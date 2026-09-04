@@ -13,9 +13,10 @@ import {
 } from 'lucide-react'
 import { useMemo, useState, type ReactNode } from 'react'
 
+import { sageApi } from '../api'
 import { useSage } from '../context'
 import { changeKey, effectiveRunStatus, relativeAge, sageSourceLink, typicalRunMs } from '../lib/format'
-import type { PrRef, RunReport } from '../lib/types'
+import { REVIEW_MODEL_AUTO, type PrRef, type ReviewFixFindingSnapshot, type RunReport } from '../lib/types'
 import EmptyState from './EmptyState'
 import { SourceError, usePrSource } from './PrSourcePanel'
 import ReportView from './ReportView'
@@ -25,12 +26,21 @@ import PrStatusChips from './PrStatusChips'
 import ReviewChat from './ReviewChat'
 import RunProgress from './RunProgress'
 import PostCommentsButton from './PostCommentsButton'
+import ReviewModelPicker from './ReviewModelPicker'
 import RunStatusPill from './RunStatusPill'
 import ShimmerLine from './ShimmerLine'
+import { api } from '../../../api/client'
 import PullRequestPanel from '../../../components/PullRequestPanel'
+import ReviewFixTaskPanel, { type ReviewFixTaskTransport } from '../../../components/ReviewFixTaskPanel'
+import ReviewFixSetup from './ReviewFixSetup'
 
 import { i18nT } from '../../../i18n/t'
 type Tab = 'review' | 'source'
+
+const reviewFixTransport: ReviewFixTaskTransport = {
+  status: (taskId) => api.reviewFixStatus(taskId),
+  action: (taskId, input) => api.reviewFixAction(taskId, input),
+}
 
 /** http(s) only: the URL is provider-derived and lands in an href. */
 function safeHref(url: string): string {
@@ -108,10 +118,29 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
     prRun, report, reportLoading, reportError,
     startReview, cancelRun, cancelling, pool,
     archiveRun, archiving, archiveError, runs, postComments, postCommentGroups,
-    posting, postError, postingSelection,
+    posting, postError, postingSelection, reviewModel, setReviewModel,
   } = useSage()
   const [tab, setTab] = useState<Tab>('review')
+  const [fixFindings, setFixFindings] = useState<ReviewFixFindingSnapshot[]>([])
+  const [fixSetupOpen, setFixSetupOpen] = useState(false)
+  const [fixTaskId, setFixTaskId] = useState<string | null>(null)
   const source = usePrSource(pr.url)
+
+  const startFix = (findingsToFix: ReviewFixFindingSnapshot[]) => {
+    if (findingsToFix.length === 0) return
+    setFixFindings(findingsToFix)
+    setFixSetupOpen(true)
+  }
+
+  const reviewAgain = async () => {
+    if (!fixTaskId) return
+    const current = await sageApi.fixTask(fixTaskId)
+    if (!current.review_fix) return
+    await sageApi.reviewAgain(fixTaskId, {
+      expected_revision: current.revision,
+      target_fingerprint: current.review_fix.target.dirty_fingerprint,
+    })
+  }
 
   const running = prRun?.status === 'running'
   // The per-change error the driver wrote for THIS pull request, if it failed.
@@ -168,7 +197,10 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
         <FailureNotice
           run={prRun}
           changeId={pr.change_id}
-          onRetry={() => startReview.mutate([pr.url])}
+          onRetry={() => startReview.mutate({
+            changes: [pr.url],
+            model: prRun?.model ?? REVIEW_MODEL_AUTO,
+          })}
           retrying={startReview.isPending}
         />
       )}
@@ -179,6 +211,31 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
           typicalMs={typicalRunMs(runs, prRun.changes.length)}
           onCancel={() => cancelRun(prRun.run_id)}
           cancelling={cancelling || Boolean(prRun.cancel_requested_at)}
+        />
+      )}
+      {fixSetupOpen && prRun && (
+        <ReviewFixSetup
+          findings={fixFindings}
+          reviewRunId={prRun.run_id}
+          prUrl={pr.url}
+          sourceHeadSha={headSha}
+          model={reviewModel}
+          onModelChange={setReviewModel}
+          onCreated={(response) => {
+            setFixTaskId(response.task_id)
+            setFixSetupOpen(false)
+          }}
+          onClose={() => setFixSetupOpen(false)}
+        />
+      )}
+      {fixTaskId && (
+        <ReviewFixTaskPanel
+          taskId={fixTaskId}
+          transport={reviewFixTransport}
+          onReviewAgain={reviewAgain}
+          onOpenTaskRunner={(taskId) => {
+            window.location.assign(`/projects?applied=${encodeURIComponent(taskId)}`)
+          }}
         />
       )}
 
@@ -223,6 +280,7 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
           // One request per change: a request posts one pending review against
           // one pull request, so a selection spanning changes is grouped.
           onPostSelection={(groups) => postCommentGroups(prRun.run_id, groups)}
+          onStartFix={startFix}
           onArchive={() => archiveRun(prRun.run_id)}
           archiving={archiving}
           archiveError={archiveError?.message ?? null}
@@ -327,8 +385,11 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
   return (
     <article className="h-full flex flex-col min-h-0">
       <header className="px-4 md:px-6 pt-5 pb-3 border-b border-border flex-shrink-0">
-        <div className="flex items-start gap-3">
-          <div className="flex-1 min-w-0">
+        {/* Stack under the title on narrow viewports: a non-shrinking action
+            column beside a long advertised model id forced the review content
+            to overflow horizontally instead of wrapping. */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-start gap-3">
+          <div className="flex-1 min-w-0 w-full">
             <h1 className="text-[21px] font-bold leading-tight text-text-strong break-words">
               {title}
             </h1>
@@ -365,28 +426,44 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
               )}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => startReview.mutate([pr.url])}
-            disabled={busy || running}
-            title={running
-              ? i18nT('apps.codeReviewSage.components.prReviewDetail.review_already_running')
-              : pr.reviewed
-                ? i18nT('apps.codeReviewSage.components.prReviewDetail.review_again_at_current_head')
-                : i18nT('apps.codeReviewSage.components.prReviewDetail.review_this_pull_request')}
-            className="flex-shrink-0 inline-flex items-center gap-1.5 rounded-md bg-accent text-accent-fg px-3 py-1.5 text-[12.5px] font-medium border-none cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default transition-colors"
-          >
-            {busy
-              ? <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
-              : <ScanSearch size={13} />}
-            {running
-              ? i18nT('apps.codeReviewSage.components.prReviewDetail.reviewing')
-              : failed
-                ? i18nT('apps.codeReviewSage.components.prReviewDetail.retry_review')
-                : pr.reviewed || pr.reviewed_stale
-                  ? i18nT('apps.codeReviewSage.components.prReviewDetail.review_again')
-                  : i18nT('apps.codeReviewSage.components.prReviewDetail.review')}
-          </button>
+          <div className="flex w-full sm:w-auto min-w-0 flex-col items-stretch sm:items-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (failed && prRun) {
+                  startReview.mutate({
+                    changes: [pr.url],
+                    model: prRun.model ?? REVIEW_MODEL_AUTO,
+                  })
+                  return
+                }
+                startReview.mutate([pr.url])
+              }}
+              disabled={busy || running}
+              title={running
+                ? i18nT('apps.codeReviewSage.components.prReviewDetail.review_already_running')
+                : pr.reviewed
+                  ? i18nT('apps.codeReviewSage.components.prReviewDetail.review_again_at_current_head')
+                  : i18nT('apps.codeReviewSage.components.prReviewDetail.review_this_pull_request')}
+              className="inline-flex items-center gap-1.5 rounded-md bg-accent text-accent-fg px-3 py-1.5 text-[12.5px] font-medium border-none cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default transition-colors"
+            >
+              {busy
+                ? <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
+                : <ScanSearch size={13} />}
+              {running
+                ? i18nT('apps.codeReviewSage.components.prReviewDetail.reviewing')
+                : failed
+                  ? i18nT('apps.codeReviewSage.components.prReviewDetail.retry_review')
+                  : pr.reviewed || pr.reviewed_stale
+                    ? i18nT('apps.codeReviewSage.components.prReviewDetail.review_again')
+                    : i18nT('apps.codeReviewSage.components.prReviewDetail.review')}
+            </button>
+            <ReviewModelPicker
+              value={reviewModel}
+              onChange={setReviewModel}
+              disabled={busy || running}
+            />
+          </div>
         </div>
         {startReview.error && (
           <div className="mt-2 text-[12.5px] text-danger">

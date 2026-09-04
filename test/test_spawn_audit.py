@@ -337,6 +337,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # covers. Fixed argv, no shell=True, no model-derived input -- the only
         # variables are a tmpdir path and a loop index.
         "apps/builtins/code_review_sage/tests/test_learning.py::test_concurrent_processes_both_land",
+        # TEST-ONLY: creates a temporary repository with a fixed git argv for the
+        # local-review fixture. The path comes from pytest's tmp_path, and no
+        # command, argument, or repository is selected by an agent.
+        "apps/builtins/code_review_sage/tests/test_local_review.py::_git",
         # auto-improvement: fixed `git`/`gh`/`ruff` argv against the OPERATOR-chosen
         # repository. Same class as code_reviewer/git.py and issue_radar's gh/glab
         # spawns: the repo is selected by the operator through the Connect endpoint,

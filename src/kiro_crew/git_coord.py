@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.sandbox import (
     create_subprocess_limited,
+    drain_bounded,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
 )
@@ -167,3 +168,43 @@ async def _git(work_dir: str, *args: str) -> str:
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {stderr.decode()}")
     return stdout.decode()
+
+
+# Hard parent-side stderr cap shared by the bounded runner below.
+_GIT_STDERR_CAP_BYTES = 64 * 1024
+
+
+async def _git_bounded(work_dir: str, cap_bytes: int, *args: str) -> tuple[str, str, int, bool]:
+    """``_git`` with a hard parent-side output cap.
+
+    ``communicate()`` buffers the child's ENTIRE output before any caller-side
+    truncation, so a runaway diff OOMs the gateway before a limit can apply
+    (GPT review, PR #5274). The output is instead drained through
+    ``drain_bounded``: at most *cap_bytes* of stdout is kept, the excess is
+    read and discarded, and ``truncated`` reports whether anything was. The
+    child runs to completion either way, so exit codes stay meaningful.
+    Returns ``(stdout, stderr, returncode, truncated)``.
+    """
+    # Same sandbox + scrubbed-env chokepoint as ``_git`` — and the same module
+    # references, so callers that patch this module's spawn seam (the review-fix
+    # test fixture) cover this runner too.
+    argv, env, cleanup = await sandboxed_spawn_argv_async(
+        ["git", *args], _prepare=sandboxed_spawn_argv
+    )
+    try:
+        proc = await create_subprocess_limited(
+            *argv,
+            cwd=work_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        out, err = await asyncio.gather(
+            drain_bounded(proc.stdout, cap_bytes),
+            drain_bounded(proc.stderr, _GIT_STDERR_CAP_BYTES),
+        )
+        returncode = await proc.wait()
+    finally:
+        if cleanup:
+            Path(cleanup).unlink(missing_ok=True)
+    return out[0].decode(errors="replace"), err[0].decode(errors="replace"), returncode, out[1]

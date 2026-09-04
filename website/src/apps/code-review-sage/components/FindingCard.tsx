@@ -29,8 +29,8 @@
 // renders through MarkdownRenderer; the `snippet` is code from a private diff and
 // renders verbatim in a monospace block — NEVER through the markdown renderer, so
 // it cannot be reinterpreted as markup.
-import { Check, Loader2, MessageSquarePlus } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { Check, Loader2, MessageSquarePlus, Wrench } from 'lucide-react'
+import { useId, type ReactNode } from 'react'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import type { Finding } from '../lib/types'
 
@@ -108,6 +108,7 @@ function DetailRow({ label, value, accent = false, children }: {
 export default function FindingCard({
   finding, onPost, posted = false, posting = false,
   selectable = false, selected = false, onToggle, label = '',
+  fixSelectable = false, fixSelected = false, onToggleFix, onFix,
 }: {
   finding: Finding
   /** Post THIS finding as a single inline comment. Omitted when the run cannot
@@ -122,7 +123,13 @@ export default function FindingCard({
   onToggle?: () => void
   /** Accessible name for the checkbox — the card's own text is long. */
   label?: string
-}) {
+  /** Fix selection is intentionally separate from the posting selection. */
+  fixSelectable?: boolean
+  fixSelected?: boolean
+  onToggleFix?: () => void
+  onFix?: () => void
+ }) {
+  const actionId = useId()
   const { text, border, word } = severityVisual(finding.severity)
   const location = [finding.file, finding.line != null && finding.line !== '' ? String(finding.line) : null]
     .filter(Boolean)
@@ -134,7 +141,8 @@ export default function FindingCard({
   // A record predating the `headline` field has none, so the dimension eyebrow
   // carries the card alone and the observation stays the lead — old reviews keep
   // rendering rather than showing an empty heading.
-  const showActions = posted || Boolean(onPost) || (selectable && !posted)
+  const showFixActions = fixSelectable && !posted && (Boolean(onFix) || Boolean(onToggleFix))
+  const showActions = posted || Boolean(onPost) || (selectable && !posted) || showFixActions
 
   return (
     <div className={`rounded-lg border border-border bg-bg-elevated overflow-hidden border-l-[3px] ${border} my-2`}>
@@ -191,8 +199,9 @@ export default function FindingCard({
       {showActions && (
         <div className="flex items-center gap-2 border-t border-border-strong bg-bg-elevated px-3.5 py-2">
           {selectable && !posted && (
-            <label className="flex items-center gap-2 text-[11.5px] text-muted cursor-pointer">
+            <label htmlFor={`${actionId}-select`} className="flex items-center gap-2 text-[11.5px] text-muted cursor-pointer">
               <input
+                id={`${actionId}-select`}
                 type="checkbox"
                 checked={selected}
                 onChange={onToggle}
@@ -201,6 +210,20 @@ export default function FindingCard({
                 className="flex-shrink-0 accent-accent cursor-pointer"
               />
               {i18nT('apps.codeReviewSage.components.findingCard.select_to_draft_together')}
+            </label>
+          )}
+          {fixSelectable && !posted && (
+            <label htmlFor={`${actionId}-fix`} className="flex items-center gap-2 text-[11.5px] text-muted cursor-pointer">
+              <input
+                id={`${actionId}-fix`}
+                type="checkbox"
+                checked={fixSelected}
+                onChange={onToggleFix}
+                aria-label={i18nT('apps.codeReviewSage.components.findingCard.select_to_fix',
+                  { label: label || i18nT('apps.codeReviewSage.components.findingCard.this_finding') })}
+                className="flex-shrink-0 accent-accent cursor-pointer"
+              />
+              {i18nT('apps.codeReviewSage.components.findingCard.select_for_fix')}
             </label>
           )}
           <span className="flex-1" />
@@ -217,20 +240,38 @@ export default function FindingCard({
               />
               {i18nT('apps.codeReviewSage.components.findingCard.posting')}
             </span>
-          ) : onPost ? (
-            <button
-              type="button"
-              onClick={onPost}
-              aria-label={finding.file
-              ? i18nT('apps.codeReviewSage.components.findingCard.post_finding_on',
-                { target: finding.file })
-              : i18nT('apps.codeReviewSage.components.findingCard.post_finding')}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-text hover:text-accent hover:border-accent cursor-pointer"
-            >
-              <MessageSquarePlus size={11} aria-hidden="true" />
-              {i18nT('apps.codeReviewSage.components.findingCard.post_this_comment')}
-            </button>
-          ) : null}
+          ) : (
+            <>
+              {onFix && (
+                <button
+                  type="button"
+                  onClick={onFix}
+                  aria-label={finding.file
+                    ? i18nT('apps.codeReviewSage.components.findingCard.ask_to_fix_on',
+                      { target: finding.file })
+                    : i18nT('apps.codeReviewSage.components.findingCard.ask_to_fix')}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent-subtle px-2 py-1 text-[11.5px] text-accent hover:bg-accent/20 cursor-pointer"
+                >
+                  <Wrench size={11} aria-hidden="true" />
+                  {i18nT('apps.codeReviewSage.components.findingCard.ask_to_fix')}
+                </button>
+              )}
+              {onPost && (
+                <button
+                  type="button"
+                  onClick={onPost}
+                  aria-label={finding.file
+                    ? i18nT('apps.codeReviewSage.components.findingCard.post_finding_on',
+                      { target: finding.file })
+                    : i18nT('apps.codeReviewSage.components.findingCard.post_finding')}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-text hover:text-accent hover:border-accent cursor-pointer"
+                >
+                  <MessageSquarePlus size={11} aria-hidden="true" />
+                  {i18nT('apps.codeReviewSage.components.findingCard.post_this_comment')}
+                </button>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

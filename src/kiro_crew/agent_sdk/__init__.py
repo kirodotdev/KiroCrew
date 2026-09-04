@@ -44,7 +44,7 @@ Design of record, including what each later phase moves in here:
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from kiro_crew.agent_sdk.backend_install import (
     CACHE_TTL_SECONDS,
@@ -72,6 +72,25 @@ class AgentTurnUsage(Protocol):
     output_tokens: int
 
 
+if TYPE_CHECKING:
+    # Model-selection vocabulary, re-exported from the ACP client so application
+    # code can run the shared entitlement check without importing ``kiro_crew.acp``
+    # itself. This is the boundary's whole point: consumers above the SDK name
+    # capabilities, the SDK resolves them against the driver (see the layering
+    # diagram above, AGENTS.md → Model selection, and
+    # docs/request-for-change/rfc-crew-agent-sdk-boundary.md §5.5 -- model-id
+    # vocabulary is driver-owned).
+    #
+    # Resolved lazily through module ``__getattr__`` below rather than at module
+    # scope: the boot path imports this package on the way to the route table,
+    # and ``kiro_crew.acp.__init__`` drags in both the client and the runtime --
+    # see test_the_boot_path_does_not_import_acp_at_module_scope.
+    from kiro_crew.acp.client import (
+        AcpModelUnavailable,
+        advertised_model_ids,
+        model_is_unusable,
+    )
+
 __all__ = [
     "AgentTurnUsage",
     "CACHE_TTL_SECONDS",
@@ -81,12 +100,34 @@ __all__ = [
     "INSTALLED",
     "MISSING",
     "UNKNOWN",
+    "AcpModelUnavailable",
     "BackendInstallState",
     "NativeCommandBatch",
+    "advertised_model_ids",
     "clear_probe_cache",
+    "model_is_unusable",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",
     "TURN_STOP_REASON_CANCELLED",
     "TURN_STOP_REASON_END_TURN",
 ]
+
+_LAZY_ACP_NAMES = frozenset(
+    name
+    for name in __all__
+    if name in {"AcpModelUnavailable", "advertised_model_ids", "model_is_unusable"}
+)
+
+
+def __getattr__(name: str):
+    """Resolve the model-selection vocabulary on first attribute access.
+
+    Keeps ``import kiro_crew.acp`` off the boot path while application code
+    still reads the names straight off ``kiro_crew.agent_sdk``.
+    """
+    if name in _LAZY_ACP_NAMES:
+        from kiro_crew.acp import client
+
+        return getattr(client, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

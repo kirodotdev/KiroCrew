@@ -19,6 +19,10 @@ vi.mock('../apps/code-review-sage/context', async importOriginal => {
   return { ...actual, useSage: () => sage as unknown as SageContextValue }
 })
 
+vi.mock('../apps/code-review-sage/components/ReviewModelPicker', () => ({
+  default: () => null,
+}))
+
 import PrPickList from '../apps/code-review-sage/components/PrPickList'
 
 function pr(overrides: Partial<RepoPr> = {}): RepoPr {

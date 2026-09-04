@@ -366,6 +366,22 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   }, [externalSelection])
 
   useEffect(() => {
+    // The anchor rect becomes invalid as soon as the editor or its panel
+    // scrolls. Hide the portal immediately instead of letting it animate from
+    // a stale position while Monaco is repainting the newly visible lines.
+    const dismissOnScroll = () => {
+      sourceRef.current = null
+      setVisible(false)
+    }
+    document.addEventListener('scroll', dismissOnScroll, true)
+    window.addEventListener('resize', dismissOnScroll)
+    return () => {
+      document.removeEventListener('scroll', dismissOnScroll, true)
+      window.removeEventListener('resize', dismissOnScroll)
+    }
+  }, [])
+
+  useEffect(() => {
     // Every deferred selection check has to be cancellable. These fire 0-50ms
     // after a pointer/key event, so an unmount inside that window leaves a
     // check running for a component that is gone. In a browser that is benign

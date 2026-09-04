@@ -3,6 +3,43 @@
 // A "thread" in the UI is a RUN on the backend: one review of one or more pull
 // requests, with its own private results + report. Several can be live at once.
 
+export type {
+  ReviewFixActionRequest,
+  ReviewFixCreateInput,
+  ReviewFixFindingSnapshot,
+  ReviewFixGroup,
+  ReviewFixMetadata,
+  ReviewFixState,
+  ReviewFixTargetMode,
+  ReviewFixTaskResponse,
+  ReviewFixValidation,
+} from '../../../types/reviewFix'
+
+/** The picker value for inheriting the account/session model. */
+export const REVIEW_MODEL_AUTO = 'auto'
+
+export interface ReviewStart {
+  changes: string[]
+  /** Concrete ACP wire id; Auto is represented by omission or null. */
+  model?: string | null
+}
+
+export interface ReviewLinksStart {
+  links: string
+  /** Concrete ACP wire id; Auto is represented by omission or null. */
+  model?: string | null
+}
+
+export interface ReviewRepoStart {
+  repo: string
+  force: boolean
+  /** Concrete ACP wire id; Auto is represented by omission or null. */
+  model?: string | null
+}
+
+export type ReviewStartInput = string[] | ReviewStart
+export type ReviewLinksInput = string | ReviewLinksStart
+
 /** Terminal + live states a run can be in (backend ``run["status"]``). */
 export type RunStatus =
   | 'running'
@@ -91,6 +128,8 @@ export interface Run {
    *  Named to mirror `RunProgressEntry.reason` so the token resolves through the
    *  same per-change-then-run precedence the prose already uses. */
   reason?: string
+  /** Concrete ACP wire id selected for this run; absent/null means Auto/inherit. */
+  model?: string | null
   force?: boolean
   skipped_inflight?: number
   /** Set once this run's findings have been published to the pull request. */
@@ -136,6 +175,8 @@ export interface Finding {
   severity?: 'red' | 'yellow'
   file?: string
   line?: number | string
+  end_line?: number | string
+  fingerprint?: string
   /** One-sentence conclusion, written by the reviewer (see
    *  `review_driver.build_review_task`). Optional: reviews recorded before the
    *  field existed have none, and the card falls back to leading with the
@@ -182,6 +223,50 @@ export interface RunReport {
   generated_at: string
   total: number
   report_slug: string | null
+}
+
+export type LocalReviewStatus = 'reviewing' | 'completed' | 'partially_completed' | 'failed'
+
+export interface LocalFinding {
+  id: string
+  file: string
+  side: 'new' | 'old'
+  line: number
+  end_line?: number | null
+  severity: 'info' | 'warning' | 'error'
+  category?: string | null
+  title: string
+  message: string
+  suggestion?: string | null
+  confidence?: number | null
+  status: 'open' | 'accepted' | 'fixing' | 'resolved' | 'dismissed' | 'stale'
+  user_instruction?: string | null
+  fingerprint?: string
+}
+
+export interface LocalReviewSession {
+  id: string
+  repository: string
+  mode: string
+  status: LocalReviewStatus
+  revision?: string
+  files?: Array<{
+    path: string
+    status: string
+    additions: number
+    deletions: number
+    hunks?: Array<{ old_start: number; new_start: number; lines: Array<{
+      kind: 'context' | 'add' | 'delete'
+      content: string
+      old_line?: number | null
+      new_line?: number | null
+    }> }>
+  }>
+  skipped_files?: string[]
+  warning?: string | null
+  findings: LocalFinding[]
+  error?: string
+  fix_runs?: Array<{ id: string; status: string; changed_files?: string[]; error?: string }>
 }
 
 // --- Repos + PRs -------------------------------------------------------------
@@ -335,7 +420,7 @@ export interface LearningsResponse {
 
 // --- Navigation --------------------------------------------------------------
 
-export type MainView = 'reviews' | 'learning' | 'settings'
+export type MainView = 'reviews' | 'local' | 'learning' | 'settings'
 /** Which list the middle column shows: the active repo's PRs, or the threads. */
 export type ListTab = 'pulls' | 'reviews'
 export type RailSection = 'repos' | 'reviews' | 'learning' | 'settings'

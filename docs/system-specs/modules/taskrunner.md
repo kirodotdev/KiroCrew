@@ -31,7 +31,7 @@ taskrunner.py        (orchestrator)
 
 | Module | Class/Functions | Responsibility |
 |--------|----------------|----------------|
-| `task_models.py` | `TaskStatus`, `Task`, `WorkingMemory`, `Project`, `NotifyCallback`, constants | Shared data types and configuration constants |
+| `task_models.py` | `TaskStatus`, `Task`, `WorkingMemory`, `Project`, `ReviewFixState`, `ReviewFixMetadata`, `NotifyCallback`, constants | Shared data types and configuration constants, including the review-fix state machine models |
 | `task_planner.py` | `decompose()`, `parse_tasks()`, `normalize_cross_group_deps()`, `group_parallel_tasks()`, `plan_to_chat_context()`, `update_plan_tasks()`, `auto_name()` | LLM spec decomposition, task parsing, dependency normalization, parallel grouping, plan-to-chat formatting |
 | `task_executor.py` | `execute_task()`, `build_task_prompt()`, `self_review()`, `run_tests()`, `check_context()` | Task execution with retry/recovery budgets, prompt building, context compaction, test running, self-review |
 | `task_reporter.py` | `notify()`, `build_status()`, `save_progress()`, `load_checkpoint()`, `build_resume_context()`, `format_completion_summary()` | Notifications, status reporting, TASK_PROGRESS.md checkpointing, resume context |
@@ -178,6 +178,12 @@ class TaskRunner:
     async def retry_from_task(task_id: str, from_task: int, agent: str = "") -> str
     async def delete_run(task_id: str) -> bool
 
+    # Review-fix lifecycle — every write goes through mutate_review_fix (CAS)
+    def get_review_fix(task_id: str) -> Project
+    async def create_review_fix(metadata: ReviewFixMetadata, *, task_id: str = "", name: str = "", spec_content: str = "", source: str = "code_review_sage", tasks: list[Task] | None = None) -> Project
+    async def execute_review_fix(task_id: str, *, agent: str = "", fresh: bool = False, auto_approve: bool = False) -> str
+    async def mutate_review_fix(task_id: str, *, expected_revision: int, action: str, mutate: Callable[[ReviewFixMetadata], None], to_state=None, expected_state=None, group_id: str = "", expected_group_revision: int | None = None, expected_target_fingerprint: str = "") -> Project
+
     # Internal but accessed by handlers for read-only projection
     _runs: dict[str, TaskRun]
     async def _apersist_runs() -> None
@@ -253,6 +259,10 @@ class Project:
     workflow_revision: int = 0
     derived_from_workflow_id: str = ""  # saved ancestor after an edit or replan
     derived_from_revision: int = 0
+    review_fix: ReviewFixMetadata | None = None  # governed review-fix state; absent on generic runs
+    revision: int = 0                  # monotonic review-fix CAS revision
+    execution_mode: str = "standard"   # "standard" | "review_fix"
+    commit_policy: str = "per_task"    # "per_task" | "manual_group"
 ```
 
 ## Concurrent Tasks
@@ -295,6 +305,127 @@ On gateway restart, any task with `status == "running"` is automatically transit
 - Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate.
 - `cli_server.py` constructs the standalone `kirocrew run TASK.md` runner without an approval callback. Use `force_approval`, not `requires_approval`, for an action that must not execute unattended.
 - The dashboard supplies the callback and renders Approve/Deny controls in the project detail view.
+
+## Review-Fix Lifecycle
+
+A review-fix run is a governed Task Runner project that applies Code Review Sage
+findings in a retained candidate worktree. `Project.execution_mode` is
+`"review_fix"` and `Project.commit_policy` is `"manual_group"` (generic runs are
+`"standard"` / `"per_task"`): the per-step auto-commit in
+[Git Coordination](#git-coordination) does not run, and the candidate reaches the
+target only through explicit user-confirmed actions. The Sage-side endpoints and
+git mechanics live in `apps/builtins/code_review_sage/backend/fix_tasks.py`,
+`review_fix.py`, and `review_fix_git.py`; the Task Runner owns the state.
+
+### Persisted state model
+
+`Project.review_fix` carries a `ReviewFixMetadata` record (`task_models.py`)
+whose `state` is a `ReviewFixState`. Every write is routed through
+`TaskRunner.mutate_review_fix` — no caller mutates fix state directly.
+
+`ReviewFixState` (task level):
+
+| Group | States |
+|-------|--------|
+| Flow | `DRAFT`, `PLANNING`, `AWAITING_GROUP_CONFIRMATION`, `RUNNING`, `AWAITING_VALIDATION`, `READY_TO_APPLY`, `AWAITING_COMMIT`, `COMMITTED`, `AWAITING_PUSH`, `PUSHED`, `REREVIEWING` |
+| Terminal | `DONE` |
+| Halted | `PAUSED`, `FAILED` |
+| Blocked | `BLOCKED_MODEL_RESOLUTION`, `BLOCKED_DIRTY_OVERLAP`, `BLOCKED_VALIDATION` |
+
+Each dependency group carries its own coexisting `ReviewFixGroupState`
+(`PROPOSED`, `CONFIRMED`, `VALIDATING`, `READY_TO_APPLY`, `APPLIED`, `COMMITTED`)
+on `ReviewFixDependencyGroup`. Task state and group state advance independently
+and both are CAS-checked.
+
+`ReviewFixMetadata` persists `review_run_id`, `pr_url`, `source_head_sha`,
+`selected_finding_keys`, `finding_snapshots`, `state`, `revision`, `target`
+(`ReviewFixTargetSnapshot`: mode, repo root, branch, HEAD sha, dirty
+fingerprint, tracked/untracked paths), `model` (`ReviewFixModelResolution`),
+`groups`, `git` (`ReviewFixGitRecord`: candidate worktree/branch, destination
+branch, remote/upstream, push preview and result, re-review run id), `chat`,
+`blocked_reason`, per-action `attempts`, bounded `logs`, `diff_paths`,
+`artifact_paths`, the `audit_log`, and timestamps.
+
+### CAS mutation (`mutate_review_fix`)
+
+```python
+async def mutate_review_fix(
+    task_id: str, *,
+    expected_revision: int,
+    action: str,
+    mutate: Callable[[ReviewFixMetadata], None],
+    to_state: ReviewFixState | None = None,
+    expected_state: ReviewFixState | str | None = None,
+    group_id: str = "",
+    expected_group_revision: int | None = None,
+    expected_target_fingerprint: str = "",
+) -> Project
+```
+
+A stale task revision, task state, target dirty fingerprint, or — when
+`group_id` is given — group revision raises `ReviewFixConflict` (surfaced as
+HTTP 409 with the current revision/state/group revisions). The mutator runs
+against a deep copy, so a failed check leaves the live `Project` untouched and
+emits no audit entry. An applied mutation bumps `run.revision` and
+`metadata.revision` together to `max(run.revision, metadata.revision) + 1` and
+appends a `ReviewFixAuditEvent` (action, from/to state, revision, actor,
+redacted details).
+
+### Transitions
+
+| Action | Transition | Guard / side effect |
+|--------|-----------|---------------------|
+| create | → `DRAFT` | Candidate worktree created from the captured target HEAD before any agent runs. Model resolution failure → `BLOCKED_MODEL_RESOLUTION` (recoverable via the `resolve_model` action); dirty-path overlap between the target and the groups' owned files → `BLOCKED_DIRTY_OVERLAP`. |
+| grouping proposed | → `PLANNING` → `AWAITING_GROUP_CONFIRMATION` | `confirm_grouping` / `edit_soft_grouping` stay in-state; hard dependency groups cannot be split. |
+| execute (`resume` / `retry`) | → `RUNNING` | Requires confirmed groups and a resolved model pin. `auto_approve` must pass the dashboard `_gate_auto_approve` provenance gate like any other launch. A failed start restores the prior state instead of persisting `RUNNING`. |
+| execution complete | → `AWAITING_VALIDATION` | Execution failure → `FAILED`; pause → `PAUSED`. |
+| `validate_group` | pass → `READY_TO_APPLY`, fail → `BLOCKED_VALIDATION` | Retry/resume re-enter execution from the blocked state. |
+| `apply_group` | `READY_TO_APPLY` → `AWAITING_COMMIT` | The live candidate patch id is compared against the validated `candidate_patch_id`; a mismatch is rejected, so candidate drift after validation cannot be applied. |
+| `commit_group` | `AWAITING_COMMIT` → `COMMITTED` | Stages exactly the group's owned paths; the target fingerprint must be unchanged. |
+| `push_preview` | `COMMITTED` → `AWAITING_PUSH` | Stores the preview (remote, branch, upstream, commits, files, diverged). |
+| `push` | `AWAITING_PUSH` → `PUSHED` | The push re-computes the preview first and rejects when it is stale — HEAD advanced or the upstream moved. Force-push is unavailable. |
+| `review_again` | `PUSHED` → `REREVIEWING` | A failed review start restores `PUSHED`. |
+| `discard_candidate` | any non-`RUNNING` lifecycle state → `DONE` | The CAS transition happens BEFORE the `git worktree remove --force` side effect, so a rejected transition can never leave a destroyed worktree behind. A failed destroy logs and surfaces in the task logs while the state stays `DONE`. |
+
+`RUNNING` is never a valid discard source, and `DONE` is terminal.
+
+### Model pinning
+
+`resolve_pinned_model` (`review_fix.py`) accepts only a concrete advertised model
+id. An empty advertised set is allowed (the repo-wide convention), but `auto` is
+rejected: a fix task must keep one concrete model across retries and resumes.
+
+### Target mode and artifacts
+
+`ReviewFixTargetMode` is `CURRENT_BRANCH` only — fixes apply back to the branch
+the review ran against.
+
+Group ids are restricted to `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` because they name
+patch/log artifact files (`{group_id}.patch`, `{group_id}-{kind}-{ts}.log`) under
+the candidate worktree's `.kirocrew-review-fix-artifacts/` directory. Artifact
+directories must be non-link and contained in the candidate worktree. Validation
+output is redacted (`redact_credentials` + `redact_exfiltration_urls`) and capped
+at 256KB (`_MAX_ARTIFACT_BYTES` in `review_fix.py`) before it is written or
+persisted.
+
+### Routes and security posture
+
+`register_fix_task_routes` (`fix_tasks.py`) registers only the app-scoped
+endpoints — `POST /api/apps/code-review-sage/fix-tasks`,
+`GET /api/apps/code-review-sage/fix-tasks/{task_id}`, and
+`POST /api/apps/code-review-sage/fix-tasks/{task_id}/review-again`. The
+`GET /api/taskrunner/{task_id}/review-fix` and
+`POST /api/taskrunner/{task_id}/review-fix/actions` routes are registered by
+`dashboard/routes/taskrunner.py` through the `dashboard/handlers/review_fix.py`
+adapter, which imports `fix_tasks` through its canonical package path so the
+review-fix enums are a single module identity.
+
+`fix_tasks.py` is a registered egress sink: review-fix error bodies quote git
+stderr, plan/validation refusals, and agent failures, so `_safe_error` scrubs
+them before they reach the dashboard or the audit record. `review_fix.py` and
+`review_fix_git.py` are allowlisted instead — they scrub patch output and git
+stderr where it is persisted INTO task state, and the user-readable surfaces are
+registered sinks downstream (`security_posture.py`).
 
 ## Parallel Execution
 
@@ -375,6 +506,8 @@ Loaded on `__init__` — survives gateway restarts.
 | POST | `/api/taskrunner/{task_id}/retry` | Retry from step N (`{from_step}` in body) |
 | POST | `/api/taskrunner/{task_id}/pause` | Pause a running project |
 | POST | `/api/taskrunner/{task_id}/execute` | Execute or resume a planned project |
+| GET | `/api/taskrunner/{task_id}/review-fix` | Read one review-fix task's governed state |
+| POST | `/api/taskrunner/{task_id}/review-fix/actions` | Review-fix actions (confirm grouping, execute, validate, apply, commit, push, discard) |
 | POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a new chat slot for manual review |
 | GET | `/api/taskrunner/{task_id}/plan-context` | Return plan text for chat pre-fill |
 | GET | `/api/taskrunner/{task_id}/plan.yaml` | Export the plan as YAML |
@@ -383,6 +516,9 @@ Loaded on `__init__` — survives gateway restarts.
 | POST | `/api/taskrunner/refine/cancel` | Cancel refine |
 | POST | `/api/taskrunner/refine/answer` | Answer clarifying question during refine |
 | POST | `/api/reveal` | Reveal file path in Finder (`open -R` macOS, `xdg-open` Linux) |
+| POST | `/api/apps/code-review-sage/fix-tasks` | Create a review-fix task from Sage findings |
+| GET | `/api/apps/code-review-sage/fix-tasks/{task_id}` | Read a review-fix task |
+| POST | `/api/apps/code-review-sage/fix-tasks/{task_id}/review-again` | Request re-review after a review-fix push |
 
 ### Status Response
 

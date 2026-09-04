@@ -8438,6 +8438,35 @@ def _needs_path_search(argv: "Sequence[str]") -> bool:
     return not (os.sep in name or (os.altsep and os.altsep in name))
 
 
+async def drain_bounded(
+    stream: "asyncio.StreamReader | None",
+    cap_bytes: int,
+    *,
+    chunk_size: int = 65536,
+) -> "tuple[bytes, bool]":
+    """Read *stream* to EOF keeping at most *cap_bytes*; return (kept, truncated).
+
+    ``process.communicate()`` buffers the child's ENTIRE output in the parent
+    before any downstream truncation runs, so a noisily-looping test or a
+    runaway diff OOMs the gateway before the limit is ever applied. Draining
+    instead keeps the parent's buffer hard-capped while preserving the child's
+    exit semantics (no mid-stream kill): chunks beyond the cap are read and
+    discarded. Pair with ``proc.wait()`` afterwards.
+    """
+    if stream is None:
+        return b"", False
+    kept: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await stream.read(chunk_size)
+        if not chunk:
+            break
+        if total < cap_bytes:
+            kept.append(chunk[: cap_bytes - total])
+        total += len(chunk)
+    return b"".join(kept), total > cap_bytes
+
+
 async def create_subprocess_limited(
     *argv: str,
     profile: str = RLIMIT_PROFILE_TOOL,

@@ -174,6 +174,10 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.awsControl.console.folder_delete_confirm', // folder-name operand, quoted per locale #4821
   'apps.awsControl.console.library_remove_confirm', // artifact-name operand, quoted per locale #6987
   'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
+  // Review Fix push: the git remote/branch operands are identifiers, quoted per
+  // locale so a branch named like prose cannot read as the rest of the sentence.
+  'apps.codeReviewSage.reviewFix.taskPanel.confirm_push_title',
+  'apps.codeReviewSage.reviewFix.taskPanel.confirm_push_body',
   'apps.crewCompanion.gallery.deleteConfirm', // ASCII quotes → locale pair #4821
   'apps.mdNotebook.row.deleteTitle', // already quoted; pin + fr NNBSP fix #5725
   'apps.meetings.list.deleteConfirm', // already quoted; pin + fr/it glyph fix #4821

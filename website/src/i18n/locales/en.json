@@ -418,6 +418,22 @@
         "pattern_other": "{{count}} patterns"
       },
       "components": {
+        "localReview": {
+          "local": "Local",
+          "repository_path": "Repository path",
+          "repository_path_hint": "Absolute path to a Git worktree",
+          "start_review": "Run local review",
+          "reviewing": "Reviewing local changes…",
+          "no_findings": "No actionable findings",
+          "files_reviewed": "{{count}} files reviewed",
+          "select_finding": "Select this finding",
+          "dismiss": "Dismiss",
+          "accept": "Accept",
+          "severity_info": "informational",
+          "human_instruction": "Guidance for the fix agent (optional)",
+          "fix_selected": "Fix selected",
+          "revision": "Revision {{revision}}"
+        },
         "addReposModal": {
           "add": "Add",
           "add_one_by_url_above": "Add one by URL above.",
@@ -672,7 +688,6 @@
           "blocking": "blocking",
           "changes_reviewed_one": "{{count}} change reviewed",
           "changes_reviewed_other": "{{count}} changes reviewed",
-          "clear": "Clear",
           "design_gate": "Design gate ·",
           "design_risk": "Design risk: {{level}}",
           "draft_selected_one": "Draft {{count}} selected finding",
@@ -806,16 +821,16 @@
         }
       },
       "manifest": {
-        "description": "Deep-reviews GitHub pull requests and tells you which changes actually deserve your attention. Every changed file is reviewed in its own isolated agent session, weighted by how much blast radius it carries, and rolled up into a prioritized Focus Report. Findings are staged as a draft GitHub review that stays unpublished until you submit it, and the reviewer keeps learning your repository's real standards from shipped fixes and past review comments.",
+        "description": "Reviews local working-tree changes with structured inline findings, human guidance, and bounded agent-assisted fixes. GitHub pull-request review remains an optional secondary surface.",
         "display_name": "Code Review Sage",
         "highlight_1": "Focus Report ranks changes by blast radius so the risky files get read first",
         "highlight_2": "One isolated agent session per change, so findings never bleed between files",
         "highlight_3": "Reviews are read in the app — nothing is posted to your pull request unless you ask",
         "highlight_4": "Learns per-repository from shipped fixes, review comments, and design discussions",
-        "highlight_5": "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host",
+        "highlight_5": "Reviews local working-tree changes before a pull request exists",
         "page_label": "Code Review Sage",
-        "use_case_1": "Review one or many GitHub pull requests by risk, inspect focused findings, and stage only the comments worth publishing.",
-        "configuration_1": "Install and authenticate the gh CLI on the gateway host, add a repository, then choose the review model, reasoning effort, and concurrency in Settings."
+        "use_case_1": "Review local working-tree changes before a pull request exists, or inspect GitHub pull requests by risk and stage selected findings.",
+        "configuration_1": "Choose a Git worktree for local review, or authenticate the gh CLI for GitHub review, then select the review model, reasoning effort, and concurrency in Settings."
       },
       "views": {
         "learningView": {
@@ -849,6 +864,7 @@
           "model": "Model",
           "reasoning_effort": "Reasoning effort",
           "review_model": "Review model",
+          "auto_recommended": "Auto (recommended)",
           "reviews_at_once": "Reviews at once",
           "settings": "Settings",
           "these_apply_to_every_review_started_from_here": "These apply to every review started from here.",
@@ -860,6 +876,10 @@
         "resize_sidebar": "Resize sidebar",
         "select_a_review_to_see_its_progress_and_report": "Select a review to see its progress and report.",
         "start_a_new_one_several_can_run_at_once": "Start a new one — several can run at the same time."
+      },
+      "reviewFix": {
+        "fixRun": {},
+        "taskPanel": {}
       }
     },
     "commandBar": {
