@@ -9,21 +9,25 @@ import { useId, useMemo } from 'react'
 import type { BaseCodeOptions, FileContents, SupportedLanguages } from '@pierre/diffs'
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
-import { getOrCreateWorkerPoolSingleton } from '@pierre/diffs/worker'
+import { WorkerPoolManager, type WorkerRequest, type WorkerResponse } from '@pierre/diffs/worker'
 import { useIsDark } from '../hooks/useIsDark'
-import { PlainCodeFallback } from './PlainCodeFallback'
+import { FilePairPlainFallback, PlainCodeFallback } from './PlainCodeFallback'
 import {
   PIERRE_EXTENSION_OVERRIDES,
   PIERRE_REGEX_ENGINE,
   PIERRE_THEMES,
   PIERRE_VIRTUALIZER_CONFIG,
+  PIERRE_WORKER_COOLDOWN_MS,
   PIERRE_WORKER_POOL_SIZE,
+  PIERRE_WORKER_REQUEST_TIMEOUT_MS,
+  PIERRE_WORKER_RETRY_DELAYS_MS,
+  PIERRE_WORKER_STABLE_AFTER_MS,
   pierreDiffOptions,
   pierreFileOptions,
   pierreThemeType,
   type PierreDiffOptions,
 } from './config'
-import { markWorkerPoolBroken, useWorkerPoolBroken } from './workerHealth'
+import { WorkerPoolLifecycle, useWorkerPoolLifecycle } from './workerPoolLifecycle'
 
 // Registered once, at the only module that loads the library, so every surface
 // that resolves a language from a FILENAME picks the override up. Fence tags go
@@ -230,46 +234,107 @@ export function normalizePatchHunks(patch: string): string {
   return changed ? lines.join('\n') : patch
 }
 
-/** One highlight worker pool for the whole tab, created on first Pierre
- *  surface and never torn down. Deliberately NOT `WorkerPoolContextProvider`:
- *  that provider terminates the shared singleton when the LAST provider
- *  unmounts, and chat surfaces live in virtualized lists where every instance
- *  can scroll out at once — remounting blocks would then queue highlights
- *  into a dead pool and paint nothing. */
-const workerPool = typeof window === 'undefined' || typeof Worker === 'undefined'
-  ? undefined
-  : getOrCreateWorkerPoolSingleton({
-      poolOptions: {
-        poolSize: PIERRE_WORKER_POOL_SIZE,
-        // worker-portable is the self-contained bundle: the plain worker.js
-        // entry carries bare package imports, which resolve when Rollup
-        // bundles the worker for production but NOT when the vite dev server
-        // serves it — the worker then errors at load and every surface waits
-        // on a pool that never initializes.
-        // The listeners are the ONLY error detection this pool has: the
-        // manager's own handler logs and returns, leaving the request that was
-        // in flight pending forever (see ./workerHealth). Attached here
-        // because the factory is the one place we hold the Worker object.
-        workerFactory: () => {
-          const worker = new Worker(new URL('@pierre/diffs/worker/worker-portable.js', import.meta.url), {
-            type: 'module',
-          })
-          // `error` covers both a worker that throws and a worker module that
-          // fails to load; `messageerror` covers a reply that cannot be
-          // deserialized, which strands the same request just as silently.
-          worker.addEventListener('error', event => markWorkerPoolBroken(event.message || event))
-          worker.addEventListener('messageerror', () => markWorkerPoolBroken('worker message could not be deserialized'))
-          return worker
-        },
-      },
-      highlighterOptions: { theme: PIERRE_THEMES, preferredHighlighter: PIERRE_REGEX_ENGINE },
-    })
+/** Wrap one Pierre worker with request watchdogs. Pierre assigns at most one
+ *  active request to a worker, but keying timers by request ID also makes late
+ *  responses harmless and keeps the protocol contract explicit. */
+function createMonitoredWorker(reportFailure: (reason?: unknown) => void): Worker {
+  const worker = new Worker(new URL('@pierre/diffs/worker/worker-portable.js', import.meta.url), {
+    type: 'module',
+  })
+  const watchdogs = new Map<string, ReturnType<typeof setTimeout>>()
+  const clearWatchdog = (id: string) => {
+    const timer = watchdogs.get(id)
+    if (timer !== undefined) clearTimeout(timer)
+    watchdogs.delete(id)
+  }
+  const clearWatchdogs = () => {
+    for (const timer of watchdogs.values()) clearTimeout(timer)
+    watchdogs.clear()
+  }
 
-/** Hands every descendant the shared pool. Exported because the editor surface
- *  lives in a sibling module and needs the same one — without it Pierre falls
- *  back to `workerManager === undefined` and tokenizes on the main thread. */
-export function PierreShell({ children }: { children: React.ReactNode }) {
-  return <WorkerPoolContext.Provider value={workerPool}>{children}</WorkerPoolContext.Provider>
+  worker.addEventListener('message', event => {
+    const response = event.data as Partial<WorkerResponse>
+    if (typeof response.id === 'string') clearWatchdog(response.id)
+  })
+  worker.addEventListener('error', event => {
+    clearWatchdogs()
+    reportFailure(event.message || event)
+  })
+  worker.addEventListener('messageerror', () => {
+    clearWatchdogs()
+    reportFailure('worker message could not be deserialized')
+  })
+
+  const postMessage = worker.postMessage.bind(worker)
+  worker.postMessage = ((...args: Parameters<Worker['postMessage']>) => {
+    const request = args[0] as Partial<WorkerRequest>
+    if (typeof request.id === 'string') {
+      clearWatchdog(request.id)
+      watchdogs.set(request.id, setTimeout(() => {
+        watchdogs.delete(request.id as string)
+        reportFailure(`worker request ${request.id} (${request.type ?? 'unknown'}) timed out`)
+      }, PIERRE_WORKER_REQUEST_TIMEOUT_MS))
+    }
+    try {
+      Reflect.apply(postMessage, worker, args)
+    } catch (error) {
+      if (typeof request.id === 'string') clearWatchdog(request.id)
+      reportFailure(error)
+      throw error
+    }
+  }) as Worker['postMessage']
+
+  const terminate = worker.terminate.bind(worker)
+  worker.terminate = () => {
+    clearWatchdogs()
+    terminate()
+  }
+
+  return worker
+}
+
+/** One replaceable pool for the whole tab. A failure first unmounts every
+ *  imperative Pierre renderer into app-owned plain text, then terminates all
+ *  workers and pending requests before constructing the next generation. */
+const workerPoolLifecycle = new WorkerPoolLifecycle<WorkerPoolManager>({
+  enabled: typeof window !== 'undefined' && typeof Worker !== 'undefined',
+  create: (_generation, reportFailure) => {
+    const pool = new WorkerPoolManager(
+      {
+        poolSize: PIERRE_WORKER_POOL_SIZE,
+        workerFactory: () => createMonitoredWorker(reportFailure),
+      },
+      { theme: PIERRE_THEMES, preferredHighlighter: PIERRE_REGEX_ENGINE },
+    )
+    return {
+      pool,
+      ready: pool.initialize(),
+      terminate: () => pool.terminate(),
+    }
+  },
+  retryDelaysMs: PIERRE_WORKER_RETRY_DELAYS_MS,
+  cooldownMs: PIERRE_WORKER_COOLDOWN_MS,
+  stableAfterMs: PIERRE_WORKER_STABLE_AFTER_MS,
+  warn: reason => {
+    // eslint-disable-next-line no-console -- plain-text recovery is user-visible; retain the root cause for diagnosis
+    console.warn('Pierre highlight worker failed; showing plain text while the worker pool recovers.', reason)
+  },
+})
+workerPoolLifecycle.start()
+
+export function usePierreWorkerPool() {
+  return useWorkerPoolLifecycle(workerPoolLifecycle)
+}
+
+/** Hands descendants the current ready generation. The key is required because
+ *  Pierre captures the manager when its imperative renderer is constructed;
+ *  changing context alone does not rebind an already-mounted instance. */
+export function PierreShell({ pool, generation, children }: {
+  pool: WorkerPoolManager
+  generation: number
+  children: React.ReactNode
+}) {
+  return <WorkerPoolContext.Provider key={generation} value={pool}>{children}</WorkerPoolContext.Provider>
 }
 
 export function PierreCodeImpl({ file, options, className, langHint, scrollClassName }: {
@@ -288,7 +353,7 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   scrollClassName?: string
 }) {
   const dark = useIsDark()
-  const poolBroken = useWorkerPoolBroken()
+  const poolState = usePierreWorkerPool()
   // Instance identity for churn accounting: two independently mounted blocks —
   // even with identical fence names — must never share an identity, while this
   // one instance re-rendering with streamed content must keep its own.
@@ -303,9 +368,13 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
       ? withLang
       : { ...withLang, cacheKey: contentCacheKey(withLang.name, withLang.contents, surfaceId + ':file') }
   }, [file, langHint, surfaceId])
-  const code = <File className={className} file={resolvedFile} options={resolved} disableWorkerPool={poolBroken} />
+  if (poolState.phase !== 'ready' || poolState.pool === undefined) {
+    const fallback = <PlainCodeFallback text={resolvedFile.contents} />
+    return scrollClassName ? <div className={scrollClassName}>{fallback}</div> : fallback
+  }
+  const code = <File className={className} file={resolvedFile} options={resolved} />
   return (
-    <PierreShell>
+    <PierreShell pool={poolState.pool} generation={poolState.generation}>
       {scrollClassName
         ? <Virtualizer config={PIERRE_VIRTUALIZER_CONFIG} className={scrollClassName}>{code}</Virtualizer>
         : code}
@@ -325,7 +394,7 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
     () => pierreDiffOptions({ themeType: pierreThemeType(dark), ...options }),
     [dark, options],
   )
-  const poolBroken = useWorkerPoolBroken()
+  const poolState = usePierreWorkerPool()
   // Parse here rather than using <PatchDiff>: that component ASSERTS exactly
   // one complete file diff and throws otherwise, but chat patches stream
   // through partial frames (bare headers, unterminated hunks) and may carry
@@ -357,16 +426,20 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
   // future unparseable shape readable instead of blank.
   const noHunks = files.length > 0 && files.every(f => (f.hunks?.length ?? 0) === 0)
   const looksLikeChanges = /^[+-](?![+-][+-] )/m.test(patch)
-  if (files.length === 0 || (noHunks && looksLikeChanges)) return <PlainCodeFallback text={patch} />
+  if (files.length === 0 || (noHunks && looksLikeChanges)) {
+    return <PlainCodeFallback text={patch} />
+  }
+  if (poolState.phase !== 'ready' || poolState.pool === undefined) {
+    return <PlainCodeFallback text={patch} header={renderHeaderMetadata?.()} />
+  }
   return (
-    <PierreShell>
+    <PierreShell pool={poolState.pool} generation={poolState.generation}>
       {files.map((fileDiff, i) => (
         <FileDiff
           key={`${fileDiff.name ?? ''}:${i}`}
           className={className}
           fileDiff={fileDiff}
           options={resolved}
-          disableWorkerPool={poolBroken}
           renderHeaderMetadata={i === 0 && renderHeaderMetadata ? renderHeaderMetadata : undefined}
         />
       ))}
@@ -395,7 +468,7 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, rende
     () => pierreDiffOptions({ themeType: pierreThemeType(dark), ...options }),
     [dark, options],
   )
-  const poolBroken = useWorkerPoolBroken()
+  const poolState = usePierreWorkerPool()
   // MultiFileDiff requires at least one populated side; both-null cannot
   // happen from our call sites (DiffPanel banners the identical case away and
   // new/deleted files carry one side), but the type demands the narrowing.
@@ -408,14 +481,26 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, rende
     [newFile, surfaceId],
   )
   if (!keyedOld && !keyedNew) return null
+  if (poolState.phase !== 'ready' || poolState.pool === undefined) {
+    return (
+      <FilePairPlainFallback
+        oldFile={keyedOld}
+        newFile={keyedNew}
+        options={resolved}
+        renderHeaderMetadata={renderHeaderMetadata}
+        renderHeaderPrefix={renderHeaderPrefix}
+        renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+      />
+    )
+  }
   const input = (keyedOld && keyedNew
     ? { oldFile: keyedOld, newFile: keyedNew }
     : keyedOld
       ? { oldFile: keyedOld, newFile: null }
       : { oldFile: null, newFile: keyedNew as FileContents })
   return (
-    <PierreShell>
-      <MultiFileDiff className={className} {...input} options={resolved} disableWorkerPool={poolBroken} renderHeaderMetadata={renderHeaderMetadata} renderHeaderPrefix={renderHeaderPrefix} renderHeaderFilenameSuffix={renderHeaderFilenameSuffix} />
+    <PierreShell pool={poolState.pool} generation={poolState.generation}>
+      <MultiFileDiff className={className} {...input} options={resolved} renderHeaderMetadata={renderHeaderMetadata} renderHeaderPrefix={renderHeaderPrefix} renderHeaderFilenameSuffix={renderHeaderFilenameSuffix} />
     </PierreShell>
   )
 }

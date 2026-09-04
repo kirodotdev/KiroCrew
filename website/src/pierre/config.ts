@@ -101,6 +101,21 @@ export const PIERRE_EDIT_CARET_ALIGN_CSS = `
  *  how many files tokenize concurrently — four covers a chat message or PR
  *  with several diffs open at once without spawning the library's default 8. */
 export const PIERRE_WORKER_POOL_SIZE = 4
+
+/** A worker receives one request at a time. If it has not answered within this
+ *  window, treat it as wedged and recycle the whole manager so sibling requests
+ *  cannot remain queued behind it forever. This is deliberately much wider
+ *  than normal highlighting latency, but still bounded below a human-scale
+ *  permanently blank surface. */
+export const PIERRE_WORKER_REQUEST_TIMEOUT_MS = 30_000
+
+/** Short retries cover a transient worker crash or module-load race. Repeated
+ *  initialization failures open a longer plain-text cooldown instead of
+ *  continuously respawning four expensive workers. */
+export const PIERRE_WORKER_RETRY_DELAYS_MS = [250, 1_000] as const
+export const PIERRE_WORKER_COOLDOWN_MS = 30_000
+export const PIERRE_WORKER_STABLE_AFTER_MS = 60_000
+
 /** Which regex engine the highlight workers tokenize with.
  *
  *  Pierre defaults to `shiki-js`, which runs TextMate grammar patterns through

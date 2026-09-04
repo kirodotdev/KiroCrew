@@ -68,6 +68,13 @@ const pierre = vi.hoisted(() => {
     FakeEditor,
     factory: { current: null as null | ((o: Record<string, unknown>) => FakeEditor) },
     surfaces: [] as { kind: 'file' | 'diff'; props: Record<string, unknown> }[],
+    poolState: {
+      current: { phase: 'ready', generation: 1, pool: {} } as {
+        phase: 'ready' | 'recovering' | 'starting'
+        generation: number
+        pool?: object
+      },
+    },
   }
 })
 
@@ -108,7 +115,18 @@ vi.mock('@pierre/diffs/react', async () => {
   }
 })
 
-import { PierreEditorImpl, type PierreEditorHandle } from '../pierre/PierreEditorImpl'
+vi.mock('../pierre/PierreImpl', async () => {
+  const { contentCacheKey } = await vi.importActual<typeof import('../pierre/PierreImpl')>('../pierre/PierreImpl')
+  return {
+    contentCacheKey,
+    PierreShell: ({ children, generation }: { children?: ReactNode; generation: number }) => (
+      <div key={generation}>{children}</div>
+    ),
+    usePierreWorkerPool: () => pierre.poolState.current,
+  }
+})
+
+import { PierreEditorImpl, type EditorMarker, type PierreEditorHandle } from '../pierre/PierreEditorImpl'
 import { contentCacheKey } from '../pierre/PierreImpl'
 
 const FILE: FileContents = {
@@ -172,6 +190,7 @@ beforeEach(() => {
   pierre.surfaces.length = 0
   pierre.editors.length = 0
   pierre.factory.current = null
+  pierre.poolState.current = { phase: 'ready', generation: 1, pool: {} }
   document.documentElement.removeAttribute('data-theme')
 })
 
@@ -290,6 +309,33 @@ describe('PierreEditorImpl surface selection', () => {
   })
 })
 
+
+  it('preserves the latest in-memory draft across worker recovery', () => {
+    const mounted = mount()
+    const editor = attachEditor()
+    const announceChange = editor.options.onChange as (file: FileContents) => void
+
+    act(() => announceChange({ ...FILE, contents: 'const unsaved = true\n' }))
+    pierre.poolState.current = { phase: 'recovering', generation: 1 }
+    mounted.rerender()
+    expect(mounted.view.container).toHaveTextContent('const unsaved = true')
+
+    pierre.poolState.current = { phase: 'ready', generation: 2, pool: {} }
+    mounted.rerender()
+    expect((lastSurface().props.file as FileContents).contents).toBe('const unsaved = true\n')
+  })
+
+it('keeps long recovery text vertically scrollable', () => {
+  const mounted = mount({ file: { ...FILE, contents: Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') } })
+  pierre.poolState.current = { phase: 'recovering', generation: 1 }
+  mounted.rerender()
+
+  const fallback = mounted.view.container.querySelector('.pierre-editor-fallback')
+  expect(fallback).not.toBeNull()
+  expect(fallback?.className).toContain('h-full')
+  expect(fallback?.className).toContain('overflow-auto')
+})
+
 describe('PierreEditorImpl marker mapping', () => {
   it('maps a diagnostic onto a whole-line Pierre marker', () => {
     const { rerender } = mount({ markers: [] })
@@ -337,6 +383,49 @@ describe('PierreEditorImpl marker mapping', () => {
     expect(sent[1].args[0]).toEqual([])
   })
 
+
+
+  it('applies diagnostics when a cold-starting pool first becomes ready', () => {
+    const markers: EditorMarker[] = [{ severity: 'warning', message: 'cold start', line: 1 }]
+    pierre.poolState.current = { phase: 'starting', generation: 1 }
+    const mounted = mount({ markers })
+    expect(mounted.view.container.textContent).toContain(FILE.contents.trim())
+
+    pierre.poolState.current = { phase: 'ready', generation: 1, pool: {} }
+    mounted.rerender()
+    const editor = attachEditor()
+    expect(editor.of('setMarkers')).toHaveLength(1)
+    expect(editor.of('setMarkers')[0].args[0]).toEqual([
+      {
+        severity: 'warning',
+        message: 'cold start',
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: Number.MAX_SAFE_INTEGER },
+      },
+    ])
+  })
+  it('reapplies unchanged diagnostics after the worker generation remounts', () => {
+    const markers: EditorMarker[] = [{ severity: 'error', message: 'still broken', line: 2 }]
+    const mounted = mount({ markers })
+    const firstEditor = attachEditor()
+
+    pierre.poolState.current = { phase: 'recovering', generation: 1 }
+    mounted.rerender()
+    pierre.poolState.current = { phase: 'ready', generation: 2, pool: {} }
+    mounted.rerender()
+    const replacementEditor = attachEditor()
+
+    expect(replacementEditor).not.toBe(firstEditor)
+    expect(replacementEditor.of('setMarkers')).toHaveLength(1)
+    expect(replacementEditor.of('setMarkers')[0].args[0]).toEqual([
+      {
+        severity: 'error',
+        message: 'still broken',
+        start: { line: 1, character: 0 },
+        end: { line: 1, character: Number.MAX_SAFE_INTEGER },
+      },
+    ])
+  })
   it('never touches the marker gutter while the prop is absent', () => {
     // A surface with no diagnostics contract must not wipe markers some other
     // owner set; `undefined` and `[]` are different requests.

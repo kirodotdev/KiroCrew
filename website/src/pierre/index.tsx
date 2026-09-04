@@ -12,7 +12,7 @@ import { Suspense, forwardRef, lazy, memo } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
-import { PlainCodeFallback } from './PlainCodeFallback'
+import { FilePairPlainFallback, PlainCodeFallback } from './PlainCodeFallback'
 
 const CodeImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierreCodeImpl })))
 const PatchImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierrePatchImpl })))
@@ -88,7 +88,7 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   renderHeaderMetadata?: () => React.ReactNode
 }) {
   return (
-    <Suspense fallback={<PlainCodeFallback text={patch} />}>
+    <Suspense fallback={<PlainCodeFallback text={patch} header={renderHeaderMetadata?.()} />}>
       <PatchImpl patch={patch} options={options} className={className} renderHeaderMetadata={renderHeaderMetadata} />
     </Suspense>
   )
@@ -108,7 +108,16 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   renderHeaderFilenameSuffix?: () => React.ReactNode
 }) {
   return (
-    <Suspense fallback={<PlainCodeFallback text={(newFile ?? oldFile)?.contents ?? ''} />}>
+    <Suspense fallback={
+      <FilePairPlainFallback
+        oldFile={oldFile}
+        newFile={newFile}
+        options={options}
+        renderHeaderMetadata={renderHeaderMetadata}
+        renderHeaderPrefix={renderHeaderPrefix}
+        renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+      />
+    }>
       <FilePairImpl
         oldFile={oldFile}
         newFile={newFile}

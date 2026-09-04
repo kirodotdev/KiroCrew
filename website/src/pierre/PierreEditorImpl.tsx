@@ -3,7 +3,7 @@
  * editing surface for every code-editing view. Lives beside `PierreImpl` in
  * the same lazy chunk; reach it through `../pierre` only.
  */
-import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef } from 'react'
+import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import { EditProvider, File, MultiFileDiff, Virtualizer } from '@pierre/diffs/react'
 import { Editor, type EditorOptions } from '@pierre/diffs/edit'
@@ -15,7 +15,8 @@ import {
   pierreFileOptions,
   pierreThemeType,
 } from './config'
-import { contentCacheKey, PierreShell } from './PierreImpl'
+import { PlainCodeFallback } from './PlainCodeFallback'
+import { contentCacheKey, PierreShell, usePierreWorkerPool } from './PierreImpl'
 
 export interface EditorMarker {
   severity: 'error' | 'warning' | 'info'
@@ -57,6 +58,18 @@ function revealSpan(editor: Editor<undefined>, line: number, endLine?: number): 
   }])
 }
 
+function applyMarkers(editor: Editor<undefined>, markers: EditorMarker[] | undefined): void {
+  if (markers == null) return
+  editor.setMarkers(
+    markers.map(marker => ({
+      severity: marker.severity,
+      message: marker.message,
+      start: { line: marker.line - 1, character: 0 },
+      end: { line: marker.line - 1, character: Number.MAX_SAFE_INTEGER },
+    })),
+  )
+}
+
 export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   file: FileContents
   options?: BaseCodeOptions
@@ -76,6 +89,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   className?: string
 }>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, className }, ref) {
   const dark = useIsDark()
+  const poolState = usePierreWorkerPool()
   const resolved = useMemo(
     () => pierreFileOptions({ themeType: pierreThemeType(dark), ...options }),
     [dark, options],
@@ -91,6 +105,19 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     [dark, options, diffSplit, diffExpandUnchanged],
   )
   const surfaceId = useId()
+  const propContentsRef = useRef(file.contents)
+  const latestContentsRef = useRef(file.contents)
+  if (propContentsRef.current !== file.contents) {
+    propContentsRef.current = file.contents
+    latestContentsRef.current = file.contents
+  }
+  const editorFile = file.contents === latestContentsRef.current
+    ? file
+    : {
+        ...file,
+        contents: latestContentsRef.current,
+        cacheKey: contentCacheKey(file.name, latestContentsRef.current),
+      }
   const baseFile = useMemo<FileContents | null>(
     () => (diffBase == null
       ? null
@@ -107,6 +134,15 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   onSaveRef.current = onSave
   const onCursorRef = useRef(onCursorChange)
   onCursorRef.current = onCursorChange
+  const generationRef = useRef(poolState.generation)
+  generationRef.current = poolState.generation
+  const markersRef = useRef(markers)
+  markersRef.current = markers
+  const markerApplicationRef = useRef<{ generation: number; markers: EditorMarker[] | undefined } | null>(null)
+
+  useLayoutEffect(() => {
+    if (poolState.phase !== 'ready') editorRef.current = null
+  }, [poolState.phase, poolState.generation])
 
   const reportCursor = () => {
     const sel = editorRef.current?.getState()?.selections?.[0]
@@ -119,6 +155,17 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     () => ({
       onAttach(editor) {
         editorRef.current = editor
+        const generation = generationRef.current
+        const currentMarkers = markersRef.current
+        const applied = markerApplicationRef.current
+        if (
+          currentMarkers != null
+          && currentMarkers.length > 0
+          && !(applied?.generation === generation && applied.markers === currentMarkers)
+        ) {
+          applyMarkers(editor, currentMarkers)
+          markerApplicationRef.current = { generation, markers: currentMarkers }
+        }
         const pending = pendingJumpRef.current
         if (pending !== null) {
           pendingJumpRef.current = null
@@ -126,6 +173,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
         }
       },
       onChange(changed) {
+        latestContentsRef.current = changed.contents
         onChangeRef.current(changed.contents)
         reportCursor()
       },
@@ -135,16 +183,12 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
 
   useEffect(() => {
     const editor = editorRef.current
-    if (!editor || markers == null) return
-    editor.setMarkers(
-      markers.map(m => ({
-        severity: m.severity,
-        message: m.message,
-        start: { line: m.line - 1, character: 0 },
-        end: { line: m.line - 1, character: Number.MAX_SAFE_INTEGER },
-      })),
-    )
-  }, [markers])
+    if (!editor) return
+    const applied = markerApplicationRef.current
+    if (applied?.generation === poolState.generation && applied.markers === markers) return
+    applyMarkers(editor, markers)
+    markerApplicationRef.current = { generation: poolState.generation, markers }
+  }, [markers, poolState.generation])
 
   useImperativeHandle(ref, () => ({
     jumpToLine: (line: number, endLine?: number) => {
@@ -188,30 +232,36 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
       onKeyUp={reportCursor}
       onMouseUp={reportCursor}
     >
-      <PierreShell>
-      <Virtualizer
-        config={PIERRE_VIRTUALIZER_CONFIG}
-        className={`pierre-surface h-full w-full overflow-auto ${className ?? ''}`}
-      >
-        <EditProvider createEditor={createEditor}>
-        {diffBase !== undefined ? (
-          // Live-diff edit session: Pierre diffs the buffer against the
-          // baseline as you type. Keyed so flipping modes rebuilds the edit
-          // session rather than rebinding one editor across surface kinds.
-          <MultiFileDiff
-            key="diff"
-            oldFile={baseFile}
-            newFile={file}
-            edit
-            editorOptions={editorOptions}
-            options={resolvedDiff}
-          />
-        ) : (
-          <File key="file" file={file} edit editorOptions={editorOptions} options={resolved} />
-        )}
-      </EditProvider>
-      </Virtualizer>
-      </PierreShell>
+      {poolState.phase === 'ready' && poolState.pool !== undefined ? (
+        <PierreShell pool={poolState.pool} generation={poolState.generation}>
+        <Virtualizer
+          config={PIERRE_VIRTUALIZER_CONFIG}
+          className={`pierre-surface h-full w-full overflow-auto ${className ?? ''}`}
+        >
+          <EditProvider createEditor={createEditor}>
+          {diffBase !== undefined ? (
+            // Live-diff edit session: Pierre diffs the buffer against the
+            // baseline as you type. Keyed so flipping modes rebuilds the edit
+            // session rather than rebinding one editor across surface kinds.
+            <MultiFileDiff
+              key="diff"
+              oldFile={baseFile}
+              newFile={editorFile}
+              edit
+              editorOptions={editorOptions}
+              options={resolvedDiff}
+            />
+          ) : (
+            <File key="file" file={editorFile} edit editorOptions={editorOptions} options={resolved} />
+          )}
+          </EditProvider>
+        </Virtualizer>
+        </PierreShell>
+      ) : (
+        <div className="pierre-editor-fallback h-full overflow-auto">
+          <PlainCodeFallback text={editorFile.contents} />
+        </div>
+      )}
     </div>
   )
 })
