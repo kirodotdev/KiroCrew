@@ -309,14 +309,26 @@ describe('narrow-first layout baseline', () => {
     // from the art's, so a square box is what makes the ink fill it and start at the
     // box's own left edge -- i.e. what makes the sum below the whole story. A `w-5 h-6`
     // slip would centre the art inside the taller box and inset the ink silently, so
-    // the two edges are pinned EQUAL rather than pinned to a literal.
-    const mark = app.match(/<img src=\{avatar\}[^\n]*className="w-(\d+(?:\.\d+)?) h-(\d+(?:\.\d+)?) rounded-md/)
+    // the two edges are pinned EQUAL rather than pinned to a literal. The img lives in
+    // MobileNavGlyph and its className is a template literal (a visibility class is
+    // appended after the load-proof swap), so the match runs to the backtick.
+    const mark = app.match(/<img src=\{avatar\}[^\n]*className=\{?[`"]w-(\d+(?:\.\d+)?) h-(\d+(?:\.\d+)?) rounded-md/)
     expect(mark, 'the nav button should render the branding avatar as the mark').toBeTruthy()
     expect(
       mark![1],
       `the mark's box is w-${mark![1]} h-${mark![2]}: a non-square box letterboxes the `
         + `square logo and insets its ink from the gutter`,
     ).toBe(mark![2])
+
+    // The hamburger fallback (shown until the logo's own load event, and after an
+    // error) must occupy the SAME box, or the swap would shift the button's tap
+    // target and pull the glyph off the gutter line the sum below derives.
+    const fallback = app.match(/data-testid="mobile-nav-fallback" className="w-(\d+(?:\.\d+)?) h-(\d+(?:\.\d+)?) /)
+    expect(fallback, 'the nav button should keep a fallback glyph in the same box').toBeTruthy()
+    expect(
+      [fallback![1], fallback![2]],
+      'the fallback hamburger box must match the logo box, or the swap moves the tap target',
+    ).toEqual([mark![1], mark![2]])
 
     const ui = await readFile(join(SRC, 'components', 'ui.tsx'), 'utf8')
     const gutter = ui.match(/px-(\d+(?:\.\d+)?) md:px-\d+(?:\.\d+)? pt-2 pb-3/)

@@ -45,7 +45,7 @@ import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -441,6 +441,36 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
         )}
       </div>
     </div>
+  )
+}
+
+/** Glyph inside the mobile nav toggle: the product logo once it has actually
+ *  loaded, the Menu hamburger at every other instant. This button is the ONLY
+ *  route to the nav rail on a narrow layout, and its logo is a network-fetched
+ *  <img> with `alt=""` + `aria-hidden` — so a 404 (asset missing on a proxied
+ *  serving path), a blocked request, or a hung fetch used to render NOTHING:
+ *  an invisible button that still toggled the rail when tapped blind. The
+ *  hamburger therefore shows by default and the swap happens on the img's
+ *  `load` event, never on an assumption: `loadedSrc` records WHICH src loaded,
+ *  so a branding/theme change falls back to the hamburger until the new asset
+ *  proves itself, and an `error` clears the record. The img stays mounted
+ *  (display:none) while hidden so the browser still fetches it. The hamburger
+ *  sits in a w-6 box matching the img, keeping the 40px tap target and the
+ *  16px page-gutter alignment identical through the swap. */
+export function MobileNavGlyph({ avatar }: { avatar: string }) {
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
+  const showLogo = !!avatar && loadedSrc === avatar
+  return (
+    <>
+      {!showLogo && (
+        <span data-testid="mobile-nav-fallback" className="w-6 h-6 flex items-center justify-center shrink-0" aria-hidden="true">
+          <Menu size={20} />
+        </span>
+      )}
+      {!!avatar && (
+        <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
+      )}
+    </>
   )
 }
 
@@ -2967,14 +2997,17 @@ export default function App() {
 
                   A full-colour raster mark is an <img>, which is exactly what the
                   `use-lucide-icons` rule's brand-mark exception prescribes -- a CSS mask
-                  over `currentColor` would flatten the art to one colour.
+                  over `currentColor` would flatten the art to one colour. But an <img>
+                  can FAIL, and `alt=""` + `aria-hidden` means failure renders nothing --
+                  an invisible button as the page's only nav route -- so MobileNavGlyph
+                  holds the Menu hamburger up until the logo's own `load` event.
 
                   Square box, so no optical correction exists: the art is square and
                   `object-contain` fills the box, putting the ink on the 16px page gutter
                   (topbar pl-2 + this button's p-2) that the page title and every card's
                   left edge below it sit on, with the button's own box at 24 + 16 = 40px
                   for the tap target. `narrowFirstBaseline.test.ts` re-derives that sum. */}
-              <img src={avatar} alt="" aria-hidden="true" className="w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]" />
+              <MobileNavGlyph avatar={avatar} />
             </button>
           )}
           <InstanceTabBar variant="inline" />
