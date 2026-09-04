@@ -747,7 +747,35 @@ function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number; tokens
   )
 }
 
-export function renderUserContent(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, onFolderOpen?: (path: string) => void, linkPreviews?: boolean) {
+/** One options object for the user-message render helpers (renderUserContent →
+ *  renderUserContentInner → renderFileSegment) instead of ever-growing
+ *  positional signatures. The optional session triple mirrors what the
+ *  assistant / note rows hand MarkdownRenderer, so a `/chat?sid=…` link in a
+ *  USER message switches session in place exactly like every other row kind
+ *  (#8253) instead of falling into the external-link branch and gaining
+ *  `target="_blank"`. */
+export type UserContentRenderOpts = {
+  content: string
+  meta?: Record<string, unknown>
+  onFileOpen: (path: string) => void
+  onFolderOpen?: (path: string) => void
+  linkPreviews?: boolean
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
+}
+
+/** renderFileSegment's own two knobs live on a private extension, not on the
+ *  exported type: renderUserContentInner sets both unconditionally, so a
+ *  caller-supplied value would type-check and silently do nothing. */
+type FileSegmentOpts = UserContentRenderOpts & {
+  /** React key namespace for the segment. */
+  keyBase?: string
+  /** Folder-token label → path map. */
+  dirMap?: Map<string, string>
+}
+
+export function renderUserContent(opts: UserContentRenderOpts) {
   // Per-message containment (defense-in-depth): a render crash in a
   // user/inject bubble must degrade to a per-message fallback, not unwind to
   // the root boundary and blank the whole dashboard.
@@ -757,13 +785,15 @@ export function renderUserContent(content: string, meta: Record<string, unknown>
   // (Done there, not here, so tests that mock MarkdownRenderer don't need the
   // context export.)
   return (
-    <MessageErrorBoundary rawContent={content}>
-      {renderUserContentInner(content, meta, onFileOpen, onFolderOpen, linkPreviews)}
+    <MessageErrorBoundary rawContent={opts.content}>
+      {renderUserContentInner(opts)}
     </MessageErrorBoundary>
   )
 }
 
-function renderUserContentInner(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, onFolderOpen?: (path: string) => void, linkPreviews?: boolean) {
+function renderUserContentInner(opts: UserContentRenderOpts) {
+  const { meta, onFileOpen, onFolderOpen } = opts
+  let content = opts.content
   const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
   const knowledge = meta?.knowledge as { items: number; tokens: number; titles: string[]; content?: { title: string; text: string }[] } | undefined
 
@@ -781,7 +811,7 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
     <KnowledgeBubbleChip knowledge={knowledge} />
   ) : null
 
-  if (!pastes.length) return <>{knowledgeBadge}{renderFileSegment(content, meta, onFileOpen, 'seg', dirMentionMap, onFolderOpen, linkPreviews)}</>
+  if (!pastes.length) return <>{knowledgeBadge}{renderFileSegment({ ...opts, content, keyBase: 'seg', dirMap: dirMentionMap })}</>
 
 
   // History load re-serves the fully-EXPANDED content (what the LLM saw), so a
@@ -802,7 +832,7 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
       ranges = findTokenRanges(text, pastes)
     }
   }
-  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment(text, meta, onFileOpen, 'seg', dirMentionMap, onFolderOpen, linkPreviews)}</>
+  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment({ ...opts, content: text, keyBase: 'seg', dirMap: dirMentionMap })}</>
 
   // Paste chips are inline by nature, so to keep them flowing with the
   // surrounding text (e.g. "hey [chip] thanks"), render each text segment
@@ -981,7 +1011,8 @@ function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string;
  *  server stores the token form in `content` AND keeps `meta.files` at once.
  *  Files referenced inline stay inline chips; the rest become block cards.
  *  Images keep their inline `![image](path)` markdown and are excluded here. */
-function renderFileSegment(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, keyBase: string, dirMap?: Map<string, string>, onFolderOpen?: (path: string) => void, linkPreviews?: boolean) {
+function renderFileSegment(opts: FileSegmentOpts) {
+  const { content, meta, onFileOpen, keyBase = 'seg', dirMap, onFolderOpen, linkPreviews, onSessionOpen, sessions, activeSession } = opts
   const parsedFiles = parseFiles(content, meta)
   const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
 
@@ -990,6 +1021,8 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
   // compactImages: this is user-message content, so attached images render small.
   // linkPreviews: mirrors the assistant path — a URL the user pasted unfurls
   // under the same opt-in gate as one the model wrote (issue #2580).
+  // The session triple mirrors the assistant path too, so a `/chat?sid=…`
+  // link switches session in place instead of opening a new tab (#8253).
   //
   // A folder token routes the message into the inline chip-split body below,
   // which renders surrounding text as plain whitespace-preserving spans — so
@@ -999,7 +1032,7 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
   // inline-widget seam; a folder-referencing prompt with block markdown is
   // the uncommon combination.
   if (!parsedFiles.length && !dirKeys.length) {
-    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} />
+    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} />
   }
 
   // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
@@ -1032,7 +1065,7 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
   // then the cards.
   if (!mentionMap.size && !dirKeys.length) {
     const caption = display.trim()
-    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} /> : null}{cards}</>
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} /> : null}{cards}</>
   }
 
   // Inline-mention path: the caption keeps files inline, so render it as a
@@ -6267,8 +6300,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx])
 
   const renderUserContentCb = useCallback(
-    (c: string, mt: Record<string, unknown> | undefined) => renderUserContent(c, mt, handleFileOpen, handleFolderOpen, linkPreviewsOn),
-    [handleFileOpen, handleFolderOpen, linkPreviewsOn]
+    // The session triple matches what the assistant / note rows hand
+    // MarkdownRenderer (see the AssistantMessage and inject branches below),
+    // so a `/chat?sid=…` link behaves identically across row kinds (#8253).
+    (c: string, mt: Record<string, unknown> | undefined) => renderUserContent({
+      content: c,
+      meta: mt,
+      onFileOpen: handleFileOpen,
+      onFolderOpen: handleFolderOpen,
+      linkPreviews: linkPreviewsOn,
+      onSessionOpen: selectSessionTab,
+      sessions: connected ? sessionTitles : undefined,
+      activeSession: activeSlot || undefined,
+    }),
+    [handleFileOpen, handleFolderOpen, linkPreviewsOn, selectSessionTab, connected, sessionTitles, activeSlot]
   )
 
   const cancelTitleRef = useRef(false)

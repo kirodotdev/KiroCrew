@@ -44,7 +44,7 @@ afterEach(() => {
 
 describe('renderUserContent — link previews (issue #2580)', () => {
   it('unfurls a URL in a user message when linkPreviews is on', async () => {
-    render(<>{renderUserContent(HREF, undefined, noop, undefined, true)}</>)
+    render(<>{renderUserContent({ content: HREF, meta: undefined, onFileOpen: noop, linkPreviews: true })}</>)
     // The card carries the fetched description — its arrival proves the
     // unfurl path ran end to end (gate open → link-meta fetch → card).
     await waitFor(() => expect(screen.queryByText(DESCRIPTION)).not.toBeNull())
@@ -52,13 +52,13 @@ describe('renderUserContent — link previews (issue #2580)', () => {
   })
 
   it('unfurls a markdown link the user pasted when linkPreviews is on', async () => {
-    render(<>{renderUserContent(`[Docs](${HREF})`, undefined, noop, undefined, true)}</>)
+    render(<>{renderUserContent({ content: `[Docs](${HREF})`, meta: undefined, onFileOpen: noop, linkPreviews: true })}</>)
     await waitFor(() => expect(screen.queryByText(DESCRIPTION)).not.toBeNull())
     expect(fetchMock).toHaveBeenCalled()
   })
 
   it('issues NO fetch when linkPreviews is off (explicit false)', async () => {
-    const { container } = render(<>{renderUserContent(HREF, undefined, noop, undefined, false)}</>)
+    const { container } = render(<>{renderUserContent({ content: HREF, meta: undefined, onFileOpen: noop, linkPreviews: false })}</>)
     // The link renders as a plain anchor and nothing is requested.
     await waitFor(() => expect(container.querySelector('a')).not.toBeNull())
     expect(fetchMock).not.toHaveBeenCalled()
@@ -66,7 +66,7 @@ describe('renderUserContent — link previews (issue #2580)', () => {
   })
 
   it('issues NO fetch when linkPreviews is omitted (default off)', async () => {
-    const { container } = render(<>{renderUserContent(HREF, undefined, noop)}</>)
+    const { container } = render(<>{renderUserContent({ content: HREF, meta: undefined, onFileOpen: noop })}</>)
     await waitFor(() => expect(container.querySelector('a')).not.toBeNull())
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -78,7 +78,7 @@ describe('renderUserContent — link previews (issue #2580)', () => {
     const block = { id: 'b1', seq: 1, lines: 4, content: 'a\nb\nc\nd' }
     const content = `see [ Paste #1 · 4 lines ]\n${HREF}`
     const { container } = render(
-      <>{renderUserContent(content, { pastes: [block] }, noop, undefined, true)}</>,
+      <>{renderUserContent({ content: content, meta: { pastes: [block] }, onFileOpen: noop, linkPreviews: true })}</>,
     )
     // The chip rendered (paste path taken)…
     expect(container.textContent).toContain('Paste #1')

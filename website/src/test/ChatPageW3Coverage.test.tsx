@@ -257,7 +257,7 @@ const openFolder = vi.fn()
 /** Renders just the exported user-bubble renderer (no ChatPage). */
 function renderBubble(content: string, meta?: Record<string, unknown>, withFolder = true) {
   return render(
-    <div>{renderUserContent(content, meta, openFile, withFolder ? openFolder : undefined)}</div>,
+    <div>{renderUserContent({ content: content, meta: meta, onFileOpen: openFile, onFolderOpen: withFolder ? openFolder : undefined })}</div>,
   )
 }
 
