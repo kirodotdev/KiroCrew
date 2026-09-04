@@ -224,6 +224,50 @@ function captureTopAnchorFrom(
   return bestKey !== null ? { key: bestKey, top: bestTop, index: bestIdx } : null
 }
 
+/** Positional re-identification, shared by TRIGGER 1's and the splice
+ *  triggers' no-surviving-key fallbacks: a row whose key did not survive the
+ *  commit moved by as much as the NEAREST row (by old index) whose key did.
+ *  Returns the displacement resolver — built once per commit, queried per
+ *  mounted node. `survivors` is in ascending old index, so the nearest is one
+ *  of the two neighbours of the change point; ties go to the row ABOVE the
+ *  reader. Survivors before `boundary` (the first old index that changed
+ *  hands) are excluded: they did not move, so their zero displacement says
+ *  nothing about rows at or below the boundary — a splice landing exactly at
+ *  the viewport top would otherwise borrow it and anchor the inserted row
+ *  itself. TRIGGER 1 passes 0 (a prepend renames index 0, so nothing sits
+ *  before its boundary). Only when no survivor remains does `noSurvivorShift`
+ *  stand in (the caller's net count change) — the reader then keeps their
+ *  distance from the END, the one thing a full re-identification of a chat
+ *  transcript preserves, and for a contiguous splice it IS the displacement. */
+function nearestSurvivorShiftFrom<T>(
+  prevItems: readonly T[],
+  prevGetKey: (it: T, i: number) => string,
+  newIndexByKey: ReadonlyMap<string, number>,
+  noSurvivorShift: number,
+  boundary = 0,
+): (idx: number) => number {
+  const survivors: Array<[oldIndex: number, shift: number]> = []
+  for (let i = boundary; i < prevItems.length; i++) {
+    const ni = newIndexByKey.get(prevGetKey(prevItems[i], i))
+    if (ni !== undefined) survivors.push([i, ni - i])
+  }
+  return (idx: number): number => {
+    if (!survivors.length) return noSurvivorShift
+    let lo = 0
+    let hi = survivors.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (survivors[mid][0] < idx) lo = mid + 1
+      else hi = mid
+    }
+    const above = survivors[lo - 1]
+    const below = survivors[lo]
+    if (!above) return below[1]
+    if (!below) return above[1]
+    return below[0] - idx < idx - above[0] ? below[1] : above[1]
+  }
+}
+
 /** Screen offset of the mounted row whose key matches, relative to the
  *  scroller's top; null when it is not mounted. Pure over its inputs like the
  *  capture above, so both anchor consumers resolve a row the same way. */
@@ -646,33 +690,11 @@ export function useVirtualChat<T>(
       // the START of the transcript rather than the rows being read. So the
       // topmost visible row is re-identified by POSITION: it moved by as much as
       // the NEAREST row (by old index) whose key did survive, and its new key is
-      // whatever now sits at old index + that displacement. Only when no key
-      // survives anywhere does the net count stand in — the reader then keeps
-      // their distance from the END, the one thing a full re-identification of a
-      // chat transcript preserves.
-      const survivors: Array<[oldIndex: number, shift: number]> = []
-      const prev = prependPrev.items
-      for (let i = 0; i < prev.length; i++) {
-        const ni = newIndexByKey.get(prependPrev.getKey(prev[i], i))
-        if (ni !== undefined) survivors.push([i, ni - i])
-      }
-      // `survivors` is in ascending old index, so the nearest is one of the two
-      // neighbours of the insertion point; ties go to the row ABOVE the reader.
-      const shiftAt = (idx: number): number => {
-        if (!survivors.length) return inserted
-        let lo = 0
-        let hi = survivors.length
-        while (lo < hi) {
-          const mid = (lo + hi) >> 1
-          if (survivors[mid][0] < idx) lo = mid + 1
-          else hi = mid
-        }
-        const above = survivors[lo - 1]
-        const below = survivors[lo]
-        if (!above) return below[1]
-        if (!below) return above[1]
-        return below[0] - idx < idx - above[0] ? below[1] : above[1]
-      }
+      // whatever now sits at old index + that displacement (see
+      // nearestSurvivorShiftFrom).
+      const shiftAt = nearestSurvivorShiftFrom(
+        prependPrev.items, prependPrev.getKey, newIndexByKey, inserted,
+      )
       prependAnchor = captureTopAnchorFrom(prependEl, elIndexRef.current.entries(), (idx) => {
         const j = idx + shiftAt(idx)
         const it = items[j]
@@ -793,7 +815,7 @@ export function useVirtualChat<T>(
     // Retirement has neither dependency, which is why it sits outside.
     if ((midListInserted || rowsRemoved || rowSwapped) && !anchorCapturedThisRender && !stickRef.current) {
       const spliceEl = scrollerRef.current
-      const spliceAnchor = spliceEl
+      let spliceAnchor = spliceEl
         ? captureTopAnchorFrom(spliceEl, elIndexRef.current.entries(), (idx) => {
             // PREVIOUS items at the node's PREVIOUS index, filtered to rows that
             // survive this commit — trigger 1's resolution, for the same reason:
@@ -804,6 +826,34 @@ export function useVirtualChat<T>(
             return survivingKeys.has(k) ? k : null
           })
         : null
+      if (!spliceAnchor && spliceEl) {
+        // No visible row kept its key — the splice landed together with a total
+        // re-identification of the on-screen rows (the wholesale-rebuild shape
+        // TRIGGER 1 already covers; the splice half was deferred there and is
+        // #8033). Standing down leaves scrollTop where it was and displaces the
+        // reader by the spliced rows' height, so the topmost visible row is
+        // re-identified by POSITION, exactly as TRIGGER 1 does: for rows below
+        // the splice point the displacement is the inserted-above count, which
+        // the nearest surviving old-index neighbour carries whenever any row
+        // between the splice and the reader keeps its key. `movedIndex` is the
+        // change boundary: survivors above it did not move, and borrowing their
+        // zero displacement would anchor a splice landing exactly at the
+        // viewport top on the inserted row itself.
+        const newIndexByKey = new Map<string, number>()
+        for (let i = 0; i < items.length; i++) newIndexByKey.set(getKey(items[i], i), i)
+        const shiftAt = nearestSurvivorShiftFrom(
+          prependPrev.items, prependPrev.getKey, newIndexByKey,
+          itemCount - prependPrev.count, Math.max(movedIndex, 0),
+        )
+        // The positional anchor names a row of the NEW list, so it is priced by
+        // the CURRENT render's getKey paired with the current items — the same
+        // pairing contract as TRIGGER 1's fallback.
+        spliceAnchor = captureTopAnchorFrom(spliceEl, elIndexRef.current.entries(), (idx) => {
+          const j = idx + shiftAt(idx)
+          const it = items[j]
+          return it ? getKey(it, j) : null
+        })
+      }
       if (spliceAnchor) {
         shiftAnchorRef.current = spliceAnchor
         shiftStageRef.current = 'ready'

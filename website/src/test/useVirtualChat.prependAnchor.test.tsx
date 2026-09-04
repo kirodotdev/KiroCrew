@@ -787,6 +787,136 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     expect(Math.abs(after! - before!.top)).toBeLessThanOrEqual(1)
   })
 
+  it('holds the reader by POSITION when a splice retires every visible key', () => {
+    const base = mkItems(30)
+    const { el, view, scrollerRef, readScrollTop } = mountScrolledUp(base)
+
+    const before = visibleByIndex(el)
+    expect(before.length).toBeGreaterThan(0)
+    const at = before[0].idx
+    expect(at).toBeGreaterThan(1)
+    const beforeTop = readScrollTop()
+
+    // A "thinking" row mounts above the viewport in the SAME commit that
+    // re-identifies every visible row (each streamed row replaced by its server
+    // copy under a different key). Index 0 keeps its key, so this is the splice
+    // path, not a prepend — and no visible key survives for the anchor to
+    // follow, so the row must be re-found by where it now sits.
+    const rekeyed = base.map((it, i) =>
+      i >= at && i < at + before.length ? { id: `r${i}` } : it,
+    )
+    const spliced = [...rekeyed.slice(0, at - 1), { id: 'ghost' }, ...rekeyed.slice(at - 1)]
+    act(() => { view.rerender(<Harness items={spliced} scrollerRef={scrollerRef} />) })
+
+    // Not vacuous: every previously visible key is genuinely gone, and the
+    // ghost really mounted above the reader.
+    for (const v of before) expect(screenTopOf(el, v.key)).toBeNull()
+    expect(screenTopOf(el, 'ghost')).not.toBeNull()
+
+    // The topmost visible row is the positional successor of the row that was
+    // there, held at the same screen offset by a scrollTop write over the
+    // inserted row — without the positional anchor it moves down by the
+    // inserted row's height.
+    const after = visibleByIndex(el)
+    expect(after.length).toBeGreaterThan(0)
+    expect(after[0].idx).toBe(at + 1)
+    expect(after[0].key).toBe(`r${at}`)
+    expect(Math.abs(after[0].top - before[0].top)).toBeLessThanOrEqual(1)
+    expect(readScrollTop()).toBeGreaterThan(beforeTop)
+  })
+
+  it('holds the reader by POSITION across a splice-with-total-retirement when getKey is INDEX-ADDRESSED', () => {
+    // The positional anchor names a row of the NEW list, so it must be priced
+    // by the CURRENT render's getKey paired with the current items — the same
+    // pairing contract PR 8001 pinned for the prepend fallback. An identity
+    // getKey cannot tell the two pairings apart; this one can.
+    const base = mkItems(30)
+    const { el, view, scrollerRef, readScrollTop } = mountScrolledUp(base, PositionalHarness)
+
+    const before = visibleByIndex(el)
+    expect(before.length).toBeGreaterThan(0)
+    const at = before[0].idx
+    expect(at).toBeGreaterThan(1)
+    const beforeTop = readScrollTop()
+
+    const rekeyed = base.map((it, i) =>
+      i >= at && i < at + before.length ? { id: `r${i}` } : it,
+    )
+    const spliced = [...rekeyed.slice(0, at - 1), { id: 'ghost' }, ...rekeyed.slice(at - 1)]
+    act(() => { view.rerender(<PositionalHarness items={spliced} scrollerRef={scrollerRef} />) })
+
+    for (const v of before) expect(screenTopOf(el, v.key)).toBeNull()
+    expect(screenTopOf(el, 'ghost')).not.toBeNull()
+
+    const after = visibleByIndex(el)
+    expect(after.length).toBeGreaterThan(0)
+    expect(after[0].idx).toBe(at + 1)
+    expect(after[0].key).toBe(`r${at}`)
+    expect(Math.abs(after[0].top - before[0].top)).toBeLessThanOrEqual(1)
+    expect(readScrollTop()).toBeGreaterThan(beforeTop)
+  })
+
+  it('does not anchor the inserted row when the splice lands exactly at the viewport top', () => {
+    const base = mkItems(30)
+    const { el, view, scrollerRef, readScrollTop } = mountScrolledUp(base)
+
+    const before = visibleByIndex(el)
+    expect(before.length).toBeGreaterThan(0)
+    const at = before[0].idx
+    expect(at).toBeGreaterThan(1)
+    const beforeTop = readScrollTop()
+
+    // The ghost mounts AT the topmost visible row's own index while every
+    // visible key retires. Rows above the viewport keep their keys but did NOT
+    // move (they sit above the splice): borrowing their zero displacement
+    // would resolve the anchor to the ghost itself and hold the wrong row.
+    // The change boundary excludes them, so the displacement comes from the
+    // survivors below (+1).
+    const rekeyed = base.map((it, i) =>
+      i >= at && i < at + before.length ? { id: `r${i}` } : it,
+    )
+    const spliced = [...rekeyed.slice(0, at), { id: 'ghost' }, ...rekeyed.slice(at)]
+    act(() => { view.rerender(<Harness items={spliced} scrollerRef={scrollerRef} />) })
+
+    // Not vacuous: every previously visible key is genuinely gone, and the
+    // ghost really mounted.
+    for (const v of before) expect(screenTopOf(el, v.key)).toBeNull()
+    expect(screenTopOf(el, 'ghost')).not.toBeNull()
+
+    // The reader's row (its re-keyed copy, now one index down) is held at its
+    // screen offset; anchoring the ghost instead would leave it one row lower
+    // with no scrollTop write.
+    const held = screenTopOf(el, `r${at}`)
+    expect(held).not.toBeNull()
+    expect(Math.abs(held! - before[0].top)).toBeLessThanOrEqual(1)
+    expect(readScrollTop()).toBeGreaterThan(beforeTop)
+  })
+
+  it('does not anchor the inserted row at the viewport top when getKey is INDEX-ADDRESSED', () => {
+    const base = mkItems(30)
+    const { el, view, scrollerRef, readScrollTop } = mountScrolledUp(base, PositionalHarness)
+
+    const before = visibleByIndex(el)
+    expect(before.length).toBeGreaterThan(0)
+    const at = before[0].idx
+    expect(at).toBeGreaterThan(1)
+    const beforeTop = readScrollTop()
+
+    const rekeyed = base.map((it, i) =>
+      i >= at && i < at + before.length ? { id: `r${i}` } : it,
+    )
+    const spliced = [...rekeyed.slice(0, at), { id: 'ghost' }, ...rekeyed.slice(at)]
+    act(() => { view.rerender(<PositionalHarness items={spliced} scrollerRef={scrollerRef} />) })
+
+    for (const v of before) expect(screenTopOf(el, v.key)).toBeNull()
+    expect(screenTopOf(el, 'ghost')).not.toBeNull()
+
+    const held = screenTopOf(el, `r${at}`)
+    expect(held).not.toBeNull()
+    expect(Math.abs(held! - before[0].top)).toBeLessThanOrEqual(1)
+    expect(readScrollTop()).toBeGreaterThan(beforeTop)
+  })
+
   it('still follows to the bottom when a row is SPLICED IN while PINNED', () => {
     const base = mkItems(30)
     const { el, view, scrollerRef, readScrollTop } = mountAtBottom(base)
