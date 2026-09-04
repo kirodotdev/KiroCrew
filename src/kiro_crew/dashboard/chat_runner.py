@@ -287,7 +287,6 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     SYNTHETIC_RECOVERY_KIND,
     TRANSIENT_RETRY_KIND,
     RecoveryPayload,
-    has_leaked_tool_call,
     is_promise_only_terminal,
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
@@ -295,6 +294,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     payload_for_replay,
     should_continue_after_compaction,
     should_notice_leaked_tool_call,
+    should_notice_mixed_turn_leak,
     should_recover_promise_only,
     subagents_attached,
 )
@@ -9818,24 +9818,39 @@ async def _run_chat(
                 "msg msg-info",
             )
             _noticed_leak = True
-        elif (
-            _turn_tool_calls > 0
-            and _stop_reason == STOP_REASON_END_TURN
-            and _prompt_depth == 0
-            and has_leaked_tool_call(assistant_text)
+        elif should_notice_mixed_turn_leak(
+            stop_reason=_stop_reason,
+            end_turn_reason=STOP_REASON_END_TURN,
+            final_segment_text=assistant_text,
+            prompt_depth=_prompt_depth,
+            turn_tool_calls=_turn_tool_calls,
         ):
-            # MIXED-TURN diagnostic (advisory gap named by review): the turn
-            # executed tools and THEN leaked a final dispatch as text. The
-            # notice/un-landing path deliberately excludes this shape —
-            # un-landing a turn whose earlier tool calls had real side effects
-            # would misdescribe it — but the stall must stay diagnosable, so
-            # log it. No notice card, no un-landing, no behavior change.
+            # MIXED TURN: the turn dispatched tool calls and THEN leaked a
+            # final one as text. The two halves of the leak response split
+            # here, because only one is unsafe on this shape: UN-LANDING stays
+            # excluded, since earlier calls may already have taken effect, so
+            # `_noticed_leak` is deliberately NOT set and the turn lands, bills
+            # and consolidates exactly as before — while the NOTICE is not
+            # excluded, and used to be, because a logger warning is invisible
+            # to the person in the chat and the leak read as a completed
+            # action. Wording differs from the sibling on purpose: "nothing was
+            # run" is false here. Rationale in full, including why the count is
+            # described as attempted: should_notice_mixed_turn_leak's docstring.
             logger.warning(
                 "Leaked tool call alongside %d executed tool call(s) for slot %s "
                 "— the final segment contains an invoke block as text; the turn "
                 "lands normally (diagnostic only)",
                 _turn_tool_calls,
                 slot.key,
+            )
+            slot.append(
+                "notice",
+                "ℹ️ The last tool call leaked into the reply text instead of "
+                f"executing — the {_turn_tool_calls} call(s) before it were "
+                "attempted and may already have taken effect, so part of this turn "
+                "may have landed and part did not. Check what landed before "
+                "re-sending (an active monitor loop retries on its next cycle).",
+                "msg msg-info",
             )
         # Promise-only guard (#2686): the turn ended NORMALLY with visible text
         # whose FINAL segment only ANNOUNCES an immediate action ("I'll do that

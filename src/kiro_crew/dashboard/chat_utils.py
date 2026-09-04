@@ -1857,9 +1857,12 @@ def has_leaked_tool_call(text: str) -> bool:
 
     Quoted syntax is excluded structurally: fenced code blocks and inline code
     spans are stripped before the scan, so a pasted bug report or an explained
-    example never matches. The caller must additionally require
-    ``turn_tool_calls == 0`` — a turn that executed tools and ALSO printed a
-    block is not the leak shape.
+    example never matches. Callers decide what to DO with a match, and the two
+    turn shapes differ: :func:`should_notice_leaked_tool_call` requires
+    ``turn_tool_calls == 0`` because it un-lands the turn, which would
+    misdescribe a turn whose earlier calls had side effects, while
+    :func:`should_notice_mixed_turn_leak` handles that shape notice-only. A
+    tool-heavy turn IS a leak — it is just not un-landable.
     """
     if not text:
         return False
@@ -1906,8 +1909,11 @@ def should_notice_leaked_tool_call(
     layer can fix honestly.
 
     Gates: the turn ended NORMALLY (cancel/refusal/error paths own their own
-    reporting), made ZERO tool calls (a turn that executed tools and also
-    printed a block is not the leak shape), is top-level, is NOT a
+    reporting), made ZERO tool calls — not because a tool-heavy turn is a
+    different shape (it is the same leak) but because THIS path un-lands the
+    turn, and a turn whose earlier calls had real side effects must not be
+    marked unacted; that shape is noticed without un-landing by
+    :func:`should_notice_mixed_turn_leak` — is top-level, is NOT a
     stage-execution turn (the orchestrator's stage loop reads the turn result
     for stage accounting, and un-landing a stage turn from here would let the
     loop record an unfinished stage as complete — same exclusion as the
@@ -1921,6 +1927,66 @@ def should_notice_leaked_tool_call(
     if turn_tool_calls != 0:
         return False
     if in_stage_execution:
+        return False
+    if stop_reason != end_turn_reason:
+        return False
+    if prompt_depth != 0:
+        return False
+    return has_leaked_tool_call(final_segment_text)
+
+
+def should_notice_mixed_turn_leak(
+    *,
+    stop_reason: str,
+    end_turn_reason: str,
+    final_segment_text: str,
+    prompt_depth: int,
+    turn_tool_calls: int,
+) -> bool:
+    """Decide whether to surface the MIXED-TURN leak notice.
+
+    The shape :func:`should_notice_leaked_tool_call` deliberately declines: the
+    turn dispatched tool calls and THEN leaked a final one as text. Its
+    ``turn_tool_calls == 0`` gate exists to protect UN-LANDING — earlier calls
+    in the turn may already have taken effect, so marking it unacted could
+    misdescribe it — and that reasoning is untouched here. This predicate
+    governs only the user-visible NOTICE, which carries no such hazard: nothing
+    is queued, nothing is un-landed, nothing executes.
+
+    Why the notice is worth a card on a shape that lands normally: the mixed
+    turn hides the gap BETTER than the zero-call one, not worse. The model
+    reads state, announces the write, leaks the write, and the reply lands
+    looking like a completed action — some of the work may already have
+    happened, so there is no stall to notice and no missing output to explain.
+    Before this the only trace was a gateway log line, which the person in the
+    chat does not read.
+
+    Conditions are EXACTLY the ones the runner already used for its diagnostic
+    log, so the set of diagnosed turns does not move — only their visibility:
+    at least one dispatched tool call, a NORMAL end-turn (which excludes the
+    cancelled stop reason), top-level, and a final segment carrying the
+    machine-shaped leak (:func:`has_leaked_tool_call`).
+
+    Deliberately NOT gated on ``in_stage_execution``, unlike its sibling: that
+    exclusion exists so the orchestrator's stage loop cannot read an unfinished
+    stage as complete, and a notice-only card changes no turn result the loop
+    reads. One mismatch follows and is accepted: the card's guidance ("check
+    what landed before re-sending") addresses a human driving the chat, not the
+    stage loop, so on a stage-execution turn it offers advice its reader cannot
+    act on — harmless, and better than hiding the leak on those turns.
+
+    The card says the earlier calls were ATTEMPTED rather than ran, and never
+    "nothing was run" as the sibling does, because ``turn_tool_calls`` counts
+    dispatches at the tool-call event, before approval — a refused call
+    increments it too. The count bounds what may have landed rather than
+    asserting any of it did, and a reader who took "nothing was run" literally
+    here would redo work that already took effect.
+
+    ``turn_tool_calls`` is REQUIRED, unlike the sibling's defaulted parameter:
+    zero is that one's firing shape but this one's refusing shape, so a default
+    here would silently disable the predicate rather than exercise it.
+    """
+    if turn_tool_calls <= 0:
         return False
     if stop_reason != end_turn_reason:
         return False
