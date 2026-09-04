@@ -9346,6 +9346,7 @@
       "clear_search": "Suche leeren",
       "close": "Schließen",
       "close_session": "Sitzung schließen",
+      "closed": "Geschlossen",
       "collapse_folder_name": "Ordner {{name}} einklappen",
       "collapse_group_results": "Ergebnisse für {{group}} einklappen",
       "collapse_hidden_folders": "Ausgeblendete Ordner einklappen",

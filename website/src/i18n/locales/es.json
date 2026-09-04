@@ -9481,6 +9481,7 @@
       "clear_search": "Borrar la búsqueda",
       "close": "Cerrar",
       "close_session": "Cerrar la sesión",
+      "closed": "Cerrado",
       "collapse_folder_name": "Contraer la carpeta {{name}}",
       "collapse_group_results": "Contraer los resultados de {{group}}",
       "collapse_hidden_folders": "Contraer las carpetas ocultas",

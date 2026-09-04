@@ -907,7 +907,16 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
               <GitMerge className="lucide-inline" aria-hidden="true" />
             </span>
           )}
-          {link.state === 'closed' && <span className="capitalize text-danger">{link.state}</span>}
+          {/* Real text needs no aria-label/title of its own: the anchor's
+              accessible name already includes it, and a child `title` would
+              shadow the anchor's tooltip — the URL and the modifier escape
+              hatch — for the region the word covers. The merged sibling
+              carries both only because its span is icon-only. */}
+          {link.state === 'closed' && (
+            <span className="shrink-0 whitespace-nowrap text-danger">
+              {i18nT('pages.chatSidebar.closed')}
+            </span>
+          )}
           {/* One status glyph, chosen by `chipStatusGlyph` — CI is moot
               once the PR is terminal (merged or closed), where the
               lifecycle glyph is the signal, and a merge conflict

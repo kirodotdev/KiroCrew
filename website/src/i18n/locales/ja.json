@@ -9211,6 +9211,7 @@
       "clear_search": "検索をクリア",
       "close": "閉じる",
       "close_session": "セッションを閉じる",
+      "closed": "クローズ済み",
       "collapse_folder_name": "フォルダー {{name}} を折りたたむ",
       "collapse_group_results": "{{group}} の結果を折りたたむ",
       "collapse_hidden_folders": "非表示フォルダーを折りたたむ",

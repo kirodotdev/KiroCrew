@@ -9616,6 +9616,7 @@
       "clear_search": "Очистить поиск",
       "close": "Закрыть",
       "close_session": "Закрыть сессию",
+      "closed": "Закрыт",
       "collapse_folder_name": "Свернуть папку «{{name}}»",
       "collapse_group_results": "Свернуть результаты «{{group}}»",
       "collapse_hidden_folders": "Свернуть скрытые папки",

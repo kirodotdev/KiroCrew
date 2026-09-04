@@ -9211,6 +9211,7 @@
       "clear_search": "清除搜索",
       "close": "关闭",
       "close_session": "关闭会话",
+      "closed": "已关闭",
       "collapse_folder_name": "折叠文件夹 {{name}}",
       "collapse_group_results": "折叠 {{group}} 的结果",
       "collapse_hidden_folders": "折叠隐藏文件夹",
