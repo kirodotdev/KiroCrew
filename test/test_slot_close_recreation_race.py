@@ -41,6 +41,7 @@ and the three predicate tests are that pin.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import pytest
@@ -66,6 +67,24 @@ def _no_nudge_service(monkeypatch):
     monkeypatch.setattr(autonudge, "_INSTANCE", None)
 
 
+class _Stream:
+    """The ``request.content`` half of the fake: a one-shot chunked reader.
+
+    ``read_bounded_json`` reads the body off the stream rather than calling
+    ``request.json()`` whenever a byte cap is in force, so a double that only
+    stubs ``json`` reads an EMPTY body on the capped path. Chunking at the
+    helper's own 8 KiB step keeps the fake honest for a body large enough to
+    arrive in several iterations.
+    """
+
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    async def iter_chunked(self, n: int):
+        for i in range(0, len(self._raw), n):
+            yield self._raw[i : i + n]
+
+
 class _Req:
     """Minimal stand-in for the aiohttp request the handlers read.
 
@@ -73,12 +92,35 @@ class _Req:
     interleaving of the concurrent recreate has to be scheduled deterministically
     inside the teardown window, and a client's own awaits would let it run before
     the handler even reached the pop.
+
+    The body surface mirrors what ``read_bounded_json`` actually touches --
+    ``can_read_body`` first, then ``content_length``/``content``/``charset`` on the
+    capped path -- not just ``json()``. ``api_chat_slots_cleanup`` moved onto that
+    helper, and a double missing ``can_read_body`` does not merely fail: the
+    handler raises before it reaches the save the race tests park on, so the
+    ``entered`` event never fires and every interleaved test HANGS to its timeout
+    instead of reporting a one-line attribute error.
     """
 
     def __init__(self, state, slot: str = NAME, body: dict | None = None) -> None:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
         self._body = body if body is not None else {}
+        # ``body is None`` is NO body, which is what every call site here sends and
+        # what ``can_read_body`` must read as False. An explicitly-passed ``{}`` is a
+        # body that is PRESENT and empty, so keying off truthiness instead would make
+        # the double answer False for a request aiohttp reports as readable.
+        self._raw = b"" if body is None else json.dumps(self._body).encode()
+        self.charset = "utf-8"
+        self.content = _Stream(self._raw)
+
+    @property
+    def can_read_body(self) -> bool:
+        return bool(self._raw)
+
+    @property
+    def content_length(self) -> int | None:
+        return len(self._raw) or None
 
     def get(self, key: str, default: str = "") -> str:
         del key
