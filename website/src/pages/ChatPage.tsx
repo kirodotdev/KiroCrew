@@ -16,7 +16,7 @@ import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 // pure test need not pull ChatPage's module graph.
 export { isBrowseCommand }
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
-import { shouldReplaceSessionUrl } from '../utils/sessionUrlHistory'
+import { shouldReplaceSessionUrl, popMaySwitchSession } from '../utils/sessionUrlHistory'
 import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
@@ -4267,6 +4267,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    * naming the session actually on screen at the pre-drawer stack depth.
    */
   const drawerPopRef = useRef(false)
+  /** Keys of history entries a session-switch PUSH created or left behind — the
+   *  only ones a POP may legitimately return to as a session. Written by the
+   *  `activeSlot -> ?sid` sync effect, read by the POP reader; see
+   *  `popMaySwitchSession`. */
+  const pushedSessionEntryKeys = useRef<Set<string>>(new Set())
+  /** A push has been issued and its destination key is not minted yet — the sync
+   *  effect records it on the commit that push lands in. */
+  const pushedEntryPending = useRef(false)
   const [sidError, setSidError] = useState('')
   const [newSlotFailed, setNewSlotFailed] = useState(false)
   const [highlightTs, setHighlightTs] = useState<string | null>(null)
@@ -4391,6 +4399,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // "the host drives ?sid" and would switch the panel onto whatever session the
     // host route happens to carry.
     if (noUrlSync) return
+    // Rewrite the entry we are STANDING ON so its `?sid=` names the session
+    // actually on screen. Shared by the two POP paths that must not honour a
+    // stale sid, because the alternative — leaving the URL wrong and relying on
+    // the `activeSlot -> ?sid` effect below to catch up — is what #8209 had to
+    // come back and fix once already. Replacing (never pushing) keeps the stack
+    // depth the pop just restored, and `activeSlotRef` is the render-current
+    // value even when the pop originated in this same commit.
+    const repairPoppedSid = () => {
+      const target = activeSlotRef.current
+      const urlSlot = searchParams.get('sid') || searchParams.get('slot')
+      if (!target || target === urlSlot) return
+      const next = new URLSearchParams(searchParams)
+      next.set('sid', target)
+      next.delete('slot')
+      navigate(
+        { pathname: location.pathname, search: `?${next}`, hash: location.hash },
+        { replace: true },
+      )
+    }
     // Our own drawer-entry consumption, not a Back/Forward the user asked for.
     // Correct the POP's stale outgoing `?sid=` HERE, in the effect that owns the
     // POP, rather than relying on the separate activeSlot -> URL effect below.
@@ -4409,17 +4436,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       drawerPopRef.current = false
       lastLocKeyRef.current = location.key
       popInFlightRef.current = false
-      const target = activeSlotRef.current
-      const urlSlot = searchParams.get('sid') || searchParams.get('slot')
-      if (target && target !== urlSlot) {
-        const next = new URLSearchParams(searchParams)
-        next.set('sid', target)
-        next.delete('slot')
-        navigate(
-          { pathname: location.pathname, search: `?${next}`, hash: location.hash },
-          { replace: true },
-        )
-      }
+      repairPoppedSid()
       return
     }
     // Embed: host app drives the URL — react to any ?sid change.
@@ -4443,11 +4460,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!connected) return
     const urlSid = searchParams.get('sid') || searchParams.get('slot')
     if (!urlSid || urlSid === activeSlot) return
+    // Mobile replaces on every session switch, so an entry here was pushed by a
+    // switch only if the write side recorded it as one — see
+    // `popMaySwitchSession`. Repair an unrecorded stale sid rather than obeying
+    // it, which is what walked the pane back into the outgoing chat when the
+    // sessions drawer's pop arrived a commit late (#8207).
+    const entryPushedBySwitch = pushedSessionEntryKeys.current.has(location.key)
+    if (!embedMode && !popMaySwitchSession({ isMobile, entryPushedBySwitch })) {
+      repairPoppedSid()
+      return
+    }
     if (filteredSlots.some(s => s.key === urlSid)) {
       popInFlightRef.current = true
       dispatch(switchSlot(urlSid))
     }
-  }, [searchParams, filteredSlots, activeSlot, dispatch, embedMode, navigationType, location.key, location.pathname, location.hash, connected, noUrlSync, navigate])
+  }, [searchParams, filteredSlots, activeSlot, dispatch, embedMode, navigationType, location.key, location.pathname, location.hash, connected, noUrlSync, navigate, isMobile])
   // Timeout: if slot never appears after 5s, show error.
   // Gated on `connected` so the timer only runs while the gateway is reachable
   // — otherwise an offline tab would burn its 5s while the resolve effects
@@ -4497,6 +4524,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // localStorage hydration, WS updates) which would unwantedly bounce
     // the user back into chat view.
     if (embedMode === 'sessions') return
+    // Land the key claimed by our own push below. This effect re-runs on
+    // `location.key`, so the first run after that navigate is standing ON the
+    // entry the push created — the Forward target. Placed ahead of every early
+    // return: the run that lands here is exactly the one where the URL already
+    // agrees with `activeSlot`, which is the earliest bail.
+    if (pushedEntryPending.current) {
+      pushedEntryPending.current = false
+      pushedSessionEntryKeys.current.add(location.key)
+    }
     const sp = searchParamsRef.current
     // Back/Forward (POP) activation in flight: the browser already set the URL to
     // the target session and activeSlot is catching up via the switchSlot the
@@ -4538,7 +4574,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // pushes. Kept as a named predicate rather than an inline boolean so the
     // reasoning has somewhere to live and a test can pin it.
     const isSessionSwitch = !!current && current !== activeSlot
-    navigate(`${basePath}${slug ? '/' + slug : ''}?${next}`, { replace: shouldReplaceSessionUrl({ isSessionSwitch, isMobile }) })
+    const replace = shouldReplaceSessionUrl({ isSessionSwitch, isMobile })
+    // A push leaves the entry we are standing on behind, still naming the session
+    // it was showing, and CREATES another naming the session switched to. Both
+    // were made by a session switch, so both are legitimate history targets — the
+    // first for Back, the second for Forward — and the POP reader must honour
+    // either even if the layout has since crossed the mobile breakpoint. Recorded
+    // here because this is the only place that knows a push happened; the reader
+    // would otherwise have to guess from the viewport, which is read at a
+    // different time (see `popMaySwitchSession`). Per-mount, like every other ref
+    // this reader keeps: a reload starts the history bookkeeping over anyway.
+    //
+    // The destination's key does not exist yet — the router mints it — so it is
+    // claimed here and recorded by the block at the top of this effect on the
+    // commit the push lands in. Recording only the entry left behind made Forward
+    // read as stale, and the reader REPAIRS what it declines, so Forward
+    // overwrote the very session it should have restored.
+    if (!replace) {
+      pushedSessionEntryKeys.current.add(location.key)
+      pushedEntryPending.current = true
+    }
+    navigate(`${basePath}${slug ? '/' + slug : ''}?${next}`, { replace })
     // `location.key` and not just `location.pathname`: consuming the mobile
     // drawer's history entry lands on a DIFFERENT entry whose pathname is
     // IDENTICAL (the entry was a duplicate), so pathname alone reports no change
