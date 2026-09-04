@@ -35,6 +35,20 @@ class _ControlledSessions:
         self.release_calls.append((session_key, cleanup))
 
 
+def test_manager_preserves_an_explicit_falsy_coordinator() -> None:
+    coordinator = MagicMock()
+    coordinator.__bool__.return_value = False
+
+    manager = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        on_done=AsyncMock(),
+        coordinator=coordinator,
+    )
+
+    assert manager._coordinator is coordinator
+
+
 @pytest.mark.asyncio
 async def test_real_run_force_reap_race_reports_once_and_releases_slot_once(
     monkeypatch: pytest.MonkeyPatch,

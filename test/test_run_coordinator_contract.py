@@ -1,0 +1,717 @@
+"""Behavioral contract shared by durable run coordinator implementations."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from kiro_crew.run_coordinator import (
+    CommandClaim,
+    CommandOperation,
+    CommandStatus,
+    CoordinatorDecision,
+    CoordinatorReason,
+    DeliveryFence,
+    DeliveryState,
+    MemoryRunCoordinator,
+    ObservedState,
+    OwnerLease,
+    RunCompletion,
+    RunCoordinator,
+    RunOutcome,
+    RunRecord,
+    SubmitRun,
+)
+
+
+class FakeClock:
+    def __init__(self, value: float = 100.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock()
+
+
+@pytest.fixture
+def coordinator(clock: FakeClock) -> RunCoordinator:
+    ids = iter(("event-1", "event-2", "event-3"))
+    return MemoryRunCoordinator(clock=clock, id_factory=lambda: next(ids))
+
+
+def _request(
+    *,
+    run_id: str = "run-1",
+    command_id: str = "command-1",
+    idempotency_key: str = "key-1",
+    payload_hash: str = "hash-1",
+    accepted: bool = True,
+    operation: CommandOperation = CommandOperation.SPAWN,
+) -> SubmitRun:
+    return SubmitRun(
+        run_id=run_id,
+        command_id=command_id,
+        idempotency_key=idempotency_key,
+        payload_hash=payload_hash,
+        parent_session="dashboard:parent",
+        agent="researcher",
+        task="compare the candidates",
+        conversation_key="",
+        operation=operation,
+        accepted=accepted,
+        rejection_reason="governance denied" if not accepted else "",
+    )
+
+
+async def _claimed_running(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> tuple[CommandClaim, RunRecord]:
+    receipt = await coordinator.submit(_request())
+    assert receipt.value is not None
+    claims = await coordinator.claim_commands(
+        OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 30),
+        limit=1,
+    )
+    assert len(claims) == 1
+    claim = claims[0]
+    starting = await coordinator.mark_starting(
+        claim.command,
+        claim.fence,
+        expected_version=claim.run.version,
+    )
+    assert starting.value is not None
+    running = await coordinator.mark_running(
+        claim.command.run_id,
+        claim.fence,
+        expected_version=starting.value.version,
+    )
+    assert running.value is not None
+    return claim, running.value
+
+
+@pytest.mark.asyncio
+async def test_submit_is_idempotent_and_detects_payload_conflicts(
+    coordinator: RunCoordinator,
+) -> None:
+    created = await coordinator.submit(_request())
+    replay = await coordinator.submit(_request())
+    conflict = await coordinator.submit(_request(payload_hash="different"))
+
+    assert created.decision is CoordinatorDecision.APPLIED
+    assert created.reason is CoordinatorReason.CREATED
+    assert created.value is not None
+    assert created.value.created is True
+    assert created.value.run.run_id == "run-1"
+    assert created.value.command.status is CommandStatus.PENDING
+
+    assert replay.decision is CoordinatorDecision.UNCHANGED
+    assert replay.reason is CoordinatorReason.IDEMPOTENT_REPLAY
+    assert replay.value is not None
+    assert replay.value.created is False
+    assert replay.value.run == created.value.run
+    assert replay.value.command == created.value.command
+
+    assert conflict.decision is CoordinatorDecision.REJECTED
+    assert conflict.reason is CoordinatorReason.IDEMPOTENCY_CONFLICT
+    assert conflict.value is None
+    assert await coordinator.get_run("run-1") == created.value.run
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_id", "run-other"),
+        ("command_id", "command-other"),
+        ("operation", CommandOperation.CONTINUE),
+    ],
+)
+async def test_submit_replay_requires_the_full_execution_identity(
+    coordinator: RunCoordinator,
+    field: str,
+    value: object,
+) -> None:
+    await coordinator.submit(_request())
+
+    replay = await coordinator.submit(replace(_request(), **{field: value}))
+
+    assert replay.decision is CoordinatorDecision.REJECTED
+    assert replay.reason is CoordinatorReason.IDEMPOTENCY_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_rejected_submission_is_queryable_but_never_claimed(
+    coordinator: RunCoordinator,
+) -> None:
+    result = await coordinator.submit(_request(accepted=False))
+
+    assert result.decision is CoordinatorDecision.REJECTED
+    assert result.reason is CoordinatorReason.ADMISSION_REJECTED
+    assert result.value is not None
+    assert result.value.run.observed_state is ObservedState.TERMINAL
+    assert result.value.run.outcome is RunOutcome.FAILED
+    assert result.value.command.status is CommandStatus.REJECTED
+    assert (
+        await coordinator.claim_commands(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=130.0), limit=1
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_rejects_duplicate_run_or_command_identity(
+    coordinator: RunCoordinator,
+) -> None:
+    created = await coordinator.submit(_request())
+    duplicate_run = await coordinator.submit(
+        _request(command_id="command-2", idempotency_key="key-2")
+    )
+    duplicate_command = await coordinator.submit(_request(run_id="run-2", idempotency_key="key-3"))
+
+    assert duplicate_run.decision is CoordinatorDecision.REJECTED
+    assert duplicate_run.reason is CoordinatorReason.IDENTITY_CONFLICT
+    assert duplicate_command.decision is CoordinatorDecision.REJECTED
+    assert duplicate_command.reason is CoordinatorReason.IDENTITY_CONFLICT
+    assert created.value is not None
+    assert await coordinator.get_run("run-1") == created.value.run
+    assert await coordinator.get_run("run-2") is None
+
+
+@pytest.mark.asyncio
+async def test_submit_rejects_control_commands_until_target_semantics_exist(
+    coordinator: RunCoordinator,
+) -> None:
+    result = await coordinator.submit(_request(operation=CommandOperation.STEER))
+
+    assert result.decision is CoordinatorDecision.REJECTED
+    assert result.reason is CoordinatorReason.UNSUPPORTED_OPERATION
+    assert result.value is None
+    assert await coordinator.get_run("run-1") is None
+
+
+@pytest.mark.asyncio
+async def test_command_claim_returns_fence_and_advances_legal_transitions(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    await coordinator.submit(_request())
+    claims = await coordinator.claim_commands(
+        OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 30),
+        limit=1,
+    )
+
+    assert len(claims) == 1
+    claim = claims[0]
+    assert claim.command.status is CommandStatus.CLAIMED
+    assert claim.run.owner_id == "gateway-1"
+    assert claim.run.lease_epoch == 1
+    assert claim.fence.run_id == "run-1"
+    assert claim.fence.owner_id == "gateway-1"
+    assert claim.fence.lease_epoch == 1
+
+    starting = await coordinator.mark_starting(
+        claim.command, claim.fence, expected_version=claim.run.version
+    )
+    assert starting.decision is CoordinatorDecision.APPLIED
+    assert starting.value is not None
+    assert starting.value.observed_state is ObservedState.STARTING
+
+    running = await coordinator.mark_running(
+        "run-1", claim.fence, expected_version=starting.value.version
+    )
+    assert running.decision is CoordinatorDecision.APPLIED
+    assert running.value is not None
+    assert running.value.observed_state is ObservedState.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_version_and_execution_fences_reject_without_mutation(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    claim, running = await _claimed_running(coordinator, clock)
+    before = await coordinator.get_run("run-1")
+
+    version_conflict = await coordinator.mark_running(
+        "run-1", claim.fence, expected_version=running.version - 1
+    )
+    stale = await coordinator.mark_running(
+        "run-1",
+        type(claim.fence)(run_id="run-1", owner_id="other", lease_epoch=1),
+        expected_version=running.version,
+    )
+
+    assert version_conflict.decision is CoordinatorDecision.REJECTED
+    assert version_conflict.reason is CoordinatorReason.VERSION_CONFLICT
+    assert stale.decision is CoordinatorDecision.REJECTED
+    assert stale.reason is CoordinatorReason.STALE_FENCE
+    assert await coordinator.get_run("run-1") == before
+
+
+@pytest.mark.asyncio
+async def test_execution_fence_cannot_cross_run_boundaries(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    await coordinator.submit(
+        _request(run_id="run-a", command_id="command-a", idempotency_key="key-a")
+    )
+    await coordinator.submit(
+        _request(run_id="run-b", command_id="command-b", idempotency_key="key-b")
+    )
+    claims = await coordinator.claim_commands(
+        OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 30),
+        limit=2,
+    )
+    claim_a, claim_b = claims
+    before = await coordinator.get_run("run-b")
+    assert before is not None
+
+    starting = await coordinator.mark_starting(
+        claim_b.command, claim_a.fence, expected_version=before.version
+    )
+    running = await coordinator.mark_running(
+        "run-b", claim_a.fence, expected_version=before.version
+    )
+    completed = await coordinator.complete(
+        RunCompletion(
+            run_id="run-b",
+            outcome=RunOutcome.FAILED,
+            result_path="",
+            error="wrong fence",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json='{"summary":"wrong fence"}',
+            terminal_at=clock.value,
+        ),
+        claim_a.fence,
+        expected_version=before.version,
+    )
+    renewed = await coordinator.renew("run-b", claim_a.fence, clock.value + 60)
+
+    assert starting.reason is CoordinatorReason.STALE_FENCE
+    assert running.reason is CoordinatorReason.STALE_FENCE
+    assert completed.reason is CoordinatorReason.STALE_FENCE
+    assert renewed is False
+    assert await coordinator.get_run("run-b") == before
+
+
+@pytest.mark.asyncio
+async def test_expired_command_claim_is_taken_over_and_fences_old_owner(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    await coordinator.submit(_request())
+    first = (
+        await coordinator.claim_commands(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5),
+            limit=1,
+        )
+    )[0]
+
+    clock.value += 6
+    second = (
+        await coordinator.claim_commands(
+            OwnerLease(owner_id="gateway-2", lease_expires_at=clock.value + 5),
+            limit=1,
+        )
+    )[0]
+
+    stale = await coordinator.mark_starting(
+        first.command, first.fence, expected_version=second.run.version
+    )
+    current = await coordinator.mark_starting(
+        second.command, second.fence, expected_version=second.run.version
+    )
+
+    assert second.fence.lease_epoch == first.fence.lease_epoch + 1
+    assert stale.reason is CoordinatorReason.STALE_FENCE
+    assert current.decision is CoordinatorDecision.APPLIED
+
+
+@pytest.mark.asyncio
+async def test_completion_is_first_writer_wins_and_creates_one_event(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    claim, running = await _claimed_running(coordinator, clock)
+    completion = RunCompletion(
+        run_id="run-1",
+        outcome=RunOutcome.COMPLETED,
+        result_path="/tmp/result.txt",
+        error="",
+        event_type="subagent_completion",
+        destination="dashboard:parent",
+        payload_json='{"summary":"done"}',
+        terminal_at=clock.value,
+    )
+
+    completed = await coordinator.complete(
+        completion, claim.fence, expected_version=running.version
+    )
+    replay = await coordinator.complete(
+        completion,
+        claim.fence,
+        expected_version=running.version,
+    )
+    conflict = await coordinator.complete(
+        replace(completion, outcome=RunOutcome.FAILED, error="late"),
+        claim.fence,
+        expected_version=running.version,
+    )
+
+    assert completed.decision is CoordinatorDecision.APPLIED
+    assert completed.value is not None
+    assert completed.value.event_id == "event-1"
+    assert completed.value.status is DeliveryState.PENDING
+    assert replay.decision is CoordinatorDecision.UNCHANGED
+    assert replay.value == completed.value
+    assert conflict.decision is CoordinatorDecision.REJECTED
+    assert conflict.reason is CoordinatorReason.OUTCOME_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_completion_replay_requires_the_original_expected_version(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    claim, running = await _claimed_running(coordinator, clock)
+    completion = RunCompletion(
+        run_id="run-1",
+        outcome=RunOutcome.COMPLETED,
+        result_path="/tmp/result.txt",
+        error="",
+        event_type="subagent_completion",
+        destination="dashboard:parent",
+        payload_json='{"summary":"done"}',
+        terminal_at=clock.value,
+    )
+    completed = await coordinator.complete(completion, claim.fence, running.version)
+    assert completed.value is not None
+
+    stale = await coordinator.complete(completion, claim.fence, expected_version=-1)
+
+    assert stale.decision is CoordinatorDecision.REJECTED
+    assert stale.reason is CoordinatorReason.VERSION_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_completion_is_atomic_when_event_identity_generation_fails(
+    clock: FakeClock,
+) -> None:
+    def fail_event_identity() -> str:
+        raise RuntimeError("identity source unavailable")
+
+    coordinator = MemoryRunCoordinator(clock=clock, id_factory=fail_event_identity)
+    claim, running = await _claimed_running(coordinator, clock)
+    completion = RunCompletion(
+        run_id="run-1",
+        outcome=RunOutcome.COMPLETED,
+        result_path="/tmp/result.txt",
+        error="",
+        event_type="subagent_completion",
+        destination="dashboard:parent",
+        payload_json='{"summary":"done"}',
+        terminal_at=clock.value,
+    )
+
+    with pytest.raises(RuntimeError, match="identity source unavailable"):
+        await coordinator.complete(completion, claim.fence, running.version)
+
+    assert await coordinator.get_run("run-1") == running
+
+
+@pytest.mark.asyncio
+async def test_outbox_claim_epoch_fences_release_and_delivery(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    claim, running = await _claimed_running(coordinator, clock)
+    completed = await coordinator.complete(
+        RunCompletion(
+            run_id="run-1",
+            outcome=RunOutcome.COMPLETED,
+            result_path="/tmp/result.txt",
+            error="",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json='{"summary":"done"}',
+            terminal_at=clock.value,
+        ),
+        claim.fence,
+        expected_version=running.version,
+    )
+    assert completed.value is not None
+
+    first = (
+        await coordinator.claim_outbox(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5),
+            limit=1,
+        )
+    )[0]
+    first_fence = DeliveryFence(
+        event_id=first.event_id,
+        owner_id=first.claim_owner,
+        claim_epoch=first.claim_epoch,
+    )
+    clock.value += 6
+    second = (
+        await coordinator.claim_outbox(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5),
+            limit=1,
+        )
+    )[0]
+    second_fence = DeliveryFence(
+        event_id=second.event_id,
+        owner_id=second.claim_owner,
+        claim_epoch=second.claim_epoch,
+    )
+
+    stale_release = await coordinator.release_outbox(first_fence, available_at=clock.value + 10)
+    stale_delivery = await coordinator.mark_delivered(first_fence)
+    delivered = await coordinator.mark_delivered(second_fence)
+    delivered_again = await coordinator.mark_delivered(second_fence)
+
+    assert second.claim_epoch == first.claim_epoch + 1
+    assert stale_release.reason is CoordinatorReason.STALE_FENCE
+    assert stale_delivery.reason is CoordinatorReason.STALE_FENCE
+    assert delivered.decision is CoordinatorDecision.APPLIED
+    assert delivered.value is not None
+    assert delivered.value.status is DeliveryState.DELIVERED
+    assert delivered_again.decision is CoordinatorDecision.UNCHANGED
+    assert (
+        await coordinator.claim_outbox(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5),
+            limit=1,
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_release_outbox_rejects_non_finite_retry_deadline(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    claim, running = await _claimed_running(coordinator, clock)
+    completed = await coordinator.complete(
+        RunCompletion(
+            run_id="run-1",
+            outcome=RunOutcome.COMPLETED,
+            result_path="/tmp/result.txt",
+            error="",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json='{"summary":"done"}',
+            terminal_at=clock.value,
+        ),
+        claim.fence,
+        running.version,
+    )
+    assert completed.value is not None
+    event = (
+        await coordinator.claim_outbox(
+            OwnerLease(owner_id="delivery", lease_expires_at=clock.value + 30),
+            limit=1,
+        )
+    )[0]
+    fence = DeliveryFence(event.event_id, event.claim_owner, event.claim_epoch)
+
+    rejected = await coordinator.release_outbox(fence, available_at=float("nan"))
+
+    assert rejected.decision is CoordinatorDecision.REJECTED
+    assert rejected.reason is CoordinatorReason.INVALID_TRANSITION
+    delivered = await coordinator.mark_delivered(fence)
+    assert delivered.decision is CoordinatorDecision.APPLIED
+
+
+@pytest.mark.asyncio
+async def test_claim_limits_and_order_are_deterministic(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    for index in range(3):
+        await coordinator.submit(
+            _request(
+                run_id=f"run-{index}",
+                command_id=f"command-{index}",
+                idempotency_key=f"key-{index}",
+                payload_hash=f"hash-{index}",
+            )
+        )
+
+    assert (
+        await coordinator.claim_commands(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5), limit=0
+        )
+        == []
+    )
+    claims = await coordinator.claim_commands(
+        OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5), limit=2
+    )
+    assert [item.command.command_id for item in claims] == ["command-0", "command-1"]
+
+
+@pytest.mark.asyncio
+async def test_claim_commands_ignores_non_future_owner_lease(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    await coordinator.submit(_request())
+
+    expired = await coordinator.claim_commands(
+        OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value), limit=1
+    )
+    current = await coordinator.claim_commands(
+        OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5), limit=1
+    )
+
+    assert expired == []
+    assert len(current) == 1
+    assert current[0].command.attempt == 1
+    assert current[0].fence.lease_epoch == 1
+
+
+@pytest.mark.asyncio
+async def test_claim_outbox_ignores_non_future_owner_lease(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    claim, running = await _claimed_running(coordinator, clock)
+    await coordinator.complete(
+        RunCompletion(
+            run_id="run-1",
+            outcome=RunOutcome.COMPLETED,
+            result_path="/tmp/result.txt",
+            error="",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json='{"summary":"done"}',
+            terminal_at=clock.value,
+        ),
+        claim.fence,
+        expected_version=running.version,
+    )
+
+    expired = await coordinator.claim_outbox(
+        OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value), limit=1
+    )
+    current = await coordinator.claim_outbox(
+        OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5), limit=1
+    )
+
+    assert expired == []
+    assert len(current) == 1
+    assert current[0].attempts == 1
+    assert current[0].claim_epoch == 1
+
+
+@pytest.mark.asyncio
+async def test_renew_requires_current_unexpired_fence(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    await coordinator.submit(_request())
+    claim = (
+        await coordinator.claim_commands(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 5), limit=1
+        )
+    )[0]
+
+    assert await coordinator.renew("run-1", claim.fence, until=clock.value + 20) is True
+    clock.value += 21
+    assert await coordinator.renew("run-1", claim.fence, until=clock.value + 20) is False
+
+
+@pytest.mark.asyncio
+async def test_renew_never_shortens_a_live_lease(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    await coordinator.submit(_request())
+    claim = (
+        await coordinator.claim_commands(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=clock.value + 60), limit=1
+        )
+    )[0]
+
+    assert await coordinator.renew("run-1", claim.fence, until=clock.value + 10) is True
+
+    run = await coordinator.get_run("run-1")
+    assert run is not None
+    assert run.lease_expires_at == clock.value + 60
+
+
+@pytest.mark.asyncio
+async def test_terminal_run_lease_cannot_be_renewed(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    claim, running = await _claimed_running(coordinator, clock)
+    completed = await coordinator.complete(
+        RunCompletion(
+            run_id="run-1",
+            outcome=RunOutcome.COMPLETED,
+            result_path="",
+            error="",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json="{}",
+            terminal_at=clock.value,
+        ),
+        claim.fence,
+        running.version,
+    )
+    assert completed.value is not None
+
+    assert await coordinator.renew("run-1", claim.fence, clock.value + 30) is False
+
+
+@pytest.mark.asyncio
+async def test_transition_uses_one_clock_sample_for_fence_and_timestamp() -> None:
+    ticks: list[float] = []
+
+    def stepping_clock() -> float:
+        return ticks.pop(0) if ticks else 100.0
+
+    coordinator = MemoryRunCoordinator(clock=stepping_clock)
+    await coordinator.submit(_request())
+    claim = (
+        await coordinator.claim_commands(
+            OwnerLease(owner_id="gateway-1", lease_expires_at=105.0), limit=1
+        )
+    )[0]
+    ticks[:] = [104.0, 106.0]
+
+    starting = await coordinator.mark_starting(
+        claim.command,
+        claim.fence,
+        claim.run.version,
+    )
+
+    assert starting.decision is CoordinatorDecision.APPLIED
+    assert starting.value is not None
+    assert starting.value.updated_at == 104.0
+    assert ticks == [106.0]
+
+
+@pytest.mark.asyncio
+async def test_claim_commands_skips_orphaned_command_without_partial_failure(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    memory = coordinator
+    assert isinstance(memory, MemoryRunCoordinator)
+    await memory.submit(_request())
+    memory._runs.pop("run-1")
+
+    claims = await memory.claim_commands(OwnerLease("gateway-1", clock.value + 10), limit=1)
+
+    assert claims == []
