@@ -33,6 +33,7 @@ from typing import Callable, Dict, List, Tuple
 
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_KNOWN,
@@ -62,6 +63,10 @@ COMPONENT_CLAUDE_ACP_ADAPTER = "claude-agent-acp"
 #: separate component because the adapter's SDK does NOT search PATH for it, so
 #: having one without the other is a real, distinguishable half-install.
 COMPONENT_CLAUDE_CODE_CLI = "claude"
+
+#: The codex-acp adapter. ONE component, not two: the adapter ships its own
+#: compatible Codex binary, so there is no second executable Crew resolves.
+COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
 
 #: How long a verdict is reused. The Claude driver shells out to mise and globs
 #: the filesystem, and the dashboard polls this endpoint, so an uncached probe
@@ -193,10 +198,41 @@ def _probe_claude() -> BackendInstallState:
 #: Backend id → its probe. A registry rather than an ``if`` chain so an id with
 #: no probe is a lookup miss that degrades to ``UNKNOWN``, instead of falling
 #: through to whichever branch happened to be last.
+def _probe_codex() -> BackendInstallState:
+    """The Codex backend needs one component, and names it when it is absent.
+
+    Without this probe the switch could render with nothing to say about a session
+    that failed to start -- which was the stated reason the backend stayed out of
+    ``BASELINE_SELECTABLE_BACKENDS``. The install command comes from the same
+    constant the resolution ladder searches for, so the advice cannot drift from
+    what would actually satisfy it.
+
+    ``restart_required`` mirrors the claude probe: when the adapter resolves now
+    but the running gateway cached a negative, the honest answer is "installed,
+    restart to use it" rather than a promise the next spawn breaks.
+    """
+    policy_id = _policy_id(ACP_BACKEND_CODEX)
+    if acp_driver.codex_adapter_resolves():
+        return BackendInstallState(
+            ACP_BACKEND_CODEX,
+            policy_id,
+            INSTALLED,
+            restart_required=acp_driver.codex_adapter_cached_negative(),
+        )
+    return BackendInstallState(
+        ACP_BACKEND_CODEX,
+        policy_id,
+        MISSING,
+        (COMPONENT_CODEX_ACP_ADAPTER,),
+        acp_driver.codex_adapter_install_command(),
+    )
+
+
 _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_KIRO: _probe_kiro,
     ACP_BACKEND_KAS: _probe_kas,
     ACP_BACKEND_CLAUDE: _probe_claude,
+    ACP_BACKEND_CODEX: _probe_codex,
 }
 
 

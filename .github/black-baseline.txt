@@ -990,7 +990,6 @@ test/test_safety_override.py
 test/test_sage_backend_routes_coverage.py
 test/test_sandbox_argv.py
 test/test_sandbox_backend_cache.py
-test/test_sandbox_cc_mode.py
 test/test_sandbox_default_fix.py
 test/test_sandbox_first_party_exec.py
 test/test_sandbox_hardlink_scan.py

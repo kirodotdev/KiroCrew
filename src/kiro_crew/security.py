@@ -6228,6 +6228,22 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".pypirc",
     ".netrc",
     ".git-credentials",
+    # ACP adapter OAuth token stores. Each adapter owns its own sign-in flow and
+    # persists its own tokens; Kiro Crew never reads them, and only ever checks
+    # that the file EXISTS so it can name the right sign-in command. An agent
+    # that could ``fs_read`` one could impersonate the operator against that
+    # vendor, so both are on the floor "precisely so nothing else does".
+    #
+    # Only the token leaf is classified. The sibling config files — codex's
+    # ``config.toml``, claude's ``settings*.json`` — deliberately stay readable:
+    # routing diagnosis needs them and they carry no credential.
+    #
+    # These are ``$HOME``-rooted defaults. Both adapters honour a home override
+    # (``CODEX_HOME``; ``CLAUDE_CONFIG_DIR`` / ``CLAUDE_HOME``), re-anchored in
+    # ``_home_dir_targets_uncached`` so an override cannot move the token out
+    # from under the gate.
+    ".codex/auth.json",
+    ".claude/.credentials.json",
     # (The Notes builtin's GitHub PAT lives under the crew data-home at
     # ``<prefix>/workspace/md-notebook/pat``; it is added below via
     # ``_CREW_SECRET_LEAVES`` so BOTH ``.kiro/crew`` and the legacy ``.kirocrew``
@@ -7922,12 +7938,12 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
 
 def _home_dir_targets_uncached(
     home_dirs: list[str],
-    roots: tuple[str, str | None, str | None, str] | None = None,
+    roots: _ResolvedRoots | None = None,
 ) -> set[str]:
     """Anchor the ``$HOME``-relative *home_dirs* entries into absolute, casefolded
     on-disk targets.
 
-    *roots* optionally supplies the ``(home, crew_home, kiro_home)`` anchors
+    *roots* optionally supplies the already-resolved :class:`_ResolvedRoots`
     already resolved by the caller. The TTL cache in :func:`_home_dir_targets` MUST pass
     it: resolving the roots here as well would read the filesystem a second
     time, and a root symlink repointed between the two reads would file this
@@ -7949,10 +7965,11 @@ def _home_dir_targets_uncached(
     secrets. On POSIX a single-segment entry splits to a 1-element list, so
     this is a no-op there.
     """
-    if roots is not None:
-        home, crew_home, kiro_home_override, logical_home = roots
-    else:
-        home, crew_home, kiro_home_override, logical_home = _resolved_root_key()
+    resolved = roots if roots is not None else _resolved_root_key()
+    home = resolved.home
+    crew_home = resolved.crew_home
+    kiro_home_override = resolved.kiro_home
+    logical_home = resolved.logical_home
 
     def _anchor(root: str, d: str) -> str:
         return os.path.join(root, *d.split("/")).casefold()
@@ -8017,6 +8034,26 @@ def _home_dir_targets_uncached(
             sensitive_targets.add(os.path.realpath(agents_full).casefold())
         except (OSError, ValueError):
             pass
+    # An ACP adapter's OAuth token follows that adapter's own home override, so
+    # the ``$HOME``-rooted entry anchored above covers only the documented
+    # default. Re-anchor the token leaf under each override the adapter honours
+    # (the default form stays, so every location is always covered). Guarded on
+    # membership in *home_dirs* for the same reason as the agents dir above: a
+    # write-tier build must not gain a read-tier target.
+    for _leaf, _root_fields in _OVERRIDE_ANCHORED_LEAVES:
+        if _leaf not in home_dirs:
+            continue
+        _basename = _leaf.split("/")[-1]
+        for _field in _root_fields:
+            _root = getattr(resolved, _field, None)
+            if not _root:
+                continue
+            _full = os.path.join(_root, _basename)
+            sensitive_targets.add(_full.casefold())
+            try:
+                sensitive_targets.add(os.path.realpath(_full).casefold())
+            except (OSError, ValueError):
+                pass
     return sensitive_targets
 
 
@@ -8065,8 +8102,70 @@ _HOME_TARGETS_TTL_SECS = 0.1
 _home_targets_cache: dict[tuple[object, ...], tuple[float, set[str]]] = {}
 
 
-def _resolved_root_key() -> tuple[str, str | None, str | None, str]:
-    """Return the (home, crew_home, kiro_home, logical_home) roots the target set is anchored on.
+class _ResolvedRoots(NamedTuple):
+    """The roots the sensitive-target set is anchored on, AND its cache key.
+
+    Those two jobs are the same object on purpose: every field is part of the
+    key, so an override that would move a target invalidates the cached set
+    instead of serving targets anchored on the previous value. Keying on fewer
+    fields than the builder anchors on is the fail-OPEN shape the resolved-home
+    key already exists to prevent.
+
+    A new adapter with its own credential home adds a field here and an entry in
+    ``_OVERRIDE_ANCHORED_LEAVES``; nothing else changes, because the tuple is
+    unpacked by FIELD rather than by position.
+    """
+
+    home: str
+    crew_home: str | None
+    kiro_home: str | None
+    codex_home: str | None
+    claude_config_dir: str | None
+    claude_home: str | None
+    logical_home: str
+
+
+#: Sensitive leaf → the override roots its parent directory can be moved to.
+#:
+#: The leaf's own ``$HOME``-rooted form is anchored by the ordinary path in
+#: ``_home_dir_targets_uncached``; this table only covers the overrides. A leaf
+#: absent from the *home_dirs* list being built is skipped, so a write-tier
+#: build never leaks a read-tier target.
+_OVERRIDE_ANCHORED_LEAVES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (".codex/auth.json", ("codex_home",)),
+    (".claude/.credentials.json", ("claude_config_dir", "claude_home")),
+)
+
+
+def _resolved_env_root(name: str) -> str | None:
+    """Resolve an environment home override, or ``None`` when it is unset.
+
+    Falls back to the unresolved absolute form on OSError/ValueError the same way
+    the builder does. No validity check: an unsafe override falls back to its
+    default inside the owning helper, and that default is already covered by the
+    ``$HOME``-rooted entry, so an extra target under a bogus value is harmless
+    and fail-safe.
+
+    The value is read VERBATIM -- deliberately not stripped. Whitespace is a legal
+    POSIX path character, and the owning resolvers take the variable raw
+    (``_valid_override_home`` does ``Path(os.environ.get("KIROCREW_HOME"))``, and
+    ``config_dir`` then ``mkdir``s whatever that names). Stripping here would
+    anchor the target set on ``<root>`` while the process actually runs out of
+    ``"<root> "``, leaving the real ``.env``, signing keys and governance files
+    outside the floor this set defines. Emptiness is the only test, so an unset
+    or empty override still resolves to ``None``.
+    """
+    raw = os.environ.get(name, "")
+    if not raw:
+        return None
+    try:
+        return str(Path(raw).expanduser().resolve())
+    except (OSError, ValueError):
+        return os.path.abspath(os.path.expanduser(raw))
+
+
+def _resolved_root_key() -> _ResolvedRoots:
+    """Return the roots the target set is anchored on.
 
     Mirrors how :func:`_home_dir_targets_uncached` derives its anchors, so the
     cache key changes exactly when the anchors would. Falls back to the
@@ -8078,6 +8177,9 @@ def _resolved_root_key() -> tuple[str, str | None, str | None, str]:
     must invalidate the cache. No validity check here (an unsafe value falls back
     to ``~/.kiro`` in ``kiro_home()``, already covered by the default form); it is
     resolved only so a symlinked override keys and anchors identically.
+
+    The three adapter roots do the same for the OAuth token leaves in
+    ``_OVERRIDE_ANCHORED_LEAVES``.
 
     ``logical_home`` is ``Path.home()`` UNRESOLVED.  It is a separate anchor, not
     a duplicate: on a host where ``$HOME`` is itself a symlink (``/home/x`` ->
@@ -8094,23 +8196,15 @@ def _resolved_root_key() -> tuple[str, str | None, str | None, str]:
         home = str(Path.home().resolve())
     except (OSError, ValueError):
         home = logical_home
-    crew_env = os.environ.get("KIROCREW_HOME")
-    if crew_env:
-        try:
-            crew: str | None = str(Path(crew_env).expanduser().resolve())
-        except (OSError, ValueError):
-            crew = os.path.abspath(os.path.expanduser(crew_env))
-    else:
-        crew = None
-    kiro_env = os.environ.get("KIRO_HOME")
-    if kiro_env:
-        try:
-            kiro: str | None = str(Path(kiro_env).expanduser().resolve())
-        except (OSError, ValueError):
-            kiro = os.path.abspath(os.path.expanduser(kiro_env))
-    else:
-        kiro = None
-    return home, crew, kiro, logical_home
+    return _ResolvedRoots(
+        home=home,
+        crew_home=_resolved_env_root("KIROCREW_HOME"),
+        kiro_home=_resolved_env_root("KIRO_HOME"),
+        codex_home=_resolved_env_root("CODEX_HOME"),
+        claude_config_dir=_resolved_env_root("CLAUDE_CONFIG_DIR"),
+        claude_home=_resolved_env_root("CLAUDE_HOME"),
+        logical_home=logical_home,
+    )
 
 
 def _home_dir_targets(home_dirs: list[str]) -> set[str]:
@@ -8365,6 +8459,71 @@ def crew_home_prefixes() -> tuple[str, ...]:
     credential store when describing the posture.
     """
     return tuple(_CREW_HOME_PREFIXES)
+
+
+def sandbox_credential_targets(exclude_leaves: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """Absolute, on-disk-case credential targets for an OS sandbox deny list.
+
+    Applies the SAME anchoring as :func:`_home_dir_targets_uncached` -- the
+    ``$HOME`` projection of every :data:`_SENSITIVE_HOME_DIRS` leaf, plus each
+    env-override re-anchor -- so a caller building a sandbox mask inherits the
+    read gate's anchor rules instead of re-deriving them. That is the whole point
+    of this living here: a mask that projected leaves under ``Path.home()`` only
+    would silently miss a credential the operator relocated with
+    ``KIROCREW_HOME``, ``CLAUDE_CONFIG_DIR`` or ``CLAUDE_HOME``, which is exactly
+    the drift a hand-maintained list already produced once.
+
+    Unlike the read gate's target set the paths are NOT casefolded: that set
+    exists to COMPARE against candidate paths, while these are handed to a
+    sandbox backend to deny on disk, and a casefolded path denies nothing on a
+    case-sensitive filesystem.
+
+    *exclude_leaves* drops a ``$HOME``-relative leaf (and its override
+    re-anchors) from the result -- for an adapter whose own OAuth token it must
+    still be able to read in order to authenticate. Excluding a leaf here only
+    removes it from THIS mask; the read gate still fences it for the agent's own
+    file tools, so the two controls keep covering different readers.
+
+    Returns logical paths. The launcher ``os.path.abspath``es what it is handed,
+    and the macOS profile emits both a ``subpath`` and a ``literal`` deny for each
+    entry, so both a directory and a plain file leaf are valid entries.
+    """
+    excluded = set(exclude_leaves)
+    leaves = [d for d in _SENSITIVE_HOME_DIRS if d not in excluded]
+    resolved = _resolved_root_key()
+    # BOTH home spellings, reusing the two anchors the read gate already keys on.
+    # On a host whose home is itself a symlink (``/home/u`` -> ``/local/home/u``) the
+    # resolved and logical spellings differ, and the read gate can absorb that because
+    # it realpaths a candidate BEFORE comparing. A sandbox deny list gets no such
+    # normalisation -- it denies the paths it is handed -- so denying only the resolved
+    # form would leave every credential reachable through the symlinked one.
+    home_anchors = {resolved.home, resolved.logical_home}
+    targets: set[str] = {
+        os.path.join(anchor, *d.split("/")) for anchor in home_anchors for d in leaves
+    }
+    # KIROCREW_HOME: the crew secrets (signing keys, governance ceiling, .env)
+    # live directly under the override, not under either default crew prefix.
+    if resolved.crew_home:
+        for d in leaves:
+            for prefix in _CREW_HOME_PREFIXES:
+                if d == prefix or d.startswith(prefix + "/"):
+                    leaf = d[len(prefix) :].lstrip("/")
+                    targets.add(
+                        os.path.join(resolved.crew_home, *leaf.split("/"))
+                        if leaf
+                        else resolved.crew_home
+                    )
+                    break
+    # An adapter's OAuth token follows that adapter's own home override.
+    for leaf, root_fields in _OVERRIDE_ANCHORED_LEAVES:
+        if leaf in excluded or leaf not in _SENSITIVE_HOME_DIRS:
+            continue
+        basename = leaf.split("/")[-1]
+        for field in root_fields:
+            root = getattr(resolved, field, None)
+            if root:
+                targets.add(os.path.join(root, basename))
+    return tuple(sorted(targets))
 
 
 def exfil_query_min_len() -> int:

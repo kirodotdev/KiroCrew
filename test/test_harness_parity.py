@@ -414,19 +414,46 @@ def test_every_known_backend_has_a_label() -> None:
     assert len(set(labels.values())) == len(labels), "two backends share a label"
 
 
-def test_codex_is_known_but_not_shipped_selectable() -> None:
-    """H1/H8: a switch a build cannot answer for must not be offered by default.
+def test_codex_is_selectable_and_answerable() -> None:
+    """H1/H8: a harness may only be offered once the build can answer for it.
 
-    This is not the stance ``claude`` has: claude is baseline-selectable because
-    ``client.py`` owns its spawn path and its adapter is a public npm package —
-    both true of codex now too. What codex still lacks is the other half,
-    ``backend_install.py``'s probe: without one its install row can only read
-    ``unknown``, so a failed session arrives with nothing to act on.
-    ``register_selectable_backend`` is the way in until that probe lands.
+    Codex was withheld for one stated reason -- ``backend_install.py`` had no probe,
+    so its install row could only read ``unknown`` and a failed session arrived with
+    nothing to act on. The probe closes that, which is what makes the switch
+    honest rather than merely present.
+
+    Asserted TOGETHER on purpose: selectability without a probe is the exact state
+    the withholding existed to prevent, so a future change that removed the probe
+    while leaving the baseline entry would fail here rather than silently ship a
+    switch with nothing behind it.
     """
+    from kiro_crew.agent_sdk.backend_install import _PROBES
+
     assert ACP_BACKEND_CODEX in ACP_BACKENDS_KNOWN
-    assert ACP_BACKEND_CODEX not in BASELINE_SELECTABLE_BACKENDS
-    assert ACP_BACKEND_CODEX not in selectable_backends()
+    assert ACP_BACKEND_CODEX in BASELINE_SELECTABLE_BACKENDS
+    assert ACP_BACKEND_CODEX in selectable_backends()
+    assert ACP_BACKEND_CODEX in _PROBES, (
+        "codex is offered in the switch, so backend_install must be able to say "
+        "what is missing when a session fails to start"
+    )
+
+
+def test_codex_tool_calls_are_gated_before_it_is_offered() -> None:
+    """A selectable harness must route its tool calls, or the switch is a trap.
+
+    This is the invariant that makes admission mean something: the picker offering
+    an id and the gate being armed for it are separate facts, and selectability
+    without routing would put the operator's narrowing silently out of circuit.
+    """
+    from kiro_crew import acp_tool_gate
+
+    verdict, _reason = acp_tool_gate.routing_verdict(ACP_BACKEND_CODEX)
+    assert verdict is acp_tool_gate.Verdict.ROUTED
+    assert acp_tool_gate.is_enforced(ACP_BACKEND_CODEX) is True
+    assert acp_tool_gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX), (
+        "ACP v1 cannot require a prompt for a passive read, so the credential "
+        "homes must be denied at the OS boundary instead"
+    )
 
 
 def test_codex_carries_its_own_provider_label() -> None:

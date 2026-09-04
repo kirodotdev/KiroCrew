@@ -138,6 +138,53 @@ def claude_adapter_cached_negative() -> bool:
     return not argv
 
 
+def codex_adapter_resolves() -> bool:
+    """Whether the codex-acp adapter resolves to a runnable argv.
+
+    ONE component, unlike claude's two: codex-acp ships a compatible Codex binary
+    as an npm dependency and reads ``CODEX_PATH`` itself only to run a DIFFERENT
+    one, so there is no second executable Crew hands it and no half-install to
+    distinguish.
+    """
+    from kiro_crew.acp.client import _resolve_codex_acp_bin
+
+    adapter_argv, _searched_path = _resolve_codex_acp_bin()
+    return bool(adapter_argv)
+
+
+def codex_adapter_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved the codex adapter as absent?
+
+    Same hazard and same resolution as :func:`claude_adapter_cached_negative`: the
+    argv is resolved once per process behind an ``_UNRESOLVED`` sentinel and never
+    invalidated, so a fresh probe reporting "installed" after an install would
+    disagree with every spawn until a restart. Consulted, never invalidated -- a
+    dashboard GET must not mutate a global on the spawn path.
+    """
+    from kiro_crew.acp import client as _client
+
+    cached = getattr(_client, "_codex_acp_argv_cache", None)
+    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+        return False
+    try:
+        argv, _searched = cached  # type: ignore[misc]
+    except Exception:
+        return False
+    return not argv
+
+
+def codex_adapter_install_command() -> str:
+    """``npm i -g <adapter package>``, with the package name read from the repo.
+
+    A global install of the SCOPED package puts the UNSCOPED ``codex-acp`` binary
+    on PATH, which is what the resolution ladder looks for -- so this command and
+    that ladder agree by construction rather than by coincidence.
+    """
+    from kiro_crew.acp.client import CODEX_ACP_NPM_PKG
+
+    return f"npm i -g {CODEX_ACP_NPM_PKG}"
+
+
 def claude_adapter_install_command() -> str:
     """``npm i -g <adapter package>`` -- the adapter's remedy, from the repo.
 

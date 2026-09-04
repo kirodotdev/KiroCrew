@@ -42,7 +42,7 @@ from typing import (
     TypeVar,
 )
 
-from kiro_crew import agent_scratch, model_registry, platform_compat
+from kiro_crew import acp_tool_gate, agent_scratch, model_registry, platform_compat
 from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
     _kiro_tool_name,
@@ -1345,6 +1345,20 @@ class AcpAuthRequired(AcpError):  # noqa: N818
     """
 
 
+class AcpToolGateUnroutable(AcpError):  # noqa: N818
+    """The harness's tool calls would not reach Kiro Crew's PreToolUse gate.
+
+    Non-retryable, and a DISTINCT type from the transport errors around it: the
+    condition is a configuration fact, so a respawn re-reads the same answer and
+    refuses again while consuming a reconnect budget meant for transport faults.
+
+    Wraps :class:`kiro_crew.acp_tool_gate.ToolGateUnroutable`, which cannot
+    subclass ``AcpError`` itself -- it lives in a LEAF module that must not import
+    this one (import cycle, and a forbidden-root edge for the SDK boundary gate).
+    Branchless callers keep degrading through their generic ``AcpError`` handling.
+    """
+
+
 class AcpModelUnavailable(AcpError):  # noqa: N818
     """An explicitly requested model is not available to this account.
 
@@ -2519,6 +2533,34 @@ def _select_tool_title(
     return None
 
 
+def _sandbox_preflight(backend: str, mode: str) -> tuple[str, ...]:
+    """Refuse an unmasked enforced adapter, then resolve its credential mask.
+
+    One function so the caller pays ONE ``asyncio.to_thread`` hop for both steps:
+    ``enforce_sandbox_floor`` probes for a sandbox backend and
+    ``adapter_hidden_credential_dirs`` resolves the home and every env-override root,
+    and both are blocking filesystem work that must not run on the event loop.
+
+    Raises :class:`AcpToolGateUnroutable` when this session would spawn the adapter
+    with its mask dropped; returns the mask otherwise (empty for a harness this core
+    does not enforce, so their spawn arguments stay byte-identical).
+    """
+    try:
+        acp_tool_gate.enforce_sandbox_floor(backend, mode)
+        return acp_tool_gate.adapter_hidden_credential_dirs(backend)
+    except acp_tool_gate.ToolGateUnroutable as exc:
+        # Translate at the boundary, exactly as the session-routing path does.
+        # ``acp_tool_gate`` is a LEAF that cannot import this module, so its
+        # ToolGateUnroutable is a plain ``Exception``: it is neither an
+        # ``AcpError`` (so the transport ladder in ``ensure_ready`` cannot see
+        # it) nor the ``AcpToolGateUnroutable`` the dedicated non-retrying
+        # handler names (an unrelated class). Raised raw, a sandbox-floor
+        # refusal therefore escaped ``ensure_ready`` uncaught and skipped the
+        # cleanup every other refusal path runs. ``from None`` because the
+        # wrapper carries the whole actionable message already.
+        raise AcpToolGateUnroutable(str(exc)) from None
+
+
 class AcpClient:
     """JSON-RPC 2.0 client over stdio with kiro-cli acp."""
 
@@ -3532,6 +3574,63 @@ class AcpClient:
 
     # ── Dynamic Config from ACP ──
 
+    async def _apply_session_permission_routing(self) -> None:
+        """Make a SESSION_CONFIG harness actually ask, or refuse to run it.
+
+        Called ONLY for a ``SESSION_CONFIG`` harness -- the caller tests that, so
+        the Kiro path never reaches this method (harness-parity H13).
+
+        Two outcomes, and each is a different verdict on purpose:
+
+        * the option was not advertised -> INDETERMINATE, because Kiro Crew cannot
+          tell what the adapter will do, and "cannot tell" must not read as armed;
+        * the write was rejected -> BYPASSED, an observed failure rather than an
+          unknown.
+
+        Only the enforced mechanisms refuse; ``enforce_runtime_routing`` owns that
+        decision, so the scope lives in one place instead of being re-derived here.
+        """
+        backend = self.backend
+        option_id, value = acp_tool_gate.permission_config_for(backend)
+        issue = acp_tool_gate.session_config_issue(backend, self._acp_config_options)
+        if issue:
+            # Not advertised: INDETERMINATE, never BYPASSED. The adapter may well
+            # ask anyway; Kiro Crew simply has no evidence, and the enforcement
+            # treats the two identically while the message stays honest.
+            try:
+                acp_tool_gate.enforce_runtime_routing(
+                    backend,
+                    issue,
+                    verdict=acp_tool_gate.Verdict.INDETERMINATE,
+                    remedy=acp_tool_gate.remediation_for(backend),
+                )
+            except acp_tool_gate.ToolGateUnroutable as exc:
+                raise AcpToolGateUnroutable(str(exc)) from None
+            return
+
+        try:
+            await self.set_config_option(option_id, value)
+        except AcpError as exc:
+            # The option was advertised and the write still failed, so this is an
+            # observed bypass rather than missing evidence.
+            try:
+                acp_tool_gate.enforce_runtime_routing(
+                    backend,
+                    "the adapter rejected its required session permission configuration",
+                    verdict=acp_tool_gate.Verdict.BYPASSED,
+                    remedy=acp_tool_gate.remediation_for(backend),
+                )
+            except acp_tool_gate.ToolGateUnroutable as gate_exc:
+                raise AcpToolGateUnroutable(str(gate_exc)) from exc
+            return
+
+        logger.info(
+            "ACP permission route armed: %s=%s (%s)",
+            option_id,
+            value,
+            acp_tool_gate.label_for(backend),
+        )
+
     def _store_session_config(self, resp: dict) -> None:
         """Extract effort configOptions from a session/new or session/load response.
 
@@ -3721,6 +3820,13 @@ class AcpClient:
         if self.backend in ACP_BACKENDS_INTERNAL_SANDBOX:
             await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
 
+        # Credential mask for an enforced adapter, resolved inside that adapter's
+        # own branch below. Declared here only because wrap_argv_async takes it as
+        # one argument for every harness; the kiro branch never assigns it, so the
+        # kiro construction path gains no conditional, no awaited step and no new
+        # failure point in service of an adapter (harness-parity H13).
+        adapter_hidden_dirs: tuple[str, ...] = ()
+
         if self._is_claude:
             # Fold the requested model onto the exact spelling claude-agent-acp
             # advertised (from the persisted provider-model cache warmed by a
@@ -3801,6 +3907,26 @@ class AcpClient:
                     f"The 'codex' CLI alone does not serve ACP."
                 )
             argv = codex_argv
+            # Fail closed BEFORE the spawn when the mask below would be dropped:
+            # several wrap_argv paths return without applying extra_hidden_dirs,
+            # which would start an enforced adapter with no compensating control
+            # at all. Placed inside this pre-existing codex arm rather than in a
+            # gate of its own on the shared path: harness-parity H13 asks whether
+            # the kiro path CHANGED, and a conditional or an awaited step added
+            # there in service of an adapter is the change it names -- so the
+            # adapter's work lives entirely behind the adapter's own seam.
+            # Keyed on the ROUTING, not on codex's identity: _sandbox_preflight
+            # re-checks acp_tool_gate.is_enforced(self.backend) itself, so this
+            # site cannot mask a harness this core does not enforce. A future
+            # SESSION_CONFIG harness gets its own arm here and must make the same
+            # call; test_acp_tool_gate ratchets that so it cannot be forgotten.
+            # OFF-LOOP: both halves touch the filesystem -- the refusal probes for
+            # a sandbox backend (a cold probe shells out via subprocess.run) and
+            # the mask resolves the home plus every env-override root -- so they
+            # run in ONE worker thread rather than blocking the gateway loop.
+            adapter_hidden_dirs = await asyncio.to_thread(
+                _sandbox_preflight, self.backend, self._sandbox_mode
+            )
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -3851,6 +3977,10 @@ class AcpClient:
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            # Credential homes the standard tier exposes for kiro-cli's sake and
+            # that an enforced adapter has no claim on. Empty for every harness
+            # this core does not enforce, so their spawn arguments are unchanged.
+            extra_hidden_dirs=adapter_hidden_dirs,
             is_kiro_cli=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
             _prepare=wrap_argv,
         )
@@ -4697,6 +4827,17 @@ class AcpClient:
         # 5. Set model — override if KiroCrew config specifies non-default.
         await self._apply_startup_model()
 
+        # 6. Arm permission routing for harnesses whose asking is a session
+        #    config option. AFTER the model apply (both write config options, and
+        #    the permission one must land last) and before any prompt can run:
+        #    _initialize_session is entirely pre-prompt, which is what makes this
+        #    placement the guarantee rather than a best effort.
+        #    Gated HERE rather than inside the method, so the first-class Kiro path
+        #    gains no call, no await and no failure point in service of an adapter
+        #    (harness-parity H13). A positive membership test, never "not claude".
+        if acp_tool_gate.routing_for(self.backend) is acp_tool_gate.Routing.SESSION_CONFIG:
+            await self._apply_session_permission_routing()
+
         # Drain MCP server init notifications
         await self._drain_notifications()
 
@@ -4748,6 +4889,18 @@ class AcpClient:
 
                     _startup_outcome = "ready"
                     return
+                except AcpToolGateUnroutable:
+                    # Non-retryable BY CONSTRUCTION (see the class docstring): the
+                    # refusal is a configuration fact, so a respawn re-reads the same
+                    # answer and refuses again -- a wasted spawn plus teardown that
+                    # also spends the reconnect budget this DISTINCT type exists to
+                    # protect. Must sit BEFORE the generic transport handler, because
+                    # it subclasses AcpError and would otherwise be retried by it,
+                    # which is the shape that made the distinct type decorative.
+                    _startup_outcome = "tool_gate_unroutable"
+                    await self._cleanup_failed_live_spawn()
+                    self._reset_state()
+                    raise
                 except (AcpTimeoutError, AcpError) as exc:
                     if attempt == 0:
                         logger.warning("ACP init failed (%s), retrying with fresh process...", exc)

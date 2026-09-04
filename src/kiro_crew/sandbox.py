@@ -2805,8 +2805,9 @@ def _build_launcher_script(
     # the child decide keeps the syscalls in the child, where they are already happening
     # and where blocking costs nothing but that one spawn.
     #
-    # macOS is unaffected either way: its rule is `(deny file-read* (subpath …))`, and a
-    # subpath rule covers a plain file.
+    # macOS is unaffected either way: for these entries the profile emits BOTH a
+    # `(subpath …)` and a `(literal …)` deny, so a plain-file leaf is covered
+    # without relying on how subpath treats a non-directory.
     dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
     readonly_json = json.dumps(list(dict.fromkeys(readonly_dirs)))
     files_json = json.dumps(
@@ -3726,6 +3727,22 @@ def _build_seatbelt_profile(
         rules.append(f'(deny file-read* (subpath "{escaped}"))')
         rules.append(f'(deny file-write* (subpath "{escaped}"))')
         rules.append(f'(deny file-link (subpath "{escaped}"))')
+        # BOTH shapes, because most of this list is plain FILES, not directories:
+        # sandbox_credential_targets() yields .codex/auth.json,
+        # .claude/.credentials.json, .netrc, .git-credentials, .npmrc, .pypirc,
+        # .docker/config.json, .kube/config, sel_hmac.key, token_signing.key.
+        # Whether a subpath rule alone covers a plain file is asserted in three
+        # comments in this tree and CONTRADICTED by the crew_hidden branch above
+        # ("A leaf may be a plain file, which no subpath rule addresses"), and
+        # nothing tests it -- no test in this repo executes sandbox-exec, so the
+        # claim has never been checked against the kernel. This mask is the ONLY
+        # compensating control for a harness whose passive reads never reach the
+        # gate, so it must not rest on an unverified reading of Seatbelt: the
+        # literal is redundant if subpath does cover files, and load-bearing if it
+        # does not.
+        rules.append(f'(deny file-read* (literal "{escaped}"))')
+        rules.append(f'(deny file-write* (literal "{escaped}"))')
+        rules.append(f'(deny file-link (literal "{escaped}"))')
 
     # .ssh: deny all access except reading known_hosts (strict only)
     if sandbox_level == "strict":
@@ -5227,6 +5244,72 @@ def reset_backend() -> None:
 # governance._ORDINAL_SCALES["sandbox"] (the single source of truth) — we never
 # re-encode the order, so a new tier added there is honoured here without edit.
 _SANDBOX_MODE_ALIASES = {"auto": "standard"}
+
+
+def credential_mask_applies(mode: str) -> bool:
+    """Whether :func:`wrap_argv` would actually APPLY ``extra_hidden_dirs`` for *mode*.
+
+    Exactly two outcomes hand back an UNWRAPPED child, dropping the mask: the ``off``
+    tier, and a host with no backend where unsandboxed exec is opted in and no
+    governance floor mandates a sandbox (the ``return argv, None`` after
+    ``_warn_no_isolation``). Every other path either wraps the argv -- ``namespace``
+    and ``sandbox-exec`` both thread ``extra_hidden_dirs`` through -- or REFUSES the
+    spawn outright with :class:`SandboxUnavailableError`, and a refusal needs no guard
+    because nothing starts.
+
+    Note this predicate is STRICTER than that inventory on one path: with no
+    backend it never consults the unsandboxed-exec opt-in, so the opted-in host
+    answers False rather than tracking that mutable value. See the branch below.
+
+    This lives here, beside those branches, so a caller whose security argument
+    depends on the mask cannot drift from them: a future branch that skips the mask
+    is a change to this function, not a silent hole in some other module's copy of
+    the reasoning.
+    """
+    floor = _governance_sandbox_floor()
+    effective = _clamp_sandbox_mode_to_floor(mode, floor)
+    if effective == "off":
+        return False
+    # Already inside a Kiro Crew sandbox: a nested re-wrap is impossible by design,
+    # wrap_argv passes the argv through (at most an env scrub) and never reaches a
+    # backend that could apply the mask. The OUTER sandbox confines the child, but it
+    # was built for the tier's own hidden dirs -- which deliberately leave ~/.aws,
+    # ~/.ssh and ~/.kube readable for kiro-cli's sake -- so it is NOT a substitute for
+    # an adapter-specific credential mask.
+    if _inside_kirocrew_sandbox() and _macos_sandbox_state() is not False:
+        return False
+    if detect_backend(config_mode=effective) != "none":
+        return True
+    # backend == "none": FAIL CLOSED, reading NO policy value to decide it.
+    #
+    # Nothing on a host without a backend can carry ``extra_hidden_dirs``, so the
+    # only question was whether the spawn would be refused instead -- and every
+    # answer to THAT is mutable config read here at preflight and acted on at the
+    # spawn. The opt-in was the first such value (an operator opting in between the
+    # two let a session that had been told "the mask applies" hand back an unwrapped
+    # child); the governance floor is the second, because a ceiling LOOSENED in the
+    # same window drops the very refusal that made True safe to report. Both windows
+    # close only by refusing to derive this from policy at all: no backend, no mask,
+    # so no enforced adapter starts here regardless of how policy moves.
+    #
+    # The cost is that a no-backend host cannot run an enforced adapter even under a
+    # governance floor that forbids unsandboxed execution. That host could not run
+    # one anyway -- ``wrap_argv`` cannot satisfy the floor without a backend and
+    # raises -- so this changes which layer reports it, not whether it works. Only an
+    # ENFORCED adapter reaches here at all: ``enforce_sandbox_floor`` returns early
+    # for every harness this core does not enforce, so no first-class path changes.
+    return False
+
+
+def effective_sandbox_mode(mode: str) -> str:
+    """The tier :func:`wrap_argv` would ACTUALLY apply for *mode* on this host.
+
+    Applies the governed ``sandbox.min_level`` clamp, so a caller whose security
+    argument depends on the sandbox being on can ask whether it will be instead of
+    trusting the raw config value -- which a governance floor may silently raise.
+    Read-only: same clamp, no spawn, no side effects.
+    """
+    return _clamp_sandbox_mode_to_floor(mode, _governance_sandbox_floor())
 
 
 def _governance_sandbox_floor() -> str | None:

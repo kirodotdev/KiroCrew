@@ -31,7 +31,7 @@ FIELD = "agent.acp_backend"
 
 #: Known ids the public baseline deliberately does not offer, each entry carrying its
 #: reason in ``test_baseline_ships_every_known_backend``. Empty is the healthy state.
-NOT_SHIPPED_SELECTABLE = frozenset({ACP_BACKEND_CODEX})
+NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
 
 
 @pytest.fixture
@@ -153,5 +153,7 @@ def test_baseline_ships_every_known_backend():
     session that failed to start.
     """
     baseline: List[str] = sorted(acp_backends.BASELINE_SELECTABLE_BACKENDS)
-    assert baseline == sorted([ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS])
+    assert baseline == sorted(
+        [ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX]
+    )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)
