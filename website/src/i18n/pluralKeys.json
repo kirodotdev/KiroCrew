@@ -137,6 +137,7 @@
   "pages.chatSidebar.day",
   "pages.chatSidebar.more_pull_request_in_this_session",
   "pages.chatSidebar.more_pull_request_or_issue_in_this_session",
+  "pages.chatSidebar.remote_sessions_not_shown_in_board_view",
   "pages.chatSidebar.running_session",
   "pages.chatSidebar.session",
   "pages.chatSidebar.session_failed_to_switch",

@@ -9521,7 +9521,12 @@
       "workflow_running_other": "{{count}} वर्कफ़्लो चल रहे हैं",
       "flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू — बोर्ड कॉलम में फ़ोल्डर छिपाएँ",
       "show_folders_in_board_columns": "बोर्ड कॉलम में फ़ोल्डर दिखाएँ",
-      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} रिमोट सत्र बोर्ड व्यू में नहीं दिखाया जाता — बोर्ड कॉलम केवल स्थानीय सत्रों को प्रबंधित करते हैं।",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} रिमोट सत्र बोर्ड व्यू में नहीं दिखाए जाते — बोर्ड कॉलम केवल स्थानीय सत्रों को प्रबंधित करते हैं।",
+      "sessions_from_instance_unavailable": "{{names}} के सत्र इस समय अनुपलब्ध हैं।",
+      "checking_remote_instances": "रिमोट इंस्टैंस जाँचे जा रहे हैं…",
+      "opens_the_instance_dashboard": "इस सत्र के बजाय {{name}} का डैशबोर्ड खोलता है"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
@@ -9897,7 +9902,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "इनबाउंड वेबहुक टोकन, पंजीकृत संदर्भ और रन इतिहास. API काम करता है, पेज अभी पूरा नहीं हुआ है.",
         "open_webhooks": "वेबहुक खोलें",
         "the_crew_members_page_and_crew_mode_chats_both_a": "क्रू सदस्य पेज और Crew Mode चैट. दोनों अभी बनाए जा रहे हैं, इसलिए इसे चालू करने तक कोई भी उपलब्ध नहीं होगा.",
-        "webhooks": "वेबहुक"
+        "webhooks": "वेबहुक",
+        "remote_instance_sessions": "रिमोट इंस्टैंस के सत्र",
+        "merge_a_connected_remote_instances_live_sessions": "किसी कनेक्टेड रिमोट इंस्टैंस के सक्रिय सत्रों को सत्र सूची में मिला देता है, और हर एक पर सर्वर बैज दिखाता है। यह काम करता है, लेकिन अभी पूरा नहीं हुआ है।"
       }
     },
     "developerPage": {

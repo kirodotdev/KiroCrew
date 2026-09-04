@@ -9521,7 +9521,12 @@
       "workflow_running_other": "{{count}}টি ওয়ার্কফ্লো চলছে",
       "flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউ — বোর্ড কলামে ফোল্ডার লুকান",
       "show_folders_in_board_columns": "বোর্ড কলামে ফোল্ডার দেখান",
-      "switch_to_flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউতে যান (বোর্ড কলামে ফোল্ডার লুকান)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউতে যান (বোর্ড কলামে ফোল্ডার লুকান)",
+      "remote_sessions_not_shown_in_board_view_one": "বোর্ড ভিউতে {{count}}টি রিমোট সেশন দেখানো হয় না — বোর্ডের কলামগুলি শুধুমাত্র স্থানীয় সেশন পরিচালনা করে।",
+      "remote_sessions_not_shown_in_board_view_other": "বোর্ড ভিউতে {{count}}টি রিমোট সেশন দেখানো হয় না — বোর্ডের কলামগুলি শুধুমাত্র স্থানীয় সেশন পরিচালনা করে।",
+      "sessions_from_instance_unavailable": "{{names}} থেকে সেশনগুলি এই মুহূর্তে অনুপলব্ধ।",
+      "checking_remote_instances": "রিমোট ইনস্ট্যান্স যাচাই করা হচ্ছে…",
+      "opens_the_instance_dashboard": "এই সেশন নয়, {{name}}-এর ড্যাশবোর্ড খোলে"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
@@ -9897,7 +9902,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "ইনবাউন্ড ওয়েবহুক টোকেন, নিবন্ধিত কনটেক্সট ও রান ইতিহাস। API কাজ করে, তবে পেজটি এখনও শেষ হয়নি।",
         "open_webhooks": "ওয়েবহুক খুলুন",
         "the_crew_members_page_and_crew_mode_chats_both_a": "ক্রু সদস্যরা পেজ এবং Crew Mode চ্যাট। দুটোই এখনও তৈরি হচ্ছে, তাই এটি চালু না করা পর্যন্ত কোনোটিই দেখানো হবে না।",
-        "webhooks": "ওয়েবহুক"
+        "webhooks": "ওয়েবহুক",
+        "remote_instance_sessions": "রিমোট ইনস্ট্যান্সের সেশন",
+        "merge_a_connected_remote_instances_live_sessions": "সংযুক্ত রিমোট ইনস্ট্যান্সের চলমান সেশনগুলি সেশন তালিকায় একত্রিত করে, প্রতিটির সঙ্গে একটি সার্ভার ব্যাজ দেখায়। কাজ করে, তবে এখনও সম্পূর্ণ নয়।"
       }
     },
     "developerPage": {

@@ -9666,7 +9666,13 @@
       "workflow_running_other": "{{count}} fluxos de trabalho em execução",
       "flat_view_hide_folders_in_board_columns": "Visão plana — ocultar pastas nas colunas do quadro",
       "show_folders_in_board_columns": "Mostrar pastas nas colunas do quadro",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Mudar para visão plana (ocultar pastas nas colunas do quadro)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Mudar para visão plana (ocultar pastas nas colunas do quadro)",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} sessão remota não é exibida na visualização de quadro — as colunas do quadro gerenciam apenas sessões locais.",
+      "remote_sessions_not_shown_in_board_view_many": "{{count}} sessões remotas não são exibidas na visualização de quadro — as colunas do quadro gerenciam apenas sessões locais.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} sessões remotas não são exibidas na visualização de quadro — as colunas do quadro gerenciam apenas sessões locais.",
+      "sessions_from_instance_unavailable": "As sessões de {{names}} estão indisponíveis neste momento.",
+      "checking_remote_instances": "Verificando instâncias remotas…",
+      "opens_the_instance_dashboard": "Abre o painel de {{name}}, não esta sessão"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",
@@ -10043,7 +10049,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks de entrada, contextos registrados e histórico de execuções. A API funciona; a página não está concluída.",
         "open_webhooks": "Abrir Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "A página Membros da equipe e os chats do Crew Mode. Ambos ainda estão em construção, por isso só aparecem quando esta opção é ativada.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sessões da instância remota",
+        "merge_a_connected_remote_instances_live_sessions": "Combina as sessões ativas de uma instância remota conectada na lista de sessões, cada uma com um selo de servidor. Funcional, mas não finalizado."
       }
     },
     "developerPage": {

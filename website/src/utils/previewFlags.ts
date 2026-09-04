@@ -96,6 +96,16 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
 export const PREVIEW_REMOTE_CREW_CHAT = `${PREVIEW_FLAG_PREFIX}remote-crew-chat`
 
 /**
+ * A connected remote instance's live sessions, merged into the Sessions list.
+ *
+ * Gates a surface INSIDE `ChatSidebar`, which every dashboard user renders — so
+ * unlike a route-level gate, this flag is also what keeps the per-instance slot
+ * queries off the wire for anyone who has not opted in. Read it in the sidebar
+ * and skip the fetch, rather than fetching and hiding the rows.
+ */
+export const PREVIEW_INSTANCE_SESSIONS = `${PREVIEW_FLAG_PREFIX}instance-sessions`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

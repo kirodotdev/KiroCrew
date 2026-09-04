@@ -17,6 +17,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
+import { PREVIEW_INSTANCE_SESSIONS } from '../utils/previewFlags'
 import type { RootState } from '../store'
 
 vi.mock('framer-motion', async () => {
@@ -51,10 +52,14 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const { TAG_JIRA, COL_FILTERED, COL_ALL, tags, columns, updateTagColumn } = vi.hoisted(() => {
+const {
+  TAG_JIRA, COL_FILTERED, COL_ALL, tags, columns,
+  updateTagColumn, listInstancesMock, instanceChatSlotsMock, chatFoldersMock,
+} = vi.hoisted(() => {
   const TAG_JIRA = '11111111-1111-1111-1111-111111111111'
   const COL_FILTERED = 'col-filtered'
   const COL_ALL = 'col-all'
+  const REMOTE_KEY = 'remote-untagged-1'
   return {
     TAG_JIRA,
     COL_FILTERED,
@@ -65,6 +70,13 @@ const { TAG_JIRA, COL_FILTERED, COL_ALL, tags, columns, updateTagColumn } = vi.h
       { id: COL_ALL, name: 'Everything', tag_ids: [] as string[], mode: 'any' as const, order: 1 },
     ],
     updateTagColumn: vi.fn(),
+    listInstancesMock: vi.fn().mockResolvedValue({
+      instances: [{ id: 'inst-a', name: 'astro', status: { state: 'connected' } }],
+    }),
+    instanceChatSlotsMock: vi.fn().mockResolvedValue([
+      { key: REMOTE_KEY, title: 'Remote untagged', running: false, last_turn_ts: '2026-09-01T12:00:00Z' },
+    ]),
+    chatFoldersMock: vi.fn().mockResolvedValue([]),
   }
 })
 // chatTags/tagColumns must serve the SAME data seeded into the query cache:
@@ -77,6 +89,9 @@ vi.mock('../api/client', () => ({
       if (prop === 'updateTagColumn') return updateTagColumn
       if (prop === 'chatTags') return () => Promise.resolve(tags)
       if (prop === 'tagColumns') return () => Promise.resolve(columns)
+      if (prop === 'listInstances') return listInstancesMock
+      if (prop === 'instanceChatSlots') return instanceChatSlotsMock
+      if (prop === 'chatFolders') return chatFoldersMock
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -99,8 +114,11 @@ const UNTAGGED_KEY = 'chat-untagged-1'
 const taggedSlot = { key: TAGGED_KEY, title: 'Tagged', running: false, tags: [TAG_JIRA], created: '', last_ts: '' }
 const untaggedSlot = { key: UNTAGGED_KEY, title: 'Untagged', running: false, tags: [], created: '', last_ts: '' }
 
-function renderSidebar() {
-  const slots = [taggedSlot, untaggedSlot]
+function renderSidebar(
+  slots = [taggedSlot, untaggedSlot],
+  folders: Array<{ id: string; name: string; collapsed: boolean; order: number }> = [],
+) {
+  chatFoldersMock.mockResolvedValue(folders)
   const store = createTestStore({
     dashboard: {
       status: {}, connected: false, slots, approvalMode: 'normal',
@@ -113,7 +131,7 @@ function renderSidebar() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(['chat-tags'], tags)
   qc.setQueryData(['tag-columns'], columns)
-  qc.setQueryData(['chat-folders'], [])
+  qc.setQueryData(['chat-folders'], folders)
   const utils = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -131,7 +149,11 @@ function renderSidebar() {
   return { ...utils, qc }
 }
 
-beforeEach(() => { localStorage.clear(); updateTagColumn.mockReset() })
+beforeEach(() => {
+  localStorage.clear()
+  updateTagColumn.mockReset()
+  chatFoldersMock.mockReset().mockResolvedValue([])
+})
 afterEach(() => vi.clearAllMocks())
 
 function slotKeysIn(container: HTMLElement, columnId: string): string[] {
@@ -142,6 +164,29 @@ function slotKeysIn(container: HTMLElement, columnId: string): string[] {
 }
 
 describe('board column tag filter', () => {
+  it('keeps remote rows out of board columns and names the hidden count', async () => {
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    const folderId = 'collision-folder'
+    instanceChatSlotsMock.mockResolvedValueOnce([
+      {
+        key: TAGGED_KEY,
+        title: 'Remote colliding with foldered local',
+        running: false,
+        last_turn_ts: '2026-09-01T12:00:00Z',
+      },
+    ])
+    const { container } = renderSidebar(
+      [{ ...taggedSlot, folder_id: folderId }, untaggedSlot],
+      [{ id: folderId, name: 'Collision folder', collapsed: false, order: 0 }],
+    )
+
+    await waitFor(() => expect(instanceChatSlotsMock).toHaveBeenCalled())
+    await waitFor(() => expect(container.textContent).toContain('1 remote session is not shown in board view'))
+    const allColumn = container.querySelector(`[data-testid="column-${COL_ALL}"]`)
+    expect(allColumn?.textContent).toContain('Tagged')
+    expect(allColumn?.textContent).not.toContain('Remote colliding with foldered local')
+  })
+
   it('renders only sessions carrying the selected tag in a filtered column', () => {
     const { container } = renderSidebar()
     // The filtered lane holds exactly the tagged session — not the full list.

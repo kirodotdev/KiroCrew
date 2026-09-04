@@ -9376,7 +9376,11 @@
       "workflow_running_other": "워크플로 {{count}}개 실행 중",
       "flat_view_hide_folders_in_board_columns": "플랫 보기 — 보드 열에서 폴더 숨기기",
       "show_folders_in_board_columns": "보드 열에서 폴더 표시",
-      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)",
+      "remote_sessions_not_shown_in_board_view_other": "보드 열은 로컬 세션만 관리하므로 원격 세션 {{count}}개는 보드 보기에 표시되지 않습니다.",
+      "sessions_from_instance_unavailable": "{{names}}의 세션을 현재 사용할 수 없습니다.",
+      "checking_remote_instances": "원격 인스턴스 확인 중…",
+      "opens_the_instance_dashboard": "이 세션이 아니라 {{name}} 대시보드를 엽니다"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -9751,7 +9755,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
         "open_webhooks": "Webhooks 열기",
         "the_crew_members_page_and_crew_mode_chats_both_a": "크루 멤버 페이지와 Crew Mode 채팅입니다. 둘 다 아직 개발 중이므로 이 옵션을 켜기 전에는 표시되지 않습니다.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "remote_instance_sessions": "원격 인스턴스 세션",
+        "merge_a_connected_remote_instances_live_sessions": "연결된 원격 인스턴스의 활성 세션을 세션 목록에 병합하고 각 세션에 서버 배지를 표시합니다. 작동하지만 아직 완성되지 않았습니다."
       }
     },
     "developerPage": {

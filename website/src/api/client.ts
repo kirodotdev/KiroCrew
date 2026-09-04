@@ -3103,6 +3103,17 @@ export const api = {
   instancesCreateRemoteSlot: (instanceId: string) =>
     post('/api/instances/' + encodeURIComponent(instanceId) + '/proxy/api/chat/slots',
       {}).then(j) as Promise<{ key?: string }>,
+
+  // A CONNECTED remote instance's LIVE sessions, read through the owner-only
+  // instance proxy. Rides the proxy's existing ('api','chat') allowlist row, so it
+  // needs no policy change. READ ONLY on purpose: remote rows offer no rename or
+  // close, because those are local-slot operations that cannot reach a session on
+  // another machine — so no peer mutation method is defined here either.
+  // A remote instance's OLDER sessions are deliberately absent: they live under the
+  // peer's /api/sessions, and the prefix row that would admit them would also admit
+  // clear-all, session-restart, a memory read and a token-spending summarize.
+  instanceChatSlots: (id: string) =>
+    fetch('/api/instances/' + encodeURIComponent(id) + '/proxy/api/chat/slots').then(j),
   sessionDetail: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key)).then(j),
   deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
   clearSessions: () => del('/api/sessions').then(j),

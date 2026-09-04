@@ -9376,7 +9376,11 @@
       "workflow_running_other": "{{count}} 个工作流运行中",
       "flat_view_hide_folders_in_board_columns": "扁平视图 — 隐藏看板列中的文件夹",
       "show_folders_in_board_columns": "显示看板列中的文件夹",
-      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）"
+      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）",
+      "remote_sessions_not_shown_in_board_view_other": "看板列仅管理本地会话，因此 {{count}} 个远程会话不会显示在看板视图中。",
+      "sessions_from_instance_unavailable": "{{names}} 的会话当前不可用。",
+      "checking_remote_instances": "正在检查远程实例…",
+      "opens_the_instance_dashboard": "打开 {{name}} 的仪表板，而不是此会话"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -9751,7 +9755,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
         "the_crew_members_page_and_crew_mode_chats_both_a": "团队成员页面和 Crew Mode 聊天。两者仍在开发中，开启后才会显示。",
-        "webhooks": "Webhook"
+        "webhooks": "Webhook",
+        "remote_instance_sessions": "远程实例会话",
+        "merge_a_connected_remote_instances_live_sessions": "将已连接远程实例的实时会话合并到会话列表中，每个会话都带有服务器标记。功能可用，但尚未完成。"
       }
     },
     "developerPage": {

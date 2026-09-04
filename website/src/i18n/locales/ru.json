@@ -9811,7 +9811,14 @@
       "workflow_running_other": "{{count}} рабочего процесса выполняется",
       "flat_view_hide_folders_in_board_columns": "Плоский вид — скрыть папки в колонках доски",
       "show_folders_in_board_columns": "Показать папки в колонках доски",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Переключиться на плоский вид (скрыть папки в колонках доски)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Переключиться на плоский вид (скрыть папки в колонках доски)",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} удалённый сеанс не отображается в режиме доски — столбцы доски управляют только локальными сеансами.",
+      "remote_sessions_not_shown_in_board_view_few": "{{count}} удалённых сеанса не отображаются в режиме доски — столбцы доски управляют только локальными сеансами.",
+      "remote_sessions_not_shown_in_board_view_many": "{{count}} удалённых сеансов не отображаются в режиме доски — столбцы доски управляют только локальными сеансами.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} удалённых сеансов не отображаются в режиме доски — столбцы доски управляют только локальными сеансами.",
+      "sessions_from_instance_unavailable": "Сеансы с {{names}} сейчас недоступны.",
+      "checking_remote_instances": "Проверка удалённых экземпляров…",
+      "opens_the_instance_dashboard": "Открывает дашборд {{name}}, а не этот сеанс"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
@@ -10189,7 +10196,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Токены входящих вебхуков, зарегистрированные контексты и история запусков. API работает, но страница не доделана.",
         "open_webhooks": "Открыть вебхуки",
         "the_crew_members_page_and_crew_mode_chats_both_a": "Страница «Участники команды» и чаты Crew Mode. Оба ещё в разработке, поэтому не отображаются, пока эта опция не включена.",
-        "webhooks": "Вебхуки"
+        "webhooks": "Вебхуки",
+        "remote_instance_sessions": "Сеансы удалённого экземпляра",
+        "merge_a_connected_remote_instances_live_sessions": "Объединяет активные сеансы подключённого удалённого экземпляра со списком сеансов, помечая каждый значком сервера. Работает, но ещё не завершено."
       }
     },
     "developerPage": {

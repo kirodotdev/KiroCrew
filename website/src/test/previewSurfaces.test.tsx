@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { render, screen, renderHook, act, cleanup } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 
 // DeveloperPage's sibling tabs are heavy and irrelevant here — the last describe
 // only needs the page's tab rail and the Feature Previews pane behind it.
@@ -47,6 +47,7 @@ import {
   PREVIEW_CREW,
   PREVIEW_FLAG_EVENT,
   PREVIEW_FLAG_PREFIX,
+  PREVIEW_INSTANCE_SESSIONS,
   PREVIEW_REMOTE_CREW_CHAT,
   PREVIEW_WEBHOOKS,
   readPreviewFlag,
@@ -123,7 +124,7 @@ describe('preview flag storage', () => {
   it('keeps every flag under the shared prefix', () => {
     // Cross-tab listeners match on the prefix rather than a list of known flags,
     // so a flag named outside it would silently stop updating other tabs.
-    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT]) {
+    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_INSTANCE_SESSIONS]) {
       expect(flag.startsWith(PREVIEW_FLAG_PREFIX)).toBe(true)
     }
   })
@@ -413,6 +414,68 @@ describe('Developer > Feature Previews', () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
     expect(realButtons().map(b => b.textContent?.trim())).toEqual(['Open Webhooks'])
+  })
+
+  it('carries a remote-instance-sessions card that starts off and writes only its own key', async () => {
+    // The toggle IS this preview's whole affordance — it has no page of its own,
+    // so nothing else on the page would reveal a card that failed to render or
+    // an onChange wired to the wrong constant. Four flags now share one tab, and
+    // a shared write would release every unfinished surface at once, so the
+    // sibling assertions are the point rather than padding.
+    //
+    // `/^remote instance sessions$/i` anchored: the card's description also says
+    // "Sessions list", and the accessible name is the label alone.
+    renderTab()
+    const toggle = () => screen.getByRole('switch', { name: /^remote instance sessions$/i })
+    expect(toggle().getAttribute('aria-checked')).toBe('false')
+    await act(async () => { toggle().click() })
+    expect(localStorage.getItem(PREVIEW_INSTANCE_SESSIONS)).toBe('1')
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+    for (const other of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT]) {
+      expect(localStorage.getItem(other)).not.toBe('1')
+    }
+  })
+
+  it('carries a remote-crew-chat card separate from crew, writing only its own key', async () => {
+    // A SEPARATE flag from `crew` deliberately: that one holds Crew Mode and the
+    // Crew Members page, this one dispatches a chat to another MACHINE over the
+    // instances tunnel. One shared write would put an unfinished cross-machine
+    // path behind the local-only switch, which is exactly the mistake the two
+    // cards exist to prevent — so the sibling assertion IS the contract.
+    //
+    // `/^chat on a crew$/i` anchored: the description says "New chat on crew"
+    // and "runs on a connected crew", and the accessible name is the label alone.
+    renderTab()
+    const toggle = () => screen.getByRole('switch', { name: /^chat on a crew$/i })
+    expect(toggle().getAttribute('aria-checked')).toBe('false')
+    await act(async () => { toggle().click() })
+    expect(localStorage.getItem(PREVIEW_REMOTE_CREW_CHAT)).toBe('1')
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+    expect(localStorage.getItem(PREVIEW_CREW)).not.toBe('1')
+  })
+
+  it('takes the webhooks ingress to /webhooks, not merely to a rendered button', async () => {
+    // The button is the ONLY door to a `hiddenFromNav` page, so an ingress that
+    // renders correctly but navigates nowhere is indistinguishable from a
+    // working one under a name-only assertion — and it would strand the page.
+    // Probe the resulting location instead of the click's return.
+    const Probe = () => <span data-testid="path">{useLocation().pathname}</span>
+    localStorage.setItem(PREVIEW_WEBHOOKS, '1')
+    render(
+      <MemoryRouter initialEntries={['/developer']}>
+        <Probe />
+        <Routes>
+          <Route path="/developer" element={<FeaturePreviewsTab />} />
+          <Route path="/webhooks" element={<div data-testid="webhooks-page" />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(screen.getByTestId('path').textContent).toBe('/developer')
+    await act(async () => {
+      screen.getByRole('button', { name: /open webhooks/i }).click()
+    })
+    expect(screen.getByTestId('path').textContent).toBe('/webhooks')
+    expect(screen.getByTestId('webhooks-page')).toBeTruthy()
   })
 
   it('is its own tab on the Developer page, not part of Config', async () => {

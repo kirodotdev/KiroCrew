@@ -9666,7 +9666,13 @@
       "workflow_running_other": "{{count}} flussi di lavoro in esecuzione",
       "flat_view_hide_folders_in_board_columns": "Vista piatta — nascondi le cartelle nelle colonne della bacheca",
       "show_folders_in_board_columns": "Mostra le cartelle nelle colonne della bacheca",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Passa alla vista piatta (nascondi le cartelle nelle colonne della bacheca)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Passa alla vista piatta (nascondi le cartelle nelle colonne della bacheca)",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} sessione remota non è mostrata nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
+      "remote_sessions_not_shown_in_board_view_many": "{{count}} sessioni remote non sono mostrate nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} sessioni remote non sono mostrate nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
+      "sessions_from_instance_unavailable": "Le sessioni di {{names}} non sono disponibili al momento.",
+      "checking_remote_instances": "Controllo delle istanze remote…",
+      "opens_the_instance_dashboard": "Apre la dashboard di {{name}}, non questa sessione"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
@@ -10043,7 +10049,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Token dei webhook in ingresso, contesti registrati e cronologia delle esecuzioni. L’API funziona, ma la pagina non è finita.",
         "open_webhooks": "Apri Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "La pagina Membri della crew e le chat Crew Mode. Entrambi sono ancora in sviluppo, quindi non vengono proposti finché non si attiva questa opzione.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sessioni dell’istanza remota",
+        "merge_a_connected_remote_instances_live_sessions": "Unisce le sessioni attive di un’istanza remota connessa nell’elenco delle sessioni, ognuna con un badge server. Funzionante, ma non completo."
       }
     },
     "developerPage": {

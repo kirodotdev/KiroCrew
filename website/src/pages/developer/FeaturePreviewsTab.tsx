@@ -3,7 +3,7 @@ import { ArrowRight } from 'lucide-react'
 
 import { SettingsCard, SettingsToggle } from '../../components/settings'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -40,9 +40,22 @@ export function FeaturePreviewsTab() {
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
   const crew = usePreviewFlag(PREVIEW_CREW)
   const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
+  const instanceSessions = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
 
   return (
     <>
+    <SettingsCard>
+      <SettingsToggle
+        label={i18nT('pages.developer.featurePreviewsTab.remote_instance_sessions')}
+        description={i18nT('pages.developer.featurePreviewsTab.merge_a_connected_remote_instances_live_sessions')}
+        checked={instanceSessions}
+        onChange={v => setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, v)}
+      />
+      {/* No ingress button: this preview has no page of its own — it changes the
+          Sessions list every user already looks at, so the toggle IS the whole
+          affordance. A "go here to see it" link would point at the surface the
+          reader is already on. */}
+    </SettingsCard>
     <SettingsCard>
       <SettingsToggle
         label={i18nT('pages.developer.featurePreviewsTab.webhooks')}

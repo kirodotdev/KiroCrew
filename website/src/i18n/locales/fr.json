@@ -9666,7 +9666,13 @@
       "workflow_running_other": "{{count}} flux de travail en cours",
       "flat_view_hide_folders_in_board_columns": "Vue à plat — masquer les dossiers dans les colonnes du tableau",
       "show_folders_in_board_columns": "Afficher les dossiers dans les colonnes du tableau",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Passer à la vue à plat (masquer les dossiers dans les colonnes du tableau)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Passer à la vue à plat (masquer les dossiers dans les colonnes du tableau)",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} session distante n'est pas affichée dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
+      "remote_sessions_not_shown_in_board_view_many": "{{count}} sessions distantes ne sont pas affichées dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} sessions distantes ne sont pas affichées dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
+      "sessions_from_instance_unavailable": "Les sessions de {{names}} sont indisponibles pour le moment.",
+      "checking_remote_instances": "Vérification des instances distantes…",
+      "opens_the_instance_dashboard": "Ouvre le tableau de bord de {{name}}, pas cette session"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
@@ -10043,7 +10049,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "La page Membres de l'équipe et les chats Crew Mode. Les deux sont encore en construction : rien n'est proposé tant que cette option n'est pas activée.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sessions de l’instance distante",
+        "merge_a_connected_remote_instances_live_sessions": "Fusionne les sessions actives d’une instance distante connectée dans la liste des sessions, chacune marquée d’un badge serveur. Fonctionnel, mais pas terminé."
       }
     },
     "developerPage": {

@@ -9521,7 +9521,12 @@
       "workflow_running_other": "{{count}} Workflows laufen",
       "flat_view_hide_folders_in_board_columns": "Flache Ansicht — Ordner in den Board-Spalten ausblenden",
       "show_folders_in_board_columns": "Ordner in den Board-Spalten anzeigen",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Zur flachen Ansicht wechseln (Ordner in den Board-Spalten ausblenden)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Zur flachen Ansicht wechseln (Ordner in den Board-Spalten ausblenden)",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} Remote-Sitzung wird in der Board-Ansicht nicht angezeigt — Board-Spalten verwalten nur lokale Sitzungen.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} Remote-Sitzungen werden in der Board-Ansicht nicht angezeigt — Board-Spalten verwalten nur lokale Sitzungen.",
+      "sessions_from_instance_unavailable": "Sitzungen von {{names}} sind derzeit nicht verfügbar.",
+      "checking_remote_instances": "Remote-Instanzen werden geprüft…",
+      "opens_the_instance_dashboard": "Öffnet das Dashboard von {{name}}, nicht diese Sitzung"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
@@ -9897,7 +9902,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens für eingehende Webhooks, registrierte Kontexte und Ausführungsverlauf. Die API funktioniert, die Seite ist noch nicht fertig.",
         "open_webhooks": "Webhooks öffnen",
         "the_crew_members_page_and_crew_mode_chats_both_a": "Die Seite „Crew-Mitglieder“ und Crew-Mode-Chats. Beides ist noch in Arbeit und wird erst angeboten, wenn diese Option aktiviert ist.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sitzungen der Remote-Instanz",
+        "merge_a_connected_remote_instances_live_sessions": "Fügt die aktiven Sitzungen einer verbundenen Remote-Instanz in die Sitzungsliste ein, jeweils mit einem Server-Abzeichen. Funktionsfähig, aber noch nicht fertig."
       }
     },
     "developerPage": {

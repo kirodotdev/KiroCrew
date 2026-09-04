@@ -9376,7 +9376,11 @@
       "workflow_running_other": "{{count}} 件のワークフローが実行中",
       "flat_view_hide_folders_in_board_columns": "フラット表示 — ボードの列内のフォルダーを非表示",
       "show_folders_in_board_columns": "ボードの列内のフォルダーを表示",
-      "switch_to_flat_view_hide_folders_in_board_columns": "フラット表示に切り替え（ボードの列内のフォルダーを非表示）"
+      "switch_to_flat_view_hide_folders_in_board_columns": "フラット表示に切り替え（ボードの列内のフォルダーを非表示）",
+      "remote_sessions_not_shown_in_board_view_other": "ボード列はローカルセッションのみを管理するため、リモートセッション {{count}} 件はボードビューに表示されません。",
+      "sessions_from_instance_unavailable": "{{names}} のセッションは現在利用できません。",
+      "checking_remote_instances": "リモートインスタンスを確認しています…",
+      "opens_the_instance_dashboard": "このセッションではなく {{name}} のダッシュボードを開きます"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -9751,7 +9755,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
         "open_webhooks": "Webhooks を開く",
         "the_crew_members_page_and_crew_mode_chats_both_a": "クルーメンバーのページと Crew Mode チャット。どちらもまだ開発中のため、これをオンにするまで表示されません。",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "remote_instance_sessions": "リモートインスタンスのセッション",
+        "merge_a_connected_remote_instances_live_sessions": "接続済みのリモートインスタンスのライブセッションをセッション一覧に統合し、それぞれにサーバーバッジを表示します。動作しますが、まだ未完成です。"
       }
     },
     "developerPage": {

@@ -9666,7 +9666,13 @@
       "workflow_running_other": "{{count}} flujos de trabajo en ejecución",
       "flat_view_hide_folders_in_board_columns": "Vista plana — ocultar carpetas en las columnas del tablero",
       "show_folders_in_board_columns": "Mostrar carpetas en las columnas del tablero",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Cambiar a vista plana (ocultar carpetas en las columnas del tablero)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Cambiar a vista plana (ocultar carpetas en las columnas del tablero)",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} sesión remota no se muestra en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
+      "remote_sessions_not_shown_in_board_view_many": "{{count}} sesiones remotas no se muestran en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} sesiones remotas no se muestran en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
+      "sessions_from_instance_unavailable": "Las sesiones de {{names}} no están disponibles en este momento.",
+      "checking_remote_instances": "Comprobando instancias remotas…",
+      "opens_the_instance_dashboard": "Abre el panel de {{name}}, no esta sesión"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
@@ -10043,7 +10049,9 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks entrantes, contextos registrados e historial de ejecuciones. La API funciona; la página no está terminada.",
         "open_webhooks": "Abrir Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "La página Miembros del equipo y los chats de Crew Mode. Ambos están todavía en desarrollo, así que no se ofrecen hasta que se active esta opción.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sesiones de la instancia remota",
+        "merge_a_connected_remote_instances_live_sessions": "Combina las sesiones activas de una instancia remota conectada en la lista de sesiones, cada una con una insignia de servidor. Funciona, pero no está terminado."
       }
     },
     "developerPage": {
