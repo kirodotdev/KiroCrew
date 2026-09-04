@@ -24,11 +24,19 @@ from kiro_crew.config.schema import SCHEMA_REGISTRY, config_entry_to_dict  # noq
 
 
 class _SafeEncoder(json.JSONEncoder):
-    """Encode dataclass instances as dicts so defaultValue is serializable."""
+    """Encode dataclass instances as dicts so defaultValue is serializable.
+
+    Private fields (leading underscore) are dropped, so this agrees with
+    ``schema._build_object_schema``, which already skips them when emitting
+    properties: they are internal bookkeeping rather than user-facing config, and a
+    default object that lists one invites a reader to write a key nothing reads.
+    """
 
     def default(self, o: object) -> object:
         if dataclasses.is_dataclass(o) and not isinstance(o, type):
-            return dataclasses.asdict(o)
+            return {
+                k: v for k, v in dataclasses.asdict(o).items() if not k.startswith("_")
+            }
         if isinstance(o, set):
             return sorted(o)
         return super().default(o)

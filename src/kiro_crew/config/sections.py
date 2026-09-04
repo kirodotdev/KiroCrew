@@ -337,8 +337,16 @@ def _safe_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
-    """Which MCP servers are given a stub.
+def _resolve_stub_roster(mcp_gateway_data: dict) -> list[str]:
+    """The stub set as CONFIGURED, before the operator's own deviations.
+
+    This is the layer a distribution owns: an edition that wants its known
+    servers stubbed out of the box ships them here, and keeps shipping them as
+    the roster grows. Operator deviations live in ``stub_overrides`` and are
+    applied over this by :func:`_resolve_stub_servers` — which is what lets the
+    two move independently. Read this directly ONLY to answer "what does the
+    roster say"; everything that wants the set actually in effect wants
+    :func:`_resolve_stub_servers`.
 
     ``poolable_servers`` is the deprecated spelling and is consulted ONLY when
     ``stub_servers`` is absent from the file. Key presence, not truthiness, is
@@ -362,6 +370,59 @@ def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
     else:
         source = None
     return [s for s in _safe_list(source) if isinstance(s, str) and s]
+
+
+def _resolve_stub_overrides(mcp_gateway_data: dict) -> dict[str, bool]:
+    """The operator's per-server stub DECISIONS — what they changed, not the result.
+
+    Sparse by construction, and that is the whole point. A flat resulting list
+    can only be REPLACED: an operator who unstubs one server out of a shipped
+    roster would have to restate the survivors, and that restated list then
+    shadows the roster permanently — the next name the distribution adds never
+    reaches them, because their file already answers the question. Recording the
+    DECISION instead leaves every server they did not speak about following the
+    roster.
+
+    Absent means "no opinion", which is why a key whose value equals the roster's
+    answer is pruned on write rather than stored: an override that agrees with
+    its base is indistinguishable from silence in effect, but not in future —
+    stored, it would freeze that server against a later roster change, which is
+    the shadowing this map exists to avoid.
+
+    Non-bool values are dropped rather than coerced. A truthy string here would
+    be an operator's typo, and guessing which way they meant it is worse than
+    leaving that server on the roster's answer.
+    """
+    raw = _safe_dict(mcp_gateway_data.get("stub_overrides"))
+    return {
+        name: value
+        for name, value in raw.items()
+        if isinstance(name, str) and name and isinstance(value, bool)
+    }
+
+
+def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
+    """Which MCP servers are given a stub, roster and operator decisions together.
+
+    The set in EFFECT: :func:`_resolve_stub_roster` supplies the configured base
+    and :func:`_resolve_stub_overrides` the operator's deviations from it, so a
+    distribution can grow the roster without overwriting a choice the operator
+    made, and the operator can turn any single server off without pinning
+    themselves to today's roster.
+
+    Roster order is preserved (the resolver has always handed back what the file
+    held, duplicates included, and ``_freeze_stub_servers`` is what normalizes on
+    write); servers added by an override are appended in sorted order, because
+    they have no position in the file to preserve.
+    """
+    roster = _resolve_stub_roster(mcp_gateway_data)
+    overrides = _resolve_stub_overrides(mcp_gateway_data)
+    if not overrides:
+        return roster
+    resolved = [name for name in roster if overrides.get(name, True)]
+    already = set(resolved)
+    resolved.extend(name for name, on in sorted(overrides.items()) if on and name not in already)
+    return resolved
 
 
 def _safe_float(
@@ -4182,6 +4243,50 @@ class McpGatewayConfig:
             "stub set.",
         ),
     )
+    stub_overrides: dict[str, bool] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Stub Overrides",
+            "Per-server deviations from stub_servers: a name mapped to true is "
+            "stubbed even when the roster omits it, false leaves it direct even "
+            "when the roster carries it. Holds what you CHANGED, not the result, "
+            "so a name you never touched keeps following the roster — which is "
+            "what lets an edition that ships its own stub_servers grow that list "
+            "without overwriting your choices, and lets you turn one server off "
+            "without pinning yourself to today's roster. Written by MCP "
+            "Management when a toggle disagrees with the roster, and dropped "
+            "again when you toggle it back to agree. Empty by default.",
+        ),
+    )
+    #: The roster EXACTLY as the file states it, carried so a full-file rewrite
+    #: can put it back.
+    #:
+    #: :attr:`stub_servers` above holds the EFFECTIVE set, because that is what all
+    #: seven of its consumers want (routing, the page's rows, ``stub_count``, the
+    #: doctor). But ``save()`` round-trips this dataclass through ``asdict``, so a
+    #: field whose value differs from the file's is a landmine: emitting the
+    #: effective set would rewrite ``stub_servers`` without the servers the operator
+    #: opted out of, turning a reversible deviation into a permanent deletion from a
+    #: layer that is not ours to edit -- and it would happen on any unrelated
+    #: ``save()``. Carrying the roster lets :meth:`KiroCrewConfig.to_dict` emit the
+    #: file's own value instead.
+    #:
+    #: Excluded from serialization (``repr=False``, popped by ``to_dict``) -- it is
+    #: not a config key and must never be written back as one. The leading
+    #: underscore keeps it out of the config schema/baseline machinery, which skips
+    #: private fields (same convention as ``_degraded_sections``); consumers read
+    #: the :attr:`stub_roster` property.
+    _stub_roster: list[str] = field(
+        default_factory=list,
+        repr=False,
+        compare=False,
+    )
+
+    @property
+    def stub_roster(self) -> list[str]:
+        """The stub roster as configured, before operator deviations."""
+        return self._stub_roster
+
     pool_identity_env: list[str] = field(
         default_factory=list,
         metadata=_meta(

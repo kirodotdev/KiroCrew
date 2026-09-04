@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from kiro_crew.config.sections import _resolve_stub_overrides, _resolve_stub_roster
 from kiro_crew.mcp_gateway.verdict_cache import VerdictCache
 
 logger = logging.getLogger(__name__)
@@ -98,16 +99,29 @@ def apply_seed(plan: SeedPlan, section: dict, cache: VerdictCache) -> bool:
         return False
     changed = False
     if plan.add_stub:
-        current = section.get("stub_servers")
-        existing = [s for s in current if isinstance(s, str)] if isinstance(current, list) else []
-        merged = sorted(set(existing) | set(plan.add_stub))
-        if merged != existing:
-            section["stub_servers"] = merged
+        # Recorded as an override, NOT merged into ``stub_servers``.
+        #
+        # Seeding discovers a fact about THIS install (the servers configured here,
+        # and what the evidence says about them). The roster is the layer whoever
+        # assembles the edition owns and keeps growing, so merging a local discovery
+        # into it puts two writers on one key: the edition's next release either
+        # drops the seeded name or has to reconcile a list it thought it owned, and
+        # because seeding is once-per-server the dropped name is never re-added.
+        #
+        # A name the roster ALREADY carries needs no entry: it is stubbed either
+        # way, and an override that merely agrees would pin it against a later
+        # roster change -- the same prune the dashboard's writer applies.
+        roster = set(_resolve_stub_roster(section))
+        current = _resolve_stub_overrides(section)
+        additions = {name: True for name in plan.add_stub if name not in roster}
+        merged = {**current, **additions}
+        if merged != current:
+            section["stub_overrides"] = {name: merged[name] for name in sorted(merged)}
             changed = True
             logger.info(
                 "mcp seeding: stubbing %s on first evaluation (edit "
-                "mcp_gateway.stub_servers to change)",
-                ", ".join(plan.add_stub),
+                "mcp_gateway.stub_overrides to change)",
+                ", ".join(sorted(additions)),
             )
     for name in plan.mark_applied:
         cache.mark_applied(name)

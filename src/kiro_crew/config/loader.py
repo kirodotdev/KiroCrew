@@ -259,6 +259,8 @@ from kiro_crew.config.sections import (  # noqa: F401
     _read_auto_add_documents,
     _read_skip_permissions,
     _resolve_stt_model,
+    _resolve_stub_overrides,
+    _resolve_stub_roster,
     _resolve_stub_servers,
     _safe_bool,
     _safe_color,
@@ -3423,6 +3425,17 @@ class KiroCrewConfig:
                     s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
                 ],
                 stub_servers=_resolve_stub_servers(mcp_gateway_data),
+                # The operator's deviations, kept ALONGSIDE the resolved set above
+                # rather than folded away: ``stub_servers`` here is already the
+                # effective answer, so a writer that wants to record a new
+                # decision needs to see which ones are decisions and which came
+                # from the roster. Shares the resolver with the runtime so a
+                # non-bool value is dropped in exactly one place.
+                stub_overrides=_resolve_stub_overrides(mcp_gateway_data),
+                # The file's own roster, carried so ``save()`` can put it back
+                # instead of flattening it to the effective set above. See the
+                # field's own comment for why that flattening is a data loss.
+                _stub_roster=_resolve_stub_roster(mcp_gateway_data),
                 # Hand-editable list of env NAMES; keep only strings and drop
                 # blanks so a stray null or nested object cannot reach the
                 # hashing layer as a key. Not deduplicated here — every consumer
@@ -3677,6 +3690,16 @@ class KiroCrewConfig:
         }
         # External registries (always serialized so save() round-trips the field)
         d["registries"] = [asdict(r) for r in self.registries]
+        # ``mcp_gateway.stub_servers`` is the ROSTER in the file but the EFFECTIVE
+        # set on the dataclass, so a straight ``asdict`` round-trip would rewrite
+        # the file without the servers the operator opted out of -- turning a
+        # reversible deviation into a permanent deletion, on any unrelated save().
+        # Emit the roster the load actually read, and drop the private carrier so
+        # it never appears as a config key.
+        _gw_section = d.get("mcp_gateway")
+        if isinstance(_gw_section, dict):
+            _gw_section["stub_servers"] = list(self.mcp_gateway.stub_roster)
+            _gw_section.pop("_stub_roster", None)
         # Re-emit unknown/edition-contributed top-level sections captured at
         # load() so save()/PATCH does not silently drop them. A known section
         # never appears here (only keys absent from d are restored), so this can

@@ -22,8 +22,21 @@ SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 HANDLER = SRC / "dashboard" / "handlers" / "mcp.py"
 
 # Keys whose write makes the legacy alias resolution unstable or authoritative.
-GUARDED_KEYS = {"enabled", "stub_servers"}
+#
+# ``stub_overrides`` joins them because it is resolved AGAINST the roster: the
+# prune that keeps it sparse compares each decision to what ``stub_servers``
+# answers, so a write that lands while the file is still riding the deprecated
+# alias compares against the wrong base and records every migrated name as an
+# operator deviation — pinning them against later roster changes, which is the
+# shadowing the override map exists to prevent.
+GUARDED_KEYS = {"enabled", "stub_servers", "stub_overrides"}
 FREEZE = "_freeze_stub_servers"
+
+# Helpers that take the mcp_gateway section as a PARAMETER and write a guarded key
+# on the caller's behalf. They are the primitives, so they are exempt from the
+# freeze requirement themselves; what must be sequenced is their CALLER, which is
+# why calling one counts as writing the keys it writes.
+SECTION_HELPERS = {FREEZE, "_record_stub_decisions"}
 
 
 def _section_vars(node: ast.AST) -> set[str]:
@@ -53,15 +66,23 @@ def _section_vars(node: ast.AST) -> set[str]:
 
 
 def _functions_writing_guarded_keys(tree: ast.AST) -> dict[str, set[str]]:
-    """Map ``function name -> guarded keys it assigns on the mcp_gateway section``."""
+    """Map ``function name -> guarded keys it assigns on the mcp_gateway section``.
+
+    A function that DELEGATES the write to one of :data:`SECTION_HELPERS` is
+    credited with that helper's keys. Without this the ratchet goes blind exactly
+    when a writer is refactored into a helper — the failure mode its own
+    self-check warns about — and the sequencing requirement would silently stop
+    applying to the handler that still owns the ordering.
+    """
     out: dict[str, set[str]] = {}
+    helper_keys: dict[str, set[str]] = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        # The freeze helper receives the section as a PARAMETER rather than via
+        # A section helper receives the section as a PARAMETER rather than via
         # setdefault, so include its parameter names too.
         targets_ok = _section_vars(node)
-        if node.name == FREEZE:
+        if node.name in SECTION_HELPERS:
             targets_ok |= {a.arg for a in node.args.args}
         if not targets_ok:
             continue
@@ -78,8 +99,20 @@ def _functions_writing_guarded_keys(tree: ast.AST) -> dict[str, set[str]]:
                     and target.slice.value in GUARDED_KEYS
                 ):
                     written.add(str(target.slice.value))
+        if node.name in SECTION_HELPERS:
+            helper_keys[node.name] = written
         if written:
             out[node.name] = written
+
+    # Second pass: a caller of a section helper writes what that helper writes.
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name in SECTION_HELPERS:
+            continue
+        for helper, keys in helper_keys.items():
+            if keys and _calls(tree, node.name, helper):
+                out.setdefault(node.name, set()).update(keys)
     return out
 
 
@@ -113,8 +146,11 @@ def test_every_section_writer_freezes_the_alias_first() -> None:
     missing = [
         name
         for name in writers
-        # The freeze helper itself assigns stub_servers; that IS the freeze.
-        if name != FREEZE and not _calls(tree, name, FREEZE)
+        # The section helpers ARE the primitives: the freeze helper's own
+        # assignment is the freeze, and the recorder is documented to run after
+        # it. Sequencing is the CALLER's obligation, which the credit pass above
+        # is what makes checkable.
+        if name not in SECTION_HELPERS and not _calls(tree, name, FREEZE)
     ]
     assert not missing, (
         f"{missing} write mcp_gateway's {sorted(GUARDED_KEYS)} without calling "

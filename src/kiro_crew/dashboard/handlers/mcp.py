@@ -26,7 +26,8 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     FORWARD_DECLARED_ENV_DEFAULT,
     KiroCrewConfig,
-    _resolve_stub_servers,
+    _resolve_stub_overrides,
+    _resolve_stub_roster,
 )
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
@@ -2566,6 +2567,53 @@ def _overlay_shadowed_keys(overlay: dict, keys: Collection[str]) -> list[str]:
     return sorted(k for k in keys if k in overlay)
 
 
+def _record_stub_decisions(section: dict, names: list[str], stub: bool) -> None:
+    """Record a toggle as a DECISION in ``stub_overrides``, not as a new stub set.
+
+    Call AFTER :func:`_freeze_stub_servers`, which settles what the roster is;
+    this writes only the operator's deviation from it.
+
+    Rewriting ``stub_servers`` was the old behaviour and it is what made the
+    roster un-shippable. That key is the layer a distribution owns, so a handler
+    that persists the resulting set into it takes ownership away on the first
+    click: every later roster change arrives into a file that already answers the
+    question, and the addition silently never takes effect. Writing the decision
+    instead leaves the roster alone, so the two layers can both keep moving.
+
+    A decision that AGREES with the roster deletes the override rather than
+    storing it. The two are identical in effect today and differ tomorrow: stored,
+    the entry would pin that server against a later roster change — so an
+    operator toggling a server back to the roster's answer is asking to follow the
+    roster again, not to freeze its current value. That prune is also what keeps
+    the map sparse under the batch action, which would otherwise write an entry
+    for every eligible server at once and shadow the roster wholesale.
+
+    Sorted on write so the file has one canonical form and two writers cannot
+    produce a spurious diff.
+    """
+    roster = set(_resolve_stub_roster(section))
+    overrides = dict(_resolve_stub_overrides(section))
+    for name in names:
+        if (name in roster) == stub:
+            overrides.pop(name, None)
+        else:
+            overrides[name] = stub
+    # Normalize the roster's FORM, never its content. The old write path rebuilt
+    # this key from a set on every toggle, which incidentally deduplicated it and
+    # dropped non-string junk; recording decisions elsewhere would silently retire
+    # that, and a duplicate here makes the dashboard's ``stub_count`` overcount
+    # (the resolver preserves what the file holds). Membership is untouched, so
+    # the layer stays the distribution's to ship and to grow.
+    section["stub_servers"] = sorted(roster)
+    if overrides:
+        section["stub_overrides"] = {name: overrides[name] for name in sorted(overrides)}
+    else:
+        # Drop the key rather than leave `{}` behind: absent and empty mean the
+        # same thing to the resolver, and an operator who has reverted every
+        # deviation should not be left with a residue suggesting otherwise.
+        section.pop("stub_overrides", None)
+
+
 def _freeze_stub_servers(section: dict, overlay: dict | None = None) -> None:
     """Materialize the resolved stub set into ``stub_servers``. Call BEFORE any
     other mutation of *section*.
@@ -2612,7 +2660,12 @@ def _freeze_stub_servers(section: dict, overlay: dict | None = None) -> None:
     if "stub_servers" not in section:
         effective = dict(section)
         effective.update(overlay or {})
-        section["stub_servers"] = sorted(set(_resolve_stub_servers(effective)))
+        # The ROSTER resolver, not the effective one: this materializes the base
+        # layer, and folding ``stub_overrides`` in here would write the operator's
+        # deviations INTO the roster -- making them indistinguishable from a
+        # shipped name and pinning them against every later roster change, which
+        # is the shadowing the override map exists to prevent.
+        section["stub_servers"] = sorted(set(_resolve_stub_roster(effective)))
 
 
 #: Serializes explicit pre-resolve refreshes. Installs are registry-bound and
@@ -3303,14 +3356,22 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
 
     async with _MCP_GATEWAY_APPLY_LOCK:
         overlay = _local_overlay_section()
-        shadowed = _overlay_shadowed_keys(overlay, ("stub_servers",))
+        # BOTH keys this handler can write. The decision now lands in
+        # ``stub_overrides``, and ``config.local.json`` wins the deep merge
+        # per-key, so an overlay that names it would shadow the base write: the
+        # click would answer 200 while the gateway kept routing the old way. That
+        # is the same silent never-takes-effect failure the guard already prevents
+        # for the roster, and relocating the write is exactly what would have
+        # reintroduced it on the new key.
+        shadowed = _overlay_shadowed_keys(overlay, ("stub_servers", "stub_overrides"))
         if shadowed:
             return web.json_response(
                 {
                     "error": (
-                        "config.local.json defines mcp_gateway.stub_servers, which "
-                        "overrides config.json. Edit that file instead — writing here "
-                        "would not change anything the gateway reads."
+                        "config.local.json defines "
+                        + " and ".join(f"mcp_gateway.{k}" for k in shadowed)
+                        + ", which overrides config.json. Edit that file instead — "
+                        "writing here would not change anything the gateway reads."
                     ),
                     "code": "overlay_owns_stub_servers",
                 },
@@ -3378,12 +3439,12 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             # then persist only the server just clicked and silently unstub
             # everything the migration was preserving.
             _freeze_stub_servers(section, overlay)
-            servers_set = set(_resolve_stub_servers(section))
-            if stub:
-                servers_set |= set(written)
-            else:
-                servers_set -= set(written)
-            section["stub_servers"] = sorted(servers_set)
+            # The click is a DECISION about these names, recorded over the roster
+            # rather than replacing it -- see `_record_stub_decisions`. Freezing
+            # first is load-bearing: the prune compares against the roster, so it
+            # has to run after the roster is settled or a legacy install's
+            # migrated names would all read as deviations.
+            _record_stub_decisions(section, written, stub)
             return data
 
         try:

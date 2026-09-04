@@ -166,7 +166,7 @@ not behaviour a reader can observe now.
 Three properties, each chosen so the operator is not surprised:
 
 - **At start, never mid-run.** Nothing changes under a live session, so the failure this feature exists to prevent — a chat losing a server's tools because its backend was recycled — cannot happen as a side effect of seeding. No live re-apply path is needed either: `SessionManager.refresh_defaults` deliberately does not retrofit running sessions.
-- **Written into `mcp_gateway.stub_servers`, not acted on implicitly.** The MCP Management page renders that key, so materialising the verdict there is what makes the row's toggle show the true state. The operator sees the decision in a file they own. A gateway that routed differently from what the page claimed would be the dishonest alternative.
+- **Written into the config, not acted on implicitly.** The MCP Management page renders the resolved stub set, so materialising the verdict there is what makes the row's toggle show the true state. The operator sees the decision in a file they own. A gateway that routed differently from what the page claimed would be the dishonest alternative. The decision lands in `mcp_gateway.stub_overrides` — the roster in `mcp_gateway.stub_servers` belongs to whoever ships it, and the page resolves the two together.
 - **Once per server.** After the first seed the config is the operator's; a later start that finds the same recommendation must not undo their choice.
 
 Seeding never turns the global `mcp_gateway.enabled` sharing switch on by itself. A recommendation to share is reported in `SeedPlan.wants_share` and left for a separate decision, because flipping that switch changes topology for every stubbed server, including ones stubbed for unrelated reasons.

@@ -173,6 +173,8 @@ _port_or_unset
 _read_auto_add_documents
 _read_skip_permissions
 _resolve_stt_model
+_resolve_stub_overrides
+_resolve_stub_roster
 _resolve_stub_servers
 _safe_bool
 _safe_color

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.config.sections import _resolve_stub_servers
 from kiro_crew.mcp_gateway import verdict_cache as vc
 from kiro_crew.mcp_gateway.seed import apply_seed, plan_seed
 
@@ -54,18 +55,37 @@ class TestPlan:
 
 
 class TestApply:
-    def test_merges_into_existing_allowlist_without_dropping_entries(self, cache) -> None:
+    def test_seeding_records_an_override_and_leaves_the_roster_alone(self, cache) -> None:
+        """The roster belongs to whoever ships it; a local discovery is a deviation.
+
+        Merging into ``stub_servers`` would put the seeder and the edition on one
+        key: the next release either drops the seeded name or has to reconcile a
+        list it thought it owned, and seeding is once-per-server so the dropped
+        name is never re-added.
+        """
         section = {"stub_servers": ["z"]}
         plan = plan_seed(cache=cache, verdicts={"a": (True, False)}, current_stub={"z"})
         assert apply_seed(plan, section, cache) is True
-        assert section["stub_servers"] == ["a", "z"]
+        assert section["stub_servers"] == ["z"]
+        assert section["stub_overrides"] == {"a": True}
+        assert _resolve_stub_servers(section) == ["z", "a"]
 
-    def test_non_list_allowlist_is_replaced_not_crashed_on(self, cache) -> None:
+    def test_a_server_the_roster_already_carries_gets_no_override(self, cache) -> None:
+        """It is stubbed either way, and an override that merely agrees would pin it
+        against a later roster change."""
+        section = {"stub_servers": ["a"]}
+        plan = plan_seed(cache=cache, verdicts={"a": (True, False)}, current_stub=set())
+        apply_seed(plan, section, cache)
+        assert "stub_overrides" not in section
+        assert _resolve_stub_servers(section) == ["a"]
+
+    def test_a_non_list_roster_is_not_crashed_on(self, cache) -> None:
         """A hand-edited config can hold anything; seeding must not raise."""
         section = {"stub_servers": "oops"}
         plan = plan_seed(cache=cache, verdicts={"a": (True, False)}, current_stub=set())
         assert apply_seed(plan, section, cache) is True
-        assert section["stub_servers"] == ["a"]
+        assert section["stub_overrides"] == {"a": True}
+        assert _resolve_stub_servers(section) == ["a"]
 
     def test_markers_are_recorded_so_the_next_start_is_a_no_op(self, cache) -> None:
         section: dict = {}
@@ -73,7 +93,9 @@ class TestApply:
         apply_seed(plan, section, cache)
 
         again = plan_seed(
-            cache=cache, verdicts={"a": (True, False)}, current_stub=set(section["stub_servers"])
+            cache=cache,
+            verdicts={"a": (True, False)},
+            current_stub=set(_resolve_stub_servers(section)),
         )
         assert again.is_empty
 
@@ -82,13 +104,15 @@ class TestApply:
         section: dict = {}
         plan = plan_seed(cache=cache, verdicts={"a": (True, False)}, current_stub=set())
         apply_seed(plan, section, cache)
-        assert section["stub_servers"] == ["a"]
+        assert _resolve_stub_servers(section) == ["a"]
 
-        section["stub_servers"] = []  # the operator switches it off in the UI
+        # The operator switches it off in the UI, which flips their own decision
+        # rather than rewriting a roster.
+        section["stub_overrides"] = {"a": False}
 
         plan2 = plan_seed(cache=cache, verdicts={"a": (True, False)}, current_stub=set())
         assert apply_seed(plan2, section, cache) is False
-        assert section["stub_servers"] == []
+        assert _resolve_stub_servers(section) == []
 
     def test_markers_survive_a_reload(self, cache, tmp_path) -> None:
         plan = plan_seed(cache=cache, verdicts={"a": (True, False)}, current_stub=set())
