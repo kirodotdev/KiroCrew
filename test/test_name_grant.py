@@ -1228,3 +1228,50 @@ class TestHookTierIsUntouched:
             "Running: gh pr view 1", command="gh pr view 1", is_shell=True
         )
         assert result.action == TOOL_AUTO_APPROVE
+
+
+class TestInheritedHostEnvironment:
+    """The AMBIGUOUS_ENV refusal must still be reachable AFTER the host scrub.
+
+    The rootdir ``conftest._scrub_inherited_program_preloads`` removes exactly the
+    entries ``name_grant`` refuses as inherited preloads (both ``_ENV_PRELOAD_VARS``
+    and the exported-shell-function pair) from ``os.environ`` for every test, so the
+    suite is host-independent: ``/etc/profile.d/which2.sh`` exports
+    ``BASH_FUNC_which%%`` on every RHEL-family host, and before the scrub that lone
+    variable turned 79/163 tests in this file red (the early AMBIGUOUS_ENV refusal
+    fired ahead of the narrower code each test asserted on) while Ubuntu CI, which
+    has no ``which2.sh``, stayed green.
+
+    Scrubbing globally means no OTHER test exercises the inherited-preload path as an
+    ambient-environment case any more, so this class owns that coverage deliberately.
+    Each test sets the variable ITSELF, with ``monkeypatch.setenv`` running after the
+    autouse scrub, so the refusal is genuinely exercised rather than depending on
+    whatever the host shell happened to export -- and so the test reads the same on a
+    RHEL host, on Ubuntu, and in CI.
+    """
+
+    def test_the_native_rhel_which_function_export_refuses(self, world, monkeypatch):
+        # The exact spelling `/etc/profile.d/which2.sh` exports on Amazon Linux,
+        # RHEL, CentOS Stream and Fedora. The autouse conftest scrub removed it (if
+        # the host carried it at all), so setting it here is what puts the suite
+        # back into the poisoned state on purpose. `head` still resolves to a
+        # system binary, so the ONLY reason this refuses is the inherited function.
+        system_dir, _ = world
+        _program(system_dir, "head")
+        assert name_grant.name_grant_refusal("head file") is None
+        monkeypatch.setenv("BASH_FUNC_which%%", "() { echo hi; }")
+        refusal = name_grant.name_grant_refusal("head file")
+        assert refusal is not None
+        assert refusal.code == name_grant.AMBIGUOUS_ENV
+
+    def test_an_inherited_bash_env_preload_refuses(self, world, monkeypatch):
+        # The other half of `name_grant`'s predicate: a `_ENV_PRELOAD_VARS` member
+        # arriving through the environment rather than the command line. Also
+        # scrubbed by the conftest floor, so this test re-injects it deliberately.
+        system_dir, _ = world
+        _program(system_dir, "head")
+        assert name_grant.name_grant_refusal("head file") is None
+        monkeypatch.setenv("BASH_ENV", "/writable/rc")
+        refusal = name_grant.name_grant_refusal("head file")
+        assert refusal is not None
+        assert refusal.code == name_grant.AMBIGUOUS_ENV

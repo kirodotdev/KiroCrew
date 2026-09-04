@@ -13,7 +13,7 @@ test collected from any testpath, because what they protect is the
 developer's machine rather than the correctness of one suite. Everything that is
 merely suite-specific isolation stays in ``test/conftest.py``.
 
-The floor has seven parts, and each one exists because the "remember to isolate
+The floor has eight parts, and each one exists because the "remember to isolate
 this" contract failed at least once:
 
 * **Services.** ``$XDG_CONFIG_HOME`` is redirected and the stdlib spawn funnels
@@ -29,6 +29,12 @@ this" contract failed at least once:
   ``JIRA_TOKEN_<HEX>`` keys are restored after every test, so a fabricated
   ``.env`` cannot silently override the next test's credentials in the same
   worker.
+* **The inherited environment.** The preloads ``name_grant`` refuses as making a
+  name-based grant unsound -- ``BASH_ENV``/``ENV``/``SHELLOPTS``/``BASHOPTS`` and
+  exported shell functions (``BASH_FUNC_*`` keys, legacy ``() {`` values) -- are
+  scrubbed per test, mirroring the module's own predicate. Without this a
+  RHEL-family host's ``/etc/profile.d/which2.sh`` export of ``BASH_FUNC_which%%``
+  turned 79/163 ``test_name_grant.py`` tests red while Ubuntu CI stayed green.
 * **The agent-spec home.** ``kiro_agents_dir()`` is a LAZY resolver, so neither of
   the two above reaches it, and a test that reaches the spec write path rewrites
   the machine-wide ``<kiro home>/agents/kirocrew.json`` -- the file that decides
@@ -1835,6 +1841,70 @@ def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
     paths = sys.modules.get("kiro_crew.config.paths")
     if paths is not None:
         monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _scrub_inherited_program_preloads(monkeypatch):
+    """Strip the inherited env that makes ``name_grant``'s name-based grant unsound.
+
+    ``name_grant._inherited_preload()`` refuses a command as ``AMBIGUOUS_ENV``
+    (``inherited_env_can_redefine_programs``) whenever the process environment
+    carries a preload that can redefine a program name a child shell will resolve:
+    a ``_ENV_PRELOAD_VARS`` member (``BASH_ENV``/``ENV``/``SHELLOPTS``/``BASHOPTS``),
+    or an EXPORTED SHELL FUNCTION (a key with the ``BASH_FUNC_`` prefix, or the
+    pre-2014 spelling where the bare-named key's VALUE starts with ``() {``). That
+    refusal is checked BEFORE the narrower ones, so it wins whenever it fires.
+
+    This belongs on the floor because the poison is the OPERATOR'S shell, not a
+    test's doing. ``/etc/profile.d/which2.sh`` defines and exports ``which`` as a
+    shell function on every RHEL-family distribution, so ``BASH_FUNC_which%%`` sits
+    in ``os.environ`` for any login shell on Amazon Linux 2023, RHEL, CentOS Stream
+    and Fedora. That single inherited variable made 79 of the 163 tests in
+    ``test/test_name_grant.py`` fail on those hosts -- each asserting on a specific
+    narrower code and receiving ``AMBIGUOUS_ENV`` instead -- while GitHub Actions'
+    Ubuntu runners, which ship no ``which2.sh``, saw an empty ``BASH_FUNC_*`` and
+    stayed green. The production behaviour is correct; what was missing was host
+    isolation of the inherited environment, one scope down from the process-global
+    poisoning the rest of this floor already pins.
+
+    It mirrors ``name_grant``'s own two-sided predicate by IMPORTING the constants
+    rather than re-hardcoding them, so the pin tracks the predicate: if the module
+    grows a new preload var or changes a prefix, the scrub follows without an edit
+    here. It deliberately removes EXACTLY what ``name_grant`` refuses -- no more --
+    rather than asserting a broader "no exported functions of any shape" floor:
+    whether a zsh/ksh or container-runtime encoding deserves the same treatment, and
+    whether the pin should widen to a shell-agnostic rule, is a call left to
+    maintainers.
+
+    Removal rides the shared monkeypatch undo stack (``monkeypatch.delenv``) rather
+    than a manual ``os.environ.pop`` with ``yield``/``finally``. That is required,
+    not stylistic: a test that deliberately sets one of these with
+    ``monkeypatch.setenv`` (see ``TestInheritedHostEnvironment`` in
+    ``test/test_name_grant.py``) runs AFTER this autouse setup, so its value wins for
+    its own duration, and when its patch reverts the key returns to the SCRUBBED
+    (absent) state instead of the operator's original export -- a same-key override
+    inside a test can never leak the removal back out.
+
+    Imports ``kiro_crew.name_grant`` in the body, wrapped in ``try``/``except
+    ImportError`` with an early return, like the other rootdir fixtures: module-level
+    imports here are stdlib + pytest only (see the top docstring), and a partial
+    checkout must not break collection.
+    """
+    try:
+        from kiro_crew.name_grant import (
+            _BASH_FUNC_KEY_PREFIX,
+            _BASH_FUNC_VALUE_PREFIX,
+            _ENV_PRELOAD_VARS,
+        )
+    except ImportError:  # pragma: no cover - a partial checkout must not break collection
+        return
+    for var in _ENV_PRELOAD_VARS:
+        monkeypatch.delenv(var, raising=False)
+    # Snapshot before mutating: monkeypatch.delenv pops from os.environ, so
+    # iterating the live mapping would be a mutate-during-iteration.
+    for key, value in list(os.environ.items()):
+        if key.startswith(_BASH_FUNC_KEY_PREFIX) or value.startswith(_BASH_FUNC_VALUE_PREFIX):
+            monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture(autouse=True, scope="session")
