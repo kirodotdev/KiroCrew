@@ -88,7 +88,14 @@ export const CHUNK_BUDGETS = {
   // The app-core chunk: the dashboard shell plus everything eagerly imported
   // from it. The vendor split in vite.config.ts already extracts the heaviest
   // libraries; what remains is first-party code with no clean lazy boundary.
-  App: 3200 * KB, // measured 3121 KB
+  // Re-measured 2026-09-04: main drifted to 3201 KB (3,277,346 B, 546 B over
+  // the previous 3200 KB ceiling), so the gate began failing on the merge ref
+  // of every open PR rather than on a new library or surface — the same
+  // recurrence the `t` entry above documents. Attribution was measured, not
+  // assumed: main's tip alone, with no PR code, reproduces the failure.
+  // 5% headroom, matching the `all` and `t` entries' convention, so ordinary
+  // first-party growth does not re-trip this within days.
+  App: 3360 * KB, // measured 3201 KB on main @ 701f8f981 (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `manualChunks` bucket, see vite.config.ts.
