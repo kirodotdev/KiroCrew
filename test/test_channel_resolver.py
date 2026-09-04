@@ -87,6 +87,16 @@ class TestResolveMany:
         # Failed refresh — falls through to id fallback
         assert result == {"C111": "C111"}
 
+    @pytest.mark.asyncio
+    async def test_successful_empty_refresh_is_cached(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        slack = _make_slack([])
+
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+
+        slack.conversations_list.assert_called_once()
+
 
 class TestDiskCache:
     @pytest.mark.asyncio
