@@ -134,7 +134,17 @@ The **rootdir `conftest.py` is the host-mutation floor**: everything in it prote
 developer's machine rather than the correctness of one suite, so it holds for all
 testpaths. It pins `$XDG_CONFIG_HOME` and the launchd paths, traps the spawn
 funnels against service mutation, pins `KIROCREW_HOME` and the import-time `~/.kiro`
-bindings, redirects `tempfile`'s base, and fails the run on residue in the checkout.
+bindings, redirects `tempfile`'s base, scrubs the inherited environment `name_grant`
+refuses as an unsound name grant, and fails the run on residue in the checkout.
+
+That last pin (`_scrub_inherited_program_preloads`) removes the `BASH_FUNC_*` exported
+shell functions and the `BASH_ENV`/`ENV`/`SHELLOPTS`/`BASHOPTS` preloads that
+`name_grant._inherited_preload()` refuses as `inherited_env_can_redefine_programs`,
+mirroring both halves of that predicate by importing its constants rather than
+re-hardcoding them. RHEL-family hosts export `BASH_FUNC_which%%` from
+`/etc/profile.d/which2.sh` into every login shell, so that refusal fired for reasons the
+test never set: 79 of 163 `test_name_grant.py` tests failed on Amazon Linux 2023 while
+Ubuntu CI, which ships no `which2.sh`, stayed green.
 
 It also pins the other real host paths a test must not reach: the subagent registry (a
 running gateway sweeps stray entries there as orphans), the 610MB embedding-model

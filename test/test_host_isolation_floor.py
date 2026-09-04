@@ -1469,3 +1469,90 @@ class TestTheWorkerBudgetIsMemoryBounded:
         monkeypatch.setattr("builtins.open", _fake_cgroup)
 
         assert budget._cgroup_limit_mib() == 8 * 1024
+
+
+# ── the inherited environment ──────────────────────────────────────────────
+
+
+class TestInheritedProgramPreloadsAreScrubbed:
+    """The inherited environment ``name_grant`` refuses as an unsound name grant.
+
+    ``name_grant._inherited_preload()`` reads the process environment for anything
+    that can redefine a program a child shell will resolve -- a ``_ENV_PRELOAD_VARS``
+    member (``BASH_ENV``/``ENV``/``SHELLOPTS``/``BASHOPTS``), or an EXPORTED SHELL
+    FUNCTION (a ``BASH_FUNC_``-prefixed key, or the pre-2014 spelling whose value
+    starts with ``() {``) -- and that refusal is checked before the narrower ones.
+    On any RHEL-family host ``/etc/profile.d/which2.sh`` exports ``BASH_FUNC_which%%``
+    into every login shell, so the check fired for reasons the test never set: 79 of
+    163 ``test_name_grant.py`` tests failed on Amazon Linux 2023 while Ubuntu CI, which
+    ships no ``which2.sh``, stayed green. The rootdir conftest's
+    ``_scrub_inherited_program_preloads`` removes exactly that set per test.
+
+    The same two jobs the rest of this file uses:
+
+    * **Behaviour** -- the floor is armed (``_inherited_preload()`` is ``None`` inside a
+      normal test even on a host that carries ``BASH_FUNC_which%%`` natively), and it is
+      a net rather than a cage (a test that sets one of these itself still observes the
+      refusal within its own body).
+    * **Ratchet** -- pin the scrubbed set against ``name_grant``'s own predicate
+      constants, the exact symbols the fixture imports, so a rename that would silently
+      un-pin the floor surfaces here instead.
+    """
+
+    def test_the_floor_leaves_no_inherited_preload_for_a_normal_test(self) -> None:
+        """After the autouse floor has run, the predicate finds nothing to refuse.
+
+        This is the whole point of the pin, asserted through ``name_grant``'s own
+        reader rather than a re-implementation of it: none of ``_ENV_PRELOAD_VARS`` is
+        present, no key carries the ``BASH_FUNC_`` prefix, and no value starts with
+        ``() {`` -- so a name-based grant in an unrelated test is decided on its merits,
+        not on whatever the operator's login shell happened to export.
+        """
+        from kiro_crew import name_grant
+
+        assert name_grant._inherited_preload() is None, (
+            "the inherited-environment floor did not fire: os.environ still carries a "
+            "preload name_grant refuses as unsound (e.g. a RHEL-family "
+            "BASH_FUNC_which%% from /etc/profile.d/which2.sh)"
+        )
+
+    def test_a_test_can_still_set_a_preload_and_observe_the_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor is a safety net, not a cage: a test that injects one still wins.
+
+        ``monkeypatch.setenv`` runs in the test body, after the autouse scrub, and
+        reverts independently -- so a test that deliberately exercises the
+        inherited-preload path sees the refusal for its own duration without leaking
+        the variable to the next test. This is what lets ``test_name_grant.py``'s
+        deliberate ``BASH_FUNC_which%%`` regression test exist alongside a floor that
+        otherwise removes it.
+        """
+        from kiro_crew import name_grant
+
+        monkeypatch.setenv("BASH_FUNC_x%%", "() { echo hi; }")
+
+        assert name_grant._inherited_preload() is not None, (
+            "a preload set inside the test body was not observed -- the floor is "
+            "removing what the test itself set, i.e. it is a cage not a net"
+        )
+
+    def test_the_scrubbed_set_tracks_name_grants_predicate_constants(self) -> None:
+        """A rename of the predicate must surface here, not silently un-pin the floor.
+
+        The fixture imports these three symbols from ``kiro_crew.name_grant`` rather
+        than re-hardcoding them, precisely so the pin cannot drift from the predicate it
+        exists to mirror. This ratchets their shape: rename or re-spell one and the
+        fixture would go on removing a set that no longer matches what ``name_grant``
+        refuses, with nothing red -- so it is pinned against the same symbols here, the
+        way ``TestTheSharedKiroPathRatchet`` pins the ``~/.kiro`` set against ``src/``.
+        """
+        from kiro_crew.name_grant import (
+            _BASH_FUNC_KEY_PREFIX,
+            _BASH_FUNC_VALUE_PREFIX,
+            _ENV_PRELOAD_VARS,
+        )
+
+        assert _BASH_FUNC_KEY_PREFIX == "BASH_FUNC_"
+        assert _BASH_FUNC_VALUE_PREFIX == "() {"
+        assert set(_ENV_PRELOAD_VARS) >= {"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"}
