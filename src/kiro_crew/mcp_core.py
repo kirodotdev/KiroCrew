@@ -847,6 +847,61 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
     )
 
 
+#: The REFLEXIVE tool surface: every module whose MCP tools embed "my session"
+#: in their semantics (ledger writes, monitor loops, session-scoped control,
+#: attributed channel sends, crew/app state, cron ownership). Each of these
+#: resolves the caller STRICTLY through :func:`require_strict_session_key` —
+#: never the lenient :func:`_resolve_session_key`, whose ``/proc`` ancestor
+#: walk hands a subagent its PARENT slot's identity. This is data, not lore:
+#: ``test/test_identity_topology.py`` scans the source tree and fails when a
+#: module calls the strict resolver directly (bypassing the gate) or calls the
+#: gate without being registered here, so the NEXT reflexive tool cannot skip
+#: the gate silently. Paths are relative to ``src/kiro_crew``.
+REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
+    {
+        "mcp_computer.py",
+        "mcp_cron.py",
+        "mcp_dashboard.py",
+        "mcp_tools/apps.py",
+        "mcp_tools/control.py",
+        "mcp_tools/ledger.py",
+        "mcp_tools/messaging.py",
+        "mcp_tools/workflows.py",
+    }
+)
+
+
+def require_strict_session_key(
+    refusal: str, server: str = "kirocrew-core"
+) -> tuple[str, str]:
+    """The ONE fail-closed identity gate every reflexive tool routes through.
+
+    Returns ``(key, "")`` when the caller is strictly identified, and
+    ``("", error)`` otherwise, where ``error`` is the caller-supplied
+    ``refusal`` text with :func:`strict_identity_diagnosis` appended so the
+    operator learns why THIS install cannot answer "which session is calling".
+
+    Resolution is :func:`_resolve_session_key_strict` — gateway-injected
+    caller context, ``KIROCREW_SESSION_KEY``, or the HMAC-verified host-pid
+    sidecar; never the lenient ``/proc`` ancestor walk, under which a subagent
+    resolves to its PARENT slot and could read or mutate the parent's state.
+
+    The tuple shape is deliberate: each call site keeps its own arm. Most
+    refuse with the ``error`` half; tools that legitimately degrade instead
+    (``autonudge_stop`` short-circuits, ``ask_question`` gates on the
+    dashboard surface, computer-use falls back to an unresolved placeholder)
+    use the resolve half only and ignore ``error``. What no call site may do
+    is resolve identity for a reflexive tool through anything but this gate —
+    the ratchet test over :data:`REFLEXIVE_TOOL_MODULES` enforces exactly
+    that. Callers must send the KEY THIS GATE RETURNED on the wire:
+    re-resolving at the write would check one identity and act as another.
+    """
+    sk = _resolve_session_key_strict()
+    if sk:
+        return sk, ""
+    return "", refusal + strict_identity_diagnosis(server)
+
+
 def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | None:
     """Return an ``Error:`` denial when a channel agent calls a messaging tool.
 

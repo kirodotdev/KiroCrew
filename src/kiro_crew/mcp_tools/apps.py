@@ -337,14 +337,14 @@ def _crew_session_key() -> tuple[str, str]:
     directly attributable. Both crew tools send THIS key rather than resolving
     their own, so the identity that passed the gate is the identity on the wire.
     """
-    _crew_sk = mcp_core._resolve_session_key_strict()
+    _crew_sk, _crew_err = mcp_core.require_strict_session_key(
+        "Error: this tool needs a directly-identified dashboard session. "
+        "A subagent resolves to its parent's session, which would read and "
+        "write the parent crew's ledger. Run this from the crew's own "
+        "session."
+    )
     if not _crew_sk:
-        return "", (
-            "Error: this tool needs a directly-identified dashboard session. "
-            "A subagent resolves to its parent's session, which would read and "
-            "write the parent crew's ledger. Run this from the crew's own "
-            "session." + mcp_core.strict_identity_diagnosis()
-        )
+        return "", _crew_err
     return _crew_sk, ""
 
 

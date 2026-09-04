@@ -478,9 +478,12 @@ Windows specifics: [windows-install](docs/guides/windows-install.md).
   match natural-language variants, the LLM interprets NL.
 - **MCP tools MUST be stateless.** One server process serves many sessions and
   sub-agents, so no module global may hold per-caller data. Resolve identity per
-  call, and use `_resolve_session_key_strict()` for anything that mutates or
-  targets a specific session (the lenient resolver walks process ancestors and a
-  sub-agent would resolve to its parent slot). Durable state lives behind a gateway
+  call, and route anything that mutates or targets a specific session through
+  `mcp_core.require_strict_session_key()` — the shared fail-closed gate — and
+  register the module in `mcp_core.REFLEXIVE_TOOL_MODULES` (the lenient resolver
+  walks process ancestors and a sub-agent would resolve to its parent slot; a
+  ratchet test rejects direct strict-resolver calls outside `mcp_core`). Durable
+  state lives behind a gateway
   endpoint keyed by session. Why, plus the `ask_question` reference
   implementation: [mcp](docs/architecture/mcp.md).
 - **A skill that any shipped feature, tool, or doc references MUST live in

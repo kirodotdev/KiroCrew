@@ -625,8 +625,8 @@ answers `tools/list` from):
     over.** The `channels` scope is a per-transport allowlist, so vetting
     `"slack"` for a Telegram send evaluates a Telegram denial against Slack's
     rule — and refuses a permitted Telegram send whenever Slack is denied.
-  - **`channel_type` is the one `send_message` argument that requires
-    `_resolve_session_key_strict()`.** It posts into one specific conversation,
+  - **`channel_type` is the one `send_message` argument that requires strict
+    identity (via `require_strict_session_key`).** It posts into one specific conversation,
     which is the "targets a specific session" case below; the lenient walk
     climbs process ancestors, so a sub-agent would resolve to its parent and
     deliver into the parent's chat window. An unresolvable identity refuses the
@@ -899,8 +899,11 @@ Two failure modes follow.
 backend: the warm pool spawns with an empty key, and a sub-agent inherits its
 parent's tree. `mcp_core.py` offers two resolvers:
 
-- `_resolve_session_key_strict()` for **anything that mutates or targets a
-  specific session** (post to a slot, change its state, deliver a callback). It
+- `_resolve_session_key_strict` for **anything that mutates or targets a
+  specific session** (post to a slot, change its state, deliver a callback) —
+  reached ONLY through `require_strict_session_key()`, the shared fail-closed
+  gate every reflexive tool module routes through (`REFLEXIVE_TOOL_MODULES`
+  enumerates them; a ratchet test rejects direct calls outside `mcp_core`). It
   accepts only the gateway-injected caller context (`mcp_caller.current_caller()`,
   which gatewayd stamps on every forwarded frame after stripping any
   client-forged `kirocrew.caller` block), the injected `KIROCREW_SESSION_KEY`, or
@@ -979,7 +982,7 @@ Structured monitoring deliberately splits mutation from inspection.
 consumer applies them to its authoritative session, so their payloads contain
 neither a session key nor a loop id. `monitor_inspect` needs a result in the same
 turn and therefore calls the session-bound read route only after
-`_resolve_session_key_strict()` succeeds, passing that exact key to `_get`.
+`require_strict_session_key()` resolves, passing that exact key to `_get`.
 It projects that response into bounded agent-oriented state (check counts and
 accepted wake count, plus only a small failed/pending/unknown name sample),
 omitting wake instructions and browser/persistence internals. Inspection reports

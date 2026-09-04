@@ -405,14 +405,13 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     # every surface that can legitimately ask for it.
     verified_session = ""
     if channel_type:
-        verified_session = mcp_core._resolve_session_key_strict()
+        verified_session, _strict_err = mcp_core.require_strict_session_key(
+            "Error: cannot verify caller identity for a channel_type send "
+            "(no gateway-injected session key or HMAC-verified pid). "
+            "Refusing to post into a conversation that cannot be attributed."
+        )
         if not verified_session:
-            return (
-                "Error: cannot verify caller identity for a channel_type send "
-                "(no gateway-injected session key or HMAC-verified pid). "
-                "Refusing to post into a conversation that cannot be attributed."
-                + mcp_core.strict_identity_diagnosis()
-            )
+            return _strict_err
     # ``gov_session`` is the identity every gate below is keyed on. It is the
     # STRICT key whenever one was required, so the identity that is checked is
     # the identity the request is later sent under (``_post`` gets the same
@@ -549,14 +548,13 @@ def send_message(name: str, args: dict[str, Any]) -> str:
 
 
 def send_notification(name: str, args: dict[str, Any]) -> str:
-    caller_session = mcp_core._resolve_session_key_strict()
+    caller_session, _strict_err = mcp_core.require_strict_session_key(
+        "Error: cannot verify caller identity for send_notification "
+        "(no gateway-injected session key or HMAC-verified pid). "
+        "Refusing to publish without a trusted governance identity."
+    )
     if not caller_session:
-        return (
-            "Error: cannot verify caller identity for send_notification "
-            "(no gateway-injected session key or HMAC-verified pid). "
-            "Refusing to publish without a trusted governance identity."
-            + mcp_core.strict_identity_diagnosis()
-        )
+        return _strict_err
     # Channel-agent containment: same boundary
     # as send_message — an auto-approved call emits no permission event,
     # so channel.py's guard alone cannot hold it.
@@ -760,7 +758,9 @@ def file_send(name: str, args: dict[str, Any]) -> str:
     # native leg first would reroute the file to the linked chat instead of
     # the named Slack channel.
     channel_warning = ""
-    strict_key = mcp_core._resolve_session_key_strict()
+    # Resolve-half of the shared strict gate only: file_send degrades (skips
+    # the native channel leg) rather than refusing when identity is absent.
+    strict_key, _ = mcp_core.require_strict_session_key("file_send native delivery")
     if strict_key and not args.get("channel"):
         channel_resp = mcp_core._post(
             "/api/channel/upload-file",

@@ -122,8 +122,8 @@ from kiro_crew.mcp_core import (
     _internal_secret,
     _replay_target,
     _resolve_api_target,
-    _resolve_session_key_strict,
     _session_key_header_error,
+    require_strict_session_key,
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.validation import MCP_COMPUTER_SCHEMAS, ValidationError, validate_tool_args
@@ -709,7 +709,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     # ``mcp_core`` itself documents as "agent-writable and therefore forgeable", and
     # an unnamed audit identity is honest where a forged one is a lie. What the audit
     # loses is attribution, which is worth less than the feature working.
-    session_key = _resolve_session_key_strict() or _unresolved_session_key()
+    session_key = require_strict_session_key("computer-use attribution")[0] or (
+        _unresolved_session_key()
+    )
     header_err = _session_key_header_error(session_key)
     if header_err:
         return f"{ERROR_PREFIX}{header_err}"

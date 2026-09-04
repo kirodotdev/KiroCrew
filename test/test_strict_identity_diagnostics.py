@@ -94,11 +94,15 @@ class TestRefusalsCarryTheDiagnosis:
         """
         import re
 
+        # For modules migrated to the shared reflexive-tool gate (#5913) the
+        # diagnosis is appended INSIDE mcp_core.require_strict_session_key, so
+        # the marker to count is the gate call itself; mcp_cron composes its
+        # refusal (and diagnosis) separately and keeps the direct token.
         roots = {
-            "mcp_tools/ledger.py": "mcp_core.strict_identity_diagnosis",
-            "mcp_tools/apps.py": "mcp_core.strict_identity_diagnosis",
-            "mcp_tools/messaging.py": "mcp_core.strict_identity_diagnosis",
-            "mcp_dashboard.py": "strict_identity_diagnosis(",
+            "mcp_tools/ledger.py": "require_strict_session_key(",
+            "mcp_tools/apps.py": "require_strict_session_key(",
+            "mcp_tools/messaging.py": "require_strict_session_key(",
+            "mcp_dashboard.py": "require_strict_session_key(",
             "mcp_cron.py": "strict_identity_diagnosis(",
         }
         src_root = Path(mcp_core.__file__).parent

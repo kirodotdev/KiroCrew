@@ -733,15 +733,15 @@ def wait(name: str, args: dict[str, Any]) -> str:
     # SUBAGENT's wait. No frontend guard can catch that: with only one wait_id
     # pinging there is no collision to detect.
     #
-    # `_resolve_session_key_strict()` is the existing primitive for exactly
-    # this class of session-mutating tool (monitor_start, autonudge_stop,
-    # set_project) -- it drops the walk and accepts only gateway-injected
-    # caller context, KIROCREW_SESSION_KEY, or a HMAC-verified pid sidecar.
+    # `require_strict_session_key` is the shared gate for exactly this class
+    # of session-mutating tool (monitor_start, autonudge_stop, set_project)
+    # -- it drops the walk and accepts only gateway-injected caller context,
+    # KIROCREW_SESSION_KEY, or a HMAC-verified pid sidecar.
     # When it comes back empty the identity is a guess, so the ping degrades
     # to the original `{}` touch: the session still cannot be reaped
     # mid-sleep, and the countdown simply never appears. Tracked in #2347,
     # which is the work that lets this gate go away.
-    _identified = bool(mcp_core._resolve_session_key_strict())
+    _identified = bool(mcp_core.require_strict_session_key("the wait keepalive ping")[0])
     # The 5s cadence exists ONLY to bound how long the button appears to do
     # nothing. An unidentified sleep publishes nothing and honours no
     # end_wait, so it has no button and would be paying a 12x request
@@ -938,11 +938,13 @@ def autonudge_stop(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, AUTONUDGE_STOP_SCHEMA)
 
     # Resolve the current session's binding key and stop any loop on it.
-    # STRICT resolution (env-var only, no PID walk): this tool mutates
-    # another process's persistent loop state, and a subagent lives under
-    # the parent slot's process tree — a PID-walk would let it silently
-    # stop the PARENT session's loop (matches set_project's rule).
-    sk = mcp_core._resolve_session_key_strict()
+    # STRICT resolution via the shared gate (env-var only, no PID walk): this
+    # tool mutates another process's persistent loop state, and a subagent
+    # lives under the parent slot's process tree — a PID-walk would let it
+    # silently stop the PARENT session's loop (matches set_project's rule).
+    # Resolve-half only: an empty key deliberately does NOT refuse here — it
+    # falls through to the directive, whose consumer resolves its own session.
+    sk, _ = mcp_core.require_strict_session_key("autonudge_stop")
     # Stateless: emit a directive; the session-aware consumer
     # (chat_runner) resolves the loop by ITS OWN session and stops it. The
     # tool carries no session identity — sk is used only to short-circuit a
@@ -979,7 +981,9 @@ def ask_question(name: str, args: dict[str, Any]) -> str:
     # the session started — a channel-born session with its tab open can
     # render it. Surfaces without a tab still get the [OPTIONS:] hint;
     # an empty (default-install) key falls through to the directive.
-    sk = mcp_core._resolve_session_key_strict()
+    # Resolve-half of the shared strict gate only: ask_question gates on the
+    # dashboard surface, not on identity, so an empty key is not a refusal.
+    sk, _ = mcp_core.require_strict_session_key("ask_question")
     if sk and not has_dashboard_surface(sk):
         return (
             "ask_question only works from a dashboard chat session "
@@ -1003,12 +1007,14 @@ def ask_question(name: str, args: dict[str, Any]) -> str:
 
 def monitor_start(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, MONITOR_START_SCHEMA)
-    # STRICT resolution (env-var only, no PID walk): monitor_start creates
-    # a persistent unattended loop that repeatedly runs tools in the bound
-    # session. A subagent under the parent's process tree must NOT be able
-    # to PID-walk into the parent's identity and mint a loop the parent
-    # user never asked for (crosses the session authorization boundary).
-    sk = mcp_core._resolve_session_key_strict()
+    # STRICT resolution via the shared gate (env-var only, no PID walk):
+    # monitor_start creates a persistent unattended loop that repeatedly runs
+    # tools in the bound session. A subagent under the parent's process tree
+    # must NOT be able to PID-walk into the parent's identity and mint a loop
+    # the parent user never asked for (crosses the session authorization
+    # boundary). Resolve-half only: the short-circuit below is on context,
+    # not identity, so an empty key falls through to the directive.
+    sk, _ = mcp_core.require_strict_session_key("monitor_start")
     # Stateless: only short-circuit contexts where a directive can
     # never be applied (cron/hook/subagent). The session-aware consumer
     # (chat_runner) supplies the binding key and arms the loop.
@@ -1108,14 +1114,12 @@ def _monitor_context_refusal(tool_name: str, session_key: str, message: str) -> 
 def monitor_watch(name: str, args: dict[str, Any]) -> str:
     """Validate and emit a session-bound structured monitor directive."""
     args = validate_tool_args(args, MONITOR_WATCH_SCHEMA)
-    sk = mcp_core._resolve_session_key_strict()
+    sk, strict_err = mcp_core.require_strict_session_key(
+        "monitor_watch requires an authenticated strict session binding. "
+        "No process-ancestor fallback is used."
+    )
     if not sk:
-        return _monitor_context_refusal(
-            "monitor_watch",
-            sk,
-            "monitor_watch requires an authenticated strict session binding. "
-            "No process-ancestor fallback is used.",
-        )
+        return _monitor_context_refusal("monitor_watch", sk, strict_err)
     if mcp_core._structured_monitor_binding_key(sk) is None:
         return _monitor_context_refusal(
             "monitor_watch",
@@ -1148,14 +1152,12 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
 def monitor_inspect(name: str, args: dict[str, Any]) -> str:
     """Read only the monitor bound to a verified strict session identity."""
     validate_tool_args(args, MONITOR_INSPECT_SCHEMA)
-    sk = mcp_core._resolve_session_key_strict()
+    sk, strict_err = mcp_core.require_strict_session_key(
+        "Monitor inspection unavailable without an authenticated strict session binding. "
+        "No process-ancestor fallback is used."
+    )
     if not sk:
-        return _monitor_context_refusal(
-            "monitor_inspect",
-            sk,
-            "Monitor inspection unavailable without an authenticated strict session binding. "
-            "No process-ancestor fallback is used.",
-        )
+        return _monitor_context_refusal("monitor_inspect", sk, strict_err)
     if mcp_core._structured_monitor_binding_key(sk) is None:
         return _monitor_context_refusal(
             "monitor_inspect",
@@ -1241,14 +1243,12 @@ def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
 def monitor_stop(name: str, args: dict[str, Any]) -> str:
     """Emit a durable structured-stop directive without caller identity."""
     args = validate_tool_args(args, MONITOR_STOP_SCHEMA)
-    sk = mcp_core._resolve_session_key_strict()
+    sk, strict_err = mcp_core.require_strict_session_key(
+        "monitor_stop requires an authenticated strict session binding. "
+        "No process-ancestor fallback is used."
+    )
     if not sk:
-        return _monitor_context_refusal(
-            "monitor_stop",
-            sk,
-            "monitor_stop requires an authenticated strict session binding. "
-            "No process-ancestor fallback is used.",
-        )
+        return _monitor_context_refusal("monitor_stop", sk, strict_err)
     if mcp_core._structured_monitor_binding_key(sk) is None:
         return _monitor_context_refusal(
             "monitor_stop",
@@ -1265,20 +1265,18 @@ def monitor_stop(name: str, args: dict[str, Any]) -> str:
 
 def monitor_update(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, MONITOR_UPDATE_SCHEMA)
-    # STRICT resolution, same rationale as monitor_start/autonudge_stop:
-    # this mutates persistent loop state that drives unattended turns, so a
-    # subagent must not PID-walk into the parent's identity and rewrite the
-    # parent session's instruction.
-    sk = mcp_core._resolve_session_key_strict()
+    # STRICT resolution via the shared gate, same rationale as
+    # monitor_start/autonudge_stop: this mutates persistent loop state that
+    # drives unattended turns, so a subagent must not PID-walk into the
+    # parent's identity and rewrite the parent session's instruction.
+    sk, strict_err = mcp_core.require_strict_session_key(
+        "monitor_update requires an authenticated strict session binding. "
+        "No process-ancestor fallback is used."
+    )
     # Stateless: short-circuit only un-appliable contexts; the
     # consumer resolves the loop by its own session and patches it.
     if not sk:
-        return _monitor_context_refusal(
-            "monitor_update",
-            sk,
-            "monitor_update requires an authenticated strict session binding. "
-            "No process-ancestor fallback is used.",
-        )
+        return _monitor_context_refusal("monitor_update", sk, strict_err)
     if mcp_core._structured_monitor_binding_key(sk) is None:
         return _monitor_context_refusal(
             "monitor_update",

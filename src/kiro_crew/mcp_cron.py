@@ -41,7 +41,7 @@ from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_core import (
     _resolve_session_key,
-    _resolve_session_key_strict,
+    require_strict_session_key,
     strict_identity_diagnosis,
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
@@ -1519,7 +1519,10 @@ def _authz_session_key() -> str:
     sandbox launcher ran). It is NOT the same as "single user, so anything goes":
     see :func:`_unidentified_caller_refusal`.
     """
-    return _resolve_session_key_strict()
+    # Resolve-half of the shared strict gate only: the refusal text (and its
+    # diagnosis) lives in :func:`_unidentified_caller_refusal`, which each
+    # mutating tool composes itself.
+    return require_strict_session_key("cron ownership authorization")[0]
 
 
 #: A job with no recorded owner. Written by every creation path that has no

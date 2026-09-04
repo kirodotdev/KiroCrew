@@ -75,7 +75,7 @@ def _verified_caller() -> Any:
     this to empty itself, and the inner patch wins.
     """
     with patch(
-        "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+        "kiro_crew.mcp_core._resolve_session_key_strict",
         return_value="dashboard:chat-1-100",
     ):
         yield
@@ -635,7 +635,7 @@ class TestFolderMoveSession:
         """
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
-            patch("kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
             patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
         ):
             out = _call_tool_inner(
@@ -656,7 +656,7 @@ class TestFolderMoveSession:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="dashboard:chat-2-200",
             ),
             patch("kiro_crew.mcp_dashboard._patch", return_value={"ok": True}) as mock_patch,
@@ -978,7 +978,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="subagent:abc123",
             ),
         ):
@@ -991,7 +991,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="subagent:abc123",
             ),
             patch("kiro_crew.mcp_dashboard._post") as mock_post,
@@ -1005,7 +1005,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="subagent:abc123",
             ),
             patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
@@ -1022,7 +1022,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="cron:job-abc123",
             ),
         ):
@@ -1034,7 +1034,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="cron:job-abc123",
             ),
             patch("kiro_crew.mcp_dashboard._post") as mock_post,
@@ -1067,7 +1067,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="dashboard:chat-gone-999",
             ),
         ):
@@ -1079,7 +1079,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="dashboard:chat-gone-999",
             ),
             patch("kiro_crew.mcp_dashboard._post") as mock_post,
@@ -1108,7 +1108,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="slack:T1:C1:1777",
             ),
         ):
@@ -1130,7 +1130,7 @@ class TestASubagentCannotOutrankItsParent:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=_rows_with_sub),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="subagent:abc123",
             ),
         ):
@@ -1161,7 +1161,7 @@ class TestTheFolderPolicyIsTheEndpointsNotThisServers:
 
     def _as(self, slot: str) -> Any:
         return patch(
-            "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+            "kiro_crew.mcp_core._resolve_session_key_strict",
             return_value=f"dashboard:{slot}",
         )
 
@@ -1240,7 +1240,7 @@ class TestTheFolderPolicyIsTheEndpointsNotThisServers:
     def test_an_unverifiable_caller_cannot_reshape_it_either(self) -> None:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
-            patch("kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
             patch("kiro_crew.mcp_dashboard._post") as mock_post,
         ):
             out = _call_tool_inner("chat_folder_create", {"name": "Q3"})
@@ -1270,7 +1270,7 @@ class TestTheFolderPolicyIsTheEndpointsNotThisServers:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=rows),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="channel:C123",
             ),
             patch("kiro_crew.mcp_dashboard._post") as mock_post,
@@ -1293,7 +1293,7 @@ class TestTheFolderPolicyIsTheEndpointsNotThisServers:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=rows),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="slack:T1/C1",
             ),
             patch("kiro_crew.mcp_dashboard._post", return_value=made) as mock_post,
@@ -1322,7 +1322,7 @@ class TestEveryFolderWriteCarriesTheVerifiedKey:
 
     def _as(self, slot: str) -> Any:
         return patch(
-            "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+            "kiro_crew.mcp_core._resolve_session_key_strict",
             return_value=f"dashboard:{slot}",
         )
 
@@ -1383,7 +1383,7 @@ class TestTheSessionListIsScopedToTheCaller:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="dashboard:chat-1-100",
             ),
         ):
@@ -1397,7 +1397,7 @@ class TestTheSessionListIsScopedToTheCaller:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="dashboard:chat-3-300",
             ),
         ):
@@ -1407,7 +1407,7 @@ class TestTheSessionListIsScopedToTheCaller:
     def test_an_unverifiable_caller_is_shown_nothing(self) -> None:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
-            patch("kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
         ):
             out = _call_tool_inner("chat_folder_tree", {})
         assert out.startswith("Error:")
@@ -1419,7 +1419,7 @@ class TestTheSessionListIsScopedToTheCaller:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
             patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict",
+                "kiro_crew.mcp_core._resolve_session_key_strict",
                 return_value="dashboard:chat-1-100",
             ),
             patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
@@ -1529,9 +1529,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
 
     def test_create_carries_the_verified_key(self):
         with (
-            patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=self.VERIFIED
-            ),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=self.VERIFIED),
             patch(
                 "kiro_crew.mcp_dashboard._post", return_value={"target": "chat-2", "title": "w"}
             ) as post,
@@ -1541,9 +1539,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
 
     def test_stop_carries_the_verified_key(self):
         with (
-            patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=self.VERIFIED
-            ),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=self.VERIFIED),
             patch("kiro_crew.mcp_dashboard._post", return_value={"ok": True}) as post,
         ):
             _call_tool_inner("session_stop", {"target": "peer"})
@@ -1551,9 +1547,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
 
     def test_read_carries_the_verified_key(self):
         with (
-            patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=self.VERIFIED
-            ),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=self.VERIFIED),
             patch("kiro_crew.mcp_dashboard._get", return_value={"messages": [], "total": 0}) as get,
         ):
             _call_tool_inner("session_read_message", {"target": "peer"})
@@ -1570,9 +1564,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
         Mutation guard: ignoring `already_stopping` restores "nothing to stop".
         """
         with (
-            patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=self.VERIFIED
-            ),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=self.VERIFIED),
             patch(
                 "kiro_crew.mcp_dashboard._post",
                 return_value={
@@ -1590,9 +1582,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
 
     def test_a_target_that_was_never_running_still_says_nothing_to_stop(self):
         with (
-            patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=self.VERIFIED
-            ),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=self.VERIFIED),
             patch(
                 "kiro_crew.mcp_dashboard._post",
                 return_value={
@@ -1617,9 +1607,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
         Mutation guard: returning only the head line and "No messages" fails here.
         """
         with (
-            patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=self.VERIFIED
-            ),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=self.VERIFIED),
             patch(
                 "kiro_crew.mcp_dashboard._get",
                 return_value={"messages": [], "total": 7, "next_since": 7},
@@ -1636,9 +1624,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
         response shape, whatever produces one.
         """
         with (
-            patch(
-                "kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=self.VERIFIED
-            ),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=self.VERIFIED),
             patch("kiro_crew.mcp_dashboard._get", return_value={"messages": [], "total": 7}),
         ):
             out = _call_tool_inner("session_read_message", {"target": "peer"})
@@ -1647,7 +1633,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
     def test_an_unverifiable_caller_never_reaches_the_request(self):
         """The refusal must precede the call, not merely alter its key."""
         with (
-            patch("kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
             patch("kiro_crew.mcp_dashboard._post") as post,
             patch("kiro_crew.mcp_dashboard._get") as get,
         ):
