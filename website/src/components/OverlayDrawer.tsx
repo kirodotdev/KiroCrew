@@ -27,6 +27,15 @@ interface Props {
    * it the settle falls back to sampling the MotionValue on the main thread.
    */
   slideRef?: React.Ref<HTMLDivElement>
+  /**
+   * Slide mode only: extra inline style MERGED into the panel motion.div's
+   * style. The caller uses it to inset the panel's VERTICAL extent (block-axis
+   * margins) to the visual viewport, so a software keyboard cannot strand its
+   * lower content — the horizontal channel is off limits: `width` and the
+   * `x` transform (owned by `slideX` / the compositor settle) are applied
+   * AFTER this, so they win any collision and this can never fight the slide.
+   */
+  slideStyle?: React.CSSProperties
   /** Morph mode: the panel's visible window (clip-path) collapses into
    *  `morphTarget` and expands back out — the content itself never moves or
    *  deforms. The outer width still animates for layout reflow. */
@@ -51,7 +60,7 @@ interface Props {
 const EASE = [0.32, 0.72, 0, 1] as const
 const DUR = 0.24
 
-export default function OverlayDrawer({ open, width, dragging, slideX, slideRef, morph, morphTarget, expandFrom, contentH, className, children }: Props) {
+export default function OverlayDrawer({ open, width, dragging, slideX, slideRef, slideStyle, morph, morphTarget, expandFrom, contentH, className, children }: Props) {
   const reduce = useReducedMotion()
   // Gesture end settles from the live presentation value via a critically
   // damped spring (no overshoot, no visible jump) — never a fixed ease tween.
@@ -80,7 +89,11 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
           <motion.div
             key="drawer-slide"
             ref={slideRef}
-            style={{ width, x: slideX }}
+            // `slideStyle` first, then `width` and `x` — the transform channel
+            // stays owned by `slideX` (and the compositor settle) and `width`
+            // by the caller's uncovered-strip math, so a vertical inset merged
+            // in here can never override the horizontal slide.
+            style={{ ...slideStyle, width, x: slideX }}
             className={`shrink-0 pb-2 overflow-hidden ${className || ''}`}
           >
             {children}
