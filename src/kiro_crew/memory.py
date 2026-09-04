@@ -486,6 +486,13 @@ class MemoryStore:
         """Delete daily history files older than *keep_days*. Returns count deleted."""
         if not self._history_dir.exists():
             return 0
+        if keep_days < 0:
+            logger.warning(
+                "prune_history: negative keep_days=%d is not valid; "
+                "using default retention of 365 days to avoid data loss",
+                keep_days,
+            )
+            keep_days = 365
         cutoff = datetime.now().date() - timedelta(days=keep_days)
         deleted = 0
         for f in self._history_dir.glob("*.md"):

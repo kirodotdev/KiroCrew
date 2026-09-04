@@ -71,6 +71,49 @@ class TestMemoryStore:
         assert "file locking" in history
 
 
+class TestPruneHistory:
+    """prune_history boundary conditions."""
+
+    def _write_old_file(self, history_dir, days_ago: int) -> None:
+        """Write a fake history file dated *days_ago* days in the past."""
+        from datetime import datetime, timedelta
+
+        date = (datetime.now().date() - timedelta(days=days_ago)).isoformat()
+        (history_dir / f"{date}.md").write_text(f"# {date}\nOld entry\n")
+
+    def test_negative_keep_days_does_not_delete_recent_files(self, tmp_path):
+        """A negative keep_days value falls back to 365 — recent files are kept."""
+        store = MemoryStore(workspace=tmp_path)
+        history_dir = store._history_dir
+        history_dir.mkdir(parents=True, exist_ok=True)
+        # Write a file 10 days old — within the 365-day fallback window, so it
+        # must be KEPT when keep_days=-1 triggers the guard.
+        self._write_old_file(history_dir, days_ago=10)
+        deleted = store.prune_history(keep_days=-1)
+        assert deleted == 0, "negative keep_days must not delete files within the 365-day fallback"
+        assert len(list(history_dir.glob("*.md"))) == 1
+
+    def test_zero_keep_days_drops_files_older_than_today(self, tmp_path):
+        """Zero keep_days retains its meaning: drop everything before today."""
+        store = MemoryStore(workspace=tmp_path)
+        history_dir = store._history_dir
+        history_dir.mkdir(parents=True, exist_ok=True)
+        self._write_old_file(history_dir, days_ago=1)
+        deleted = store.prune_history(keep_days=0)
+        assert deleted == 1, "keep_days=0 should delete yesterday's file"
+
+    def test_positive_keep_days_deletes_old_files(self, tmp_path):
+        """Positive keep_days deletes files older than the threshold."""
+        store = MemoryStore(workspace=tmp_path)
+        history_dir = store._history_dir
+        history_dir.mkdir(parents=True, exist_ok=True)
+        self._write_old_file(history_dir, days_ago=10)
+        self._write_old_file(history_dir, days_ago=1)
+        deleted = store.prune_history(keep_days=5)
+        assert deleted == 1, "only the 10-day-old file should be deleted"
+        assert len(list(history_dir.glob("*.md"))) == 1
+
+
 class TestRecentHistoryCache:
     """read_recent_history TTL cache (per-message hot path)."""
 
