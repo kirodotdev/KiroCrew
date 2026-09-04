@@ -4111,6 +4111,32 @@ class TestTrustedGitBin:
         )
         assert pc.trusted_git_bin() is None
 
+    def test_windows_git_helper_uses_the_fixed_git_for_windows_root(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: None)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        gfw = tmp_path / "Git" / "mingw64" / "bin"
+        gfw.mkdir(parents=True)
+        helper = gfw / "git-upload-pack.exe"
+        helper.write_text("")
+        helper.chmod(0o755)
+        monkeypatch.setattr(pc, "_WINDOWS_GIT_HELPER_DIRS", (str(gfw),), raising=False)
+
+        assert pc.trusted_git_helper_bin("git-upload-pack") == str(helper)
+
+    def test_windows_git_helper_never_falls_back_to_path(self, monkeypatch) -> None:
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: None)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc,
+            "_WINDOWS_GIT_HELPER_DIRS",
+            (r"Z:\nonexistent\Git\mingw64\bin",),
+            raising=False,
+        )
+
+        assert pc.trusted_git_helper_bin("git-upload-pack") is None
+
 
 class TestKillAndReap:
     """The shared kill-the-tree + bounded-pipe-draining-reap helper (#5989)."""

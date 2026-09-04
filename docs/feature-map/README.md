@@ -87,13 +87,14 @@ stay wired, but it is entered from the topbar bell rather than a rail row.
 
 ## Agent Capabilities
 
-One destination, pinned to the bottom of the rail, hosting nine tabs. Every tab
+One destination, pinned to the bottom of the rail, hosting ten tabs. Every tab
 is a `?tab=` value on `/capabilities` (`pages/CapabilitiesPage.tsx`).
 
 | Tab | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|
 | Crews | Named agent bindings — which agent, model and workspace | `/capabilities?tab=crews` | `pages/KiroCrewAgentsPage.tsx` | `handlers/agents.py` | `GET /api/agent/config`, `GET,PUT /api/config/default-agent` |
 | Agent Templates | The harness-level agent definitions crews bind to | `?tab=templates` | `pages/AgentsPage.tsx` | `handlers/agents.py` | `GET /api/agent/config`, `GET /api/config/schema` |
+| Projects | Portable Project bundles: register, inspect, sync and activate reviewed capabilities | `?tab=projects` | `pages/ProjectBundlesPage.tsx` | `handlers_project.py` | `GET,POST /api/project-bundles`, `GET,DELETE /api/project-bundles/{id}`, `POST /api/project-bundles/add`, `POST,DELETE /api/project-bundles/{id}/activate`, `POST /api/project-bundles/{id}/sync` |
 | Connections | MCP servers: install, sign in, enable, scope tools | `?tab=mcp` | `pages/connections/ConnectionsPage.tsx` | `handlers/mcp.py`, `handlers/connections.py`, `handlers/mcp_discover.py` | `GET /api/mcp`, `GET /api/mcp/discover`, `POST /api/connections/mint`, `POST /api/mcp/custom` |
 | Skills | Installed skills, the public registry, pending candidates | `?tab=skills` | `pages/overview/SkillsTab.tsx` | `handlers/prompts.py`, `handlers/discover.py`, `handlers/skill_budget.py` | `GET,POST /api/skills`, `GET /api/skills/-/discover`, `GET /api/skills/-/pending` |
 | Knowledge | The document library: sources, sync, entities, graph | `?tab=knowledge` | `pages/knowledge/index.tsx` | `handlers/knowledge.py` | `GET /api/knowledge/items`, `POST /api/knowledge/sources`, `GET /api/knowledge/graph` |

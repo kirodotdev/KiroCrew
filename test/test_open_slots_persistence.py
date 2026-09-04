@@ -133,6 +133,87 @@ def test_restore_open_slots_rehydrates_listed_keys(tmp_path, monkeypatch):
     assert "chat-2-beta" in state2._slots
 
 
+def test_restore_open_slots_rehydrates_project_identity(tmp_path, monkeypatch):
+    """A Project-backed session keeps its bundle identity across restart."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-project")
+    history_key = _history_key_for("chat-1-project")
+    state.conversation_log.update_metadata(
+        history_key,
+        {
+            "project": "/tmp/payments",
+            "project_id": "018f4f4a-760f-7a8b-a5d4-5a7e0f130d4e",
+        },
+    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-project"], "ts": 0.0}))
+
+    state2 = _make_state(tmp_path / "sessions")
+    assert restore_open_slots(state2) == 1
+    restored = state2._slots["chat-1-project"]
+    assert restored.project == "/tmp/payments"
+    assert restored.project_id == "018f4f4a-760f-7a8b-a5d4-5a7e0f130d4e"
+    assert restored.to_dict()["project_id"] == restored.project_id
+
+
+def test_restore_open_slots_rejects_an_object_project_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-project")
+    state.conversation_log.update_metadata(
+        _history_key_for("chat-1-project"), {"project_id": {"invalid": True}}
+    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-project"], "ts": 0.0}))
+
+    restored_state = _make_state(tmp_path / "sessions")
+    assert restore_open_slots(restored_state) == 1
+    assert restored_state._slots["chat-1-project"].project_id == ""
+
+
+def test_restore_open_slots_rejects_a_noncanonical_project_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-project")
+    state.conversation_log.update_metadata(
+        _history_key_for("chat-1-project"), {"project_id": "NOT-A-UUID"}
+    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-project"], "ts": 0.0}))
+
+    restored_state = _make_state(tmp_path / "sessions")
+    assert restore_open_slots(restored_state) == 1
+    assert restored_state._slots["chat-1-project"].project_id == ""
+
+
+def test_restore_recent_sessions_rejects_an_object_project_identity(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.chat_persistence import restore_recent_sessions
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-project")
+    state.conversation_log.update_metadata(
+        _history_key_for("chat-1-project"), {"project_id": {"invalid": True}}
+    )
+
+    restored_state = _make_state(tmp_path / "sessions")
+    assert restore_recent_sessions(restored_state, window_minutes=0) == 1
+    assert restored_state._slots["chat-1-project"].project_id == ""
+
+
+def test_restore_recent_sessions_rejects_a_noncanonical_project_identity(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.chat_persistence import restore_recent_sessions
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-project")
+    state.conversation_log.update_metadata(
+        _history_key_for("chat-1-project"), {"project_id": "NOT-A-UUID"}
+    )
+
+    restored_state = _make_state(tmp_path / "sessions")
+    assert restore_recent_sessions(restored_state, window_minutes=0) == 1
+    assert restored_state._slots["chat-1-project"].project_id == ""
+
+
 def test_restore_open_slots_skips_closed_sessions(tmp_path, monkeypatch):
     """A session marked closed=True in metadata must not be restored."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
@@ -331,9 +412,7 @@ def test_rehydrate_slot_restores_persisted_tab_id_for_fork_chaining(tmp_path, mo
 
     # Legacy-session path: no tab_id in meta -> one is generated and written back.
     _seed_session(state, "chat-2-legacy-no-tab-id")
-    snapshot_path.write_text(
-        json.dumps({"keys": ["chat-2-legacy-no-tab-id"], "ts": 0.0})
-    )
+    snapshot_path.write_text(json.dumps({"keys": ["chat-2-legacy-no-tab-id"], "ts": 0.0}))
     state3 = _make_state(tmp_path / "sessions")
     restored = restore_open_slots(state3)
     assert restored == 1
@@ -385,8 +464,10 @@ def test_rehydrate_slot_uses_chained_read_with_500_message_window(tmp_path, monk
         flat_calls.append(key)
         return real_flat(key, *args, **kwargs)
 
-    with patch.object(state2.conversation_log, "read_messages_chained", _spy_chained), \
-            patch.object(state2.conversation_log, "read_messages", _spy_flat):
+    with (
+        patch.object(state2.conversation_log, "read_messages_chained", _spy_chained),
+        patch.object(state2.conversation_log, "read_messages", _spy_flat),
+    ):
         restored = restore_open_slots(state2)
 
     assert restored == 1
@@ -426,9 +507,7 @@ def test_rehydrate_slot_loads_full_500_message_window(tmp_path, monkeypatch):
         log.append(history_key, "user", f"msg-{i:03d}")
 
     snapshot_path = tmp_path / "open_slots.json"
-    snapshot_path.write_text(
-        json.dumps({"keys": ["chat-1-bigwindow"], "ts": 0.0})
-    )
+    snapshot_path.write_text(json.dumps({"keys": ["chat-1-bigwindow"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     restored = restore_open_slots(state2)
@@ -811,9 +890,7 @@ def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatc
 
     def guarded_read_messages(key):
         if key in armed_unreadable:
-            raise PermissionError(
-                f"[WinError 32] simulated in-flight os.replace holding {key}"
-            )
+            raise PermissionError(f"[WinError 32] simulated in-flight os.replace holding {key}")
         return real_read_messages(key)
 
     monkeypatch.setattr(log, "_read_messages", guarded_read_messages)
@@ -851,9 +928,7 @@ def test_restore_open_slots_async_matches_sync_result(tmp_path, monkeypatch):
 
     sync_state = _make_state(tmp_path / "sessions")
     async_state = _make_state(tmp_path / "sessions")
-    assert restore_open_slots(sync_state) == asyncio.run(
-        restore_open_slots_async(async_state)
-    )
+    assert restore_open_slots(sync_state) == asyncio.run(restore_open_slots_async(async_state))
     assert set(sync_state._slots) == set(async_state._slots) == {"chat-1-same", "chat-2-same"}
 
 
@@ -995,9 +1070,7 @@ def test_flush_during_async_restore_does_not_truncate_snapshot(tmp_path, monkeyp
             observed.append(len(json.loads(snapshot.read_text())["keys"]))
         return await real_sleep(delay, *a, **kw)
 
-    with patch(
-        "kiro_crew.dashboard.chat_persistence.asyncio.sleep", side_effect=flushing_sleep
-    ):
+    with patch("kiro_crew.dashboard.chat_persistence.asyncio.sleep", side_effect=flushing_sleep):
         restored = asyncio.run(restore_open_slots_async(state2))
 
     assert restored == 8
@@ -1005,9 +1078,9 @@ def test_flush_during_async_restore_does_not_truncate_snapshot(tmp_path, monkeyp
     # Assert on the INTERMEDIATE states, not just the final one. Without the guard
     # the file transiently reads 1, 2, 3 … tabs; it only ends up complete because
     # the restore happens to finish. A kill in that window is what loses tabs.
-    assert all(n == len(keys) for n in observed), (
-        f"snapshot was truncated mid-restore: sizes {observed} (expected all {len(keys)})"
-    )
+    assert all(
+        n == len(keys) for n in observed
+    ), f"snapshot was truncated mid-restore: sizes {observed} (expected all {len(keys)})"
     assert set(json.loads(snapshot.read_text())["keys"]) == set(keys)
 
 
@@ -1016,9 +1089,7 @@ def test_restoring_flag_clears_and_reenables_persistence(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
     _seed_session(state, "chat-1-flag")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-flag"], "ts": 0.0})
-    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-flag"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     assert state2.restoring_open_slots is False
@@ -1039,9 +1110,7 @@ def test_restoring_flag_cleared_even_if_restore_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
     _seed_session(state, "chat-1-boom")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-boom"], "ts": 0.0})
-    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-boom"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     with patch(
@@ -1355,9 +1424,7 @@ def test_metadata_failure_is_reported_above_debug(tmp_path, monkeypatch, caplog)
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
     _seed_session(state, "chat-1-logged")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-logged"], "ts": 0.0})
-    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-logged"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     victim = state2.conversation_log._path(_history_key_for("chat-1-logged")).name
@@ -1366,8 +1433,7 @@ def test_metadata_failure_is_reported_above_debug(tmp_path, monkeypatch, caplog)
             restore_open_slots(state2)
 
     assert any(
-        "chat-1-logged" in r.message and "reopen seed" in r.message
-        for r in caplog.records
+        "chat-1-logged" in r.message and "reopen seed" in r.message for r in caplog.records
     ), f"no WARNING named the affected tab; got {[r.message for r in caplog.records]}"
 
 
@@ -1400,9 +1466,7 @@ def test_get_metadata_status_separates_unreadable_from_absent(tmp_path, monkeypa
         assert log.get_metadata(history_key) == {}
 
 
-def test_non_object_metadata_line_does_not_abort_the_whole_restore(
-    tmp_path, monkeypatch
-):
+def test_non_object_metadata_line_does_not_abort_the_whole_restore(tmp_path, monkeypatch):
     """A transcript whose first line is valid JSON but not an OBJECT is skipped.
 
     ``json.loads`` happily returns ``None`` / a list / a str / an int, and a bare

@@ -221,6 +221,7 @@ class SlotProjection:
             "surface": slot.mode,
             "workspace": slot.workspace,
             "project": slot.project,
+            "project_id": slot.project_id,
             "artifact": slot._artifact,
             "messages": len(slot.messages),
             "running": slot.running,

@@ -831,7 +831,7 @@ export interface ChatSlot {
    *  the absence of an answer, never a denial. DISPLAY only — the pin is
    *  deliberately kept when withheld, so this must not drive a write. */
   model_withheld?: boolean | null
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; project_id?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
    * survey shows only on a "user" slot, so an imported Slack thread, a
@@ -1211,6 +1211,67 @@ export interface TaskRunnerStatus {
   /** Pre-fill value for the per-run workspace-folder selector: configured
    *  taskrunner.workspace_dir if set, else the default per-run base directory. */
   default_workspace_dir?: string
+}
+
+export type ProjectBundleOrigin = 'local' | 'existing_git' | 'managed_git'
+
+export interface ProjectBundleSource {
+  id: string
+  type: string
+  url?: string
+  default_branch?: string
+  [key: string]: unknown
+}
+
+export interface ProjectBundleContext {
+  agents: string[]
+  skills: string[]
+  mcp: string
+}
+
+export interface ProjectBundle {
+  id: string
+  name: string
+  description: string
+  workspace_source: string
+  sources: ProjectBundleSource[]
+  context: ProjectBundleContext
+  registrations: {
+    origin: ProjectBundleOrigin
+    path: string
+    syncable: boolean
+  }[]
+  health: {
+    status: 'healthy' | 'unavailable'
+    code: string
+  }
+  capabilities: {
+    active: boolean
+    review_key: string
+    agents: number
+    skills: number
+    mcp_servers: number
+    repos: number
+    repositories: { source_id: string; path: string }[]
+    agent_names?: string[]
+    mcp_server_details?: {
+      name: string
+      command?: string
+      args?: string[]
+      url?: string
+    }[]
+  }
+  sessions?: {
+    key: string
+    title: string
+    messages: number
+    running: boolean
+    live: boolean
+  }[]
+}
+
+export interface ProjectBundlesResponse {
+  projects: ProjectBundle[]
 }
 
 

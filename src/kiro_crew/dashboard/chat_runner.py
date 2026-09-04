@@ -225,6 +225,7 @@ from kiro_crew.name_grant import (
     shell_command_for_event,
 )
 from kiro_crew.platform import redact_via_context
+from kiro_crew.project_sessions import ProjectSessionError
 from kiro_crew.providers.acp import is_claude_backend
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -5206,6 +5207,17 @@ class _AppAgentNotLoaded(Exception):
     """
 
 
+async def _refresh_project_attachment(slot: _ChatSlot) -> None:
+    """Resolve restored Project state before any session binds its working directory."""
+    if not slot.project_id or slot._project_brief:
+        return
+    from kiro_crew.project_sessions import resolve_project_attachment
+
+    attachment = await asyncio.to_thread(resolve_project_attachment, slot.project_id)
+    slot.project = str(attachment.workspace_dir)
+    slot._project_brief = attachment.brief
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
@@ -6018,6 +6030,11 @@ async def _run_chat(
         # after the resolve block). Captured inside the try so the raise below
         # lives OUTSIDE it and is not swallowed by the resolve except.
         _app_agent_unresolved = False
+        # Restored slots persist the Project id and the last known cwd, but not
+        # the derived brief. Resolve the current bundle before the best-effort
+        # agent-binding block: attachment failure must abort rather than letting
+        # get_or_create launch in the stale persisted workspace.
+        await _refresh_project_attachment(slot)
         try:
             cfg = KiroCrewConfig.load()
             provider_name = cfg.agent.provider
@@ -6610,6 +6627,7 @@ async def _run_chat(
                 resumed=resumed,
                 workspace=slot.workspace or None,
                 project=slot.project or None,
+                project_brief=slot._project_brief or None,
                 memory_store=memory_store,
                 compressed_history=compressed,
                 mode=slot.mode,
@@ -11181,6 +11199,12 @@ async def _run_chat(
                 # moves it back).
                 slot._fallback_candidate_idx = 0
                 slot._fallback_walked = []
+    except ProjectSessionError as exc:
+        # Project attachment is pre-session setup, not a backend conversation
+        # failure. Surface it without poisoning the native-session retry streak.
+        error = _redact_for_display(str(exc))
+        logger.warning("Project attachment failed for slot %s: %s", slot.key, error)
+        slot.append("error", error, "msg msg-err")
     except _AppAgentNotLoaded as exc:
         # An app-owned slot whose agent never materialized, even after the
         # self-heal warm. Deliberately terminal: running the default agent here is

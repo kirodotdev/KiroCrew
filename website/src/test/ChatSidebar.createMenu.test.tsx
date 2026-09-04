@@ -60,7 +60,12 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), instancesCreateRemoteSlot: vi.fn(), listInstances: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  createChatSlot: vi.fn(),
+  instancesCreateRemoteSlot: vi.fn(),
+  listInstances: vi.fn(),
+  projectBundles: vi.fn(),
+}))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -129,6 +134,11 @@ beforeEach(() => {
     active: true, warm_set_cap: 5, sso: {},
     instances: [{ id: 'i-nobita', name: 'nobita' }, { id: 'i-gian', name: 'gian' }],
   })
+  mocks.projectBundles.mockResolvedValue({
+    projects: [{
+      id: 'project-payments', name: 'Payments Platform', health: { status: 'healthy' },
+    }],
+  })
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -138,6 +148,15 @@ describe('create-button caret menu', () => {
     openCreateMenu()
     expect(await screen.findByText('New chat')).toBeTruthy()
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
+  })
+
+  it('starts a new session with a healthy Project from the create menu', async () => {
+    renderSidebar()
+    openCreateMenu()
+    fireEvent.click(await screen.findByText('Payments Platform'))
+
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
+    expect(mocks.createChatSlot.mock.calls.some(call => call.includes('project-payments'))).toBe(true)
   })
 
   it('explains what each engineered mode does, at the point of choice', async () => {

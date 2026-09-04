@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, FolderKanban, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -12,6 +12,7 @@ import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, Me
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
@@ -2360,6 +2361,7 @@ function ChatSidebar({
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const isMobile = useIsMobile()
@@ -4583,6 +4585,23 @@ function ChatSidebar({
     mutationFn: () => dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '' })).unwrap(),
     onSuccess: focusComposer,
   })
+  const projectBundlesQuery = useQuery({
+    queryKey: ['project-bundles'],
+    queryFn: () => typeof api.projectBundles === 'function'
+      ? api.projectBundles()
+      : Promise.resolve({ projects: [] }),
+  })
+  const healthyProjects = (projectBundlesQuery.data?.projects ?? []).filter(
+    project => project.health.status === 'healthy',
+  )
+  const createProjectChatMutation = useMutation({
+    mutationFn: (projectId: string) => dispatch(createSlot({
+      agent: defaultAgent || undefined,
+      mode: mode || '',
+      project_id: projectId,
+    })).unwrap(),
+    onSuccess: focusComposer,
+  })
 
   // Create an ephemeral chat — incognito (memory reads, no writes) or temporary
   // (neither). The mode is pinned plain for the same reason the plain entry
@@ -5270,6 +5289,31 @@ function ChatSidebar({
                 <DropdownMenuItem disabled={creatingSlot} onClick={() => { createPlainChatMutation.mutate() }}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
                 </DropdownMenuItem>
+                {healthyProjects.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>{i18nT('pages.projectBundlesPage.projects')}</DropdownMenuLabel>
+                    {healthyProjects.map(project => (
+                      <DropdownMenuItem
+                        aria-label={`${project.name} — ${project.registrations?.at(-1)?.path ?? project.id}`}
+                        className="items-start"
+                        disabled={creatingSlot || createProjectChatMutation.isPending}
+                        key={project.id}
+                        onClick={() => createProjectChatMutation.mutate(project.id)}
+                      >
+                        <FolderKanban size={14} className="text-muted" />
+                        <span className="flex min-w-0 flex-col gap-px">
+                          <span className="truncate">{project.name}</span>
+                          <span className="truncate font-mono text-[11px] text-muted">{project.registrations?.at(-1)?.path ?? project.id}</span>
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuItem onClick={() => navigate('/capabilities?tab=projects')}>
+                      <Settings size={14} className="text-muted" />
+                      {i18nT('pages.projectBundlesPage.manage_projects')}
+                    </DropdownMenuItem>
+                  </>
+                )}
                 {/* The two engineered modes carry a one-line description, because the
                  *  moment a user cannot tell them apart is the moment this menu opens
                  *  — and until now the only explanation lived in a native title= on

@@ -4562,6 +4562,20 @@ class TestRebuildReconcileRetainsEnabledAppServers:
         # The old, buggy condition (delete when absent from on_disk) must be gone.
         assert "if _k not in on_disk_app:" not in src
 
+    def test_project_revocation_reconcile_runs_inside_the_final_config_lock(self) -> None:
+        import inspect
+
+        from kiro_crew import agent
+
+        src = inspect.getsource(agent.install_agent)
+        lock = src.index("with _mcp_lock():")
+        reconcile = src.index("reconcile_project_mcp(config, current_project_source)")
+        final_write = src.index("_finalize_and_write()", reconcile)
+
+        assert lock < reconcile < final_write
+        assert "project_mcp_source_changed(kirocrew_mcp, current_project_source)" in src
+        assert "return rebuild_agent_config(clean=clean, _project_retry=True)" in src
+
 
 class TestMcpMergePriority:
     def test_the_authorship_marker_never_reaches_the_rendered_spec(self, tmp_path: Path):

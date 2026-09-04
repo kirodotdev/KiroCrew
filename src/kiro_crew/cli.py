@@ -2394,6 +2394,20 @@ Examples:
     ws_delete = ws_sub.add_parser("delete", help="Delete a workspace")
     ws_delete.add_argument("name", help="Workspace name to delete")
 
+    # project
+    project_parser = cli_help.add_command(sub, "project")
+    project_sub = project_parser.add_subparsers(dest="project_action")
+    project_create = project_sub.add_parser("create", help="Create a local Project bundle")
+    project_create.add_argument("path", help="Directory to create the Project bundle in")
+    project_create.add_argument("--name", required=True, help="Project display name")
+    project_add = project_sub.add_parser("add", help="Register an existing Project bundle")
+    project_add.add_argument("source", help="Local Project bundle path or Git URL")
+    project_sub.add_parser("list", help="List registered Projects")
+    project_show = project_sub.add_parser("show", help="Show a registered Project")
+    project_show.add_argument("identifier", help="Stable Project id or unambiguous name")
+    project_sync = project_sub.add_parser("sync", help="Fast-forward a managed Git Project")
+    project_sync.add_argument("identifier", help="Stable Project id or unambiguous name")
+
     # app
     app_parser = cli_help.add_command(
         sub,
@@ -2833,6 +2847,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         from kiro_crew.cli_commands import _handle_workspace
 
         _handle_workspace(args)
+    elif args.command == "project":
+        from kiro_crew.cli_projects import _handle_project
+
+        _handle_project(args)
     elif args.command == "app":
         from kiro_crew.cli_commands import _handle_app
 

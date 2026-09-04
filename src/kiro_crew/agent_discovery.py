@@ -847,7 +847,11 @@ def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
             pkg_stem = pkg_stem[len("local-") :]
         package = pkg_stem[: -(len(agent_name) + 1)]
 
-    if f.name in (AGENT_FILENAME, LITE_AGENT_FILENAME):
+    if stem.startswith("project--"):
+        source = "project"
+        parts = stem.split("--", 2)
+        package = parts[1] if len(parts) == 3 else ""
+    elif f.name in (AGENT_FILENAME, LITE_AGENT_FILENAME):
         source = "kirocrew"
     elif is_package_filename:
         source = "package"

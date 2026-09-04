@@ -399,7 +399,6 @@ test/test_admission_gate.py
 test/test_agent.py
 test/test_agent_default_model.py
 test/test_agent_delete_reference_guard.py
-test/test_agent_discovery.py
 test/test_agent_import_hoist.py
 test/test_agent_source_ownership_durability.py
 test/test_agent_template_skills.py
@@ -1099,7 +1098,6 @@ test/test_stub_bridge_liveness.py
 test/test_stuck_turn_watchdog.py
 test/test_subagent.py
 test/test_subagent_context_group_plumbing.py
-test/test_subagent_context_groups.py
 test/test_subagent_continuable.py
 test/test_subagent_cost.py
 test/test_subagent_persistence.py

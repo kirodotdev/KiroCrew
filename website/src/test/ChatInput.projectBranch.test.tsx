@@ -4,10 +4,9 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 
-// Pins the project-chip branch contract: the active project button
-// shows "<folder> · <branch>" so the session's git context is visible without
-// opening a picker, and degrades to the folder name alone when there is no
-// branch to show (not a repo, git unavailable, path gone).
+// Pins both project-chip identities: a bundle-attached session shows its Project
+// name, while a directory-only session shows "<folder> · <branch>" and degrades
+// to the folder name alone when there is no branch to show.
 
 const defaultProps = {
   value: '',
@@ -26,6 +25,28 @@ const chip = () => screen.getByRole('button', { name: /Project: |Select project/
 const branchBtn = () => screen.getByRole('button', { name: /Cop(y|ied) (branch name|commit) / })
 
 describe('ChatInput project chip branch label', () => {
+  it('shows an attached Project name instead of its workspace repository', () => {
+    renderWithProviders(
+      <ChatInput
+        {...defaultProps}
+        project="/home/u/projects/launchpad/sources/service"
+        projectBranch="main"
+        projectBundleName="Launchpad Workspace"
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'Project: Launchpad Workspace' })
+    expect(btn).toHaveTextContent('Launchpad Workspace')
+    expect(btn).not.toHaveTextContent('service')
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute(
+      'title',
+      "Project: Launchpad Workspace. This session's Project sets the workspace.",
+    )
+    expect(screen.queryByRole('button', { name: /Copy branch name/ })).not.toBeInTheDocument()
+    fireEvent.click(btn)
+    expect(defaultProps.onProjectClick).not.toHaveBeenCalled()
+  })
+
   it('renders the branch beside the folder name', () => {
     renderWithProviders(<ChatInput {...defaultProps} projectBranch="feat/example" />)
     expect(chip()).toHaveTextContent('KiroCrew')

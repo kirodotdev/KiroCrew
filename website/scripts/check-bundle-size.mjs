@@ -57,18 +57,12 @@ export const CHUNK_BUDGETS = {
   // `t()` no longer pull the other twelve catalogs in behind them. Sized for the
   // English catalog plus headroom; a jump here means a non-English catalog, or a
   // library, reached the runtime module.
-  // Re-measured 2026-09-04 at 740 KB, and the 702 KB note above was ~38 KB
-  // stale, which is the same recurrence it describes: main drifted to EXACTLY
-  // 740.00 KB (757,764 B, 4 B over its own ceiling), so the gate began failing
-  // on the merge ref of every open PR rather than on the new library or surface
-  // it exists to catch. Attribution was measured, not assumed -- the branch that
-  // tripped it first builds a BYTE-IDENTICAL `t` chunk to its own base
-  // (`t-BLZeayKy.js`, 755,868 B on both), and main's tip alone, with none of that
-  // branch's code, reproduces the 4-byte failure with the same content hash. So
-  // the growth is main's accumulated English strings, and headroom is what was
-  // actually missing. 5% headroom, matching the `all` entry's convention above,
-  // so the next English string does not re-trip this for the third time.
-  t: 777 * KB, // measured 740 KB on main @ 1cd64b8c9 (~5% headroom)
+  // Main was re-measured at 740 KB on 2026-09-04 after accumulated English
+  // strings exhausted the stale 740 KB ceiling. The Projects surface adds 58
+  // more English UI strings but no runtime dependency. The rebased analyze build
+  // measures their combined output at 760,670 bytes (742.84 KiB), so 780 KiB
+  // preserves the usual ~5% headroom.
+  t: 780 * KB, // measured 742.84 KiB on main + Projects @ dabd83e9
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

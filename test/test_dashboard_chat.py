@@ -12869,6 +12869,29 @@ class TestFolderAssignmentPersistence:
         meta = json.loads(path.read_text(encoding="utf-8").split("\n")[0])
         assert meta.get("folder_id") == "f-force"
 
+    def test_empty_window_force_save_clears_project_binding(self, tmp_path, monkeypatch):
+        """A metadata-only detach must overwrite the persisted Project UUID."""
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("detachslot")
+        history_key = "dashboard:detachslot"
+        project_id = "018f4f4a-760f-7a8b-a5d4-5a7e0f130d4e"
+        state.conversation_log.append(history_key, "user", "persisted message")
+        state.conversation_log.update_metadata(
+            history_key,
+            {"project": "/old/project", "project_id": project_id},
+        )
+
+        slot.project = ""
+        slot.project_id = ""
+        _save_slot_to_history(state, slot, force=True)
+
+        meta = state.conversation_log.get_metadata(history_key)
+        assert meta["project"] == ""
+        assert meta["project_id"] == ""
+
 
 class TestNewPlanResetsAutoRun:
     """Regression: _auto_run must reset when a new plan is detected."""

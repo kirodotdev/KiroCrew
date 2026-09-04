@@ -140,6 +140,14 @@ The source install below remains the fully supported path.
 
 No admin is required — everything installs user-scoped under `%USERPROFILE%`.
 
+Unattended Project clone and sync operations do not trust `PATH`: they resolve
+`git.exe` and its upload/receive helpers only from Windows system directories or
+Git for Windows' fixed Program Files installation roots. A nonstandard Git install
+therefore remains available for interactive use but is deliberately unavailable to
+the gateway's unattended Project transport. Those managed commands enable Git for
+Windows' long-path support so the derived Project hierarchy and Git's temporary
+pack files remain usable below the normal per-user data root.
+
 Avoid the Microsoft Store `python` alias stub: Kiro Crew's interpreter finder
 (`platform_compat.find_python_interpreter`) rejects it, but a Store-only `python`
 on `PATH` can still confuse other tooling. Prefer a real CPython install.

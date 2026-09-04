@@ -52,12 +52,26 @@ _WEBSITE = "website"
 #
 # RAISE this when you add specs. Only LOWER it with a written reason in the
 # commit body: a drop means specs stopped running.
-MIN_EXECUTED_SPECS = 220
+MIN_EXECUTED_SPECS = 221
 
 # Skips are silent passes. A spec should seed its preconditions rather than skip
 # when they are absent, so the intended steady state is zero. Specs excluded by
 # tag are never collected, so they do not count here.
 MAX_SKIPPED_SPECS = 0
+
+
+def _allow_ephemeral_unsandboxed_exec(home: Path) -> None:
+    """Opt this isolated gateway into the documented no-backend fallback."""
+    from kiro_crew.config.loader import update_config_locked
+
+    def mutate(data: dict) -> dict:
+        agent = data.setdefault("agent", {})
+        if not isinstance(agent, dict):
+            raise AssertionError("E2E fixture agent config must be an object")
+        agent["sandbox_allow_unsandboxed_exec"] = True
+        return data
+
+    update_config_locked(home / "config.json", mutate=mutate)
 
 
 def _assert_suite_not_darkened(report: Path) -> None:
@@ -185,6 +199,12 @@ def test_dashboard_playwright_suite() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "playwright-results.json"
             with spawn_feature_gateway(fixture="minimal", approval="reads") as gw:
+                # Git-backed Projects deliberately fail closed when no OS
+                # sandbox backend exists. GitHub's Linux runner has no usable
+                # user-namespace backend, so exercise the documented explicit
+                # opt-in only inside this throwaway harness home. The production
+                # default and every non-harness home remain fail-closed.
+                _allow_ephemeral_unsandboxed_exec(gw.home)
                 env = dict(os.environ)
                 env.update(
                     {
@@ -240,6 +260,17 @@ def _write_report(tmp_path: Path, **stats: int) -> Path:
     report = tmp_path / "results.json"
     report.write_text(json.dumps({"stats": stats}))
     return report
+
+
+def test_ephemeral_sandbox_opt_in_only_updates_the_supplied_home(tmp_path: Path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"agent": {"sandbox": "off"}}), encoding="utf-8")
+
+    _allow_ephemeral_unsandboxed_exec(tmp_path)
+
+    data = json.loads(config.read_text(encoding="utf-8"))
+    assert data["agent"]["sandbox"] == "off"
+    assert data["agent"]["sandbox_allow_unsandboxed_exec"] is True
 
 
 def test_floor_accepts_a_run_at_the_floor(tmp_path: Path) -> None:

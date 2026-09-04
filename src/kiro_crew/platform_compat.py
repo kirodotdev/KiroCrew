@@ -1365,6 +1365,15 @@ _WINDOWS_GIT_DIRS = (
     r"C:\Program Files (x86)\Git\cmd",
 )
 
+# Git for Windows keeps the transport-side helpers outside ``cmd``. These fixed
+# Program Files roots carry the same trust argument as ``_WINDOWS_GIT_DIRS``;
+# consulting PATH or a mutable ProgramFiles environment variable would let an
+# agent-written executable become the upload/receive program for a local fetch.
+_WINDOWS_GIT_HELPER_DIRS = (
+    r"C:\Program Files\Git\mingw64\bin",
+    r"C:\Program Files (x86)\Git\mingw64\bin",
+)
+
 
 def trusted_git_bin() -> str | None:
     """The ``git`` executable resolved off ``PATH``, or ``None`` if untrustworthy.
@@ -1385,6 +1394,24 @@ def trusted_git_bin() -> str | None:
                 return candidate
         return None
     return git
+
+
+def trusted_git_helper_bin(name: str) -> str | None:
+    """Resolve a Git transport helper from fixed trusted install roots.
+
+    Git invokes helpers such as ``git-upload-pack`` during local/file fetches.
+    They need the same off-PATH trust decision as the top-level Git executable,
+    while Git for Windows installs them under its own ``mingw64\\bin`` tree.
+    """
+    helper = trusted_system_bin(name)
+    if helper is None and IS_WINDOWS:
+        filename = name if name.lower().endswith(".exe") else f"{name}.exe"
+        for directory in _WINDOWS_GIT_HELPER_DIRS:
+            candidate = os.path.join(directory, filename)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+    return helper
 
 
 def trusted_system_bin(name: str) -> str | None:

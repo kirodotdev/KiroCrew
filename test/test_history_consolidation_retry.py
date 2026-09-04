@@ -1063,6 +1063,34 @@ class TestForeignWritersCannotEraseTheAccounting:
         assert "pinned" not in meta, "an un-pinned slot could not clear its pin"
         assert meta.get("consolidation_attempts") == 1
 
+    def test_a_dashboard_slot_save_persists_project_identity(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state.config_dir", lambda: tmp_path
+        )
+        log = ConversationLog(base_dir=tmp_path)
+        log.init()
+        log.append("dashboard:chat1", "user", "m0")
+
+        state = _dashboard_state(log)
+        slot = _rehydrate_slot_from_history(state, "chat1")
+        assert slot is not None
+        slot.project = "/tmp/payments"
+        slot.project_id = "018f4f4a-760f-7a8b-a5d4-5a7e0f130d4e"
+        slot._dirty = True
+        _save_slot_to_history(state, slot)
+
+        meta = log.get_metadata("dashboard:chat1")
+        assert meta["project"] == "/tmp/payments"
+        assert meta["project_id"] == slot.project_id
+        listed = next(
+            item
+            for item in log.list_sessions()
+            if item["key"] == "dashboard_chat1"
+        )
+        assert listed["project_id"] == slot.project_id
+
     def test_the_helper_never_shadows_an_owned_key(self):
         rebuilt = {"title": "new"}
         existing = {"title": "old", "consolidation_attempts": 2, "rotation_generation": 1}

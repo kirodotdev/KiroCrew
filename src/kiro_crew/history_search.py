@@ -781,6 +781,8 @@ class SessionCatalogProjection:
                 meta["memory_mode"] = d.get("memory_mode", "persistent")
                 if d.get("folder_id"):
                     meta["folder_id"] = d["folder_id"]
+                if d.get("project_id"):
+                    meta["project_id"] = d["project_id"]
             else:
                 # Read only the first line for metadata
                 try:
@@ -798,6 +800,8 @@ class SessionCatalogProjection:
                             meta["memory_mode"] = d.get("memory_mode", "persistent")
                             if d.get("folder_id"):
                                 meta["folder_id"] = d["folder_id"]
+                            if d.get("project_id"):
+                                meta["project_id"] = d["project_id"]
                             # Guarded publish — discard the fill if a write
                             # invalidated this key inside the stat → read
                             # window (see the generation snapshot above).

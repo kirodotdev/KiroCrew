@@ -64,10 +64,15 @@ order:
 3. Boots a real gateway with `spawn_feature_gateway(fixture="minimal",
    approval="reads")`, on an isolated temporary `KIROCREW_HOME` seeded
    atomically with gateway startup.
-4. Exports the harness env into the Playwright child: `PLAYWRIGHT_BASE_URL`
+4. Enables the documented `sandbox_allow_unsandboxed_exec` fallback only in
+   that throwaway harness home. Git-backed Project coverage therefore remains
+   runnable on GitHub's backend-less Linux workers without weakening the
+   product default: every ordinary home still fails closed when no OS sandbox
+   exists.
+5. Exports the harness env into the Playwright child: `PLAYWRIGHT_BASE_URL`
    (the gateway's port), `PLAYWRIGHT_TOKEN`, `PLAYWRIGHT_RUN_AGENT_SPECS=1`,
    `KIROCREW_E2E_EPHEMERAL=1`, `CI=1`, and `PLAYWRIGHT_JSON_OUTPUT_NAME`.
-5. Runs `playwright test --reporter=html,json` with `cwd=website`. A CLI
+6. Runs `playwright test --reporter=html,json` with `cwd=website`. A CLI
    `--reporter` replaces the config value, so both are named: `html` keeps the CI
    artifact the config asks for, `json` supplies the machine-readable counts the
    darkening floor below reads.

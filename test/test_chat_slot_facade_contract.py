@@ -26,6 +26,7 @@ _TO_DICT_KEYS = (
     "surface",
     "workspace",
     "project",
+    "project_id",
     "artifact",
     "messages",
     "running",

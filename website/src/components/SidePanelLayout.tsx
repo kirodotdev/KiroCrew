@@ -289,6 +289,10 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
       // writing a duplicate on top of it.
     }, { replace: !isMobile, state: isMobile ? { [SUBNAV_PUSH_STATE]: true } : undefined })
   }
+  const requestTab = (nextTab: string) => {
+    if (nextTab === tab && rawTab) return
+    setTab(nextTab)
+  }
   /** Mobile back: return to the root list. If THIS stack pushed the current
    *  entry, pop it — a replace-write here would leave [root, root] twins in
    *  history and the next platform back-swipe would visibly do nothing. The
@@ -410,7 +414,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                   {t.dividerBefore && <div className="h-px bg-border mx-2.5 my-2" role="separator" />}
                   <button
                     className={`flex items-center gap-2.5 w-full px-2.5 py-2.5 ${COARSE_TOUCH_TARGET} rounded-md text-[14px] text-left font-medium cursor-pointer border-none bg-transparent text-text transition-colors hover:bg-bg-hover`}
-                    onClick={() => setTab(t.key)}
+                    onClick={() => { void requestTab(t.key) }}
                   >
                     <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>
                     <span className="flex-1 min-w-0 truncate">{t.label}</span>
@@ -521,7 +525,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                     ? 'bg-accent-subtle text-accent'
                     : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
                 }`}
-                onClick={() => setTab(t.key)}
+                onClick={() => { void requestTab(t.key) }}
               >
                 <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${tab === t.key ? 'text-accent' : 'text-muted'}`}>
                   {t.icon}

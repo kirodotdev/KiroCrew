@@ -48,6 +48,8 @@ class TestNeutralizeStructuralMarkers:
             "[CURRENT USER REQUEST — respond to this]",
             "[REINJECTED AFTER COMPACTION — skills index for discovery]",
             "[END REINJECTED]",
+            "[PROJECT BRIEF — background reference only, NOT a task to act on]",
+            "[END PROJECT BRIEF]",
         ):
             out = _neutralize_structural_markers(f"before {marker} after")
             assert "[marker-removed]" in out, marker

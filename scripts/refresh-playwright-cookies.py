@@ -4,11 +4,11 @@
 Export a cookie jar from a browser where you are already logged in, then call
 browser_set_storage_state to reload cookies without restarting the MCP server.
 """
+
 import json
 import os
 import sys
 import time
-
 
 # A leading "~" is expanded because Docker `ENV` and systemd `Environment=`
 # pass one through unexpanded, and os.environ.get does not expand it -- without
@@ -27,23 +27,25 @@ def parse_netscape_cookies(cookie_file_path):
             line = line.strip()
             http_only = line.startswith("#HttpOnly_")
             if http_only:
-                line = line[len("#HttpOnly_"):]
+                line = line[len("#HttpOnly_") :]
             elif line.startswith("#") or not line:
                 continue
             fields = line.split("\t")
             if len(fields) < 7:
                 continue
             domain, _, path, secure_flag, expires, name, value = fields[:7]
-            cookies.append({
-                "name": name,
-                "value": value.strip(),
-                "domain": domain,
-                "path": path,
-                "expires": int(expires) if int(expires) != 0 else -1,
-                "httpOnly": http_only,
-                "secure": secure_flag == "TRUE",
-                "sameSite": "None" if secure_flag == "TRUE" else "Lax",
-            })
+            cookies.append(
+                {
+                    "name": name,
+                    "value": value.strip(),
+                    "domain": domain,
+                    "path": path,
+                    "expires": int(expires) if int(expires) != 0 else -1,
+                    "httpOnly": http_only,
+                    "secure": secure_flag == "TRUE",
+                    "sameSite": "None" if secure_flag == "TRUE" else "Lax",
+                }
+            )
     return cookies
 
 

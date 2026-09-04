@@ -2500,7 +2500,7 @@ export const warmSlotCache = createAsyncThunk(
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean } | string | undefined,
+  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; project_id?: string | null; activate?: boolean } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -2519,6 +2519,7 @@ export const createSlot = createAsyncThunk<
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
     const explicitHex = typeof opts === 'string' ? undefined : opts?.color_hex
     const project = typeof opts === 'string' ? undefined : opts?.project
+    const projectId = typeof opts === 'string' ? undefined : opts?.project_id
     // `activate: false` creates the session WITHOUT stealing focus, so a caller
     // that must finish setting the slot up (e.g. scoping it to a worktree) can
     // do so before the user is able to type into it. Defaults to true — every
@@ -2530,7 +2531,7 @@ export const createSlot = createAsyncThunk<
     // pending (e.g. New Chat spun on "Creating" under memory pressure and they
     // moved to another tab), the new slot must NOT hijack the view.
     const originActiveSlot = (getState() as RootState).chat.activeSlot
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, clean_mode, undefined, folderId || undefined)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, clean_mode, undefined, folderId || undefined, projectId || undefined)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.

@@ -162,6 +162,10 @@ def _agent_identity_enabled() -> bool:
     )
 
 
+class _ProjectMcpSourceChanged(RuntimeError):
+    """Project MCP source moved after a rebuild took its input snapshot."""
+
+
 def _atomic_json_write(path: Path, data: dict) -> None:
     """Write JSON atomically via tmp+rename to prevent read-of-partial-file.
 
@@ -3664,7 +3668,7 @@ def reproject_for_ceiling_change() -> None:
     _projected_ceiling_generation = generation
 
 
-def rebuild_agent_config(*, clean: bool = False) -> Path:
+def rebuild_agent_config(*, clean: bool = False, _project_retry: bool = False) -> Path:
     """Rebuild and write the merged kirocrew.json to ~/.kiro/agents/.
 
     This is the single authoritative function for producing the agent config.
@@ -4573,6 +4577,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         is_kirocrew_json = path.resolve() == _mcp_json_path().resolve()
     except OSError:
         is_kirocrew_json = False
+    retry_project_source = False
     if is_kirocrew_json:
         with _mcp_lock():
             on_disk = _read_mcp_json_unlocked().get("mcpServers", {})
@@ -4622,9 +4627,29 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
                     # otherwise the dead pre-rebuild URL is persisted.
                     if _k in on_disk_app:
                         servers[_k] = _v
-            _finalize_and_write()
+            # Project deactivation and this rebuild use different source files.
+            # Re-read the Project-owned source at the rendered-config commit
+            # boundary so a rebuild that snapshotted the old source cannot write
+            # a revoked server back after deactivation removed it.
+            from kiro_crew.project_capabilities import (
+                project_mcp_source_changed,
+                reconcile_project_mcp,
+            )
+
+            current_project_source = _load_json(_user_dir() / "mcp.json").get("mcpServers", {})
+            if project_mcp_source_changed(kirocrew_mcp, current_project_source):
+                retry_project_source = True
+            else:
+                reconcile_project_mcp(config, current_project_source)
+                _finalize_and_write()
     else:
         _finalize_and_write()
+    if retry_project_source:
+        if _project_retry:
+            raise _ProjectMcpSourceChanged(
+                "Project MCP source changed repeatedly while rebuilding the agent config"
+            )
+        return rebuild_agent_config(clean=clean, _project_retry=True)
     logger.info("Installed agent config: %s", path)
 
     # Install KiroCrew AIM capabilities package (includes kirocrew-lite)

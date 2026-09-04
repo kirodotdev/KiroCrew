@@ -622,6 +622,67 @@ the filename stem (`dashboard_chat-1-xxx`), producing session key
 back to the canonical form (`dashboard:chat-1-xxx`) when the direct lookup
 fails.
 
+**Portable Project attachment:** A dashboard slot may carry a first-class
+`project_id` in addition to its legacy `slot.project` directory. The id names a
+registered portable Project; the directory is derived from that Project's
+`workspace.source` (`self` or a materialized `repo` source) and remains the
+compatibility field used by file/workspace consumers. `POST /api/chat/slots`
+resolves an optional `project_id` before it creates the slot, then installs the
+id, derived directory, and compact Project brief before the first slots
+broadcast. A missing, unavailable, sensitive, or non-owner Project attachment
+therefore fails without publishing a half-attached session. An allowed attachment
+also records its SEL permission event before slot creation and returns
+`503 project_audit_unavailable` if that audit cannot be appended. The first real user
+turn injects the bounded brief as background reference context; it is not
+repeated on ordinary later turns, and a restored slot resolves it again when a
+reinjection boundary requires it. A restored slot resolves both its current
+workspace and brief before agent binding or session creation; resolution failure
+aborts the turn instead of launching in the stale persisted directory.
+Bundle-authored text is neutralized for both
+Project-brief boundary markers before Crew adds the trusted background-reference
+wrapper, so a Project description cannot forge that prompt boundary. The complete
+assembled brief is credential- and exfiltration-URL-redacted before truncation and
+is registered as a distinct model-egress sink in the Security Posture inventory.
+
+Attachment looks up the selected repo in owner-activated install-local state and
+fails closed when it cannot produce a readable, non-sensitive primary directory
+whose resolved path is free of control characters. It never clones or fetches a
+repository: capability activation is the only flow authorized to materialize the
+repo declarations bound into the owner's review digest, so an agent edit to
+`project.yaml` cannot make session restore contact a new remote. The path is
+injected into the trusted session preamble, so rejecting controls prevents a local
+directory name from forging a prompt section outside the screened Project brief.
+It then looks up every other declared `repo` source in manifest order. Secondary
+failures are recorded as unavailable instead of failing the session. The brief places the primary cwd and every resolved repo id/path before
+the description, so long prose cannot displace the locations an agent needs to
+work across repositories. Non-repo declarations remain in the source inventory
+without being treated as directories.
+
+An already-materialized repo is the only repo checkout attachment can use.
+Attachment keeps the readable checkout, marks that source as using cached bytes in
+the Project brief, and continues without any network operation. Activation and
+unchanged-digest refresh own clone/staging publication and preserve the old checkout
+if publication fails. A Project attachment error is reported as a Project setup
+failure and does not increment the
+conversation backend-failure streak: repository availability is not evidence that
+the provider conversation is poisoned.
+
+The relationship is one Project per session and is immutable once the session
+has messages: changing to another Project requires a new session. The legacy
+raw-directory endpoint remains available for work that has no portable Project.
+Using it, or changing the workspace directory, clears `project_id` so a local
+path override can never masquerade as the registered bundle it replaced. The
+same transition clears the cached Project brief, so a later turn cannot inject
+instructions from the detached bundle.
+`open_slots.json`, the dashboard slot payload, and history metadata all preserve
+the id across restart and resume. Restore accepts the persisted value only when it
+is a canonical UUID string, so malformed operator-edited metadata cannot install a
+false identity or crash the Project session index. The chat composer
+uses that id to resolve and
+show the Project manifest's display name as the session identity; it does not
+present the derived workspace repo or its branch as the Project. A slot with
+only a raw directory keeps the legacy folder-and-branch indicator.
+
 **Slot-key filename normalization:** `get_or_create_slot()` folds every
 caller-provided slot name to the `_safe_key()` filename charset
 (`[A-Za-z0-9_\-.]`, via `_normalize_slot_key()` — `dashboard:`/`dashboard_`

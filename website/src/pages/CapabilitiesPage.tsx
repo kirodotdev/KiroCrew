@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link2, BookOpen, Users, MessageSquareText, Webhook, LayoutTemplate, Compass, Workflow, Library } from 'lucide-react'
+import { Link2, BookOpen, Users, MessageSquareText, Webhook, LayoutTemplate, Compass, Workflow, Library, FolderKanban } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
 import RestartButton from '../components/RestartButton'
@@ -13,6 +13,7 @@ import ConnectionsPage from './connections/ConnectionsPage'
 import KnowledgePage from './KnowledgePage'
 import { SkillsTab, PromptsTab, SteeringTab } from './overview'
 import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
+import ProjectBundlesPage from './ProjectBundlesPage'
 
 
 /**
@@ -36,7 +37,6 @@ export default function CapabilitiesPage() {
   const { t } = useTranslation()
 
   const connectionsUiEnabled = useConnectionsUiEnabled()
-
   const tabs = useMemo(() => {
     // Three-group rail. Groups are display labels (SidePanelLayout keys group
     // membership on string identity), so each is computed once per render and
@@ -47,6 +47,7 @@ export default function CapabilitiesPage() {
     return [
       { key: 'crews', label: t('pages.capabilitiesPage.crews_label'), icon: <Users size={16} />, description: t('pages.capabilitiesPage.crews_description'), group: groupAgent },
       { key: 'templates', label: t('pages.capabilitiesPage.templates_label'), icon: <LayoutTemplate size={16} />, description: t('pages.capabilitiesPage.templates_description'), group: groupAgent },
+      { key: 'projects', label: t('pages.projectBundlesPage.projects'), icon: <FolderKanban className="lucide-inline" />, description: t('pages.projectBundlesPage.subtitle'), group: groupAgent },
       { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent },
       // The label and description are deliberately unchanged. Substituting the
       // pre-gallery "MCP Servers" strings was tried and reverted: those keys were
@@ -74,10 +75,16 @@ export default function CapabilitiesPage() {
   }, [provider, t])
 
   return (
-    <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<RestartButton />}>
+    <SidePanelLayout
+      title={t('pages.capabilitiesPage.agent_capabilities')}
+      tabs={tabs}
+      rememberKey="capabilities"
+      headerRight={<RestartButton />}
+    >
       {tab => <>
         {tab === 'crews' && <KiroCrewAgentsPage embedded />}
         {tab === 'templates' && <AgentsPage embedded />}
+        {tab === 'projects' && <ProjectBundlesPage embedded />}
         {tab === 'mcp' && <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
         {tab === 'skills' && <SkillsTab />}
         {/* ErrorBoundary preserves the crash isolation the /knowledge route

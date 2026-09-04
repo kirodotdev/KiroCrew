@@ -179,6 +179,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "mode",
         "workspace",
         "project",
+        "project_id",
         "folder_id",
         "app",
         "artifact",

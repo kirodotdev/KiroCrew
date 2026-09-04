@@ -1513,6 +1513,111 @@ security decision or the copied content.
   - `kirocrew-core`: spawn, learn, task tools
 - Skills are for on-demand knowledge only (not for CLI command wrappers — use MCP tools instead)
 
+## Project bundle capability activation
+
+The bounded Project brief attached to a session is external bundle prose. Before it
+enters the prompt, credentials and suspicious exfiltration URLs are redacted,
+structural boundary markers are neutralized, and the shared prompt-injection screen
+runs over the full brief. A match drops the entire brief and emits the standard
+`prompt_injection_dropped` SEL event with the `project_brief` surface; the Project
+working directory remains attached, so suspicious prose cannot remove the user's
+explicit workspace selection.
+
+Portable Project bundles may declare only `context.agents`, `context.skills`, and
+`context.mcp`; unknown context fields are rejected instead of becoming inert aliases.
+Discovery resolves only normalized bundle-relative paths, rejects
+links, and reports an inventory without reading those declarations into an
+agent's context or MCP runtime. The owner review names every declared agent and
+shows each MCP server's exact command and string arguments or credential-free URL;
+counts and path globs alone are not consent to local process execution. Activation
+requires a separate confirmation. The owner-only Project activation endpoint is
+the consent boundary. Its caller must echo the review key returned by the
+inventory. That key binds the canonical bundle directory to repo declarations,
+context selectors, and the exact agent, skill, and MCP content being approved;
+any change after review makes activation fail. Agent and MCP validation, digesting,
+and installation use one retained bounded byte snapshot per file, so a path change
+between those stages cannot substitute unreviewed configuration. The successful
+decision is critically SEL-audited before any output is materialized.
+
+Activated outputs are namespaced by immutable Project id: agent JSON lives in
+the Kiro agents directory, skill trees live under
+`<data home>/skills/projects/<project-id>/`, and MCP names in
+`<data home>/mcp.json` use the same full-id prefix. The full UUID prevents two
+Projects sharing an eight-character prefix from shadowing one another. Skill
+trees are copied into private staging through descriptor-pinned, no-follow
+traversal before atomic publication. A link or mid-copy link swap is a hard
+activation refusal, and platforms without pinned tree traversal fail closed
+instead of falling back to a name-based copy. Existing links or junctions in the
+install-owned skill destination ancestry are refused before directory creation and
+checked again before atomic publication. Bundle-owned agent and MCP JSON
+are likewise read through descriptor-pinned, no-follow file descriptors and
+must be single-link regular files. Platforms without POSIX descriptor-relative
+opens use the shared hardened read, which validates containment and hardlink
+status against the opened handle. Capability JSON reads are size-bounded before
+parsing; discovery caps resolved matches and inspected tree entries. Each skill
+tree has fixed depth, entry, and byte budgets during the pinned copy. The stored digest
+is later verified through a bounded descriptor-pinned walk as well, so a locally
+replaced root, link, hardlink, special file, growing file, or oversized tree is
+refused before deactivation can read through or remove it. Agent specs cannot carry
+hooks, file-backed prompts or resources, `allowedTools`, or `toolsSettings`; nested
+agent MCP and standalone Project MCP definitions cannot carry `autoApprove`,
+environment, headers, OAuth, or client credentials. Inline prompts and non-file
+resources remain portable because they cannot make kiro-cli read an unreviewed
+install-local path outside Crew's file gate.
+Standalone MCP definitions accept only a credential-free HTTP(S) URL or a stdio
+command with string arguments. The explicit trust action enables accepted MCP
+definitions; no approval field is synthesized.
+
+Standalone Project MCP entries carry their Project id as provenance through the
+install MCP source and rendered main-agent config. The activation record is
+owner-only state under
+`<data home>/trust/project-bundles/`, which inherits the trust directory's
+keystone protection. Deactivation removes only the recorded namespaced agent,
+skill, and byte-equal MCP entries, then removes matching provenance-owned MCP
+servers and tool references from the rendered agent config. An entry whose
+source or provenance was changed locally is preserved as a user-owned entry;
+other local MCP changes make deactivation fail visibly rather than deleting a
+user's edit. Derived repo clones remain cached while the Project is registered;
+unregister removes only its exact Crew-owned derived state and managed bundle
+clone, never an operator-added local bundle or existing checkout. Derived clones
+contain no granted runtime capability.
+
+An existing activation record is fail-closed state. If it is unreadable, carries
+an unsupported version, names another Project, or records an output outside that
+Project's exact agent, skill, MCP, or repository namespace, deactivation and Project
+removal stop with a repair error; they never interpret corruption as "inactive" or
+use copied state to remove another Project's materialization. Removing only the
+Project provenance marker from an otherwise configuration-equal MCP entry is the documented
+reclamation path and does not block deactivation or delete the reclaimed entry.
+
+Managed bundle sync compares the current content-bound review key with the key in
+the activation record. If any agent, skill, MCP definition, context selector, or
+repo declaration changed, sync withdraws the tracked activation instead of
+installing the new upstream content. The owner must inspect the new inventory and
+activate it explicitly. A synced bundle that cannot produce a review key also
+withdraws the tracked activation before reporting the malformed content. An unchanged
+key may refresh the existing activation.
+Changed-key invalidation does not apply ordinary deactivation's local-integrity
+precheck: it removes modified outputs in the exact Project namespace and MCP entries
+that retain matching Project provenance, then removes the activation record. A
+markerless reclaimed MCP entry remains user-owned.
+Repeating explicit activation with the same review key and canonical bundle verifies
+the existing tracked outputs and returns without removing or rematerializing them;
+repository refresh remains the managed-sync path.
+Project status verifies presence before reporting an activation as active. A missing
+tracked agent, skill tree, or MCP entry is a verification failure, so deleting a
+derived output cannot leave the Project displayed as active. Full byte and tree
+integrity verification remains on repeated activation, refresh, deactivation, and removal.
+
+The main-agent writer reconciles Project provenance from the current install MCP
+source while holding its final rendered-config lock. A rebuild that loaded the
+old source detects any Project-owned entry change, discards that render, and
+retries once from the current source; it cannot commit a revoked or superseded
+server later.
+Missing source entries lose their rendered server and `@` references; a source
+entry whose marker was removed keeps its configuration and loses only Crew's
+provenance claim.
+
 ## MCP Discovery (`mcp_discovery.py`)
 
 Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kirocrew-cron`, `kirocrew-core`.

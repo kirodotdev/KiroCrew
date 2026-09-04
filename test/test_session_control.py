@@ -2440,6 +2440,7 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
     child._artifact = "my-artifact"
     child.reasoning_effort = "high"
     child.color_index = 3
+    child.project_id = "018f4f4a-760f-7a8b-a5d4-5a7e0f130d4e"
     child.title = "Pinned title"
     child._titled = True
     child._title_origin = "user"
@@ -2464,6 +2465,7 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
     assert meta.get("artifact") == "my-artifact"
     assert meta.get("reasoning_effort") == "high"
     assert meta.get("color_index") == 3
+    assert meta.get("project_id") == child.project_id
     assert meta.get("title") == "Pinned title"
     assert meta.get("title_origin") == "user"
 

@@ -1562,7 +1562,7 @@ React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 
 
 **Real-time updates** — Single WebSocket at `/api/ws` (`useWebSocket` hook) multiplexes all events: `dashboard`, `slots`, `slot_title`, `notification`, `notification_ack`, `notification_unack`, `notifications_clear`, `refresh`, `chat_message`, `chat_chunk`, `chat_done`, `log`, `refine`, `sessions_restarting`, `heartbeat`, `tool_call`, `context_usage`. Exponential backoff reconnect (1s→2s→4s→max 10s); on reconnect re-fetches slots via Redux dispatch — **no page reload** unless the server `version` field in the `dashboard` status message changes (actual code update). This preserves unsent messages, scroll position, and form state across transient disconnects. `WsContext` provides log subscribe/unsubscribe to `LogsPage`. SSE survives only for logs (`useLogSSE` at `/api/logs`); the `/api/stream` route is still served but has no frontend consumer. Chat send uses `AbortController` with 10-second timeout — if the backend is busy starting kiro sessions, the fetch times out gracefully without showing an error (the message was received server-side; chunks arrive via WS when the session is ready).
 
-**Routing** — `App.tsx` uses React Router `<Routes>` with paths: `/chat`, `/notifications`, `/overview`, `/worlds`, `/system`, `/capabilities`, `/projects`, `/logs`, `/hooks`. `/agents` and `/mc-agents` redirect to `/capabilities` (Agents is the panel's first tab). Default redirects to `/chat`. SPA fallback middleware in `server.py` catches 404s on non-API GET requests and serves `index.html`.
+**Routing** — `App.tsx` uses React Router `<Routes>` with paths: `/chat`, `/notifications`, `/overview`, `/worlds`, `/system`, `/capabilities`, `/projects`, `/logs`, `/hooks`. `/agents` and `/mc-agents` redirect to `/capabilities` (Agents is the panel's first tab); `/tasks` redirects to the Task Runner at `/projects`. Portable Project bundles have no top-level route and live under `/capabilities?tab=projects`. Default redirects to `/chat`. SPA fallback middleware in `server.py` catches 404s on non-API GET requests and serves `index.html`.
 
 **Request a Feature** — The header action creates a chat slot and queues the self-contained feature-request seed through the slot's pending-context endpoint. It then sends and persists only the localized, user-facing request text. Pending context is consumed by that turn without becoming a transcript message, so internal workflow instructions never appear as user-authored history. Every drained frame also carries a silent-consumption contract line (`_CONTEXT_FRAME_CONTRACT` in `chat_runner.py`, between the `[Background context from "<source>"]` delimiter and the content): follow the block, never quote/echo/reveal it, reply only to the user's visible message. Without it the agent recited the injected workflow verbatim as its visible reply on every click (#4780) — the contract is part of the frame so every producer (app-kit inject, artifact companion, Slack thread backfill, feature-request) is covered without restating it per payload. The contract is best-effort model compliance, not a confidentiality boundary — a model can still ignore it, so pending-context payloads must never carry secrets or content that would be harmful if echoed. If context injection fails, the visible request still sends and the chat remains usable.
 
@@ -1593,9 +1593,8 @@ React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 
   - **There is no dependency-install button.** Desktop releases already carry the recognizer and pinned `imageio-ffmpeg` decoder; the only user action is selecting an on-demand model and clicking **Download now**. A source install can need a `voice`-extra command in the gateway's OWN interpreter plus a system FFmpeg command for compressed input; project-venv binaries are not trusted executable storage. These commands are suppressed where no channel into this interpreter exists (frozen build, code-signed app bundle, pip-less or PEP 668 externally-managed python): `transcribe_unsupported` makes the page show an unsupported notice instead of a command that cannot succeed. `bundled_interpreter` also prevents any Homebrew/Winget/Apt decoder advice inside a desktop app. A platform with no prebuilt recognizer wheel is not pip-actionable; the availability `detail` on `/api/stt/status` names it. `ffmpeg_missing` remains independent of `available` for diagnostics, because a corrupt payload can leave a provider ready while an uploaded WebM cannot be decoded. `transcribe` additionally renders `AwsConsentGate service="transcribe"`, which is the only way the paid-service grant is recorded (deliberately no CLI verb).
   - Endpoints: `GET/PUT /api/config/stt`, `GET /api/stt/status`, `POST /api/stt/prepare`, `POST /api/stt/prewarm`, `POST /api/stt/transcribe`, `GET /api/ws/stt`. The live dictation surface these settings drive is specified in [stt-streaming](../features/stt-streaming.md).
 - **System** (`/system`) — live metrics (1s refresh): CPU %, memory used/total, network RX/TX stat cards; host info with correct Apple Silicon arch detection, load averages; memory, process, network, storage detail cards; uptime ticking every 1s via `useUptime` hook (client-side from `start_time`)
-- **Agent Capabilities** (`/capabilities`; `/agents` redirects here) — merged Agents + Capabilities destination, bottom-pinned in the nav. `SidePanelLayout` tabs in order: **Agents** (agent → workspace → memory store bindings, `KiroCrewAgentsPage` embedded), **Agent Templates** (installed agent configurations/packages, `AgentsPage` embedded), **Integrations (MCP)**, **Skills**, **Hooks**, **Prompts**. The templates tab keeps the side-by-side layout: installed agents list (left) with detail panel (right, height from `LAYOUT.AGENT_LIST_HEIGHT`). Installed agents card shows each agent with name, `SourceBadge` source pill (neutral `package`/`kirocrew`/`project`/`local` sources — the former `aim` source was generalized to `package`), model, description, skill count, MCP server count. Click to view full agent config in detail panel: system prompt, tools, auto-approved tools, MCP servers with `--aim` token colors (hover tooltip showing tool list), expandable denied commands list (`<details>` with all patterns). **Agent-package install / uninstall now routes through the capability seam** (`installPlugin`/`uninstallPlugin` in `providers/adapters/acp.ts` dispatch `type === 'agent'` to `/api/capability/agents/{install,uninstall}`). This replaced the earlier "intentionally NOT offered" stance: the pure-AIM `/api/aim/agents/*` + `/api/aim/update` routes were removed, but leaving `GET /api/capability/agents` as list-only meant the seam could SHOW installed agent packages and never manage them — an asymmetry with skills/MCP that forced an edition to shadow the core or mount its own routes. Bulk "Update All" remains unoffered (no `update_*` op on the seam). Skills/MCP install/uninstall still route through the capability seam (see Capability Integration); the manager returns human-friendly errors for invalid packages. The MCP registry browser is hidden entirely when no external capability manager is configured (registry → 503); when present it offers click-to-expand descriptions with all detail lines, clickable URLs (DOMPurify-sanitized), a direct Install button, and tier badges at `text-[11px]` minimum. Striped subagent table with `EmptyState` when empty, kiro credit usage card, context window usage bars per session (agent name in `--aim` color).
-- **Tasks** (`/tasks`) — redirects to `/projects`
-- **Projects** (`/projects`) — autonomous multi-step task execution with left/right split layout (260px sidebar + detail/compose area). Sidebar shows compact project cards with status icons, progress bars, cancel/delete buttons, and "＋ New Project" button. Compose area has two modes: ✨ Compose (free-text with refine-to-spec) and 📄 From Spec (paste/upload). Shared `AgentSelector` for agent selection. Plan generation with cancel, auto-polling for planned runs. Selected project detail view (`ProjectDetailPage`) with Idea/Tasks tabs: Idea tab shows spec content read-only with "Edit in Chat" button; Tasks tab has DAG/Phased view toggle. **🎮 button** (right-aligned in tab bar) opens pixel-art office animation modal (`PixelCanvasWidget`) showing character sprites working at desks based on task status. Action buttons: Execute/Chat/Discard (planned), Cancel (running), Restart/Schedule (completed/failed). Execute stays on project (no navigation). `SubAgentActivity` table shown below running projects. `ProjectAnimation` shown in empty compose state. Session storage persistence for mode, input, spec text, and planning state. 3-second auto-refresh polling.
+- **Agent Capabilities** (`/capabilities`; `/agents` redirects here) — merged Agents + Capabilities destination, bottom-pinned in the nav. `SidePanelLayout` tabs in order: **Agents** (agent → workspace → memory store bindings, `KiroCrewAgentsPage` embedded), **Agent Templates** (installed agent configurations/packages, `AgentsPage` embedded), **Projects** (portable bundle management, `ProjectBundlesPage` embedded), **Integrations (MCP)**, **Skills**, **Steering**, **Hooks**, **Prompts**. The templates tab keeps the side-by-side layout: installed agents list (left) with detail panel (right, height from `LAYOUT.AGENT_LIST_HEIGHT`). Installed agents card shows each agent with name, `SourceBadge` source pill (neutral `package`/`kirocrew`/`project`/`local` sources — the former `aim` source was generalized to `package`), model, description, skill count, MCP server count. Click to view full agent config in detail panel: system prompt, tools, auto-approved tools, MCP servers with `--aim` token colors (hover tooltip showing tool list), expandable denied commands list (`<details>` with all patterns). **Agent-package install / uninstall now routes through the capability seam** (`installPlugin`/`uninstallPlugin` in `providers/adapters/acp.ts` dispatch `type === 'agent'` to `/api/capability/agents/{install,uninstall}`). This replaced the earlier "intentionally NOT offered" stance: the pure-AIM `/api/aim/agents/*` + `/api/aim/update` routes were removed, but leaving `GET /api/capability/agents` as list-only meant the seam could SHOW installed agent packages and never manage them — an asymmetry with skills/MCP that forced an edition to shadow the core or mount its own routes. Bulk "Update All" remains unoffered (no `update_*` op on the seam). Skills/MCP install/uninstall still route through the capability seam (see Capability Integration); the manager returns human-friendly errors for invalid packages. The MCP registry browser is hidden entirely when no external capability manager is configured (registry → 503); when present it offers click-to-expand descriptions with all detail lines, clickable URLs (DOMPurify-sanitized), a direct Install button, and tier badges at `text-[11px]` minimum. Striped subagent table with `EmptyState` when empty, kiro credit usage card, context window usage bars per session (agent name in `--aim` color).
+- **Task Runner** (`/projects`; `/tasks` redirects here) — autonomous multi-step task execution with left/right split layout (260px sidebar + detail/compose area). Sidebar shows compact project cards with status icons, progress bars, cancel/delete buttons, and "＋ New Project" button. Compose area has two modes: ✨ Compose (free-text with refine-to-spec) and 📄 From Spec (paste/upload). Shared `AgentSelector` for agent selection. Plan generation with cancel, auto-polling for planned runs. Selected project detail view (`ProjectDetailPage`) with Idea/Tasks tabs: Idea tab shows spec content read-only with "Edit in Chat" button; Tasks tab has DAG/Phased view toggle. **🎮 button** (right-aligned in tab bar) opens pixel-art office animation modal (`PixelCanvasWidget`) showing character sprites working at desks based on task status. Action buttons: Execute/Chat/Discard (planned), Cancel (running), Restart/Schedule (completed/failed). Execute stays on project (no navigation). `SubAgentActivity` table shown below running projects. `ProjectAnimation` shown in empty compose state. Session storage persistence for mode, input, spec text, and planning state. 3-second auto-refresh polling.
 - **Hooks** (`/hooks`) — script hook management following standard page layout: `PageHeader` + `StatCard` row (Total, Enabled, Total Runs, Errors) + `Card`/`CardTitle`/`InfoTip` wrapping a `table-striped` hooks table with `SearchInput` filter. Toggle switches for enable/disable, `Badge` status pills (ok/err/warn), `Btn` actions (▶ Test, Edit, ✕ Delete). Create/edit form uses `Card` wrapper with `Input`, styled `select` for event type, `SendBtn` for save. Test results shown in card-like panel below table with `Badge` exit status and dismissible stdout/stderr output.
 - **Logs** (`/logs`) — live gateway log stream via WebSocket (subscribe/unsubscribe via `WsContext`), server-side log level control (DEBUG/INFO/WARNING/ERROR buttons). SSE (`/api/logs`) remains as a secondary transport.
 - **Worlds** (`/worlds`) — agent world scenes with themed 3D-style environments (neural, wizard, underwater). Decorative page for visual personality.
@@ -1935,6 +1934,213 @@ evidence. The generic service update also fails closed for structured records.
 - Injects `deniedCommands` from bundled defaults into ALL agent configs (security)
 - Runs at install, gateway startup, and every ~60s
 - MCP server isolation removed — kiro-cli ACP ignores per-agent `disabled` overrides; control is centralized in global mcp.json
+
+### Portable Projects portal
+
+The **Projects** tab at `/capabilities?tab=projects` is the portal for portable
+Project bundles. It reads the same install-local registry as `kirocrew project`
+and presents a single-column Project list whose focused detail view shows bundle
+identity, manifest health, repositories, included capabilities, and every local
+materialization. Each Project detail also shows its live and
+historical attached sessions and offers **New session**, which creates a slot
+with the Project id in the birth request and navigates directly to it. Attachment
+resolution supplies the workspace and first-turn brief before that slot is
+announced; the UI never races a follow-up scoping request. It also inventories
+declared agents, skills, repo
+sources, and MCP servers. They stay inert until the dashboard owner chooses
+**Trust and activate**. The review shows every agent name and each MCP server's
+exact command and arguments or URL, and activation requires a separate
+confirmation before it materializes namespaced install-local capability
+entries and repo clones; **Deactivate capabilities** removes only the tracked
+agent, skill, and MCP outputs. It can create a local bundle, register an existing
+folder, clone a Git-backed bundle, and fast-forward a managed clone. Healthy
+Projects also appear in the sidebar's general create-session menu. Project
+Git locks, managed bundle clones, and derived repo checkouts reject any existing
+link or junction in their install-owned destination ancestry before creation and
+recheck it before publication. Project selection, create, and add state live in
+query parameters so refresh, browser history, and shared links preserve the active
+surface. The v1 portal treats the manifest as an externally edited bundle file.
+List rows and create-session
+choices show the registration path beside
+the display name so equal names remain distinguishable. The trust review shows
+both declared paths and resolved counts, plus every materialized repo path.
+An attached session's composer chip is read-only and shows the Project display
+name rather than exposing its selected repository as the session identity.
+Unavailable bundles remain listed with a stable health code, block new sessions,
+and offer Git retry when a managed clone exists. **Remove from Kiro Crew** first
+withdraws tracked activated capabilities and then unregisters the Project. Crew-owned
+managed storage is deleted only after the registry deletion commits, so a registry
+write failure cannot delete a still-registered bundle. Removal preserves operator-added
+bundle directories and existing checkouts while removing only the exact Crew-owned
+managed clone and derived state for that Project.
+Filesystem
+permissions and Git credentials remain the authority; the API and UI introduce
+no user, owner, membership, or ACL record. The tab is the only navigation entry;
+the existing `/projects` route remains the Task Runner surface.
+Crew accepts local paths, scp-style remotes, and `file`, `git`, HTTP(S), or SSH
+URLs; it rejects Git remote-helper protocols and embedded HTTP credentials.
+Malformed bracketed authorities and other URL parser failures become bounded
+Project-domain errors, so invalid Git or MCP URLs cannot escape as owner-API 500s.
+Project-domain exception messages pass through credential and suspicious-URL
+redaction before they are returned in dashboard JSON.
+Local create/add and local or `file` Git remotes resolve the filesystem path
+before I/O and reject Crew-sensitive locations, including percent-encoded file
+URLs. Decoded control characters are rejected before path construction, so an
+encoded NUL cannot crash the owner API or CLI. `file` URLs cannot name a network
+authority. Relative bundle repo paths
+resolve against the bundle root; relative add-command paths resolve against the
+caller's current directory, and the same absolute path reaches both security and
+Git. Provider-specific source
+configuration is recursively limited to
+credential-free, acyclic JSON values under one shared depth/node expansion budget,
+and dashboard serialization defensively
+applies both credential and suspicious-URL redaction to every manifest-derived
+display string, including nested configuration keys and values and local paths.
+Repo sources require a non-empty text URL, their optional default branch must be
+text, and a non-`self` workspace source must identify a repo rather than an inert
+provider extension. Live slot values are snapshotted on the event-loop thread
+before historical session processing is offloaded, so concurrent slot creation
+or removal cannot invalidate a worker's registry iterator.
+Managed clone and sync commands use a trusted Git executable inside the standard
+subprocess sandbox with a resource ceiling and non-interactive prompting. Their
+credential-scrubbed environment restores only allowlisted OS keychain helpers or
+the exact trusted `gh auth git-credential` command from system/global config.
+Manifest paths reject POSIX-rooted and Windows drive-rooted spellings on every
+platform so sharing cannot change a path from relative to escaping. Local/file
+Git fetches resolve upload and receive helpers outside `PATH`, including only
+fixed Git for Windows installation roots on Windows.
+Repository-local execution hooks, credential helpers, transports, URL rewrites,
+and worktree redirects are refused. Per-project/source file locks serialize Git
+mutations, and a declared default branch is used for the initial clone. Attachment
+reuses an existing derived checkout, marks it stale in the Project brief, and does
+not reopen it by name for Git operations after validation. This avoids a checkout
+swap redirecting a Git write into another repository. Removal and re-addition are
+the v1 refresh/reset operation, including after a declared remote changes.
+Bundle sync inspects the fetched `project.yaml` before merge and refuses a
+remote Project-id change, so an existing registry identity cannot silently turn
+into a second Project. It checks the fetched Git blob size before reading the
+manifest into the gateway process, so the fixed manifest limit also bounds
+remote input buffering. Adding a second remote that declares an already managed
+Project id is also refused unless its origin URL matches the existing clone's
+origin, so the registry never records one remote against another remote's bytes.
+
+Creating a bundle resolves the operator-selected path and publishes the initial
+manifest inside the same worker-thread operation, so a slow filesystem cannot block
+the aiohttp event loop. Publication uses an atomic no-clobber operation;
+an existing file, dangling link, or other directory entry wins and remains untouched.
+The complete candidate manifest is validated before writing. Existing manifests
+are not edited by the v1 portal: check-then-replace cannot atomically refuse a
+destination another process changed after validation. Operators edit
+`project.yaml` with their normal file/Git workflow, then sync or re-add the bundle.
+Crew never commits or pushes a Git-backed edit and never configures Git author identity.
+
+The HTTP contract is authenticated throughout and every Project route is
+restricted to the dashboard owner. Reads include absolute local registration
+and materialization paths, and v1 has no membership model that could safely
+delegate that machine-local inventory. Both allowed and denied owner checks emit
+SEL permission events. An allowed owner operation fails closed with
+`project_audit_unavailable` when its event cannot be recorded; a denied Project
+attachment emits the same audit before it returns. Attachment records its allowed
+event before looking up an already-materialized repository. It cannot clone or fetch;
+that network-capable materialization is restricted to explicit owner activation:
+
+* `GET /api/project-bundles` and `GET /api/project-bundles/{id}` — owner-only
+  list/read bundles,
+  including attached live and historical persistent-session summaries. Incognito
+  and temporary sessions stay out of this historical view.
+* `POST /api/project-bundles` — create a local bundle from `name` and `path`.
+* `POST /api/project-bundles/add` — register a local `source` path or clone a Git URL.
+  Adding a second materialization of the same Project id is refused while activation
+  state remains, before the registry primary changes; inactive additions run through
+  the capability-aware registry guard.
+* `POST /api/project-bundles/{id}/sync` — fast-forward a managed Git clone only.
+* `POST /api/project-bundles/{id}/activate` — owner-only trust plus capability/repo
+  materialization; the body must echo the listing's content-bound `expected_key`.
+* `DELETE /api/project-bundles/{id}/activate` — owner-only trust withdrawal and
+  targeted capability removal.
+* `DELETE /api/project-bundles/{id}` — owner-only capability withdrawal, registry
+  removal, and cleanup of that Project's Crew-owned managed clone and derived state.
+  Operator-added directories remain on disk and can be registered again.
+
+The legacy Task Runner keeps its original `GET/POST /api/projects` and
+`GET/PUT/DELETE /api/projects/{id}` contract. Portable bundles do not repurpose
+an existing API resource or publish a second alias namespace for it.
+
+Activation, deactivation, and removal rebuild the rendered main-agent config so
+an MCP change applies to new sessions. Activated agents, skills, and MCP servers
+are namespaced install-level entries in v1, not per-session registries. Project
+attachment scopes the working repositories and bounded Project brief. After the
+primary workspace resolves, secondary owner-activated checkouts are looked up
+concurrently in a bounded worker pool and retain manifest order in the resulting
+brief; attachment performs no clone or fetch. Managed
+bundle sync refreshes capabilities only when that Project is already active and
+its review key still matches the exact repo declarations, context selectors,
+agent JSON, skill trees, and MCP JSON the owner approved. A changed key withdraws
+the old tracked materialization and requires explicit re-review instead of
+installing new upstream capabilities. That security invalidation removes locally
+modified outputs in the Project's exact namespace and MCP entries that retain its
+provenance, while preserving markerless reclaimed MCP entries. An unchanged-key
+refresh verifies the prior
+materialization and resolves every repository before replacing only the recorded
+repository paths; a failed repository refresh leaves the prior activation record and
+capabilities usable. Repeating explicit activation for the same review key verifies and
+returns the existing materialization without replacing it. Deactivation and removal
+validate tracked outputs, then append
+their critical SEL decision inside the per-Project lock before mutating capability or
+registry state. A failed critical audit denies the mutation rather than leaving an
+unaudited revocation. Activation grants are stored below
+`<data home>/trust/project-bundles/`, inside the keystone-protected trust
+directory, with owner-only permissions and a per-Project cross-process lock.
+Executable bundle resolution and review-key validation happen inside that lock,
+before any activated output is installed. Managed repo materialization rejects a
+link or junction at its checkout target and at every derived-state ancestor before
+directory creation and again after acquiring its Git lock, so a planted checkout
+cannot redirect synchronization into another working tree.
+The authority-bearing registry similarly lives below
+`<data home>/trust/project-registry/`, separate from agent-writable derived
+Project state. Its lock and JSON file reject links and non-regular aliases, the
+JSON read is bounded, and the same bound is enforced before an atomic registry
+replacement. Stored paths are resolved and checked against the sensitive-path
+ceiling again on every load rather than trusting registration-time
+validation forever. Resolution failures, including a replaced path that forms a
+link loop, become a bounded Project registry error instead of escaping into the
+dashboard or session attachment path. An unreadable or version-invalid activation
+record likewise blocks deactivation and Project removal, so registry deletion
+cannot orphan installed Project capabilities.
+Dashboard startup constructs one registry and one capability manager with this
+production layout and shares them through the application. Requests do not create a
+fresh registry or perform data-home initialization on the event loop.
+
+Human `kirocrew project create`, `add`, and `sync` mutations record SEL outcomes.
+This CLI group is intentionally not mirrored as an MCP tool: registration, cloning,
+and lifecycle changes cross the operator trust boundary and remain human-invoked.
+Bundle agent and MCP JSON reads are descriptor-pinned and no-follow; platforms
+without POSIX descriptor-relative opens use the shared hardened read, which
+validates containment and hardlink status against the opened handle. Project
+MCP entries keep Project-id provenance in both the install source and rendered
+agent config; withdrawal
+removes matching servers and tool references while preserving entries whose
+provenance was locally reclaimed.
+`project.yaml` itself uses the shared opened-handle, no-follow reader for load
+and validation, with a fixed size bound. Deep YAML and alias
+amplification fail as manifest errors. Source and context declaration counts are
+bounded, and recursive context globs are refused so inventory cannot turn one
+small manifest into an unbounded filesystem traversal. The rendered-agent commit
+also reconciles
+Project provenance against the current install MCP source inside its final lock,
+discarding a stale render and retrying once when any Project-owned entry changed.
+An overlapping rebuild cannot restore a withdrawn or superseded server.
+
+Non-2xx JSON responses carry a stable `code`. Blocking filesystem and Git work
+runs off the aiohttp event loop. The install-scoped Project registry and capability
+manager are created lazily on the first authorized Project request, after the
+gateway has bound its socket, and then reused; their first filesystem setup also
+runs off-loop. Task Runner remains at `/projects`, and `/tasks`
+is its compatibility redirect. Task Runner
+continues to use `/api/taskrunner`; its Project resource remains available at
+`/api/projects`. A request to
+the Projects bundle portal with the legacy `?applied=` task-plan query resolves
+to Task Runner.
 
 ### Build & Development
 

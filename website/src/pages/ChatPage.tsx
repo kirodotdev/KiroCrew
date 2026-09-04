@@ -5654,6 +5654,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // (no git, path gone, not a repo) leaves the chip showing the folder name
   // alone, which is the pre-existing behaviour.
   const _slotProject = currentSlot?.project || ''
+  const _slotProjectId = currentSlot?.project_id || ''
+  const { data: projectBundles } = useQuery({
+    queryKey: ['project-bundles'],
+    queryFn: () => api.projectBundles(),
+    enabled: !!_slotProjectId,
+    staleTime: 15_000,
+  })
+  // Never reveal the workspace repo as the identity of a bundle-attached
+  // session, including during the short window before its manifest loads.
+  const projectBundleName = _slotProjectId
+    ? projectBundles?.projects.find(project => project.id === _slotProjectId)?.name
+      || i18nT('components.chatInput.project')
+    : undefined
   const { data: projectGit, isError: projectGitError } = useQuery({
     queryKey: ['project-git', _slotProject],
     queryFn: () => api.projectGit(_slotProject),
@@ -8603,6 +8616,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }}
               onFileOpen={handleFileOpen}
               project={currentSlot?.project || ''}
+              projectBundleName={projectBundleName}
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}
               projectGitDirty={gitBadge?.dirty ?? 0}

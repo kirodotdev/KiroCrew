@@ -30,6 +30,7 @@ from kiro_crew.platform import current_context, safe_context_call
 
 def register(app: web.Application) -> None:
     """Register the connections routes on *app*."""
+    handlers_project.install_project_services(app)
     # SSO login WS: an edition may supply the real login handler (CPP
     # DashboardContributor.sso_login_handler); the public Default returns None so the
     # built-in stub stays bound. Fail-closed via the canonical safe_context_call.
@@ -54,12 +55,26 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/taskrunner/refine/cancel", handlers.api_taskrunner_refine_cancel)
     app.router.add_post("/api/taskrunner/refine/answer", handlers.api_taskrunner_refine_answer)
 
-    # Projects
-    app.router.add_get("/api/projects", handlers_project.api_projects_list)
-    app.router.add_get("/api/projects/{id}", handlers_project.api_project_get)
-    app.router.add_post("/api/projects", handlers_project.api_project_create)
-    app.router.add_put("/api/projects/{id}", handlers_project.api_project_update)
-    app.router.add_delete("/api/projects/{id}", handlers_project.api_project_delete)
+    # Portable Project bundles use their own namespace. Literal routes precede
+    # the id route so "add" cannot be interpreted as a project id.
+    app.router.add_get("/api/project-bundles", handlers_project.api_projects_list)
+    app.router.add_post("/api/project-bundles", handlers_project.api_project_create)
+    app.router.add_post("/api/project-bundles/add", handlers_project.api_project_add)
+    app.router.add_post("/api/project-bundles/{id}/sync", handlers_project.api_project_sync)
+    app.router.add_post("/api/project-bundles/{id}/activate", handlers_project.api_project_activate)
+    app.router.add_delete(
+        "/api/project-bundles/{id}/activate", handlers_project.api_project_deactivate
+    )
+    app.router.add_delete("/api/project-bundles/{id}", handlers_project.api_project_remove)
+    app.router.add_get("/api/project-bundles/{id}", handlers_project.api_project_get)
+
+    # Preserve the established Task Runner API without widening its public
+    # surface. Project bundles use the separate namespace above.
+    app.router.add_get("/api/projects", handlers_project.api_task_projects_list)
+    app.router.add_get("/api/projects/{id}", handlers_project.api_task_project_get)
+    app.router.add_post("/api/projects", handlers_project.api_task_project_create)
+    app.router.add_put("/api/projects/{id}", handlers_project.api_task_project_update)
+    app.router.add_delete("/api/projects/{id}", handlers_project.api_task_project_delete)
     app.router.add_get("/api/activities", handlers_project.api_activities_list)
     app.router.add_post("/api/comments", handlers_project.api_comment_add)
     app.router.add_get("/api/comments", handlers_project.api_comments_list)
