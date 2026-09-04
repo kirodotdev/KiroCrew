@@ -268,6 +268,9 @@ export const HtmlViewer = memo(function HtmlViewer({ content }: { content: strin
         srcDoc={content}
         sandbox=""
         className="w-full h-full border-none"
+        // Own compositing layer: a sandboxed srcDoc frame with no transform can
+        // skip its first paint and render blank. Same remedy as McpAppFrame.
+        style={{ transform: 'translateZ(0)' }}
         title={i18nT('components.fileRenderers.html_preview')}
       />
     </div>

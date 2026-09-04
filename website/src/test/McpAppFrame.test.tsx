@@ -53,6 +53,17 @@ describe('McpAppFrame', () => {
     expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin')
   })
 
+  it('gives the app frame its own compositing layer so a skipped first paint cannot blank it', () => {
+    const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
+    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+    expect(iframe).not.toBeNull()
+    expect(iframe.style.transform).toBe('translateZ(0)')
+    // Additive: the script-reported height sizing must survive the promotion —
+    // losing it would collapse the frame for every app, a bigger regression
+    // than the blank first paint being fixed.
+    expect(iframe.style.height).not.toBe('')
+  })
+
   it('renders the server/tool header', () => {
     const { getByText } = renderWithProviders(<McpAppFrame payload={payload()} />)
     expect(getByText('excalidraw')).toBeTruthy()

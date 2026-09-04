@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { columnLetter, detectFileType, JsonlViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
+import { columnLetter, detectFileType, HtmlViewer, JsonlViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
 
 // `useCanOpenFile` reads both of these, and it is the gate deciding whether the
 // Open button exists at all. Drive them explicitly: on the test host they would
@@ -95,6 +95,18 @@ describe('JsonlViewer', () => {
     const content = '{"a":1}\n\n\n{"b":2}\n'
     render(<JsonlViewer content={content} />)
     expect(screen.getByText('2 lines')).toBeInTheDocument()
+  })
+})
+
+describe('HtmlViewer', () => {
+  it('gives the preview frame its own compositing layer so a skipped first paint cannot blank it', () => {
+    const { container } = render(<HtmlViewer content="<p>preview</p>" />)
+    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+    expect(iframe).not.toBeNull()
+    expect(iframe.style.transform).toBe('translateZ(0)')
+    // The isolation contract must survive the style change: an empty sandbox
+    // is what keeps the srcDoc document inert.
+    expect(iframe.getAttribute('sandbox')).toBe('')
   })
 })
 
