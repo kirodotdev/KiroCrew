@@ -1224,3 +1224,34 @@ class TestEmptyIndexIsNotAbsence:
         out = capsys.readouterr().out
         assert "empty or unavailable" in out
         assert "No memory-history matches." not in out
+
+
+class TestReaderUtf8Degradation:
+    """#8247: the direct readers (read_preferences/read_projects) and the repair
+    path must degrade an undecodable file to empty rather than raising
+    UnicodeDecodeError up through every reader — mirroring the _guarded_entry
+    precedent that markdown_snapshot() already relies on.
+    """
+
+    def test_read_preferences_invalid_utf8_returns_empty(self, tmp_path: Path) -> None:
+        ms = _store(tmp_path)
+        ms.init()
+        (tmp_path / "ws" / "memory" / "preferences.md").write_bytes(b"\xff\xfe broken \x80")
+        assert ms.read_preferences() == ""  # degrades, does not raise
+
+    def test_read_projects_invalid_utf8_returns_empty(self, tmp_path: Path) -> None:
+        ms = _store(tmp_path)
+        ms.init()
+        (tmp_path / "ws" / "memory" / "projects.md").write_bytes(b"\xff\xfe broken \x80")
+        assert ms.read_projects() == ""  # degrades, does not raise
+
+    def test_add_preference_recovers_from_undecodable_file(self, tmp_path: Path) -> None:
+        """The repair path reads before it writes; an undecodable file must not
+        deadlock it (the API cannot fix what the API cannot read)."""
+        ms = _store(tmp_path)
+        ms.init()
+        prefs_path = tmp_path / "ws" / "memory" / "preferences.md"
+        prefs_path.write_bytes(b"\xff\xfe broken \x80")
+        ms.add_preference("recovered pref")  # raised UnicodeDecodeError before the fix
+        assert "recovered pref" in ms.read_preferences()
+        prefs_path.read_text(encoding="utf-8")  # file is valid UTF-8 again
