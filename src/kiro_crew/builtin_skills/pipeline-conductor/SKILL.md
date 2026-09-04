@@ -39,7 +39,7 @@ The operator's seed message names a spec file (JSON). Fields you consume now:
                    "skip_signals": ["claimed", "in-progress"]},
   "worker_contract": {"branch_pattern": "fix/{slug}-{n}",
                        "worktree_pattern": "../{repo_name}-fix-{n}"},
-  "governance": {"max_in_flight": 8, "max_per_cycle": 3,
+  "governance": {"max_in_flight": 32, "max_per_cycle": 3,
                   "idle_alert_secs": 900, "session_ceiling": 30,
                   "credit_budget_per_item": 100, "topup_ceiling": 2},
   "interface": {"folder_name": "pipeline-{id}", "digest_language": "auto"}
@@ -56,8 +56,14 @@ spec file's directory is your working state home: write the probe config as
 
 1. Read the spec. `chat_folder_create` the pipeline folder.
 2. Build the queue from the work source (or adopt the operator's seeded
-   backlog). Record every item in the session ledger:
-   `{item, state: queued, evidence}`.
+   backlog). **Record the backlog at whatever size it is** — as the queue's
+   PROVENANCE, one entry: the work source, its selector, the count, and the item
+   ids as one list. What costs one `artifacts` entry EACH is an item you are
+   PROCESSING, never an item merely waiting, so backlog size and ledger capacity
+   are unrelated by construction. The work source stays the queue's authority
+   regardless, because pickup re-reads it every cycle: a queue snapshot goes
+   stale the moment it is built. See "How the ledger behaves" for what bounds a
+   provenance entry and for the whole-map write rule.
 3. Open your own status file beside the spec — `conductor-status/v1`, schema
    below. The ledger tracks the items; the status file tracks YOU.
 4. Arm the patrol: `monitor_start` (interval ~90s) with the standing
@@ -68,18 +74,106 @@ spec file's directory is your working state home: write the probe config as
 Standing patrol instruction template (keep it CURRENT — steering edits go here
 via `monitor_update`, see "Live steering"):
 
-> PROBE FIRST: one `fleet_probe.py --config <path>` call. Act only on 🔔/BANNED
+> LEDGER FIRST: one `session_ledger_read` — the injected `[work ledger]` block
+> is a truncated teaser, and every disposition below is a comparison against the
+> recorded item state.
+> THEN PROBE: one `fleet_probe.py --config <path>` call. Act only on 🔔/BANNED
 > lines: ERR → batch resume; PR → record; GREEN → verify independently then
 > digest + backfill; STANDDOWN/PROPOSAL → disposition + backfill; TERMINAL →
 > close it out, never nudge; BLOCKED → adjudicate; IDLE → intervention ladder.
 > Diff each fired line's `i=` against the recorded one: unchanged index is no
 > progress. Mark each acted signal handled.
+> Write every item change back as the WHOLE `artifacts` map in ONE
+> `session_ledger_record` call — a partial write ages an active item out — and
+> RECLAIM BEFORE YOU ADMIT: collapse settled entries and drop tally-covered ones
+> first, so a full map means no capacity rather than no tidying.
 > THEN, every cycle regardless of what fired: review `open_rulings` and deliver
 > any ruling still owed; run the unfiltered merge reconcile.
 > Check budgets on items with open sessions every ~5 cycles. Admission per the
 > delivery counters first, load/memory second. Quiet cycle = one line, end
 > turn. EXIT when queue empty and fleet drained: final tally, then
 > `autonudge_stop`.
+
+## How the ledger behaves
+
+Every rule above and below tells you to record something in the session ledger.
+Three mechanics decide whether that record is still there next cycle, and all
+three fail silently.
+
+**Read the ledger at the TOP of every cycle, before the probe.** The
+`[work ledger]` block prefixed onto a nudge turn is a teaser, not the record:
+**1600 chars total**, every field truncated to **300 chars**, and only the
+**last 3** `tried` entries. A fleet's item table does not fit in that. "PROBE
+FIRST" ranks the probe above worker transcripts, not above the ledger — a fired
+line carries a key, an age and an index, and every row of the action table is a
+comparison against RECORDED state: which item that session owns, what its last
+index was, whether its PR is already recorded. Act first and read after, and you
+have dispositioned a fleet against a 1600-char summary of it. Cadence is not a
+trade-off here: the read is O(record), never O(loop history), which is the whole
+reason a patrol loop's per-cycle cost stops growing.
+
+**The snapshot arrives on nudge turns only** — it is rendered on the patrol wake
+path. An operator steering you mid-run arrives with no block at all, and that is
+exactly the turn where you are about to answer "where are the other N". Read
+before you answer.
+
+**A terminal phase silences the snapshot for the rest of the run.**
+`render_snapshot` returns empty once the phase is terminal (`done`,
+`abandoned`), so `drain` is a MODE and never a phase: keep the ledger's phase
+in-flight until the final tally, or you spend the whole drain blind to your own
+state with no symptom but the absence of a block you stopped expecting.
+
+**Write the item map back WHOLE, in ONE `session_ledger_record` call.** Items
+live in `artifacts`, a string→string map: a nested object is rejected outright
+(`artifacts_not_string_map`) and NOTHING persists, so each item is one
+single-line string. Then two caps bound it, and neither one errors:
+
+- **32 entries — which is the same number as `max_in_flight`, deliberately.**
+  One entry is what one item COSTS while you process it, so the entry cap and the
+  fleet ceiling are one ceiling, not two that can disagree: `max_in_flight`
+  defaults to the cap, and a spec raising it above the cap has configured a fleet
+  whose own worker state cannot fit — honour the cap and tell the operator the
+  spec over-subscribes the ledger. **A backlog costs nothing here**, because a
+  waiting item is one line inside the provenance entry rather than an entry of
+  its own; queue length and ledger capacity are unrelated.
+
+  **Neither number is the fleet size to run.** They are a ceiling; the size is
+  what the host can carry this cycle, read from `resource_status` and the
+  delivery counters (see admission and resource governance). Never write a fleet
+  size into a plan — derive it every cycle, because free CPU and memory are the
+  operator's, not yours, and they move.
+
+  **The cap is not a number you check — it is a step you run.** Past it the map
+  is trimmed by insertion order and the OLDEST entries age out, blind to whether
+  that item is still in flight, and nothing says so: the ledger's age-out has no
+  notion of an active item. So **RECLAIM, THEN ADMIT, in that order, once per
+  cycle before any dispatch write**: collapse every settled item to its one-line
+  outcome, drop the ones the final tally already covers, and write that map back.
+  What still occupies a slot afterwards is an ACTIVE item, and only then does a
+  full map mean "no capacity" rather than "not tidied yet". Run it in that order
+  and the deadlock cannot form; check a slot count without it and a map full of
+  finished work reads as a fleet at capacity, which strands the queue permanently
+  and looks exactly like being busy.
+- **2000 chars per value, 128 per key.** An oversized value is TRUNCATED, not
+  refused, which cuts a one-line entry mid-payload and leaves a record that
+  reads as present and decodes as garbage. Entries carry pointers, never prose:
+  scope, branch, PR number, session key, state. This is also the real bound on
+  the provenance entry, and the reason it carries the SOURCE and the COUNT and
+  not only the ids — a long enough id list is silently cut, so the entry must be
+  the thing that lets you rebuild the queue rather than the queue itself.
+
+A write MERGES rather than replaces, and that is what makes a partial write
+unsafe rather than merely incomplete: an omitted key is NOT deleted, so it looks
+preserved, while every key you DO send is re-inserted as newest. A cycle that
+records only the items that moved therefore pushes every quiet item to the front
+of the eviction queue — the long-running worker nobody has heard from is the
+entry the cap takes first. Read the map, edit it in memory, send all of it. This
+is the one place "write only deltas" does not apply.
+
+Confirm it landed by READING, not from the write's reply: the record tool answers
+with the phase and the next intent only, so an eviction leaves no trace in the
+response to the call that caused it. The next cycle's read is the only place a
+missing item surfaces — which is one more reason that read is not optional.
 
 ## Conductor-owned state: `conductor-status/v1`
 
@@ -128,7 +222,13 @@ saying it. A debt survives only when both hold.
 Dispatch is **idempotent** — every check, every time (skipping them is how two
 sessions end up on one item and mutual-yield deadlock):
 
-1. Ledger state is `queued` — anything else, skip.
+1. The ledger carries no non-`queued` entry for the item — `dispatched`,
+   `green_verified`, `done` or parked means skip. An ABSENT entry means NOT YET
+   ADMITTED, which is eligible: the ledger holds admitted items only, so absence
+   is the normal state of a backlog item and reading it as a veto would strand
+   every item the entry cap could not hold. What prevents a double dispatch is
+   not this check — it is the four-way collision check in step 4 and the atomic
+   forge claim below, which is why the ledger being a cache is safe here.
 2. The backlog/findings store (when the pipeline has one) still says the item
    is open — a queue snapshot goes stale the moment it is built.
 3. `claim_preflight.py` returns `CLAIM` for the item (below). That verdict
@@ -146,7 +246,9 @@ sessions end up on one item and mutual-yield deadlock):
    `worktree_pattern`. The preflight answers the two PR arms; the branch and
    worktree arms are local and yours.
 5. In-flight count < `max_in_flight`, this cycle's dispatches <
-   `max_per_cycle`, and admission admits (see governance).
+   `max_per_cycle`, this cycle's ledger reclaim has run and left a slot for it
+   (see "How the ledger behaves" — reclaim, then admit), and admission admits
+   (see governance).
 
 Then **claim atomically** — the lock label and the assignee in ONE call, never
 two. The forge is the cross-operator lock and your ledger is only a cache of
@@ -560,7 +662,7 @@ cannot deliver, and the failures then present as the workers' fault.
 
 | Signal | Posture | Do |
 | --- | --- | --- |
-| Delivery counters both 0; load and memory healthy | `ample` | Dispatch up to `max_in_flight`. |
+| Delivery counters both 0; load and memory healthy | `ample` | Dispatch up to `max_in_flight`, into what this cycle's ledger reclaim left free (see "How the ledger behaves"). |
 | Either delivery counter ≥2 in one cycle | `saturated` | Stop dispatching until two consecutive clean cycles. In-flight work continues — what is short is delivery, not compute, so stopping the workers would waste their progress for nothing. |
 | Load or memory tight, delivery clean | `tight` | No new dispatches; ask heavy workers to defer gate runs; postpone items marked expensive. |
 | `critical` from `resource_status` | `critical` | Halt admission; `session_stop` the most expensive in-flight items (record as reclaim, not failure); handle violators; wait for recovery before resuming. |
@@ -729,7 +831,8 @@ autonudge_stop.`
 
 Queue empty + fleet drained: final tally (dispatched / merged / open-green /
 proposals / standdowns / skips, with URLs), close remaining sessions,
-`autonudge_stop`.
+`autonudge_stop`. That tally is also the first moment the ledger's phase may go
+terminal — see "How the ledger behaves".
 
 ## Known limits (state them, don't hide them)
 
