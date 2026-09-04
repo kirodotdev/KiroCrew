@@ -1,6 +1,6 @@
 /**
  * Screenshot harness for moving the "Chat on a crew" preview opt-in from
- * Settings > Remote crews to Developer > Feature Previews.
+ * Settings > Remote Instances to Developer > Feature Previews.
  *
  * Runs the REAL built SPA (website/dist) behind the shared in-process static
  * server and answers every /api/** call from fixtures via Playwright route
@@ -72,7 +72,7 @@ async function main() {
   await page.waitForTimeout(500) // let the cards' rise animation finish
   await save('feature-previews')
 
-  // 2. The origin — Settings > Remote crews, where Auto-connect crews is now
+  // 2. The origin — Settings > Remote Instances, where Auto-connect crews is now
   //    the first card. Asserting the label is GONE is the half of the pair that
   //    proves a move rather than a copy.
   await page.goto(base + '/settings?tab=instances', { waitUntil: 'domcontentloaded' })
@@ -85,7 +85,7 @@ async function main() {
   await browser.close()
   srv.close()
   console.log(`wrote ${shot.length} shot(s) to ${OUT}: ${shot.join(', ')}`)
-  console.log(`"${LABEL}" still on Settings > Remote crews: ${onDestination > 0 ? 'YES' : 'no'}`)
+  console.log(`"${LABEL}" still on Settings > Remote Instances: ${onDestination > 0 ? 'YES' : 'no'}`)
 }
 
 main().catch(err => { console.error(err); process.exit(1) })

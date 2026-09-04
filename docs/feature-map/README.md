@@ -230,8 +230,8 @@ not where a user manages their own data.
 | Logs | Full-page log viewer | `/logs` | `pages/LogsPage.tsx` | `handlers/updates.py` | `GET /api/logs`, `GET /api/stream` |
 | Hooks | Full-page hook manager | `/hooks` | `pages/HooksPage.tsx` | `handlers/hooks.py` | `GET,POST /api/hooks`, `GET /api/kiro-hooks` |
 | Webhooks | Inbound webhook tokens, contexts, run history | `/webhooks` (preview-gated) | `pages/WebhooksPage.tsx` | `handlers/hooks.py` | `GET /api/webhooks`, `POST /api/webhooks/tokens`, `POST /api/hooks/agent` |
-| Cloud launch | Provision a Kiro Crew EC2 instance in the user's account | Settings → Instances → Cloud | `pages/settings/InstancesPanel.tsx` | `handlers_cloud.py` | `GET /api/cloud/preflight`, `POST /api/cloud/launch`, `GET /api/cloud/iam-policy` |
-| Mobile connect | Pair a phone to this gateway | Settings → Instances → mobile card | `pages/settings/MobileLoginCard.tsx` | `handlers/mobile_connect.py`, `handlers/tailnet_mobile.py` | `GET /api/mobile-connect/methods`, `POST /api/auth/mobile-link`, `POST /api/tailnet/mobile/qr` |
+| Cloud launch | Provision a Kiro Crew EC2 instance in the user's account | Settings → Remote Instances → Set up a new one | `pages/settings/RemoteCrewPanel.tsx` | `handlers_cloud.py` | `GET /api/cloud/preflight`, `POST /api/cloud/launch`, `GET /api/cloud/iam-policy` |
+| Mobile connect | Pair a phone to this gateway | Settings → Security → mobile card | `pages/settings/MobileLoginCard.tsx` | `handlers/mobile_connect.py`, `handlers/tailnet_mobile.py` | `GET /api/mobile-connect/methods`, `POST /api/auth/mobile-link`, `POST /api/tailnet/mobile/qr` |
 | Source-provider review | PR state, checks and review threads in the Changes panel | Chat right panel → **Changes** | `components/PullRequestPanel.tsx`, `components/CommentThreads.tsx` | `handlers/source_providers.py` | `POST /api/source/pull-request`, `.../checks`, `.../status`, `.../resolve` |
 | OpenAI-compatible API | Chat-completions shim for external clients | External clients only | — | `openai_compat.py` | `POST /v1/chat/completions` |
 

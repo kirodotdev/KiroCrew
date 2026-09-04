@@ -1069,7 +1069,7 @@ export default function InstanceTabBar({
   // one that is currently warm/live. Live `status.state` only drives the
   // per-entry visual state, NOT whether the entry exists, so a crew survives a
   // gateway restart or a failed auto-reconnect (rendered with an error dot)
-  // instead of vanishing and forcing the user back to Settings → Remote Crew.
+  // instead of vanishing and forcing the user back to Settings → Remote Instances.
   const tabInstances = useMemo(() => visibleInstanceTabs(instances, warm), [instances, warm])
 
   // Select-and-maybe-reconnect semantics live in the shared useSelectInstance

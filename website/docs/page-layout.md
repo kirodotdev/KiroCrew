@@ -251,7 +251,7 @@ the difference is whether the heading can ever have a sibling above it:
 Measured at 390px with `website/scripts/capture-side-panel-pane-inset.mjs`, which reports
 the divider→first-in-flow-box distance per tab: all 31 renderable tabs across the three
 pages now read 12px. Residual differences in where the first *pixel* lands (21px on
-Connections, on Developer > System, on Settings > Instances) are a control's own internal
+Connections, on Developer > System, on Settings > Remote Instances) are a control's own internal
 padding — a sub-tab's or a segmented button's tap target — not stacked page padding, and
 tightening those would shrink a touch target.
 

@@ -5414,7 +5414,7 @@ function ChatSidebar({
                  *  Crew Mode's: the landing is what is unfinished, since the
                  *  created session opens in that crew's pane and the local list
                  *  does not yet show live remote sessions. Toggle lives in
-                 *  Settings > Remote crews. */}
+                 *  Settings > Remote Instances. */}
                 {remoteCrewChatPreview && warmCrews.length > 0 && (() => {
                   const crewRows = warmCrews.map(c => (
                     <DropdownMenuItem key={c.id} data-testid={`new-chat-on-crew-${c.id}`}

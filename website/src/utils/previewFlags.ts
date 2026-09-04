@@ -83,7 +83,7 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
  * live remote sessions — so the session is hard to return to afterwards.
  *
  * Its toggle lives in Developer > Feature Previews, alongside every other
- * unreleased surface, and NOT on Settings > Remote crews where it started: a
+ * unreleased surface, and NOT on Settings > Remote Instances where it started: a
  * held feature is found by looking at the one page that lists held features, so
  * scattering an opt-in onto the page it happens to act on hides it from the only
  * reader who wants it. It keeps its own card there rather than sharing
