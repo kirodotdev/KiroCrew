@@ -19,12 +19,25 @@ Covered:
   line. The anchor is now ``(?:^|[\\s'\\"=:,;])``. This is a DENY surface, so the
   verdict tests below replay positives and negatives to make it obvious that
   nothing became more permissive.
+* #8338 -- the SAME defect one branch over. Mesh-3693 fixed the eleven
+  verb-independent branches but left branch (1), whose four alternatives still
+  carry a leading ``.*`` (``_READ_CMDS.*``, ``_WRITE_CMDS.*``, ``_SCRIPT_OPEN.*``,
+  ``.*[<>|]\\s*``), so the scan stayed quadratic: 1.09s at 9KB, 16.03s at 37KB,
+  65.11s at 75KB on a clean command. The gate runs synchronously on the event loop
+  from ``_resolve_permission``, so a long cron-built command wedged the loop past
+  the stall watchdog's budget and the gateway dump-then-exited every couple of
+  hours. Branch (1) is now GATED by a cheap superset pre-filter rather than
+  rewritten. The cost tests below count expensive SCANS rather than seconds --
+  #3080, #4108, #3938 and #2811 are all flakes from wall-clock ratio assertions on
+  this very module, so wall clock is deliberately not asserted.
 """
 
 from __future__ import annotations
 
+import pathlib
 import re
 import time
+from unittest import mock
 
 import pytest
 
@@ -263,25 +276,155 @@ def test_sensitive_path_verdicts_unchanged_by_anchor_rewrite(path: str, expected
 
 
 def test_sensitive_anchor_has_no_leading_wildcard() -> None:
-    """Source guard: the redundant ``.*`` must not come back.
+    """Guard: the redundant ``.*`` must not come back, on either pattern.
 
-    ``_build_sensitive_regex`` is the only place these anchors are written. The
-    check is on the source text rather than the compiled pattern because the
-    compiled form interpolates the path alternations and is impractical to
-    assert against.
+    Asserted against the COMPILED forms now rather than the source text. The
+    anchor used to be spelled once per branch, so counting source occurrences was
+    the only way to check every branch carried it; it is now written once and
+    applied to a tuple of tails (#8338), which makes the source count meaningless
+    and the compiled count exact. Both patterns are checked, because the
+    pre-filter being free of ``.*`` is what makes it linear -- and therefore what
+    makes it safe to run in front of the pattern on every command.
     """
     from kiro_crew import security as security_mod
 
-    source = inspect_source(security_mod._build_sensitive_regex)
-    assert r"""(?:^|.*[\s'\"=:,;])""" not in source, (
+    pattern, prefilter_alternatives = security_mod._build_sensitive_patterns()
+    prefilter = security_mod._build_sensitive_prefilter(prefilter_alternatives)
+
+    wildcard_anchor = r"""(?:^|.*[\s'\"=:,;])"""
+    assert wildcard_anchor not in pattern.pattern, (
         "a leading `.*` is back in the sensitive-path anchor -- it is redundant "
         "under re.search and makes matching quadratic in the longest line"
     )
-    # And the fixed form is still there, on every branch it was applied to.
-    # Count the BRANCH spelling (``rf"|`` prefix) so the explanatory comment in
-    # `_build_sensitive_regex`, which quotes the anchor in prose, is not counted.
-    branch_anchor = r"""rf"|(?:^|[\s'\"=:,;])"""
-    assert source.count(branch_anchor) == 11
+    # And the fixed form is still there, on every branch it was applied to: the
+    # eleven verb-independent branches, and nothing else.
+    branch_anchor = r"""(?:^|[\s'\"=:,;])"""
+    assert pattern.pattern.count(branch_anchor) == 11
+    # The pre-filter is the pattern's own branch list with exactly ONE
+    # substitution: branch (1) replaced by its bare tail. So it carries the same
+    # eleven anchored tails plus that bare tail plus the two anchor-free ones.
+    assert len(prefilter_alternatives) == 14
+
+    # The pre-filter must stay free of `.*`. Branch (1) is the only alternative
+    # that has one, and the pre-filter takes its TAIL instead. A `.*` here would
+    # make the pre-filter as quadratic as the scan it exists to avoid, and it
+    # would be charged to every command.
+    assert ".*" not in prefilter.pattern, (
+        "the sensitive-path pre-filter has acquired a `.*` -- it is evaluated on "
+        "every command, so it must stay linear"
+    )
+    # The token anchor must be KEPT on those eleven tails, not dropped. Dropping it
+    # would still be a sound superset, but it lets the engine enter the Windows
+    # tails at every offset, and those contain `win_gsep`, a starred group: a 10KB
+    # UNC-style backslash run then backtracks for 25.4s against 0.008s anchored --
+    # past the watchdog, i.e. the pre-filter would introduce the very crash it
+    # exists to prevent. Pinned by
+    # `test_a_backslash_run_does_not_blow_up_the_prefilter`.
+    assert prefilter.pattern.count(branch_anchor) == 11, (
+        "the pre-filter dropped its token anchors -- unanchored Windows tails make "
+        "the pre-filter itself quadratic on a backslash run"
+    )
+
+    # Branch (1)'s redirect alternative must stay free of a leading `.*` too. It
+    # was `.*[<>|]\s*`, and that `.*` was the DOMINANT quadratic term: unlike the
+    # verb alternatives beside it, which only enter where a verb matches, it
+    # entered at every offset unconditionally. It is redundant for the same reason
+    # the token anchor's was -- `.search` already retries at every offset -- so
+    # removing it is match-set identical, which
+    # `test_removing_the_redirect_wildcard_is_match_set_identical` pins.
+    assert r"|.*[<>|]" not in pattern.pattern, (
+        "a leading `.*` is back on branch (1)'s redirect alternative -- it is "
+        "redundant under re.search and was the dominant quadratic term"
+    )
+    assert r"|[<>|]\s*)" in pattern.pattern, (
+        "branch (1)'s redirect alternative is gone or respelled -- the shapes it "
+        "covers (`>~/path`, `|~/path`) are matched by no other branch"
+    )
+
+
+#: Every shape branch (1)'s redirect alternative exists for: the fenced path is
+#: glued to a redirect operator or a pipe, so the character before it is not in
+#: the token-anchor class and branches (2+) cannot match. These are exactly what a
+#: wrong simplification of that alternative would silently stop blocking.
+REDIRECT_GLUED_POSITIVES = [
+    "cat foo >~/.aws/credentials",
+    "cat foo >>~/.aws/credentials",
+    "cat foo 2>~/.aws/credentials",
+    "cat foo <~/.aws/credentials",
+    "cat x|~/.ssh/id_rsa",
+    "echo hi | tee ~/.ssh/authorized_keys",
+]
+
+
+@pytest.mark.parametrize("command", REDIRECT_GLUED_POSITIVES)
+def test_redirect_glued_paths_are_still_blocked(command: str) -> None:
+    """The alternative whose `.*` was removed still covers every shape it owns."""
+    assert is_sensitive_bash_command(command) is not None, command
+
+
+def test_a_backslash_run_does_not_blow_up_the_prefilter() -> None:
+    """The pre-filter runs on EVERY command, so it must be safe on hostile input.
+
+    The Windows tails contain ``win_gsep``, a starred group. With the token anchor
+    dropped from them the engine entered those tails at every offset and a UNC-style
+    backslash run backtracked quadratically -- measured 0.066s / 0.258s / 1.019s /
+    4.055s at 0.5KB / 1KB / 2KB / 4KB and **25.4s at 10KB**, past the 25s watchdog.
+    Keeping the anchor takes the same 10KB subject to 0.008s.
+
+    An absolute ceiling rather than a doubling ratio, following
+    ``test_long_nonshell_line_does_not_blow_up`` above: a ratio assertion on this
+    module is the direct cause of four separate CI flakes (#3080, #4108, #3938,
+    #2811). 2s clears the fixed path by ~250x while the quadratic form overshoots
+    by ~12x, so the bound distinguishes them without being tight enough to flake.
+    The structural half of this guard -- that the anchors are still there at all --
+    is asserted in ``test_sensitive_anchor_has_no_leading_wildcard``.
+    """
+    command = "copy " + ("\\" * 10_000) + "server\\share\\file.txt c:\\out"
+    assert len(command) > 10_000
+
+    started = time.perf_counter()
+    verdict = is_sensitive_bash_command(command)
+    elapsed = time.perf_counter() - started
+
+    assert verdict is None, "a UNC run naming no fenced path must stay clean"
+    assert elapsed < 2.0, (
+        f"is_sensitive_bash_command took {elapsed:.2f}s on a 10KB backslash run -- "
+        "the pre-filter's Windows tails have lost their token anchor"
+    )
+
+
+def test_removing_the_redirect_wildcard_is_match_set_identical() -> None:
+    """Differential for the `.*` removal, against the pattern that still has it.
+
+    Rebuilds the pre-change form by putting the `.*` back into the compiled
+    pattern and asserts the two agree on every case in both corpora -- positives,
+    the redirect-glued shapes the alternative exists for, and negatives. This is
+    the argument stated directly rather than trusted: under ``.search``, which
+    retries at every offset, ``.*[<>|]\\s*P`` matches a subject exactly when
+    ``[<>|]\\s*P`` does, because a match of the former from any offset implies the
+    metacharacter sits at some offset the search also visits.
+    """
+    from kiro_crew import security as security_mod
+
+    fixed, _ = security_mod._build_sensitive_patterns()
+    assert r"|[<>|]\s*)" in fixed.pattern
+    with_wildcard = re.compile(
+        fixed.pattern.replace(r"|[<>|]\s*)", r"|.*[<>|]\s*)", 1), re.IGNORECASE
+    )
+
+    negatives = [
+        "echo hello world",
+        "npm ci && npm run build",
+        'curl -s https://example.com/api --data \'{"k":"v"}\'',
+        # Glued to a NAME character, not a redirect: no branch matches this, and
+        # it is the subject shape the pre-filter admits but the pattern rejects.
+        "abc~/.aws/credentials",
+        "ls -la /var/log",
+    ]
+    for command in PREFILTER_MUST_NOT_MISS + REDIRECT_GLUED_POSITIVES + negatives:
+        assert (fixed.search(command) is not None) == (
+            with_wildcard.search(command) is not None
+        ), f"the `.*` removal changed the verdict for: {command}"
 
 
 def inspect_source(func: object) -> str:
@@ -325,3 +468,199 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
     body = inspect_source(security_mod.redact_credentials)
     assert "_CREDENTIAL_PATTERNS.sub(" in body
     assert "_might_contain_credential(result)" in body
+
+
+# ── #8338: branch (1)'s `.*` is gated by a cheap superset pre-filter ──
+#
+# Two properties matter and are tested separately, because only one of them is
+# about speed:
+#
+#   1. SAFETY -- the pre-filter is a superset, so no command that the pattern
+#      would have blocked is now allowed. This is a deny surface; a regression
+#      here is a credential bypass, not a slowdown.
+#   2. COST -- a clean command must not reach the quadratic pattern at all.
+#      Asserted by COUNTING scans, never by timing: #3080, #4108, #3938 and #2811
+#      are four separate flakes caused by wall-clock ratio assertions on this
+#      module, and a count is exact on every runner.
+
+
+class _CountingPattern:
+    """Wraps the compiled pattern to count how often it is actually scanned."""
+
+    def __init__(self, inner: re.Pattern[str]) -> None:
+        self._inner = inner
+        self.searches = 0
+
+    def search(self, subject: str):  # noqa: ANN202 - mirrors re.Pattern.search
+        self.searches += 1
+        return self._inner.search(subject)
+
+
+def _count_expensive_scans(monkeypatch: pytest.MonkeyPatch) -> _CountingPattern:
+    """Install a counting proxy over the module's cached sensitive-path pattern."""
+    from kiro_crew import security as security_mod
+
+    counter = _CountingPattern(security_mod._get_sensitive_re())
+    monkeypatch.setattr(security_mod, "_SENSITIVE_RE", counter)
+    return counter
+
+
+def _clean_pipeline(repeats: int) -> str:
+    """A long, CLEAN command shaped like the cron turns that wedged the loop.
+
+    Dense in the quote/colon/comma characters the branch anchors retry from, and
+    carrying the ``//`` of a URL -- which is itself a cost multiplier, because
+    ``_SEPARATOR_RUN_RE`` matches any doubled separator, so pass 1b re-scanned the
+    whole command once per collapsed variant (three of them) on top of the
+    original.
+    """
+    return " && ".join(
+        f"curl --silent --header 'X-K:{i}' https://example.com/api/v1/pages/{i} "
+        f'--data \'{{"k{i}":"v{i}","path":"a/b/c/d{i}"}}\''
+        for i in range(repeats)
+    )
+
+
+#: Commands the pattern matches, spanning every branch family: POSIX and
+#: Windows-native spellings, the ``%APPDATA%``/``%LOCALAPPDATA%`` aliases, a UNC
+#: anchor, the ``$KIRO_HOME`` override, the two anchor-free bare leaves, a
+#: separator run that only a collapsed variant matches, and the two shapes that
+#: ONLY branch (1) matches (a path glued to a redirect or a pipe, where the
+#: preceding character is not in the token-anchor class).
+PREFILTER_MUST_NOT_MISS = [
+    "cat ~/.aws/credentials",
+    "cat $HOME/.ssh/id_rsa",
+    "cat /home/someone/.netrc",
+    "cat /Users/someone/.npmrc",
+    "cat ~/.kube/config",
+    "cat ~/.config/gcloud/credentials.db",
+    "cat ~/.git-credentials",
+    "echo x > ~/.kiro/crew/security_policy.json",
+    "CAT ~/.AWS/CREDENTIALS",
+    "cat ~/.aws/credentials;whoami",
+    "type %USERPROFILE%\\.aws\\credentials",
+    "Get-Content $env:USERPROFILE\\.ssh\\id_rsa",
+    "type %APPDATA%\\kiro-cli\\data.sqlite3",
+    "type %LOCALAPPDATA%\\kiro-cli\\data.sqlite3",
+    "type !APPDATA!\\kiro-cli\\data.sqlite3",
+    "copy \\\\server\\share\\.kiro\\crew\\security_policy.json c:\\x",
+    # The home-anchored native spelling of the same Roaming store, which the
+    # %APPDATA% alias branch does NOT cover, and the variable-LEAF shape whose
+    # branch anchors on the keystone's parent because there is no literal leaf.
+    "type %USERPROFILE%\\AppData\\Roaming\\kiro-cli\\data.sqlite3",
+    "type %USERPROFILE%\\.kiro\\crew\\%F%",
+    'echo forged > "C:\\Users\\u\\.kiro\\crew\\connections-tool-aliases.json"',
+    "tee $KIRO_HOME/agents/evil.json",
+    "tee %KIRO_HOME%\\agents\\evil.json",
+    "cat connections-tool-aliases.json",
+    "rm ./ggml-base.bin",
+    # Branch (1) only: the character before the path is `>` / `|`, neither of
+    # which the token anchor admits, so branches (2+) cannot match these.
+    "cat foo >~/.aws/credentials",
+    "cat x|~/.ssh/id_rsa",
+]
+
+
+@pytest.mark.parametrize("command", PREFILTER_MUST_NOT_MISS)
+def test_prefilter_never_misses_what_the_pattern_matches(command: str) -> None:
+    """The pre-filter's one hard contract, over every branch family.
+
+    It may match where the pattern would not; it must NEVER fail to match where
+    the pattern would, or the gate silently stops blocking. Both shapes that only
+    branch (1) matches are included, because branch (1) is DROPPED from the
+    pre-filter rather than stripped -- it is covered by branch (2)'s identical
+    tail, and these two cases are what proves that.
+    """
+    from kiro_crew import security as security_mod
+
+    pattern, prefilter_alternatives = security_mod._build_sensitive_patterns()
+    prefilter = security_mod._build_sensitive_prefilter(prefilter_alternatives)
+
+    assert pattern.search(command) is not None, "corpus case no longer matches"
+    assert prefilter.search(command) is not None, (
+        "the pre-filter missed a command the pattern matches -- this is a "
+        "credential-fence bypass, not a performance regression"
+    )
+
+
+@pytest.mark.parametrize("command", PREFILTER_MUST_NOT_MISS)
+def test_gate_verdicts_unchanged_by_the_prefilter(command: str) -> None:
+    """End to end: every corpus case is still denied through the real gate."""
+    assert is_sensitive_bash_command(command) is not None, command
+
+
+def test_clean_command_does_not_reach_the_quadratic_pattern(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fix, stated as a count: zero expensive scans on a clean command.
+
+    Before the pre-filter this command cost FOUR full scans of the quadratic
+    pattern -- one on the original plus one per separator-collapsed variant -- and
+    the count is what the loop-stall crash was made of. A count is asserted rather
+    than a duration so the test cannot flake on a loaded runner.
+    """
+    counter = _count_expensive_scans(monkeypatch)
+    command = _clean_pipeline(40)
+    assert len(command) > 4_000
+
+    assert is_sensitive_bash_command(command) is None
+    assert counter.searches == 0, (
+        f"a clean command reached the quadratic pattern {counter.searches} time(s) "
+        "-- the pre-filter is no longer gating it"
+    )
+
+
+def test_a_url_no_longer_multiplies_the_expensive_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pass 1b's variants must not each pay for a scan.
+
+    ``_SEPARATOR_RUN_RE`` matches any doubled separator, so the ``//`` in an
+    ordinary URL produced three collapsed variants and tripled the cost of an
+    already-quadratic scan -- measured 16.06s against 4.58s at 37KB for the same
+    command with a single slash. The variants are still produced and still
+    checked; they just no longer reach the pattern.
+    """
+    from kiro_crew import security as security_mod
+
+    command = _clean_pipeline(4)
+    assert len(security_mod._separator_collapsed_variants(command)) == 3, (
+        "the URL no longer yields collapsed variants -- this test is no longer "
+        "exercising the multiplier it was written for"
+    )
+
+    counter = _count_expensive_scans(monkeypatch)
+    assert is_sensitive_bash_command(command) is None
+    assert counter.searches == 0
+
+
+def test_a_fenced_command_still_reaches_the_pattern(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-filter admits a real candidate rather than deciding for itself.
+
+    It is a cost gate, not a second matcher: on a command that names a fenced
+    path the pattern must still be the thing that returns the verdict.
+    """
+    counter = _count_expensive_scans(monkeypatch)
+    assert is_sensitive_bash_command("cat ~/.aws/credentials") is not None
+    assert counter.searches >= 1
+
+
+def test_prefilter_is_built_from_the_same_home_as_the_pattern() -> None:
+    """Both patterns come from ONE build, so neither can describe a stale home.
+
+    ``_build_sensitive_cache`` populates both caches together. A home that is not
+    under ``Users``/``home`` has only the resolved literal to match on, which is
+    exactly the case where a pre-filter built from a second, later reading of
+    ``Path.home()`` would disagree with the pattern.
+    """
+    from kiro_crew import security as security_mod
+
+    with mock.patch.object(security_mod.Path, "home", return_value=pathlib.Path("D:\\profiles\\u")):
+        pattern, prefilter_alternatives = security_mod._build_sensitive_patterns()
+        prefilter = security_mod._build_sensitive_prefilter(prefilter_alternatives)
+
+    command = r'type "D:\profiles\u\.aws\credentials"'
+    assert pattern.search(command) is not None
+    assert prefilter.search(command) is not None

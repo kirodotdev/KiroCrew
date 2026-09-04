@@ -7042,8 +7042,17 @@ _WRITE_CMDS = (
 _SCRIPT_OPEN = r"(?:python|ruby|perl)\S*\s.*open\s*\("
 
 
-def _build_sensitive_regex() -> re.Pattern[str]:
-    """Build a compiled regex matching bash reads OR writes of sensitive paths.
+def _build_sensitive_patterns() -> "tuple[re.Pattern[str], tuple[str, ...]]":
+    """Build the sensitive-path matcher, and the alternatives its pre-filter uses.
+
+    Returns ``(pattern, prefilter_alternatives)``:
+
+    * ``pattern`` -- the compiled regex matching bash reads OR writes of
+      sensitive paths, described below.
+    * ``prefilter_alternatives`` -- what :func:`_build_sensitive_prefilter`
+      compiles into the cheap superset pre-filter. Assembled HERE, rather than by
+      that function from the same constants, so the pre-filter cannot drift away
+      from the pattern it gates: there is one place the branch list is written.
 
     Matching strategies, OR'd:
       1. a READ verb / WRITE verb / script-open / shell-redirect followed by a
@@ -7456,74 +7465,213 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # trailing ``.`` or separator still matches, so ``ggml-base.bin.tmp`` and the
     # mkdir-as-directory form are covered.
     bare_weight_path = rf"(?<![\w.\-]){_WHISPER_WEIGHT_NAME}(?![\w\-])"
-    return re.compile(
-        # (1) verb/redirect-anchored, OR (2) verb-independent: the sensitive path
-        # appears anywhere as a token.  The token anchor accepts start-of-string
-        # plus the separators that precede a path argument: whitespace, quote,
-        # ``=`` (VAR=path), AND ``:``/``,``/``;`` (option:path, PATH-style
-        # colon lists, comma/semicolon-joined args) — without the latter a
-        # ``FOO=bar:~/.aws/credentials`` or ``PATH=/x:~/.ssh/id_rsa`` token slips
-        # past the backstop while no verb branch fires either.
-        #
-        # The anchor is written ``(?:^|[\s'\"=:,;])`` with NO leading ``.*``: this
-        # pattern is only ever used via ``.search`` (see ``_get_sensitive_re``
-        # callers), which already retries at every offset, so a leading ``.*``
-        # matched nothing extra while making the scan quadratic in the longest
-        # line. Note ``\n`` is in the class, so a path at the start of a later
-        # line still matches even though ``.`` never crossed a newline anyway.
-        # Do NOT reintroduce ``.*`` here.
-        # (3) write-protected leaf: matched verb-INDEPENDENTLY too (same token
-        # anchor), so a quoted redirect (``> "$HOME/.../marker"``), ``cp``,
-        # ``python -c "open(...,'w')"`` or any novel write verb is still caught.
-        rf"(?:(?:{_READ_CMDS}.*|{_WRITE_CMDS}.*|{_SCRIPT_OPEN}.*|.*[<>|]\s*)"
-        rf"{sensitive_path}"
-        rf"|(?:^|[\s'\"=:,;]){sensitive_path}"
-        rf"|(?:^|[\s'\"=:,;]){write_protected_path}"
-        # (3b) publish artifacts of a keystone leaf -- the atomic-write temp and the lock
-        # sibling -- in both the POSIX and the Windows-native spelling. Verb-independent
-        # like (2)/(3): naming the artifact is the signal, so a redirect, a ``cp``, or an
-        # embedded ``open(...,'w')`` is caught without enumerating write verbs.
-        rf"|(?:^|[\s'\"=:,;]){artifact_path}"
-        # (4) Windows-native spelling, verb-independent (same token anchor):
-        # covers quoted backslash paths AND embedded-script literals that the
-        # tokenizing passes cannot see. (5) the %APPDATA% / %LOCALAPPDATA%
-        # aliases of the fenced Roaming/Local stores. (6) the write-protected
-        # leaves in that same native spelling, which branch (3) cannot see.
-        # (7) the distinctive leaves as a bare path SEGMENT, with no anchor at
-        # all, because branches (3) and (6) both fall to a ``cd`` plus a
-        # relative name.
-        rf"|(?:^|[\s'\"=:,;]){win_sensitive_path}"
-        rf"|(?:^|[\s'\"=:,;]){win_artifact_path}"
-        rf"|(?:^|[\s'\"=:,;]){appdata_sensitive_path}"
-        rf"|(?:^|[\s'\"=:,;]){localappdata_sensitive_path}"
-        rf"|(?:^|[\s'\"=:,;]){win_write_protected_path}"
-        rf"|(?:^|[\s'\"=:,;]){win_crew_var_leaf_path}"
-        # (8) ~/.kiro/agents (POSIX and Windows-native spelling, plus the
-        # ``$KIRO_HOME`` override), matched verb-INDEPENDENTLY with the same token
-        # anchor as (2)/(3): naming the dir is the signal, so ``curl -o``/``wget
-        # -O`` output-file writers, ``python -c "open(...,'w')"`` and any novel
-        # write verb are caught, not just an enumerated allowlist. Bash reads of
-        # the dir are blocked incidentally (harmless — no secret, Python readers
-        # only); tool-path reads stay allowed.
-        rf"|(?:^|[\s'\"=:,;]){agents_write_path}"
-        rf"|(?:^|[\s'\"=:,;]){win_agents_write_path}"
-        # (10) whisper weight FILENAMES, also with no anchor, because the digest the
-        # model store checks only binds the bytes if the name it then loads cannot be
-        # rewritten by a ``cd``-relative command.
-        rf"|{bare_protected_path}"
-        rf"|{bare_weight_path})",
-        re.IGNORECASE,
+    # (1) verb/redirect-anchored, OR (2) verb-independent: the sensitive path
+    # appears anywhere as a token.  The token anchor accepts start-of-string
+    # plus the separators that precede a path argument: whitespace, quote,
+    # ``=`` (VAR=path), AND ``:``/``,``/``;`` (option:path, PATH-style
+    # colon lists, comma/semicolon-joined args) — without the latter a
+    # ``FOO=bar:~/.aws/credentials`` or ``PATH=/x:~/.ssh/id_rsa`` token slips
+    # past the backstop while no verb branch fires either.
+    #
+    # The anchor is written ``(?:^|[\s'\"=:,;])`` with NO leading ``.*``: this
+    # pattern is only ever used via ``.search`` (see ``_get_sensitive_re``
+    # callers), which already retries at every offset, so a leading ``.*``
+    # matched nothing extra while making the scan quadratic in the longest
+    # line. Note ``\n`` is in the class, so a path at the start of a later
+    # line still matches even though ``.`` never crossed a newline anyway.
+    # Do NOT reintroduce ``.*`` here.
+    #
+    # Written ONCE and applied to the tuple below rather than spelled per
+    # branch, so "every verb-independent branch carries this anchor and nothing
+    # else" is a property of the code instead of eleven copies that have to
+    # agree. ``_build_sensitive_prefilter`` needs to strip exactly this prefix.
+    token_anchor = r"(?:^|[\s'\"=:,;])"
+    # Branch (1)'s prefix. Three alternatives keep a `.*` because it spans a
+    # meaningful gap -- a read/write verb, then the path later on the line -- and
+    # those cost O(verb occurrences x n), which is bounded by how often a verb
+    # actually appears (measured negligible even on a subject that is nothing but
+    # `cat` invocations).
+    #
+    # The FOURTH alternative is `[<>|]\s*` and carries NO leading `.*`, for exactly
+    # the reason recorded on the token anchor below: this pattern is only ever used
+    # via `.search`, which already retries at every offset, so a leading `.*` there
+    # matched nothing extra -- if `.*[<>|]\s*<path>` matches from some offset then
+    # `[<>|]\s*<path>` matches at the offset of that metacharacter, which `.search`
+    # reaches on its own -- while making the scan quadratic in the longest line.
+    # That one was the DOMINANT quadratic term, because unlike the verb
+    # alternatives it entered at every offset unconditionally: on a subject the
+    # pre-filter admits but the pattern rejects, scanning to non-matching
+    # completion cost 0.021s / 0.086s / 0.350s at 2.6KB / 5.4KB / 11KB (4x per
+    # doubling) and 0.001s / 0.003s / 0.006s once removed (2x). Verified match-set
+    # identical, including every redirect spelling the alternative exists for
+    # (`>`, `>>`, `2>`, `<`, and a piped `tee`). Do NOT reintroduce `.*` here.
+    verb_or_redirect_anchor = rf"(?:{_READ_CMDS}.*|{_WRITE_CMDS}.*|{_SCRIPT_OPEN}.*|[<>|]\s*)"
+    # The verb-independent tails, each matched behind ``token_anchor``.
+    # (3) write-protected leaf: matched verb-INDEPENDENTLY too (same token
+    # anchor), so a quoted redirect (``> "$HOME/.../marker"``), ``cp``,
+    # ``python -c "open(...,'w')"`` or any novel write verb is still caught.
+    # (3b) publish artifacts of a keystone leaf -- the atomic-write temp and the lock
+    # sibling -- in both the POSIX and the Windows-native spelling. Verb-independent
+    # like (2)/(3): naming the artifact is the signal, so a redirect, a ``cp``, or an
+    # embedded ``open(...,'w')`` is caught without enumerating write verbs.
+    # (4) Windows-native spelling, verb-independent (same token anchor):
+    # covers quoted backslash paths AND embedded-script literals that the
+    # tokenizing passes cannot see. (5) the %APPDATA% / %LOCALAPPDATA%
+    # aliases of the fenced Roaming/Local stores. (6) the write-protected
+    # leaves in that same native spelling, which branch (3) cannot see.
+    # (8) ~/.kiro/agents (POSIX and Windows-native spelling, plus the
+    # ``$KIRO_HOME`` override), matched verb-INDEPENDENTLY with the same token
+    # anchor as (2)/(3): naming the dir is the signal, so ``curl -o``/``wget
+    # -O`` output-file writers, ``python -c "open(...,'w')"`` and any novel
+    # write verb are caught, not just an enumerated allowlist. Bash reads of
+    # the dir are blocked incidentally (harmless — no secret, Python readers
+    # only); tool-path reads stay allowed.
+    token_anchored_tails = (
+        sensitive_path,
+        write_protected_path,
+        artifact_path,
+        win_sensitive_path,
+        win_artifact_path,
+        appdata_sensitive_path,
+        localappdata_sensitive_path,
+        win_write_protected_path,
+        win_crew_var_leaf_path,
+        agents_write_path,
+        win_agents_write_path,
+    )
+    # (7) the distinctive leaves as a bare path SEGMENT, with no anchor at
+    # all, because branches (3) and (6) both fall to a ``cd`` plus a
+    # relative name.
+    # (10) whisper weight FILENAMES, also with no anchor, because the digest the
+    # model store checks only binds the bytes if the name it then loads cannot be
+    # rewritten by a ``cd``-relative command.
+    anchor_free_tails = (bare_protected_path, bare_weight_path)
+    alternatives = (
+        # Branch (1). Its tail is ``sensitive_path``, character for character the
+        # same tail branch (2) carries -- relied on by the pre-filter.
+        (verb_or_redirect_anchor + sensitive_path,)
+        + tuple(f"{token_anchor}{tail}" for tail in token_anchored_tails)
+        + anchor_free_tails
+    )
+    # The pre-filter's alternatives, assembled HERE so the branch list is written
+    # once. See :func:`_build_sensitive_prefilter` for the superset argument and
+    # for why the token anchor is KEPT on the eleven tails rather than dropped.
+    prefilter_alternatives = (
+        (sensitive_path,)
+        + tuple(f"{token_anchor}{tail}" for tail in token_anchored_tails)
+        + anchor_free_tails
+    )
+    return (
+        re.compile("(?:" + "|".join(alternatives) + ")", re.IGNORECASE),
+        prefilter_alternatives,
     )
 
 
 _SENSITIVE_RE: re.Pattern[str] | None = None
+_SENSITIVE_PREFILTER: re.Pattern[str] | None = None
+
+
+def _build_sensitive_prefilter(alternatives: "tuple[str, ...]") -> re.Pattern[str]:
+    """Compile the cheap superset pre-filter for :func:`_get_sensitive_re`.
+
+    A strict superset of ``_get_sensitive_re().search(text) is not None``: it may
+    match where the pattern would not, but it MUST NOT fail to match where the
+    pattern would, so the verdict cannot move -- only the cost. Same contract, and
+    the same purpose, as ``_might_contain_credential``.
+
+    Why one is needed. Branch (1) still carries a `.*` on each of its three
+    verb/script alternatives (``_READ_CMDS.*``, ``_WRITE_CMDS.*``,
+    ``_SCRIPT_OPEN.*``), spanning the gap between the verb and the path, so the
+    engine re-walks the subject from every offset a verb matches at. Before its
+    fourth alternative's redundant ``.*`` was removed alongside this, the scan was
+    QUADRATIC in command length unconditionally. Measured then, on a clean command
+    -- the common case, and the only one that runs to completion, since a match
+    returns early: 1.09s at 9KB, 3.99s at 18KB, 16.03s at 37KB, 65.11s at 75KB,
+    i.e. 4x per doubling. The gate runs synchronously on the event loop from
+    ``_resolve_permission``, so that is a loop wedge and the stall watchdog's
+    dump-then-exit: past ``LOOP_STALL_EXIT_AFTER_DEFAULT`` (25s) at about 45KB of
+    command and past the managed 90s budget at about 87KB (#8338). Profiled, the
+    regex was 94% of the gate and 99.5% of that was this one matcher, so the other
+    passes are not the problem.
+
+    The two fixes are complementary, and both are needed. Removing that ``.*``
+    bounds the WORST case; this pre-filter removes the COMMON case, where a command
+    names no fenced path at all and should not be scanned even once. Neither can
+    move a verdict.
+
+    Why this is a superset. ``_build_sensitive_patterns`` hands over the pattern's
+    own branch list with exactly ONE substitution: branch (1),
+    ``verb_or_redirect_anchor + sensitive_path``, is replaced by a bare
+    ``sensitive_path``. Dropping a REQUIRED prefix can only admit more subjects, so
+    that alternative matches wherever branch (1) did. Every other alternative -- the
+    eleven token-anchored tails and the two anchor-free ones -- is passed through
+    character for character, so it matches exactly where the pattern's own branch
+    does. No case is left for the pre-filter to miss.
+
+    Why the token anchor is KEPT on those eleven rather than dropped, even though
+    dropping a required prefix would also have been sound: the anchor is what stops
+    the engine entering the WINDOWS tails at every offset, and those tails contain
+    ``win_gsep``, a starred group. Unanchored, a backslash run backtracks through it
+    -- measured on a 10KB UNC-style run, 25.4s against 0.008s with the anchor kept,
+    and quadratic on the way there (0.066s / 0.258s / 1.019s / 4.055s at 0.5KB /
+    1KB / 2KB / 4KB). 25.4s is past the watchdog, so a pre-filter that dropped
+    these anchors would have introduced the very crash it exists to prevent, on a
+    different subject. It is the same DoS family recorded on ``win_gsep`` itself,
+    where admitting a separator run into the patterns measured 33s on 6,000
+    backslashes. Found by the GPT review lane on #8349. The anchored form is also
+    cheaper on every other subject measured, so nothing is traded for it.
+
+    Measured on a clean command: 0.005s at 18KB, 0.011s at 37KB, 0.021s at 75KB --
+    2x per doubling against the pattern's 4x, and several hundred times cheaper than
+    the scan it replaces.
+
+    ``re.IGNORECASE`` is set because the gated pattern sets it, so the two agree on
+    case by construction. A hand-rolled ``str.lower()`` comparison would NOT: ``re``
+    folds characters that ``lower()`` leaves alone (U+017F LATIN SMALL LETTER LONG S
+    matches ``s`` but lowercases to itself), and a pre-filter that missed one of
+    those would be a bypass rather than a slowdown.
+    """
+    return re.compile("|".join(f"(?:{alt})" for alt in alternatives), re.IGNORECASE)
+
+
+def _build_sensitive_cache() -> None:
+    """Populate both module caches from ONE build.
+
+    Built lazily, and together, for the same reason the pattern always was:
+    ``_SENSITIVE_HOME_DIRS`` is still being extended at import time
+    (``_CREW_SECRET_LEAVES``, the identity stores) and ``Path.home()`` is read at
+    build time. Sharing one build is what guarantees the pre-filter describes the
+    pattern actually in force rather than a second reading of the same constants.
+    """
+    global _SENSITIVE_RE, _SENSITIVE_PREFILTER
+    pattern, prefilter_alternatives = _build_sensitive_patterns()
+    _SENSITIVE_PREFILTER = _build_sensitive_prefilter(prefilter_alternatives)
+    _SENSITIVE_RE = pattern
 
 
 def _get_sensitive_re() -> re.Pattern[str]:
-    global _SENSITIVE_RE
     if _SENSITIVE_RE is None:
-        _SENSITIVE_RE = _build_sensitive_regex()
+        _build_sensitive_cache()
+    assert _SENSITIVE_RE is not None
     return _SENSITIVE_RE
+
+
+def _get_sensitive_prefilter() -> re.Pattern[str]:
+    if _SENSITIVE_PREFILTER is None:
+        _build_sensitive_cache()
+    assert _SENSITIVE_PREFILTER is not None
+    return _SENSITIVE_PREFILTER
+
+
+def _names_fenced_path(subject: str) -> bool:
+    """True if :func:`_get_sensitive_re` matches *subject*, gated by the pre-filter.
+
+    The single place the two are paired, so no caller can reach the quadratic scan
+    without the linear check in front of it.
+    """
+    if _get_sensitive_prefilter().search(subject) is None:
+        return False
+    return _get_sensitive_re().search(subject) is not None
 
 
 # ── Bounded symlink resolution for the sensitive-path gates ──
@@ -8405,7 +8553,7 @@ def _extracts_into_trust_root(command: str) -> bool:
 
 # ── Symlink-staging to a sensitive target via RELATIVE traversal ──
 # The home-anchored ~/$HOME/absolute forms of ``ln -sf ~/.aws/credentials link``
-# are already caught by _build_sensitive_regex (the sensitive path appears as an
+# are already caught by _build_sensitive_patterns (the sensitive path appears as an
 # argument token).  What that matcher CANNOT see is a sensitive dir named through
 # pure relative traversal — ``ln -sf ../../../.aws/credentials link`` — because
 # it has no home anchor.  Creating such a symlink is the staging step of the
@@ -8591,7 +8739,7 @@ def is_sensitive_bash_command(
     Returns denial reason string, or None if clean.
     """
     # ── Pass 1: regex fast-path ──
-    if _get_sensitive_re().search(command):
+    if _names_fenced_path(command):
         return "Blocked: command accesses sensitive credential path"
     if _extracts_into_trust_root(command):
         return "Blocked: command extracts into the governance trust-root directory"
@@ -8617,8 +8765,12 @@ def is_sensitive_bash_command(
     #
     # Run only after the original missed, so nothing that needs the run intact
     # (a UNC ``\\server\share`` anchor) loses its match.
+    #
+    # The pre-filter is applied to each COLLAPSED subject rather than inferred
+    # from the original: collapsing rewrites the text, so only the variant it
+    # actually produced can answer whether that variant may match.
     for collapsed in _separator_collapsed_variants(command):
-        if _get_sensitive_re().search(collapsed):
+        if _names_fenced_path(collapsed):
             return "Blocked: command accesses sensitive credential path"
         if _extracts_into_trust_root(collapsed):
             return "Blocked: command extracts into the governance trust-root directory"
@@ -8714,7 +8866,7 @@ _MAX_TRACKED_BASES = 64
 #: This gate runs on the raw command string of every shell tool call, whatever
 #: shell will execute it -- ``hooks.py`` hands it the title and the command with
 #: no per-platform branch -- and the absolute-path pass in
-#: `_build_sensitive_regex` already models cmd.exe and PowerShell spellings
+#: `_build_sensitive_patterns` already models cmd.exe and PowerShell spellings
 #: (``%USERPROFILE%``, ``$env:USERPROFILE``, backslash separators). The
 #: working-directory tracker knew only bash's two verbs, so the Windows spelling
 #: of the cd-then-relative chain was unmodelled and read clean::
@@ -8748,7 +8900,7 @@ _CHDIR_VERBS: frozenset[str] = frozenset(
 #: `expanduser` leaves untouched, which then matches nothing.
 #:
 #: The alternation accepts EXACTLY the spellings the ``userprofile`` group in
-#: `_build_sensitive_regex` accepts, and a parametrized drift test pins both
+#: `_build_sensitive_patterns` accepts, and a parametrized drift test pins both
 #: directions on one list. Notably that means a BARE ``%HOMEPATH%`` is not here:
 #: it omits the drive letter, the absolute pass does not accept it either, and
 #: covering it on this side alone would leave the same anchor half-fenced --
@@ -9461,7 +9613,7 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
       ``cd ~/.kiro/crew && cat token_signing.key``
 
     Runs VERB-INDEPENDENTLY, matching the posture the regex first-pass already
-    ships: :func:`_build_sensitive_regex`'s catch-all branch blocks any command
+    ships: :func:`_build_sensitive_patterns`'s catch-all branch blocks any command
     that NAMES a sensitive path, whatever the verb, because naming one is itself
     the signal. This pass previously required a token from
     :data:`_NORMALIZER_READ_VERBS`, so normalization — the only layer that can

@@ -5396,7 +5396,7 @@ class TestChdirVerbSpellings:
         """Drift guard: the two anchor lists must not diverge.
 
         `_WINDOWS_HOME_ANCHOR_RE` mirrors the ``userprofile`` alternation inside
-        `_build_sensitive_regex`. Adding a spelling to one and not the other
+        `_build_sensitive_patterns`. Adding a spelling to one and not the other
         leaves a half-covered anchor, which is exactly the asymmetry this class
         exists to close, so pin both directions on one list.
         """
@@ -6247,7 +6247,7 @@ class TestNativeHomeEntryThenFencedRead:
         """Drift guard: every anchor the absolute pass accepts also anchors an entry.
 
         `_HOME_TARGET_ALT`, `_WINDOWS_HOME_ANCHOR_RE` and the `userprofile` group
-        inside `_build_sensitive_regex` are three lists of the same thing; pin
+        inside `_build_sensitive_patterns` are three lists of the same thing; pin
         them to one set so a spelling added to one is not missing from another.
         """
         anchors = (
@@ -6367,7 +6367,7 @@ class TestKeystoneVariableLeafNativeSpellings:
     def test_a_home_held_in_a_tracked_variable_is_refused(self, command: str) -> None:
         """The shape the raw-text pass cannot see, so only the token rule can catch it.
 
-        Every native-spelling branch in `_build_sensitive_regex` needs a literal
+        Every native-spelling branch in `_build_sensitive_patterns` needs a literal
         home ANCHOR in the command text. Assigning the home to a variable first
         removes it: the raw text carries ``$D``, which no anchor alternation
         matches. What resolves the path is the segment walk substituting the value
@@ -6827,10 +6827,10 @@ class TestWindowsSeparatorRuns:
         # literal to match on. The PATTERN spells one separator, so a run is
         # handled by collapsing the SUBJECT first -- this asserts the
         # composition, which is what the gate actually evaluates. Built through
-        # ``_build_sensitive_regex`` directly: it is a pure function of the
+        # ``_build_sensitive_patterns`` directly: it is a pure function of the
         # home, so no module cache is disturbed and no Windows host is needed.
         with mock.patch.object(security.Path, "home", return_value=Path("D:\\profiles\\u")):
-            pattern = security._build_sensitive_regex()
+            pattern = security._build_sensitive_patterns()[0]
         for spelling in (
             r"D:\profiles\\u\.aws\credentials",
             r"D:\profiles\u\\.aws\credentials",
