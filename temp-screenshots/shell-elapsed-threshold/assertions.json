@@ -1,0 +1,48 @@
+{
+  "viewport": {
+    "width": 1180,
+    "height": 720
+  },
+  "deviceScaleFactor": 2,
+  "thresholdSeconds": 10,
+  "frameMs": 500,
+  "frames": 32,
+  "pillBox": {
+    "top": 471.375,
+    "bottom": 495.375,
+    "left": 504,
+    "right": 682
+  },
+  "stills": [
+    {
+      "still": "01-running-1s-no-line",
+      "count": 0,
+      "text": "",
+      "ok": true
+    },
+    {
+      "still": "02-running-6s-no-line",
+      "count": 0,
+      "text": "",
+      "ok": true
+    },
+    {
+      "still": "03-line-appears-past-threshold",
+      "count": 1,
+      "text": "RunningRunning · 11s",
+      "ok": true
+    },
+    {
+      "still": "04-line-counting",
+      "count": 1,
+      "text": "RunningRunning · 13s",
+      "ok": true
+    },
+    {
+      "still": "05-done-line-gone",
+      "count": 0,
+      "text": "",
+      "ok": true
+    }
+  ]
+}

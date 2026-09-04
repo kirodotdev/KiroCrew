@@ -1,0 +1,120 @@
+[
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 12.5,
+      "credits": 0.25
+    }
+  },
+  {
+    "action": "compaction",
+    "frame": "_kiro.dev/compaction/status",
+    "params": {
+      "sessionId": "kiro-session-0001",
+      "status": "started"
+    }
+  },
+  {
+    "action": "compaction",
+    "frame": "_kiro.dev/compaction/status",
+    "params": {
+      "sessionId": "kiro-session-0001",
+      "status": "completed"
+    }
+  },
+  {
+    "action": "clear",
+    "frame": "_kiro.dev/clear/status",
+    "params": {
+      "sessionId": "kiro-session-0001",
+      "status": "completed"
+    }
+  },
+  {
+    "action": "agent_switched",
+    "frame": "_kiro.dev/agent/switched",
+    "params": {
+      "agentName": "kirocrew",
+      "sessionId": "kiro-session-0001"
+    }
+  },
+  {
+    "action": "mcp_server_initialized",
+    "frame": "_kiro.dev/mcp/server_initialized",
+    "params": {
+      "serverName": "kirocrew-core",
+      "sessionId": "kiro-session-0001"
+    }
+  },
+  {
+    "action": "mcp_server_init_failure",
+    "frame": "_kiro.dev/mcp/server_init_failure",
+    "params": {
+      "error": "spawn failed",
+      "serverName": "kirocrew-cron",
+      "sessionId": "kiro-session-0001"
+    }
+  },
+  {
+    "action": "mcp_oauth_request",
+    "frame": "_kiro.dev/mcp/oauth_request",
+    "params": {
+      "serverName": "example-mcp",
+      "sessionId": "kiro-session-0001",
+      "url": "https://example.invalid/oauth/authorize"
+    }
+  },
+  {
+    "action": "subagent_list",
+    "frame": "_kiro.dev/subagent/list_update",
+    "params": {
+      "sessionId": "kiro-session-0001",
+      "subagents": [
+        {
+          "id": "sub-1",
+          "name": "reviewer",
+          "status": "running"
+        }
+      ]
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "~/notes.md",
+          "token": "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"
+        },
+        "title": "read the deploy notes",
+        "tool_call_id": "kiro-tool-0002",
+        "tool_input": "{\n  \"path\": \"~/notes.md\",\n  \"token\": \"[REDACTED: credential]\"\n}",
+        "tool_input_redacted": true,
+        "tool_kind": "read",
+        "wire_title": "read the deploy notes"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "kiro-tool-0002",
+        "tool_final": true,
+        "tool_output": "{\"content\": \"the deploy key is [REDACTED: credential]\"}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "max_tokens"
+  }
+]

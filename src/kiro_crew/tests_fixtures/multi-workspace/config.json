@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "version": 1,
+    "created_by": "kirocrew-fixture"
+  },
+  "agent": {
+    "approval_mode": "interactive",
+    "bot_name": "kirocrew"
+  },
+  "workspaces": {
+    "default": {
+      "dir": "workspace"
+    },
+    "review": {
+      "dir": "workspace-review"
+    },
+    "research": {
+      "dir": "workspace-research"
+    }
+  },
+  "default_workspace": "default",
+  "dashboard": {
+    "host": "127.0.0.1",
+    "theme_mode": "dark",
+    "onboarded": true
+  },
+  "timezone": "UTC"
+}

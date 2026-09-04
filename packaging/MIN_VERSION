@@ -1,0 +1,24 @@
+# The fleet's minimum supported version — the forced-update floor.
+#
+# Leave this file with no value line (comments only) for normal releases.
+# When a release ships a BREAKING change that older clients must not keep
+# running against (feed schema breaks, protocol breaks, data-format
+# migrations without back-compat), put ONE bare release version on its own
+# line, e.g.:
+#
+#   0.6.0
+#
+# Every CLI feed manifest published from a commit carrying that value embeds
+# it as the signed `min_version` field. Running gateways below the floor mark
+# the update REQUIRED: the dashboard's update prompt loses its snooze/skip
+# affordances until the install is updated. The floor must be a bare release
+# (no rc/dev/channel suffix) and must not exceed the version being published
+# — `packaging/signing/cli-manifest.py` rejects both at publish time.
+#
+# Rules:
+# - Bump it to the FIRST version that old clients can safely land on, which
+#   is usually the breaking release itself.
+# - Never bump it in the same release that introduces min_version support
+#   itself: clients only learn to read the field after updating once.
+# - Lower it (or clear it) only to roll back a mistaken floor; clients above
+#   the floor are never affected.

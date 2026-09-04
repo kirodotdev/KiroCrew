@@ -1,0 +1,255 @@
+// Extension composition root — the one file a downstream edition owns. Imported
+// FIRST (before store/providers/App) so seam registrations run before render.
+// Empty in the stock build. See website/src/extensions.ts.
+import './extensions'
+import { startMemoryWatch } from './lib/memoryWatch'
+import React, { StrictMode, Suspense, lazy } from 'react'
+import { createRoot } from 'react-dom/client'
+import { withCommitProfiler, installCommitProfilerConsoleApi } from './lib/commitProfiler'
+import { Provider } from 'react-redux'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { store } from './store'
+import { BrandingProvider } from './hooks/useBranding'
+import { ProviderProvider } from './providers'
+import { ThemeProvider } from './hooks/useTheme'
+import { UIModeProvider } from './hooks/useUIMode'
+import ThemeExperienceLayer from './components/ThemeExperienceLayer'
+import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/NavigationLeaveGuard'
+import { initRum } from './rum'
+import { isEmbeddedPane } from './lib/embedded'
+// i18n must initialize before the first render — a component rendering ahead of
+// init would emit its bare translation key instead of text. The `/all` entry is
+// what registers every language; plain `./i18n` is English-only, so importing it
+// here would render English for every user whatever language they picked.
+import { initI18n } from './i18n/all'
+import { LanguageProvider } from './i18n/LanguageProvider'
+import App from './App'
+import { queryClient } from './api/queryClient'
+import ErrorBoundary from './components/ErrorBoundary'
+import DashboardBootstrap from './components/DashboardBootstrap'
+import { installPageZoomSuppression } from './utils/pageZoom'
+import { installStaleShellHeal } from './lib/staleShellHeal'
+import { hydrateUiPrefs, needsHydrate, startUiPrefsSync } from './lib/uiPrefs'
+import 'katex/dist/katex.min.css'
+import './index.css'
+import './styles/cli-mode.css'
+// Register shared modules for federated app bundles (must be before any app loads)
+import './app-sdk/shared-modules'
+
+// Initialize RUM as early as possible
+initRum(__APP_VERSION__)
+
+// Seeded from localStorage (written by the inline bootstrap in index.html) so
+// the very first paint is already in the right language; LanguageProvider then
+// reconciles against the server-authoritative config value.
+initI18n()
+
+// Page zoom is off on touch: the shell is an application, not a document. The
+// viewport meta and the root `touch-action` cover Blink/Gecko; this covers
+// WebKit, which ignores both for user gestures. Installed before render so the
+// very first pinch is already suppressed. See utils/pageZoom.ts.
+installPageZoomSuppression()
+// Detect and break out of a stale service-worker shell (see the module doc).
+installStaleShellHeal()
+
+// Auto-recover from stale lazy-chunk errors after a frontend rebuild.
+// Vite fires `vite:preloadError` on window when a dynamic import() of a
+// hashed chunk 404s -- this happens when a tab loaded an old entry bundle
+// before a rebuild, then lazy-loads a page whose hash has since changed
+// (e.g. "Failed to fetch dynamically imported module: .../SomePage-<hash>.js").
+// Reloading pulls the fresh index.html + chunk map, which self-heals the tab.
+// Guarded by a short-lived sessionStorage timestamp so a genuinely-missing
+// chunk (persistent 404) can't trigger an infinite reload loop.
+window.addEventListener('vite:preloadError', (event) => {
+  const AT_KEY = 'vite-preload-reloaded-at'
+  const N_KEY = 'vite-preload-reload-count'
+  const COOLDOWN_MS = 10_000
+  const MAX_RELOADS = 3
+  let last = 0
+  let count = 0
+  try {
+    last = Number(sessionStorage.getItem(AT_KEY) || 0)
+    count = Number(sessionStorage.getItem(N_KEY) || 0)
+  } catch { /* storage blocked (privacy/partitioned) — treat as a first attempt */ }
+  // Bail (let the error surface via ErrorBoundary) if we reloaded very recently
+  // (tight-loop guard) OR have already reloaded too many times this session
+  // (a genuinely-missing chunk whose reload round-trip keeps exceeding the
+  // cooldown must not loop forever).
+  if (Date.now() - last < COOLDOWN_MS || count >= MAX_RELOADS) return
+  let persisted = false
+  try {
+    sessionStorage.setItem(AT_KEY, String(Date.now()))
+    sessionStorage.setItem(N_KEY, String(count + 1))
+    persisted = true
+  } catch { /* storage blocked */ }
+  // Only auto-reload if we could PERSIST the guard. If storage is blocked we
+  // cannot count reloads, so a genuinely-missing chunk would loop forever —
+  // let the error surface via ErrorBoundary instead.
+  if (!persisted) return
+  // Prevent Vite from throwing the unhandled preload error before we reload.
+  event.preventDefault()
+  window.location.reload()
+})
+
+// Accessibility: runtime DOM scanning in dev mode (logs violations to console)
+if (import.meta.env.DEV) {
+  // The `meta-viewport` rule is deliberately NOT waived, even though this shell ships
+  // `maximum-scale=1, user-scalable=no` and axe therefore reports a critical WCAG 1.4.4
+  // finding on every dev render. A waiver was written and removed; do not re-add one.
+  // The finding is not noise — it is the only recurring reminder that suppressing page
+  // zoom is an accessibility trade nobody has yet accepted in writing, and "nobody can
+  // action it" was wrong: it is a decision, and a decision stays owed.
+  // See the page-zoom row in website/docs/page-layout.md for the policy.
+  import('react-dom').then(ReactDOM => import('@axe-core/react').then(axe => axe.default(React, ReactDOM, 1000)))
+}
+
+// Warm the Pierre code/diff renderer while the tab is idle: loading the chunk
+// creates the module-level highlight worker pool, so the first code surface a
+// user opens paints immediately instead of paying chunk + worker + grammar
+// startup on click.
+//
+// NOT in an embedded remote-instance pane. Each warm pane is a full copy of this
+// SPA in its own realm, and every realm that evaluates PierreImpl spawns
+// PIERRE_WORKER_POOL_SIZE workers, each loading its own highlighter bundle + WASM
+// regex engine. With a warm-set cap that tracks the connected crews (automatic,
+// bounded at 8) that is 4 workers x up to 8 panes eagerly-spawned in one renderer
+// process, and the background panes paint
+// nothing, so most of them buy no responsiveness at all. Observed consequence: the
+// renderer accumulated 20 DedicatedWorker threads and was killed by a V8 fatal
+// abort raised on one of them, taking the whole window black.
+//
+// Panes are not left slower than before in any case a user can see: the lazy
+// import in pierre/index.tsx still creates the pool on the first real code
+// surface, so a pane the user actually opens a diff in pays exactly the
+// pre-warm cost it used to pay on click.
+const idle: (cb: () => void) => void =
+  typeof requestIdleCallback === 'function' ? cb => requestIdleCallback(cb) : cb => setTimeout(cb, 2000)
+if (!isEmbeddedPane()) {
+  idle(() => { import('./pierre/PierreImpl').catch(() => { /* warmed on first use instead */ }) })
+}
+
+const WorldsPopout = lazy(() => import('./pages/WorldsPopout'))
+
+// Sample this renderer's memory trajectory so a V8 cage OOM has a before, not
+// just an after. Reports V8 external memory (backing stores + external strings),
+// which is where EVERY ArrayBuffer lands regardless of which API created it --
+// unlike the constructor wrap this replaces, which saw one of ~25 allocation
+// paths in one realm. Cheap (four integers per 5s), and no-ops when there is no
+// main process to report to (a plain-browser dashboard).
+startMemoryWatch('main')
+
+// Debug-only, and inert unless explicitly armed with ?profile=commits. When
+// disarmed withCommitProfiler returns the children untouched, so no Profiler
+// element enters the tree on a normal load.
+installCommitProfilerConsoleApi()
+
+const appTree = (
+  <StrictMode>
+    <ErrorBoundary root scope="app-shell">
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <LanguageProvider>
+            <ThemeProvider>
+              <UIModeProvider>
+                <ThemeExperienceLayer />
+                <NavigationLeaveGuardProvider>
+                  <BrowserRouter>
+                    {/* Inside the router (it navigates) and outside the routes
+                        (it must survive every route change). Renders nothing,
+                        and stays out of the history stack entirely until a page
+                        publishes work at stake. */}
+                    <NavigationBackGuard />
+                    <Routes>
+                      <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
+                      <Route
+                        path="*"
+                        element={(
+                          <BrandingProvider>
+                            <ProviderProvider>
+                              <DashboardBootstrap>{withCommitProfiler('app', <App />)}</DashboardBootstrap>
+                            </ProviderProvider>
+                          </BrandingProvider>
+                        )}
+                      />
+                    </Routes>
+                  </BrowserRouter>
+                </NavigationLeaveGuardProvider>
+              </UIModeProvider>
+            </ThemeProvider>
+          </LanguageProvider>
+        </Provider>
+      </QueryClientProvider>
+    </ErrorBoundary>
+  </StrictMode>
+)
+
+// Restore the host-side backup of the renderer's own settings BEFORE the first
+// render, on any profile that has never successfully reached the host — a fresh
+// browser profile, a moved dashboard port (localStorage is per-origin), or a
+// relocated Electron userData directory. That is the case where the user would
+// otherwise see every setting back at its default and conclude the upgrade ate
+// them. Keyed on "never synced" rather than "no settings present" so a boot whose
+// fetch failed retries on the next one instead of forfeiting the restore.
+//
+// When something WAS restored we reload rather than render. Restoring before the
+// first render is not enough on its own: static imports are evaluated before any
+// statement here, so a store that reads its key at module scope (e.g.
+// hooks/useBottomTerminal.ts) has already captured the pre-restore value, and its
+// first write would persist that stale copy back over what we just restored. A
+// reload is the one move that is correct for every module-scope reader, present
+// and future, without a per-store re-init hook a new store would silently miss.
+// It costs one extra load on a fresh profile and cannot loop: hydrateUiPrefs
+// records the synced marker, so the next boot does not hydrate, and even with
+// that write dropped the second pass finds the keys present and restores nothing.
+//
+// Sync starts ONLY once this profile knows the host's state — i.e. the GET landed,
+// which is what clears needsHydrate(). If the fetch failed we render but do NOT
+// sync: the local keys at that moment are whatever the defaults-persisting hooks
+// just wrote, and uploading those would overwrite the very backup the failed
+// restore was trying to read. No sync means no backup for this session and the
+// next boot retries the restore. The asymmetry is deliberate — losing one
+// session's backup is recoverable, overwriting the host's copy is not.
+//
+// A profile that has synced pays nothing: needsHydrate() is a synchronous
+// localStorage read, so the usual launch renders on the same tick as before. The
+// first-time path is bounded by hydrateUiPrefs' own timeout, and a gateway that
+// never answers renders defaults rather than hanging the boot. See lib/uiPrefs.ts.
+
+// Embedded panes only: tell the parent this bundle EXECUTED, before React renders
+// anything. The parent's pane journal records `boot` for it. Without this line a
+// pane that loads its shell (a 200 the parent can see) and then never announces
+// `mc-embedded-ready` is indistinguishable from one whose bundle never ran; with
+// it the parent can tell "the entry ran but App/its bridge never mounted" from
+// "no JavaScript of ours ever executed in that frame". `stage` names how far
+// this file got. Wildcard target is safe: the payload carries no data and the
+// parent validates the origin. See EmbeddedHostBridge for the ready half.
+function announceBoot(stage: string): void {
+  if (!isEmbeddedPane()) return
+  try {
+    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+    window.parent?.postMessage({ type: 'mc-embedded-boot', v: 1, stage }, '*')
+  } catch {
+    /* no parent reachable — the ready announce carries its own retries */
+  }
+}
+announceBoot('entry')
+
+// (See the block above announceBoot for why the first-time boot may reload.)
+function boot(startSync: boolean): void {
+  announceBoot('render')
+  createRoot(document.getElementById('root')!).render(appTree)
+  if (startSync) startUiPrefsSync()
+}
+
+if (needsHydrate()) {
+  void hydrateUiPrefs().then(
+    (restored) => {
+      if (restored > 0) window.location.reload()
+      else boot(!needsHydrate())
+    },
+    () => boot(false),
+  )
+} else {
+  boot(true)
+}

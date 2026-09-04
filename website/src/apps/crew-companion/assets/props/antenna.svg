@@ -1,0 +1,25 @@
+<svg width="220" height="215" viewBox="1190 346 220 215" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- The full "antenna look" — exact vectors from Figma node 3:386 (updated),
+       kept in the design's own canvas coordinates so every relative position is
+       precise. The white ghost body is intentionally omitted (our own ghost body
+       renders underneath this overlay). ViewBox padded (centre preserved). -->
+
+  <!-- Left earmuff (Ellipse 5) -->
+  <ellipse cx="1220.5" cy="519.42" rx="23.5" ry="34" fill="#0A090B"/>
+  <!-- Right earmuff (Subtract 5:69) — partial oval peeking out from behind the head -->
+  <g transform="translate(1373 464)">
+    <path d="M4.43945 0.0230911C17.4 -0.662045 28.7099 13.9835 29.7012 32.735C30.435 46.6167 25.3068 58.855 17.3359 64.5543C16.4482 46.4426 13.3684 33.0811 11.9551 27.8776C9.17169 17.684 5.08248 8.68369 0 0.877583C1.42654 0.396785 2.90996 0.103949 4.43945 0.0230911Z" fill="#0A090B"/>
+  </g>
+  <!-- Visor / "glasses" (Vector 436) — replaces the eyes -->
+  <g transform="translate(1265.52 489.16) rotate(0.93 46 25.7304)">
+    <path d="M74.5171 1.02713C44.8912 -3.09036 21.4276 5.82094 7.33797 16.2054C2.31777 19.9055 0 26.0438 0 32.2802V37.4223C0 48.3652 13.0146 54.7034 22.7753 49.7559C40.7189 40.6608 56.804 38.6977 69.3787 39.9271C79.6378 40.9301 92 33.2026 92 22.8946C92 12.2745 85.036 2.48908 74.5171 1.02713Z" fill="#0A090B"/>
+  </g>
+  <!-- Antenna stalk (Vector 437) -->
+  <path d="M1302.77 425.4L1302.77 387.42" stroke="#0A090B" stroke-width="9"/>
+  <!-- Antenna top bobble (Ellipse 4) -->
+  <circle cx="1302.38" cy="371.42" r="17" fill="#0A090B"/>
+  <!-- Antenna's little round bottom (Ellipse 6) where it meets the head -->
+  <g transform="translate(1279.5 414.83) rotate(-1.42 23.5 11)">
+    <path d="M23.5 0C10.5213 0 0 7.61116 0 17C0 17 9.5 22 23.5 22C37.5 22 47 17 47 17C47 7.61116 36.4787 0 23.5 0Z" fill="#0A090B"/>
+  </g>
+</svg>

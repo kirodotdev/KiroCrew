@@ -1,0 +1,143 @@
+"""Persistence-only monitor probing with no action-delivery dependency."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
+from dataclasses import fields
+
+from kiro_crew.monitoring.decision import (
+    decide_monitor,
+    monitor_budget_reason,
+    terminal_decision_for_outcome,
+)
+from kiro_crew.monitoring.models import (
+    MonitorDecision,
+    MonitorObservationStatus,
+    MonitorOutcome,
+    MonitorProbe,
+    MonitorState,
+    MonitorVerdict,
+    ProviderErrorKind,
+    is_finite_non_negative_number,
+    resolve_probe_result,
+)
+from kiro_crew.monitoring.registry import (
+    kind_supports_objective,
+    kind_supports_shadow,
+)
+
+ShadowStatePersistence = Callable[[MonitorState], Awaitable[None]]
+
+
+class ShadowWakeDeliveryRefused(RuntimeError):
+    """Raised when a caller asks the persistence-only path to wake a session."""
+
+
+async def run_shadow_probe(
+    state: MonitorState,
+    provider: MonitorProbe,
+    persist: ShadowStatePersistence,
+    *,
+    now: float,
+    wake_delivery: bool = False,
+) -> MonitorVerdict:
+    """Probe and persist one decision without acquiring a delivery capability.
+
+    A verdict returned before the probe runs carries no entries: refusing a
+    monitor for a recorded outcome or a spent budget observes nothing.
+    """
+    if wake_delivery:
+        raise ShadowWakeDeliveryRefused("wake delivery is unavailable in shadow mode")
+    # A CAPABILITY the kind declares, not an allowlist of what a caller may request:
+    # this asks whether the persistence-only path is implemented for the kind, which
+    # is a fact about what code exists. A kind registered without it is refused here
+    # rather than silently inheriting a claim about a path it has never run.
+    if not kind_supports_shadow(state.kind):
+        raise ValueError(f"shadow mode is not implemented for monitored kind {state.kind!r}")
+    if not kind_supports_objective(state.kind, state.objective):
+        raise ValueError(
+            f"monitored kind {state.kind!r} does not declare objective {state.objective!r}"
+        )
+    if not is_finite_non_negative_number(now):
+        raise ValueError("now must be a finite non-negative number")
+    if not callable(persist):
+        raise ValueError("persist must be callable")
+
+    terminal = terminal_decision_for_outcome(state.outcome)
+    if terminal is not None:
+        return MonitorVerdict(decision=terminal)
+    budget_reason = monitor_budget_reason(state, now=now)
+    if budget_reason:
+        staged = deepcopy(state)
+        staged.last_decision = MonitorDecision.STOP_BUDGET
+        staged.outcome = MonitorOutcome.BUDGET
+        staged.stopped_reason = budget_reason
+        staged.stopped_at = now
+        staged.next_probe_at = 0.0
+        await _persist_and_publish(state, staged, persist)
+        return MonitorVerdict(decision=MonitorDecision.STOP_BUDGET)
+
+    results = await asyncio.to_thread(
+        provider.probe,
+        (state.target,),
+        previous_observations={state.target: deepcopy(state.last_observation)},
+    )
+    result = resolve_probe_result(results, state.target)
+    staged = deepcopy(state)
+    verdict = decide_monitor(staged, result.observation, now=now)
+    decision = verdict.decision
+    staged.probe_count += 1
+    staged.last_probe_at = now
+    staged.last_decision = decision
+    observation = result.observation
+    provider_error = observation.provider_error or observation.supplemental_provider_error
+    if provider_error is not None:
+        staged.provider_error_count += 1
+        staged.consecutive_provider_errors += 1
+        staged.last_provider_error = provider_error
+    else:
+        staged.consecutive_provider_errors = 0
+        staged.last_provider_error = None
+    if observation.status is not MonitorObservationStatus.PROVIDER_ERROR:
+        staged.last_observation = deepcopy(result.canonical)
+        staged.last_fingerprint = observation.fingerprint
+        staged.last_observed_at = now
+    if decision in {
+        MonitorDecision.STOP_SUCCESS,
+        MonitorDecision.STOP_BLOCKED,
+        MonitorDecision.STOP_BUDGET,
+    }:
+        staged.outcome = _terminal_outcome(decision, observation.provider_error)
+        staged.stopped_reason = observation.reason_code or decision.value
+        staged.stopped_at = now
+        staged.next_probe_at = 0.0
+    else:
+        staged.next_probe_at = now + staged.cadence_secs
+    await _persist_and_publish(state, staged, persist)
+    return verdict
+
+
+async def _persist_and_publish(
+    state: MonitorState,
+    staged: MonitorState,
+    persist: ShadowStatePersistence,
+) -> None:
+    """Publish only after the staged replacement is durable."""
+    await persist(staged)
+    for state_field in fields(MonitorState):
+        setattr(state, state_field.name, deepcopy(getattr(staged, state_field.name)))
+
+
+def _terminal_outcome(
+    decision: MonitorDecision,
+    provider_error: ProviderErrorKind | None,
+) -> MonitorOutcome:
+    if decision is MonitorDecision.STOP_SUCCESS:
+        return MonitorOutcome.SUCCESS
+    if decision is MonitorDecision.STOP_BUDGET:
+        return MonitorOutcome.BUDGET
+    if provider_error is ProviderErrorKind.NOT_FOUND:
+        return MonitorOutcome.TARGET_UNAVAILABLE
+    return MonitorOutcome.BLOCKED

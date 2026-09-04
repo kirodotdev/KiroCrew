@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288">
+  <defs>
+    <linearGradient id="ai-detail-dark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#122a20"/>
+      <stop offset="100%" stop-color="#0d1f18"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="288" fill="url(#ai-detail-dark)"/>
+
+  <!-- Same visual language as the card hero, laid out for the wide detail slot:
+       the loop's four phases read left to right along one measured baseline. -->
+
+  <!-- Noise band -->
+  <rect x="80" y="168" width="1040" height="30" rx="6" fill="#1f4a3a" fill-opacity="0.22"/>
+  <line x1="80" y1="183" x2="1120" y2="183" stroke="#059669" stroke-width="1.5" stroke-dasharray="7 6" stroke-opacity="0.75"/>
+
+  <!-- Frozen floor anchor -->
+  <line x1="80" y1="52" x2="1120" y2="52" stroke="#a7f3d0" stroke-width="1.5" stroke-opacity="0.5"/>
+  <text x="88" y="44" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#a7f3d0" fill-opacity="0.8">frozen floor</text>
+
+  <!-- Cumulative-best staircase across the run -->
+  <path d="M80,140 L260,140 L260,116 L440,116 L440,96 L620,96 L620,80 L800,80 L800,68 L1060,68"
+        stroke="#34d399" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="260" cy="116" r="5.5" fill="#34d399"/>
+  <circle cx="440" cy="96" r="5.5" fill="#34d399"/>
+  <circle cx="620" cy="80" r="5.5" fill="#34d399"/>
+  <circle cx="800" cy="68" r="5.5" fill="#34d399"/>
+  <circle cx="1060" cy="68" r="7.5" fill="#a7f3d0"/>
+
+  <!-- A reverted candidate: measured, landed inside the band, thrown away. The
+       hollow marker is the honest half of the story. -->
+  <circle cx="530" cy="180" r="5.5" fill="none" stroke="#059669" stroke-width="2" stroke-opacity="0.9"/>
+  <circle cx="700" cy="186" r="5.5" fill="none" stroke="#059669" stroke-width="2" stroke-opacity="0.9"/>
+
+  <!-- Phase labels -->
+  <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" fill="#6ee7b7" fill-opacity="0.9">
+    <text x="88" y="232">discover</text>
+    <text x="330" y="232">propose</text>
+    <text x="570" y="232">gate</text>
+    <text x="800" y="232">measure</text>
+    <text x="1010" y="232">draft PR</text>
+  </g>
+
+  <!-- The ruler -->
+  <rect x="80" y="248" width="1040" height="16" rx="3" fill="#ffffff" fill-opacity="0.08" stroke="#6ee7b7" stroke-width="1.4" stroke-opacity="0.7"/>
+  <g stroke="#6ee7b7" stroke-width="1.2" stroke-opacity="0.7" stroke-linecap="round">
+    <line x1="200" y1="248" x2="200" y2="257"/>
+    <line x1="320" y1="248" x2="320" y2="257"/>
+    <line x1="440" y1="248" x2="440" y2="257"/>
+    <line x1="560" y1="248" x2="560" y2="257"/>
+    <line x1="680" y1="248" x2="680" y2="257"/>
+    <line x1="800" y1="248" x2="800" y2="257"/>
+    <line x1="920" y1="248" x2="920" y2="257"/>
+    <line x1="1040" y1="248" x2="1040" y2="257"/>
+  </g>
+</svg>

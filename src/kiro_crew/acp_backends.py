@@ -1,0 +1,113 @@
+"""Re-export shim: the ACP backend registry now lives behind the agent-SDK boundary.
+
+The definitions moved to :mod:`kiro_crew.agent_sdk.backends` in RFC PR 3, which
+consolidates the capability mechanism inside ``kiro_crew.agent_sdk``. Read that
+module for what each name means and why; this file exists so the move needed no
+edit at any of the ~30 existing ``from kiro_crew.acp_backends import ...`` call
+sites, and so a future one keeps working.
+
+**Re-export, never a copy.** ``register_selectable_backend`` and
+``apply_selectable_denials`` mutate module state that lives in
+``agent_sdk.backends``: the names below bind the SAME function objects, so the
+registry has one ``_baseline``/``_selectable`` pair whichever path imported it. The
+private pair is deliberately NOT re-exported — a second binding to a mutable set
+is how two views of one registry start disagreeing.
+
+**Prefer the new path in new code.** This shim is not deprecated and nothing warns;
+importing from here is correct. What it must not become is the path a NEW consumer
+finds first, so ``test_agent_sdk_capabilities`` pins that the file stays a shim with
+no definitions of its own.
+
+Importing this module now executes ``agent_sdk/__init__``, and that chain stays
+import-light on purpose — no ``kiro_crew.config``, ``kiro_crew.platform`` or
+``kiro_crew.acp`` at module scope — because ``config.loader`` reaches
+``resolve_selected_backend`` from inside ``KiroCrewConfig.load()`` and a config
+import here would re-enter that load. ``test_acp_capability_sets_leaf`` pins it in
+a subprocess.
+"""
+
+from __future__ import annotations
+
+from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for existing importers
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_PERMISSION_CONFIG,
+    ACP_BACKEND_ROUTING,
+    ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_HOST_AUTH_CALLBACK,
+    ACP_BACKENDS_INLINE_COMPACTION,
+    ACP_BACKENDS_INTERNAL_SANDBOX,
+    ACP_BACKENDS_KIRO_IDENTITY_STORE,
+    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MEMBER_DISPATCH,
+    ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_POD_HOME_REMAP,
+    ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SESSION_MCP_ARRAY,
+    ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STRUCTURED_REFUSAL,
+    BASELINE_SELECTABLE_BACKENDS,
+    GOVERNANCE_FLOOR_BACKEND,
+    POLICY_ID_BY_BACKEND,
+    POLICY_ID_KIRO,
+    Routing,
+    apply_selectable_denials,
+    model_registry_namespace,
+    permission_config_for,
+    register_selectable_backend,
+    registered_backends,
+    resolve_selected_backend,
+    routing_for,
+    selectable_backend_values,
+    selectable_backends,
+)
+
+__all__ = [
+    "ACP_BACKENDS_ACP_RUNTIME",
+    "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION",
+    "ACP_BACKENDS_COMPACT",
+    "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION",
+    "ACP_BACKENDS_HOST_AUTH_CALLBACK",
+    "ACP_BACKENDS_INLINE_COMPACTION",
+    "ACP_BACKENDS_INTERNAL_SANDBOX",
+    "ACP_BACKENDS_KIRO_IDENTITY_STORE",
+    "ACP_BACKENDS_KIRO_SLASH_COMMANDS",
+    "ACP_BACKENDS_KNOWN",
+    "ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD",
+    "ACP_BACKENDS_MEMBER_DISPATCH",
+    "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION",
+    "ACP_BACKENDS_POD_HOME_REMAP",
+    "ACP_BACKENDS_SEED_LOCAL_SETTINGS",
+    "ACP_BACKENDS_SESSION_MCP_ARRAY",
+    "ACP_BACKENDS_SESSION_SHARING",
+    "ACP_BACKENDS_STEER",
+    "ACP_BACKENDS_STRUCTURED_REFUSAL",
+    "ACP_BACKEND_CLAUDE",
+    "ACP_BACKEND_CODEX",
+    "ACP_BACKEND_KAS",
+    "ACP_BACKEND_KIRO",
+    "ACP_BACKEND_PERMISSION_CONFIG",
+    "ACP_BACKEND_ROUTING",
+    "BASELINE_SELECTABLE_BACKENDS",
+    "GOVERNANCE_FLOOR_BACKEND",
+    "POLICY_ID_BY_BACKEND",
+    "POLICY_ID_KIRO",
+    "Routing",
+    "apply_selectable_denials",
+    "model_registry_namespace",
+    "permission_config_for",
+    "register_selectable_backend",
+    "registered_backends",
+    "resolve_selected_backend",
+    "routing_for",
+    "selectable_backend_values",
+    "selectable_backends",
+]

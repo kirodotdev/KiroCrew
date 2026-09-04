@@ -1,0 +1,19 @@
+{
+  "name": "mochi",
+  "description": "Mochi desktop pet companion — concise, friendly, can spawn subagents, learn from corrections, schedule tasks, and read internal resources",
+  "model": "auto",
+  "tools": [
+    "execute_bash",
+    "fs_read",
+    "fs_write",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch",
+    "@kirocrew-cron",
+    "@kirocrew-core",
+    "@mochi:mochi"
+  ],
+  "includeMcpJson": false,
+  "mcpServers": {}
+}

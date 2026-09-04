@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- One phase fans out to several agents and converges into the next: the graph
+       IS the product here, so the edges are drawn rather than implied by a list. -->
+  <path d="M6.9,10.7 C8.3,8.2 8.3,6.4 9.9,6.4" stroke="var(--ico-a, currentColor)" stroke-width="1.5" stroke-linecap="round" stroke-opacity="0.55"/>
+  <path d="M6.9,13.3 C8.3,15.8 8.3,17.6 9.9,17.6" stroke="var(--ico-a, currentColor)" stroke-width="1.5" stroke-linecap="round" stroke-opacity="0.55"/>
+  <path d="M14.1,6.4 C15.7,6.4 15.7,8.2 17.1,10.7" stroke="var(--ico-a, currentColor)" stroke-width="1.5" stroke-linecap="round" stroke-opacity="0.55"/>
+  <path d="M14.1,17.6 C15.7,17.6 15.7,15.8 17.1,13.3" stroke="var(--ico-a, currentColor)" stroke-width="1.5" stroke-linecap="round" stroke-opacity="0.55"/>
+  <!-- Descending fill = the run streaming through: finished, in flight, queued,
+       and an outlined terminal phase not yet reached. -->
+  <circle cx="4.6" cy="12" r="2.4" fill="var(--ico-b, currentColor)"/>
+  <circle cx="12" cy="6.4" r="2.2" fill="var(--ico-b, currentColor)" fill-opacity="0.75"/>
+  <circle cx="12" cy="17.6" r="2.2" fill="var(--ico-b, currentColor)" fill-opacity="0.3"/>
+  <circle cx="19.4" cy="12" r="2.4" fill="var(--ico-a, currentColor)" fill-opacity="0.16" stroke="var(--ico-a, currentColor)" stroke-width="1.7"/>
+</svg>

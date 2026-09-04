@@ -1,0 +1,222 @@
+{
+  "skill": "explain-for",
+  "notes": [
+    "Each case is one user prompt plus the audience the skill is expected to resolve,",
+    "and the assertions a graded answer must satisfy. 'audience' must appear verbatim",
+    "as a row label in the skill's audience tables -- run_evals.py --check enforces that,",
+    "so a case can never test an audience the skill does not define.",
+    "expect_trigger=false marks a control case: the prompt contains the word 'explain'",
+    "but is NOT an audience request, so the trigger phrases must NOT fire on it."
+  ],
+  "cases": [
+    {
+      "id": 1,
+      "name": "queue-age5",
+      "prompt": "Explain like I am five what a message queue is",
+      "audience": "Age 5",
+      "expect_trigger": true,
+      "assertions": [
+        "Contains no technical jargon at all (no 'broker', 'consumer', 'enqueue', 'throughput')",
+        "Uses a concrete physical analogy a small child has touched, not an abstract one",
+        "Conveys waiting in order -- first in is first served",
+        "Warm and delighted in tone, never a definition read aloud"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "rate-limit-manager",
+      "prompt": "Explain this rate limiting to my manager",
+      "audience": "Manager",
+      "expect_trigger": true,
+      "assertions": [
+        "Leads with user or business impact, not with mechanism",
+        "Names a cost, a timeline, or a risk in concrete terms",
+        "Ends on a decision that is the manager's to make",
+        "Does not walk through implementation detail unless asked"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "recursion-age15",
+      "prompt": "Break this recursion down for a 15 year old",
+      "audience": "Age 15",
+      "expect_trigger": true,
+      "assertions": [
+        "Correctly conveys that a function calls itself",
+        "Mentions a base case or stopping condition",
+        "Analogy comes from phones, games, or social apps rather than office work",
+        "Casual register without performed teen slang"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "cache-invalidation-default",
+      "prompt": "Dumb it down: why does cache invalidation keep going wrong",
+      "audience": "Age 5",
+      "expect_trigger": true,
+      "assertions": [
+        "Defaults to the simplest audience because the phrasing asks for the plainest possible framing and names nobody",
+        "Explains staleness -- something kept after it stopped being true",
+        "Zero jargon; no 'TTL', 'eviction', or 'coherence'",
+        "Does not ask the user which audience to use, because the phrasing already answered that"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "migration-parent",
+      "prompt": "Explain this database migration to my mom",
+      "audience": "Parents",
+      "expect_trigger": true,
+      "assertions": [
+        "Respectful throughout, with no trace of talking down",
+        "Analogy drawn from home life or technology she already uses",
+        "Conveys that the data moved shape without naming schema mechanics",
+        "Warm, conversational register rather than a lecture"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "load-429-designer",
+      "prompt": "Simplify this for a designer: the API returns 429 under load",
+      "audience": "Designer",
+      "expect_trigger": true,
+      "assertions": [
+        "Frames the failure as what the user perceives, not as an HTTP status",
+        "Says something about the interaction or flow that breaks",
+        "Suggests or implies a design response, such as feedback or a retry state",
+        "Avoids backend implementation detail"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "eventual-consistency-graduate",
+      "prompt": "Explain eventual consistency in plain english for a graduate seminar",
+      "audience": "Graduate",
+      "expect_trigger": true,
+      "assertions": [
+        "Uses correct terminology rather than avoiding it",
+        "Engages a trade-off, a bound, or an edge case instead of only defining the term",
+        "Assumes distributed-systems foundations already held",
+        "Stays precise -- no analogy that misstates the guarantee"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "merge-conflict-age5",
+      "prompt": "Explain like I am 5 how git merge conflicts happen",
+      "audience": "Age 5",
+      "expect_trigger": true,
+      "assertions": [
+        "Conveys two people changing the same thing at once",
+        "No version-control vocabulary at all",
+        "Analogy uses objects or people a child knows",
+        "Short, playful, and encouraging"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "incident-support",
+      "prompt": "Break this incident down for our support team",
+      "audience": "Support",
+      "expect_trigger": true,
+      "assertions": [
+        "Describes the observable symptom a user would report first",
+        "Says how to recognise or confirm the case",
+        "States what support should actually do or say",
+        "Does not require reading code to be actionable"
+      ]
+    },
+    {
+      "id": 10,
+      "name": "slip-director",
+      "prompt": "Explain it to my director why the migration slipped two weeks",
+      "audience": "Director",
+      "expect_trigger": true,
+      "assertions": [
+        "Frames the slip against strategy or resource allocation, not task mechanics",
+        "Honest about the cause without burying it in detail",
+        "States the consequence for the plan going forward",
+        "Ends on what is being asked of or decided by the director"
+      ]
+    },
+    {
+      "id": 16,
+      "name": "control-ci-question",
+      "prompt": "Can you explain for a second why the CI job failed",
+      "expect_trigger": false,
+      "assertions": [
+        "Answers the CI question directly",
+        "Does not pitch the answer at a child or any other audience level"
+      ]
+    },
+    {
+      "id": 11,
+      "name": "retry-flow-like-a-manager",
+      "prompt": "explain it to me like a manager: how the retry backoff works",
+      "audience": "Manager",
+      "expect_trigger": true,
+      "assertions": [
+        "Leads with what the retry behaviour costs or risks, not with the algorithm",
+        "Frames it as a decision or an expectation a manager can hold",
+        "Draws a diagram only if it shows the sequence, and does not draw an architecture diagram",
+        "Avoids implementation vocabulary like 'jitter' or 'exponential' without a plain gloss"
+      ]
+    },
+    {
+      "id": 12,
+      "name": "lifecycle-diagram-engineer",
+      "prompt": "Explain this session lifecycle to my teammate, an engineer",
+      "audience": "Engineer",
+      "expect_trigger": true,
+      "assertions": [
+        "Uses a diagram, because a lifecycle is a sequence of states",
+        "The diagram is a mermaid or excalidraw fence rather than ASCII art",
+        "The prose carries what the diagram cannot, instead of restating the boxes",
+        "Uses real terminology without apologising for it"
+      ]
+    },
+    {
+      "id": 17,
+      "name": "slow-query-middle-school",
+      "prompt": "explain like im in middle school why this query is slow",
+      "audience": "Middle school",
+      "expect_trigger": true,
+      "assertions": [
+        "Introduces any technical term together with its definition rather than assuming it",
+        "Walks the reason step by step instead of stating a conclusion",
+        "Uses a concrete example of the work the database is doing",
+        "Does not drop to Age-5 register -- the reader can follow cause and effect"
+      ]
+    },
+    {
+      "id": 13,
+      "name": "control-commit-diff",
+      "prompt": "Explain the difference between these two commits",
+      "expect_trigger": false,
+      "assertions": [
+        "Compares the commits directly",
+        "Does not introduce an audience calibration the user never asked for"
+      ]
+    },
+    {
+      "id": 14,
+      "name": "control-explain-it-to-me",
+      "prompt": "Can you explain it to me",
+      "expect_trigger": false,
+      "assertions": [
+        "Explains the thing under discussion directly",
+        "Does not pitch the answer at a child or ask which audience to use"
+      ]
+    },
+    {
+      "id": 15,
+      "name": "control-break-this-down",
+      "prompt": "Break this down",
+      "expect_trigger": false,
+      "assertions": [
+        "Breaks the subject down at the level the conversation is already using",
+        "Does not pitch the answer at a named audience"
+      ]
+    }
+  ]
+}

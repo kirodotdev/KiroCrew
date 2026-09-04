@@ -1,0 +1,96 @@
+import { useEffect } from 'react'
+import { MessagesSquare, X } from 'lucide-react'
+import { useScrollEdges } from '../hooks/useScrollEdges'
+import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
+import type { SessionRef } from '../utils/sessionRefs'
+
+/**
+ * Staged session references, rendered in the composer as chips.
+ *
+ * Deliberately mirrors `FilePreviewStrip`'s container geometry (same padding,
+ * top border, chrome tint, single scrolling row) so a staged session reads as
+ * the same class of thing as a staged attachment rather than a second,
+ * differently-styled mechanism. Like attachments, the chip is a real element
+ * ABOVE the textarea — not a token painted inside it. A `<textarea>` cannot
+ * render styled inline children, which is why the collapsed-paste chip has to
+ * fake itself with a transparent mirror layer; a chip strip has no such limit
+ * and can carry an icon and a secondary line.
+ *
+ * The composer reserves space for this strip by MEASURING it (`rootRef`, wired
+ * to `useMeasuredHeight` in ChatInput) rather than by predicting its height from
+ * these classes. Change the padding or the chip's type scale freely: the
+ * reservation follows. It used to be a hand-computed constant that had to be
+ * edited in step with this file, and nothing enforced that.
+ */
+export default function SessionRefStrip({ refs, onRemove, rootRef }: {
+  refs: SessionRef[]
+  onRemove?: (key: string) => void
+  /** Measured by the composer to reserve the strip's height. */
+  rootRef?: (node: HTMLDivElement | null) => void
+}) {
+  const [attachScroller, edges, remeasure] = useScrollEdges<HTMLDivElement>()
+  // Chips are staged and removed while the strip stays mounted, and the
+  // scroller keeps its own box through those changes, so the ResizeObserver
+  // never fires and no scroll event lands. Without this the cue goes stale:
+  // dark over a row that now fits, or absent over one that clips.
+  useEffect(() => { remeasure() }, [refs, remeasure])
+  if (!refs.length) return null
+  return (
+    // The wrapper exists for the edge cues: absolutely-positioned children of
+    // the scroller itself would travel with the scrolled content, so the fades
+    // anchor to a non-scrolling parent, same shape as the sibling strips.
+    <div className="relative" ref={rootRef}>
+      <div
+        ref={attachScroller}
+        className="flex gap-2 px-4 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-center"
+        data-testid="session-ref-strip"
+      >
+      {refs.map(ref => (
+        <div
+          key={ref.key}
+          data-testid="session-ref-chip"
+          data-session-ref={ref.key}
+          className="relative group/sessref shrink-0 flex items-center gap-1.5 max-w-[320px] px-2 py-1 rounded border border-border bg-bg-hover text-[12px] text-text"
+          title={ref.title || ref.key}
+        >
+          <MessagesSquare size={13} className="shrink-0 text-accent" aria-hidden="true" />
+          <span className="truncate">{ref.title || ref.key}</span>
+          {ref.messages !== undefined && (
+            <span className="shrink-0 text-muted tabular-nums">
+              {/* `n`, not `count`: `count` is i18next's reserved plural selector
+                  and would send this key through plural resolution it is not
+                  registered for. The abbreviated unit needs no plural form. */}
+              {i18nT('components.sessionRefStrip.n_messages', { n: fmtNumber(ref.messages) })}
+            </span>
+          )}
+          {onRemove && (
+            <button
+              type="button"
+              className="shrink-0 text-muted hover:text-danger cursor-pointer bg-transparent border-none p-0"
+              onClick={() => onRemove(ref.key)}
+              title={i18nT('components.sessionRefStrip.remove_reference')}
+              aria-label={i18nT('components.sessionRefStrip.remove_reference_to', { name: ref.title || ref.key })}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+      ))}
+      </div>
+      {/* Edge cues, same treatment as the sibling strips that already ship it
+          (FollowUpBar's scroll row, SidePanelLayout's tab strip): a gradient
+          says content continues past the clipped edge, because the overlay
+          scrollbar on macOS/iOS leaves no visible sign while idle.
+          from-bg-elevated matches the composer surface the strip sits on.
+          top-px keeps the strip's own border-t visible; pointer-events-none
+          keeps the edge chips interactive. */}
+      {edges.left && (
+        <div aria-hidden="true" data-testid="session-ref-strip-cue-left" className="pointer-events-none absolute left-0 top-px bottom-0 w-6 z-10 bg-gradient-to-r from-bg-elevated to-transparent" />
+      )}
+      {edges.right && (
+        <div aria-hidden="true" data-testid="session-ref-strip-cue-right" className="pointer-events-none absolute right-0 top-px bottom-0 w-6 z-10 bg-gradient-to-l from-bg-elevated to-transparent" />
+      )}
+    </div>
+  )
+}

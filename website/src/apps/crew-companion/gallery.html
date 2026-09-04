@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Avatar gallery</title>
+    <!--
+      Transparent window with a gutter for the card's own shadow. Every default
+      background is cleared explicitly: transparency only shows where nothing paints,
+      and one stylesheet setting a body background would turn the gutter into a
+      visible box. The padding must stay in step with GALLERY_PAD.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent !important;
+        overflow: hidden;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      #root {
+        /* = GALLERY_PAD */
+        padding: 24px;
+        box-sizing: border-box;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./gallery.tsx"></script>
+  </body>
+</html>

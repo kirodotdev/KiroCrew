@@ -1,0 +1,169 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": false,
+      "promptCapabilities": {
+        "image": true
+      }
+    },
+    "agent_version": "0.0.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": []
+    },
+    "session_id": "claude-session-0001"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "text": "I should run the command."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "I should run the command.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Running one command."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Running one command.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "echo acp-replay-corpus",
+          "description": "Echo the corpus marker"
+        },
+        "title": "Echo the corpus marker",
+        "tool_call_id": "toolu_01ReplayCorpus",
+        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"description\": \"Echo the corpus marker\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "allow_always",
+            "label": "Allow for this session"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo acp-replay-corpus",
+          "description": "Echo the corpus marker"
+        },
+        "request_id": 9201,
+        "shell_classified": true,
+        "title": "Bash",
+        "tool_call_id": "toolu_01ReplayCorpus",
+        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"description\": \"Echo the corpus marker\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_01ReplayCorpus",
+        "tool_final": true,
+        "tool_output": "acp-replay-corpus"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Compacting conversation..."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Compacting conversation...",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      900,
+      42,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

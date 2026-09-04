@@ -1,0 +1,165 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": false
+    },
+    "agent_version": "0.0.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "currentValue": "gpt-5-codex",
+        "id": "model",
+        "name": "Model"
+      },
+      {
+        "currentValue": "medium",
+        "id": "effort",
+        "name": "Reasoning effort"
+      },
+      {
+        "currentValue": "read-only",
+        "id": "mode",
+        "name": "Approval mode"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "codex-session-0001"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "text": "Echo the marker."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "Echo the marker.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Running one command."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Running one command.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": [
+            "bash",
+            "-lc",
+            "echo acp-replay-corpus"
+          ]
+        },
+        "title": "shell",
+        "tool_call_id": "call_ReplayCorpus1",
+        "tool_input": "{\n  \"command\": [\n    \"bash\",\n    \"-lc\",\n    \"echo acp-replay-corpus\"\n  ]\n}",
+        "tool_kind": "execute",
+        "wire_title": "shell"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "approve",
+            "label": "Approve"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": [
+            "bash",
+            "-lc",
+            "echo acp-replay-corpus"
+          ]
+        },
+        "request_id": 9301,
+        "shell_classified": true,
+        "title": "shell",
+        "tool_call_id": "call_ReplayCorpus1",
+        "tool_input": "{\n  \"command\": [\n    \"bash\",\n    \"-lc\",\n    \"echo acp-replay-corpus\"\n  ]\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "approve",
+      "once": "approve",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_ReplayCorpus1",
+        "tool_final": true,
+        "tool_output": "acp-replay-corpus"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

@@ -1,0 +1,284 @@
+"""Tests for agent sync prune logic in dashboard/handlers/agents.py."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from kiro_crew.agent_discovery import AgentInfo
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+
+def _make_aim_agent(name: str) -> AgentInfo:
+    return AgentInfo(
+        name=name,
+        filename=f"local-OmniAgents-{name}.json",
+        description=f"{name} agent",
+        model="auto",
+        source="aim",
+        package="OmniAgents",
+    )
+
+
+def _make_config(agents: dict[str, KiroCrewAgentConfig]) -> KiroCrewConfig:
+    """Create a MagicMock standing in for KiroCrewConfig with the given agents dict."""
+    cfg = MagicMock(spec=KiroCrewConfig)
+    cfg.agents = agents
+    cfg.default_agent = "kirocrew"
+    cfg.save = MagicMock()
+    return cfg
+
+
+async def _run_sync(cfg: KiroCrewConfig, aim_agents_list: list[AgentInfo]) -> dict:
+    """Invoke the production _do_agents_sync with mocked dependencies and return parsed body.
+
+    The sync persists via a delta mutate through ``update_config_locked``
+    (#4767); the patch below records each call on ``cfg.save`` (so the
+    existing called/not-called assertions keep their meaning) and stores the
+    mutated document on ``cfg.written_doc``.
+    """
+    from kiro_crew.dashboard.handlers.agents import _do_agents_sync
+
+    request = MagicMock()
+    request.get.return_value = "dashboard"
+
+    sel_mock = MagicMock()
+
+    def _fake_update_config_locked(*args, **kwargs):
+        doc: dict = {"agents": {}}
+        result = kwargs["mutate"](doc)
+        cfg.save()
+        cfg.written_doc = result
+        return result
+
+    with (
+        patch("kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load", return_value=cfg),
+        patch("kiro_crew.dashboard.handlers.agents.list_agents", return_value=aim_agents_list),
+        patch(
+            "kiro_crew.dashboard.handlers.agents.update_config_locked",
+            new=_fake_update_config_locked,
+        ),
+        patch("kiro_crew.dashboard.handlers.agents._sel", return_value=sel_mock),
+    ):
+        response = await _do_agents_sync(request)
+
+    assert response.body is not None
+    return json.loads(response.body)
+
+
+class TestAgentSyncPrune:
+    """Tests for the prune step in _do_agents_sync (real production code path)."""
+
+    @pytest.mark.asyncio
+    async def test_prune_removes_stale_aim_agents(self):
+        """Agents with source='aim' not in scan results get pruned."""
+        agents = {
+            "omni-reviewer": KiroCrewAgentConfig(kiro_agent="omni-reviewer", source="aim"),
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+            "gpu-dev": KiroCrewAgentConfig(kiro_agent="gpu-dev", source="aim"),
+        }
+        cfg = _make_config(agents)
+        aim_list = [_make_aim_agent("omni-aws"), _make_aim_agent("gpu-dev")]
+
+        body = await _run_sync(cfg, aim_list)
+
+        assert body["pruned"] == ["omni-reviewer"]
+        assert "omni-reviewer" not in cfg.agents
+        assert "omni-aws" in cfg.agents
+        assert "gpu-dev" in cfg.agents
+        cfg.save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_prune_removes_a_starred_package_agent_too(self):
+        """A star does not keep a spec-less row alive: the row is pruned like
+        any other and a reinstall comes back un-starred (one click restores it)."""
+        agents = {
+            "omni-reviewer": KiroCrewAgentConfig(
+                kiro_agent="omni-reviewer", source="aim", starred=True
+            ),
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+        }
+        cfg = _make_config(agents)
+        body = await _run_sync(cfg, [_make_aim_agent("omni-aws")])
+        assert body["pruned"] == ["omni-reviewer"]
+        assert "omni-reviewer" not in cfg.agents
+        body = await _run_sync(cfg, [_make_aim_agent("omni-aws"), _make_aim_agent("omni-reviewer")])
+        assert body["synced"] == ["omni-reviewer"]
+        assert cfg.agents["omni-reviewer"].starred is False
+
+    @pytest.mark.asyncio
+    async def test_prune_skips_kirocrew_owned_agents(self):
+        """Agents with source='kirocrew' are never pruned."""
+        agents = {
+            "kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew", source="kirocrew"),
+            "stale-aim": KiroCrewAgentConfig(kiro_agent="stale-aim", source="aim"),
+        }
+        cfg = _make_config(agents)
+        aim_list = [_make_aim_agent("gpu-dev")]
+
+        body = await _run_sync(cfg, aim_list)
+
+        assert "stale-aim" in body["pruned"]
+        assert "kirocrew" not in body["pruned"]
+        assert "kirocrew" in cfg.agents
+
+    @pytest.mark.asyncio
+    async def test_prune_skips_user_created_agents(self):
+        """Agents with source='builtin' (user-created) are never pruned."""
+        agents = {
+            "my-custom": KiroCrewAgentConfig(kiro_agent="my-custom", source="builtin"),
+            "stale-aim": KiroCrewAgentConfig(kiro_agent="stale-aim", source="aim"),
+        }
+        cfg = _make_config(agents)
+        aim_list = [_make_aim_agent("gpu-dev")]
+
+        body = await _run_sync(cfg, aim_list)
+
+        assert "stale-aim" in body["pruned"]
+        assert "my-custom" not in body["pruned"]
+        assert "my-custom" in cfg.agents
+
+    @pytest.mark.asyncio
+    async def test_no_prune_when_scan_returns_empty(self):
+        """Empty scan result (likely transient failure) should not prune anything."""
+        agents = {
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+            "gpu-dev": KiroCrewAgentConfig(kiro_agent="gpu-dev", source="aim"),
+        }
+        cfg = _make_config(agents)
+        aim_list: list[AgentInfo] = []
+
+        body = await _run_sync(cfg, aim_list)
+
+        assert body["pruned"] == []
+        assert body["synced"] == []
+        assert "omni-aws" in cfg.agents
+        assert "gpu-dev" in cfg.agents
+        cfg.save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_and_prune_in_same_sync(self):
+        """A single sync both adds new agents and prunes stale ones."""
+        agents = {
+            "old-agent": KiroCrewAgentConfig(kiro_agent="old-agent", source="aim"),
+        }
+        cfg = _make_config(agents)
+        aim_list = [_make_aim_agent("new-agent")]
+
+        body = await _run_sync(cfg, aim_list)
+
+        assert body["synced"] == ["new-agent"]
+        assert body["pruned"] == ["old-agent"]
+        assert "new-agent" in cfg.agents
+        assert "old-agent" not in cfg.agents
+        cfg.save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_noop_when_nothing_changed(self):
+        """No adds or prunes when config matches scan exactly."""
+        agents = {
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+        }
+        cfg = _make_config(agents)
+        aim_list = [_make_aim_agent("omni-aws")]
+
+        body = await _run_sync(cfg, aim_list)
+
+        assert body["synced"] == []
+        assert body["pruned"] == []
+        cfg.save.assert_not_called()
+
+
+class TestSyncRefusesCredentialShapedNames:
+    """The SECOND way a name reaches `cfg.agents`, which the create route cannot see.
+
+    A discovered spec's name is package-controlled, not typed by the owner, so
+    "the owner is reading a string the owner wrote" does not hold for it: a package
+    could land a credential-shaped name that then reaches the roster. Refused at
+    this source too (#8454).
+    """
+
+    PROBE = "AKIAIOSFODNN7EXAMPLE"
+
+    @pytest.mark.asyncio
+    async def test_a_credential_shaped_discovered_name_is_not_synced(self):
+        cfg = _make_config({})
+        body = await _run_sync(cfg, [_make_aim_agent(self.PROBE)])
+        assert self.PROBE not in cfg.agents, "a credential-shaped package name was stored"
+        assert self.PROBE not in json.dumps(body), "the name was echoed into the response"
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_discovered_name_still_syncs(self):
+        """The direction that proves the refusal is narrow, not a blanket."""
+        cfg = _make_config({})
+        await _run_sync(cfg, [_make_aim_agent("oncall-triage")])
+        assert "oncall-triage" in cfg.agents
+
+
+class TestAgentSyncFsCheckIsOffloaded:
+    """The per-agent on-disk existence check (a stat + a namespaced glob) runs in
+    a loop over discovered agents; on a populated agents directory it must be
+    offloaded or the gateway loop and heartbeat stall."""
+
+    def test_the_on_disk_check_is_awaited_off_loop(self) -> None:
+        import inspect
+
+        from kiro_crew.dashboard.handlers import agents
+
+        src = inspect.getsource(agents._do_agents_sync)
+        assert "await asyncio.to_thread(" in src
+        assert "_namespaced_agent_file_exists(_dn)" in src, "the FS check must run off-loop"
+
+
+class TestPruneOnlySnapshotMatchedEntries:
+    """#4767 round 8: the locked prune only deletes entries that still equal
+    this sync's own snapshot -- an agent (re)added by a NEWER sync between the
+    discovery snapshot and the lock hold must survive a stale prune."""
+
+    @pytest.mark.asyncio
+    async def test_agent_added_or_changed_after_snapshot_survives_stale_prune(self):
+        from kiro_crew.dashboard.handlers.agents import _do_agents_sync
+
+        cfg = _make_config({"stale": KiroCrewAgentConfig(kiro_agent="stale-spec", source="aim")})
+        request = MagicMock()
+        request.get.return_value = "dashboard"
+
+        # Discovery finds one unrelated agent, so "stale" (spec gone) is this
+        # sync's prune candidate. The in-lock document simulates a NEWER sync
+        # having landed between the snapshot and the lock hold: "stale" was
+        # re-added with a DIFFERENT spec name, and "fresh" is brand new.
+        # Neither equals this sync's snapshot entry, so neither is pruned.
+        in_lock_doc = {
+            "agents": {
+                "stale": {"kiro_agent": "renewed-spec", "source": "aim"},
+                "fresh": {"kiro_agent": "fresh-spec", "source": "aim"},
+            }
+        }
+        written: dict = {}
+
+        def _fake_update_config_locked(*args, **kwargs):
+            result = kwargs["mutate"](in_lock_doc)
+            written["doc"] = result if result is not None else in_lock_doc
+            return result
+
+        with (
+            patch("kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load", return_value=cfg),
+            patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents",
+                return_value=[_make_aim_agent("unrelated")],
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.agents.update_config_locked",
+                new=_fake_update_config_locked,
+            ),
+            patch("kiro_crew.dashboard.handlers.agents._sel", return_value=MagicMock()),
+        ):
+            await _do_agents_sync(request)
+
+        agents_after = written["doc"]["agents"]
+        assert "fresh" in agents_after, "an agent added after the snapshot was pruned"
+        assert (
+            agents_after["stale"]["kiro_agent"] == "renewed-spec"
+        ), "a re-added (changed) entry was deleted on stale snapshot evidence"

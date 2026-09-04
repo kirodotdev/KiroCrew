@@ -1,0 +1,196 @@
+# Request for Change
+
+Design documents for changes that are large enough, risky enough, or contested
+enough to be worth writing down before building. An RFC here is a **proposal and
+a record of a decision** — not a description of what the code does today. For
+that, read the code, or the `status` field described below.
+
+## Index
+
+Every status below is verified against the code — definitions *and* callers — and
+against merged PR history, never taken from the document's own claims. Rows are
+re-audited in waves rather than all at once, so each document's own
+`last-audited` / `audited-at` front matter is the authoritative freshness signal
+for that row. The `rfc-crew-agent-sdk-boundary`, `rfc-agent-config-mirror`,
+`rfc-global-workflow-library` and `rfc-app-sandbox-isolation` rows, and the three
+`implemented` rows, were re-audited against `424efa423`. Rows not named there are
+older; when a row's `audited-at` is far behind main, distrust the status.
+Last audited **2026-08-03** against main `0ab6ed48`. Every status below was
+verified against the code (definitions *and* callers) and against merged/open PR
+history, not taken from the document's own claims. The `rfc-tailnet-dashboard-access`
+row was added later and re-verified against `429cbad8`, and `rfc-session-address-model`
+was added later still and verified against `b23ab77af`; the
+`rfc-everything-is-an-app` and `rfc-amend-tenets-everything-is-an-app` rows
+were added
+2026-08-18 and verified against `e6b06685e`; the other rows have
+not been re-audited since 2026-08-03. The durable-run-coordinator row was added
+2026-08-22 and the orchestrator-chat-sessions row was re-audited at
+`c4f253891`; the `rfc-token-efficient-monitors` row was added 2026-08-22 and
+verified against `6d3e30bbbd`. The `rfc-global-workflow-library` row was added
+2026-08-25 and audited against `749468d42`; its implementation exists only in
+the active detached worktree. The `rfc-agentcore-identity-gateway` row
+was added 2026-08-27. The `rfc-crew-agent-sdk-boundary` row was added 2026-08-28 and verified against `dc88f142b`. The `rfc-transcript-section-markers` row was added 2026-08-30 and verified against `202770d13`. The `rfc-mcp-lifecycle-event-log` row was added 2026-09-01 and verified against `1ee69f225`. The `rfc-session-tag-change-event` row was added 2026-09-02 and verified against `6581a04ee`. The `rfc-agent-config-mirror` row was added 2026-09-02 and verified against `f8b3203c0`. The `rfc-chat-core-extraction` row was added 2026-09-05 and verified against `8ed028b0b`. The `rfc-conductor-work-ledger` row was added 2026-09-05 and verified against `049b8c729`. The `rfc-app-session-controls` row was added 2026-08-31 and re-verified against `1d705a03f` on 2026-09-01. The `rfc-central-governance-ceiling` row was added 2026-09-08 and verified against `8a9c269b4`. The `rfc-security-conductor` row was re-audited 2026-09-08 against `acc99f217`.
+
+| Document | Status | What is actually on main |
+|---|---|---|
+| [rfc-central-governance-ceiling.md](rfc-central-governance-ceiling.md) | `draft` | Nothing. The break_glass mechanism was withdrawn from PR #7362 before merge and no managed-tier code exists. Verified at `8a9c269b4`: `break_glass`, `BreakGlass`, `BREAK_GLASS`, `_read_managed_policy` and `_managed_policy_path` each return zero hits under `src/`. The shipped ceiling is the tighten-only ladder in `load_security_policy` (`platform/governance.py`); this RFC records the withdrawn time-boxed local override, its four defect classes, and the intended Windows managed tier (`HKLM\SOFTWARE\Policies\<vendor>\<product>`) as design of record only |
+| [rfc-remote-instance-on-fargate.md](rfc-remote-instance-on-fargate.md) | `draft` | Nothing. Verified at `8fd5193e6`: the only `LaunchEngine` implementation is `RealLaunchEngine` in `cloud/launch_engine.py`, which calls `ec2.deploy`; `cloud_launch_engine` in `dashboard/state.py` is injectable but set only by tests; `sizes.py` fixes the three shapes to instance types; nothing in `src/kiro_crew/cloud/` references Fargate, ECS or `RunTask`. |
+| [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) | `partial` | Phases 1, 2 and 2.5 are on main; verified at `c02cdd67c`. `src/kiro_crew/work_ledger.py` is the store ([#8855](https://github.com/kirodotdev/KiroCrew/pull/8855)); `src/kiro_crew/mcp_work.py` plus `dashboard/handlers/work_ledger.py` are the four tools and their `/api/work-ledger` routes, and `_MANAGED_MCP_SERVERS` carries the `opt_in` `kirocrew-work` entry ([#9152](https://github.com/kirodotdev/KiroCrew/pull/9152)); `agent.py` installs `kirocrew-worker` and `kirocrew-ledger-conductor`, and `kirocrew-conductor` / `kirocrew-pipeline-conductor` deliberately carry no work-ledger grant ([#9277](https://github.com/kirodotdev/KiroCrew/pull/9277)). Not started: the wake gate (`probes/__init__.py` `build` still maps exactly one kind, `gh-pr`), the sibling digest, worker-to-worker channels, and the Crew page surfaces. `goal-conductor/SKILL.md` and `goal-conductor/scripts/ledger_entry.py` are untouched, so an un-migrated conductor still learns worker state by `session_read_message` and still encodes each item into a `session_ledger` `artifacts` value |
+| [rfc-session-tag-change-event.md](rfc-session-tag-change-event.md) | `draft` | Nothing. Verified at `6581a04ee`: `SessionTagsChanged` has zero hits in the tree, and `HOOK_EVENTS` (`hooks.py:93-99`) and `ALLOWED_HOOK_EVENTS` (`validation.py:92-94`) still carry exactly the five turn-lifecycle events. Tag writes still only `push_slots_update()` to the browser with no server-side consumer |
+| [rfc-agent-config-mirror.md](rfc-agent-config-mirror.md) | `partial` | The `providers/mirrors/` package it proposes is on main — `base.py`, `claude_code.py`, `registry.py` and the package's own `README.md` — so the seam and the Claude Code mirror exist. The three pre-existing unnamed mirrors it consolidates are all still real: `providers/acp.py`'s `_write_cli_overlay` + `_write_tool_search_overlay` (kiro-cli's `cli.json`), `acp/kas_agents.py` + `acp/kas_permissions.py` (KAS `customAgents` over the wire), and `client.py`'s `_write_claude_local_settings`. Unstarted: the interface on `LLMProvider`, the disposition vocabulary, the parity test, `acp/session_mcp.py`. Both hooks gaps it names are live: `hooks` sits in `kas_agents.UNSUPPORTED_SPEC_KEYS` and is never written for Claude Code. The mirror contract is documented in two places — `providers/mirrors/README.md` and [`../system-specs/modules/providers.md`](../system-specs/modules/providers.md) — and which one owns it is unresolved |
+| [rfc-mcp-lifecycle-event-log.md](rfc-mcp-lifecycle-event-log.md) | `draft` | The events package it builds on is real (`src/kiro_crew/events/`: envelope, registry, read-only backfill validator, landed by [#3808](https://github.com/kirodotdev/KiroCrew/pull/3808)), but nothing emits and nothing reads: no writer module, no `seq` field, no `mcp/` kinds. The #7366 capture points it names as emit sites are on an open PR, not on main |
+| [rfc-app-session-controls.md](rfc-app-session-controls.md) | `accepted` | Ships with its implementation in #7573. Verified at `1d705a03f`, before that PR: `UIConfig` declares `entry`/`pages`/`overlays`/`sidebar` and no session-scoped surface, and the app SDK's public files carry zero `sessionKey`/`session_key`/`activeSession`/`currentSession` hits — so no app can discover the chat it is rendered beside. Implementation (manifest field + composer host + status polling) lands in the same PR; S1 and S2 are deliberately not separable |
+| [rfc-transcript-section-markers.md](rfc-transcript-section-markers.md) | `draft` | Nothing. No `section_marker` role exists; every collapse affordance is intra-turn (`CollapsibleToolGroup`, `TurnBlock`, `ToolCallLine`) and nothing collapses rows above a point |
+| [rfc-crew-agent-sdk-boundary.md](rfc-crew-agent-sdk-boundary.md) | `partial` | Both named deliverables are on main: the `agent_sdk` package (`drivers/acp.py`, `backend_identity.py`, `provider_identity.py`, `backend_install.py`, `native_commands.py`) and the shrink-only import ratchet `scripts/check_agent_sdk_boundary.py`. What remains is the cleanup the boundary was declared to enable: `providers/base.py` still aliases `AcpEvent` as the "provider-agnostic" event type, direct `kiro_crew.acp` import edges remain outside `acp/` and `providers/`, and `acp/worker_pool.py` still imports back from `session_pid.py` behind a cycle guard |
+| [rfc-global-workflow-library.md](rfc-global-workflow-library.md) | `partial` | The global definition library is on main: `workflows/library.py` persists definitions under `<KIROCREW_HOME>/workflow_library/`, the `workflow_library_list` MCP tool reads it, and Agent Capabilities > Workflows carries the **Workflow library** and **Runs** views. [`../system-specs/modules/workflows.md`](../system-specs/modules/workflows.md) owns the shipped shape, including the import layering that keeps `library` below `service`. Slug persistence and promotion ship; a chat `/workflow <name>` invocation resolving a saved slug is not on main |
+| [rfc-durable-run-coordinator.md](rfc-durable-run-coordinator.md) | `draft` | Nothing. Design and seven-PR additive migration stack only; the existing in-memory manager and run folders remain authoritative |
+| [rfc-issue-radar-crews.md](rfc-issue-radar-crews.md) | `draft` | Nothing. Design of record only; `crew_brief.md` and `crew_ledger_spec.md` sit beside the Issue Radar backend as companion specs, also unimplemented |
+| [rfc-orchestrator-chat-sessions.md](rfc-orchestrator-chat-sessions.md) | `partial` | Crew Mode shipped in [#1295](https://github.com/kirodotdev/KiroCrew/pull/1295) and has since received store and routing fixes. The implementation deliberately diverges from the RFC in at least three places: no snapshot-generation CAS, no `release` decision action, and immediate per-result delivery instead of burst coalescing |
+| [rfc-channel-plugin-architecture.md](rfc-channel-plugin-architecture.md) | `partial` | Shared turn pipeline shipped; **4 of 7** channels adopted. Registry/seam collapse, telegram+discord, Feishu unstarted. Its §9 address rule is separately half-shipped — audit this row alongside [rfc-session-address-model.md](rfc-session-address-model.md) |
+| [rfc-session-address-model.md](rfc-session-address-model.md) | `partial` | The dashboard half of the channel-plugin RFC's §9 rule 1 shipped ([#1366](https://github.com/kirodotdev/KiroCrew/pull/1366) plus four follow-ups): a chat-app conversation opened in a dashboard tab is no longer copied into a second session, and `has_dashboard_surface` (7 callers) replaced the name-prefix capability tests. All four phases it proposes are unstarted — 23 named key converters and 5 copies of the session-type ladder remain, surface capability is still one boolean, and an unbound channel tab still starts a second session against the same transcript file |
+| [rfc-local-notification-bus.md](rfc-local-notification-bus.md) | `partial` | Phases 1/3/4 complete. Phase 2 wired but has no producer; Phase 5 shipped 2 of 3 |
+| [rfc-federated-app-platform.md](rfc-federated-app-platform.md) | `partial` | Phase 1 substantially shipped, Phase 3 half-built. Phase 2, Phase 1's removals, Phase 4, Phase 5 unstarted |
+| [rfc-workspace-config-evolution.md](rfc-workspace-config-evolution.md) | `partial` | Phases 1–2 shipped. Phase 3's vector isolation was **reversed** on purpose; Phase 4 unstarted |
+| [rfc-resumable-subagent-sessions.md](rfc-resumable-subagent-sessions.md) | `partial` | Phase 0 ran and **redirected the design**: continuable conversations shipped instead of the record-store ladder |
+| [rfc-i18n-measurement.md](rfc-i18n-measurement.md) | `partial` | Overflow gate shipped, `localeCompare` migration partial. All three *measurement* proposals unstarted |
+| [rfc-appstore-official-registry.md](rfc-appstore-official-registry.md) | `partial` | The official fetch and editorial-driven Discover are live (`apps/official_catalog.py`, `apps/official_editorial.py`); signature verification and tombstone resolution are deliberately absent and fail closed. **§4 diverged** — four of its decisions about categories were reversed in the sibling `KiroCrewApps` repo; the note at its head says which |
+| [rfc-notification-bridge.md](rfc-notification-bridge.md) | `accepted` | Nothing — zero implementation code |
+| [rfc-tips-kit.md](rfc-tips-kit.md) | `draft` | Nothing. T1 was built and **retracted** ([#775](https://github.com/kirodotdev/KiroCrew/pull/775)); the design section needs revising first |
+| [rfc-update-architecture.md](rfc-update-architecture.md) | `draft` | Nothing — zero of three phases |
+| [rfc-app-sandbox-isolation.md](rfc-app-sandbox-isolation.md) | `draft` | Nothing. Apps still run in-process with full privileges (see `docs/architecture/app-platform-trust-model.md`); no isolation code exists |
+| [rfc-issue-radar-dispatch.md](rfc-issue-radar-dispatch.md) | `draft` | Nothing. Issue Radar has Investigate and Review; no verb produces work, and issues carry no link to the change that resolves them |
+| [rfc-perpetual-agent.md](rfc-perpetual-agent.md) | `draft` | Nothing. Verified at `9ac3716a`: no schedule kind self-reschedules, and `binding_key_for` has no `cron:` branch |
+| [rfc-token-efficient-monitors.md](rfc-token-efficient-monitors.md) | `draft` | Nothing. Probe-first replacement for token-heavy babysit loops; implementation begins in a stacked series after this RFC |
+| [rfc-consolidated-monitor.md](rfc-consolidated-monitor.md) | `draft` | Nothing of the merge. Verified at `ef38f4cbe`: `probes/__init__.py` `build` maps exactly one kind (`gh-pr`); `monitoring/github_pull_request.py` still reduces a pull request to one fingerprint with no named-entry list, and `decide_monitor` compares that single `fingerprint` against `last_wake_fingerprint`; no coalescing pre-stage reaches the controller, the window exists only in `irq.py`; and `api_autonudge_get` no longer nulls a structured monitor out -- both legacy read routes report an armed monitor's presence, cadence, liveness and state while withholding what it watches, so the goal popover receives the record and only the rendering is outstanding |
+| [rfc-tailnet-dashboard-access.md](rfc-tailnet-dashboard-access.md) | `partial` | Phase 1 landed ([#1761](https://github.com/kirodotdev/KiroCrew/pull/1761), `f8afcff7`) — reports the pin's real scope, does not fix it. Phases 2–4 unstarted; the pin repair is tracked as [#1762](https://github.com/kirodotdev/KiroCrew/issues/1762) |
+| [rfc-pluggable-model-providers.md](rfc-pluggable-model-providers.md) | `draft` | Nothing, by design. `agent.provider` is still fixed to `acp` and [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md) lists "Other providers" under *Never re-add*. This document **recommends** supporting provider choice and asks the maintainers to amend that rule; it proposes no design, and an exploratory implementation is shelved pending the answer ([#1693](https://github.com/kirodotdev/KiroCrew/issues/1693)) |
+| [rfc-s3-backup.md](rfc-s3-backup.md) | `draft` | Nothing. Verified at `f4d3327a7`: `VALID_COMPONENTS` carries no session component and no code path writes crew state to a remote store |
+| [rfc-navigation-placement-seam.md](rfc-navigation-placement-seam.md) | `draft` | Nothing. Verified at `2a665e735`: `UISidebar` ships in the manifest and no frontend code reads `ui.sidebar`; `appNavTarget` still resolves `pages[0]` only, and `registerBuiltinSurface` is not one of the nine edition seams |
+| [rfc-append-only-session-transcript.md](rfc-append-only-session-transcript.md) | `draft` | Nothing. Verified at `2a665e735`: `_save_slot_to_history` still re-serializes the whole in-memory window on every flush, and `rewrite_session` / `sliding_window` still have no production caller |
+| [version-compliance-framework.md](version-compliance-framework.md) | `draft` | Nothing. Framework doc, not an RFC; premise is pre-fork and stale |
+| [rfc-everything-is-an-app.md](rfc-everything-is-an-app.md) | `draft` | Nothing. Phase 0's boundary section is in this document's own branch and not yet merged; the eleven declared-but-unread manifest fields it inventories are all still declared and still unread |
+| [rfc-amend-tenets-everything-is-an-app.md](rfc-amend-tenets-everything-is-an-app.md) | `draft` | Nothing. `TENETS.md` still carries seven tenets on main. `git log --follow` on it shows two commits and no prior amendment, and `grep -i tenet` returns zero hits in `GOVERNANCE.md` |
+| [rfc-chat-core-extraction.md](rfc-chat-core-extraction.md) | `partial` | P1 shipped: `app-sdk/messageRenderers.tsx` is the role registry with a parity contract test ([#5128](https://github.com/kirodotdev/KiroCrew/pull/5128)). P2 shipped for one surface: `website/src/chat-core/transport/sendTurn.ts` exists and `components/ChatPane.tsx` is its only production caller ([#5909](https://github.com/kirodotdev/KiroCrew/pull/5909)); ChatEmbed, SideChat and ChatPage still hand-roll their POST on main (open PRs [#8599](https://github.com/kirodotdev/KiroCrew/pull/8599), [#8655](https://github.com/kirodotdev/KiroCrew/pull/8655), [#8689](https://github.com/kirodotdev/KiroCrew/pull/8689)). P3 shipped for SideChat (`pages/chat/SideChat.tsx` mounts `ChatInput`); `app-sdk/ChatEmbed.tsx` still renders a bare `<input>` on main. Verified at `8ed028b0b`: `ChatPage.tsx` carries 29 `role ===` branches (P5 unstarted) |
+| [rfc-crew-projects.md](rfc-crew-projects.md) | `draft` | Nothing. Verified at `5cd92ff99`: no project manifest format exists, `slot.project` is a bare directory path, and `grep -ril "confluence\|servicenow" src/kiro_crew` returns zero hits |
+| [rfc-tool-derived-diff-cards.md](rfc-tool-derived-diff-cards.md) | `in-progress` | Ships with [#5012](https://github.com/kirodotdev/KiroCrew/pull/5012): dashboard diff-card/summary promotion + runtime-selected prompt rule. The messaging `OutputEvent` extension (§3.3) is unstarted |
+| [rfc-agentcore-identity-gateway.md](rfc-agentcore-identity-gateway.md) | `in-progress` | First stack PR lands the `agent_identity` CPP slot, `DefaultAgentIdentityProvider` no-op, `capabilities.agentcore` catalog row, and AWS-free policy validators. No AWS extra, no Gateway inject, no login attach, no Settings UI |
+| [rfc-playwright-cli-migration.md](rfc-playwright-cli-migration.md) | `partial` | `playwright-cli` is the live backend: `browser_cli/` carries install, launch, snapshot retention and OS deps, the capability model is in `config/sections.py`, and the write-path gates are in `platform/governance.py`. [`../system-specs/modules/browser.md`](../system-specs/modules/browser.md) owns the landed contract. **Phase 3's removal of `browser/` did not happen** — `browser/command_bus.py` and `browser/__init__.py` remain, `dashboard/handlers/messaging.py` imports the command bus, and `test_browser_command_bus.py` pins it |
+| [rfc-pipeline-conductor.md](rfc-pipeline-conductor.md) | `partial` | M0 shipped: `kirocrew-pipeline-conductor` is registered in `subagent.py`'s `UNADVERTISED_AGENTS`, and the `pipeline-conductor` builtin skill carries the operating procedure, its bundled scripts and the `conductor-status/v1` schema. Unbuilt: M1's `PipelineSpec` and SQLite event store (`PipelineSpec` has no code hit outside the RFC), M2's adjudication and SLA machinery, M3's baking, compensation and per-repo objects; five decisions remain open. [`system-specs/modules/pipeline-conductor.md`](../system-specs/modules/pipeline-conductor.md) owns the shipped half |
+| [rfc-prepare-pr-portability.md](rfc-prepare-pr-portability.md) | `implemented` | Shipped. `resolve_profile.py` in the `prepare-pr` skill's `scripts/` implements the four-step resolution order (`.prepare-pr.toml` → Kiro Crew markers → stack auto-detect → generic fallback) and parses the `[project]` / `[setup].commands` / `[gates].commands` schema through `tomllib` with a `tomli` fallback |
+| [rfc-app-sdk-durable-jobs-and-view-state.md](rfc-app-sdk-durable-jobs-and-view-state.md) | draft | A gateway-side durable run record so a long app action survives unmount and restart, plus URL-backed view state. Nothing shipped. |
+| [rfc-security-conductor.md](rfc-security-conductor.md) | `partial` | M0 shipped: `kirocrew-security-conductor` is registered in `subagent.py`'s `UNADVERTISED_AGENTS` with its installer `_install_security_conductor_agent` in `agent.py` ([#9273](https://github.com/kirodotdev/KiroCrew/pull/9273)), and the `security-conductor` builtin skill plus the first `rules-of-engagement.json` are on main ([#9271](https://github.com/kirodotdev/KiroCrew/pull/9271)), whose merge is the human review of the rules of engagement that M0 required. M1 is half shipped: the SQLite findings ledger `scripts/ledger.py` landed ([#9270](https://github.com/kirodotdev/KiroCrew/pull/9270), test guard corrected in [#9362](https://github.com/kirodotdev/KiroCrew/pull/9362)) with four tables; the three evaluator scripts `scope_check.py` / `finding_entry.py` / `verify_finding.py` are review-ready in open [#9332](https://github.com/kirodotdev/KiroCrew/pull/9332) and **not merged**, so nothing on main answers a scope question. Unstarted: the `golden_paths` corpus, `verify_fix.py` and `deny_diff.py` the golden-paths section adds, the M2 pilot round and the M3 fixer lane; five decisions remain open |
+
+One document is `implemented`: the design landed whole and the row names the spec
+that owns the shipped behaviour. Nothing here is `superseded`.
+
+## Implementation plans
+
+[plans/](plans/README.md) holds the dated, task-by-task execution plans derived
+from documents in this directory. A plan is the *how* and belongs beside the RFC
+it executes; the RFC stays the *what* and the *why*. A plan's checkboxes are its
+own progress record and are not a status source — read the RFC's `status` for
+that, and read the plan's own head note for whether it is live or dormant.
+
+## Front matter
+
+Every document carries YAML front matter as the machine-readable record. The
+prose header below it stays human-readable and carries the *why*; front matter
+carries the *what*.
+
+```yaml
+---
+title: Channel Plugin Architecture — shared runtime, channels as app extension points
+status: partial            # see vocabulary below
+author: zezhexu
+created: 2026-07-28
+last-audited: 2026-08-03   # when status was last verified against code
+audited-at: 0ab6ed48       # the commit it was verified against
+doc-pr: 689                # the PR that merged this document
+implementation-prs: [777, 1019, 1234]
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
+```
+
+Optional keys: `kind: framework` for docs that are policy rather than a
+reviewable change to a named component, and `revision:` where a document is
+versioned across review rounds.
+
+`last-audited` and `audited-at` exist because a bare `status: partial` rots
+silently. If those two fields are far behind main, distrust the status.
+
+### Status vocabulary
+
+| Status | Meaning |
+|---|---|
+| `draft` | Proposed. Nothing built. |
+| `accepted` | Design agreed and locked. Nothing built yet. |
+| `in-progress` | Implementation is live in an open PR or an active branch. |
+| `partial` | Some phases are on main; the rest are open. The prose status line names which. |
+| `implemented` | Every phase is verifiably on main. |
+| `superseded` | Replaced. `superseded-by` names the replacement. |
+
+`partial` is the most common status and the most dangerous one to read
+carelessly — several documents here describe a plan that main only partly
+follows, and two describe a plan main **deliberately diverged from**.
+
+## Reading a `partial` or divergent RFC
+
+Three failure modes are live in this directory. Each document's prose status line
+calls out its own, but the patterns are worth knowing before you trust any of them:
+
+1. **The plan was overtaken.** `rfc-resumable-subagent-sessions.md` had its
+   Phase 0 probe return a negative verdict, which redirected the whole design —
+   what shipped (continuable conversations) is not what the phases below it
+   describe. `rfc-workspace-config-evolution.md` had its Phase 3 vector-store
+   isolation affirmatively reversed by a later commit. Neither document was
+   revised afterwards. `rfc-appstore-official-registry.md` is the same pattern
+   caught late but *revised*: four of §4's decisions about categories were
+   reversed as R1 shipped, and the section now opens with a note saying which,
+   so the reasoning survives as a record without still reading as the contract.
+2. **The credit is not the RFC's.** `rfc-i18n-measurement.md` shows `partial`,
+   but the proposals that shipped were already in flight under a separate
+   program, one of them merging 18 hours before the document did.
+3. **A dependency claim is overstated.** `rfc-notification-bridge.md` asserts the
+   bus RFC's phases "all shipped". The phases the bridge actually needs are real;
+   the blanket claim is not.
+
+When a document and the code disagree, the code wins and the document is a bug.
+Fix it in the same PR that discovers the drift.
+
+## Writing a new RFC
+
+[GOVERNANCE.md](../../GOVERNANCE.md) covers who decides whether an RFC is
+accepted, and the scope test for when a change needs one at all.
+
+- File as `rfc-<topic>.md`, kebab-case. Framework or policy docs that propose no
+  reviewable change to a named component drop the prefix and set `kind: framework`.
+- Open with front matter, then an H1 `# RFC: <Title>`, then the prose header.
+- Write in English.
+- Structure that has worked here: Summary → Motivation (current state, problems)
+  → Goals → Non-goals → Design → Migration plan (phased, each phase PR-sized with
+  **exit criteria**) → Backward compatibility → Security considerations →
+  Alternatives considered → Open questions.
+- Phases earn their keep by being independently shippable and independently
+  abandonable. State exit criteria as assertions someone can test, and mark any
+  phase whose entry depends on an unanswered open question as blocked on it.
+- **Verify before asserting.** Claims of the form "X does not exist" or "Y is
+  unused" are the ones that most often turn out wrong. Grep for callers, not just
+  definitions — a defined-but-uncalled symbol means the behavior does not happen,
+  which is a different (and usually more interesting) finding than absence.
+  Quote `file:line`. Name the commit you measured at, as
+  `rfc-i18n-measurement.md` does.
+- A probe phase that exists to answer a question must write its verdict down
+  somewhere durable and the RFC must be updated to point at it. PR #1023 recorded
+  its Phase 0 verdict in the PR description; the RFC still does not reference it,
+  which is why that document now needs a reader's warning.
+
+## Keeping this honest
+
+When you land an implementation PR for anything here, update the document's
+`status`, `implementation-prs`, `last-audited` and `audited-at` in the same PR,
+and re-audit the whole directory whenever the table above starts feeling
+plausible rather than checked. The audit is cheap: for each document, extract its
+named deliverables, grep for each one's definition and callers, and check the PR
+history for the phase that claims to have landed it.

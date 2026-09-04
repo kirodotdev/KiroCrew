@@ -1,0 +1,28 @@
+{
+  "runtime": "piper-tts 1.8.0; Windows; isolated worker protocol",
+  "model": "zh_CN-huayan-medium.onnx",
+  "requests": [
+    {
+      "id": "probe-0",
+      "pcm_bytes": 349184,
+      "chunks": 41,
+      "first_audio_seconds": 2.813325299999633,
+      "total_seconds": 3.758183399999325,
+      "audio_seconds": 7.918004535147392,
+      "same_worker_still_running": true
+    },
+    {
+      "id": "probe-1",
+      "pcm_bytes": 347648,
+      "chunks": 41,
+      "first_audio_seconds": 0.06812549999995099,
+      "total_seconds": 0.7157151999999769,
+      "audio_seconds": 7.883174603174603,
+      "same_worker_still_running": true
+    }
+  ],
+  "load_seconds": 5.851644500000475,
+  "returncode": 0,
+  "caveat": "Machine has concurrent workloads; this verifies reuse, not an idle-host SLA.",
+  "boundary": "Direct isolated worker-protocol smoke test. This does not establish live gateway sandbox availability or clean-host latency."
+}

@@ -1,0 +1,199 @@
+name: Denial Differential
+
+# Fails a deny-rule change that newly refuses an operation the product depends
+# on. A security fix is almost always a rule made stricter, and "stricter" has no
+# upper bound a reviewer can see: the author reads the attack the pattern now
+# catches, nobody reads the ordinary commands it also newly matches. The symptom
+# lands days later as an agent that stopped working, reporting a pattern instead
+# of a cause.
+#
+# Deterministic, no model. `scripts/deny_diff.py` classifies a corpus of golden
+# paths -- operations legitimate BY DECISION, each with the reason -- with the
+# REAL deny composite as it exists at the base ref and at the head ref, and diffs
+# the two verdict sets. Newly refused is a failure; newly allowed is reported and
+# does not block, because loosening is what a revert or a false-positive fix
+# looks like.
+#
+# "The deny composite" is all four checks `hooks.on_tool_call` applies to a shell
+# command -- the path fence, the IMDS/env-credential detectors, the exfil shapes,
+# and the rule catalog with its argv floors -- not just the catalog. A gate that
+# measured only the catalog would go green on a tightening of `paths.py` or
+# `exfil.py`, which its own trigger paths cover, and the green badge would then
+# stand as evidence the question had been asked. `test/test_deny_diff.py` pins
+# that list against the hooks gate itself, so a fifth check added there reds this
+# gate rather than silently escaping it.
+#
+# The corpus is taken from the BASE ref, never the head checkout. The corpus IS
+# the contract the change is judged against, so a head-owned corpus would let the
+# same PR that tightens a rule delete the row that rule breaks -- removing it from
+# BOTH sides and passing. Its path is named in the step below and changing it is a
+# reviewed edit, so no other file can take the contract over on its own.
+#
+# What a green does NOT cover: this gate calls the four `security.*` checks
+# directly, so it measures the RULES, not `hooks.py`'s own composition of them --
+# how targets are built, the raw_params path-fence application, the context-derived
+# enabled set. A tightening implemented inside `hooks.py` itself runs this gate and
+# comes back empty. The tier pin catches a check ADDED there; it cannot catch a
+# behavioural change in how the gate assembles what it checks.
+#
+# That same base-ownership is also the ESCAPE, which is why this gate has no
+# approval label. Withdrawing a golden path is a real thing to want, and it is
+# done by removing the row in its OWN pull request: that PR changes no rule, so
+# this gate is green on it, and the next PR's base no longer carries the row. The
+# withdrawal then gets reviewed on its own merits instead of riding along inside a
+# security diff behind a label -- and there is no waiver mechanism to keep honest.
+#
+# Matrix, and why all three legs: the rules read argv SHAPE and the path fence
+# reads real paths, and both differ per platform -- Windows has its own tokenizer
+# and separators, and the fence's home-directory ordering is macOS-specific
+# (`Library/Application Support`, `/Volumes/<share>`). A Linux-only gate would
+# pass a tightening that breaks every operator on another OS -- the same class of
+# defect the Cross-Platform Portability gate exists for and cannot see, because
+# that one reads added lines rather than behaviour.
+#
+# No dependency install: the composite's import chain is stdlib plus the package's
+# own modules, and the child reaches them through PYTHONPATH at a materialized
+# checkout. Installing the package would add three platform-dependent minutes and
+# a resolution failure mode, and an editable install would put a SECOND copy of
+# `kiro_crew` on the path -- which the script's own tree check would then refuse.
+#
+# Honest red, no continue-on-error: a failing leg shows as failing, and branch
+# protection decides whether that blocks a merge.
+
+on:
+  pull_request:
+    paths:
+      - "src/kiro_crew/security/**"
+      - "src/kiro_crew/deny_guidance.py"
+      - "src/kiro_crew/platform/security_authority.py"
+      - "src/kiro_crew/hooks.py"
+      - "src/kiro_crew/builtin_skills/security-conductor/rules-of-engagement.json"
+      - "scripts/deny_diff.py"
+      - "scripts/deny_diff_fixture.json"
+      - ".github/workflows/denial-differential.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: denial-differential-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  denial-differential:
+    name: Denial Differential (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      # Every leg reports. One platform's regression is not evidence about
+      # another's, so a fail-fast cancel would hide the rows an operator on the
+      # cancelled runner is the only one who can see.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: BOTH commits must be archivable locally, and a shallow
+          # clone of the merge ref has neither parent's tree.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Run the denial differential
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          # `git archive` needs the OBJECTS, not just the refs. fetch-depth: 0
+          # normally supplies both, so fetch only what is genuinely absent.
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$sha" || true
+            fi
+          done
+
+          # ONE corpus path, named here. Adopting the security-conductor's seed is an
+          # explicit change to this line, not an automatic preference: a gate that
+          # switched contracts the moment another file appeared would hand coverage
+          # over with nobody's PR showing the handover, and rows this corpus carries
+          # could drop out silently. The adopting PR edits this line, deletes the
+          # fixture, and shows in its own diff that the seed covers these rows.
+          corpus_path="scripts/deny_diff_fixture.json"
+
+          # Read out of the BASE tree: the corpus is the contract being judged and
+          # must not be editable by the change under judgement.
+          owner="base"
+          if git cat-file -e "$BASE_SHA:$corpus_path" 2>/dev/null; then
+            git show "$BASE_SHA:$corpus_path" > corpus.json
+          elif [ -f "$corpus_path" ]; then
+            # Absent at base -- the gate itself is being introduced, or the corpus is
+            # being added. There is no base contract to protect, so nothing can be
+            # withdrawn to escape one; use the head file and say so in the report
+            # rather than failing on a bootstrap.
+            owner="head"
+            cp "$corpus_path" corpus.json
+          else
+            echo "::error::No golden-paths corpus at $corpus_path -- nothing to classify."
+            {
+              echo "### Denial differential"
+              echo
+              echo "**No golden-paths corpus at \`$corpus_path\`.** Not a pass."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          rc=0
+          python scripts/deny_diff.py \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --corpus corpus.json \
+            --platform auto > report.md 2>error.log || rc=$?
+
+          cat report.md
+          {
+            cat report.md
+            echo
+            echo "Corpus: \`$corpus_path\` as it stands at the **$owner** ref."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s error.log ]; then
+            cat error.log
+            {
+              echo
+              echo '```'
+              cat error.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$rc" = "0" ]; then
+            echo "No newly-refused golden paths."
+            exit 0
+          fi
+
+          if [ "$rc" = "2" ]; then
+            # A differential that could not run is not a pass.
+            echo "::error::deny_diff could not run (corpus or ref error) -- see the job summary."
+            {
+              echo
+              echo "**The differential did not run.** A corpus or ref error is not a pass."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          {
+            echo
+            echo "Each row above is an operation the corpus records as legitimate that this"
+            echo "change newly refuses. Either narrow the rule, or -- if the row should no"
+            echo "longer be a golden path -- withdraw it in its own pull request first: that"
+            echo "PR changes no rule, so this gate is green on it, and this PR's base then no"
+            echo "longer carries the row."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Newly-refused golden paths -- see the job summary."
+          exit 1

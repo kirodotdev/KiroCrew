@@ -1,0 +1,17 @@
+# Test assertions that read a source file's TEXT (via readFileSync or Vite's
+# `?raw`) and match a line-anchored pattern (`…$`, `.split('\n')`, a multi-line
+# `toContain`) fail on a Windows checkout and only there: `core.autocrlf=true`
+# (the Git-for-Windows default) rewrites these to CRLF in the working tree, so a
+# `\r` sits before every line end and the pattern cannot match — green on CI's
+# Linux runner, red for every Windows contributor. Pinning the working-tree
+# ending to LF fixes the whole class at checkout, for every current and future
+# such test, rather than each test normalizing its own read.
+#
+# eol=lf (not just `text`) forces LF regardless of the user's core.autocrlf. The
+# blobs are already LF in the index, so this only affects the working-tree
+# checkout — it introduces no content change. Mirrors the root .gitattributes,
+# which pins the same ending for *.sh and the data files shell scripts parse.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.json text eol=lf

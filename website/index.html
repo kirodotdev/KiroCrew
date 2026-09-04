@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <!-- `interactive-widget=resizes-content`: the default, `resizes-visual`, shrinks only
+       the VISUAL viewport when the software keyboard opens. The layout viewport keeps
+       its full height, so `vh`, `dvh` and `position:fixed; inset:0` all keep laying out
+       against a window the user can no longer see the bottom of -- a focused full-screen
+       overlay strands its own content below the keyboard with no gesture to reach it.
+       `resizes-content` resizes the layout viewport instead, so the shell (already
+       `h-dvh` with `overflow-hidden` and inner `min-h-0` scrollers) simply gets shorter
+       and the focused input stays on screen. `dvh` alone cannot do this: it tracks
+       collapsible browser UI, not the keyboard. -->
+  <!-- viewport-fit=cover is required for env(safe-area-inset-*) to report
+       non-zero values on notched iPhones (Safari and the standalone PWA).
+       Screen-edge surfaces then inset themselves with the tailwindcss-safe-area
+       utilities; src/test/safeArea.guard.test.ts enforces that. -->
+  <!-- `maximum-scale=1, user-scalable=no`: the dashboard is an application shell, not a
+       zoomable document, and a pinch magnifies a `position: fixed` / `h-dvh` shell that
+       has no scroll axis to reach what the magnification pushed off-screen.
+       These two keys are ONE of three mechanisms and cover only Blink and Gecko: WebKit
+       ignores them for user gestures, so iOS needs the `gesturestart` suppression in
+       utils/pageZoom.ts plus the root `touch-action` in index.css. Removing any one of
+       the three silently un-covers an engine.
+       Rationale, the accessibility trade and what still magnifies: the policy section
+       in website/docs/narrow-viewport.md is the authoritative copy — extend it there, not
+       here. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content, viewport-fit=cover" />
+  <link rel="icon" href="/logo.png" type="image/png" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0d0f12" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" onload="this.rel='stylesheet'" />
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" /></noscript>
+  <title>Kiro Crew</title>
+  <script>
+    // The entry module (the module tag Vite appends to the document head on
+    // build; the /src/main.tsx tag in the body in dev) is an ES module with a
+    // few hundred statically imported chunks, and Chromium evaluates the graph
+    // only once EVERY edge has loaded. One chunk that fails to fetch (a 404 --
+    // live from the gateway mid-upgrade, or replayed from a poisoned HTTP cache)
+    // fails the whole graph: no console line, no exception, none of our
+    // JavaScript runs, so main.tsx's own `mc-embedded-boot stage=entry` never
+    // fires and a pane is just "Loading" forever. The loader does fire `error`
+    // on the script element itself. Resource errors do not bubble, but a
+    // capture-phase listener on window still sees them -- that is the one
+    // renderer-side signal that survives, so it is taken here, in the shell,
+    // before the module is even requested. Vite rewrites the module tag's src
+    // on build and drops its attributes, so this cannot be an onerror= on the
+    // tag. Wildcard target is safe: the payload is a stage name plus the
+    // failing script's own path (query stripped), and the parent validates the
+    // origin. Standalone, it logs. Placed in the document head ahead of the
+    // module tag, so the listener exists before the module can possibly fail
+    // -- a replayed-from-cache 404 fails fast.
+    //
+    // Keep this comment free of a literal script OPENING TAG, above all one
+    // with a module type: Vite relocates the import map to just before the
+    // first module script it finds with a regex over the raw HTML, so that
+    // text spelled out in prose here once received the import map mid-comment,
+    // its closing tag ended this script early, and the remainder ran as an
+    // inline module that threw. `npm run i18n:render` renders the built shell
+    // and is what catches that; `vite build` alone exits 0.
+    window.addEventListener('error', function (e) {
+      var t = e && e.target;
+      if (!t || t.tagName !== 'SCRIPT' || t.type !== 'module') return;
+      var src = String(t.src || '').split('?')[0];
+      try { console.error('[boot] module script failed to load: ' + src); } catch (err) {}
+      var embedded = false;
+      try { embedded = window.self !== window.top; } catch (err) { embedded = true; }
+      if (!embedded) return;
+      try {
+        // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+        window.parent.postMessage({ type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: src }, '*');
+      } catch (err) {}
+    }, true);
+  </script>
+  <script>
+    // Set data-ui from localStorage before React hydrates to prevent flash of
+    // chat layout when the user's preferred mode is 'cli'. Mirrors the
+    // pattern used by data-theme bootstrapping. Synced by useUIMode.
+    try { var u = localStorage.getItem('mc-ui'); if (u === 'cli') document.documentElement.dataset.ui = 'cli'; } catch (e) {}
+    // Set <html lang> from the cached language choice before React hydrates, so
+    // assistive tech and :lang() CSS see the right language on the first paint
+    // rather than 'en' briefly. Only the shape is validated here — the real
+    // resolution (browser detection, fallback) happens in src/i18n/detect.ts;
+    // this is a pre-hydration hint, not the source of truth. Synced by
+    // useLanguage.
+    try {
+      var l = localStorage.getItem('mc-lang');
+      if (l && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}$/.test(l)) document.documentElement.lang = l;
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+  <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js')</script>
+</body>
+</html>

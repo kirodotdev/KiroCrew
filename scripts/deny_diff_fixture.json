@@ -1,0 +1,126 @@
+{
+  "_comment": [
+    "Fallback golden-paths corpus for scripts/deny_diff.py.",
+    "Each row is an operation that is legitimate BY DECISION, with the reason it is.",
+    "The denial-differential gate fails a PR that makes any of these newly refused.",
+    "This file exists because the security-conductor's own golden-paths seed",
+    "(src/kiro_crew/builtin_skills/security-conductor/golden-paths.seed.json) is not",
+    "on main yet. The workflow prefers that seed the moment it lands and falls back",
+    "here until then, so delete this file in the same change that starts using the seed.",
+    "kind: shell rows are classified; flow and cron rows are recorded and reported as",
+    "skipped, because neither has a single command line to hand a matcher.",
+    "A row is classified against the WHOLE deny composite the tool gate applies to a",
+    "shell command: the path fence, the IMDS/env-credential detectors, the exfil",
+    "shapes, and the rule catalog with its argv floors."
+  ],
+  "golden_paths": [
+    {
+      "kind": "shell",
+      "command_or_flow": "gh pr view 8014 --json state,mergeable,statusCheckRollup",
+      "platform": "any",
+      "reason": "Read-only PR status query -- every drive-to-green round starts with it."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "gh issue list --label needs-triage --json number,title,labels",
+      "platform": "any",
+      "reason": "Read-only issue enumeration used by the triage and scanner crons."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "gh pr diff 8014",
+      "platform": "any",
+      "reason": "Read-only diff fetch -- how a review lane reads a change as data."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "git push origin feat/denial-differential-gate",
+      "platform": "any",
+      "reason": "Explicitly-named feature-branch push. Allowed by policy; only protected branches are fenced."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "git push --force-with-lease=feat/x:0123abc origin feat/x",
+      "platform": "any",
+      "reason": "Lease-guarded feature-branch force push -- the sanctioned way to update a PR round."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "git status --porcelain",
+      "platform": "any",
+      "reason": "Read-only working-tree inspection."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "git log --oneline -20",
+      "platform": "any",
+      "reason": "Read-only history read -- the basis of every archaeology step."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "git fetch origin main",
+      "platform": "any",
+      "reason": "Read-only remote sync before a rebase."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "git worktree add --detach /tmp/probe origin/main",
+      "platform": "posix",
+      "reason": "Base-ref probe worktree -- the sanctioned alternative to checking out over live work."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "python3 scripts/docs_lint.py",
+      "platform": "any",
+      "reason": "A repo gate the agent runs locally before every push."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "mypy src/kiro_crew/",
+      "platform": "any",
+      "reason": "A blocking CI gate, run locally first."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "npx eslint src/ --max-warnings 603",
+      "platform": "any",
+      "reason": "The frontend lint ratchet, run at CI's exact ceiling."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "kirocrew status",
+      "platform": "any",
+      "reason": "Own-health read. Named here because the self-protection floor is the rule most often tightened."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "kirocrew cron list",
+      "platform": "any",
+      "reason": "Read-only enumeration of installed jobs, across the same self-protection surface."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "ls -la src/kiro_crew/security",
+      "platform": "posix",
+      "reason": "Read-only directory listing over the governance tree -- a repeat false-positive source."
+    },
+    {
+      "kind": "shell",
+      "command_or_flow": "Get-ChildItem -Path src -Recurse -Filter *.py",
+      "platform": "windows",
+      "reason": "The Windows equivalent read-only listing; proves the fence is not POSIX-shaped."
+    },
+    {
+      "kind": "flow",
+      "command_or_flow": "chat start",
+      "platform": "any",
+      "reason": "Starting a chat session must never be refused; classified by the flow gate, not this one."
+    },
+    {
+      "kind": "cron",
+      "command_or_flow": "gh-issue-scanner",
+      "platform": "any",
+      "reason": "An installed scanner job must keep firing; classified by the cron gate, not this one."
+    }
+  ]
+}

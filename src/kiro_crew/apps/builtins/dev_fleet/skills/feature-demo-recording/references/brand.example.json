@@ -1,0 +1,16 @@
+{
+  "_note": "All optional. Defaults are Kiro Crew's palette. font_face_local must name a font that actually exists on the render host -- run scripts/deps.py to see which CJK family is available, because an undeclared family fails the render gate instead of degrading quietly.",
+
+  "lang": "en",
+  "accent": "#8e48ff",
+  "accent_hi": "#9f63ff",
+  "bg": "#19161d",
+  "bg_el": "#211d25",
+
+  "font_stack": "\"Inter\",\"Droid Sans Fallback\",sans-serif",
+  "font_face_local": "Droid Sans Fallback",
+
+  "outro_eyebrow": "KIRO CREW",
+  "outro_title_lead": "Command",
+  "outro_title_tail": " Bar"
+}

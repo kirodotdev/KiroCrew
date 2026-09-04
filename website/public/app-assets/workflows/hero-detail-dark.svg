@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288" fill="none">
+  <rect width="1200" height="288" fill="#1a1b26"/>
+
+  <!-- Connection lines (full-width DAG) -->
+  <line x1="127" y1="144" x2="302" y2="144" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="354" y1="132" x2="551" y2="102" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="354" y1="156" x2="551" y2="186" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="599" y1="102" x2="794" y2="140" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="599" y1="186" x2="794" y2="148" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="843" y1="144" x2="1053" y2="144" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+
+  <!-- Glow effects -->
+  <circle cx="110" cy="144" r="30" fill="#6366f1" opacity="0.08"/>
+  <circle cx="328" cy="144" r="28" fill="#818cf8" opacity="0.08"/>
+  <circle cx="575" cy="96" r="24" fill="#818cf8" opacity="0.08"/>
+  <circle cx="575" cy="192" r="24" fill="#818cf8" opacity="0.08"/>
+  <circle cx="818" cy="144" r="26" fill="#a78bfa" opacity="0.08"/>
+  <circle cx="1080" cy="144" r="24" fill="#c084fc" opacity="0.08"/>
+
+  <!-- Nodes -->
+  <circle cx="110" cy="144" r="17" stroke="#6366f1" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="110" cy="144" r="6" fill="#818cf8" opacity="0.8"/>
+
+  <circle cx="328" cy="144" r="16" stroke="#818cf8" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="328" cy="144" r="5" fill="#a5b4fc" opacity="0.8"/>
+
+  <circle cx="575" cy="96" r="14" stroke="#818cf8" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="575" cy="96" r="4" fill="#a5b4fc" opacity="0.8"/>
+
+  <circle cx="575" cy="192" r="14" stroke="#818cf8" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="575" cy="192" r="4" fill="#a5b4fc" opacity="0.8"/>
+
+  <circle cx="818" cy="144" r="15" stroke="#a78bfa" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="818" cy="144" r="5" fill="#c4b5fd" opacity="0.8"/>
+
+  <!-- End node (diamond) -->
+  <polygon points="1080,127 1097,144 1080,161 1063,144" stroke="#c084fc" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="1080" cy="144" r="4" fill="#e9d5ff" opacity="0.8"/>
+
+  <!-- Pulse rings -->
+  <circle cx="110" cy="144" r="23" stroke="#6366f1" stroke-width="0.5" fill="none" opacity="0.3"/>
+  <circle cx="818" cy="144" r="21" stroke="#a78bfa" stroke-width="0.5" fill="none" opacity="0.3"/>
+
+  <!-- Accent dots spread across full width -->
+  <circle cx="60" cy="52" r="1.5" fill="#6366f1" opacity="0.4"/>
+  <circle cx="230" cy="238" r="1" fill="#818cf8" opacity="0.3"/>
+  <circle cx="430" cy="44" r="1.5" fill="#a78bfa" opacity="0.3"/>
+  <circle cx="690" cy="246" r="1" fill="#818cf8" opacity="0.3"/>
+  <circle cx="900" cy="48" r="1.5" fill="#a78bfa" opacity="0.3"/>
+  <circle cx="1000" cy="240" r="1.5" fill="#c084fc" opacity="0.3"/>
+  <circle cx="1150" cy="60" r="1.5" fill="#6366f1" opacity="0.35"/>
+  <circle cx="1140" cy="228" r="1" fill="#c084fc" opacity="0.3"/>
+</svg>

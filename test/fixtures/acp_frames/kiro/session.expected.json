@@ -1,0 +1,169 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "promptCapabilities": {
+        "image": true
+      }
+    },
+    "agent_version": "2.21.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "plan"
+      ]
+    },
+    "session_id": "kiro-session-0001"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "text": "The user wants the corpus echoed back."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "The user wants the corpus echoed back.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Running one command."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Running one command.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Echo the corpus marker",
+          "command": "echo acp-replay-corpus"
+        },
+        "title": "echo acp-replay-corpus",
+        "tool_call_id": "kiro-tool-0001",
+        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__tool_use_purpose\": \"Echo the corpus marker\"\n}",
+        "tool_kind": "execute",
+        "tool_purpose": "Echo the corpus marker",
+        "wire_title": "echo acp-replay-corpus"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Allow once"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject_once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Echo the corpus marker",
+          "command": "echo acp-replay-corpus"
+        },
+        "request_id": 9001,
+        "shell_classified": true,
+        "title": "echo acp-replay-corpus",
+        "tool_call_id": "kiro-tool-0001",
+        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__tool_use_purpose\": \"Echo the corpus marker\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "kiro-tool-0001",
+        "tool_final": true,
+        "tool_output": "{\"exitStatus\": {\"exitCode\": 0}, \"stdout\": \"acp-replay-corpus\\n\"}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      18422,
+      200000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      1204,
+      88,
+      15900,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

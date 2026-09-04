@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270">
+  <defs>
+    <linearGradient id="mt-bg-l" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#eef2ff"/>
+      <stop offset="100%" stop-color="#dbe4ff"/>
+    </linearGradient>
+    <linearGradient id="mt-wave-l" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.25"/>
+      <stop offset="50%" stop-color="#6366f1" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0.25"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" rx="12" fill="url(#mt-bg-l)"/>
+  <circle cx="58" cy="42" r="22" fill="#c7d2fe" opacity="0.55"/>
+  <circle cx="424" cy="228" r="30" fill="#a5b4fc" opacity="0.35"/>
+
+  <!-- Live transcription: a microphone with an audio waveform running out of it -->
+  <g transform="translate(58,118)">
+    <rect x="0" y="-22" width="26" height="40" rx="13" fill="#ffffff" stroke="#4f46e5" stroke-width="2"/>
+    <line x1="13" y1="18" x2="13" y2="30" stroke="#4f46e5" stroke-width="2.4" stroke-linecap="round"/>
+    <line x1="5" y1="30" x2="21" y2="30" stroke="#4f46e5" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="13" cy="-8" r="3.5" fill="#ef4444"/>
+  </g>
+  <g stroke="url(#mt-wave-l)" stroke-width="3" stroke-linecap="round">
+    <line x1="100" y1="106" x2="100" y2="130"/>
+    <line x1="110" y1="96" x2="110" y2="140"/>
+    <line x1="120" y1="110" x2="120" y2="126"/>
+    <line x1="130" y1="88" x2="130" y2="148"/>
+    <line x1="140" y1="104" x2="140" y2="132"/>
+    <line x1="150" y1="98" x2="150" y2="138"/>
+    <line x1="160" y1="112" x2="160" y2="124"/>
+    <line x1="170" y1="92" x2="170" y2="144"/>
+  </g>
+
+  <!-- The notes document the note-taker keeps -->
+  <rect x="196" y="42" width="120" height="118" rx="8" fill="#ffffff" stroke="#c7d2fe" stroke-width="1.6"/>
+  <rect x="208" y="56" width="70" height="7" rx="3.5" fill="#3730a3"/>
+  <rect x="208" y="74" width="94" height="5" rx="2.5" fill="#a5b4fc"/>
+  <rect x="208" y="86" width="82" height="5" rx="2.5" fill="#a5b4fc"/>
+  <rect x="208" y="98" width="90" height="5" rx="2.5" fill="#a5b4fc" opacity="0.7"/>
+  <rect x="208" y="114" width="46" height="6" rx="3" fill="#4f46e5" opacity="0.8"/>
+  <rect x="208" y="128" width="86" height="5" rx="2.5" fill="#a5b4fc" opacity="0.55"/>
+  <rect x="208" y="140" width="62" height="5" rx="2.5" fill="#a5b4fc" opacity="0.4"/>
+
+  <!-- The diagram the sketch artist draws -->
+  <rect x="332" y="42" width="118" height="70" rx="8" fill="#ffffff" stroke="#c7d2fe" stroke-width="1.6"/>
+  <rect x="346" y="58" width="30" height="18" rx="4" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.4"/>
+  <rect x="406" y="58" width="30" height="18" rx="4" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.4"/>
+  <rect x="376" y="86" width="30" height="18" rx="4" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.4"/>
+  <line x1="376" y1="67" x2="406" y2="67" stroke="#6366f1" stroke-width="1.6"/>
+  <line x1="361" y1="76" x2="385" y2="86" stroke="#6366f1" stroke-width="1.6"/>
+  <line x1="421" y1="76" x2="397" y2="86" stroke="#6366f1" stroke-width="1.6"/>
+
+  <!-- The reviewed action items -->
+  <rect x="196" y="176" width="254" height="26" rx="6" fill="#ffffff" stroke="#c7d2fe" stroke-width="1.5"/>
+  <circle cx="212" cy="189" r="7" fill="#4f46e5"/>
+  <path d="M208.5 189 L211.5 192 L216 186.5" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="228" y="185" width="120" height="6" rx="3" fill="#3730a3"/>
+  <rect x="362" y="185" width="44" height="6" rx="3" fill="#a5b4fc"/>
+
+  <rect x="196" y="210" width="254" height="26" rx="6" fill="#ffffff" stroke="#c7d2fe" stroke-width="1.5" opacity="0.7"/>
+  <circle cx="212" cy="223" r="7" fill="none" stroke="#6366f1" stroke-width="1.8"/>
+  <rect x="228" y="219" width="96" height="6" rx="3" fill="#3730a3" opacity="0.55"/>
+  <rect x="338" y="219" width="52" height="6" rx="3" fill="#a5b4fc" opacity="0.6"/>
+</svg>

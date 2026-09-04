@@ -1,0 +1,128 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true
+    },
+    "agent_version": "0.54.3",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "kas-session-0001"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Running one command."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Running one command.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__toolUsePurpose": "Echo the corpus marker",
+          "command": "echo acp-replay-corpus"
+        },
+        "title": "echo acp-replay-corpus",
+        "tool_call_id": "kas-tool-0001",
+        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__toolUsePurpose\": \"Echo the corpus marker\"\n}",
+        "tool_kind": "execute",
+        "tool_purpose": "Echo the corpus marker",
+        "wire_title": "executeBash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__toolUsePurpose": "Echo the corpus marker",
+          "command": "echo acp-replay-corpus"
+        },
+        "request_id": 9101,
+        "shell_classified": true,
+        "title": "executeBash",
+        "tool_call_id": "kas-tool-0001",
+        "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__toolUsePurpose\": \"Echo the corpus marker\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "kas-tool-0001",
+        "tool_final": true,
+        "tool_output": "{\"stdout\": \"acp-replay-corpus\\n\", \"exitStatus\": {\"exitCode\": 0}}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

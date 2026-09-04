@@ -1,0 +1,20 @@
+# Smoke: a first-time user changes the theme from Settings and sees the page
+# repaint. Pixel-only assertions (background colour actually changed) are the
+# whole point -- a DOM test cannot tell a theme that applied from one that only
+# flipped a class name.
+name: settings-theme-toggle
+tier: smoke
+summary: Switch the dashboard theme in Settings and confirm the colours change
+preconditions:
+  seed: rich
+  start_url: /settings
+steps:
+  - You are on the Settings page. Take note of the current background colour of the page.
+  - Find the appearance / theme control (it may be a light/dark/system switch or a colour list) and pick a different theme than the one currently selected.
+  - Wait a second for the page to repaint.
+expectations:
+  - The page background colour is clearly different from the colour in the first screenshot (light became dark or dark became light, or the accent colour changed).
+  - The theme control shows the newly selected option as active.
+  - No text is clipped, overlapping or unreadable after the change.
+max_steps: 12
+max_seconds: 300
