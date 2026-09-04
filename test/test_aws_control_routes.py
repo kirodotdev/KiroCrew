@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import inspect
 import json
 import logging
+import re
+import threading
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -145,7 +148,60 @@ class TestHelpers:
         # The audit is best-effort: a broken SEL sink must never propagate into
         # the response path, so a raising backend is logged and swallowed.
         with mock.patch.object(routes_mod, "sel", side_effect=RuntimeError("no sel")):
-            routes_mod._audit("op", "res", "denied")  # must not raise
+            routes_mod._audit_sync("op", "res", "denied")  # must not raise
+
+    def test_audit_routes_the_sel_write_off_the_event_loop(self):
+        # The SEL write's first touch pays log construction, so the async
+        # _audit wrapper must hand the sync writer to a worker thread instead
+        # of running it inline on the loop — the regression issue #8139 locks
+        # out. Observed from inside the writer itself (which thread ran it)
+        # rather than by patching the stdlib asyncio module object, which
+        # would leak the mock to unrelated code on other threads.
+        assert asyncio.iscoroutinefunction(routes_mod._audit)
+        seen: dict[str, object] = {}
+
+        def _record(*args: object, **kwargs: object) -> None:
+            seen["thread"] = threading.current_thread()
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+
+        with mock.patch.object(routes_mod, "_audit_sync", side_effect=_record):
+            asyncio.run(routes_mod._audit("op", "res", "denied", error="why"))
+        assert seen["args"] == ("op", "res", "denied")
+        assert seen["kwargs"] == {"error": "why"}
+        # asyncio.run drives the loop on the calling thread, so a writer that
+        # ran on the loop would report this thread.
+        assert seen["thread"] is not threading.current_thread()
+
+    def test_audit_swallows_a_failing_thread_dispatch(self):
+        # The wrapper keeps the sync body's never-raises contract even when
+        # the dispatched call raises out of the worker (the real _audit_sync
+        # swallows its own errors; this pins the wrapper's guard for anything
+        # that escapes thread dispatch itself).
+        with mock.patch.object(
+            routes_mod, "_audit_sync", side_effect=RuntimeError("executor down")
+        ):
+            asyncio.run(routes_mod._audit("op", "res", "denied"))  # must not raise
+
+    def test_every_audit_call_site_awaits_the_wrapper(self):
+        # Wiring pin: with _audit patched as an AsyncMock, an UNAWAITED
+        # `_audit(...)` still lands in call_args_list, so the behavioural
+        # tests cannot detect a dropped `await` — the audit would silently
+        # stop being recorded (only a RuntimeWarning). Pin the source instead:
+        # every call site must `await` the wrapper, directly or through
+        # `asyncio.shield` (the post-side-effect sites). Same style as
+        # test_api_health.py::test_every_middleware_denial_is_audited_off_the_loop.
+        src = inspect.getsource(routes_mod)
+        sites = [m for m in re.finditer(r"_audit\(", src) if not src[: m.start()].endswith("def ")]
+        assert len(sites) >= 13, "expected the module's audit call sites to be present"
+        for m in sites:
+            before = src[: m.start()]
+            line = src[src.rfind("\n", 0, m.start()) + 1 : src.find("\n", m.end())]
+            # `await _audit(` or `await asyncio.shield(  _audit(` — black may
+            # break the shield form across lines, so allow whitespace between.
+            assert re.search(
+                r"await\s+(asyncio\.shield\(\s*)?$", before
+            ), f"_audit call site is not awaited: {line.strip()!r}"
 
     def test_body_returns_empty_dict_for_a_non_dict_json(self):
         # A JSON list is valid JSON but not a body shape the handlers accept;

@@ -320,7 +320,7 @@ async def _publish_gate(request: web.Request, operation: str) -> web.Response | 
     policy, every governance profile, and config.json from disk."""
     reason = await asyncio.to_thread(publish_denied_reason, request, _PUBLISH_PROVIDER_ID)
     if reason:
-        _audit(operation, request.path, "denied", error=reason)
+        await _audit(operation, request.path, "denied", error=reason)
         return _forbidden(f"publishing is disabled by policy: {reason}", "publish_denied")
     return None
 
@@ -365,8 +365,15 @@ def _aws_failed(exc: AWSError) -> web.Response:
     return web.json_response({"error": _safe_error(exc), "code": "aws_call_failed"}, status=502)
 
 
-def _audit(operation: str, resources: str, outcome: str, *, error: str = "") -> None:
-    """Best-effort SEL audit for mutations; never blocks the response."""
+def _audit_sync(operation: str, resources: str, outcome: str, *, error: str = "") -> None:
+    """Best-effort SEL audit for mutations; never blocks the response.
+
+    Blocking body of :func:`_audit` — ``log_api_access`` only enqueues onto the
+    writer thread, but the first ``sel()`` of a process CONSTRUCTS the log
+    (trust-dir creation, key load/validation, on Windows the owner-only DACL),
+    so handlers must reach it through the async wrapper, which routes it off
+    the event loop. Only tests and the wrapper call this directly.
+    """
     try:
         sel().log_api_access(
             caller="dashboard-owner",
@@ -380,6 +387,27 @@ def _audit(operation: str, resources: str, outcome: str, *, error: str = "") -> 
         logger.debug("aws-control SEL audit failed", exc_info=True)
 
 
+async def _audit(operation: str, resources: str, outcome: str, *, error: str = "") -> None:
+    """Record a SEL audit event without stalling the event loop.
+
+    ``log_api_access`` itself only enqueues, but first touch pays SEL
+    construction (see :func:`_audit_sync`), so the call is offloaded with
+    ``asyncio.to_thread`` — the same pattern this module already uses for its
+    other blocking calls and the shape ``dashboard.server._audit_denied``
+    settled for SEL specifically. Awaiting keeps the audit-before-response
+    ordering every call site relies on, and the wrapper preserves the
+    never-raises contract of the sync body even if thread dispatch itself
+    fails. Call sites that audit AFTER an external side effect (a mutation
+    outcome, a minted presign URL) wrap this in ``asyncio.shield`` so a client
+    disconnect cannot cancel the record between the side effect and its audit;
+    denial paths have no side effect to orphan and stay unshielded.
+    """
+    try:
+        await asyncio.to_thread(_audit_sync, operation, resources, outcome, error=error)
+    except Exception:
+        logger.debug("aws-control SEL audit dispatch failed", exc_info=True)
+
+
 def _guarded(handler: Handler) -> Handler:
     """Enabled check + owner check — the wrapper every route goes through."""
 
@@ -389,7 +417,7 @@ def _guarded(handler: Handler) -> Handler:
             # Same rule as the owner denial below: a permission DECISION must
             # reach SEL — a request arriving while the app is disabled is a
             # denial an incident review asks about.
-            _audit("access", request.path, "denied", error="app_disabled")
+            await _audit("access", request.path, "denied", error="app_disabled")
             return _forbidden("aws-control is disabled", "app_disabled")
         if not is_owner_dashboard_request(request):
             logger.warning(
@@ -400,7 +428,7 @@ def _guarded(handler: Handler) -> Handler:
             # The permission DECISION must reach SEL, not just the logger —
             # an app token probing the account portal is exactly the event
             # an incident review asks about. Before either response shape.
-            _audit(
+            await _audit(
                 "access",
                 request.path,
                 "denied",
@@ -425,7 +453,7 @@ def _mutating(operation: str) -> Callable[[Handler], Handler]:
 
             state = request.app.get("state")
             if state is not None and _is_restricted_session(state, request):
-                _audit(operation, request.path, "denied", error="restricted session")
+                await _audit(operation, request.path, "denied", error="restricted session")
                 return _forbidden(
                     "this session is restricted from AWS mutations",
                     "restricted_session",
@@ -433,12 +461,19 @@ def _mutating(operation: str) -> Callable[[Handler], Handler]:
             try:
                 response = await handler(request)
             except AWSError as exc:
-                _audit(operation, request.path, "error", error=str(exc))
+                # The handler already ran against AWS, so this audit and the
+                # success/refused one below must survive a client disconnect:
+                # shield keeps the record being written even when the await
+                # itself is cancelled. Before the await this point had no
+                # suspension, so cancellation could never orphan the outcome.
+                await asyncio.shield(_audit(operation, request.path, "error", error=str(exc)))
                 return _aws_failed(exc)
-            _audit(
-                operation,
-                request.path,
-                "success" if response.status < 400 else "refused",
+            await asyncio.shield(
+                _audit(
+                    operation,
+                    request.path,
+                    "success" if response.status < 400 else "refused",
+                )
             )
             return response
 
@@ -856,7 +891,10 @@ async def _handle_drive_download(request: web.Request) -> web.Response:
     # A presign is an ACCESS GRANT (a bearer URL now exists), not a plain
     # read — record it like every other grant so the audit trail can answer
     # "what URLs were minted". The key is metadata, never the URL itself.
-    _audit("drive_download", f"{section}/{key}", "granted")
+    # A bearer URL now exists, so the grant record must survive a client
+    # disconnect: shield keeps the audit being written even when the await
+    # itself is cancelled.
+    await asyncio.shield(_audit("drive_download", f"{section}/{key}", "granted"))
     return web.json_response({"url": url, "expiresSecs": _DOWNLOAD_URL_SECS})
 
 
@@ -1283,16 +1321,8 @@ async def _drive_object_keys(request: web.Request, account: str) -> tuple[set[st
         # failing: the profile became unavailable or now names another account.
         # `_guarded`'s rule is that such a decision reaches SEL, and degrading
         # quietly would drop the one event an incident review asks about.
-        #
-        # OFF-LOOP. `_audit` is synchronous, and on a gateway whose SEL has not
-        # been touched yet the first call constructs the log and writes to disk
-        # -- initialization plus a write, on the event loop, from a route the
-        # console renders on every page load. The eleven older `_audit` calls in
-        # this module are on-loop; this is the one this change adds, and issue
-        # #8139 owns the rest.
-        await asyncio.to_thread(
-            _audit, "shares_list", request.path, "denied", error="account_unavailable"
-        )
+        # `_audit` routes the SEL write off the loop itself (issue #8139).
+        await _audit("shares_list", request.path, "denied", error="account_unavailable")
         return None, "no working connection for this account"
     _account, profile, region = target
     if await _consent(aws_consent.SERVICE_S3, profile, region) is not None:
@@ -1437,7 +1467,7 @@ async def _reauthorize_in_lock(
     on the way in.
     """
     if not await asyncio.to_thread(is_app_enabled, APP_NAME):
-        _audit(operation, request.path, "denied", error="app_disabled")
+        await _audit(operation, request.path, "denied", error="app_disabled")
         return _forbidden("aws-control is disabled", "app_disabled")
     recheck = await _account_target(request)
     if isinstance(recheck, web.Response):
@@ -1446,10 +1476,10 @@ async def _reauthorize_in_lock(
         # `_mutating` records their outcome, but the reconcile READ converts it
         # into a degraded 200 -- so without an audit at the point of decision the
         # denial disappears entirely on that path.
-        _audit(operation, request.path, "denied", error="account_unavailable")
+        await _audit(operation, request.path, "denied", error="account_unavailable")
         return recheck
     if recheck != (account, profile, region):
-        _audit(operation, request.path, "denied", error="account_mismatch")
+        await _audit(operation, request.path, "denied", error="account_mismatch")
         return _conflict(
             "this connection changed while the request was queued; nothing was written",
             "account_mismatch",
@@ -1462,7 +1492,7 @@ async def _reauthorize_in_lock(
     except AWSError as exc:
         return _aws_failed(exc)
     if current != bucket:
-        _audit(operation, request.path, "denied", error="drive_changed")
+        await _audit(operation, request.path, "denied", error="drive_changed")
         return _conflict(
             "this account's drive changed while the request was queued; nothing was written",
             "drive_changed",
@@ -1497,7 +1527,7 @@ async def _reconciled_remote_slugs(request: web.Request) -> tuple[set[str] | Non
         # failing: the profile became unavailable or now names another account,
         # and _guarded's own rule is that such a decision reaches SEL. Degrading
         # quietly would drop the one event an incident review asks about.
-        _audit("library_list", request.path, "denied", error="account_unavailable")
+        await _audit("library_list", request.path, "denied", error="account_unavailable")
         return None, "no working connection for this account"
     account, profile, region = target
     if await _consent(aws_consent.SERVICE_S3, profile, region) is not None:
