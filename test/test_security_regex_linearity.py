@@ -292,23 +292,44 @@ def inspect_source(func: object) -> str:
 
 
 def test_long_nonshell_line_does_not_blow_up() -> None:
-    """Complexity guard for Mesh-3693.
+    """Catastrophe ceiling for Mesh-3693.
 
     A ~20 KB newline-free non-shell string is the worst case for the old anchor:
-    eleven branches each retried a greedy ``.*`` from every offset. Measured on
-    the dev box this took ~27 s before the rewrite and ~1.5 s after, so a 6 s
-    ceiling clears the fixed path by ~4x while the quadratic form overshoots by
-    ~4.5x. Deliberately generous -- this test exists to catch a complexity
-    regression, not to benchmark CI.
+    eleven branches each retried a greedy ``.*`` from every offset. On the dev box
+    that form took ~27 s; the rewritten anchor takes ~2.0 s -- a ~14x separation,
+    which is what this test actually keys on.
+
+    Two deliberate choices keep it off the flake list, both learned from a 6.27 s
+    reading on a 16-worker CI shard against the old 6.0 s ceiling:
+
+    * ``min()`` over two repeats, after a warm-up call. The first call pays the
+      one-time ``_build_sensitive_regex`` compile (~0.12 s) and ``min`` discards
+      scheduler interference rather than averaging it in.
+    * a 20 s ceiling, not a ~4x margin over the dev-box reading. The measured
+      contention factor on a loaded shard is ~3.2x (2.0 s -> 6.3 s), so 20 s
+      leaves ~3x headroom above the worst observed fixed-path time while the old
+      form -- ~27 s unloaded, ~86 s at that same contention factor -- still
+      overshoots by >4x.
+
+    This is a catastrophe ceiling, not a benchmark. The DETERMINISTIC net for the
+    specific regression it names is
+    :func:`test_sensitive_anchor_has_no_leading_wildcard`, which reads the anchor
+    out of the source and cannot flake at all; keep that one primary.
     """
     blob = "abcdefgh " * 2500
     assert len(blob) > 20_000
-    started = time.perf_counter()
+    # Warm-up: pays the one-time regex build so it is not billed to a sample.
     verdict = is_sensitive_bash_command(blob)
-    elapsed = time.perf_counter() - started
     assert bool(verdict) is False
-    assert elapsed < 6.0, (
-        f"is_sensitive_bash_command took {elapsed:.2f}s on a 20 KB line -- "
+    samples = []
+    for _ in range(2):
+        started = time.perf_counter()
+        is_sensitive_bash_command(blob)
+        samples.append(time.perf_counter() - started)
+    elapsed = min(samples)
+    assert elapsed < 20.0, (
+        f"is_sensitive_bash_command took {elapsed:.2f}s on a 20 KB line "
+        f"(samples: {[f'{s:.2f}' for s in samples]}) -- "
         "a leading `.*` in the sensitive-path anchor is quadratic"
     )
 
