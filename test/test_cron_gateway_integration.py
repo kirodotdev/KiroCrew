@@ -166,6 +166,25 @@ async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_
         return await _init_and_run(), mock_run
 
 
+def test_pruned_install_requires_both_runtime_paths_to_be_absent(tmp_path, monkeypatch):
+    from kiro_crew.slack import gateway as gateway_mod
+
+    interpreter = tmp_path / "old-install" / "python"
+    module = tmp_path / "old-install" / "gateway.py"
+    monkeypatch.setattr(gateway_mod.sys, "executable", str(interpreter))
+    monkeypatch.setattr(gateway_mod, "__file__", str(module))
+
+    assert gateway_mod._running_install_was_pruned()
+
+    module.parent.mkdir(parents=True)
+    module.write_text("# still installed\n", encoding="utf-8")
+    assert not gateway_mod._running_install_was_pruned()
+
+    module.unlink()
+    interpreter.write_text("", encoding="utf-8")
+    assert not gateway_mod._running_install_was_pruned()
+
+
 class TestScriptExecution:
     """Test script cron dispatch through the gateway callback."""
 
@@ -184,6 +203,35 @@ class TestScriptExecution:
         job = _make_script_job()
         result, _ = await _run_script_callback(gw, job, {"status": "skip"})
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_pruned_install_enoent_uses_the_skip_path(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        job.consecutive_failures = 3
+        missing = FileNotFoundError(2, "No such file or directory", "/old/python")
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        assert result is None
+        assert job.last_status != "error"
+        assert job.consecutive_failures == 3
+        assert job.last_error is None
+
+    @pytest.mark.asyncio
+    async def test_unrelated_spawn_enoent_remains_a_failure(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/wrapper")
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=False):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert job.consecutive_failures == 1
+        assert "/missing/wrapper" in job.last_error
 
     @pytest.mark.asyncio
     async def test_skip_is_success_not_failure(self):
@@ -1141,6 +1189,48 @@ class TestModelFallback:
             raise RuntimeError("model spawn failed")
 
         with pytest.raises(RuntimeError, match="model spawn failed"):
+            await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "agent_sequence",
+        [[], ["first", "second"]],
+        ids=["single-agent", "agent-sequence"],
+    )
+    async def test_pruned_install_enoent_skips_agent_launch(self, agent_sequence):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=agent_sequence)
+        job.consecutive_failures = 3
+        missing = FileNotFoundError(2, "No such file or directory", "/old/python")
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, stream_mock = await _run_llm_callback(
+                gw, job, get_or_create_side_effect=_side_effect
+            )
+
+        assert result is None
+        stream_mock.assert_not_awaited()
+        assert job.last_status != "error"
+        assert job.consecutive_failures == 3
+        assert job.last_error is None
+        gw.cron_svc.clear_active_session_key.assert_called_once_with(job.id)
+
+    @pytest.mark.asyncio
+    async def test_unrelated_agent_spawn_enoent_remains_a_failure(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job()
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/provider")
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with (
+            patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=False),
+            pytest.raises(FileNotFoundError, match="missing/provider"),
+        ):
             await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
 
 

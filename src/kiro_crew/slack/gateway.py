@@ -773,6 +773,18 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
     return HookManager(scoped)
 
 
+def _running_install_was_pruned() -> bool:
+    """Whether an update removed every path that can launch this version.
+
+    A managed-install promotion may unlink the old interpreter and package
+    tree while this gateway still drains from mapped memory. Requiring both
+    paths to be absent distinguishes that handoff from an unrelated missing
+    working directory, launcher, or user binary, which must remain a real
+    cron failure.
+    """
+    return not Path(sys.executable).is_file() and not Path(__file__).is_file()
+
+
 class _GateTally:
     """Tool-gate outcomes accumulated over one cron run.
 
@@ -4086,25 +4098,36 @@ class GatewayOrchestrator:
                     # runs inside the worker, after the wait, so the decision
                     # holds at the moment of use.  It also now shares the
                     # backstop below, which is why it must stay short.
-                    result = await run_in_cron_pool(
-                        _vet_at_claim_then,
-                        handoff,
-                        job,
-                        run_script_sandboxed,
-                        job.script,
-                        job.id,
-                        job.message,
-                        script_timeout,
-                        job.secret_env,
-                        job.secret_env_pin,
-                        delivery_fingerprint(
-                            job.session_key,
-                            job.silent,
-                            job.channel or "",
-                            job.thread_ts or "",
-                        ),
-                        timeout=_claim_backstop(job, script_timeout),
-                    )
+                    try:
+                        result = await run_in_cron_pool(
+                            _vet_at_claim_then,
+                            handoff,
+                            job,
+                            run_script_sandboxed,
+                            job.script,
+                            job.id,
+                            job.message,
+                            script_timeout,
+                            job.secret_env,
+                            job.secret_env_pin,
+                            delivery_fingerprint(
+                                job.session_key,
+                                job.silent,
+                                job.channel or "",
+                                job.thread_ts or "",
+                            ),
+                            timeout=_claim_backstop(job, script_timeout),
+                        )
+                    except FileNotFoundError:
+                        if not _running_install_was_pruned():
+                            raise
+                        # The replacement gateway owns the next wake. Reuse the
+                        # normal Skip bookkeeping so runtime maintenance cannot
+                        # spend an auto-pause strike on an otherwise healthy job.
+                        logger.info(
+                            "Script cron launch skipped because the running install was replaced"
+                        )
+                        result = {"status": "skip"}
                     status = result.get("status", "error")
                     if status == "cancelled":
                         # User-initiated cancel: CronService.cancel() owns the
@@ -4451,45 +4474,57 @@ class GatewayOrchestrator:
 
             async def _acquire_with_model_fallback(
                 key: str, agent_id: str | None
-            ) -> "tuple[LLMProvider, bool, bool, bool]":
+            ) -> "tuple[LLMProvider, bool, bool, bool] | None":
                 """get_or_create honoring job.model; if that model is
                 unavailable, retry once with the registry default.
-                Returns (client, is_new, resumed, downgraded)."""
+                Returns (client, is_new, resumed, downgraded), or ``None`` when
+                this old gateway's runtime was pruned during an update."""
                 assert self.sessions is not None
                 try:
-                    client, is_new, resumed = await self.sessions.get_or_create(
-                        key,
-                        agent=agent_id,
-                        channel_id=job.channel,
-                        approval_policy=job.approval_mode,
-                        model=job.model or None,
-                        extra_env=_cron_extra_env(),
-                    )
-                    return client, is_new, resumed, False
-                except Exception as model_exc:
-                    if not job.model:
+                    try:
+                        client, is_new, resumed = await self.sessions.get_or_create(
+                            key,
+                            agent=agent_id,
+                            channel_id=job.channel,
+                            approval_policy=job.approval_mode,
+                            model=job.model or None,
+                            extra_env=_cron_extra_env(),
+                        )
+                        return client, is_new, resumed, False
+                    except Exception as model_exc:
+                        if not job.model:
+                            raise
+                        # Only fall back when the failure plausibly implicates the
+                        # pinned model; unrelated session-creation errors (provider
+                        # spawn, missing factory, transient I/O) must propagate so
+                        # they are not misreported as a model downgrade.
+                        _err = str(model_exc).lower()
+                        if "model" not in _err and job.model.lower() not in _err:
+                            raise
+                        logger.warning(
+                            "Cron '%s': model %r unavailable (%s); retrying with default",
+                            job.name,
+                            job.model,
+                            model_exc,
+                        )
+                        client, is_new, resumed = await self.sessions.get_or_create(
+                            key,
+                            agent=agent_id,
+                            channel_id=job.channel,
+                            approval_policy=job.approval_mode,
+                            extra_env=_cron_extra_env(),
+                        )
+                        return client, is_new, resumed, True
+                except FileNotFoundError:
+                    if not _running_install_was_pruned():
                         raise
-                    # Only fall back when the failure plausibly implicates the
-                    # pinned model; unrelated session-creation errors (provider
-                    # spawn, missing factory, transient I/O) must propagate so
-                    # they are not misreported as a model downgrade.
-                    _err = str(model_exc).lower()
-                    if "model" not in _err and job.model.lower() not in _err:
-                        raise
-                    logger.warning(
-                        "Cron '%s': model %r unavailable (%s); retrying with default",
-                        job.name,
-                        job.model,
-                        model_exc,
+                    # Do not pair this old gateway's in-memory protocol and
+                    # package paths with the newly promoted interpreter. The
+                    # replacement gateway will launch a single-version child.
+                    logger.info(
+                        "Agent cron launch skipped because the running install was replaced"
                     )
-                    client, is_new, resumed = await self.sessions.get_or_create(
-                        key,
-                        agent=agent_id,
-                        channel_id=job.channel,
-                        approval_policy=job.approval_mode,
-                        extra_env=_cron_extra_env(),
-                    )
-                    return client, is_new, resumed, True
+                    return None
 
             def _annotate_model_downgrade(text: str) -> str:
                 # job.model is LLM-controllable via MCP; redact before it
@@ -4515,9 +4550,12 @@ class GatewayOrchestrator:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
                     _acq = False
                     try:
-                        client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
-                            agent_session_key, agent
-                        )
+                        acquired = await _acquire_with_model_fallback(agent_session_key, agent)
+                        if acquired is None:
+                            if self.cron_svc is not None:
+                                self.cron_svc.clear_active_session_key(job.id)
+                            return None
+                        client, is_new, _resumed, _downgraded = acquired
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
                         # Publish this turn's session identity so managed MCP
@@ -4656,9 +4694,12 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
-                client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
-                    session_key, job.agent_id or None
-                )
+                acquired = await _acquire_with_model_fallback(session_key, job.agent_id or None)
+                if acquired is None:
+                    if self.cron_svc is not None:
+                        self.cron_svc.clear_active_session_key(job.id)
+                    return None
+                client, is_new, _resumed, _model_downgraded = acquired
                 _acquired = True
                 # Same identity publish as the sequential site above — the
                 # single-agent cron turn must publish its pidfile mapping or
