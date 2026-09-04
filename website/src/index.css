@@ -207,6 +207,30 @@
        local('NirmalaUI-Bold'), local('Vrinda Bold');
   unicode-range: U+0980-09FF;
 }
+/* ── Straight ASCII quotes (U+0022 " and U+0027 ') ──
+   Space Grotesk — the default body face — has no straight-quote glyph: it draws
+   both code points as its CLOSING curly form, so a straight quote in UI copy, or
+   one a user types, renders as ” / ’ and hangs on the wrong side of the word
+   (issue #6374). This alias draws ONLY those two code points from a locally
+   installed straight-quote face. Like the script aliases above it is
+   unicode-range-restricted, so it is never consulted for any other character and
+   can lead the family list without changing how anything else renders. The curly
+   quotes U+2018-U+201D are deliberately NOT claimed — they keep coming from the
+   body face, unchanged, exactly as the script-fallback note below intends.
+
+   One 400-700 face, not the split 400/700 pair the CJK aliases need: a quotation
+   mark carries no meaningful weight contrast, and the range descriptor covers a
+   bold context with no synthetic bold. src is local()-only, so nothing downloads;
+   if none of the listed faces is installed the code point falls through to the
+   body face — today's rendering, never worse. */
+@font-face {
+  font-family: 'KC Straight Quotes';
+  font-style: normal; font-weight: 400 700;
+  src: local('Arial'), local('ArialMT'), local('Helvetica Neue'), local('Helvetica'),
+       local('Segoe UI'), local('SegoeUI'), local('Roboto'), local('Liberation Sans'),
+       local('DejaVu Sans'), local('Noto Sans'), local('Nimbus Sans');
+  unicode-range: U+0022, U+0027;
+}
 
 /* ─── OpenDyslexic (SIL-OFL) ── accessibility built-in ───
    Registered as its own font-family so the a11y font never leaks into
@@ -268,8 +292,11 @@
      CJK) through the wrong glyph forms. html:lang(zh-CN/ja/ko) below swap
      isolated regional faces for that UI language. A bare :lang(zh) is avoided
      — it also matches zh-TW/zh-HK. They lead each stack; unicode-range is what
-     makes leading safe. */
-  --script-fallbacks:'KC Devanagari Fallback','KC Bengali Fallback';
+     makes leading safe. 'KC Straight Quotes' leads every sans variant for the
+     same reason, fixing the straight-quote glyph (#6374) in every UI language.
+     It is sans-only: the mono stacks resolve to JetBrains Mono, whose straight
+     quotes are already correct. */
+  --script-fallbacks:'KC Straight Quotes','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Devanagari Fallback','KC Bengali Fallback';
   /* An installed theme pack fills --theme-font-sans / --theme-font-mono with its
      own faces (see hooks/themeCss.ts). Reading them here means code surfaces
@@ -285,19 +312,19 @@ html:lang(zh-CN) {
   /* Isolated Simplified aliases for Chinese UI. Not :lang(zh): that also
      matches zh-TW / zh-HK / zh-Hant. Document-level only — :root/--font-body
      and useZoom already resolve var(--script-fallbacks) on <html>. */
-  --script-fallbacks:'KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks:'KC Straight Quotes','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 html:lang(ja) {
   /* Never retain the SC aliases here. If no named Japanese face is installed,
      falling through lets the browser use its lang-aware Japanese fallback. */
-  --script-fallbacks:'KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks:'KC Straight Quotes','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 html:lang(ko) {
   /* Never retain the SC or JP aliases here. Neither draws Hangul, so leaving one
      in front only delays resolution to the browser's lang-aware Korean fallback. */
-  --script-fallbacks:'KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks:'KC Straight Quotes','KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Korean Mono Fallback','KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 /* Dark theme shadows */

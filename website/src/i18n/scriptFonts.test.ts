@@ -93,6 +93,12 @@ const ALIASES = [...SC_ALIASES, ...REGIONAL_ALIASES, ...COMMON_ALIASES] as const
  * Ranges that must stay OUT of every alias. Latin proper plus general punctuation:
  * an alias claiming U+2000-206F would take over quotes, dashes and ellipses in
  * Latin text, which is the same class of silent regression as claiming Latin.
+ *
+ * The ONE intentional exception is 'KC Straight Quotes' (#6374): it claims exactly
+ * U+0022 and U+0027 to replace Space Grotesk's miscut straight quotes. It is
+ * deliberately NOT in ALIASES, so the checks above never run on it; instead it is
+ * pinned separately at the bottom of this file to those two code points and nothing
+ * wider, which is what keeps the exception from quietly growing into a Latin claim.
  */
 const FORBIDDEN = [
   { name: 'Latin (Basic through Extended-B)', lo: 0x0000, hi: 0x024f },
@@ -385,5 +391,51 @@ describe('font stack declarations', () => {
       }
     }
     expect(offenders, offenders.join('\n')).toEqual([])
+  })
+})
+
+/**
+ * The straight-quote alias is the deliberate inverse of every alias above: those
+ * exist to add script coverage WITHOUT touching Latin, while this one exists to
+ * REPLACE the Latin body face for exactly two code points. Space Grotesk (the
+ * default body face) draws U+0022 and U+0027 as its closing curly glyph, so a
+ * straight quote in UI copy — or one a user types — renders as ” / ’ on the wrong
+ * side of the word (#6374). The alias leads the sans stack with a local()
+ * straight-quote face and a unicode-range of just those two code points.
+ *
+ * Two properties keep it safe, and both are pinned here because neither is visible
+ * from reading a family list: it may claim ONLY U+0022 and U+0027 (widening it back
+ * into Latin is the regression FORBIDDEN guards for the other aliases), and it must
+ * stay OUT of the mono tokens (JetBrains Mono already draws straight quotes, so the
+ * override is neither needed nor wanted there).
+ */
+describe('KC Straight Quotes (#6374) — the one deliberate Latin-claiming alias', () => {
+  const FAMILY = 'KC Straight Quotes'
+
+  it('exists, is local()-only, and claims EXACTLY U+0022 and U+0027', () => {
+    const block = faceBlock(FAMILY)
+    expect(block, `no @font-face for '${FAMILY}' in index.css`).not.toBe('')
+    expect(block).toMatch(/src:[^;]*local\(/)
+    expect(block, `'${FAMILY}' must not fetch a remote font`).not.toMatch(/url\(/)
+    const ranges = parseUnicodeRange(block).map((r) => [r.lo, r.hi]).sort((a, b) => a[0] - b[0])
+    // The whole safety of a Latin-claiming leading alias is that it claims these
+    // two code points and no others. Any wider range is a silent Latin takeover.
+    expect(ranges).toEqual([[0x22, 0x22], [0x27, 0x27]])
+  })
+
+  it('leads every sans --script-fallbacks and appears in none of the mono ones', () => {
+    const sansSites: Array<[string, string]> = [
+      ['root', ruleBody(/:root\s*\{([^}]*)\}/)],
+      ...REGIONAL.map(({ lang }) => [lang, htmlLangRuleBody(lang)] as [string, string]),
+    ]
+    for (const [label, block] of sansSites) {
+      const sans = scriptToken(block)
+      const mono = scriptToken(block, true)
+      expect(sans, `'${FAMILY}' missing from the ${label} sans token`).toContain(FAMILY)
+      // Leading is what makes it win for U+0022/U+0027 over the body face without a
+      // unicode-range collision changing anything else (see the aliases' rationale).
+      expect(sans.trimStart().startsWith(`'${FAMILY}'`), `'${FAMILY}' must lead the ${label} sans token`).toBe(true)
+      expect(mono, `'${FAMILY}' must not appear in the ${label} mono token`).not.toContain(FAMILY)
+    }
   })
 })
