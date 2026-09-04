@@ -37,7 +37,7 @@ Builds use plain `pip` + `npm`/Vite + `pytest`, driven by the repo-root
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
 | **Python** | Backend | `>= 3.12` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
-| **Node.js + npm** | Building the dashboard | `>= 22` (`website/package.json` `engines`; Node 24 LTS recommended); the legacy Amazon Linux 2 path drops to 16 where newer official builds need a glibc that host does not have |
+| **Node.js + npm** | Building the dashboard | `>= 22` (`website/package.json` `engines`; Node 24 LTS recommended); on x86_64 Amazon Linux 2, the glibc-217 fallback installs Node 24 because official builds need a newer glibc (no glibc-217 arm64 build is available) |
 | **`kiro-cli`** | Driving the LLM | Required; see below |
 
 Node is only needed to *build* the dashboard. The prebuilt wheel, the DMG, the
