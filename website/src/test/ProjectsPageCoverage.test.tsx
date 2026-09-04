@@ -37,6 +37,7 @@ vi.mock('../api/client', () => ({
   api: {
     taskRunnerStatus: vi.fn(),
     kirocrewAgents: vi.fn(),
+    syncKirocrewAgents: vi.fn().mockResolvedValue({}),
     planTask: vi.fn(),
     cancelPlan: vi.fn(),
     executePlan: vi.fn(),

@@ -2272,6 +2272,9 @@
           "editor": {
             "agent_hint": "Qualquer agente funciona. O brief do crew é injetado na sessão sempre que desaparece da conversa, então nada precisa ser colado no agente.",
             "agent_label": "Agente",
+            "agent_roster_failed": "Não foi possível carregar a lista de agentes.",
+            "agent_roster_retry": "Tentar novamente",
+            "agent_roster_retrying": "Tentando novamente…",
             "aria_create": "Criar um novo crew",
             "aria_edit": "Editar o crew {{name}}",
             "automerge_hint": "Mescla no momento em que um humano aprova. A proteção de branch continua valendo.",

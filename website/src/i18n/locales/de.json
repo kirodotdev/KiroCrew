@@ -2273,6 +2273,9 @@
           "editor": {
             "agent_hint": "Jeder Agent funktioniert. Das Crew-Briefing wird in die Sitzung eingefügt, sobald es im Gesprächsverlauf fehlt — es muss also nichts in den Agenten kopiert werden.",
             "agent_label": "Agent",
+            "agent_roster_failed": "Die Agentenliste konnte nicht geladen werden.",
+            "agent_roster_retry": "Wiederholen",
+            "agent_roster_retrying": "Wird wiederholt…",
             "aria_create": "Neue Crew anlegen",
             "aria_edit": "Crew {{name}} bearbeiten",
             "automerge_hint": "Mergt, sobald ein Mensch zustimmt. Der Branch-Schutz greift weiterhin.",

@@ -2172,6 +2172,9 @@
           "editor": {
             "agent_hint": "任何代理都可以。每当小队简报从对话中消失，系统就会重新注入会话，你不用手动粘贴到代理里。",
             "agent_label": "代理",
+            "agent_roster_failed": "无法加载 Agent 列表。",
+            "agent_roster_retry": "重试",
+            "agent_roster_retrying": "正在重试…",
             "aria_create": "创建新小队",
             "aria_edit": "编辑小队 {{name}}",
             "automerge_hint": "人工批准后立即合并。分支保护规则依然生效。",

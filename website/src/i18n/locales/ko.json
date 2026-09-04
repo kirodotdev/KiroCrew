@@ -2223,6 +2223,9 @@
           "editor": {
             "agent_hint": "어떤 에이전트든 쓸 수 있습니다. 크루 브리프는 대화에서 사라질 때마다 세션에 다시 주입되므로, 에이전트에 직접 붙여 넣을 필요가 없습니다.",
             "agent_label": "에이전트",
+            "agent_roster_failed": "에이전트 목록을 불러올 수 없습니다.",
+            "agent_roster_retry": "다시 시도",
+            "agent_roster_retrying": "다시 시도 중…",
             "aria_create": "새 크루 만들기",
             "aria_edit": "크루 {{name}} 편집",
             "automerge_hint": "사람이 승인하는 즉시 병합합니다. 브랜치 보호 규칙은 그대로 적용됩니다.",

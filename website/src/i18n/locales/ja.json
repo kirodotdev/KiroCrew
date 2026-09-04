@@ -2238,6 +2238,9 @@
           "editor": {
             "agent_hint": "どのエージェントでも動作します。クルーのブリーフは、会話から失われるたびにセッションへ挿入されるため、エージェントに貼り付ける必要はありません。",
             "agent_label": "エージェント",
+            "agent_roster_failed": "エージェント一覧を読み込めませんでした。",
+            "agent_roster_retry": "再試行",
+            "agent_roster_retrying": "再試行中…",
             "aria_create": "新しいクルーを作成",
             "aria_edit": "クルー {{name}} を編集",
             "automerge_hint": "人間が承認した時点でマージします。ブランチ保護は引き続き適用されます。",

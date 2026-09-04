@@ -2272,6 +2272,9 @@
           "editor": {
             "agent_hint": "Cualquier agente funciona. Las instrucciones del equipo se inyectan en la sesión cada vez que faltan en la conversación, así no hay que pegar nada en el agente.",
             "agent_label": "Agente",
+            "agent_roster_failed": "No se pudo cargar la lista de agentes.",
+            "agent_roster_retry": "Reintentar",
+            "agent_roster_retrying": "Reintentando…",
             "aria_create": "Crear un equipo nuevo",
             "aria_edit": "Editar el equipo {{name}}",
             "automerge_hint": "Fusiona en el momento en que una persona aprueba. La protección de rama sigue controlándolo.",

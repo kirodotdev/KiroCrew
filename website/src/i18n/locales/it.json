@@ -2272,6 +2272,9 @@
           "editor": {
             "agent_hint": "Va bene qualsiasi agente. Il brief della crew viene iniettato nella sessione ogni volta che sparisce dalla conversazione, quindi non serve incollare nulla nell’agente.",
             "agent_label": "Agente",
+            "agent_roster_failed": "Impossibile caricare l'elenco degli agenti.",
+            "agent_roster_retry": "Riprova",
+            "agent_roster_retrying": "Nuovo tentativo…",
             "aria_create": "Crea una nuova crew",
             "aria_edit": "Modifica la crew {{name}}",
             "automerge_hint": "Esegue il merge nel momento in cui una persona approva. La protezione del branch continua comunque a fare da filtro.",

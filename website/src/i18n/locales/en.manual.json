@@ -604,6 +604,9 @@
           "editor": {
             "agent_hint": "Any agent works.",
             "agent_label": "Agent",
+            "agent_roster_failed": "Couldn't load the agent list.",
+            "agent_roster_retry": "Retry",
+            "agent_roster_retrying": "Retrying…",
             "aria_create": "Create a new Crew",
             "aria_edit": "Edit Crew {{name}}",
             "automerge_hint": "Merges once a human approves.",

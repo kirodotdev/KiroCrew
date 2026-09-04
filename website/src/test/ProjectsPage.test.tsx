@@ -17,6 +17,7 @@ vi.mock('../api/client', () => ({
     taskRunnerStatus: vi.fn().mockResolvedValue({ running: false, available: true, runs: [] }),
     agentsInstalled: vi.fn().mockResolvedValue([]),
     kirocrewAgents: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
+    syncKirocrewAgents: vi.fn().mockResolvedValue({}),
     startTaskRunner: vi.fn().mockResolvedValue({ ok: true }),
     cancelTaskRunner: vi.fn().mockResolvedValue({ ok: true }),
     deleteTaskRun: vi.fn().mockResolvedValue({ ok: true }),
