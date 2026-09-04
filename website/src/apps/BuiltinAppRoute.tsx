@@ -16,6 +16,7 @@ import { Suspense } from 'react'
 import { useParams, Navigate } from 'react-router-dom'
 import { getBuiltinApp } from './builtinRegistry'
 import { AppIdentityProvider } from '../app-sdk/identity'
+import { AppCacheRetention } from '../app-sdk/appQuery'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { ContentSkeleton } from '../components/ui'
 
@@ -56,6 +57,15 @@ export default function BuiltinAppRoute() {
         installed app's own origin, and `useTrustedAppId()` refuses it there.
       */}
       <AppIdentityProvider appId={appId} origin="builtin">
+        {/*
+          Keeps this app's cached data resident across leaving the page, so a
+          return repaints instead of showing loading placeholders. A SIBLING
+          ahead of the Suspense boundary rather than a wrapper around it: React
+          reconciles children in order, so this renders — and registers — before
+          the page below it mounts its first query, which is the ordering that
+          matters. It renders nothing.
+        */}
+        <AppCacheRetention />
         <Suspense fallback={<ContentSkeleton />}>
           <Component />
         </Suspense>

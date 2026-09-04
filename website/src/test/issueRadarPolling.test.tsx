@@ -2,9 +2,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IssueRadarProvider, useIssueRadar } from '../apps/issue-radar/context'
+import { APP_CACHE_RETENTION_MS } from '../apps/appCacheRetention'
 import {
   LIST_POLL_MS, LIST_POLL_CHOICES_MS, STALE_TIME_CHOICES_MS, REFRESH_DEFAULTS,
-  CACHE_RETENTION_MS, coerceInterval, coerceRefreshPrefs,
+  coerceInterval, coerceRefreshPrefs,
 } from '../apps/issue-radar/lib/format'
 
 // The list routes are cache-first with NO server-side TTL, so a plain refetch
@@ -345,18 +346,18 @@ describe('cached surfaces survive a tab switch', () => {
   // line and refetched from scratch. Once per tab click.
   it('retains issue-radar query data far longer than the app-wide default', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000 } } })
-    qc.setQueryDefaults(['issue-radar'], { gcTime: CACHE_RETENTION_MS })
+    qc.setQueryDefaults(['issue-radar'], { gcTime: APP_CACHE_RETENTION_MS })
     expect(qc.getQueryDefaults(['issue-radar', 'tagging', 'gh:github.com:o/r']).gcTime)
-      .toBe(CACHE_RETENTION_MS)
+      .toBe(APP_CACHE_RETENTION_MS)
     // Comfortably past a normal detour between surfaces, where 5 minutes is not.
-    expect(CACHE_RETENTION_MS).toBeGreaterThan(5 * 60_000)
+    expect(APP_CACHE_RETENTION_MS).toBeGreaterThan(5 * 60_000)
   })
 
   it('scopes the retention to this app, not the whole dashboard', () => {
     // A global gcTime bump would retain every other page's queries too, which is memory
     // spent on data nothing asked to keep.
     const qc = new QueryClient()
-    qc.setQueryDefaults(['issue-radar'], { gcTime: CACHE_RETENTION_MS })
+    qc.setQueryDefaults(['issue-radar'], { gcTime: APP_CACHE_RETENTION_MS })
     expect(qc.getQueryDefaults(['chat-slots']).gcTime).toBeUndefined()
   })
 

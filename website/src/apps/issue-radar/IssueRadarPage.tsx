@@ -6,10 +6,9 @@
 // and data fetching live in context.tsx; the layout lives in Workspace.tsx.
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { queryClient } from '../../api/queryClient'
 import { issueRadarApi } from './api'
 import {
-  CACHE_RETENTION_MS, loadActiveRepo, markAutoSelectFirstIssue, patchUiState, saveActiveRepo,
+  loadActiveRepo, markAutoSelectFirstIssue, patchUiState, saveActiveRepo,
 } from './lib/format'
 import type { ActiveRepo } from './lib/types'
 import { sameRepoRef } from './lib/links'
@@ -20,21 +19,19 @@ import WelcomeCarousel from './WelcomeCarousel'
 import ConnectRepoModal from './ConnectRepoModal'
 
 import { i18nT } from '../../i18n/t'
-// Keep every Issue Radar query's data resident long enough to survive moving between
-// surfaces, set ONCE for the whole `['issue-radar', ...]` key space rather than repeated
-// across ~20 call sites (a per-site option is one a new query silently forgets).
+// Retention for the whole `['issue-radar', ...]` key space is no longer set here.
+// The host registers it for every builtin app from `BuiltinAppRoute`, against the
+// `[appId]` prefix, with the same 30 minutes this app introduced — see
+// `apps/appCacheRetention.ts`, which is now the only place that number lives --
+// this app's own CACHE_RETENTION_MS is deleted in the same change, because one
+// constant beats two literals kept in step by a test.
 //
-// The problem it fixes: each dashboard mounts its own queries and unmounts them on the way
-// out, because the views are SWAPPED not hidden (`views/registry.tsx`). Data for an
-// unmounted query lives only `gcTime` longer, and the app-wide default is react-query's 5
-// minutes, which is shorter than an ordinary triage session. Leave Tagging for six minutes
-// and its queue has been evicted, so returning shows a loading line and refetches
-// everything, once per tab click.
-//
-// Retention is not freshness: `staleTime` and the poll intervals still decide when a
-// refetch happens, so this only changes whether there is something to paint WHILE that
-// refetch runs. Module scope so it is applied before the first child query mounts.
-queryClient.setQueryDefaults(['issue-radar'], { gcTime: CACHE_RETENTION_MS })
+// Keeping a second registration here would not have been merely redundant:
+// `setQueryDefaults` is a Map keyed by the hashed key, so both write the SAME entry
+// and the last writer wins — and which one is last depends on module evaluation
+// order (the host registers while rendering the route; this line runs when this
+// lazy chunk evaluates, after). Identical values hid that today; a future change to
+// either number would have been silently decided by chunk timing.
 
 export default function IssueRadarPage() {
   const queryClient = useQueryClient()
