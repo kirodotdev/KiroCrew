@@ -65,6 +65,76 @@ async def _noop_reset(session_key):
     await asyncio.sleep(0)
 
 
+@pytest.mark.asyncio
+async def test_reap_settles_credits_before_a_cancelled_state_writer_drains(monkeypatch):
+    from kiro_crew.acp.types import AcpPromptStats
+
+    mgr = _make_manager()
+    mgr._sessions.reset = AsyncMock()
+    mgr._running_count = 1
+    info = _info(credits=1.25)
+    mgr._agents[info.id] = info
+    provider = MagicMock()
+    provider.last_prompt_stats = AcpPromptStats(credits=9.0)
+    entered = asyncio.Event()
+    draining = asyncio.Event()
+    released = asyncio.Event()
+    workers = []
+    persisted = []
+    tombstoned = []
+    delivered = []
+    original_wait = asyncio.wait
+
+    async def blocked_write(func, *args, **fields):
+        if "turns" in fields:
+            workers.append(asyncio.current_task())
+            entered.set()
+            await released.wait()
+        else:
+            persisted.append(fields)
+        return True
+
+    async def observe_drain(futures, **kwargs):
+        if info._state_drain_active:
+            draining.set()
+        return await original_wait(futures, **kwargs)
+
+    async def billed_consumer(self, run, session_key, usage):
+        usage.begin(provider)
+        provider.last_prompt_stats = AcpPromptStats(credits=0.75)
+        await mgr._write_state_off_loop(run, "diagnostics", turns=1)
+
+    async def on_done(run):
+        delivered.append(run.credits)
+
+    mgr._on_done = on_done
+    mgr._write_tombstone = MagicMock(side_effect=lambda run, cause: tombstoned.append(run.credits))
+    monkeypatch.setattr(type(mgr._run_events), "_run_inner_impl", billed_consumer)
+    monkeypatch.setattr("kiro_crew.subagent.asyncio.to_thread", blocked_write)
+    monkeypatch.setattr("kiro_crew.subagent.asyncio.wait", observe_drain)
+    task = asyncio.create_task(mgr._run_inner(info, f"subagent:{info.id}"))
+    mgr._tasks[info.id] = task
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        await asyncio.wait_for(draining.wait(), timeout=5)
+        await asyncio.wait_for(mgr._force_reap(info.id, info, 12.5, reason="deadline"), timeout=5)
+        assert info._state_drain_active, "test must report before the worker drains"
+        assert not task.done()
+        assert _done_events(mgr)[0].args[2]["credits"] == 2.0
+        assert persisted == [{"status": "failed", "elapsed": 12.5, "credits": 2.0}]
+        assert tombstoned == [2.0]
+        assert delivered == [2.0]
+    finally:
+        released.set()
+        task.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(task, *workers, *mgr._report_tasks, return_exceptions=True), timeout=5
+        )
+    assert info.credits == 2.0, "the outer finally must not count the attempt twice"
+    assert info._credit_accounting is None
+
+
 async def _schedule_recovery(mgr: SubagentManager, info: SubagentInfo) -> None:
     """Arm cancel-recovery and let it run to completion.
 
@@ -756,15 +826,20 @@ async def test_run_does_not_block_on_its_report_during_shutdown():
 
     mgr._on_done = _wedged_on_done
 
-    # Must return promptly even though the injection is wedged.
-    await asyncio.wait_for(mgr._run(info), timeout=5)
-
-    assert wedged.is_set(), "report never started"
-    pending = [t for t in mgr._report_tasks if not t.done()]
-    assert pending, "report should still be pending, owned by cancel_all's drain"
-    for t in pending:
-        t.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
+    try:
+        # Must return promptly even though the injection is wedged.
+        await asyncio.wait_for(mgr._run(info), timeout=5)
+        # The independent report may still be persisting terminal usage when
+        # the run returns; synchronize with its callback rather than scheduling.
+        await asyncio.wait_for(wedged.wait(), timeout=5)
+        assert wedged.is_set(), "report never started"
+        pending = [t for t in mgr._report_tasks if not t.done()]
+        assert pending, "report should still be pending, owned by cancel_all's drain"
+    finally:
+        pending = list(mgr._report_tasks)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 @pytest.mark.asyncio

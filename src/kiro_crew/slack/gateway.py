@@ -298,6 +298,7 @@ from kiro_crew.subagent import (
     SubagentManager,
     ToolApprovalCallback,
     _injection_notice_outcome,
+    format_subagent_usage,
     resolve_max_subagents,
 )
 from kiro_crew.subagent_completion_meta import (
@@ -7077,7 +7078,8 @@ class GatewayOrchestrator:
             task_text, _ = redact_exfiltration_urls(info.task)
             task_text, _ = redact_credentials(task_text)
             task_text = task_text[:100]
-            body = f"{task_text}\n\n{detail}"
+            usage = format_subagent_usage(info.credits, info.elapsed)
+            body = f"{task_text}\n\nUsage: {usage}\n\n{detail}"
             title, _ = redact_exfiltration_urls(title)
             title, _ = redact_credentials(title)
 
@@ -7087,6 +7089,7 @@ class GatewayOrchestrator:
                 f"{f' ({info.agent})' if info.agent else ''}"
                 f" {status} {emoji}\n"
                 f"Task: {task_text}\n\n"
+                f"Usage: {usage}\n\n"
                 f"{detail}"
                 f"{guard_msg}"
             )
@@ -7214,12 +7217,13 @@ class GatewayOrchestrator:
                 # successes are one pointer line (full output stays on disk).
                 if _oc == "completed":
                     bp["ok_lines"].append(
-                        f"— `{info.id}` ✅ {task_text[:80]}{_model_tag}"
+                        f"— `{info.id}` ✅ {task_text[:80]}{_model_tag} · {usage}"
                         + (f"\n  → {result_path}" if result_path else "")
                     )
                 else:
                     bp["fail_lines"].append(
                         f"— `{info.id}` {status} {emoji} · {task_text[:80]}{_model_tag}\n"
+                        f"  Usage: {usage}\n"
                         f"  {detail[:400]}{'…' if len(detail) > 400 else ''}"
                     )
                 _last = bp["total"] > 0 and bp["done"] >= bp["total"]
@@ -8195,11 +8199,13 @@ class GatewayOrchestrator:
                     # every terminal state whose report could not be injected,
                     # not only successful completions.
                     outcome_line = _injection_notice_outcome(info)
+                    usage = format_subagent_usage(info.credits, info.elapsed)
                     slot.append(
                         "assistant",
                         f"{SUBAGENT_COMPLETION_PREFIX}\n"
                         f"Agent `{info.id}` ❌\n"
                         f"Task: {task_preview}\n\n"
+                        f"Usage: {usage}\n\n"
                         f"Error: {error_text}\n"
                         f"⚠️ Result delivery failed — {outcome_line}",
                         "msg msg-a",

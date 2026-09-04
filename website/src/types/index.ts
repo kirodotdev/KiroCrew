@@ -1094,7 +1094,7 @@ export interface SubagentActivity {
   childSession?: string
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
-  startedAt: number; elapsed: number; error?: string
+  startedAt: number; elapsed: number; credits?: number; error?: string
   toolCount?: number      // observed tool calls (incl. auto-approved) — running-card progress
   stalled?: boolean       // reaper flagged this subagent as idle/stalled
   /** Seconds of no stream activity measured when the reaper raised `stalled`

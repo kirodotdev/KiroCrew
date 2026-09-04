@@ -671,6 +671,47 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(cancel.className).toContain('shrink-0')
     expect(cancel.className).toContain('whitespace-nowrap')
   })
+
+  it.each([0.25, 0, -1, Number.NaN, undefined])('shows only positive reported credits in expanded cards (%s)', (credits) => {
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    store.dispatch(openActivityToTab('subagents'))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ActivityViewer
+            toolLog={[]}
+            open
+            onToggle={vi.fn()}
+            slot="test-slot"
+            subagents={{
+              ok: {
+                id: 'ok', task: 'successful task', agent: 'kirocrew', status: 'done',
+                streaming: '', lastTool: '', startedAt: Date.now() - 12_000,
+                elapsed: 12, credits,
+              },
+              failed: {
+                id: 'failed', task: 'failed task', agent: 'kirocrew', status: 'error',
+                streaming: '', lastTool: '', startedAt: Date.now() - 65_000,
+                elapsed: 65, credits: 12.5, error: 'boom',
+              },
+            }}
+          />
+        </QueryClientProvider>
+      </Provider>,
+    )
+
+    const stats = screen.getAllByTestId('subagent-run-stats')
+    expect(stats.map(node => node.textContent)).toEqual(expect.arrayContaining(['12s', '1m 5s']))
+    expect(screen.queryByTestId('subagent-credit-usage')).not.toBeInTheDocument()
+    for (const node of stats) fireEvent.click(node.closest('[aria-expanded]')!)
+    const usage = screen.getAllByTestId('subagent-credit-usage').map(node => node.textContent)
+    expect(usage).toEqual(credits === 0.25
+      ? expect.arrayContaining(['0.25 credits', '12.5 credits'])
+      : ['12.5 credits'])
+  })
 })
 
 /**

@@ -46,14 +46,14 @@ class ContinuationCoordinator(ManagerComponent):
         the same conversation.
 
         A FINISHED run also holds its conversation while its id sits in
-        ``_abandoned_state_writers``: its bounded state-write drain expired, so a
-        worker is still live and its stale whole-file rewrite would roll back the
+        ``_abandoned_state_writers``: a terminal or cancel-draining state writer
+        is still live and its stale whole-file rewrite would roll back the
         ``keep`` that this gate's two callers write on the loop (#6298). Holding
         defers those writes past the worker instead of letting it undo them. That
         record lives on the manager rather than on the run, because
         ``evict_completed_agents`` prunes completed runs out of ``_agents`` and an
-        eviction must not release the hold; the worker's own done-callback
-        discards the id, so the hold lasts exactly as long as the danger.
+        eviction must not release the hold; the last worker's done-callback
+        discards the id, so overlapping writers keep the hold until all settle.
         """
         for a in self._manager._agents.values():
             if not a.done and (a.conversation_key or f"subagent:{a.id}") == conv_key:

@@ -4000,7 +4000,7 @@ const chatSlice = createSlice({
         if (st === 'done' || st === 'error' || st === 'stopped') delete subs[id]
       }
     },
-    sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; requested_model?: string; child_session?: string; result?: string }>) {
+    sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; requested_model?: string; child_session?: string; result?: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const subs = action.payload.slot !== state.activeSlot
         ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
@@ -4016,6 +4016,9 @@ const chatSlice = createSlice({
         }
       }
       const isNative = action.payload.id.startsWith('native:')
+      const credits = typeof action.payload.credits === 'number' && Number.isFinite(action.payload.credits)
+        ? Math.max(0, action.payload.credits)
+        : undefined
       // Canonical terminal classification: `outcome` is the single source
       // (spec: docs/system-specs/modules/subagent.md). `stopped`/`error`
       // derivation is kept ONLY as a fallback for old payloads that predate
@@ -4029,6 +4032,7 @@ const chatSlice = createSlice({
         a.status = doneStatus
         a.retrying = false
         a.elapsed = action.payload.elapsed
+        if (credits !== undefined) a.credits = credits
         a.error = doneStatus === 'stopped' ? undefined : action.payload.error
         a.streaming = ''
         if (action.payload.task && !a.task) a.task = action.payload.task
@@ -4057,6 +4061,7 @@ const chatSlice = createSlice({
           lastTool: '',
           startedAt: Date.now() - action.payload.elapsed * 1000,
           elapsed: action.payload.elapsed,
+          credits,
           error: doneStatus === 'stopped' ? undefined : action.payload.error,
           result: isNative ? action.payload.result : undefined,
         }

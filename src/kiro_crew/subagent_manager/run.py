@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _describe_exception,
         _redact,
         _resolved_model_of,
+        _RunCreditAccounting,
         _subagent_default_effort,
         _subagent_default_model,
         _timeout_context,
@@ -84,7 +85,7 @@ class RunEventCoordinator(ManagerComponent):
         return info.max_turns or self._manager._default_turn_limit or _TURN_LIMIT
 
     async def _write_state_off_loop_impl(
-        self, info: SubagentInfo, what: str, **fields: object
+        self, info: SubagentInfo, what: str, *, wait_timeout: float | None = None, **fields: object
     ) -> bool:
         """Merge *fields* into this run's ``state.json``, off the event loop.
 
@@ -112,59 +113,62 @@ class RunEventCoordinator(ManagerComponent):
         ``asyncio.wait`` never cancels its members, so repeated cancels of the
         awaiting task keep the worker future intact while the drain loop waits
         out the same deadline. For the whole window in which the worker may still
-        write -- from the cancellation until the worker settles, however the drain
-        exits -- the run HOLDS its conversation
+        write -- from submission until every worker for this run settles -- the
+        run HOLDS its conversation
         (``SubagentManager._abandoned_state_writers``), so the two on-loop
         ``keep`` writes are deferred past the worker instead of being rolled back
-        by it. The window starts at the cancellation rather than at the drain
-        deadline because on Python 3.10 a second outer cancel can finalize the run
-        mid-drain.
+        by it. Terminal reports write after the run is already done, so normal
+        writes need the hold too, not only cancelled or abandoned writes.
+
+        A best-effort caller may set ``wait_timeout`` to stop waiting without
+        cancelling the writer or releasing its retention hold. The manager owns
+        that task until it settles; a late exception is retrieved by its callback.
 
         Returns ``update_state``'s own report: True when the merge was written,
-        False when it was SKIPPED because the state was unreadable — a caller
+        False on a wait timeout or when the state was unreadable — a caller
         with a durability contract (the pre-spawn provenance write, #5394)
         retries on False. Re-raises ``asyncio.CancelledError`` after draining,
         so such a retry loop ends on cancellation instead of adding a second
         writer for the same fields.
         """
         writer = asyncio.ensure_future(asyncio.to_thread(update_state, info.id, **fields))
+        self._manager._state_write_tasks.add(writer)
+        self._manager._state_writer_counts[info.id] = (
+            self._manager._state_writer_counts.get(info.id, 0) + 1
+        )
+        self._manager._abandoned_state_writers.add(info.id)
+
+        def _settled(fut: "asyncio.Future[Any]") -> None:
+            self._manager._state_write_tasks.discard(fut)
+            remaining = self._manager._state_writer_counts[info.id] - 1
+            if remaining:
+                self._manager._state_writer_counts[info.id] = remaining
+            else:
+                self._manager._state_writer_counts.pop(info.id)
+                self._manager._abandoned_state_writers.discard(info.id)
+            # Retrieve exceptions even if cancellation abandoned this worker.
+            if not fut.cancelled() and fut.exception() is not None:
+                logger.debug(
+                    "Best-effort %s write failed for %s",
+                    what,
+                    info.id,
+                    exc_info=fut.exception(),
+                )
+
+        writer.add_done_callback(_settled)
         try:
+            if wait_timeout is not None:
+                done, _ = await asyncio.wait({writer}, timeout=wait_timeout)
+                if not done:
+                    logger.warning(
+                        "%s write for %s is still pending after %.1fs; continuing without waiting",
+                        what,
+                        info.id,
+                        wait_timeout,
+                    )
+                    return False
             return bool(await asyncio.shield(writer))
         except asyncio.CancelledError:
-            # Hold this run's conversation for the WHOLE window in which the
-            # worker may still write, which starts here and not at the drain
-            # deadline: on Python 3.10 a second outer cancel can deliver _run's
-            # finalization mid-drain, so the run can go `done` while the writer
-            # is live, and a continuation reaching a released gate would then
-            # write `keep` for that writer's stale whole-file rewrite to erase
-            # (#6298). `keep` is written on the loop and takes no per-agent lock,
-            # so ordering is the only thing protecting it. The worker's own
-            # done-callback releases the hold, so it lasts exactly as long as the
-            # worker does -- milliseconds on a healthy FS. Recorded on the
-            # MANAGER, not on `info`: `evict_completed_agents` prunes completed
-            # runs out of `_agents`, and an eviction must not release the hold.
-            self._manager._abandoned_state_writers.add(info.id)
-
-            def _settled(
-                fut: "asyncio.Future[Any]",
-                _mgr: Any = self._manager,
-                _aid: str = info.id,
-                _what: str = what,
-            ) -> None:
-                # The worker has landed (drained or abandoned): the conversation
-                # is safe to promote or release again.
-                _mgr._abandoned_state_writers.discard(_aid)
-                # It may also have raised; retrieve it so it never surfaces as an
-                # asynchronous "exception was never retrieved" warning.
-                if not fut.cancelled() and fut.exception() is not None:
-                    logger.debug(
-                        "Best-effort %s write failed for %s during cancel drain",
-                        _what,
-                        _aid,
-                        exc_info=fut.exception(),
-                    )
-
-            writer.add_done_callback(_settled)
             # Latch for _run's recovery gate: on Python 3.10, wait_for's
             # _cancel_and_wait awaits a bare future that a SECOND outer cancel
             # can interrupt, delivering _run's CancelledError handler while this
@@ -561,7 +565,9 @@ class RunEventCoordinator(ManagerComponent):
         )
         loop.create_task(self._manager._fire_event("subagent_queued", info, {"queued": depth}))
 
-    async def _run_inner_impl(self, info: SubagentInfo, session_key: str) -> None:
+    async def _run_inner_impl(
+        self, info: SubagentInfo, session_key: str, usage: _RunCreditAccounting
+    ) -> None:
         """Inner execution — called within timeout wrapper."""
         # Mark the real start of execution BEFORE any await so the startup
         # watchdog measures from here, not from registration (which may include
@@ -925,7 +931,9 @@ class RunEventCoordinator(ManagerComponent):
             # on-loop writers (promote / release) contend for -- taking the
             # per-agent lock here is what orders it against any other pool
             # writer.
-            await self._manager._write_state_off_loop(info, "session record", **state_update)
+            await self._manager._write_state_off_loop(
+                info, "session record", wait_timeout=None, **state_update
+            )
         except Exception:
             logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
 
@@ -968,13 +976,13 @@ class RunEventCoordinator(ManagerComponent):
             _fb_state = FallbackState(configured_fallback_chain())
             msg = full_message
             while True:
+                usage.begin(client)
                 try:
                     async for _ev in client.stream(msg):
                         yield _ev
                     return
-                except asyncio.CancelledError:
-                    raise
                 except Exception as exc:
+                    usage.settle()
                     if not acp_error_is_transient(exc):
                         raise
                     # Post-activity: continue instead of re-running. "Activity"
@@ -1206,6 +1214,7 @@ class RunEventCoordinator(ManagerComponent):
                             info.id,
                             child_escalation_limit,
                         )
+                        usage.settle()
                         self._manager._write_tombstone(info, "child_escalation_limit")
                         return
                 # Diagnostic pointer is written for BOTH origins — orphan
@@ -1249,6 +1258,7 @@ class RunEventCoordinator(ManagerComponent):
                     info.done = True
                     Stats().inc_subagent_failed()
                     logger.warning("Subagent %s hit turn limit (%d)", info.id, turn_limit)
+                    usage.settle()
                     self._manager._write_tombstone(info, "turn_limit")
                     return
                 tool_result = self._manager._ctx_builder.hooks.on_tool_call(
@@ -1545,7 +1555,12 @@ class RunEventCoordinator(ManagerComponent):
                         )
             elif event.kind == EVENT_COMPLETE:
                 _complete_event = event
+                usage.settle(event)
                 break
+
+        # A provider may finish without an explicit completion event. Its
+        # current prompt stats are still the authoritative billing record.
+        usage.settle()
 
         # Strip [OPTIONS: ...] tags and redact sensitive content
         cleaned, _ = extract_options(result_text) if result_text else (result_text, [])

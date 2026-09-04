@@ -81,6 +81,168 @@ class TestUpdateState:
 # ── read_state ───────────────────────────────────────────────────────
 
 
+class TestTerminalUsagePersistence:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("write_fails", [False, True])
+    async def test_stalled_terminal_write_does_not_block_delivery(self, monkeypatch, write_fails):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        import kiro_crew.subagent as subagent_module
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_done=AsyncMock())
+        info = SubagentInfo(id="usageblocked", task="done", done=True, credits=0.75, elapsed=12.5)
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        workers = []
+
+        async def blocked_write(func, *args, **fields):
+            workers.append(asyncio.current_task())
+            entered.set()
+            await released.wait()
+            if write_fails:
+                raise OSError("late disk failure")
+            return True
+
+        monkeypatch.setattr(subagent_module.asyncio, "to_thread", blocked_write)
+        monkeypatch.setattr(subagent_module, "_TERMINAL_USAGE_WRITE_TIMEOUT", 0)
+        report = asyncio.create_task(
+            manager._report_terminal(
+                info,
+                source="test",
+                injection_timeout_reason="test",
+                mark_delivered_on_success=False,
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            await asyncio.wait_for(asyncio.shield(report), timeout=5)
+            manager._on_done.assert_awaited_once_with(info)
+            assert info._reported_to_parent
+            assert not workers[0].done(), "delivery cancelled the underlying write"
+            assert workers[0] in manager._state_write_tasks
+            assert manager._conversation_busy("subagent:usageblocked") is not None
+        finally:
+            released.set()
+            await asyncio.wait_for(
+                asyncio.gather(report, *workers, return_exceptions=True), timeout=5
+            )
+        assert manager._conversation_busy("subagent:usageblocked") is None
+        assert manager._state_writer_counts == {}
+        assert manager._state_write_tasks == set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancel_first", [False, True])
+    async def test_overlapping_writers_hold_until_both_settle(self, monkeypatch, cancel_first):
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+        info = SubagentInfo(id="overlap", task="done", done=True)
+        entered = [asyncio.Event(), asyncio.Event()]
+        released = [asyncio.Event(), asyncio.Event()]
+        workers = []
+
+        async def controlled_write(func, *args, **fields):
+            index = fields["turns"]
+            workers.append(asyncio.current_task())
+            entered[index].set()
+            await released[index].wait()
+            return True
+
+        monkeypatch.setattr("kiro_crew.subagent.asyncio.to_thread", controlled_write)
+        monkeypatch.setattr("kiro_crew.subagent._STATE_DRAIN_TIMEOUT", 0)
+        tasks = []
+        try:
+            for index in range(2):
+                tasks.append(
+                    asyncio.create_task(manager._write_state_off_loop(info, "test", turns=index))
+                )
+                await asyncio.wait_for(entered[index].wait(), timeout=5)
+            if cancel_first:
+                tasks[0].cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await tasks[0]
+            released[0].set()
+            await asyncio.wait_for(asyncio.gather(workers[0], return_exceptions=True), timeout=5)
+            assert manager._conversation_busy("subagent:overlap") is not None
+            assert manager._state_writer_counts == {info.id: 1}
+        finally:
+            for release in released:
+                release.set()
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, *workers, return_exceptions=True), timeout=5
+            )
+        assert manager._conversation_busy("subagent:overlap") is None
+        assert manager._state_writer_counts == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["continue", "release"])
+    async def test_terminal_write_holds_retention_until_settled(
+        self, agent_root, monkeypatch, operation
+    ):
+        import asyncio
+        import threading
+        from unittest.mock import MagicMock
+
+        from kiro_crew import subagent_persistence as persistence
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        info = SubagentInfo(id="usagehold", task="done", done=True, credits=0.75, elapsed=12.5)
+        create_agent_folder(info.id, task=info.task)
+        update_state(info.id, keep=operation == "release")
+        sessions = MagicMock()
+        sessions.resumable_sid.return_value = "retained-session"
+        sessions.forget_conversation.return_value = None
+        manager = SubagentManager(sessions=sessions, ctx_builder=None)
+        manager._agents[info.id] = info
+        monkeypatch.setattr(manager, "spawn", MagicMock(return_value=info))
+        entered = asyncio.Event()
+        released = threading.Event()
+        loop = asyncio.get_running_loop()
+        atomic_write = persistence._atomic_write
+
+        def parked_write(path, data):
+            if "credits" in data and not released.is_set():
+                loop.call_soon_threadsafe(entered.set)
+                assert released.wait(timeout=5), "terminal writer was not released"
+            atomic_write(path, data)
+
+        monkeypatch.setattr(persistence, "_atomic_write", parked_write)
+        report = asyncio.create_task(
+            manager._report_terminal(
+                info,
+                source="test",
+                injection_timeout_reason="test",
+                mark_delivered_on_success=False,
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            continuation = manager.continue_conversation(info.id, "follow up")
+            assert continuation.error.startswith("conversation_busy")
+            ok, detail = manager.release_conversation(info.id)
+            assert not ok and detail.startswith("conversation_busy")
+            manager._agents.clear()
+            assert manager._conversation_busy(f"subagent:{info.id}") is not None
+        finally:
+            released.set()
+            await asyncio.wait_for(report, timeout=5)
+
+        assert manager._conversation_busy(f"subagent:{info.id}") is None
+        if operation == "continue":
+            assert manager.continue_conversation(info.id, "follow up") is info
+        else:
+            manager.release_conversation(info.id)
+        state = await asyncio.to_thread(read_state, info.id)
+        assert state["keep"] is (operation == "continue")
+        assert state["credits"] == 0.75
+        assert state["elapsed"] == 12.5
+
+
 class TestReadState:
     def test_reads_state(self, agent_root):
         create_agent_folder("r1", task="hello")
@@ -289,8 +451,10 @@ class TestSpawnCreatesFolder:
         assert state_path.exists(), f"Expected {state_path} to exist"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         assert state["id"] == info.id
-        assert state["status"] == "running"
+        assert state["status"] == "completed"
         assert state["parent_session"] == "dashboard:default"
+        assert state["elapsed"] == info.elapsed
+        assert state["credits"] == 0.0
 
     @pytest.mark.asyncio
     async def test_rejected_spawn_no_folder(self, agent_root):
@@ -1171,11 +1335,13 @@ class TestSpawnStatusReadsFromAgentFolder:
         from kiro_crew.dashboard.handlers.messaging import api_spawn_status
         from kiro_crew.subagent_persistence import (
             create_agent_folder,
+            update_state,
             write_result_chunk,
             write_tombstone,
         )
 
         create_agent_folder("disk_agent", task="disk task")
+        update_state("disk_agent", elapsed=12.5, credits=1.25)
         write_result_chunk("disk_agent", "disk result")
         write_tombstone("disk_agent", cause="gateway_restart", recovery_action="delivered")
 
@@ -1196,6 +1362,32 @@ class TestSpawnStatusReadsFromAgentFolder:
         assert "disk result" in body["result"]
         assert "gateway_restart" in body["error"]
         assert "started" in body
+        assert body["elapsed"] == 12.5
+        assert body["credits"] == 1.25
+
+    @pytest.mark.asyncio
+    async def test_api_spawn_status_legacy_disk_record_omits_usage(self, agent_root):
+        """Pre-feature state files stay honest instead of inventing zero usage."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_status
+        from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
+
+        create_agent_folder("legacy_agent", task="legacy task")
+        write_result_chunk("legacy_agent", "legacy result")
+        subagents = MagicMock()
+        subagents.get = MagicMock(return_value=None)
+        request = MagicMock()
+        request.match_info = {"agent_id": "legacy_agent"}
+        request.query = {}
+        request.app = {"state": MagicMock(subagents=subagents)}
+
+        resp = await api_spawn_status(request)
+        body = json.loads(resp.body)
+
+        assert resp.status == 200
+        assert "elapsed" not in body
+        assert "credits" not in body
 
     @pytest.mark.asyncio
     async def test_api_spawn_status_404_when_not_on_disk(self, agent_root):

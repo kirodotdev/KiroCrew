@@ -87,6 +87,7 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
     LLMEvent,
+    resolve_billing_stats,
 )
 from kiro_crew.resource_status import cached_admission_check
 from kiro_crew.security import (
@@ -443,6 +444,70 @@ def _done_result(text: str) -> str:
     return "…(truncated)\n" + redacted[-_MAX_DONE_RESULT_LEN:]
 
 
+def _finite_nonnegative_number(value: object) -> float | None:
+    """Return a safe numeric telemetry value, excluding booleans and NaN/inf."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
+def _usage_credits(source: object) -> float:
+    """Read credits from a completion event, TurnUsage, or prompt-stats holder."""
+    usage = getattr(source, "usage", None) or source
+    credits = _finite_nonnegative_number(getattr(usage, "credits", 0.0))
+    return credits if credits is not None else 0.0
+
+
+def format_subagent_usage(credits: object, elapsed: object) -> str:
+    """Format the terminal usage line shared by all subagent delivery surfaces."""
+    credit_value = _finite_nonnegative_number(credits)
+    elapsed_value = _finite_nonnegative_number(elapsed)
+    if credit_value is None or elapsed_value is None:
+        return ""
+    # Zero also represents a provider that does not report credit billing.
+    if credit_value == 0:
+        return f"{elapsed_value:.1f}s"
+    digits = 1 if credit_value >= 10 else 2
+    return f"{credit_value:.{digits}f} credits · {elapsed_value:.1f}s"
+
+
+def _provider_prompt_stats(provider: object) -> object | None:
+    """Resolve the current prompt's billing holder across provider wrappers."""
+    stats = resolve_billing_stats(provider)
+    if stats is not None:
+        return stats
+    return resolve_billing_stats(getattr(provider, "_client", None))
+
+
+@dataclass
+class _RunCreditAccounting:
+    """Settle each attempted turn once, including consumer-side interruptions."""
+
+    info: SubagentInfo
+    provider: object | None = None
+    stats_before: object | None = None
+    pending: bool = False
+
+    def begin(self, provider: object) -> None:
+        self.provider = provider
+        self.stats_before = _provider_prompt_stats(provider)
+        self.pending = True
+
+    def settle(self, completion: object | None = None) -> None:
+        if not self.pending:
+            return
+        self.pending = False
+        if completion is not None:
+            self.info.credits += _usage_credits(completion)
+            return
+        stats = _provider_prompt_stats(self.provider)
+        # Providers replace this holder for each prompt. An unchanged holder
+        # belongs to the preceding turn, not to an attempt that failed to start.
+        if stats is not None and stats is not self.stats_before:
+            self.info.credits += _usage_credits(stats)
+
+
 _TIMEOUT_SECS = 1800  # 30 minutes
 _TURN_LIMIT = 100
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
@@ -477,6 +542,8 @@ _REPORT_DRAIN_TIMEOUT = (
 # cannot hold cancel_all()'s untimed gather — bounded shutdown plus recoverable
 # state beats unbounded shutdown.
 _STATE_DRAIN_TIMEOUT = 5.0
+# Best-effort terminal telemetry must not hold up delivery to the parent.
+_TERMINAL_USAGE_WRITE_TIMEOUT = 5.0
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
 
@@ -1297,6 +1364,13 @@ class SubagentInfo:
     reaped: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
+    # Cumulative across every attempted turn, including transient retries that
+    # consumed credits before failing. Providers that do not bill in credits
+    # report zero through the shared TurnUsage contract.
+    credits: float = 0.0
+    # Shared with terminal reporters so a reap need not wait for a cancelled
+    # consumer's state-write drain before settling the active attempt.
+    _credit_accounting: _RunCreditAccounting | None = field(default=None, repr=False, compare=False)
     _raw_task: str = ""  # unredacted task for kiro-cli execution prompt
     # CC-specific overrides (ignored for ACP)
     model: str = ""
@@ -1401,7 +1475,7 @@ class SubagentInfo:
     # the drain exists to close.
     _state_drain_active: bool = False
     # Set only on the synthetic marker `_conversation_busy` returns for a
-    # conversation held by an abandoned state writer (#6298 review), so the two
+    # conversation held by a pending state writer, so the two
     # retention callers can say "still settling a state write" instead of
     # promising a completion event that has already fired. The authoritative
     # record is `SubagentManager._abandoned_state_writers`, which survives
@@ -1611,16 +1685,21 @@ class SubagentManager:
         # also re-registers it on demand.
         self._conversations: dict[str, float] = {}
         self._conv_registry_rebuilt = False
-        # Run ids whose bounded state-write drain EXPIRED, so a pool worker is
-        # still live and its stale whole-file rewrite would roll back the
-        # retention `keep` a promote / release writes on the loop (#6298).
+        # Run ids with live state writers, including terminal reports and workers
+        # abandoned after a bounded cancel drain. Their whole-file rewrites could
+        # roll back retention `keep` changes made on the event loop.
         # `_conversation_busy` reports these as held, which defers both retention
-        # writes past the worker; each worker's own done-callback discards its id,
-        # so the set holds at most one entry per live zombie. It lives on the
-        # MANAGER, not on the run's SubagentInfo, because `evict_completed_agents`
+        # writes past the workers; the last worker's done-callback discards its id.
+        # It lives on the manager, not on SubagentInfo, because `evict_completed_agents`
         # prunes completed runs out of `_agents` and an eviction must not silently
         # release the hold.
         self._abandoned_state_writers: set[str] = set()
+        # Reference counts also cover overlapping terminal and draining writers;
+        # settling one worker must not release another worker's retention hold.
+        self._state_writer_counts: dict[str, int] = {}
+        # A bounded terminal write may outlive its report; own its task until
+        # the worker settles, without releasing the conversation's write hold.
+        self._state_write_tasks: set[asyncio.Future[Any]] = set()
         # state.json is the source of truth for retention (#1115): give the
         # SessionManager's in-memory continuable cache a disk fallback so a
         # cache miss (restart window) cannot demote a promoted conversation.
@@ -2262,6 +2341,7 @@ class SubagentManager:
                 turns=info.turns,
                 last_tool=info.last_tool,
                 outcome=info.outcome,
+                credits=info.credits,
                 # ``cause`` is a coarse bucket ("error", "timeout"), which is
                 # not enough to act on. ``info.error`` is in-memory only and
                 # dies with the gateway, so without this the specific reason is
@@ -2271,11 +2351,26 @@ class SubagentManager:
         except Exception:
             logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)
 
-    async def _write_state_off_loop(self, info: SubagentInfo, what: str, **fields: object) -> bool:
-        return await self._run_events._write_state_off_loop_impl(info, what, **fields)
+    async def _write_state_off_loop(
+        self, info: SubagentInfo, what: str, *, wait_timeout: float | None = None, **fields: object
+    ) -> bool:
+        return await self._run_events._write_state_off_loop_impl(
+            info, what, wait_timeout=wait_timeout, **fields
+        )
 
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
-        return await self._run_events._run_inner_impl(info, session_key)
+        usage = _RunCreditAccounting(info)
+        info._credit_accounting = usage
+        try:
+            return await self._run_events._run_inner_impl(info, session_key, usage)
+        finally:
+            # Cancellation may land in the event consumer, outside the stream
+            # generator's exception handlers. Settle before terminal reporting.
+            try:
+                usage.settle()
+            finally:
+                if info._credit_accounting is usage:
+                    info._credit_accounting = None
 
     def _should_use_session_sharing(self, info: SubagentInfo) -> bool:
         return self._run_events._should_use_session_sharing_impl(info)
@@ -2425,6 +2520,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     evict_completed_agents,
     extract_options,
     fire_tool_hooks,
+    format_subagent_usage,
     has_dashboard_surface,
     list_orphans,
     maintenance_executor,

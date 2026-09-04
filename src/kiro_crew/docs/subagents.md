@@ -131,6 +131,13 @@ line-oriented paging (like reading code) for large results:
 - `spawn_status(agent_id, offset=200, limit=200)` — next page
 - `spawn_status(agent_id, grep="ERROR|FAIL")` — only lines matching the regex
 
+For newly completed runs, the response also reports cumulative credit usage and
+elapsed time. The credit total includes billed retry attempts, whether the run
+ultimately succeeds or fails. Older retained records remain readable without a
+usage line. When credit billing is not reported, only elapsed time is shown,
+not a zero-cost claim. The dashboard keeps elapsed time in each card header and
+shows positive reported credits when you expand the card.
+
 A paged/filtered response is prefixed with a continuation header
 (`showing lines X-Y of N | more available — call again with offset=Y`). With no
 paging args it returns the full transcript. You can also point the generic

@@ -678,6 +678,8 @@ class TestWaveDigest:
         info.error = error
         info.result = f"result {i}"
         info.result_path = f"/tmp/w{i}/result.txt"
+        info.elapsed = 10.0 + i
+        info.credits = 0.25 + i
         return info
 
     @pytest.mark.asyncio
@@ -731,6 +733,8 @@ class TestWaveDigest:
         # Chunk 1 carries the first 10 members' lines, exception-first.
         assert first.index("w2") < first.index("w0")
         assert "/tmp/w0/result.txt" in first
+        assert "Usage: 2.25 credits · 12.0s" in first
+        assert "0.25 credits · 10.0s" in first
         # Chunk 2 (final): summary counts + release guidance, and ONLY the
         # remaining members' lines (chunk buffers reset between flushes).
         assert "Batch results 2/2" in final
@@ -1522,11 +1526,14 @@ class TestWaveDigest:
         )
         solo.done = True
         solo.result = "solo result"
+        solo.elapsed = 12.0
+        solo.credits = 0.25
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat):
             await on_done(solo)
             await _settle(lambda: len(injected) >= 1)
         assert len(injected) == 1
         assert injected[0].startswith("[Subagent completion event]")
+        assert "Usage: 0.25 credits · 12.0s" in injected[0]
         assert "Batch results" not in injected[0]
 
 

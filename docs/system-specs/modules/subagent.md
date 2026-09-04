@@ -13,6 +13,7 @@ Supports `on_tool_approval` callback for interactive tool approval (routed throu
 | `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` now defaults to `0` = auto-size the cap at startup (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. Session-shared subagents are cost-sampled as the runtime's measured RSS/CPU divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
 | `_TIMEOUT_SECS` | 1800 | Hard timeout per subagent (30 minutes) |
 | `_ON_DONE_TIMEOUT` | 1200 | Outer cap: max total seconds for semaphore wait + injection (20 minutes) |
+| `_TERMINAL_USAGE_WRITE_TIMEOUT` | 5 | Best-effort terminal usage persistence wait before parent delivery; a pending worker retains its conversation hold until it settles |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
 | `_TURN_LIMIT` | 100 | Default tool-call budget per subagent (configurable via `agent.subagent_max_turns`, per-spawn via `max_turns`) |
@@ -152,6 +153,7 @@ class SubagentInfo:
     result_truncated: bool  # completion copy dropped content → event carries summary+path
     error: str            # error message if failed
     elapsed: float        # seconds from start to completion (set in _run finally)
+    credits: float        # cumulative reported credits across all attempted turns
     tool_count: int       # observed tool calls (incl. auto-approved); drives running-card progress
     last_activity: float  # time.time() of last stream event; reset to _exec_started; drives idle-stall
     stalled: bool         # reaper flagged this subagent as idle/stalled (UI signal)
@@ -165,12 +167,58 @@ class SubagentInfo:
 3. `_run()` wraps `_run_inner()` with `asyncio.wait_for(_TIMEOUT_SECS)`
 4. `_run_inner()` resolves `parent_policy` (parent session → YOLO fallback → config fallback), creates session `subagent:{id}` via `SessionManager.get_or_create(approval_policy=parent_policy)` — policy is persisted on the new session
 5. Streams through ACP with context injection, tool approval cascade, and turn counting
-6. On completion (in `_run` finally block): fire `subagent_done` WS event immediately (before slow reset + on_done), then `sessions.release()` → `_running_count -= 1` → `sessions.reset()` → call `on_done` callback
+6. On completion (in `_run` finally block): spawn a shielded report that fires `subagent_done` with terminal `elapsed` and cumulative `credits`, attempts to persist both values (bounded by `_TERMINAL_USAGE_WRITE_TIMEOUT`), then calls `on_done`. Session release/reset and concurrency-slot release proceed independently of the report; successful delivery waits for teardown before marking the result delivered.
 7. On timeout: `error = "Timed out after 30 minutes"`
 8. On turn limit: `error = "turn_limit:{turn_limit}"` (default 100)
 9. On `CancelledError`: three-way, by cancellation source (see **Terminal-State Contract** below) — user stop → neutral `user_stopped` record (NO error); shutdown / spent one-shot → `error = "cancelled"`; any other (unexpected) cancel → one-shot auto-continue via `_schedule_cancel_recovery`
 
 **Early WS event firing**: `subagent_done` WS event is fired in the `_run` finally block BEFORE the slow `reset()` + `on_done()` path. This ensures the dashboard receives completion status within seconds, not 30-90s later when `stream_and_collect` finishes processing.
+
+Credit accounting is per attempted provider turn, not only per successful run.
+Each `EVENT_COMPLETE` contributes its `TurnUsage.credits`; an attempt that exits
+through an exception, cancellation, or a run limit contributes the provider's
+current prompt stats instead. This includes billed transient retries without
+double-counting the final completion. Providers that do not bill in credits
+report `0`; display surfaces omit the credit label for that value rather than
+claiming the run was free. The cumulative total is persisted in `state.json`,
+included in live and reconnect `subagent_done` frames, shown in the expanded
+terminal card body, and included in completion, delivery-failure, orphan, and
+wave-digest messages. Card headers retain elapsed time only so billing text
+does not crowd the status and model chips in a narrow rail. Native harness
+subagents remain unattributed because they share the
+parent billed turn and have no independent run record.
+
+The run total is a completion summary, not another billing-ledger entry: it is
+never added to account-level usage totals. Successful-turn records and this
+summary use the same reported provider usage, but failed-attempt credits can
+make the run total larger than the successful-turn records alone.
+
+The terminal state write also sets `state.json.status` to the canonical outcome
+(`completed`, `failed`, or `stopped`), alongside elapsed time and credits. This
+records execution state, not confirmed parent delivery; delivery tombstones and
+conversation holds remain independently managed. The status endpoint exposes
+terminal usage; the list endpoint keeps its existing fields because no list
+consumer displays terminal billing.
+
+An attempt settles once at the outer run boundary as well as before a retry or
+limit return. This includes cancellation or failure while handling an event
+(approval waits, state writes, and chunk delivery), not only inside the provider
+stream. An unchanged prompt-stats holder is not charged again when an attempt
+fails before starting a new prompt. The active accounting record is shared with
+terminal reporting: the reaper settles it before recording a tombstone or
+capturing a completion payload, even when the cancelled consumer is still
+draining a state writer. The consumer's eventual cleanup cannot count that
+attempt again.
+
+Every pending state writer holds the conversation against `spawn_continue` and
+`spawn_release`, including the terminal usage write after `done` is visible.
+The hold survives run eviction and cancellation; overlapping writers release it
+only after the last worker settles. Completion events still fire before this
+write, without waiting for disk persistence. Parent delivery waits at most
+`_TERMINAL_USAGE_WRITE_TIMEOUT` for the best-effort terminal usage write; on a
+timeout it proceeds while the manager continues owning the uncancelled writer.
+The conversation hold remains until the worker actually settles, including when
+it fails after delivery; late failures are retrieved and logged.
 
 ## Terminal-State Contract (stopped vs failed vs completed)
 
@@ -334,7 +382,7 @@ On timeout (inner or outer):
 
 `_inject_with_retry()` in `gateway.py` makes up to 3 attempts (1 initial + 2 retries) of `stream_and_collect` on AcpError. Between retries: cancels orphaned prompt, exponential backoff. On `PromptBusyExhaustedError`: kills provider, queues failure event. Note: the 1200s outer cap (`_ON_DONE_TIMEOUT`) bounds total wall-clock time, so not all retries may fire if earlier attempts consume the budget.
 
-**Reconnect recovery**: `subscribe_subagents` in `ws.py` restores both managed and native subagent cards. Managed subagents are authoritative in `SubagentManager`: running records replay as `subagent_snapshot`, and recently completed records replay as `subagent_done`. Managed results remain disk-backed and are not copied into inline Redux card payloads.
+**Reconnect recovery**: `subscribe_subagents` in `ws.py` restores both managed and native subagent cards. Managed subagents are authoritative in `SubagentManager`: running records replay as `subagent_snapshot`, and recently completed records replay as `subagent_done`, including terminal `elapsed` and cumulative `credits`. Managed results remain disk-backed and are not copied into inline Redux card payloads.
 
 Native kiro-cli subagents run inside the parent ACP turn and are owned by the parent dashboard slot. `DashboardState.native_subagent_snapshots()` replays running native cards as `subagent_snapshot` and recent terminal cards as `subagent_done`. A native `subagent_done` payload may include optional `task`, `agent`, and `result` fields. `result` is a redacted output tail bounded to 8,000 characters, with an explicit truncation marker when earlier output was dropped. Running output retained for replay is bounded to 40,000 characters, with an 80,000-character hard accumulation ceiling. Terminal native records are retained globally up to 50 cards for at most one hour. The client treats `done` and `error` as monotonic terminal states, so a stale running snapshot interleaved after a live completion cannot demote the card.
 
@@ -551,7 +599,8 @@ On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:
   (default 1h); all other tombstones after 7 days. `prune_stale_tombstones` takes
   a per-cause cutoff for this.
 - `spawn_status` falls back to persistence layer for completed/tombstoned agents,
-  reading the retained `result.txt` (and honoring offset/limit/grep).
+  reading the retained `result.txt` (and honoring offset/limit/grep). New terminal
+  records also return `elapsed` and `credits`; legacy records omit both.
 
 ### MCP Tool: `spawn_status`
 
@@ -581,6 +630,14 @@ continuation header (`showing lines X-Y of N | more available — call again wit
 offset=Y`). With no paging params the full-transcript contract is unchanged. The
 line split + regex run via `asyncio.to_thread` so a pathological pattern never
 stalls the event loop.
+
+When positive terminal credits were recorded, the MCP tool prefixes the full transcript
+with `[usage: <credits> credits · <elapsed>s]`; paged responses include the same
+fact in their existing continuation header. Error responses also carry this
+prefix when terminal usage is available. Historical records without both fields
+keep their previous byte shape. Zero credits produce an elapsed-only usage
+prefix because zero can mean billing was not reported. Credit precision matches
+the dashboard: two decimals below 10 credits, one decimal at or above 10.
 
 ### Completion Event Truncation Modes
 

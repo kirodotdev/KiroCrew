@@ -29,6 +29,7 @@ import GitPanel from '../../components/GitPanel'
 import { fmtDateFields } from '../../i18n/format'
 import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
+import { fmtCredits } from './AssistantMessage'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
@@ -160,6 +161,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
 
   const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
   const fmtElapsed = displayElapsed >= 60 ? `${Math.floor(displayElapsed / 60)}m ${displayElapsed % 60}s` : `${displayElapsed}s`
+  const terminalCredits = isDone && typeof a.credits === 'number' && Number.isFinite(a.credits) && a.credits > 0
+    ? a.credits
+    : null
 
   // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
   // narrow rail it was the part that survived truncation while the actual
@@ -235,13 +239,18 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             </code>
           )
         })()}
-        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
+        {!isPending && <span data-testid="subagent-run-stats" className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
       {/* Input (task) */}
       {!collapsed && (
         <div className="px-3 pt-1 pb-2">
+          {terminalCredits !== null && (
+            <div data-testid="subagent-credit-usage" className="text-[12px] text-muted font-mono tabular-nums break-words mb-2">
+              {fmtCredits(terminalCredits)} {i18nT('app.credits')}
+            </div>
+          )}
           <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.input')}</div>
           <pre className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed">{a.task}</pre>
         </div>

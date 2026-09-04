@@ -77,6 +77,8 @@ single completion path that serves every terminal outcome:
 Agent `<id>` (<agent name>) <status> <emoji>
 Task: <first 100 chars of the task>
 
+Usage: <credits> credits · <elapsed>s
+
 <result detail>
 ```
 
@@ -88,6 +90,11 @@ Task: <first 100 chars of the task>
   content, or in orchestrator mode, it is a summary plus a `result_path` pointer, so
   the parent reads the full transcript on demand (`read`, `grep`, `spawn_status`)
   instead of re-running the sub-agent.
+- Usage is cumulative across all attempted turns in the run, including billed
+  retries that failed before the final turn. Providers that do not report credit
+  billing retain elapsed time without a credit label; zero is not a claim that
+  the run was free. Credits use two decimals below 10 and one decimal at or
+  above 10, matching the dashboard.
 - A user-stopped agent says so explicitly and instructs the parent not to treat the
   partial output as a finished result or retry it unprompted.
 - The runner appends it with role `subagent`, so it renders as its own message kind
@@ -122,6 +129,7 @@ session failed (most commonly a delivery timeout). `subagent.py` builds:
 [Subagent completion event]
 Agent `<id>` ❌ <reason>
 Task: <first 100 chars of the task>
+Usage: <credits> credits · <elapsed>s
 <outcome line>
 Result saved at: <path> (<n> bytes)
 Use the read tool to retrieve it if needed.
@@ -143,7 +151,9 @@ never from its error wording):
 The result-path lines are present only when a result file exists. **The result is
 on disk**, so use the `read` tool to retrieve it rather than re-running the work.
 
-Two adjacent variants exist for a gateway restart, same prefix:
+Two adjacent variants exist for a gateway restart, same prefix. They include the
+same `Usage:` line when terminal usage survived in `state.json`; legacy records
+without it keep the older shape:
 
 - `⚠️ orphaned by gateway restart` plus `Result saved at: <path>` and
   `Use the read tool to retrieve it.`

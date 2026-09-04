@@ -32,6 +32,7 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent import (
     AGENT_NOT_FOUND_CODE,
+    format_subagent_usage,
     resolve_max_subagents,
     visible_agent_names,
 )
@@ -407,7 +408,8 @@ def schemas() -> list[dict[str, Any]]:
                 "transcript on disk — use this tool (or the read/grep tools on the path) "
                 "to read the rest instead of re-running the subagent. For large "
                 "transcripts, page with offset/limit (line-based, like reading code) or "
-                "filter with grep (regex) rather than pulling the whole thing into context."
+                "filter with grep (regex) rather than pulling the whole thing into context. "
+                "Terminal responses include elapsed time and credit usage when recorded."
             ),
             "inputSchema": {
                 "type": "object",
@@ -938,8 +940,10 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
     if spawn_params:
         path += "?" + urlencode(spawn_params)
     d = mcp_core._get(path)
+    usage = format_subagent_usage(d.get("credits"), d.get("elapsed"))
     if d.get("error"):
-        return f"Error: {d['error']}"
+        error = f"Error: {d['error']}"
+        return f"[usage: {usage}]\n{error}" if usage else error
 
     meta = d.get("result_meta")
     if isinstance(meta, dict) and meta.get("grep_error"):
@@ -953,6 +957,8 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         # Paged/grepped read — prepend a compact header so the LLM knows how
         # much it saw and how to continue, without re-reading the whole file.
         hdr: list[str] = []
+        if usage:
+            hdr.append(f"usage: {usage}")
         total = meta.get("total_lines", "?")
         if "matched_lines" in meta:
             hdr.append(f"{meta['matched_lines']} line(s) matched grep of {total} total")
@@ -962,7 +968,7 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         if meta.get("has_more"):
             hdr.append(f"more available — call again with offset={start + returned}")
         return f"[{' | '.join(hdr)}]\n{result}"
-    return result
+    return f"[usage: {usage}]\n{result}" if usage else result
 
 
 def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
