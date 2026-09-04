@@ -91,6 +91,117 @@ class DeniedCommandRule:
     description: str
 
 
+# Variable-name words that make an AWS variable secret-BEARING, i.e. printing it
+# prints a credential. ``ACCESS`` counts: ``AWS_ACCESS_KEY_ID`` is half of a key
+# pair and is the name an exfiltrator selects for first.
+_AWS_SECRET_WORDS: tuple[str, ...] = ("SECRET", "SESSION", "SECURITY", "ACCESS")
+_AWS_SECRET_VAR_NAMES = r"(?:" + "|".join(_AWS_SECRET_WORDS) + r")"
+
+
+def _aws_secret_word_prefix_alternation() -> str:
+    """Alternation over every PROPER prefix of an :data:`_AWS_SECRET_WORDS` entry.
+
+    ``grep`` selects by SUBSTRING, so ``env | grep AWS_S`` prints
+    ``AWS_SECRET_ACCESS_KEY``'s value exactly as ``env | grep AWS_SECRET`` does. A
+    selector that only recognised whole words would therefore treat a one-keystroke
+    truncation as benign. Matching a truncation is only sound where the operand ENDS
+    there, though -- ``AWS_SDK_LOAD_CONFIG`` also begins ``AWS_S`` and leads nowhere
+    secret -- which is why the caller pairs this alternation with a boundary
+    lookahead and keeps the whole-word alternative separate (a whole word may be
+    followed by more name characters, a truncation may not).
+
+    Longest prefix first so the engine settles on the longest match without
+    backtracking through the shorter ones.
+    """
+    prefixes = {word[:i] for word in _AWS_SECRET_WORDS for i in range(1, len(word))}
+    return "|".join(sorted(prefixes, key=lambda prefix: (-len(prefix), prefix)))
+
+
+# The name a text filter selects on, when selecting it can print a credential:
+# the bare ``AWS`` / ``AWS_`` prefix (which selects every AWS variable, secrets
+# included), a secret-bearing word, or a truncation of one that ends the operand.
+# Selecting a named non-secret variable (``AWS_REGION``, ``AWS_PROFILE``,
+# ``AWS_SDK_LOAD_CONFIG``) is allowed -- it cannot print a secret.
+#
+# The boundary classes include DIGITS: ``env | grep AWS1`` selects a variable whose
+# name contains ``AWS1``, which no secret-bearing name does, so treating a digit as
+# the end of the bare prefix would deny a command that cannot leak.
+_AWS_SECRET_WORD_PREFIXES = _aws_secret_word_prefix_alternation()
+_AWS_VAR_SELECTOR = (
+    r"AWS(?:(?![A-Za-z0-9_])"
+    r"|_(?![A-Za-z0-9])"
+    rf"|_{_AWS_SECRET_VAR_NAMES}"
+    rf"|_(?:{_AWS_SECRET_WORD_PREFIXES})(?![A-Za-z0-9_]))"
+)
+
+# Spellings that DUMP the environment. ``environ`` is one because
+# ``/proc/<pid>/environ`` IS the process environment under a path, and ``typeset``
+# because with no operand it prints every variable WITH its value. Both are here
+# explicitly rather than by accident: a substring matcher caught them only because
+# ``environ`` contains ``env`` and ``typeset`` contains ``set``, so bounding the
+# verb as a word -- which is what stops ``pyenv``, ``dotenv``, ``src/environment``
+# and ``settings.py`` from counting -- would otherwise DROP two real dumps.
+# Longest spelling first so the alternation settles on ``environ`` rather than on
+# the ``env`` prefix inside it.
+_ENV_DUMP_VERBS = r"(?:environ|printenv|typeset|export\s+-p|env|set)"
+
+# An environment dump PIPED through a text filter that selects AWS variables.
+# Backs the disableable ``credential-exfil-env-grep-aws`` rule, which the always-on
+# keystone re-enforces by id (``_ENV_CRED_SHARED_RULE_IDS``) so the two tiers cannot
+# drift apart.
+#
+# The narrowing this rule carries over a plain substring match is entirely in its
+# two anchors, because those are the two an attacker cannot rewrite around:
+# * the dump verb must both BEGIN and END a word (``(?<![\w-])`` / ``(?!\w)``), so
+#   ``unset``, ``offset``, ``pyenv``, ``dotenv``, ``virtualenv``,
+#   ``src/environment`` and ``settings.py`` are not dumps. A ``.`` or ``/`` before
+#   the verb is deliberately allowed: ``/usr/bin/env``, ``/bin/printenv`` and
+#   ``/proc/self/environ`` are the same dumps under a path and are the most
+#   ordinary spelling of the command. The filter word is bounded on its right the
+#   same way, so a quoted filter (``env | 'grep' AWS_SECRET``) still counts while
+#   ``grepfoo`` does not;
+# * the selector must be a name whose selection can PRINT a credential
+#   (``_AWS_VAR_SELECTOR``) -- ``env | grep AWS_REGION`` cannot, and is allowed.
+# A ``|`` must appear between the dump and the filter, which is what keeps ``env``
+# as a wrapper (``env FOO=1 cmd``), ``set -e; grep AWS_ file.txt`` and
+# ``cat .env; grep AWS_ config.py`` out.
+#
+# The gaps are deliberately plain ``.*`` -- ordered existence within one LINE, with
+# no attempt to confine the match to a single shell statement or pipeline stage.
+# A statement-scoped span has to treat ``;`` and ``&`` as separators, and a regex
+# cannot tell a separator from the identical character inside a quoted argument:
+# ``env | sed 's/;/x/' | grep AWS_SECRET_ACCESS_KEY`` and
+# ``env | grep -E 'a&b|AWS_SECRET'`` are ordinary credential dumps whose only
+# unusual feature is a quoted separator, and a span that stops there fails OPEN.
+# Guessing the other way costs an over-block instead: a ``set …`` earlier in the
+# line makes any later ``… | grep AWS_`` in the same line a match. That is the
+# residual, it is the safe direction, and it is the reason the gaps are not spans.
+#
+# What this rule does NOT cover, on purpose: a dump REDIRECTED to a file and read
+# back with no pipe (``env > f; grep AWS_SECRET f``). Correlating the sink with the
+# reader needs a backreference, which the RE2-style engine these built-ins are
+# authored for does not have; and blocking only the ``grep`` spelling would be no
+# control at all, since ``awk``, ``sed`` and a plain ``cat`` of the same file read
+# it just as well and are equally unmatched. The output layer's
+# ``redact_credentials`` (AKIA/ASIA plus high-entropy detection) is what stands
+# between that shape and a chat surface.
+_ENV_DUMP_GREP_AWS_PATTERN = (
+    rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)"
+    + r".*\|.*"
+    + r"(?:grep|awk|sed)(?!\w)"
+    + r".*"
+    + _AWS_VAR_SELECTOR
+)
+
+# ``printenv NAME...`` prints the named variables' VALUES, so naming a
+# secret-bearing variable is a credential read. Naming a non-secret one
+# (``printenv AWS_REGION``) is not. Unlike ``grep``, ``printenv`` takes EXACT
+# names, so a truncation (``printenv AWS_S``) prints nothing and is not denied --
+# which is why this pattern uses the whole-word alternation and the piped form
+# (``printenv | grep ...``) is ``_ENV_DUMP_GREP_AWS_PATTERN``'s job.
+_PRINTENV_AWS_SECRET_PATTERN = r"(?<![\w-])printenv(?!\w).*AWS_" + _AWS_SECRET_VAR_NAMES
+
+
 BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     DeniedCommandRule(
         id="credential-exfil-s3-cp",
@@ -148,11 +259,13 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="credential-exfil-printenv-aws",
-        pattern=".*printenv.*AWS.*",
+        pattern=_PRINTENV_AWS_SECRET_PATTERN,
         category="credential-exfil",
         description=(
-            "Blocks `printenv` dumping any AWS_* environment variable, which can leak AWS "
-            "credentials held in the environment."
+            "Blocks `printenv` naming a secret-bearing AWS variable (`AWS_SECRET*`, "
+            "`AWS_SESSION*`, `AWS_SECURITY*`, `AWS_ACCESS*`), which prints the credential "
+            "held in the environment. Naming a non-secret variable such as `AWS_REGION` "
+            "is allowed."
         ),
     ),
     DeniedCommandRule(
@@ -294,11 +407,14 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="credential-exfil-env-grep-aws",
-        pattern=".*env.*grep.*AWS.*",
+        pattern=_ENV_DUMP_GREP_AWS_PATTERN,
         category="credential-exfil",
         description=(
-            "Blocks `env | grep AWS`, which filters the environment for AWS_* variables and "
-            "leaks any credentials stored there."
+            "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, "
+            "`typeset`, `/proc/<pid>/environ`) through grep/awk/sed for the bare "
+            "`AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one "
+            "such as `AWS_S`, which leaks any credentials stored there. Selecting a named "
+            "non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
         ),
     ),
     DeniedCommandRule(
@@ -16630,16 +16746,6 @@ _ENV_CRED_PATTERNS: list[re.Pattern[str]] = [
         r"declare\s+(?:-[a-zA-Z]+\s+)*-?p\s+AWS_(?:SECRET|SESSION|SECURITY)",
         re.IGNORECASE,
     ),
-    # env / printenv / export -p piped through grep for AWS_ vars
-    re.compile(
-        r"(?:env|printenv|export\s+-p|set)\s*(?:\|.*)?(?:grep|awk|sed)\s+.*AWS_",
-        re.IGNORECASE,
-    ),
-    # Direct printenv of sensitive vars
-    re.compile(
-        r"printenv\s+AWS_(?:SECRET_ACCESS_KEY|SESSION_TOKEN|SECURITY_TOKEN)",
-        re.IGNORECASE,
-    ),
     # echo $AWS_SECRET* / echo ${AWS_SECRET*}
     re.compile(
         r"(?:echo|printf|cat)\s+.*\$\{?AWS_(?:SECRET|SESSION|SECURITY)",
@@ -16658,15 +16764,52 @@ _ENV_CRED_PATTERNS: list[re.Pattern[str]] = [
     ),
 ]
 
+# Two intents this tier and the deny catalog express identically: an environment
+# dump piped through grep/awk/sed for AWS variables, and ``printenv`` naming a
+# secret-bearing variable directly. They are held as CATALOG RULE IDS and resolved
+# from ``BUILTIN_DENIED_RULES`` -- never from the user's effective set -- so this
+# tier runs exactly the regex the catalog publishes and still refuses when the
+# catalog rule is opted out. Naming the rule rather than keeping a second reference
+# to its pattern is what makes "one regex per intent" structural: there is no
+# parallel constant here that could be edited alone, and the two had already
+# drifted in the dangerous direction once (the keystone covered three full variable
+# names while the catalog covered every secret-bearing prefix, so the tier that
+# cannot be switched off was the weaker of the two).
+_ENV_CRED_SHARED_RULE_IDS: tuple[str, ...] = (
+    "credential-exfil-env-grep-aws",
+    "credential-exfil-printenv-aws",
+)
+
+# Resolved eagerly and without a default, so a renamed rule id fails loudly at
+# import instead of silently shrinking the tuple and retiring the always-on block.
+_ENV_CRED_SHARED_RULES: tuple[DeniedCommandRule, ...] = tuple(
+    next(rule for rule in BUILTIN_DENIED_RULES if rule.id == rule_id)
+    for rule_id in _ENV_CRED_SHARED_RULE_IDS
+)
+
+_ENV_CRED_DENIAL_REASON = "Blocked: command reads AWS credentials from environment variables"
+
 
 def _check_env_credential_access(command: str) -> str | None:
     """Detect attempts to read AWS credentials from environment variables.
 
     Returns denial reason if env credential access detected, None otherwise.
+
+    The shared rules run through the same ``_deny_matcher`` the catalog tier uses,
+    not a raw ``re.search``. Sharing the regex TEXT alone is not enough: this tier
+    applies no length cap, and an ordered-existence pattern
+    (``dump .* | .* filter .* selector``) under Python's backtracking engine is
+    superlinear in the number of candidate pipes and filter words -- seconds on a
+    few thousand characters, against milliseconds on the linear fragment matcher --
+    so a raw search here would hand a long crafted command a stall of the
+    synchronous PreToolUse gate that the catalog tier is already immune to.
     """
+    for rule in _ENV_CRED_SHARED_RULES:
+        if _deny_matcher(rule.pattern).match(command):
+            return _ENV_CRED_DENIAL_REASON
     for pattern in _ENV_CRED_PATTERNS:
         if pattern.search(command):
-            return "Blocked: command reads AWS credentials from environment variables"
+            return _ENV_CRED_DENIAL_REASON
     return None
 
 

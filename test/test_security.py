@@ -4305,6 +4305,367 @@ class TestHomeDirTargetsCache:
         assert len(security._home_targets_cache) <= 33
 
 
+class TestEnvDumpGrepAwsNarrowing:
+    """The env-dump-piped-to-grep deny fires on a credential dump and nothing else.
+
+    The same regex backs two tiers -- the always-on keystone
+    (``_ENV_CRED_SHARED_RULE_IDS``, checked here through
+    ``is_sensitive_bash_command``) and the disableable
+    ``credential-exfil-env-grep-aws`` catalog rule (checked through its real
+    ``_DenyMatcher``). Both are asserted so a fix on one tier cannot leave the block
+    standing on the other under a different message. The direct-``printenv`` sibling
+    rule is pinned alongside, and every case is also run through the FULL gate: a
+    shape one rule stops refusing while a sibling still refuses it is not fixed.
+
+    The narrowing is in the two anchors an attacker cannot rewrite around -- the dump
+    verb has to be a whole word, and the selected name has to be one whose selection
+    prints a credential. It is deliberately NOT in confining the match to one shell
+    statement or pipeline stage: ``DENIED`` carries the quoted-separator dumps that
+    proved a statement-scoped span fails OPEN, and ``RESIDUAL_OVER_BLOCK`` carries
+    what refusing to guess costs instead.
+    """
+
+    DENIED = (
+        "env | grep AWS_SECRET",
+        "env | grep AWS_",
+        "env | grep -c AWS_",
+        # The bare name with no underscore selects the same variables.
+        "env | grep AWS",
+        "env | grep -i aws",
+        'env | grep "AWS"',
+        "env | grep AWS_ACCESS",
+        "printenv | grep -i aws_session",
+        "set | grep AWS_",
+        "export -p | grep AWS_",
+        "env | sort | grep AWS_",
+        "env | awk '/AWS_/'",
+        "env | sed -n '/AWS_SECRET/p'",
+        # An alternation inside the grep pattern, with the prefix on either side.
+        "/bin/sh -c 'env | grep -E \"^(AWS_|SANDBOX|AIM)\"'",
+        "env | grep -E '^(SANDBOX|AWS_)'",
+        # Inside a command substitution.
+        "echo $(env | grep AWS_SESSION)",
+        # The SAME dump under a path, a quote or a substitution -- ``/usr/bin/env`` is
+        # the most ordinary spelling of the command, so the command-word boundary must
+        # not treat the path separator as part of a longer word.
+        "/usr/bin/env | grep AWS_SECRET_ACCESS_KEY",
+        "/bin/printenv | grep AWS_",
+        "sudo -E /usr/bin/env | grep AWS_SESSION",
+        "$(which env) | grep AWS_",
+        "'env' | grep AWS_SECRET",
+        "env|grep AWS_SECRET",
+        # A TRUNCATED secret word. ``grep`` selects by substring, so ``AWS_S`` prints
+        # ``AWS_SECRET_ACCESS_KEY``'s value exactly as ``AWS_SECRET`` does.
+        "env | grep AWS_S",
+        "env | grep AWS_SE",
+        "env | grep AWS_SECU",
+        "printenv | grep AWS_A",
+        "env | grep -i aws_s",
+        # The selecting stage is not the first stage after the dump.
+        "env | grep -v PATH | grep AWS_SECRET",
+        "env | tr ' ' '\\n' | grep AWS_SECRET",
+        # ``|&`` is bash's stderr-merging PIPE and ``2>&1`` an fd duplication, both
+        # inside one pipeline -- the same dump two keystrokes differently, so an
+        # ``&`` may not be read as a statement separator on sight.
+        "env |& grep -q '^AWS_SECRET_ACCESS_KEY='",
+        "printenv |& grep AWS_",
+        "set |& grep AWS_",
+        "env 2>&1 | grep AWS_SECRET",
+        "export -p 2>&1 | grep AWS_",
+        "env | grep -v X 2>&1 | grep AWS_SECRET",
+        "env | grep -v PATH |& grep AWS_SECRET",
+        # A quoted or escaped filter word is still the filter.
+        "env | 'grep' AWS_SECRET",
+        'env | "grep" -q AWS_SECRET',
+        "env | \\grep AWS_SECRET",
+        # A ``;`` or ``&`` inside a QUOTED argument. These are the reason the gaps
+        # between the dump, the pipe, the filter and the selector are plain ``.*``
+        # rather than statement- or stage-scoped spans: a regex cannot tell a
+        # separator from the identical character inside a quote, and a span that
+        # stops at the quoted one fails OPEN on an ordinary credential dump.
+        "env | sed 's/;/x/' | grep AWS_SECRET_ACCESS_KEY",
+        "env | grep -E 'a;b|AWS_SECRET'",
+        "env | grep -E 'a&b|AWS_SECRET'",
+        "env | awk -F';' '{print}' | grep AWS_",
+        "env | tr ';' '\\n' | grep AWS_SECRET",
+        'env | sed "s/&/x/" | grep AWS_SECRET',
+        "env -u 'A;B' | grep AWS_SECRET",
+        "env FOO='a;b' | grep AWS_SECRET",
+        # ``/proc/<pid>/environ`` IS the process environment under a path, so reading
+        # it and selecting a credential out of it is the same dump. A word-bounded
+        # dump verb has to name ``environ`` explicitly, because the boundary that
+        # (correctly) stops ``src/environment`` also stops the accidental ``env``
+        # substring this shape used to be caught by.
+        "strings /proc/self/environ | grep AWS_SECRET",
+        "cat /proc/self/environ | tr '\\0' '\\n' | grep AWS_SECRET",
+        "tr '\\0' '\\n' < /proc/self/environ | grep AWS_SECRET",
+        "xargs -0 -n1 < /proc/1234/environ | grep AWS_SECRET",
+        # ``typeset`` with no operand prints every variable WITH its value, so it is a
+        # dump under another name -- named for the same reason ``environ`` is.
+        "typeset | grep AWS_SECRET",
+        "typeset | grep AWS_",
+    )
+
+    # What refusing to guess at statement boundaries costs. Every one of these was
+    # refused before the narrowing too, so none is a new over-block; they are pinned
+    # DENIED so the trade is explicit rather than discovered later. Confining the
+    # match to one statement would allow each of them -- and would also allow the
+    # quoted-separator dumps in ``DENIED``, which is the direction that matters.
+    RESIDUAL_OVER_BLOCK = (
+        # A later pipeline stage's text read as the filter's operand (``echo``
+        # ignores stdin, so nothing from the dump is actually selected).
+        "env | grep PATH | echo AWS_SECRET",
+        # A filter in a LATER statement than the dump.
+        "env | head -5; grep -r AWS_ src/",
+        "env | wc -l && grep AWS_SECRET f",
+        "env | grep KIROCREW && echo AWS_SECRET",
+        "env | head -1 & grep AWS_SECRET f",
+        # ``env`` as another tool's SUBCOMMAND. Anchoring the verb to a command
+        # position would drop it, and would also drop ``sudo -E /usr/bin/env | grep
+        # AWS_SECRET`` -- any wrapper prefix defeats that anchor, so it is not one.
+        "conda env list | grep aws",
+    )
+
+    ALLOWED = (
+        # A named non-secret variable.
+        "env | grep AWS_REGION",
+        "env | grep AWS_PROFILE",
+        "printenv | grep AWS_DEFAULT_REGION",
+        "env | grep -E '^AWS_PROFILE='",
+        "env | grep AWS_ROLE_ARN",
+        # A non-secret name that merely SHARES a secret word's first letters. The
+        # truncation clause requires the operand to end at the truncation, so these
+        # stay out even though ``AWS_S`` is denied.
+        "env | grep AWS_SDK_LOAD_CONFIG",
+        "env | grep AWS_SHARED_CREDENTIALS_FILE",
+        "env | grep AWS_STS_REGIONAL_ENDPOINTS",
+        # ``AWS`` inside another identifier is not the prefix.
+        "env | grep MY_AWS_ROLE",
+        # A digit ends the bare prefix: no secret-bearing name contains ``AWS1`` or
+        # ``AWS_1``, so selecting one cannot print a credential.
+        "env | grep AWS1",
+        "env | grep AWS_1",
+        # No filter at all.
+        "env | cut -d= -f1 | sort",
+        "docker exec kirocrew printenv KIROCREW_PORT",
+        "printenv | wc -l",
+        # The dump verb has to END a word, not merely start one.
+        "grep -rn AWS_REGION src/environment/",
+        "ls src/environment | grep AWS_SECRET",
+        "pyenv | grep AWS_SECRET",
+        "virtualenv versions | grep AWS_SECRET",
+        "dotenv | grep AWS_SECRET",
+        "offset | grep AWS_SECRET",
+        "git diff --stat -- settings.py | grep AWS_",
+        # ``env`` as a WRAPPER, not a dump.
+        "env FOO=1 python -c 'print(1)'",
+        # No pipe between the dump and the filter, which is what keeps a bare
+        # ``set -e`` at the top of a script from making the rest of the line a dump.
+        "cat .env; grep AWS_ config.py",
+        "unset AWS_PROFILE; grep -r AWS_ src/",
+        "set -e; grep AWS_ file.txt",
+        # Nothing that dumps the environment at all.
+        "cat README.md | grep AWS_REGION",
+        "grep -rn AWS_SECRET_ACCESS_KEY src/",
+        "cat .github/workflows/ci.yml | grep AWS_",
+        "docker inspect x | grep AWS_REGION",
+    )
+
+    # ``printenv NAME`` prints a value directly -- its own catalog rule, no pipe.
+    PRINTENV_DENIED = (
+        "printenv AWS_SECRET_ACCESS_KEY",
+        "printenv AWS_SESSION_TOKEN",
+        "printenv AWS_ACCESS_KEY_ID",
+        "printenv AWS_REGION AWS_SECRET_ACCESS_KEY",
+        "/usr/bin/printenv AWS_SECRET_ACCESS_KEY",
+        "printenv 2>&1 AWS_SECRET_ACCESS_KEY",
+        "printenv 2>/dev/null AWS_SESSION_TOKEN",
+    )
+    PRINTENV_ALLOWED = (
+        "printenv AWS_REGION",
+        "printenv AWS_PROFILE AWS_DEFAULT_REGION",
+        "printenv AWS_ROLE_ARN",
+        "printenv MY_AWS_ROLE",
+        "printenv",
+        # ``printenv`` takes EXACT names, so a truncation prints nothing. This is the
+        # one place the two rules diverge on purpose, and the divergence is grep's
+        # substring matching, not an oversight.
+        "printenv AWS_S",
+        "printenv AWS_SDK_LOAD_CONFIG",
+    )
+
+    # Every truncation of a secret-bearing word, derived from the same tuple the
+    # selector is built from, so adding a word extends the pinned set automatically.
+    SECRET_WORD_TRUNCATIONS = tuple(
+        sorted(
+            {
+                word[:length]
+                for word in security._AWS_SECRET_WORDS
+                for length in range(1, len(word) + 1)
+            }
+        )
+    )
+
+    @staticmethod
+    def _keystone(cmd: str) -> bool:
+        from kiro_crew.security import _check_env_credential_access
+
+        return _check_env_credential_access(cmd) is not None
+
+    @staticmethod
+    def _rule_matcher(rule_id: str):
+        from kiro_crew import security
+
+        rule = next(r for r in security.BUILTIN_DENIED_RULES if r.id == rule_id)
+        return security._deny_matcher(rule.pattern)
+
+    @classmethod
+    def _catalog_matcher(cls):
+        return cls._rule_matcher("credential-exfil-env-grep-aws")
+
+    def test_catalog_rule_and_keystone_share_one_regex(self) -> None:
+        from kiro_crew import security
+
+        rule = next(
+            r for r in security.BUILTIN_DENIED_RULES if r.id == "credential-exfil-env-grep-aws"
+        )
+        assert rule.pattern == security._ENV_DUMP_GREP_AWS_PATTERN
+        # The keystone names the CATALOG RULE, so there is no parallel pattern
+        # constant it could be edited away from -- and it resolves from
+        # ``BUILTIN_DENIED_RULES``, not the user's effective set, so opting the
+        # catalog rule out does not retire the always-on block.
+        assert rule.id in security._ENV_CRED_SHARED_RULE_IDS
+        assert rule in security._ENV_CRED_SHARED_RULES
+        # The direct-``printenv`` sibling shares its regex across the two tiers for the
+        # same reason: two hand-written spellings of one intent drift, and the tier that
+        # cannot be switched off is the one that must not end up weaker.
+        printenv_rule = next(
+            r for r in security.BUILTIN_DENIED_RULES if r.id == "credential-exfil-printenv-aws"
+        )
+        assert printenv_rule.pattern == security._PRINTENV_AWS_SECRET_PATTERN
+        assert printenv_rule.id in security._ENV_CRED_SHARED_RULE_IDS
+        assert printenv_rule in security._ENV_CRED_SHARED_RULES
+        # A renamed id must not silently shrink the tuple and retire the block.
+        assert len(security._ENV_CRED_SHARED_RULES) == len(security._ENV_CRED_SHARED_RULE_IDS)
+
+    def test_keystone_tier_evaluates_the_shared_rules_on_the_deny_matcher(
+        self, monkeypatch
+    ) -> None:
+        # Sharing the regex TEXT is not enough. The keystone tier applies no length
+        # cap, and an ordered-existence pattern under Python's backtracking engine is
+        # superlinear in the number of candidate pipes and filter words -- measured in
+        # seconds on a few thousand characters -- so a raw ``re.search`` here would
+        # hand a long crafted command a stall of the synchronous gate that the catalog
+        # tier is already linear on. Pinned as SHAPE, not as a duration: the tier must
+        # route through ``_deny_matcher``, and no compiled duplicate may remain in the
+        # raw list to reintroduce the cost behind the shared one.
+        from kiro_crew import security
+
+        shared = {rule.pattern for rule in security._ENV_CRED_SHARED_RULES}
+        assert all(compiled.pattern not in shared for compiled in security._ENV_CRED_PATTERNS)
+        real = security._deny_matcher
+        seen: list[str] = []
+
+        def spy(pattern: str):
+            seen.append(pattern)
+            return real(pattern)
+
+        monkeypatch.setattr(security, "_deny_matcher", spy)
+        assert security._check_env_credential_access("env | grep AWS_SECRET") is not None
+        assert seen[:1] == [security._ENV_DUMP_GREP_AWS_PATTERN]
+
+    @pytest.mark.parametrize(
+        "rule_id", ["credential-exfil-env-grep-aws", "credential-exfil-printenv-aws"]
+    )
+    def test_catalog_rule_is_published_not_silently_disabled(self, rule_id: str) -> None:
+        # ``_DenyMatcher`` disables a pattern that fails ``is_safe_user_regex`` with
+        # only a log line, so a rule that never matches looks identical to one that
+        # was narrowed. Assert on the matcher, not on ``re.search``: the fragment path
+        # is also what makes both tiers linear, and a pattern that lost it would keep
+        # matching while silently becoming length-capped and superlinear.
+        from kiro_crew.security import is_safe_user_regex
+
+        matcher = self._rule_matcher(rule_id)
+        assert not matcher._disabled
+        assert not matcher._bounded, "must stay on the full-input fragment path"
+        assert len(matcher._frag_res) > 1, "the ``.*`` gaps are what make matching linear"
+        assert is_safe_user_regex(matcher._frag_res[0].pattern)
+
+    @pytest.mark.parametrize("cmd", DENIED)
+    def test_credential_dumps_are_denied_on_both_tiers(self, cmd: str) -> None:
+        assert self._keystone(cmd), cmd
+        assert self._catalog_matcher().match(cmd), cmd
+        assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    @pytest.mark.parametrize("cmd", RESIDUAL_OVER_BLOCK)
+    def test_the_residual_over_block_is_pinned_not_assumed(self, cmd: str) -> None:
+        # Refused, and refused on purpose: each of these prints no credential, and
+        # each was refused before the narrowing as well. The assertion exists so a
+        # later attempt to reclaim them has to argue with the quoted-separator dumps
+        # in ``DENIED`` rather than delete a comment.
+        assert self._keystone(cmd), cmd
+        assert self._catalog_matcher().match(cmd), cmd
+
+    @pytest.mark.parametrize("cmd", ALLOWED)
+    def test_benign_commands_pass_both_tiers(self, cmd: str) -> None:
+        assert not self._keystone(cmd), cmd
+        assert not self._catalog_matcher().match(cmd), cmd
+
+    @pytest.mark.parametrize("cmd", PRINTENV_DENIED)
+    def test_printenv_of_a_secret_is_denied(self, cmd: str) -> None:
+        assert self._rule_matcher("credential-exfil-printenv-aws").match(cmd), cmd
+        assert self._keystone(cmd), cmd
+
+    @pytest.mark.parametrize("cmd", PRINTENV_ALLOWED)
+    def test_printenv_of_a_non_secret_passes(self, cmd: str) -> None:
+        assert not self._rule_matcher("credential-exfil-printenv-aws").match(cmd), cmd
+        assert not self._keystone(cmd), cmd
+
+    @pytest.mark.parametrize("cmd", DENIED + PRINTENV_DENIED)
+    def test_full_gate_denies(self, cmd: str) -> None:
+        from kiro_crew.security import is_denied
+
+        assert is_denied(cmd) is not None, cmd
+
+    @pytest.mark.parametrize("cmd", ALLOWED + PRINTENV_ALLOWED)
+    def test_full_gate_allows(self, cmd: str) -> None:
+        # The whole gate, not just the two touched tiers: a benign shape that one
+        # rule stops refusing while a sibling rule still refuses it is not fixed.
+        from kiro_crew.security import is_denied
+
+        assert is_denied(cmd) is None, cmd
+
+    @pytest.mark.parametrize("truncation", SECRET_WORD_TRUNCATIONS)
+    def test_every_truncation_of_a_secret_word_is_denied(self, truncation: str) -> None:
+        # Derived from ``_AWS_SECRET_WORDS`` rather than sampled: a selector that
+        # recognised only whole words would let one keystroke off the end through, and
+        # the value ``grep`` would then print is the same credential.
+        cmd = f"env | grep AWS_{truncation}"
+        assert self._keystone(cmd), cmd
+        assert self._catalog_matcher().match(cmd), cmd
+
+    @pytest.mark.parametrize("letter", ["B", "C", "D", "E", "M", "P", "R", "T"])
+    def test_a_non_secret_initial_is_not_a_truncation(self, letter: str) -> None:
+        # The complement of the test above: only a letter that STARTS a secret-bearing
+        # word makes a one-character selector a credential read.
+        cmd = f"env | grep AWS_{letter}"
+        assert not self._keystone(cmd), cmd
+        assert not self._catalog_matcher().match(cmd), cmd
+
+    def test_selector_boundaries_admit_digits(self) -> None:
+        # ``(?![A-Za-z_])`` would end the bare prefix at a digit and deny a selector no
+        # secret-bearing name contains. Asserted on the constant so the two boundary
+        # classes cannot drift apart.
+        assert "A-Za-z0-9_" in security._AWS_VAR_SELECTOR
+        assert "(?![A-Za-z_])" not in security._AWS_VAR_SELECTOR
+
+    def test_the_printenv_rule_keeps_whole_words_only(self) -> None:
+        # ``printenv`` resolves EXACT names, so extending it with the grep selector's
+        # truncations would deny a command that prints nothing.
+        assert security._AWS_SECRET_VAR_NAMES in security._PRINTENV_AWS_SECRET_PATTERN
+        assert security._AWS_VAR_SELECTOR not in security._PRINTENV_AWS_SECRET_PATTERN
+
+
 class TestIsSensitiveBashCommand:
     """Tests for is_sensitive_bash_command()."""
 

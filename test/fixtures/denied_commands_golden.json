@@ -37,9 +37,9 @@
   },
   {
     "id": "credential-exfil-printenv-aws",
-    "pattern": ".*printenv.*AWS.*",
+    "pattern": "(?<![\\w-])printenv(?!\\w).*AWS_(?:SECRET|SESSION|SECURITY|ACCESS)",
     "category": "credential-exfil",
-    "description": "Blocks `printenv` dumping any AWS_* environment variable, which can leak AWS credentials held in the environment."
+    "description": "Blocks `printenv` naming a secret-bearing AWS variable (`AWS_SECRET*`, `AWS_SESSION*`, `AWS_SECURITY*`, `AWS_ACCESS*`), which prints the credential held in the environment. Naming a non-secret variable such as `AWS_REGION` is allowed."
   },
   {
     "id": "credential-exfil-kirocrew-token",
@@ -49,9 +49,9 @@
   },
   {
     "id": "credential-exfil-env-grep-aws",
-    "pattern": ".*env.*grep.*AWS.*",
+    "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*(?:grep|awk|sed)(?!\\w).*AWS(?:(?![A-Za-z0-9_])|_(?![A-Za-z0-9])|_(?:SECRET|SESSION|SECURITY|ACCESS)|_(?:SECURIT|SECURI|SESSIO|ACCES|SECRE|SECUR|SESSI|ACCE|SECR|SECU|SESS|ACC|SEC|SES|AC|SE|A|S)(?![A-Za-z0-9_]))",
     "category": "credential-exfil",
-    "description": "Blocks `env | grep AWS`, which filters the environment for AWS_* variables and leaks any credentials stored there."
+    "description": "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, `typeset`, `/proc/<pid>/environ`) through grep/awk/sed for the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one such as `AWS_S`, which leaks any credentials stored there. Selecting a named non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
   },
   {
     "id": "credential-exfil-python-boto3-get-credentials",
