@@ -128,6 +128,7 @@ import AppPage from './pages/AppPage'
 import AppDetailPage from './pages/AppDetailPage'
 import MigrationPage from './pages/MigrationPage'
 import MigrationCheck from './components/MigrationCheck'
+import CrashReportNotice from './components/CrashReportNotice'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
@@ -4122,6 +4123,10 @@ export default function App() {
         <div className={`flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
         <main id="main-content" tabIndex={-1} className={`flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           <MigrationCheck />
+          {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
+              the app, not of the page, and the launch after a crash rarely lands
+              on the page the user was on when it happened. */}
+          <CrashReportNotice />
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />

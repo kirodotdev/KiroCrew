@@ -5174,6 +5174,13 @@
       "upload_note": "PNG, JPEG o WEBP. Ritagliata in quadrato e ridotta a 512 px prima del salvataggio.",
       "upload_too_large": "Il file è troppo grande (max 20 MB)."
     },
+    "crashNotice": {
+      "diagnostics_were_saved_locally": "Nuovi record di arresto anomalo salvati su questo computer: {{n}}. Allegali quando segnali il problema.",
+      "dismiss": "Ignora",
+      "reveal_failed": "Impossibile aprire la cartella: cerca crashes.log nella directory dei log dell’app.",
+      "show_diagnostics": "Mostra diagnostica",
+      "the_app_closed_unexpectedly": "L’app si è chiusa in modo inaspettato"
+    },
     "crewWakeSection": {
       "active": "attivo",
       "cancel_new_schedule": "Annulla nuova pianificazione",

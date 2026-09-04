@@ -172,6 +172,7 @@
       "renderer-recovery.js",
       "hang-recovery.js",
       "native-logging.js",
+      "crash-collector.js",
       "disable-gpu.js",
       "memory-watch-log.js",
       "frame-load-log.js",

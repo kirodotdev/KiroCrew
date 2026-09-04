@@ -5089,6 +5089,13 @@
       "upload_note": "PNG, JPEG বা WEBP। সংরক্ষণের আগে বর্গাকারে ছাঁটা হয় এবং 512 px-এ ছোট করা হয়।",
       "upload_too_large": "ফাইলটি খুব বড় (সর্বোচ্চ 20 MB)।"
     },
+    "crashNotice": {
+      "diagnostics_were_saved_locally": "এই ডিভাইসে {{n}}টি নতুন ক্র্যাশ রেকর্ড সংরক্ষণ করা হয়েছে। সমস্যাটি রিপোর্ট করার সময় সেগুলি সংযুক্ত করুন।",
+      "dismiss": "বাতিল করুন",
+      "reveal_failed": "ফোল্ডারটি খোলা যায়নি — অ্যাপের লগ ডিরেক্টরিতে crashes.log খুঁজুন।",
+      "show_diagnostics": "ডায়াগনস্টিকস দেখান",
+      "the_app_closed_unexpectedly": "অ্যাপটি অপ্রত্যাশিতভাবে বন্ধ হয়ে গেছে"
+    },
     "crewWakeSection": {
       "active": "সক্রিয়",
       "cancel_new_schedule": "নতুন শিডিউল বাতিল করুন",

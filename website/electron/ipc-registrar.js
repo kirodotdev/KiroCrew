@@ -16,6 +16,7 @@ const {
 const { initAutoUpdate } = require("./auto-update");
 const { makeUpdaterLogger } = require("./update-logger");
 const { detectWsl2 } = require("./wsl-detection");
+const { crashNoticeSummary } = require("./crash-collector");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -30,6 +31,7 @@ function createIpcRegistrar({
   backendUrl,
   port,
   detectWsl = detectWsl2,
+  crashScan = null,
   glog,
   // Close/reopen the Crew Companion overlay around an update install so it does
   // not float orphaned over the vanished dashboard during the quit handoff.
@@ -52,6 +54,7 @@ function createIpcRegistrar({
     app,
     Notification,
     ipcMain,
+    shell,
     webContents,
   } = electron;
   const log = typeof glog === "function" ? glog : (() => {});
@@ -137,12 +140,32 @@ function createIpcRegistrar({
     ipcMain.handle("local-gateway:set", (_event, enabled) =>
       setLocalGatewayEnabled(store, enabled));
 
-    // WSL2 host-runtime readout, rendered read-only by the Host runtime card.
-    // Sender-restricted ON PURPOSE: the discovery result is a fact about THIS
-    // machine, so only WebContents served by this shell's own local gateway may
-    // enumerate it. Connection windows pointed at a remote gateway share this
-    // preload and must get a rejection instead of the host's distro inventory.
-    ipcMain.handle("wsl:detect", async (event) => {
+    // THE local-dashboard gate. Every channel whose answer is a fact about the
+    // machine in front of the user — rather than about the gateway a window
+    // happens to be talking to — takes all three of these, because a connection
+    // window pointed at a REMOTE gateway shares this same preload.
+    //
+    // One function, not one copy per channel. `wsl:detect` and both
+    // `crash-reports:*` channels need the identical three gates, and three
+    // hand-maintained spellings of a security check are three chances for one of
+    // them to be tightened while the others are not.
+    //
+    // All THREE gates, never two. An earlier version of this file stopped at
+    // gate 2 for the crash channels, reasoning that gate 3 exists to withhold a
+    // host software inventory and that this payload is only a count and a
+    // timestamp. That reasoning does not survive `crash-reports:reveal`, which
+    // is not a read at all: it opens a file-manager window on the machine in
+    // front of the user. A manual SSH tunnel holding the primary port appears in
+    // no remote-host config, so gate 2 passes for it by construction (see
+    // `isGatewayLocalForWindow`, which can only consult configured hosts) — and
+    // a remote renderer would then be able to pop a local Finder/Explorer
+    // window and learn whether this machine has been crashing. Gate 3 is the
+    // only one that positively identifies the listener.
+    //
+    // Every rejection is LOGGED, not silent. The UI renders a sender rejection
+    // and a genuinely empty answer ("no crashes", "no WSL install") the same
+    // way, so diagnostics are the only place those two causes can be told apart.
+    const assertLocalDashboard = async (event, channel) => {
       // Gate 1 — document origin: the page must have been served from this
       // shell's own fixed primary gateway URL.
       let origin = "";
@@ -152,37 +175,71 @@ function createIpcRegistrar({
         // about:blank, a malformed URL, or a torn-down frame is not a dashboard.
       }
       if (origin !== backendUrl) {
-        // Logged, not silent: the UI renders both a sender rejection and a
-        // missing WSL install as unavailable, so diagnostics must distinguish
-        // those two causes.
-        log(`wsl:detect rejected for sender origin ${origin || "(unreadable)"}`);
-        throw new Error("wsl:detect is restricted to the local dashboard");
+        log(`${channel} rejected for sender origin ${origin || "(unreadable)"}`);
+        throw new Error(`${channel} is restricted to the local dashboard`);
       }
 
-      // Gate 2 — the sending window's gateway must genuinely be on this
-      // machine. Loopback is necessary but insufficient because a configured
-      // remote gateway reached through an SSH tunnel also presents as localhost.
+      // Gate 2 — the sending window's gateway must genuinely be on this machine.
+      // Loopback is necessary but insufficient because a configured remote
+      // gateway reached through an SSH tunnel also presents as localhost.
       const owner = windows.windowForWebContents(event.sender);
       if (!windows.security.isGatewayLocalForWindow(owner)) {
-        log("wsl:detect rejected for a sender window without a local gateway");
-        throw new Error("wsl:detect is restricted to the local dashboard");
+        log(`${channel} rejected for a sender window without a local gateway`);
+        throw new Error(`${channel} is restricted to the local dashboard`);
       }
 
-      // Gate 3 — positive listener ownership. A MANUAL SSH tunnel can occupy
-      // the primary local port without appearing in the remote-host config, so
-      // only this shell's gateway or its service manager is accepted. Foreign
+      // Gate 3 — positive listener ownership. A MANUAL SSH tunnel can occupy the
+      // primary local port without appearing in the remote-host config, so only
+      // this shell's gateway or its service manager is accepted. Foreign
       // holders, an unbound port, and an unavailable owner probe all fail
       // closed. Gate 1 already fixed the sender to backendUrl, which is why the
       // supervisor's fixed primary-port probe is also probing the sender's port.
       const portOwner = await gateway.probePrimaryPortOwner();
       if (portOwner !== "kirocrew" && portOwner !== "service") {
         log(
-          `wsl:detect rejected: :${port} held by ${portOwner}, `
+          `${channel} rejected: :${port} held by ${portOwner}, `
           + "not this shell's gateway",
         );
-        throw new Error("wsl:detect is restricted to the local dashboard");
+        throw new Error(`${channel} is restricted to the local dashboard`);
       }
+    };
 
+    // Crash artifacts left by a previous run, so the dashboard can say "this
+    // happened" instead of leaving the user to discover it themselves.
+
+    ipcMain.handle("crash-reports:get", async (event) => {
+      await assertLocalDashboard(event, "crash-reports:get");
+      // Absent injection means the shell was assembled without a collector —
+      // report "nothing to see" rather than failing the renderer's first call.
+      return crashNoticeSummary(typeof crashScan === "function" ? crashScan() : null);
+    });
+
+    // Reveal, never read. The renderer names no path and receives no path: this
+    // resolves the log location in the trusted process from the scan it already
+    // performed, so the channel cannot be turned into "open an arbitrary file
+    // for me". Reveals the FILE (selected in its folder) rather than opening
+    // it, because the useful gesture is "hand this directory over" — the log
+    // sits beside chromium.log and the retained previous generation.
+    ipcMain.handle("crash-reports:reveal", async (event) => {
+      await assertLocalDashboard(event, "crash-reports:reveal");
+      const scan = typeof crashScan === "function" ? crashScan() : null;
+      if (!scan || !scan.crashLogPath) return { ok: false, error: "no crash log" };
+      try {
+        shell.showItemInFolder(scan.crashLogPath);
+        return { ok: true };
+      } catch (e) {
+        log(`crash-reports:reveal failed: ${e && e.message}`);
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    });
+
+    // WSL2 host-runtime readout, rendered read-only by the Host runtime card.
+    // Sender-restricted ON PURPOSE: the discovery result is a fact about THIS
+    // machine, so only WebContents served by this shell's own local gateway may
+    // enumerate it. Connection windows pointed at a remote gateway share this
+    // preload and must get a rejection instead of the host's distro inventory.
+    ipcMain.handle("wsl:detect", async (event) => {
+      await assertLocalDashboard(event, "wsl:detect");
       return detectWsl();
     });
 

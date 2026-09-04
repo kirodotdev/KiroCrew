@@ -29,6 +29,8 @@ const SHELL_HANDLES = [
   "browser:set-inactive",
   "browser:set-overlay",
   "browser:track-session",
+  "crash-reports:get",
+  "crash-reports:reveal",
   "global-hotkey:get",
   "local-gateway:get",
   "local-gateway:set",
@@ -171,6 +173,8 @@ function harness({
   wslOwner = { fake: "wsl-owner" },
   wslGatewayLocal = true,
   primaryPortOwner = "kirocrew",
+  crashScan,
+  revealThrows = false,
   detectWsl = async () => ({
     available: true,
     distros: [],
@@ -178,6 +182,8 @@ function harness({
   }),
 } = {}) {
   const order = [];
+  const shellCalls = [];
+  const crashScans = [];
   const windowCalls = [];
   const gatewayCalls = [];
   const appCalls = [];
@@ -231,6 +237,12 @@ function harness({
     dialog: { fake: "dialog" },
     Notification: FakeNotification,
     ipcMain,
+    shell: {
+      showItemInFolder: (...args) => {
+        shellCalls.push(["showItemInFolder", ...args]);
+        if (revealThrows) throw new Error("Finder is unavailable");
+      },
+    },
     webContents: { getAllWebContents: () => [liveContents, destroyedContents] },
   };
 
@@ -324,6 +336,10 @@ function harness({
     backendUrl,
     port,
     detectWsl: runWslDetection,
+    crashScan: crashScan === undefined ? undefined : () => {
+      crashScans.push(true);
+      return typeof crashScan === "function" ? crashScan() : crashScan;
+    },
     glog: (line) => logs.push(line),
   });
 
@@ -343,6 +359,8 @@ function harness({
     notifications,
     sentUpdates,
     wslDetections,
+    shellCalls,
+    crashScans,
     logs,
   };
 }
@@ -417,13 +435,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 30);
+  assert.equal(h.handlers.size + h.listeners.size, 32);
 
-  // boot-complete is the 31st non-update host channel, but it is deliberately
+  // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 31);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 33);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -531,6 +549,206 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     accelerator: "",
     default: "Test+Shift+K",
   });
+});
+
+// A completed scan, shaped like collectCrashReports' return value. Only
+// newCrashes (what crashNoticeSummary counts) and crashLogPath (what reveal
+// opens) matter here; `recorded` is carried because the log line count is
+// logged, never handed to the renderer.
+function crashScanResult(overrides = {}) {
+  return {
+    crashLogPath: "/logs/crashes.log",
+    newCrashes: [{ key: "a" }, { key: "b" }],
+    recorded: 2,
+    ...overrides,
+  };
+}
+
+const CRASH_CHANNELS = ["crash-reports:get", "crash-reports:reveal"];
+
+test("crash-reports channels reject wrong and unreadable sender origins", async () => {
+  for (const channel of CRASH_CHANNELS) {
+    for (const [label, event, loggedOrigin] of [
+      ["wrong", wslEvent("https://remote.example/settings"), "https://remote.example"],
+      ["unreadable", { sender: { id: "blank" } }, "(unreadable)"],
+    ]) {
+      const h = harness({ crashScan: crashScanResult });
+      h.registrar.registerShell();
+
+      await assert.rejects(
+        () => h.handlers.get(channel)(event),
+        (error) => {
+          assert.equal(
+            error && error.message,
+            `${channel} is restricted to the local dashboard`,
+          );
+          return true;
+        },
+        `${channel}/${label}: a foreign origin must be refused`,
+      );
+      assert.equal(
+        h.gatewayCalls.some(([name]) => name === "probePrimaryPortOwner"),
+        false,
+        `${channel}/${label}: an origin rejection must precede the port probe`,
+      );
+
+      // Refusing BEFORE the scan is the point: whether this machine crashed
+      // must not be computed for a sender that may not be told the answer.
+      assert.equal(h.crashScans.length, 0, `${channel}/${label}: scan must stay uncalled`);
+      assert.equal(
+        h.windowCalls.some(([name]) => name === "windowForWebContents"),
+        false,
+        `${channel}/${label}: an origin rejection must precede window lookup`,
+      );
+      assert.equal(h.shellCalls.length, 0, `${channel}/${label}: nothing may be revealed`);
+      assert.match(
+        h.logs.join("\n"),
+        new RegExp(`${channel} rejected for sender origin ${loggedOrigin.replace(/[.?*+^$[\]\\(){}|-]/g, "\\$&")}`),
+      );
+    }
+  }
+});
+
+test("crash-reports channels reject missing and remote sender-window owners", async () => {
+  for (const channel of CRASH_CHANNELS) {
+    for (const [label, wslOwner] of [
+      ["missing", null],
+      ["remote", { fake: "remote-window" }],
+    ]) {
+      const h = harness({ wslOwner, wslGatewayLocal: false, crashScan: crashScanResult });
+      h.registrar.registerShell();
+      const event = wslEvent();
+
+      await assert.rejects(
+        () => h.handlers.get(channel)(event),
+        (error) => {
+          assert.equal(
+            error && error.message,
+            `${channel} is restricted to the local dashboard`,
+          );
+          return true;
+        },
+        `${channel}/${label}: a window without a local gateway must be refused`,
+      );
+      assert.equal(
+        h.gatewayCalls.some(([name]) => name === "probePrimaryPortOwner"),
+        false,
+        `${channel}/${label}: a gateway rejection must precede the port probe`,
+      );
+
+      assert.deepEqual(
+        lastCall(h.windowCalls, "windowForWebContents").slice(1),
+        [event.sender],
+        `${channel}/${label}: ownership must resolve from event.sender`,
+      );
+      assert.deepEqual(
+        lastCall(h.windowCalls, "security.isGatewayLocalForWindow").slice(1),
+        [wslOwner],
+        `${channel}/${label}: the resolved owner must reach the shared predicate`,
+      );
+      assert.equal(h.crashScans.length, 0, `${channel}/${label}: scan must stay uncalled`);
+      assert.equal(h.shellCalls.length, 0, `${channel}/${label}: nothing may be revealed`);
+      assert.match(h.logs.join("\n"), /sender window without a local gateway/);
+    }
+  }
+});
+
+// Gate 3, the one a manual SSH tunnel is the whole reason for. Gates 1 and 2 can
+// both pass for a tunnel: the sender IS backendUrl, and `isGatewayLocalForWindow`
+// can only consult the remote-host CONFIG, which a hand-rolled `ssh -L` never
+// enters. Only positively identifying the listener separates the two, and
+// `crash-reports:reveal` is not a read — it opens a file-manager window on the
+// machine in front of the user.
+test("crash-reports channels reject a primary port held by anything else", async () => {
+  for (const channel of CRASH_CHANNELS) {
+    for (const owner of ["foreign", "unbound", "unknown", null]) {
+      const h = harness({ primaryPortOwner: owner, crashScan: crashScanResult });
+      h.registrar.registerShell();
+
+      await assert.rejects(
+        () => h.handlers.get(channel)(wslEvent()),
+        (error) => {
+          assert.equal(
+            error && error.message,
+            `${channel} is restricted to the local dashboard`,
+          );
+          return true;
+        },
+        `${channel}/${owner}: a port this shell does not own must be refused`,
+      );
+
+      assert.equal(h.crashScans.length, 0, `${channel}/${owner}: scan must stay uncalled`);
+      assert.equal(h.shellCalls.length, 0, `${channel}/${owner}: nothing may be revealed`);
+      assert.match(h.logs.join("\n"), new RegExp(`${channel} rejected: :\\d+ held by ${owner}`));
+    }
+  }
+});
+
+test("crash-reports channels accept the service manager as the port owner", async () => {
+  for (const channel of CRASH_CHANNELS) {
+    const h = harness({ primaryPortOwner: "service", crashScan: crashScanResult });
+    h.registrar.registerShell();
+    await h.handlers.get(channel)(wslEvent());
+    assert.equal(h.crashScans.length, 1, `${channel}: a service-held port is this shell's own`);
+  }
+});
+
+test("crash-reports:get narrows the scan to a single count", async () => {
+  const h = harness({ crashScan: crashScanResult });
+  h.registrar.registerShell();
+
+  const summary = await h.handlers.get("crash-reports:get")(wslEvent());
+
+  assert.deepEqual(summary, { newCount: 2 });
+  // The renderer must never receive a path, a filename, an exception code, or
+  // even a timestamp: the reveal gesture happens in the trusted process
+  // precisely so it need not.
+  assert.deepEqual(Object.keys(summary).sort(), ["newCount"]);
+  assert.equal(h.crashScans.length, 1, "the summary must come from the injected scan");
+});
+
+test("crash-reports:get reports nothing when no collector was injected", async () => {
+  const h = harness();
+  h.registrar.registerShell();
+
+  assert.deepEqual(await h.handlers.get("crash-reports:get")(wslEvent()), { newCount: 0 });
+});
+
+test("crash-reports:reveal selects the ledger the main process resolved itself", async () => {
+  const h = harness({ crashScan: crashScanResult });
+  h.registrar.registerShell();
+
+  assert.deepEqual(await h.handlers.get("crash-reports:reveal")(wslEvent()), { ok: true });
+  assert.deepEqual(lastCall(h.shellCalls, "showItemInFolder").slice(1), ["/logs/crashes.log"]);
+});
+
+test("crash-reports:reveal reports rather than throws when there is nothing to show", async () => {
+  for (const [label, crashScan] of [
+    ["no collector", undefined],
+    ["scan failed", () => null],
+    ["no log written", () => crashScanResult({ crashLogPath: "" })],
+  ]) {
+    const h = harness({ crashScan });
+    h.registrar.registerShell();
+
+    assert.deepEqual(
+      await h.handlers.get("crash-reports:reveal")(wslEvent()),
+      { ok: false, error: "no crash log" },
+      `${label}: a missing ledger is a result, not a renderer exception`,
+    );
+    assert.equal(h.shellCalls.length, 0, `${label}: nothing may be revealed`);
+  }
+});
+
+test("crash-reports:reveal survives a shell that refuses to open the folder", async () => {
+  const h = harness({ crashScan: crashScanResult, revealThrows: true });
+  h.registrar.registerShell();
+
+  assert.deepEqual(await h.handlers.get("crash-reports:reveal")(wslEvent()), {
+    ok: false,
+    error: "Finder is unavailable",
+  });
+  assert.match(h.logs.join("\n"), /crash-reports:reveal failed: Finder is unavailable/);
 });
 
 test("wsl:detect rejects wrong and unreadable sender origins before owner lookup", async () => {

@@ -5089,6 +5089,13 @@
       "upload_note": "PNG, JPEG या WEBP। सहेजने से पहले वर्गाकार काटकर 512 px तक छोटा किया जाता है।",
       "upload_too_large": "फ़ाइल बहुत बड़ी है (अधिकतम 20 MB)।"
     },
+    "crashNotice": {
+      "diagnostics_were_saved_locally": "इस डिवाइस पर {{n}} नए क्रैश रिकॉर्ड सहेजे गए। समस्या की रिपोर्ट करते समय उन्हें संलग्न करें।",
+      "dismiss": "खारिज करें",
+      "reveal_failed": "फ़ोल्डर नहीं खोला जा सका — ऐप की लॉग डायरेक्ट्री में crashes.log ढूँढें।",
+      "show_diagnostics": "डायग्नोस्टिक्स दिखाएँ",
+      "the_app_closed_unexpectedly": "ऐप अनपेक्षित रूप से बंद हो गया"
+    },
     "crewWakeSection": {
       "active": "चालू",
       "cancel_new_schedule": "नया शेड्यूल रद्द करें",

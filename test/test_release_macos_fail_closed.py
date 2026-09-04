@@ -71,15 +71,30 @@ def _write_valid_handoff(root: Path, name: str = ARTIFACT_NAME) -> Path:
     return artifact
 
 
-def _run_assembly(root: Path, *, promote_mode: bool = False) -> subprocess.CompletedProcess[str]:
+def _run_assembly(
+    root: Path,
+    *,
+    promote_mode: bool = False,
+    channel: str = "stable",
+    rebuild: str = "false",
+) -> subprocess.CompletedProcess[str]:
     (root / "artifacts").mkdir(exist_ok=True)
+    # CHANNEL/REBUILD drive the symbols-manifest fail-closed gate. The defaults
+    # (stable + not-a-rebuild) keep that gate DORMANT for every test that is not
+    # about it, so the macOS and Windows assertions below are unchanged; the two
+    # manifest tests override them to reach the guard.
     return subprocess.run(
         ["bash", "-c", _assembly_script()],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "PROMOTE_MODE": "true" if promote_mode else "false"},
+        env={
+            **os.environ,
+            "PROMOTE_MODE": "true" if promote_mode else "false",
+            "CHANNEL": channel,
+            "REBUILD": rebuild,
+        },
     )
 
 
@@ -151,6 +166,38 @@ def test_non_udif_dmg_fails(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "is not a valid UDIF DMG" in result.stderr + result.stdout
+
+
+def test_symbols_manifest_is_required_on_the_channel_that_builds(tmp_path: Path) -> None:
+    """Insider builds the desktop legs, so a missing Electron pin is a lost artifact.
+
+    The exempt direction is pinned by the passing promotion cases, which carry no
+    manifest at all: a byte promotion builds no desktop leg, so demanding one would
+    fail the job and publish no Release page. Executed rather than grepped because
+    only running the script proves which branch each condition takes.
+    """
+    _write_valid_handoff(tmp_path)
+
+    result = _run_assembly(tmp_path, channel="insider")
+
+    assert result.returncode != 0
+    assert "No symbols-manifest.json found" in result.stderr + result.stdout
+
+
+def test_symbols_manifest_is_required_on_a_stable_rebuild(tmp_path: Path) -> None:
+    """A stable release REBUILDS from source, so it too must carry its pin.
+
+    Stable ships a bare version and rebuilds the desktop legs (``rebuild == 'true'``)
+    unless the byte-promotion escape hatch is armed. That fresh build produces its
+    own manifest, so an emit step that broke on a stable tag would ship a green
+    release whose crash reports no one can decode -- the loss this feature prevents.
+    """
+    _write_valid_handoff(tmp_path)
+
+    result = _run_assembly(tmp_path, channel="stable", rebuild="true")
+
+    assert result.returncode != 0
+    assert "No symbols-manifest.json found" in result.stderr + result.stdout
 
 
 def test_exact_gated_handoff_is_renamed_for_the_release(tmp_path: Path) -> None:

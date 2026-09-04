@@ -843,10 +843,64 @@ jobs:
       - name: Assemble release assets (require gated macOS artifacts)
         env:
           PROMOTE_MODE: ${{ needs.version.outputs.promote_mode }}
+          # CHANNEL/REBUILD drive the symbols-manifest fail-closed gate below,
+          # which fires on exactly the runs that build the desktop legs.
+          CHANNEL: ${{ needs.version.outputs.channel }}
+          REBUILD: ${{ needs.version.outputs.rebuild }}
         run: |
           set -euo pipefail
           mkdir -p release
           find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) -exec cp {} release/ \;
+
+          # The symbols pin has to outlive the build that wrote it. Each desktop
+          # leg uploads symbols-manifest.json into its own CI artifact, and that
+          # artifact expires in 14 days -- but the crash reports it exists to
+          # decode arrive from users on released builds, months later. A GitHub
+          # Release asset does not expire, so the pin travels with the release it
+          # describes. A few hundred bytes each.
+          #
+          # Renamed per leg on the way in: every artifact holds a file with the
+          # same basename, and `release/` is flat, so a plain copy would leave
+          # one arbitrary winner and silently drop the rest.
+          manifests=0
+          for manifest in artifacts/*/symbols-manifest.json; do
+            [ -e "$manifest" ] || continue
+            slug="$(basename "$(dirname "$manifest")")"
+            slug="${slug#unsigned-}"
+            slug="${slug#build-}"
+            cp "$manifest" "release/symbols-manifest-${slug}.json"
+            manifests=$((manifests + 1))
+          done
+          # Fail closed -- but only for a run whose desktop legs actually built.
+          # The requirement fires on exactly `build-desktop`'s own condition
+          # (`channel == 'insider' || rebuild == 'true'`): those are the runs that
+          # build a macOS and Linux leg, so a zero manifest count means the emit
+          # step stopped producing one -- a green build shipping undecodable crash
+          # reports, the failure this file exists to make impossible rather than
+          # unlikely. An ordinary stable release is one of them: stable ships a
+          # BARE version and so REBUILDS from source (`rebuild == 'true'`), running
+          # the same desktop legs an insider does, so a fresh stable build that
+          # stopped emitting a manifest must red here too.
+          #
+          # Byte-for-byte promotion (`promote_mode`, i.e. stable with
+          # `rebuild != 'true'`) is the one mode exempt, and correctly: it builds
+          # no macOS or Linux leg at all, republishing the exact bytes of an
+          # already-released insider build whose pin already sits permanently on
+          # that insider release. It is also never zero regardless -- `build-windows`
+          # has no channel condition and runs on every release, and this job now
+          # `needs` it, so the leg has finished and the loop above has copied its
+          # manifest before this check.
+          #
+          # Known limit, stated rather than implied: this counts manifests, so the
+          # Windows leg alone satisfies it and a macOS leg that silently stopped
+          # emitting one would still pass. Closing that needs a per-lane
+          # expectation keyed off which legs ran, a bigger change than the loss it
+          # prevents; the count still catches the emit step breaking outright.
+          if { [ "$CHANNEL" = "insider" ] || [ "$REBUILD" = "true" ]; } && [ "$manifests" -eq 0 ]; then
+            echo "::error::No symbols-manifest.json found in any build artifact;" \
+                 "see the 'Record symbols manifest' step in build-desktop.yml."
+            exit 1
+          fi
 
           NOTARIZED_DIR="artifacts/KiroCrew-notarized-${{ needs.version.outputs.channel }}-${{ needs.version.outputs.version }}"
           NOTARIZED_ZIP="${NOTARIZED_DIR}/notarized.zip"

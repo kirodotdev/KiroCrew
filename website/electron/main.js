@@ -33,6 +33,7 @@ const { seedRenamedStore } = require("./store-rename");
 const { resolveHome, secretCandidates } = require("./home-dir");
 const { identityFamily } = require("./instance-guard");
 const { initNativeLogging } = require("./native-logging");
+const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
@@ -196,6 +197,55 @@ let isQuitting = false;
 let desktopMetricsRecorder = null;
 let windows = null;
 
+let crashScan = null;
+// Separate from `crashScan` so a scan that failed is not retried on every call:
+// the failure is a broken path or a missing directory, not a transient.
+let crashScanDone = false;
+
+/**
+ * Scan for crash artifacts once per app session, on first demand.
+ *
+ * LAZY on purpose, unlike `initNativeLogging` above. Native logging has to be
+ * armed before Chromium initializes, but this only READS what a previous run
+ * left behind — and it reads files, on the launch immediately after a crash,
+ * which is the launch a user is already watching impatiently. Nothing needs the
+ * answer until the dashboard's crash notice asks for it, so it costs nothing
+ * until then and nothing at all on a run where the dashboard never opens.
+ */
+function scanCrashArtifacts() {
+  if (crashScanDone) return crashScan;
+  crashScanDone = true;
+  try {
+    crashScan = collectCrashReports({
+      logsDir: path.dirname(gatewayLogPath()),
+      crashDumpsDir: app.getPath("crashDumps"),
+      // macOS only. `.ips` reports are the ONLY channel that captures a
+      // main-process abort the Crashpad handler did not survive to write, so
+      // they are worth a second directory here. Linux and Windows have no
+      // equivalent user-readable per-app report directory, and passing "" makes
+      // the collector skip the scan rather than guess at a path.
+      diagnosticReportsDir: process.platform === "darwin"
+        ? path.join(app.getPath("home"), "Library", "Logs", "DiagnosticReports")
+        : "",
+      appName: app.getName(),
+      // BOTH names, because they are different strings and neither derives from
+      // the other: `electron/package.json` sets `executableName` to
+      // `kirocrew-desktop` (and the nightly channel overrides it again), while
+      // `getName()` is `Kiro Crew`. Off darwin a minidump is our only crash
+      // channel, so recognising the executable name is what makes Linux work.
+      execName: path.basename(process.execPath),
+      fs,
+      log: glog,
+    });
+  } catch (e) {
+    // A diagnostic that breaks the launch it exists to explain is worse than no
+    // diagnostic. `getPath`/`getName` are the only calls here that can throw.
+    glog("crash scan unavailable: " + (e && e.message));
+    crashScan = null;
+  }
+  return crashScan;
+}
+
 const requestQuit = () => {
   // Window close handlers consult this synchronously. Set it before app.quit()
   // so a real quit can never be misread as a hide-to-tray request.
@@ -208,6 +258,35 @@ const requestQuit = () => {
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
+  // Record the moment this build became able to collect crashes, BEFORE the
+  // crash reporter can produce one. The scan below is lazy — it runs when the
+  // dashboard first asks — and the first scan has to distinguish artifacts that
+  // predate this feature (which are history, and are marked seen without being
+  // read) from ones this build produced. Deciding that at scan time answers the
+  // wrong question: an app that crashes before the dashboard ever opens would
+  // have its dump written off as pre-existing on the next launch, which is
+  // exactly the crash worth reporting. This writes only the cutoff, does not
+  // read any artifact, and is idempotent — a second launch keeps the first
+  // stamp — so it is cheap enough to sit on the boot path.
+  //
+  // THE ORDER OF THESE TWO CALLS IS LOAD-BEARING. This must precede
+  // `initNativeLogging`, because that is what calls `crashReporter.start()` and
+  // so what makes Crashpad able to write a dump at all. Stamping afterwards
+  // leaves a window — short, but covering precisely the startup crashes this
+  // feature is most needed for — in which a dump exists with no cutoff on
+  // record. The next launch then stamps a cutoff LATER than that dump's mtime,
+  // the first scan reads it as history, and it is marked seen without ever being
+  // surfaced: the crash is silently lost, which is the one outcome this whole
+  // feature exists to prevent. Do not reorder for tidiness. Arming first is also
+  // free: `armCrashCollector` uses nothing `initNativeLogging` sets up, neither
+  // call creates `logsDir`, and the state write fails soft (logs and returns
+  // null) rather than throwing.
+  armCrashCollector({
+    logsDir: path.dirname(gatewayLogPath()),
+    fs,
+    log: glog,
+  });
+
   initNativeLogging({
     logsDir: path.dirname(gatewayLogPath()),
     appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
@@ -280,6 +359,7 @@ const ipcRegistrar = createIpcRegistrar({
   glog,
   closeCrewCompanionForUpdate,
   reopenCrewCompanionAfterUpdate,
+  crashScan: scanCrashArtifacts,
 });
 
 /**
