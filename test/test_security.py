@@ -2942,6 +2942,48 @@ class TestOperatorOAuthEndpointExtension:
 class TestRedactExfiltrationUrls:
     """Tests for redact_exfiltration_urls — domain-agnostic payload detection."""
 
+    def test_substitution_is_built_from_the_exported_prefix(self) -> None:
+        """The URL tag must start with ``EXFILTRATION_REDACTION_TAG_PREFIX``.
+
+        The dashboard chat notice (issue #8132) prefix-counts that constant in
+        the persisted text to tell the user a URL was rewritten -- the tag
+        interpolates the domain, so unlike the constant credential tags it
+        cannot be equality-compared. Driving the REAL redactor here pins the
+        substitution to the exported constant: if the f-string ever drifts from
+        the prefix, this goes red instead of the notice silently never firing.
+        """
+        from kiro_crew.security import (
+            EXFILTRATION_REDACTION_TAG_PREFIX,
+            redact_exfiltration_urls,
+        )
+
+        url = "https://evil.example.com/steal?data=" + "A" * 250
+        result, warnings = redact_exfiltration_urls(f"Link: {url}")
+        assert warnings, "fixture no longer trips the redactor; pick another URL"
+        assert EXFILTRATION_REDACTION_TAG_PREFIX in result
+        assert f"{EXFILTRATION_REDACTION_TAG_PREFIX}evil.example.com]" in result
+
+    def test_url_tag_prefix_does_not_collide_with_credential_tags(self) -> None:
+        """Prefix-counting the URL tag must never double-count a credential tag.
+
+        The notice sums ``CREDENTIAL_REDACTION_TAGS`` exact counts and the URL
+        prefix count over the same text. That is only safe while neither side
+        matches the other's substitution: the prefix must not appear inside any
+        credential tag, no credential tag may start with the prefix, and the
+        prefix stays OUT of the tuple (it is a prefix, not a full tag -- see the
+        tuple's docstring).
+        """
+        from kiro_crew.security import (
+            CREDENTIAL_REDACTION_TAGS,
+            EXFILTRATION_REDACTION_TAG_PREFIX,
+        )
+
+        assert EXFILTRATION_REDACTION_TAG_PREFIX not in CREDENTIAL_REDACTION_TAGS
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            assert EXFILTRATION_REDACTION_TAG_PREFIX not in tag
+            assert not tag.startswith(EXFILTRATION_REDACTION_TAG_PREFIX)
+            assert tag not in EXFILTRATION_REDACTION_TAG_PREFIX
+
     def test_external_long_query_redacted(self) -> None:
         """External domains with long query strings are still redacted."""
         from kiro_crew.security import redact_exfiltration_urls

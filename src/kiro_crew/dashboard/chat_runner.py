@@ -244,6 +244,7 @@ from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     StreamRedactor,
     is_sensitive_path,
     oauth_url_contains_credential,
@@ -3126,32 +3127,55 @@ def _prepare_mirror_msg(raw_user_message: str) -> str:
     return safe[:500]
 
 
-def _redaction_notice(count: int) -> str:
-    """Build the user-visible notice for a segment that had credentials removed.
+def _redaction_notice(cred_count: int, url_count: int) -> str:
+    """Build the user-visible notice for a segment the redactors rewrote.
 
-    ``count`` is the number of redaction placeholders standing in the persisted
-    text, so the wording always matches what the user can see in the message
-    above it. The notice carries no secret bytes -- by the time it is built, a tag
-    has already replaced them.
+    ``cred_count`` and ``url_count`` are the numbers of redaction placeholders
+    standing in the persisted text -- credential tags counted exactly from
+    ``CREDENTIAL_REDACTION_TAGS``, URL tags counted by
+    ``EXFILTRATION_REDACTION_TAG_PREFIX`` prefix (the URL tag interpolates the
+    domain, so it has no constant form to compare) -- so the wording always
+    matches what the user can see in the message above it. The notice carries no
+    secret bytes and no redacted URL -- by the time it is built, a tag has
+    already replaced them.
 
     Says "a redaction placeholder" rather than naming a specific tag: the
-    redactor emits more than one (see ``CREDENTIAL_REDACTION_TAGS``), so naming
-    one would print a marker the user cannot find in the text whenever the
-    substitution came from a different pass.
+    redactors emit more than one (see ``CREDENTIAL_REDACTION_TAGS`` and the URL
+    prefix), so naming one would print a marker the user cannot find in the text
+    whenever the substitution came from a different pass.
 
-    The second sentence is the part that matters and is deliberately blunt: a
-    redacted command is not a working command. Saying only "a credential was
-    removed" would still leave the user pasting text that cannot run, which is
-    the failure issue #6189 reports (the reporter lost time to an opaque
-    ``getaddrinfo EAI_AGAIN`` far from the real cause).
+    The wording is BY KIND because the remedies differ -- issue #8132: telling a
+    user whose URL was rewritten that "a credential was replaced; supply the
+    secret yourself" names a remedy that cannot help them. A credential needs
+    the secret re-entered where the command runs; a rewritten URL needs the
+    original link re-checked from a trusted source. The second sentence stays
+    deliberately blunt either way: a redacted command is not a working command
+    (issue #6189's reporter lost time to an opaque ``getaddrinfo EAI_AGAIN`` far
+    from the real cause). At least one count must be non-zero -- the caller
+    gates on that.
     """
-    subject = "A credential" if count == 1 else f"{count} credentials"
-    verb = "was" if count == 1 else "were"
+    subjects: list[str] = []
+    if cred_count:
+        subjects.append("a credential" if cred_count == 1 else f"{cred_count} credentials")
+    if url_count:
+        subjects.append("a suspicious URL" if url_count == 1 else f"{url_count} suspicious URLs")
+    subject = " and ".join(subjects)
+    subject = subject[0].upper() + subject[1:]
+    verb = "was" if (cred_count + url_count) == 1 and len(subjects) == 1 else "were"
+    lead = "Any command shown above" if not url_count else "Any command or link shown above"
+    if cred_count and url_count:
+        remedy = (
+            "supply the secret yourself on the machine where you run it, and "
+            "re-check any redacted URL against a trusted source."
+        )
+    elif cred_count:
+        remedy = "supply the secret yourself on the machine where you run it."
+    else:
+        remedy = "re-check the original URL against a trusted source before using it."
     return (
         f"Security notice: {subject} in this message {verb} replaced with a "
-        "redaction placeholder before it reached this page. Any command shown "
-        "above will not work if you paste it as-is; supply the secret yourself "
-        "on the machine where you run it."
+        f"redaction placeholder before it reached this page. {lead} "
+        f"will not work if you paste it as-is; {remedy}"
     )
 
 
@@ -3237,40 +3261,49 @@ def _flush_segment(
         last_msg["variant_idx"] = len(pending_list) - 1
         slot._pending_variants = []
     # Tell the user the text was altered. Until now this was silent: the
-    # `cred_warnings` above are logged and nothing else, so a user copied a
-    # command whose credential had become a placeholder and only found out when
-    # it failed downstream (issue #6189).
+    # `cred_warnings` and `exfil_warnings` above are logged and nothing else, so
+    # a user copied a command whose credential had become a placeholder (issue
+    # #6189) or whose URL had been rewritten (issue #8132) and only found out
+    # when it failed downstream.
     #
-    # The count comes from the TAG in the persisted text, not from
-    # `cred_warnings`, because on the streaming path that list is almost always
-    # empty HERE: the run loop redacts every chunk before it enters
-    # `assistant_text` (EVENT_TEXT_CHUNK branch), so this call re-redacts
-    # already-clean text and reports nothing. `cred_warnings` only fires for a
-    # credential split across chunk boundaries, which is the rarer case. Reading
-    # the artifact instead of the event answers the question the user actually
-    # has -- "is what I am about to copy still what the assistant wrote?" -- and
-    # stays correct wherever the substitution happened: per-chunk, the
-    # StreamRedactor wire pass, or this call. All three write the same tag.
+    # The counts come from the TAGS in the persisted text, not from
+    # `cred_warnings`/`exfil_warnings`, because on the streaming path those lists
+    # are almost always empty HERE: the run loop redacts every chunk before it
+    # enters `assistant_text` (EVENT_TEXT_CHUNK branch), so this call re-redacts
+    # already-clean text and reports nothing. The warning lists only fire for a
+    # secret or URL split across chunk boundaries, which is the rarer case.
+    # Reading the artifact instead of the event answers the question the user
+    # actually has -- "is what I am about to copy still what the assistant
+    # wrote?" -- and stays correct wherever the substitution happened: per-chunk,
+    # the StreamRedactor wire pass, or this call. All three write the same tags.
     #
     # Broadcast unconditionally: `quiet_persist` exists to suppress a DUPLICATE
     # of the pre-steer assistant text that clients already rendered, and a notice
     # row has no streamed counterpart to duplicate. Suppressing it there would
     # drop the warning on exactly the path this fix exists to cover.
-    # The count sums every CREDENTIAL tag the redactor can emit, read from
-    # `CREDENTIAL_REDACTION_TAGS` which `security.py` owns beside the passes that
-    # write them. Enumerating tags by hand here is what previously left an
+    # The counts sum every tag the redactors can emit: every CREDENTIAL tag,
+    # read from `CREDENTIAL_REDACTION_TAGS` which `security.py` owns beside the
+    # passes that write them, plus the exfiltration-URL tag, counted by
+    # `EXFILTRATION_REDACTION_TAG_PREFIX` because that tag interpolates the
+    # redacted domain and so has no constant form to equality-compare (the
+    # substitution is built FROM the exported prefix, so the two cannot drift).
+    # Enumerating tags by hand here is what previously left an
     # encoded-credential-only segment silently rewritten and undercounted a mixed
     # one; asking the redactor's own module means a newly added tag cannot escape.
     #
-    # SCOPE: credentials only, so this notice does NOT fire for the
-    # `redact_exfiltration_urls` pass a few lines above, which rewrites a URL to
-    # `[REDACTED: suspicious URL to <domain>]` just as silently. Same root cause,
-    # same function, different rewriter -- tracked separately rather than widened
-    # into this fix, because issue #6189 reports the credential case and the notice
-    # wording ("A credential ... was replaced") would have to change to cover both.
+    # SCOPE: this notice covers BOTH rewriters on the assistant body persisted
+    # THROUGH THIS FUNCTION -- `redact_credentials` (issue #6189) and
+    # `redact_exfiltration_urls` (issue #8132), worded by kind because the
+    # remedies differ. Two kinds of sibling call sites stay notice-free:
+    # display-string redactions (titles, tool names, feed strings, stashed
+    # variants -- not text the user copies commands from), deliberately; and the
+    # seven exception/teardown branches below that persist an assistant body
+    # directly, bypassing this function -- a known shared gap of both notices,
+    # tracked in issue #8311 rather than widened into this fix.
     _cred_redactions = sum(redacted.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-    if _cred_redactions:
-        slot.append("notice", _redaction_notice(_cred_redactions), "msg msg-info")
+    _url_redactions = redacted.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+    if _cred_redactions or _url_redactions:
+        slot.append("notice", _redaction_notice(_cred_redactions, _url_redactions), "msg msg-info")
     # Re-append any stop_event that belongs to this segment's trailing run,
     # placed AFTER the finalized assistant message so the UI shows
     # prose → stop card.

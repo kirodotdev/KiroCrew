@@ -11554,6 +11554,18 @@ def scan_exfiltration_urls(text: str) -> list[str]:
     return warnings
 
 
+#: Stable PREFIX of the substitution :func:`redact_exfiltration_urls` writes in
+#: place of a suspicious URL. The full tag interpolates the redacted URL's
+#: domain (``f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"``), so unlike the
+#: constant credential tags it cannot be equality-compared -- which is why it is
+#: a PREFIX constant and deliberately NOT a member of
+#: :data:`CREDENTIAL_REDACTION_TAGS` (see that tuple's docstring). A consumer
+#: that must detect this rewriter's substitutions (the dashboard chat notice,
+#: issue #8132) prefix-counts THIS constant; the substitution below is built
+#: from it so the two can never drift.
+EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
+
+
 def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     """Scan and redact suspicious exfiltration URLs from text.
 
@@ -11574,7 +11586,9 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
             port=match.group(2) or "",
             is_https=match.group(0).lower().startswith("https://"),
         ):
-            result = result.replace(match.group(0), f"[REDACTED: suspicious URL to {domain}]")
+            result = result.replace(
+                match.group(0), f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"
+            )
     return result, warnings
 
 
@@ -12731,8 +12745,11 @@ _REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
 #: this text rewritten at all". :func:`redact_exfiltration_urls` is a separate
 #: rewriter that substitutes ``[REDACTED: suspicious URL to <domain>]`` -- a
 #: variable string, so it is prefix-matched rather than compared, which is why it
-#: is not a member here. Text can therefore be rewritten with every tag in this
-#: tuple absent.
+#: is not a member here. Its stable prefix is exported as
+#: :data:`EXFILTRATION_REDACTION_TAG_PREFIX` (beside the rewriter itself), and a
+#: consumer that needs the full "was this text rewritten" answer must check that
+#: constant by prefix ALONGSIDE this tuple -- the dashboard chat notice does
+#: exactly that (issues #6189 and #8132).
 #:
 #: This tuple exists because the enumeration used to live at the call site, where
 #: it silently missed the encoded tag and under-reported redactions on the
