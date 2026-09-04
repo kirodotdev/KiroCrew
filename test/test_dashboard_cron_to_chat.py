@@ -801,6 +801,18 @@ class TestInjectCronResultToDashboard:
         job.set_run_result("run one")
         _inject(state, job, "run one", history=[])
         job.set_run_result("run two")
+        # Pin the second run's identity past the first run's, as the sibling
+        # test setting ``last_result_ts`` explicitly already does. This test is
+        # about the ``history=None`` steady state, not about clock resolution:
+        # ``set_run_result`` stamps at wall-clock time, and on a coarse clock
+        # (Windows/CPython <= 3.12 resolves ~15.6 ms) two back-to-back calls
+        # can return the identical float, rendering both runs a byte-identical
+        # marker -- so the dedupe would CORRECTLY drop run two as a repeat and
+        # the test would assert against a single-run transcript it never meant
+        # to build. Two real runs are separated by a schedule interval; the
+        # explicit stamp gives the test the two distinct identities it needs.
+        job.last_result_ts += 1.0
+        job.last_result_stamp = job._render_run_stamp(job.last_result_ts)
         _inject(state, job, "run two", history=None)
 
         prompts = [
