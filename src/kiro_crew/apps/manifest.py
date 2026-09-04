@@ -1195,7 +1195,7 @@ def _mirrored_len(text: str) -> int:
     title cap that "a cap that only one side enforces is not a cap"; that holds for the
     UNIT as well as for the number, so the caps are measured the host's way.
     UNPAIRED surrogates are why this passes ``surrogatepass``: JSON can carry a lone
-    ``\ud800`` escape, ``json.loads`` accepts it, and a plain ``utf-16-le`` encode then
+    ``\\ud800`` escape, ``json.loads`` accepts it, and a plain ``utf-16-le`` encode then
     raises ``UnicodeEncodeError`` -- so a manifest would CRASH validation instead of
     being told what is wrong with it. With the flag the count still matches the host
     exactly: a lone surrogate is one unit in both languages, an astral character two.

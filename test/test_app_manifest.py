@@ -1720,3 +1720,19 @@ class TestContributedCommands:
         # Without autoSend the same command is fine.
         cmd.pop("autoSend")
         assert AppManifest.from_dict(self._manifest(cmd)).validate() == []
+
+
+class TestManifestModuleImportable:
+    """The module must import cleanly — no lone surrogates in docstrings (#8391)."""
+
+    def test_mirrored_len_docstring_has_no_surrogates(self):
+        import kiro_crew.apps.manifest as manifest_mod
+
+        doc = manifest_mod._mirrored_len.__doc__ or ""
+        assert chr(0xD800) not in doc
+        doc.encode("utf-8")
+
+    def test_mirrored_len_still_counts_host_units(self):
+        from kiro_crew.apps.manifest import _mirrored_len
+
+        assert _mirrored_len("abc") == 3
