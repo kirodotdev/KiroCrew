@@ -12074,7 +12074,7 @@
         "send_the_copied_link_to_your_mobile_device_then_open_it": "Envie o link copiado ao seu celular e abra-o lá.",
         "dashboard_url_required_to_create_a_mobile_sign_in_link": "A URL do painel não está configurada. Defina dashboard.url para criar um link de login para celular.",
         "could_not_create_a_sign_in_link_try_again": "Não foi possível criar um link de login. Tente novamente.",
-        "restricted_sessions_cannot_create_a_sign_in_link": "Sessões anônimas e temporárias não podem criar links de login. Mude para uma sessão normal para criar um.",
+        "restricted_sessions_cannot_create_a_sign_in_link": "Sessões anônimas e temporárias não podem criar links de login. Volte ao modo padrão para criar um.",
         "session_expired_sign_in_again_to_create_a_link": "Sua sessão expirou. Entre novamente e depois crie o link.",
         "copy_failed_select_the_link_and_copy_it_manually": "Falha ao copiar. Selecione o link e copie-o manualmente."
       },

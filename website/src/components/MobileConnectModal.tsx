@@ -9,8 +9,9 @@ import { settingsPath } from './settingsPath'
 import { useAppSelector } from '../store'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { copyToClipboard } from '../utils/clipboard'
-import { parseErrorCode } from '../utils/errorReport'
+import { findReport, parseErrorCode } from '../utils/errorReport'
 import ErrorBoundary from './ErrorBoundary'
+import ErrorNotice from './ErrorNotice'
 import { getMobileConnectRenderers } from './mobileConnectRenderers'
 
 /** Machine-readable code from a mint error's JSON body (same shape as the
@@ -20,6 +21,30 @@ const linkErrorCode = (error: unknown): string | undefined =>
   typeof error === 'object' && error !== null && 'body' in error
     ? parseErrorCode(typeof error.body === 'string' ? error.body : undefined)
     : undefined
+
+/**
+ * Handler error code → catalog key, for the SECOND consumer of
+ * `api.mobileLoginLink` (the Settings card is the first, and carries the same
+ * map). Both dialogs mint through one handler, so a code that retrying cannot
+ * clear has to name its action in both places or the defect only half moves.
+ *
+ * The two 403s reuse the Settings card's keys rather than duplicating the
+ * sentences into this namespace: the copy is identical, the strings are already
+ * translated in all thirteen catalogs, and a component reading a `pages.*` core
+ * key is the established shape here (`ApprovalModePicker`, `AddJobSplitButton`).
+ * The other two entries stay on this dialog's own keys, whose wording is
+ * dialog-specific.
+ *
+ * Every key is a plain string literal in an `as const` map, not a key assembled
+ * at the call site, so the static key scan can see them — see
+ * `src/i18n/dynamicKeys.test.ts`.
+ */
+const LINK_ERROR_KEYS = {
+  external_origin_unavailable: 'components.mobileConnect.could_not_create_a_link_check_that_an_external_add',
+  governance_denied: 'components.mobileConnect.phone_connection_is_disabled_by_policy_on_this_dep',
+  restricted_session: 'pages.settings.mobileLoginCard.restricted_sessions_cannot_create_a_sign_in_link',
+  caller_session_expired: 'pages.settings.mobileLoginCard.session_expired_sign_in_again_to_create_a_link',
+} as const
 
 /**
  * "Connect your phone" — the sidebar entry's centered dialog (mockup A1).
@@ -278,16 +303,26 @@ function LoginLinkSection({ standalone }: { standalone: boolean }) {
         </p>
       )}
       {createLink.isError && (
-        <p className="text-[11.5px] text-danger mt-2" role="alert">
-          {/* Blame configuration ONLY when the server said so; a policy denial
-              is terminal (retrying cannot succeed); anything else gets a plain
-              retry line so the user does not hunt a config that is fine. */}
-          {linkErrorCode(createLink.error) === 'external_origin_unavailable'
-            ? t('components.mobileConnect.could_not_create_a_link_check_that_an_external_add')
-            : linkErrorCode(createLink.error) === 'governance_denied'
-              ? t('components.mobileConnect.phone_connection_is_disabled_by_policy_on_this_dep')
-              : t('components.mobileConnect.could_not_create_a_link_try_again')}
-        </p>
+        /* Blame configuration ONLY when the server said so; a policy denial
+           and both dead-end 403s are terminal (retrying cannot succeed);
+           anything else gets a plain retry line so the user does not hunt a
+           config that is fine.
+           Hand-off is on: the mint takes no user input, so the only thing this
+           dialog holds is a read-only generated link that re-minting replaces.
+           `report` is resolved from the RAW error message, not the copy below:
+           the journal keys on what `apiFailure` threw, so a lookup by the
+           translated sentence would miss and the hand-off would carry no
+           endpoint, status or backend `code`. */
+        <ErrorNotice
+          variant="inline"
+          askAgent
+          className="mt-2"
+          report={findReport(createLink.error?.message)}
+          message={t(
+            LINK_ERROR_KEYS[linkErrorCode(createLink.error) as keyof typeof LINK_ERROR_KEYS] ||
+              'components.mobileConnect.could_not_create_a_link_try_again',
+          )}
+        />
       )}
       {createLink.data && (
         <p className="text-[11.5px] text-muted mt-2">

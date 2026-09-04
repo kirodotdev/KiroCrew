@@ -12075,7 +12075,7 @@
         "send_the_copied_link_to_your_mobile_device_then_open_it": "Envía el enlace copiado a tu dispositivo móvil y ábrelo allí.",
         "dashboard_url_required_to_create_a_mobile_sign_in_link": "La URL del panel no está configurada. Configura dashboard.url para crear un enlace de inicio de sesión móvil.",
         "could_not_create_a_sign_in_link_try_again": "No se pudo crear un enlace de inicio de sesión. Inténtalo de nuevo.",
-        "restricted_sessions_cannot_create_a_sign_in_link": "Las sesiones de incógnito y temporales no pueden crear enlaces de inicio de sesión. Cambia a una sesión normal para crear uno.",
+        "restricted_sessions_cannot_create_a_sign_in_link": "Las sesiones de incógnito y temporales no pueden crear enlaces de inicio de sesión. Vuelve al modo predeterminado para crear uno.",
         "session_expired_sign_in_again_to_create_a_link": "Tu sesión ha caducado. Inicia sesión de nuevo y luego crea el enlace.",
         "copy_failed_select_the_link_and_copy_it_manually": "No se pudo copiar. Selecciona el enlace y cópialo manualmente."
       },

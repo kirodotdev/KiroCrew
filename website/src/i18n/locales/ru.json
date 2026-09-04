@@ -12241,7 +12241,7 @@
         "send_the_copied_link_to_your_mobile_device_then_open_it": "Отправь скопированную ссылку на мобильное устройство и открой её там.",
         "dashboard_url_required_to_create_a_mobile_sign_in_link": "URL панели управления не настроен. Укажите dashboard.url, чтобы создать ссылку для входа с мобильного устройства.",
         "could_not_create_a_sign_in_link_try_again": "Не удалось создать ссылку для входа. Попробуй ещё раз.",
-        "restricted_sessions_cannot_create_a_sign_in_link": "Сессии инкогнито и временные сессии не могут создавать ссылки для входа. Перейди в обычную сессию, чтобы создать ссылку.",
+        "restricted_sessions_cannot_create_a_sign_in_link": "Сессии инкогнито и временные сессии не могут создавать ссылки для входа. Вернись в обычный режим, чтобы создать ссылку.",
         "session_expired_sign_in_again_to_create_a_link": "Твоя сессия истекла. Войди снова, затем создай ссылку.",
         "copy_failed_select_the_link_and_copy_it_manually": "Не удалось скопировать. Выдели ссылку и скопируй её вручную."
       },

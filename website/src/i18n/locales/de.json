@@ -11908,7 +11908,7 @@
         "send_the_copied_link_to_your_mobile_device_then_open_it": "Senden Sie den kopierten Link an Ihr Mobilgerät und öffnen Sie ihn dort.",
         "dashboard_url_required_to_create_a_mobile_sign_in_link": "Die Dashboard-URL ist nicht konfiguriert. Setzen Sie dashboard.url, um einen mobilen Anmeldelink zu erstellen.",
         "could_not_create_a_sign_in_link_try_again": "Anmeldelink konnte nicht erstellt werden. Versuchen Sie es erneut.",
-        "restricted_sessions_cannot_create_a_sign_in_link": "Inkognito- und temporäre Sitzungen können keine Anmeldelinks erstellen. Wechsle zu einer regulären Sitzung, um einen zu erstellen.",
+        "restricted_sessions_cannot_create_a_sign_in_link": "Inkognito- und temporäre Sitzungen können keine Anmeldelinks erstellen. Wechsle zurück zum Standardmodus, um einen zu erstellen.",
         "session_expired_sign_in_again_to_create_a_link": "Deine Sitzung ist abgelaufen. Melde dich erneut an und erstelle dann den Link.",
         "copy_failed_select_the_link_and_copy_it_manually": "Kopieren fehlgeschlagen. Wählen Sie den Link aus und kopieren Sie ihn manuell."
       },
