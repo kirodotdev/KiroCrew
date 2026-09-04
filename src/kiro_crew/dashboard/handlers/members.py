@@ -216,9 +216,19 @@ async def api_member_thread(request: web.Request) -> web.Response:
     re-created (the slot key is a pure derivation of the slug, so re-creation
     always converges on the same thread).
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     denied = _deny_app_caller(request, "members.thread")
     if denied is not None:
         return denied
+    # An app token is already refused above with the module's existence-hiding
+    # 404. This gate covers the other half: a dashboard token with an empty app
+    # identity but a non-owner subject (the `!dashboard` Slack case), which
+    # would otherwise bind a session slot to a crew member. Kept below the app
+    # denial so app callers keep the 404 they get on every other member route.
+    owner_denied = await require_owner_dashboard_request(request, "members.thread")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState | None = request.app.get("state")
     if state is None:
         return web.json_response(

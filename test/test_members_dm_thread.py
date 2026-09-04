@@ -144,6 +144,12 @@ def _make_members_app(state) -> web.Application:
     async def _auth(request: web.Request, handler):
         if "app" not in request:
             request["app"] = ""
+        # POST /api/members/{slug}/thread is owner-gated. ``local-app`` is the
+        # standalone-local owner subject the gate accepts when no owner_id is
+        # configured; set only when a test has not already chosen a caller, so
+        # the non-owner and app-token cases can still pick their own.
+        if "user" not in request:
+            request["user"] = "local-app"
         return await handler(request)
 
     app = web.Application(middlewares=[_auth])

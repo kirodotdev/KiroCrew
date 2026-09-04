@@ -92,25 +92,6 @@ _KNOWN_UNGATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PUT", "/api/config/kirocrew"),
         ("PATCH", "/api/config/kirocrew"),
         ("PUT", "/api/config/theme"),
-        # --- Workspace CRUD (files.py) ---
-        # Found BY this walk, not by the migration: none of the three carries an
-        # owner gate, and ``api_workspaces_delete`` removes a workspace from
-        # config.json for any authenticated dashboard session -- including the
-        # session token minted for an allow-listed Slack user, which has an empty
-        # app identity and so is authenticated but not the owner.
-        #
-        # Listed rather than gated HERE because gating them changes WHO may manage
-        # workspaces, which is a product decision, not the mechanical migration
-        # this change is: tracked as #6470. The DELETE is the highest-priority
-        # entry in this set.
-        ("POST", "/api/workspaces"),
-        ("PUT", "/api/workspaces/{name}"),
-        ("DELETE", "/api/workspaces/{name}"),
-        # --- Member thread creation (members.py) ---
-        # Also found by this walk. Creates a thread against a crew member for any
-        # authenticated caller. Same disposition as the workspace routes above
-        # (#6470).
-        ("POST", "/api/members/{slug}/thread"),
     }
 )
 
@@ -118,7 +99,7 @@ _KNOWN_UNGATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 # ``test_known_ungated_routes_not_growing``. Raising it is the reviewable act
 # that adding a new ungated route costs; lower it whenever an entry is gated and
 # removed, so the ratchet stays tight.
-_MAX_KNOWN_UNGATED_ROUTES = 24
+_MAX_KNOWN_UNGATED_ROUTES = 20
 
 # --------------------------------------------------------------------------- #
 # Coherence floor: the walk must find at least this many GATED mutating routes.

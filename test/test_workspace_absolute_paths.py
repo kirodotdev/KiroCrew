@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers import api_workspaces_create, api_workspaces_update
 
@@ -16,7 +17,9 @@ def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_post("/api/workspaces", api_workspaces_create)
     app.router.add_put("/api/workspaces/{name}", api_workspaces_update)
-    return app
+    # Both routes are owner-gated; without an owner identity every test below
+    # would answer 403 on the gate instead of on the path handling it names.
+    return as_owner(app)
 
 
 @pytest.fixture()

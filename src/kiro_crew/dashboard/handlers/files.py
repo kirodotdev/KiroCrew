@@ -1481,7 +1481,15 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     """POST /api/workspaces — create a new workspace."""
     import shutil  # noqa: F811
 
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
     from kiro_crew.validation import WORKSPACE_NAME_RE  # noqa: F811
+
+    # Ahead of the body read: a workspace entry carries a caller-supplied
+    # directory, so the traversal and sensitive-path guards below are defending
+    # against input that only the owner may supply in the first place.
+    owner_denied = await require_owner_dashboard_request(request, "workspace.create")
+    if owner_denied is not None:
+        return owner_denied
 
     # Default cap: the body is a workspace name plus optional dir/copy_from.
     body, body_err = await read_bounded_json(request)
@@ -1637,6 +1645,12 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
 
 async def api_workspaces_update(request: web.Request) -> web.Response:
     """PUT /api/workspaces/{name} — update a workspace."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    # Ahead of the 404: whether a workspace exists is not a non-owner's to learn.
+    owner_denied = await require_owner_dashboard_request(request, "workspace.update")
+    if owner_denied is not None:
+        return owner_denied
 
     name = request.match_info["name"]
     cfg = KiroCrewConfig.load()
@@ -1710,6 +1724,13 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
 
 async def api_workspaces_delete(request: web.Request) -> web.Response:
     """DELETE /api/workspaces/{name} — delete a workspace."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    # Ahead of the 404/409 guards: those are referential, not authorization, and
+    # this handler reaches `cfg.save()` with an entry removed.
+    owner_denied = await require_owner_dashboard_request(request, "workspace.delete")
+    if owner_denied is not None:
+        return owner_denied
 
     name = request.match_info["name"]
     cfg = KiroCrewConfig.load()
