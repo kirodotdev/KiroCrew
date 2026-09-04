@@ -186,6 +186,26 @@ leaving the specs enough of that budget to actually run:
   reports the real cause while the job still has budget, instead of the job
   timing out having run zero specs.
 
+### A red run uploads the specs' own failure record
+
+When the job fails, a final `if: failure()` step uploads
+`website/test-results/` and `website/playwright-report/` as the
+`e2e-playwright-failures` artifact (7-day retention). `test-results/` holds one
+directory per failed attempt: `error-context.md` (the ARIA snapshot of the page
+at the failing assertion — the thing that says whether a locator matched the
+wrong row or no row), the `on-first-retry` trace, and any screenshot. The html
+report next to it is the one `--reporter=html` writes.
+
+The job's log alone is not enough to triage a spec failure: it names
+`error-context.md` and prints nothing from it. #8526 (a ghost transcript from the
+previous session rendering for a few hundred ms after the first send) was
+narrowed for hours from that one line before a local run produced the snapshot.
+Download the artifact first; bisect second.
+
+`if-no-files-found: ignore`, deliberately: a run that fails before the specs
+start (a stalled browser install) has neither directory, and the upload must not
+turn that into a second, misleading failure.
+
 Related: [i18n-gates.md](i18n-gates.md) for the render-time gate that shares this
 job, and [ci-and-reviews.md](ci-and-reviews.md) for where `e2e` sits among the
 other PR gates.
