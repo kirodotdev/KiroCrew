@@ -5762,6 +5762,7 @@
       "changed": "geändert",
       "file_one": "{{count}} Datei",
       "file_other": "{{count}} Dateien",
+      "large_file_simplified_view": "Große Datei — vereinfachte Ansicht",
       "more": "mehr",
       "no_changes": "keine Änderungen",
       "open": "Datei öffnen",

@@ -260,6 +260,21 @@ Shared CSS utilities in `index.css`: `.top-bar-pill`, `.topbar-glass`,
 `.scroll-shadow`, `.table-striped`, `.skeleton`, `.focus-ring`. A theme change
 crossfades through a `transition` on `body`.
 
+## Large file-pair diffs
+
+All old/new source pairs render through `PierreFilePair` in `src/pierre/index.tsx`.
+That wrapper owns a layout-independent renderer-thread budget before the lazy
+Pierre chunk loads, because Pierre constructs the raw diff synchronously before
+its worker pool or row virtualizer participates. Inputs outside the budget keep
+both complete files, header controls, native selection, wrapping, and theme
+styling in a bounded plain side-by-side or sequential surface. A translated
+status identifies the simplified view; it omits syntax colour, hunk interleaving,
+and line-level diff controls. The content limit is measured in JavaScript UTF-16
+code units rather than encoded bytes so the guard stays allocation-free while an
+editor changes. Editable live diffs use the same
+predicate and degrade to the ordinary editable file surface rather than becoming
+read-only. Do not duplicate or weaken the limits at call sites.
+
 ## Typography scale
 
 Body is 14px (`0.875rem`, set on `body`). Descriptions and details use

@@ -185,6 +185,21 @@ describe('PierreEditorImpl surface selection', () => {
     expect(lastSurface().props.edit).toBe(true)
   })
 
+  it('degrades an oversized live diff to the same editable file surface', () => {
+    const contents = Array.from(
+      { length: 401 },
+      (_, i) => `export const generated${i} = ${i}`,
+    ).join('\n')
+    const oversized = { ...FILE, contents, cacheKey: 'a.ts:oversized' }
+    const { view } = mount({ file: oversized, diffBase: contents.replaceAll(' = ', ' = old') })
+
+    expect(lastSurface().kind).toBe('file')
+    expect(view.getByTestId('pierre-file')).toBeInTheDocument()
+    expect(lastSurface().props.file).toBe(oversized)
+    expect(lastSurface().props.edit).toBe(true)
+    expect(lastSurface().props.editorOptions).toBeTruthy()
+  })
+
   it('renders the live-diff surface with a null baseline for a brand-new file', () => {
     // `diffBase: null` is a distinct request from omitting it: the whole buffer
     // reads as added, so the surface must still be the diff one.

@@ -5668,6 +5668,7 @@
       "artifact": "アーティファクト",
       "changed": "変更",
       "file_other": "{{count}} 個のファイル",
+      "large_file_simplified_view": "大きなファイル — 簡易表示",
       "more": "その他",
       "no_changes": "変更なし",
       "open": "ファイルを開く",

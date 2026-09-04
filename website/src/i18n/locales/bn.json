@@ -5762,6 +5762,7 @@
       "changed": "পরিবর্তিত",
       "file_one": "{{count}}টি ফাইল",
       "file_other": "{{count}}টি ফাইল",
+      "large_file_simplified_view": "বড় ফাইল — সরলীকৃত ভিউ",
       "more": "আরও",
       "no_changes": "কোনো পরিবর্তন নেই",
       "open": "ফাইল খুলুন",

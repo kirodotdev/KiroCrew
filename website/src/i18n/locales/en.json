@@ -4236,6 +4236,7 @@
       "changed": "changed",
       "file_one": "{{count}} file",
       "file_other": "{{count}} files",
+      "large_file_simplified_view": "Large file — simplified view",
       "more": "more",
       "no_changes": "no changes",
       "open": "Open File",

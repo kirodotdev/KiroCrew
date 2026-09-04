@@ -5668,6 +5668,7 @@
       "artifact": "产物",
       "changed": "已更改",
       "file_other": "{{count}} 个文件",
+      "large_file_simplified_view": "大文件 — 简化视图",
       "more": "更多",
       "no_changes": "无更改",
       "open": "打开文件",

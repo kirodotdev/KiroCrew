@@ -8,11 +8,12 @@
  * the chunk loads, so content is readable immediately (and test environments
  * that never resolve the chunk still render the text).
  */
-import { Suspense, forwardRef, lazy, memo } from 'react'
+import { Suspense, forwardRef, lazy, memo, type CSSProperties } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
-import { PlainCodeFallback } from './PlainCodeFallback'
+import { PlainCodeFallback, PlainFilePairFallback } from './PlainCodeFallback'
+import { isPierreFilePairWithinBudget } from './renderBudget'
 
 const CodeImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierreCodeImpl })))
 const PatchImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierrePatchImpl })))
@@ -94,11 +95,14 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   )
 })
 
-export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
+export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackContentStyle, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
   oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
   className?: string
+  /** Light-DOM sizing for the plain oversized fallback. Pierre's `unsafeCSS`
+   *  styles its shadow root and cannot reach that fallback. */
+  fallbackContentStyle?: CSSProperties
   /** Injected into the file header's metadata slot. Also rendered while
    *  `options.collapsed` is set, where the header IS the whole surface. */
   renderHeaderMetadata?: () => React.ReactNode
@@ -107,6 +111,20 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   /** Injected directly after the filename in the header. */
   renderHeaderFilenameSuffix?: () => React.ReactNode
 }) {
+  if (!isPierreFilePairWithinBudget(oldFile, newFile)) {
+    return (
+      <PlainFilePairFallback
+        oldFile={oldFile}
+        newFile={newFile}
+        options={options}
+        className={className}
+        contentStyle={fallbackContentStyle}
+        renderHeaderMetadata={renderHeaderMetadata}
+        renderHeaderPrefix={renderHeaderPrefix}
+        renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+      />
+    )
+  }
   return (
     <Suspense fallback={<PlainCodeFallback text={(newFile ?? oldFile)?.contents ?? ''} />}>
       <FilePairImpl

@@ -5668,6 +5668,7 @@
       "artifact": "아티팩트",
       "changed": "변경됨",
       "file_other": "파일 {{count}}개",
+      "large_file_simplified_view": "큰 파일 — 간소화된 보기",
       "more": "더 보기",
       "no_changes": "변경 없음",
       "open": "파일 열기",

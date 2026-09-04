@@ -16,6 +16,7 @@ import {
   pierreThemeType,
 } from './config'
 import { contentCacheKey, PierreShell } from './PierreImpl'
+import { isPierreFilePairWithinBudget } from './renderBudget'
 
 export interface EditorMarker {
   severity: 'error' | 'warning' | 'info'
@@ -97,6 +98,8 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
       : { name: file.name, contents: diffBase, cacheKey: contentCacheKey(file.name, diffBase, surfaceId + ':edit-base') }),
     [diffBase, file.name, surfaceId],
   )
+  const renderLiveDiff = diffBase !== undefined
+    && isPierreFilePairWithinBudget(baseFile, file)
   const editorRef = useRef<Editor<undefined> | null>(null)
   /** A jump requested before Pierre bound its editor, replayed on attach. */
   const pendingJumpRef = useRef<{ line: number; endLine?: number } | null>(null)
@@ -194,10 +197,12 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
         className={`pierre-surface h-full w-full overflow-auto ${className ?? ''}`}
       >
         <EditProvider createEditor={createEditor}>
-        {diffBase !== undefined ? (
+        {renderLiveDiff ? (
           // Live-diff edit session: Pierre diffs the buffer against the
-          // baseline as you type. Keyed so flipping modes rebuilds the edit
-          // session rather than rebinding one editor across surface kinds.
+          // baseline as you type. Inputs outside the renderer-thread budget
+          // keep the same editor behavior but omit live diff decoration.
+          // Keyed so flipping modes rebuilds the edit session rather than
+          // rebinding one editor across surface kinds.
           <MultiFileDiff
             key="diff"
             oldFile={baseFile}

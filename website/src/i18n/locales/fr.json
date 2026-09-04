@@ -5856,6 +5856,7 @@
       "file_many": "{{count}} fichiers",
       "file_one": "{{count}} fichier",
       "file_other": "{{count}} fichiers",
+      "large_file_simplified_view": "Fichier volumineux — vue simplifiée",
       "more": "de plus",
       "no_changes": "aucun changement",
       "open": "Ouvrir le fichier",

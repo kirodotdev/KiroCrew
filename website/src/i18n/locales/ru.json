@@ -5950,6 +5950,7 @@
       "file_many": "{{count}} файлов",
       "file_one": "{{count}} файл",
       "file_other": "{{count}} файла",
+      "large_file_simplified_view": "Большой файл — упрощённый вид",
       "more": "ещё",
       "no_changes": "нет изменений",
       "open": "Открыть файл",

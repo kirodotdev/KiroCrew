@@ -101,6 +101,16 @@ export const PIERRE_EDIT_CARET_ALIGN_CSS = `
  *  how many files tokenize concurrently — four covers a chat message or PR
  *  with several diffs open at once without spawning the library's default 8. */
 export const PIERRE_WORKER_POOL_SIZE = 4
+/** File-pair inputs above either limit bypass Pierre before its lazy chunk loads.
+ * `MultiFileDiff` builds a raw diff synchronously on the renderer thread before
+ * workers or row virtualization can help. Benchmarks of Pierre 1.3.5 put 400
+ * fully changed lines at ~20 ms on a normal host, leaving headroom under a
+ * 100 ms long-task budget at 4x CPU slowdown; 1,000 lines already takes ~120 ms
+ * before React rendering or highlighting. The UTF-16 code-unit ceiling is cheap
+ * enough to run while editing and bounds wide JavaScript strings before a broken
+ * worker pool can move Shiki onto that thread. */
+export const PIERRE_FILE_PAIR_MAX_LINES_PER_SIDE = 400
+export const PIERRE_FILE_PAIR_MAX_TOTAL_CODE_UNITS = 128 * 1024
 /** Which regex engine the highlight workers tokenize with.
  *
  *  Pierre defaults to `shiki-js`, which runs TextMate grammar patterns through

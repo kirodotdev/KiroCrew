@@ -5762,6 +5762,7 @@
       "changed": "बदली गई",
       "file_one": "{{count}} फ़ाइल",
       "file_other": "{{count}} फ़ाइलें",
+      "large_file_simplified_view": "बड़ी फ़ाइल — सरल दृश्य",
       "more": "और",
       "no_changes": "कोई बदलाव नहीं",
       "open": "फ़ाइल खोलें",

@@ -13,18 +13,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent, cleanup, within } from '@testing-library/react'
 
-const hoisted = vi.hoisted(() => ({ options: [] as { collapsed: boolean; diffStyle?: string }[] }))
+const hoisted = vi.hoisted(() => ({
+  options: [] as { collapsed: boolean; diffStyle?: string }[],
+  fallbackStyles: [] as { maxHeight?: number; overflowY?: string }[],
+}))
 
 vi.mock('../pierre', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  PierreFilePair: ({ oldFile, options, renderHeaderPrefix, renderHeaderFilenameSuffix, renderHeaderMetadata }: {
+  PierreFilePair: ({ oldFile, options, fallbackContentStyle, renderHeaderPrefix, renderHeaderFilenameSuffix, renderHeaderMetadata }: {
     oldFile: { name: string }
     options: { collapsed: boolean; diffStyle?: string }
+    fallbackContentStyle: { maxHeight?: number; overflowY?: string }
     renderHeaderPrefix?: () => React.ReactNode
     renderHeaderFilenameSuffix?: () => React.ReactNode
     renderHeaderMetadata?: () => React.ReactNode
   }) => {
     hoisted.options.push(options)
+    hoisted.fallbackStyles.push(fallbackContentStyle)
     return (
       <div data-testid="pierre-pair">
         <div data-diffs-header="">
@@ -49,6 +54,7 @@ const cells = (c: HTMLElement, cls: string) => c.querySelectorAll(`.${cls}`).len
 
 beforeEach(() => {
   hoisted.options.length = 0
+  hoisted.fallbackStyles.length = 0
   // The card's split/unified layout persists app-wide (`mc-diff-split`);
   // start each test from the unseeded default.
   localStorage.clear()
@@ -56,6 +62,11 @@ beforeEach(() => {
 })
 
 describe('expanded row header slots', () => {
+  it('shares the normal row body height with the plain oversized fallback', () => {
+    render(<FileChangeChips fileChanges={[change('/src/a.ts', 'a', 'b')]} />)
+    expect(hoisted.fallbackStyles.at(-1)).toEqual({ maxHeight: 376, overflowY: 'auto' })
+  })
+
   it('shows the basename in the header and keeps the full path on the row tooltip', () => {
     const { container } = render(
       <FileChangeChips fileChanges={[change('/deep/nested/index.ts', 'a', 'b')]} />,
