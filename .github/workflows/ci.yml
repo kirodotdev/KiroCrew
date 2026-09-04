@@ -48,7 +48,9 @@ jobs:
   # only_backend / only_frontend are computed here ONCE. `backend` is a
   # catch-all, so every changed file is exactly one of frontend / meta /
   # backend: a diff that touches two buckets (or meta) leaves BOTH flags false
-  # and the full matrix runs.
+  # and the full matrix runs. One exception: temp-screenshots/** evidence
+  # media counts toward NO bucket, so a screenshots-only diff also leaves both
+  # flags false and runs the full matrix (fails safe).
   changes:
     name: Detect changed surface
     runs-on: ubuntu-latest
@@ -79,12 +81,14 @@ jobs:
         with:
           # 'some-with-excludes': a file matches a filter when it matches at
           # least one pattern AND none of the negated ones. That lets `backend`
-          # be a true CATCH-ALL ("every changed file that is not frontend and not
-          # meta") instead of an allowlist that would have to be complete to be
-          # safe. Every changed file therefore lands in exactly one bucket, which
-          # is what makes "only_X means only X changed" literally true -- an
-          # unrecognised path (docs/**, *.md, a new root file) counts as backend
-          # rather than silently riding along under a narrowed suite.
+          # be a true CATCH-ALL ("every changed file that is not frontend, not
+          # meta, and not ignored evidence media") instead of an allowlist that
+          # would have to be complete to be safe. Every changed file therefore
+          # lands in exactly one bucket -- or none, for temp-screenshots/**
+          # evidence -- which is what keeps "only_X means only X changed" true
+          # for real files: an unrecognised path (docs/**, *.md, a new root
+          # file) counts as backend rather than silently riding along under a
+          # narrowed suite.
           # NOTE: this quantifier requires >= v4.0.3 (added upstream in PR #322);
           # v4.0.2 rejects the input and throws, so do not lower the pin.
           predicate-quantifier: 'some-with-excludes'
@@ -99,6 +103,15 @@ jobs:
               - '!website/**'
               - '!.github/**'
               - '!scripts/**'
+              # temp-screenshots/** is never-packaged, never-imported evidence
+              # media (cleanup-temp-screenshots.yml already treats it as
+              # ephemeral), so it must not drag a frontend-only PR into the
+              # full backend matrix (#8027). Excluding it keeps the catch-all
+              # safety property: any unrecognised REAL file still lands in
+              # backend, a screenshots+frontend diff stays only_frontend=true,
+              # and a screenshots-ONLY diff matches no bucket so both flags
+              # stay false and the FULL matrix runs (fails safe).
+              - '!temp-screenshots/**'
             # Independent of the three buckets above: it answers a different
             # question ("could this diff change what a Linux package installs?")
             # and so may overlap them freely.

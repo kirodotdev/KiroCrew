@@ -64,10 +64,51 @@ def test_script_exists(gate) -> None:
         ("docs/README.md", (False, False, True)),  # catch-all: unrecognised = backend
         ("newtoplevel.cfg", (False, False, True)),
         ("websites/evil.py", (False, False, True)),  # prefix, not substring
+        # Evidence media matches NO bucket (#8027) -- mirrors ci.yml's
+        # '!temp-screenshots/**' backend negation.
+        ("temp-screenshots/feature/shot.png", (False, False, False)),
+        ("temp-screenshotsx/evil.py", (False, False, True)),  # prefix, not substring
     ],
 )
 def test_classify_buckets(gate, path: str, expected) -> None:
     assert gate.classify([path]) == expected
+
+
+def test_classify_evidence_does_not_flip_frontend_only(gate) -> None:
+    """A screenshots+frontend diff stays frontend-only -- the #8027 fix."""
+    frontend, meta, backend = gate.classify(
+        ["website/src/App.tsx", "temp-screenshots/feature/shot.png"]
+    )
+    assert frontend and not meta and not backend
+
+
+def test_changed_files_keeps_both_rename_endpoints(gate, monkeypatch) -> None:
+    """Renaming a real file INTO temp-screenshots/ must not hide the old
+    path's bucket: ``--no-renames`` splits a rename into delete + add (the
+    same contract run_scoped_tests.py and CI's dorny/paths-filter apply), and
+    the porcelain parser keeps BOTH sides of a defensive ``old -> new`` arrow.
+    """
+    class _Proc:
+        def __init__(self, stdout: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+
+    def fake_run(argv, **_kwargs):
+        if argv[:2] == ["git", "merge-base"]:
+            return _Proc("abc123\n")
+        if argv[:2] == ["git", "diff"]:
+            assert "--no-renames" in argv, "committed diff must not fold renames"
+            return _Proc("src/kiro_crew/gateway.py\n")
+        assert "--no-renames" in argv, "porcelain status must not fold renames"
+        return _Proc('R  src/kiro_crew/moved.py -> temp-screenshots/f/moved.png\n')
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    paths = gate.changed_files("main")
+    assert paths is not None
+    assert "src/kiro_crew/moved.py" in paths
+    assert "temp-screenshots/f/moved.png" in paths
+    # And the classification consequence: the old backend path still counts.
+    assert gate.classify(paths) == (False, False, True)
 
 
 def test_classify_mixed_diff_sets_both_flags(gate) -> None:
@@ -139,10 +180,20 @@ def test_bucket_prefixes_match_ci_changes_job(gate) -> None:
         "ci.yml's backend bucket is no longer a pure '**' catch-all -- "
         "scripts/local-gate.py classify() must be reworked to match"
     )
-    assert negations == set(filters["frontend"]) | set(filters["meta"]), (
-        "ci.yml's backend negations no longer mirror frontend+meta exactly -- "
-        "re-derive the bucket rules in scripts/local-gate.py"
+    ignored = {f"{prefix}**" for prefix in gate._IGNORED_PREFIXES}
+    assert negations == set(filters["frontend"]) | set(filters["meta"]) | ignored, (
+        "ci.yml's backend negations no longer mirror frontend+meta plus the "
+        "ignored evidence prefixes -- re-derive the bucket rules in "
+        "scripts/local-gate.py (_FRONTEND_PREFIXES / _META_PREFIXES / "
+        "_IGNORED_PREFIXES)"
     )
+    # classify() tests the ignored prefixes FIRST, so an entry overlapping a
+    # real bucket would silently shadow it while the set-union above still
+    # passed. Keep the carve-out disjoint from the buckets it is carved from.
+    assert not (
+        set(gate._IGNORED_PREFIXES)
+        & (set(gate._FRONTEND_PREFIXES) | set(gate._META_PREFIXES))
+    ), "_IGNORED_PREFIXES must not overlap the frontend/meta bucket prefixes"
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +249,18 @@ def test_empty_diff_falls_open(gate, monkeypatch) -> None:
 def test_meta_diff_runs_full(gate, monkeypatch) -> None:
     monkeypatch.setattr(gate, "changed_files", lambda base: ["scripts/clean.sh"])
     assert _is_full(gate.build_plan(_args()))
+
+
+def test_evidence_only_diff_falls_open(gate, monkeypatch) -> None:
+    """A screenshots-only diff matches no bucket in CI (full matrix runs);
+    the local gate mirrors that with the full plan (fail-open)."""
+    monkeypatch.setattr(
+        gate, "changed_files",
+        lambda base: ["temp-screenshots/feature/shot.png"],
+    )
+    plan = gate.build_plan(_args())
+    assert _is_full(plan)
+    assert "fail-open" in plan.reason
 
 
 def test_both_surfaces_runs_full(gate, monkeypatch) -> None:

@@ -201,25 +201,37 @@ def has_broad_impact(paths: list[str]) -> str | None:
 
 
 def surface_bucket(path: str) -> str:
-    """Which of CI's three buckets a changed path falls in.
+    """Which of CI's buckets a changed path falls in (or ``ignored``).
 
     Transcribed from `ci.yml`'s `changes` job, which is the authority for this
     question and computes it once for the whole workflow:
 
         frontend: website/**
         meta:     .github/**  scripts/**
-        backend:  **  minus the two above
+        ignored:  temp-screenshots/**  (evidence media; matches NO bucket)
+        backend:  **  minus the three above
 
     An earlier revision folded `meta` into `backend`, which is wrong in a way that
     is invisible until it bites: `.github/scripts/frontend-blob-reconcile.mjs` is
     asserted on by `website/src/test/frontendBlobReconcile.wireFormat.test.ts`, and
     `scripts/` and `docs/` are read by several i18n and settings specs too. Meta
     paths belong to neither surface and can be read by both.
+
+    ``ignored`` is safe in `plan()` by construction: it is never `meta`, never
+    the surface under test, and never the *other* surface, so an ignored path
+    can only ever leave the decision to the real files in the diff -- and an
+    ignored-ONLY diff has no `other` in its buckets, which returns the full
+    suite (fail-open), matching ci.yml where such a diff sets no flag.
     """
     if path.startswith("website/"):
         return "frontend"
     if path.startswith((".github/", "scripts/")):
         return "meta"
+    if path.startswith("temp-screenshots/"):
+        # Mirrors ci.yml's '!temp-screenshots/**' backend negation (#8027):
+        # committed screenshot evidence must not drag a frontend-only diff
+        # into the full backend matrix.
+        return "ignored"
     # Catch-all, exactly as ci.yml comments it: "an unrecognised path counts as
     # backend and cannot ride along under a narrowed suite".
     return "backend"
@@ -505,6 +517,8 @@ def _self_test() -> int:
     check("bucket: workflows are meta", surface_bucket(".github/workflows/ci.yml") == "meta")
     check("bucket: scripts are meta, NOT backend", surface_bucket("scripts/ci-surface-tests.py") == "meta")
     check("bucket: the runner itself is meta", surface_bucket("scripts/run_scoped_tests.py") == "meta")
+    check("bucket: temp-screenshots is ignored, NOT backend (#8027)", surface_bucket("temp-screenshots/feature/shot.png") == "ignored")
+    check("bucket: ignored is a prefix, not a substring", surface_bucket("temp-screenshotsx/evil.py") == "backend")
 
     # The cross-surface list feeds a runner directly, so it must arrive in that
     # runner's path space. Regression trap: unprocessed, it handed vitest
