@@ -63,6 +63,8 @@ import { chromium } from 'playwright'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { diffPngs } from './lib/diff-pngs.mjs'
+
 const BASE = process.argv[2] || 'http://127.0.0.1:6812'
 const OUT = process.argv[3] || '../temp-screenshots/topbar-metrics-pending'
 mkdirSync(OUT, { recursive: true })
@@ -95,38 +97,6 @@ const near = (a, b, tol = 0.5) => Math.abs(a - b) <= tol
  *  noise stays visible rather than silently discarded. */
 const TOL = 24
 
-async function diffPngs(page, aB64, bB64) {
-  return page.evaluate(async ([a, b, tol]) => {
-    const load = (b64) => new Promise((res) => {
-      const img = new Image()
-      img.onload = () => {
-        const c = document.createElement('canvas')
-        c.width = img.naturalWidth; c.height = img.naturalHeight
-        c.getContext('2d').drawImage(img, 0, 0)
-        res(c.getContext('2d').getImageData(0, 0, c.width, c.height))
-      }
-      img.src = `data:image/png;base64,${b64}`
-    })
-    const [ia, ib] = await Promise.all([load(a), load(b)])
-    let n = 0, rawN = 0, minX = Infinity, maxX = -1, minY = Infinity, maxY = -1
-    for (let y = 0; y < ia.height; y++) {
-      for (let x = 0; x < ia.width; x++) {
-        const i = (ia.width * y + x) << 2
-        let d = 0
-        for (let k = 0; k < 4; k++) d = Math.max(d, Math.abs(ia.data[i + k] - ib.data[i + k]))
-        if (d > 0) rawN++
-        if (d > tol) {
-          n++
-          if (x < minX) minX = x
-          if (x > maxX) maxX = x
-          if (y < minY) minY = y
-          if (y > maxY) maxY = y
-        }
-      }
-    }
-    return { n, rawN, minX, maxX, minY, maxY }
-  }, [aB64, bB64, TOL])
-}
 
 /** Boxes of the three things every claim here is about. */
 const measure = (page) => page.evaluate(() => {
@@ -208,12 +178,12 @@ for (const w of WIDTHS) {
   } else ok(`${w}: header height unchanged (${m.loaded.header.h.toFixed(1)}px)`)
 
   // --- pixels: the fix is not inert ----------------------------------------
-  const dBefore = await diffPngs(page, shots[`${w}-pending-before`], shots[`${w}-pending-after`])
+  const dBefore = await diffPngs(page, shots[`${w}-pending-before`], shots[`${w}-pending-after`], TOL)
   if (dBefore.n === 0) fail(`${w}: before and after renders are identical — the fix did not apply`)
   else ok(`${w}: ${dBefore.n} pixels differ before vs after (${dBefore.rawN} raw incl. backdrop noise)`)
 
   // --- pixels: pending sits in the loaded layout ----------------------------
-  const dLoaded = await diffPngs(page, shots[`${w}-pending-after`], shots[`${w}-loaded`])
+  const dLoaded = await diffPngs(page, shots[`${w}-pending-after`], shots[`${w}-loaded`], TOL)
   const segBox = m.loaded.metrics
   if (dLoaded.n === 0) {
     // Legitimate on the icon-collapsed rung: with the readings hidden, the two

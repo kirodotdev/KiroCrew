@@ -1,4 +1,5 @@
 {
+  "exitCode": 1,
   "threshold": 0,
   "minTokens": 180,
   "reporters": [
