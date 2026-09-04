@@ -943,6 +943,7 @@ _ALLOWED_TEXT_EXT = {
     ".txt",
     ".md",
     ".json",
+    ".jsonl",
     # Excalidraw scene JSON — the composer's sketch pad attaches one per
     # sketch, and the dashboard has a dedicated read-only renderer for it
     # (FileRenderers routes on this exact extension). Content-wise it is
@@ -953,6 +954,7 @@ _ALLOWED_TEXT_EXT = {
     ".yml",
     ".xml",
     ".csv",
+    ".tsv",
     ".log",
     ".py",
     ".js",

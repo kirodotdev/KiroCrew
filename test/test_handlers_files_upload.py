@@ -327,6 +327,58 @@ async def test_upload_har_is_accepted_as_plain_text(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "body"),
+    [
+        ("table-export.tsv", b"Files\tRecords\tCodec\n51000\t204000\tsnappy\n"),
+        ("events.jsonl", b'{"event": "start"}\n{"event": "stop"}\n'),
+    ],
+)
+async def test_upload_tsv_and_jsonl_are_accepted_as_plain_text(
+    upload_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    mock_sel,
+    filename: str,
+    body: bytes,
+) -> None:
+    """``.tsv`` and ``.jsonl`` uploads are accepted like their allowlisted
+    siblings ``.csv`` and ``.json``.
+
+    Both are plain text (TSV is tab-separated values, JSONL is
+    newline-delimited JSON), so they ride the text-extension allowlist with
+    no magic-byte signature to enforce, and — like other text — stay out of
+    the binary-upload diagnostic log.
+    """
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        body,
+        filename=filename,
+        content_type="text/plain",
+    )
+    with caplog.at_level(
+        logging.INFO, logger="kiro_crew.dashboard.handlers.files",
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/upload/file", data=form)
+            assert resp.status == 200, await resp.text()
+            payload = await resp.json()
+    # The file landed in the upload dir with its (sanitized) name intact.
+    assert payload["paths"], payload
+    saved = Path(payload["paths"][0])
+    assert saved.name.endswith(f"_{filename}")
+    assert saved.read_bytes() == body
+    # No diagnostic (and therefore no content-adjacent logging) for text.
+    diagnostics = [
+        r for r in caplog.records if "upload.file diagnostic" in r.getMessage()
+    ]
+    assert not diagnostics, (
+        f"Did not expect a diagnostic for {filename} upload; got: "
+        f"{[r.getMessage() for r in diagnostics]}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_upload_unrelated_extension_still_rejected(
     upload_dir: Path,
     mock_sel,
