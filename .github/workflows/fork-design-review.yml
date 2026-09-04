@@ -27,8 +27,18 @@ name: Fork Design Review
 # verdict fails the check.
 
 on:
+  # Fast Gate, not CI. This lane is stage 2 of the fork design -- it may not start
+  # until a trusted workflow has vouched for the head commit -- but waiting for
+  # ALL of CI put the verdict ~54 minutes out (CI's median wall clock), and 73.7%
+  # of that is the backend matrix, which tells this reviewer nothing. Fast Gate
+  # carries the eleven cheap blocking gates and finishes in about a minute.
+  #
+  # This does not weaken the fork trust boundary: the steps below still harden the
+  # runner, check out the BASE commit, and read the fork's diff as data that never
+  # reaches the tree. CI's green was a quality precondition here, never a security
+  # one.
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["Fast Gate"]
     types: [completed]
 
 permissions:

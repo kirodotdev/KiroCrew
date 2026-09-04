@@ -15,10 +15,17 @@ is [CONTRIBUTING.md](../../CONTRIBUTING.md).
 ## Shape
 
 CI is a **fan-out of independent workflows that one aggregator folds into a single
-verdict**:
+verdict**, with exactly one ordering edge inside it: the eleven cheap blocking
+gates run in their own workflow, and both the expensive matrix and the fork
+reviewers wait for its verdict rather than racing it.
 
 ```
 pull_request
+  |-- fast-gate.yml     "Fast Gate"    the 11 cheap blocking gates (~44s wall clock)
+  |     |
+  |     |-- ci.yml's `await-fast-gate` job releases the heavy jobs
+  |     '-- the five fork-*-review.yml lanes trigger on its completion
+  |
   |-- ci.yml            "CI"           lint, sharded tests, coverage gate, e2e
   |-- build.yml         "Build"        wheel + desktop artifacts still build
   |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene, dep audit
@@ -35,8 +42,20 @@ pull_request
   '-> pr-readiness.yml  "PR Readiness"  one commit status + one readiness: label
 ```
 
-Two structural facts explain most of the rest:
+Three structural facts explain most of the rest:
 
+- **The cheap gates decide whether the expensive ones get to run.** The eleven
+  gates in `Fast Gate` cost 198 job-seconds between them, about 70% of which is
+  runner acquisition and checkout, and they finish in ~44 seconds because they run
+  in parallel. A median CI run is 240 job-minutes and 54 minutes of wall clock, and
+  the eight `backend-test` shards alone are 73.7% of those job-minutes. While the
+  gates lived in `ci.yml` the matrix started alongside them, so a gate that went red
+  in twenty seconds still let the whole matrix run to completion. They are now a
+  separate workflow with the same triggers, and `ci.yml`'s `await-fast-gate` job —
+  which every heavy job needs — is the edge that makes a red gate SKIP the matrix
+  instead of racing it. A `needs:` edge cannot cross a workflow file, which is why
+  that barrier is a job that reads the other workflow's run rather than a
+  dependency GitHub resolves for us.
 - **The real merge gate is human approval plus armed auto-merge.** `PR Readiness`
   is the one status worth watching; individual red checks are strong signals a
   human can weigh.
@@ -146,18 +165,54 @@ Out-of-band lanes that never gate a PR:
   `test/test_workflow_pr_create_handoff.py` holds them in step and fails a new
   `gh pr create` step that skips the guard.
 
-## `ci.yml`: correctness
+## `fast-gate.yml`: the cheap blocking gates
 
-Every job here is blocking.
+Every job here is blocking, and nothing here is behind a path filter — the
+workflow has no `changes` job at all, because a gate that costs a few seconds is
+cheaper to always run than to decide about, and a filter is one more thing that can
+be dodged by an edge case in its own globs.
+
+They live in their own workflow for two reasons that both come down to who has to
+wait for them. `ci.yml`'s heavy jobs now wait through `await-fast-gate`, so a red
+gate skips ~220 job-minutes of tests it was previously running beside. And the five
+`fork-*-review.yml` lanes need SOME trusted workflow to vouch for a fork's head
+commit before they start (see [Fork PRs](#fork-prs)); waiting for all of `CI` put a
+fork PR's AI verdict ~54 minutes out, when the gates that verdict actually needs are
+green after one.
+
+The trigger set is copied from `ci.yml` deliberately, `branches: [main]` included.
+The fork reviewers key on this workflow now, so a wider filter here would newly
+review fork PRs opened against a non-main base — which today get no review at all,
+because they wait on a `CI` run that `ci.yml`'s own branch filter never starts.
+Widening that is a separate decision from moving the gates.
 
 | Job | What it enforces |
 |---|---|
 | `scrub-lint` | `scripts/scrub-lint.sh --no-history`. Fails on any internal marker in this public tree, so a sync cannot reintroduce a coupling |
-| `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Always-on (not behind the `changes` path filter) |
-| `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.10 and 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
-| `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
-| `feature-map` | `scripts/check_feature_map.py`, self-test first. Fails when a file is ADDED or DELETED under `website/src/pages/` or `src/kiro_crew/dashboard/handlers/`, or a `<Route>` entry arrives or leaves `website/src/App.tsx`, while `docs/feature-map/README.md` stays untouched. The blocking root AUTOSDE rule `feature-map-correctness` is the semantic half: it verifies changed rows against the code, rejects unrelated or cosmetic map churn, and checks that the map's net diff matches the PR's stated scope. Structural on purpose: an edit to an existing page changes a feature's behavior, which the map does not describe, so an edit-only diff never fires — a gate demanding a map review on every UI fix produces a map nobody reads. Fails OPEN on an unreadable diff, unlike the gates above: this one guards a documentation habit, not an invariant a bad line carries into `main` forever |
+| `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Hashing the ~26MB tree takes seconds, so it is always-on like the rest of this workflow |
+| `brand-lint` | `scripts/check_brand_name.py`, self-test first. Fails on a newly added line that joins the two words of the product name. Diff-scoped: the tree still carries thousands of pre-convention prose lines, so a whole-tree gate would charge that backlog to whoever pushed next; the whole-tree count is still printed as a non-failing report |
+| `focus-cue-lint` | `scripts/check_focus_cue.py`, self-test first. Fails when a change writes the `className` of an element that then has no visible focus cue. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
+| `feature-map-lint` | `scripts/check_feature_map.py`, self-test first. Fails when a file is ADDED or DELETED under `website/src/pages/` or `src/kiro_crew/dashboard/handlers/`, or a `<Route>` entry arrives or leaves `website/src/App.tsx`, while `docs/feature-map/README.md` stays untouched. The blocking root AUTOSDE rule `feature-map-correctness` is the semantic half: it verifies changed rows against the code, rejects unrelated or cosmetic map churn, and checks that the map's net diff matches the PR's stated scope. Structural on purpose: an edit to an existing page changes a feature's behavior, which the map does not describe, so an edit-only diff never fires — a gate demanding a map review on every UI fix produces a map nobody reads. Fails OPEN on an unreadable diff, unlike the other gates here: this one guards a documentation habit, not an invariant a bad line carries into `main` forever |
+| `changelog-history` | `scripts/check_changelog_history.py`, self-test first. Fails when a shipped `CHANGELOG.md` section loses lines. Every section already in that file describes software a user has installed, and it has been silently truncated once already — a commit titled "docs: add 0.3.0-insider.9 changelog" REPLACED the file (53 insertions, 322 deletions) and nothing noticed until the Releases page had gone nearly empty |
+| `builtin-skill-scope` | `scripts/check_builtin_skill_scope.py`, self-test first. Fails on a marker for THIS repository (its GitHub slug, a `src/` checkout path, a test or workflow file) inside a skill body under `src/kiro_crew/builtin_skills/`, because those install on every machine and resolve for exactly one of them. The `kirocrew-dev/` family is exempt by directory, since this repository is its subject matter |
 | `loop-bound-locks` | `scripts/check_loop_bound_locks.py`, self-test first. Fails on any module-global `asyncio.Lock()`/`Event()`/`Queue()` declaration — those bind to the import-time (or first-use) event loop and raise `RuntimeError` when acquired from another loop (Python 3.10+). #4800 converted the tree to `kiro_crew.loop_lock.LoopBoundLock`; whole-tree, since the backlog is zero |
+| `testpaths-coverage` | `scripts/check_testpaths_coverage.py`, self-test first. Fails on a `test_*.py` file outside the roots `setup.cfg` pins in `testpaths` — such a file is never collected, so it is green by omission and rots against the code it claims to cover (#6577 found twelve). Whole-tree, since the backlog is zero |
+| `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
+| `docs-lint` | `scripts/docs_lint.py --test` then `scripts/docs-lint.sh`. Every internal link resolves, every doc is reachable from its directory index, every directory holding docs has one, no code comment cites a doc that does not exist, no doc cites a source LINE past the end of the file it names, no module spec names a source file that exists nowhere, and no doc whose filename is hardcoded in code has been renamed out from under its consumer |
+
+Each of these runs its own self-test in the same step, ahead of the real check. A
+gate that has silently stopped matching reads as a green signal, which is worse than
+no gate, so every rule is exercised against a planted probe first.
+
+## `ci.yml`: correctness
+
+Every job here is blocking. Every job that costs real runner time also `needs:`
+`await-fast-gate`, so on a red gate it does not run at all.
+
+| Job | What it enforces |
+|---|---|
+| `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one that completes non-success. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One extra ~1-minute job buys the whole matrix the right to not start |
+| `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.10 and 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
 | `backend-test` | 2 Python versions x 4 duration-balanced pytest-split shards (8 jobs), `-n auto` within each. Coverage only on 3.12 (3.10 passes `--no-cov` for a trace-free run) |
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
@@ -182,10 +237,24 @@ Details worth knowing:
   namespace, the job fails instead of letting the suite silently skip and the gate
   go green having asserted nothing. This is what gives the `hooks.py`
   sensitive-path keystone real CI coverage.
-- **`coverage-gate` is fail-closed.** It runs `if: always()` and its first step
-  converts any non-success upstream result into an explicit failure, because GitHub
-  treats a **skipped** required check as satisfied. It also compares the raw
-  line-rate and rounds only for display, so 89.95% cannot pass a 90% floor.
+- **`coverage-gate` is fail-closed, and the split made that load-bearing.** It runs
+  `if: always()` and its first step converts any non-success upstream result into an
+  explicit failure, because GitHub treats a **skipped** required check as satisfied.
+  That was already the right shape when the only way to skip a test job was a path
+  filter or a failed dependency. It is now the mechanism that keeps the whole
+  `await-fast-gate` design honest: a red gate deliberately SKIPS `backend-test` and
+  `frontend-test`, and without this step a required Coverage Gate would skip with
+  them and be reported as satisfied — so the barrier that exists to save runner time
+  would also have quietly removed the coverage floor. The `if: always()` is what
+  makes it emit a real verdict, and the first step is what makes that verdict red.
+  `frontend-coverage-merge` carries the other half of the same problem and solves it
+  the opposite way: its `!cancelled()` needed an explicit
+  `needs.frontend-test.result != 'skipped'` clause, because a skipped shard set has
+  nothing to stitch and the merge would otherwise go red for missing an artifact
+  instead of for the gate the developer actually has to fix. A FAILED shard set still
+  has something to stitch, which is why the clause names `skipped` and not both. It
+  also compares the raw line-rate and rounds only for display, so 89.95% cannot pass
+  a 90% floor.
 - **`coverage-gate` enforces two different shapes.** The project floors
   (`BACKEND_MIN`, `FRONTEND_MIN`) compare one lane-wide average; the per-file floor
   (`PER_FILE_MIN`, `scripts/check_per_file_coverage.py`) requires *every measured
@@ -617,7 +686,13 @@ It executes no tests. It resolves the PR's current head SHA, **drops stale event
 queries the latest run per monitored workflow, and publishes **one `PR Readiness`
 commit status plus one `readiness:` label**.
 
-- **Always required:** CI, Build, Code Review.
+- **Always required:** Fast Gate, CI, Build, Code Review. `Fast Gate` is a lane in
+  its own right and not merely CI's precondition — a red gate must red the PR, and
+  `await-fast-gate` reports `failure` rather than the gate that actually broke, so
+  the readable verdict has to come from the gate workflow itself. It carries CI's
+  `branches: [main]` filter, so it sits in the same stacked-PR carve-out: on a PR
+  whose base is not the default branch it never starts, and a monitored lane that
+  reads `(not started)` would freeze the verdict at pending forever.
 - **Additionally required on a same-repo PR:** CodeQL, Opus 4.8 Review, GPT 5.6
   Review, and completion of Design Review, UX Review and First Principles Review.
 - **UX Review and First Principles Review are completion-required but advisory:**
@@ -757,17 +832,27 @@ eligible automated validation passed for this revision. Human approval and branc
 protection remain separate gates.
 
 **The `fork-*` pipeline gives fork PRs AI review anyway, in two stages.**
-`fork-opus-review.yml`, `fork-gpt-review.yml`, `fork-design-review.yml` and
-`fork-ux-review.yml` each trigger on the **completion of CI** (stage 1) and run
-privileged from the default branch (stage 2), gated on
+`fork-opus-review.yml`, `fork-gpt-review.yml`, `fork-design-review.yml`,
+`fork-ux-review.yml` and `fork-first-principles-review.yml` each trigger on the
+**completion of `Fast Gate`** (stage 1) and run privileged from the default branch
+(stage 2), gated on
 `workflow_run.head_repository.full_name != github.repository`. Each posts a check-run
 named exactly like its same-repo twin (`Opus 4.8 Review`, `GPT 5.6 Review`,
-`Design Review`, `UX Review`), so branch protection is satisfied on either path, and
-it opens that check-run as early as possible keyed to `head_sha` so a job that dies
-still leaves a fail-closed result. On a fork PR this lane is the **only** publisher
-of that name -- the same-repo twin renames itself (see the reviewer-job security
-posture above) -- so the protected status can only be reported by a review that
-actually ran.
+`Design Review`, `UX Review`, `First Principles Review`), so branch protection is
+satisfied on either path, and it opens that check-run as early as possible keyed to
+`head_sha` so a job that dies still leaves a fail-closed result.
+
+Stage 1 is `Fast Gate` rather than `CI` because what stage 2 needs from stage 1 is a
+TRUSTED workflow's word on the head commit, and `Fast Gate` gives that in about a
+minute where `CI` took ~54. That is a latency change, not a trust change: the
+security properties below hold whatever stage 1 is, since none of them depend on
+`CI` having gone green. `CI`'s verdict was a quality precondition here, never a
+security one — and `fork-workflow-guard.yml`, which IS a security lane, still keys on
+`CI` and is unaffected.
+
+On a fork PR this lane is the **only** publisher of that name -- the same-repo twin
+renames itself (see the reviewer-job security posture above) -- so the protected
+status can only be reported by a review that actually ran.
 
 `fork-gpt-review.yml` publishes its GPT verdict by editing one marker comment in
 place, so an incomplete run must never bury a posted verdict (the class of bug tracked

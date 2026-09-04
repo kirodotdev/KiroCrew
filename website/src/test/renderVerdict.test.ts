@@ -321,17 +321,39 @@ describe('CI supplies a base commit on both paths', () => {
   // nothing. That makes the workflow wiring load-bearing: if a push to main stopped
   // passing `github.event.before`, merges would silently go unchecked and the unit
   // tests above would still pass.
-  const ci = readFileSync(resolve(process.cwd(), '../.github/workflows/ci.yml'), 'utf-8')
+  // Both blocking workflows, not just ci.yml. The cheap diff-scoped gates moved
+  // into fast-gate.yml, which ci.yml blocks on through `await-fast-gate`; reading
+  // ci.yml alone would have silently dropped five of the nine wirings out of this
+  // file's view while every assertion below still passed on the remaining four.
+  const workflowSources = ['ci.yml', 'fast-gate.yml'].map((name) => ({
+    name,
+    text: readFileSync(resolve(process.cwd(), `../.github/workflows/${name}`), 'utf-8'),
+  }))
   // Any `*_BASE_REF` wiring, not just the i18n ones: `brand-lint` passes
   // `BRAND_BASE_REF` and `harness-parity` passes `HARNESS_BASE_REF` through the
   // same resolver and both need the same guarantees.
-  const wirings = ci.match(/^\s*[A-Z0-9_]*BASE_REF: \$\{\{.*$/gm) || []
+  const wiringsBySource = workflowSources.map((source) => ({
+    name: source.name,
+    lines: source.text.match(/^\s*[A-Z0-9_]*BASE_REF: \$\{\{.*$/gm) || [],
+  }))
+  const wirings = wiringsBySource.flatMap((source) => source.lines)
 
   it('wires every diff-scoped gate step', () => {
-    // A count, not a set: the point is that a gate ADDED to ci.yml cannot skip
-    // this file's `base.sha` assertion below by going unnoticed. Bump it when a
-    // diff-scoped gate lands, and check the new wiring is in the loop.
+    // A count, not a set: the point is that a gate ADDED to either workflow
+    // cannot skip this file's `base.sha` assertion below by going unnoticed. Bump
+    // it when a diff-scoped gate lands, and check the new wiring is in the loop.
     expect(wirings).toHaveLength(9)
+  })
+
+  it('still sees a wiring in each workflow it reads', () => {
+    // The count above is the only thing standing between a moved gate and an
+    // unchecked one, and a total can be met while one source contributes zero --
+    // which is exactly what a further split would do. Naming each source keeps
+    // the scan honest instead of merely non-empty.
+    for (const source of wiringsBySource) {
+      expect(source.lines.length, `${source.name} contributed no BASE_REF wiring`)
+        .toBeGreaterThan(0)
+    }
   })
 
   it('diffs a PR against the commit its merge ref was built on, not the branch tip', () => {
@@ -355,8 +377,15 @@ describe('CI supplies a base commit on both paths', () => {
   it('routes each step through the shared resolver', () => {
     // Relative, not a stored total: a step that wires a base ref must also route
     // through the shared resolver, so the two move together as gates are added
-    // and neither number has to be maintained by hand.
-    expect(ci.match(/resolve-i18n-base\.sh/g) || []).toHaveLength(wirings.length)
+    // and neither number has to be maintained by hand. Counted PER WORKFLOW, so a
+    // gate wired in one file cannot be paid for by a resolver call in the other.
+    for (const source of wiringsBySource) {
+      const text = workflowSources.find((s) => s.name === source.name)!.text
+      expect(
+        text.match(/resolve-i18n-base\.sh/g) || [],
+        `${source.name} wires ${source.lines.length} base ref(s) but does not route each one`,
+      ).toHaveLength(source.lines.length)
+    }
   })
 })
 

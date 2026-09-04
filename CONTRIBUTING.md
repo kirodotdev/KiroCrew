@@ -98,7 +98,10 @@ An agent contributing to Kiro Crew loads this suite and follows the same
 worktree → build gate → prepare-pr → review loop human contributors use, so
 the PR process stays consistent regardless of who is writing the code. If you
 change the workflow, change it THERE — those files are the single source of
-truth (with `.github/workflows/ci.yml` canonical for the gate list).
+truth (with `.github/workflows/ci.yml` plus
+`.github/workflows/fast-gate.yml` canonical for the gate list — the eleven cheap
+blocking gates live in the second one so a red gate can skip the expensive matrix
+instead of racing it).
 
 ## Building
 
@@ -527,8 +530,10 @@ Some of our checks are not "does this pass or fail" tests but *ratchets*: a gate
 that records the current count of a thing we are burning down and then fails if
 that count grows, so the number is only ever allowed to shrink. The idea is that
 we never make a known problem worse, and every PR either holds the line or pays
-some of it down. A few examples (`.github/workflows/ci.yml` stays canonical for
-the full list, so this is illustration, not an inventory):
+some of it down. A few examples (`.github/workflows/ci.yml` and
+`.github/workflows/fast-gate.yml` stay canonical for the full list — most of the
+diff-scoped ratchets are in the second — so this is illustration, not an
+inventory):
 
 - the black formatting **baseline** (`.github/black-baseline.txt`) and the
   config-baseline snapshot (`config-baseline.json`, checked by

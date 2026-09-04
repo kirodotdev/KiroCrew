@@ -17,6 +17,15 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 # Both first-principles lanes carry byte-identical reasoning, so every
 # contract assertion runs against the pair.
 FP_LANES = ("first-principles-review.yml", "fork-first-principles-review.yml")
+# Every privileged Stage-2 fork reviewer. They share one trigger contract, so the
+# trigger assertions run against the whole set rather than one sampled lane.
+FORK_REVIEW_LANES = (
+    "fork-opus-review.yml",
+    "fork-gpt-review.yml",
+    "fork-design-review.yml",
+    "fork-ux-review.yml",
+    "fork-first-principles-review.yml",
+)
 REVIEW_PROMPTS = ROOT / ".github" / "review-prompts"
 PREPARE_PR_SKILL = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
 PREPARE_PR_FINDINGS = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_findings.py"
@@ -774,6 +783,12 @@ class TestPrReadiness:
         assert "      - CodeQL" in workflow
         for workflow_name in (
             "ci.yml|CI",
+            # Fast Gate carries the eleven cheap blocking gates that used to sit
+            # inside CI. Splitting them out gave the fork reviewers something to
+            # key on in ~1 minute instead of CI's ~54, but a split-out lane that
+            # readiness does not aggregate is a gate that can go red without
+            # turning the PR red -- so it is pinned here exactly like CI.
+            "fast-gate.yml|Fast Gate",
             "build.yml|Build",
             "code-review.yml|Code Review",
             "dynamic/github-code-scanning/codeql|CodeQL",
@@ -783,6 +798,21 @@ class TestPrReadiness:
         ):
             assert workflow_name in workflow
         assert 'success|skipped) passed+=("$label")' in workflow
+
+    def test_readiness_listens_for_the_fast_gate_run_and_carves_it_out_when_stacked(
+        self,
+    ) -> None:
+        # Aggregating a lane is only half the wiring: readiness re-evaluates on
+        # `workflow_run: completed`, so a lane missing from the trigger allowlist
+        # is read at whatever state the LAST unrelated trigger saw it in.
+        workflow = _workflow("pr-readiness.yml")
+
+        assert "      - Fast Gate" in workflow
+        # Fast Gate inherits CI's `branches:` filter, so on a stacked PR it never
+        # starts -- and a pinned lane that never starts freezes the verdict at
+        # pending forever. It must ride in the same carve-out as CI and Build.
+        assert 'skipped+=("CI (only runs on PRs to $DEFAULT_BRANCH)")' in workflow
+        assert 'skipped+=("Fast Gate (only runs on PRs to $DEFAULT_BRANCH)")' in workflow
 
     def test_fork_readiness_reads_ai_reviews_from_check_runs(self) -> None:
         # A fork head cannot run default-setup CodeQL, but the AI code reviews
@@ -1168,7 +1198,15 @@ class TestFirstPrinciplesReview:
         assert "ref: ${{ steps.pr.outputs.base_sha }}" in workflow
         assert "never applied to the tree" in workflow
         assert "egress-policy: block" in workflow
-        assert 'workflows: ["CI"]' in workflow
+        # Stage 2 still starts only after a TRUSTED workflow has vouched for the
+        # head commit -- that workflow is now Fast Gate rather than CI. CI's
+        # green was a quality precondition here, never a security one: the trust
+        # boundary is harden-runner + the base checkout + the diff-as-data read
+        # asserted above. Waiting for all of CI put this verdict ~54 minutes out
+        # (CI's median wall clock), 73.7% of it the backend matrix, which tells
+        # this reviewer nothing.
+        assert 'workflows: ["Fast Gate"]' in workflow
+        assert 'workflows: ["CI"]' not in workflow
         assert (
             "github.event.workflow_run.head_repository.full_name != github.repository"
             in workflow
@@ -3121,6 +3159,88 @@ class TestLedgerReadFailureFailsClosed:
         assert 'issues/$PR/comments" --paginate 2>/dev/null' not in block
         assert "|| true" not in block
         assert "|| printf" not in block
+
+
+class TestForkReviewersAreStageTwoOfFastGate:
+    """The fork reviewers hold `pull-requests: write` and `id-token: write` on a
+    PR whose author is untrusted, so they may not be reachable from any
+    fork-controlled event: `workflow_run` is the ONLY trigger, and it fires only
+    after a workflow on the DEFAULT branch has already run against the head
+    commit.
+
+    Which trusted workflow that is, is a cost decision, not a security one. It
+    used to be CI, whose median wall clock is ~54 minutes -- 73.7% of it the
+    backend matrix, which tells a code reviewer nothing. It is now Fast Gate,
+    the eleven cheap blocking gates split out of CI, which finishes in about a
+    minute. The trust boundary is unchanged and lives in the steps: harden-runner
+    with a blocked egress policy, a checkout of the BASE commit, and the fork's
+    diff read as data that is never applied to the tree.
+    """
+
+    def _triggers(self, name: str) -> dict:
+        spec = yaml.safe_load(_workflow(name))
+        # `on` is a YAML 1.1 boolean, so PyYAML keys the trigger block on True.
+        on = spec.get("on", spec.get(True))
+        assert isinstance(on, dict), name
+        return on
+
+    @pytest.mark.parametrize("name", FORK_REVIEW_LANES)
+    def test_lane_waits_for_fast_gate_and_nothing_else(self, name: str) -> None:
+        on = self._triggers(name)
+
+        # Exactly one trigger, and it is the trusted-vouch one. Any additional
+        # entry here (`pull_request_target`, `issue_comment`, `workflow_call`) is
+        # a fork-reachable door into a privileged lane.
+        assert set(on) == {"workflow_run"}, name
+        assert on["workflow_run"]["workflows"] == ["Fast Gate"], name
+        assert on["workflow_run"]["types"] == ["completed"], name
+
+    @pytest.mark.parametrize("name", FORK_REVIEW_LANES)
+    def test_lane_is_not_reachable_from_a_fork_controlled_event(self, name: str) -> None:
+        on = self._triggers(name)
+        workflow = _workflow(name)
+
+        for fork_controlled in (
+            "pull_request",
+            "pull_request_target",
+            "issue_comment",
+            "pull_request_review",
+            "pull_request_review_comment",
+        ):
+            assert fork_controlled not in on, f"{name}: {fork_controlled}"
+        # And the job still only proceeds for a head that is actually a fork, so
+        # a same-repo PR cannot double-publish through this lane.
+        assert (
+            "github.event.workflow_run.head_repository.full_name != github.repository"
+            in workflow
+        ), name
+
+    @pytest.mark.parametrize("name", FORK_REVIEW_LANES)
+    def test_swapping_the_trusted_gate_did_not_relax_the_trust_boundary(
+        self, name: str
+    ) -> None:
+        # Fast Gate is cheaper than CI, so the security properties that were
+        # never CI's job to provide must be visibly still here.
+        workflow = _workflow(name)
+
+        assert "egress-policy: block" in workflow, name
+        assert "ref: ${{ steps.pr.outputs.base_sha }}" in workflow, name
+        assert "actions/checkout" in workflow, name
+        # The head SHA comes from the event payload GitHub sets, never from
+        # fork-authored text.
+        assert "github.event.workflow_run.head_sha" in workflow, name
+
+    @pytest.mark.parametrize("name", FORK_REVIEW_LANES)
+    def test_lane_records_why_it_no_longer_waits_for_ci(self, name: str) -> None:
+        # A future reader seeing a security-sensitive lane keyed on a one-minute
+        # gate will otherwise "restore" the CI dependency and pay 54 minutes for
+        # a precondition that was never load-bearing.
+        flat = _flat(_workflow(name))
+
+        assert "Fast Gate, not CI" in flat, name
+        assert "median wall clock" in flat, name
+        assert "backend matrix" in flat, name
+        assert "never a security" in flat, name
 
 
 class TestProtectedCheckNameHasOnePublisherPerPrType:

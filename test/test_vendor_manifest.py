@@ -6,8 +6,8 @@ lint/format configs all skip it — so a modified vendored ``.py``, a swapped
 native library, or an added rogue file would pass every review gate unnoticed.
 ``scripts/verify_vendor_manifest.py`` closes that gap: a committed sha256
 manifest (``scripts/vendor_manifest.sha256``, deliberately OUTSIDE the
-excluded tree) pins every file's content, and the ``vendor-manifest`` CI job
-fails any PR whose tree diverges from it.
+excluded tree) pins every file's content, and the ``vendor-manifest`` job in
+``.github/workflows/fast-gate.yml`` fails any PR whose tree diverges from it.
 
 These tests exercise the script's LOGIC against small temp-dir fixture trees:
 detection of each divergence class (modified / missing / unexpected),
@@ -28,6 +28,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "verify_vendor_manifest.py"
@@ -261,9 +262,24 @@ def test_vendor_text_payloads_are_checkout_byte_stable(pattern: str) -> None:
 
 
 def test_ci_wires_the_manifest_gate() -> None:
-    """ci.yml must run the verifier unconditionally — the vendored tree gets
-    no other content review, so a gate that exists but is not wired (or is
+    """fast-gate.yml must run the verifier unconditionally — the vendored tree
+    gets no other content review, so a gate that exists but is not wired (or is
     hidden behind a path filter's surface outputs) guards nothing.
+
+    The job moved out of ci.yml into fast-gate.yml, which holds the eleven cheap
+    blocking gates so ci.yml's heavy matrix waits on their verdict rather than
+    racing it; ci.yml still blocks on it transitively via ``await-fast-gate``.
+    Unconditionality is asserted structurally rather than as a substring, because
+    the property this test protects is not that the script name appears
+    somewhere — it is that no ``needs:`` and no ``if:`` can keep the job from
+    running on a given diff.
     """
-    text = (_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "scripts/verify_vendor_manifest.py" in text, "ci.yml does not run the manifest gate"
+    path = _REPO_ROOT / ".github" / "workflows" / "fast-gate.yml"
+    text = path.read_text(encoding="utf-8")
+    assert (
+        "scripts/verify_vendor_manifest.py" in text
+    ), "fast-gate.yml does not run the manifest gate"
+
+    job = yaml.safe_load(text)["jobs"]["vendor-manifest"]
+    assert "needs" not in job, "vendor-manifest gained a dependency and can now be skipped"
+    assert "if" not in job, "vendor-manifest gained a condition and can now be dodged"

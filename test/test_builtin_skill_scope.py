@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 from skill_script_helpers import load_skill_script
 
 from conftest import requires_symlinks
@@ -299,7 +300,28 @@ class TestTheCommittedTreeAgrees:
 
     def test_the_gate_is_wired_into_ci(self) -> None:
         """A scanner nothing runs is documentation. Also pinned in the prepare-pr
-        gate floor by test_prepare_pr_profiles.py."""
-        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        assert "python3 scripts/check_builtin_skill_scope.py --test" in ci
-        assert "python3 scripts/check_builtin_skill_scope.py\n" in ci
+        gate floor by test_prepare_pr_profiles.py.
+
+        The gate lives in fast-gate.yml, not ci.yml: the eleven cheap blocking
+        gates were split into their own workflow so ci.yml's heavy matrix can
+        wait on their verdict instead of racing it. ci.yml still BLOCKS on this
+        gate transitively, through its ``await-fast-gate`` job, so the wiring
+        assertion has to read the file that now carries the invocation.
+        """
+        gate = (ROOT / ".github" / "workflows" / "fast-gate.yml").read_text(encoding="utf-8")
+        assert "python3 scripts/check_builtin_skill_scope.py --test" in gate
+        assert "python3 scripts/check_builtin_skill_scope.py\n" in gate
+
+    def test_the_gate_is_unconditional(self) -> None:
+        """Both halves of the wiring: the invocation above, and the job carrying
+        it running on every event the workflow fires on. A ``needs:`` would let a
+        failed sibling skip it, and an ``if:`` (a path filter's surface output,
+        say) would let a diff shape dodge it -- either one turns the absolute,
+        baseline-free rule into one that only sometimes runs.
+        """
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "fast-gate.yml").read_text(encoding="utf-8")
+        )
+        job = workflow["jobs"]["builtin-skill-scope"]
+        assert "needs" not in job, "builtin-skill-scope gained a dependency and can now be skipped"
+        assert "if" not in job, "builtin-skill-scope gained a condition and can now be dodged"

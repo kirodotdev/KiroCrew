@@ -4,7 +4,7 @@ Everything that gates a pull request.
 
 | Document | Covers |
 |---|---|
-| [ci-and-reviews.md](ci-and-reviews.md) | The CI jobs, the AI review workflows, and the aggregate readiness status. |
+| [ci-and-reviews.md](ci-and-reviews.md) | The Fast Gate barrier, the CI jobs, the AI review workflows, and the aggregate readiness status. |
 | [e2e-gate.md](e2e-gate.md) | The offline browser E2E gate (`python setup.py test_e2e`). |
 | [harness-parity-gate.md](harness-parity-gate.md) | The added-line gate keeping the Kiro harness first-class: the six rules, and why it reports rather than enforces whole-tree. |
 | [i18n-gates.md](i18n-gates.md) | The i18n gate chain: what fails, what only reports, and the ratchet rule. |
