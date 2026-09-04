@@ -46,8 +46,8 @@ class TestConfig:
 
         c = InstancesConfig()
         assert c.enabled is False
-        # 0 == automatic: the cap follows the connected crew count (resolved per
-        # request by resolve_warm_set_cap), so no connected crew is ever evicted.
+        # 0 == automatic: the cap follows the REGISTERED crew count (resolved per
+        # request by resolve_warm_set_cap), so no configured crew is ever evicted.
         assert c.warm_set_cap == DEFAULT_WARM_SET_CAP == 0
         assert c.tunnel_base_port == DEFAULT_TUNNEL_BASE_PORT == 7778
         assert DEFAULT_CONNECT_TIMEOUT_SECS == 15.0
@@ -2251,18 +2251,25 @@ class TestHandlers:
         assert r.status == 201
         r = asyncio.run(handlers.api_instances_list(_FakeReq(state)))
         b = _body(r)
-        # Automatic cap with nothing connected floors at 1 (the active pane is
-        # always warm), so the browser still gets a cap it can honour.
+        # One crew registered => automatic cap 1, and adding it is enough: the
+        # cap does not wait for the tunnel to come up.
         assert b["warm_set_cap"] == 1 and len(b["instances"]) == 1
         # no manager on this state => enabled-in-config but not active (needs restart)
         assert b["active"] is False
 
-    def test_automatic_cap_tracks_the_connected_count(self, tmp_path, monkeypatch):
-        """The served cap covers every connected crew, so none is ever evicted.
+    def test_automatic_cap_covers_every_registered_crew_not_just_connected_ones(
+        self, tmp_path, monkeypatch
+    ):
+        """The served cap covers every REGISTERED crew, connected or not.
 
-        Eviction unmounts the pane and cold-boots the remote SPA on the next
-        click, which reads as a disconnect — so a cap below the connected count
-        makes ordinary tab switching look like a connection flap.
+        This is the regression that produced "one random crew is broken". The cap
+        used to be the live connected count, so a crew whose tunnel came up just
+        after this request was not counted, the cap arrived one short, and the
+        viewport evicted a pane to honour it. Eviction unmounts the pane and
+        cold-boots the remote SPA on the next click, which reads as a disconnect —
+        and which crew lost depended on connection order, so the victim moved on
+        every restart. Here 3 are registered and only 2 are connected; the cap
+        must still be 3.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 
@@ -2273,9 +2280,26 @@ class TestHandlers:
         state = _State(reg, _ConnectedMgr(["a", "c"]))
         b = _body(asyncio.run(handlers.api_instances_list(_FakeReq(state))))
         assert len(b["instances"]) == 3
-        assert b["warm_set_cap"] == 2
+        assert b["warm_set_cap"] == 3
 
-    def test_explicit_cap_is_served_even_below_the_connected_count(self, tmp_path, monkeypatch):
+    def test_adding_a_crew_widens_the_served_cap(self, tmp_path, monkeypatch):
+        """Otherwise every new crew has to be paired with a config edit.
+
+        Forgetting that edit reintroduces the eviction above, so the cap has to
+        rise on its own when the fleet grows.
+        """
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(name="a", ssh_host="a-alias")
+        state = _State(reg, _ConnectedMgr([]))
+        before = _body(asyncio.run(handlers.api_instances_list(_FakeReq(state))))["warm_set_cap"]
+        reg.add(name="b", ssh_host="b-alias")
+        after = _body(asyncio.run(handlers.api_instances_list(_FakeReq(state))))["warm_set_cap"]
+        assert (before, after) == (1, 2)
+
+    def test_explicit_cap_is_served_even_below_the_registered_count(self, tmp_path, monkeypatch):
         """An operator's own number is the budget and is not widened for them."""
         from kiro_crew.dashboard import handlers_instances as handlers
 

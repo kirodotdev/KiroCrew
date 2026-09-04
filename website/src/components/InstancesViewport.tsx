@@ -40,6 +40,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
+import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import AskAgentButton from './AskAgentButton'
@@ -193,9 +194,15 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         const port = res.local_port || warmRef.current[id]?.port
         if (res.token && port) {
           dispatch(setWarm({ id, conn: { port, token: res.token } }))
+          paneLog('remint', { id, port })
+        } else {
+          // A mint that returns nothing usable leaves the OLD warm entry standing,
+          // so the pane looks unchanged. Journal it: on screen this is
+          // indistinguishable from success, which is how it stayed invisible.
+          paneLog('remint-empty', { id, port, hasToken: !!res.token })
         }
-      } catch {
-        /* transient — the next poll / auth-expired signal retries */
+      } catch (err) {
+        paneLog('remint-failed', { id, error: (err as Error)?.message || 'unknown' })
       } finally {
         refreshingRef.current.delete(id)
         lastRefreshRef.current.set(id, Date.now())
@@ -214,9 +221,23 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         const st = await api.connectInstance(id)
         if (st.state === 'connected' && st.local_port && st.token) {
           dispatch(setWarm({ id, conn: { port: st.local_port, token: st.token } }))
+          paneLog('warm', { id, port: st.local_port, via: 'auto' })
+        } else {
+          // No `else` used to exist here, and that is why a failed auto-warm was
+          // untraceable: it leaves any PREVIOUS warm entry in place, so the tab
+          // still renders a pane and the user sees only "loading" forever.
+          paneLog('warm-declined', {
+            id,
+            via: 'auto',
+            state: st.state,
+            hasPort: !!st.local_port,
+            hasToken: !!st.token,
+            error: st.error || undefined,
+            reason: st.diagnosis?.reason || undefined,
+          })
         }
-      } catch {
-        /* leave it — clicking the tab will surface the error panel */
+      } catch (err) {
+        paneLog('warm-failed', { id, via: 'auto', error: (err as Error)?.message || 'unknown' })
       }
     },
     [dispatch],
@@ -277,6 +298,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // so the error panel carrying Retry surfaces instead.
           dispatch(clearPaneReady(id))
           setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
+          paneLog('remint-budget-exhausted', { id, spent })
           return
         }
         // Charge the budget only for asks that are actually answered with a mint.
@@ -288,6 +310,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // instead of MAX_REACTIVE_REMINTS.
         if (!canRefreshNow(id)) return
         reactiveMintsRef.current.set(id, spent + 1)
+        paneLog('auth-expired', { id, spent: spent + 1 })
         void refreshToken(id)
       } else if (data.type === 'mc-switch-instance') {
         // The embedded pane's inline switcher asks the parent to flip
@@ -351,6 +374,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // mount, before the pane's first authenticated request, so it is no
         // evidence the token works. See MAX_REACTIVE_REMINTS.
         dispatch(setPaneReady(id))
+        paneLog('ready', { id })
         postModelToRef.current(id)
       } else if (data.type === 'mc-drag-gaps') {
         // The embedded pane relays the control-free spans of its header so the
@@ -403,8 +427,25 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     onSuccess: (st, id) => {
       if (st.state === 'connected' && st.local_port && st.token) {
         dispatch(setWarm({ id, conn: { port: st.local_port, token: st.token } }))
+        paneLog('warm', { id, port: st.local_port, via: 'connect' })
+      } else {
+        // Same silent shape as the auto-warm path: Retry can "succeed" as a
+        // request while warming nothing, and the pane then reloads into the same
+        // stuck state with no error anywhere.
+        paneLog('warm-declined', {
+          id,
+          via: 'connect',
+          state: st.state,
+          hasPort: !!st.local_port,
+          hasToken: !!st.token,
+          error: st.error || undefined,
+          reason: st.diagnosis?.reason || undefined,
+        })
       }
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
+    },
+    onError: (err, id) => {
+      paneLog('warm-failed', { id, via: 'connect', error: (err as Error)?.message || 'unknown' })
     },
   })
 
@@ -459,8 +500,19 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   useEffect(() => {
     if (!activeId || activeWarmPort === undefined || activeReady) return
     const id = activeId
+    const port = activeWarmPort
     const t = window.setTimeout(() => {
       setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
+      // `frame` is the verdict: `cross-origin` means the pane really loaded the
+      // tunnel URL and then failed to announce readiness, while `about:blank`
+      // means it never navigated at all and no crew bundle could ever have run.
+      paneLog('load-timeout', {
+        id,
+        port,
+        seq: activeSeq,
+        afterMs: PANE_LOAD_TIMEOUT_MS,
+        frame: frameDocumentState(iframeRefs.current.get(id)),
+      })
     }, PANE_LOAD_TIMEOUT_MS)
     return () => window.clearTimeout(t)
   }, [activeId, activeWarmPort, activeSeq, activeReady])
@@ -469,6 +521,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     (id: string) => {
       // Clear the stale verdict and force a reload even if the re-mint returns
       // an identical token (setWarm would be a no-op for the iframe src).
+      paneLog('retry', {
+        id,
+        port: warmRef.current[id]?.port,
+        frame: frameDocumentState(iframeRefs.current.get(id)),
+      })
       setTimedOut(prev => ({ ...prev, [id]: false }))
       setReloadSeq(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
       // An explicit user press is a fresh start: re-open the reactive budget so
@@ -589,10 +646,19 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       const w = warm[id]
       if (!el?.contentWindow || !w) return
       const origin = `${window.location.protocol}//${window.location.hostname}:${w.port}`
+      // A frame still on about:blank inherits THIS origin, so the post below is
+      // rejected with a target-origin mismatch. Chromium reports that as a
+      // console error rather than an exception, so the catch cannot see it —
+      // journal the frame's state here instead. The post is still attempted:
+      // this is instrumentation, and skipping on a mis-read would break a
+      // delivery that would have worked.
+      const frame = frameDocumentState(el)
+      if (frame !== 'cross-origin') paneLog('post-model-undeliverable', { id, origin, frame })
       try {
         el.contentWindow.postMessage(buildModelFor(id), origin)
-      } catch {
+      } catch (err) {
         /* frame mid-navigation — the next broadcast / ready ping retries */
+        paneLog('post-model-threw', { id, origin, frame, error: (err as Error)?.message || 'unknown' })
       }
     },
     [warm, buildModelFor],
@@ -688,8 +754,21 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // the re-minted src is byte-identical to the dead frame's.
           key={`${id}:${reloadSeq[id] || 0}`}
           ref={el => {
-            if (el) iframeRefs.current.set(id, el)
-            else iframeRefs.current.delete(id)
+            if (el) {
+              iframeRefs.current.set(id, el)
+              // The mount is the moment the src is committed to a live frame.
+              // An empty `src` here means srcFor found no warm entry, which is
+              // the one way the pane can end up parked on about:blank forever.
+              paneLog('iframe-mounted', {
+                id,
+                port: warmRef.current[id]?.port,
+                seq: reloadSeq[id] || 0,
+                src: safePaneUrl(el.getAttribute('src')),
+              })
+            } else {
+              iframeRefs.current.delete(id)
+              paneLog('iframe-unmounted', { id })
+            }
           }}
           title={nameFor(id)}
           src={srcFor(id)}
@@ -707,7 +786,17 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // require alongside the Permissions-Policy delegation.
           allow="microphone; fullscreen"
           allowFullScreen
-          onLoad={() => postModelTo(id)}
+          onLoad={e => {
+            // Fires for the initial about:blank too, which is why a load event is
+            // NOT proof the pane loaded. `frame` says which one this was.
+            paneLog('iframe-load', {
+              id,
+              port: warmRef.current[id]?.port,
+              seq: reloadSeq[id] || 0,
+              frame: frameDocumentState(e.currentTarget),
+            })
+            postModelTo(id)
+          }}
           className="absolute inset-0 w-full h-full border-0"
           style={{ display: id === activeId ? 'block' : 'none' }}
         />

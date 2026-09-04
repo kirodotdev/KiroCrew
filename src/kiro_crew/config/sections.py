@@ -4463,11 +4463,12 @@ class InstancesConfig:
             "at once. Least-recently-used instances beyond this are evicted and "
             "reconnected on demand. Bounds memory/socket use (each warm instance is a "
             "full dashboard SPA). 0 (the default) is automatic: the cap follows how "
-            "many crews are currently connected, so a crew you connected is never "
-            "evicted -- eviction cold-boots the pane and reads as a disconnect, so a "
-            "fixed cap below the connected count makes tab switching look like a "
-            "connection flap. Automatic is bounded by an internal ceiling; an explicit "
-            "value is honoured exactly, including one below the connected count.",
+            "many crews are configured, so up to an internal ceiling no crew you added "
+            "is evicted and the cap widens by itself when you add one -- eviction "
+            "cold-boots the pane and reads as a disconnect, so a cap below the number "
+            "of crews in use makes tab switching look like a connection flap. Past that "
+            "ceiling eviction resumes; an explicit value is honoured exactly, including "
+            "one below the number of configured crews.",
         ),
     )
     tunnel_base_port: int = field(

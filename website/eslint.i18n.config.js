@@ -369,6 +369,29 @@ export default [
               // (`=1`, `=true`) — never a sentence — so prose still cannot match.
               String.raw`^[?&][a-z_]+=[a-z0-9]+$`,
 
+              // An angle-bracketed SENTINEL written into a diagnostic log line, e.g.
+              // `<redacted>`, `<empty>`, `<unserializable>` in lib/paneLog.ts. These are
+              // not copy in either direction: nobody reads them in the UI, and the reader
+              // is whoever greps gateway-launch.log — translating one would make the
+              // journal unsearchable in exactly the incident it exists for, and
+              // `<redacted>` in particular is the marker that a credential was WITHHELD,
+              // so a locale that renamed it would read as if the token had been printed.
+              // Shape: the whole string is one angle-bracketed lowercase word. Prose
+              // never takes that form — copy that mentions a placeholder carries the
+              // surrounding sentence (`Enter <name> here`), which the anchors reject.
+              String.raw`^<[a-z]+>$`,
+
+              // The same sentinel standing in for a URL QUERY, e.g. `?token=<redacted>`
+              // and `?<query>` — the two values `safePaneUrl` substitutes for a query it
+              // will not journal. Deliberately a separate entry from the bare sentinel
+              // above and from the `^[?&][a-z_]+=…$` server-contract shapes: neither of
+              // those admits an angle bracket, and widening either to reach these would
+              // also let a bracket into a shape whose whole tightness argument is that it
+              // carries only `[a-z0-9_=]`. The leading `?` is required, so this cannot
+              // match a bare word, and the key is optional because one of the two forms
+              // replaces the entire query rather than one parameter's value.
+              String.raw`^\?(?:[a-z_]+=)?<[a-z]+>$`,
+
               // A catalog KEY assembled at runtime, e.g.
               // `apps.crewCompanion.state.${slot}`. Translating a key would break the
               // lookup it performs — the value it resolves to is what gets translated.
