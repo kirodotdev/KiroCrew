@@ -93,10 +93,23 @@ permissions:
   statuses: read        # read the "PR Readiness" commit status
 
 concurrency:
-  # Collapse an overlapping sweep into one. The sweep is idempotent, so
-  # cancelling an in-flight run is safe.
+  # Collapse overlap WITHOUT cancelling the incumbent. The group alone already
+  # dedupes: GitHub keeps at most one PENDING run per group, and a newer pending
+  # run supersedes the older pending one. `cancel-in-progress: true` would also
+  # cancel the run currently HOLDING the slot -- and a run that is queued
+  # waiting for a runner already holds it, so once repo-wide queue latency
+  # exceeds the 15-minute cron interval every run is killed by its own
+  # successor before executing a single step and the sweep never runs again,
+  # exactly when Actions saturation makes the backstop most needed (#8026).
+  # With `false` the incumbent -- queued or executing -- is never cancelled by
+  # a successor; a queued run that never gets a runner still expires on
+  # GitHub's own queued-run TTL, after which the next tick takes the slot. So
+  # under saturation the sweep degrades to running less often instead of never.
+  # (The old "the sweep is idempotent, so cancelling an in-flight run is safe"
+  # reasoning considered only an executing run and missed that queued runs are
+  # cancellation targets too.)
   group: pr-readiness-sweep
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   sweep:
