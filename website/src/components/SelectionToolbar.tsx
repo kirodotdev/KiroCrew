@@ -7,12 +7,36 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { containedSelectionRange } from '../utils/selectionContainment'
 import { i18nT } from '../i18n/t'
 
+/**
+ * Where a selection came from, carried alongside the text.
+ *
+ * The message components already know their own role/timestamp/row id, so the
+ * descriptor is filled at the call site rather than re-derived from the DOM.
+ * `mid` is the durable anchor (a coarse clock can stamp two rows with the same
+ * `ts`, and the steer path rewrites `ts` mid-stream); `ts` is the fallback for
+ * rows minted before `mid` existed, and for a still-streaming bubble that has
+ * no `mid` yet.
+ */
+export interface SelectionSource {
+  /** Localized role label, e.g. "Assistant" / "You". */
+  role: string
+  /** Localized clock label, e.g. "10:22". */
+  time: string
+  /** Server row id — preferred identity. */
+  mid?: string
+  /** Message timestamp — fallback identity. */
+  ts?: string
+  /** The selection is wholly inside a rendered code/preformatted block. */
+  code?: boolean
+}
+
 export interface SelectionAction {
   id: string
   icon: React.ReactNode
   label: string
-  /** Called with selected text and the bounding rect of the selection */
-  onClick: (text: string, rect: DOMRect) => void
+  /** Called with selected text, the bounding rect of the selection, and (when
+   *  the host supplies one) the source message it was selected from. */
+  onClick: (text: string, rect: DOMRect, source?: SelectionSource) => void
 }
 
 /**
@@ -248,11 +272,14 @@ interface SelectionToolbarProps {
   actions: SelectionAction[]
   /** External trigger (e.g. from the code editor) — shows toolbar at given position with given text */
   externalSelection?: { text: string; x: number; y: number } | null
+  /** Provenance of whatever is selected inside this container, passed through
+   *  to every action. Omitted by hosts that have no message identity. */
+  source?: SelectionSource
 }
 
 /** Generic floating toolbar that appears when user selects text within a container.
  *  Extensible — pass any actions (quote, copy, etc.) via the `actions` prop. */
-export default function SelectionToolbar({ containerRef, actions, externalSelection }: SelectionToolbarProps) {
+export default function SelectionToolbar({ containerRef, actions, externalSelection, source }: SelectionToolbarProps) {
   const [visible, setVisible] = useState(false)
   const [pos, setPos] = useState({ x: 0, y: 0 })
   // Clamped top-left, computed after measuring the toolbar so it never clips
@@ -272,6 +299,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   const selectedTextRef = useRef('')
   const toolbarRef = useRef<HTMLDivElement>(null)
   const sourceRef = useRef<'dom' | 'external' | null>(null)
+  const selectionIsCodeRef = useRef(false)
 
   const selectionRectRef = useRef<DOMRect | null>(null)
 
@@ -308,6 +336,10 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     if (!text) { setVisible(false); return }
 
     selectedTextRef.current = text
+    const ancestor = range.commonAncestorContainer instanceof Element
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer.parentElement
+    selectionIsCodeRef.current = !!ancestor?.closest('pre, code')
 
     const rect = measureRange.getBoundingClientRect()
     selectionRectRef.current = rect
@@ -361,6 +393,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       selectionRectRef.current = new DOMRect(externalSelection.x, externalSelection.y, 0, 0)
       setPos({ x: externalSelection.x, y: externalSelection.y + 8 })
       sourceRef.current = 'external'
+      selectionIsCodeRef.current = false
       setVisible(true)
     }
   }, [externalSelection])
@@ -454,7 +487,9 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     const text = selectedTextRef.current
     if (!text) return
     const rect = selectionRectRef.current || new DOMRect(0, 0, 0, 0)
-    action.onClick(text, rect)
+    action.onClick(text, rect, source
+      ? { ...source, code: selectionIsCodeRef.current }
+      : undefined)
     if (action.id === 'copy') {
       setCopiedId('copy')
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
@@ -466,7 +501,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       setVisible(false)
       window.getSelection()?.removeAllRanges()
     }
-  }, [])
+  }, [source])
 
   // Cancel a pending "copied!" reset timer on unmount so it can never fire
   // after the component (or a test's jsdom environment) is torn down.
@@ -513,8 +548,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
 
 /** Pre-built actions for common use cases */
 export function useSelectionActions(
-  onQuote?: (text: string, rect: DOMRect) => void,
-  onAsk?: (text: string, rect: DOMRect) => void,
+  onQuote?: (text: string, rect: DOMRect, source?: SelectionSource) => void,
+  onAsk?: (text: string, rect: DOMRect, source?: SelectionSource) => void,
 ): SelectionAction[] {
   const actions: SelectionAction[] = []
 

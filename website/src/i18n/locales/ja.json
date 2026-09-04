@@ -6848,6 +6848,17 @@
       "submitting": "送信中…",
       "thanks": "フィードバックありがとうございます！"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "すべての引用を削除",
+      "jump_to_source": "引用元のメッセージへ移動",
+      "n_quotes": "{{n}} 件の引用 · {{roles}}",
+      "one_quote": "{{role}} · 「{{excerpt}}」",
+      "remove_quote": "引用を削除",
+      "review_quotes": "引用テキストを確認",
+      "role_assistant": "アシスタント",
+      "role_unknown": "引用",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} 件",
       "remove_reference": "参照を削除",

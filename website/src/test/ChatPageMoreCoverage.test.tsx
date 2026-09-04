@@ -35,7 +35,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore } from '../store'
-import { setVoicePlaying } from '../store/chatSlice'
+import { setActiveSlot, setVoicePlaying } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 
@@ -44,9 +44,11 @@ import type { ChatMessage } from '../types'
 interface AssistantProps {
   content: string
   timestamp?: string
+  quoteSourceTime?: string
+  messageMid?: string
   onFork?: (visibleIndex: number) => void | Promise<void>
   onPlanFromHere?: (visibleIndex: number) => void | Promise<void>
-  onQuote?: (text: string, rect: DOMRect) => void
+  onQuote?: (text: string, rect: DOMRect, source?: { role: string; time: string; mid?: string; ts?: string; code?: boolean }) => void
   onAsk?: (text: string) => void
   onSpeak?: (content: string) => void
   onRegenerate?: () => void
@@ -55,7 +57,13 @@ interface AssistantProps {
 }
 let assistantProps: AssistantProps | null = null
 
-interface InputProps { value: string; onChange: (v: string) => void }
+interface InputProps {
+  value: string
+  onChange: (v: string) => void
+  onSend?: () => void
+  onSteer?: () => void
+  quotedReplies?: { key: string; role: string; time: string; text: string }[]
+}
 let inputProps: InputProps | null = null
 
 vi.mock('../pages/chat', async () => {
@@ -237,13 +245,14 @@ interface RenderOpts {
   /** Past sessions `api.sessions` yields — ChatPage fetches them on mount, so a
    *  preloaded `chat.history` would be overwritten before the first paint. */
   sessions?: HistorySession[]
+  slots?: typeof SLOT[]
 }
 
 function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
-  const { chat = {}, sessions = [] } = opts
-  apiMocks.chatSlots = vi.fn().mockResolvedValue([SLOT])
+  const { chat = {}, sessions = [], slots = [SLOT] } = opts
+  apiMocks.chatSlots = vi.fn().mockResolvedValue(slots)
   apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({
-    messages, has_more: false, total: messages.length,
+    messages, running: chat.slotRunning === true, has_more: false, total: messages.length,
   })
   apiMocks.sessions = vi.fn().mockResolvedValue({ sessions, has_more: false })
   // Spread the reducers' own initial state: RTK's preloadedState REPLACES a
@@ -255,7 +264,7 @@ function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
       ...base.dashboard,
       status: { platform: 'darwin' } as unknown as RootState['dashboard']['status'],
       connected: true,
-      slots: [SLOT] as unknown as RootState['dashboard']['slots'],
+      slots: slots as unknown as RootState['dashboard']['slots'],
     },
     chat: {
       ...base.chat,
@@ -287,7 +296,7 @@ function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
 async function renderTurn(opts: RenderOpts = {}) {
   const out = renderChatPage([
     msg('user', 'what changed?', { ts: '2026-08-12T07:00:00Z' }),
-    msg('assistant', 'two files changed', { ts: '2026-08-12T07:00:05Z' }),
+    msg('assistant', 'two files changed', { ts: '2026-08-12T07:00:05Z', meta: { mid: 'assistant-mid-1' } }),
   ], opts)
   await waitFor(() => expect(assistantProps).not.toBeNull())
   return out
@@ -414,23 +423,121 @@ describe('ChatPage row callbacks — plan from here', () => {
 })
 
 describe('ChatPage row callbacks — quote and ask', () => {
-  it('quotes the selection into the composer and shows the transit animation', async () => {
+  const rect = { top: 10, left: 20, width: 5, height: 5 } as DOMRect
+
+  it('stages the selection as an annotation instead of injecting text into the composer', async () => {
     await renderTurn()
-    const rect = { top: 10, left: 20, width: 5, height: 5 } as DOMRect
     act(() => { assistantProps!.onQuote!('first line\nsecond line', rect) })
-    await waitFor(() => expect(inputProps!.value).toContain('> first line'))
-    expect(inputProps!.value).toContain('> second line')
-    expect(screen.getByTestId('flying-quote')).toBeInTheDocument()
+    await waitFor(() => expect(inputProps!.quotedReplies).toHaveLength(1))
+    expect(inputProps!.quotedReplies![0].text).toBe('first line\nsecond line')
+    // The composer stays exactly as the user left it: a quote is a separate
+    // staged object, so it can be removed without editing their prose.
+    expect(inputProps!.value).not.toContain('> first line')
+    expect(inputProps!.value).toBe('')
+    // The transit animation was removed as needless motion on every quote.
+    expect(screen.queryByTestId('flying-quote')).toBeNull()
   })
 
-  it('appends a second quote below the first rather than replacing it', async () => {
+  it('stacks a second quote alongside the first rather than replacing it', async () => {
     await renderTurn()
-    const rect = { top: 0, left: 0, width: 1, height: 1 } as DOMRect
     act(() => { assistantProps!.onQuote!('alpha', rect) })
-    await waitFor(() => expect(inputProps!.value).toContain('> alpha'))
+    await waitFor(() => expect(inputProps!.quotedReplies).toHaveLength(1))
     act(() => { assistantProps!.onQuote!('beta', rect) })
-    await waitFor(() => expect(inputProps!.value).toContain('> beta'))
-    expect(inputProps!.value).toContain('> alpha')
+    await waitFor(() => expect(inputProps!.quotedReplies).toHaveLength(2))
+    expect(inputProps!.quotedReplies!.map(q => q.text)).toEqual(['alpha', 'beta'])
+    // Distinct keys are what make per-row removal addressable.
+    expect(inputProps!.quotedReplies![0].key).not.toBe(inputProps!.quotedReplies![1].key)
+  })
+
+  it('passes a durable row id and formatted source time even when timestamps are hidden', async () => {
+    await renderTurn()
+    expect(assistantProps!.timestamp).toBeUndefined()
+    expect(assistantProps!.messageMid).toBe('assistant-mid-1')
+    expect(assistantProps!.quoteSourceTime).toBeTruthy()
+  })
+
+  it('keeps staged quotes owned by their slot across switches', async () => {
+    const slotB = { ...SLOT, key: 'chat-2', title: 'chat-2' }
+    const { store } = await renderTurn({ slots: [SLOT, slotB] })
+    act(() => { assistantProps!.onQuote!('only slot one', rect) })
+    await waitFor(() => expect(inputProps!.quotedReplies?.map(q => q.text)).toEqual(['only slot one']))
+
+    act(() => { store.dispatch(setActiveSlot('chat-2')) })
+    await waitFor(() => expect(inputProps!.quotedReplies).toEqual([]))
+    act(() => { assistantProps!.onQuote!('only slot two', rect) })
+    await waitFor(() => expect(inputProps!.quotedReplies?.map(q => q.text)).toEqual(['only slot two']))
+
+    act(() => { store.dispatch(setActiveSlot('chat-1')) })
+    await waitFor(() => expect(inputProps!.quotedReplies?.map(q => q.text)).toEqual(['only slot one']))
+  })
+
+  it('sends a quote-only composer and clears it after acceptance', async () => {
+    apiSpy('sendChat').mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    await renderTurn()
+    act(() => { assistantProps!.onQuote!('quote without extra prose', rect) })
+    await waitFor(() => expect(inputProps!.quotedReplies).toHaveLength(1))
+
+    act(() => { inputProps!.onSend!() })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalled())
+    expect(String(apiMocks.sendChat.mock.calls[0][0])).toContain('quote without extra prose')
+    await waitFor(() => expect(inputProps!.quotedReplies).toEqual([]))
+  })
+
+  it('restores a staged quote when the send transport rejects', async () => {
+    apiSpy('sendChat').mockRejectedValueOnce(new Error('network down'))
+    await renderTurn()
+    act(() => { assistantProps!.onQuote!('recover this quote', rect) })
+    await waitFor(() => expect(inputProps!.quotedReplies).toHaveLength(1))
+
+    act(() => { inputProps!.onSend!() })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalled())
+    await waitFor(() => expect(inputProps!.quotedReplies?.map(q => q.text)).toEqual(['recover this quote']))
+    const stored = JSON.parse(sessionStorage.getItem('mc-chat-quote-drafts') || '{}')
+    expect(stored['chat-1'].map((q: { text: string }) => q.text)).toEqual(['recover this quote'])
+  })
+
+  it('serializes and consumes quote context on a mid-turn steer', async () => {
+    apiSpy('steerChat').mockResolvedValue({ ok: true })
+    await renderTurn({
+      chat: { slotRunning: true },
+      slots: [{ ...SLOT, running: true }],
+    })
+    act(() => { assistantProps!.onQuote!('steer with this context', rect) })
+    await waitFor(() => expect(inputProps!.quotedReplies).toHaveLength(1))
+
+    act(() => { inputProps!.onSteer!() })
+    await waitFor(() => expect(apiMocks.steerChat).toHaveBeenCalled())
+    expect(String(apiMocks.steerChat.mock.calls[0][0])).toContain('steer with this context')
+    await waitFor(() => expect(inputProps!.quotedReplies).toEqual([]))
+  })
+
+  it('merges consumed quotes behind newer quotes when a steer rejects', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      let rejectSteer: (error: Error) => void = () => {}
+      apiSpy('steerChat').mockImplementationOnce(
+        () => new Promise((_resolve, reject) => { rejectSteer = reject }),
+      )
+      await renderTurn({
+        chat: { slotRunning: true },
+        slots: [{ ...SLOT, running: true }],
+      })
+      act(() => { assistantProps!.onQuote!('first quote', rect) })
+      await waitFor(() => expect(inputProps!.quotedReplies).toHaveLength(1))
+      act(() => { inputProps!.onSteer!() })
+      await waitFor(() => expect(inputProps!.quotedReplies).toEqual([]))
+
+      act(() => { assistantProps!.onQuote!('newer quote', rect) })
+      await waitFor(() => expect(inputProps!.quotedReplies?.map(q => q.text)).toEqual(['newer quote']))
+      act(() => { rejectSteer(new Error('steer unavailable')) })
+
+      await waitFor(() => expect(inputProps!.quotedReplies?.map(q => q.text)).toEqual([
+        'newer quote',
+        'first quote',
+      ]))
+    } finally {
+      errorSpy.mockRestore()
+    }
   })
 
   it('routes Ask to the side panel and seeds it, leaving the main composer untouched', async () => {
@@ -648,14 +755,13 @@ describe('ChatPage project picker', () => {
 describe('ChatPage widget composer bridge', () => {
   it('appends a widget action below text the user already typed', async () => {
     await renderTurn()
-    const rect = { top: 0, left: 0, width: 1, height: 1 } as DOMRect
-    act(() => { assistantProps!.onQuote!('context line', rect) })
-    await waitFor(() => expect(inputProps!.value).toContain('> context line'))
+    act(() => { inputProps!.onChange('context line') })
+    await waitFor(() => expect(inputProps!.value).toContain('context line'))
     act(() => {
       window.dispatchEvent(new CustomEvent('mc-widget-send', { detail: { text: 'Merge it now' } }))
     })
     await waitFor(() => expect(inputProps!.value).toContain('Merge it now'))
-    expect(inputProps!.value).toContain('> context line')
+    expect(inputProps!.value).toContain('context line')
   })
 
   it('ignores a widget action with no text', async () => {

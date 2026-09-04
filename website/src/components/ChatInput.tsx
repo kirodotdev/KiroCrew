@@ -138,6 +138,8 @@ import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 import { i18nT } from '../i18n/t'
 import { fmtDateFields, fmtPercent } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
+import QuoteAnnotationPill from './QuoteAnnotationPill'
+import type { QuoteRef } from '../utils/quoteRefs'
 import type { SessionRef } from '../utils/sessionRefs'
 const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
@@ -345,6 +347,15 @@ interface ChatInputProps {
   pendingSessions?: SessionRef[]
   /** Unstage a session reference by its session key */
   onRemoveSessionRef?: (key: string) => void
+  /** Text quotes staged by the Quote action, shown as one collapsed annotation
+   *  pill above the textarea. Serialized as labeled blockquotes on send. */
+  quotedReplies?: QuoteRef[]
+  /** Unstage one quote by its key */
+  onRemoveQuote?: (key: string) => void
+  /** Unstage every quote at once */
+  onClearQuotes?: () => void
+  /** Scroll the transcript to a quote's source message and flash it */
+  onJumpToQuoteSource?: (quote: QuoteRef) => void
   /** Show macOS-only buttons (screenshot) */
   isMac?: boolean
   /** Drag-and-drop handler for the entire input bar */
@@ -763,6 +774,10 @@ function ChatInput({
   onRemoveDir,
   pendingSessions = [],
   onRemoveSessionRef,
+  quotedReplies = [],
+  onRemoveQuote,
+  onClearQuotes,
+  onJumpToQuoteSource,
   isMac = false,
   onDrop,
   onDragOver,
@@ -2610,8 +2625,10 @@ function ChatInput({
   }, [onUploadFiles])
 
   const hasSessionRefs = pendingSessions.length > 0
+  const hasQuoteRefs = quotedReplies.length > 0
   const [fileStripRef, fileStripH] = useMeasuredHeight<HTMLDivElement>()
   const [sessionStripRef, sessionStripH] = useMeasuredHeight<HTMLDivElement>()
+  const [quoteStripRef, quoteStripH] = useMeasuredHeight<HTMLDivElement>()
   /** True when the composer holds something a send would carry.
    *
    *  Hoisted because the hold-to-talk gate has to agree with the send button, and
@@ -2869,7 +2886,7 @@ function ChatInput({
    *  is simply taller when measured, instead of needing a second predicted
    *  height, which is how the third constant came to exist in the first place.
    */
-  const stripH = fileStripH + sessionStripH
+  const stripH = fileStripH + sessionStripH + quoteStripH
   /** Whether `stripH` describes what is actually on screen right now.
    *
    *  A measured height arrives one commit AFTER the strip mounts: the ref
@@ -2879,7 +2896,7 @@ function ChatInput({
    *  on every mount that already had something staged. Waiting for a mounted
    *  strip to report a non-zero box makes the first value a BASELINE rather
    *  than a change. */
-  const stripsMounted = pendingFiles.length > 0 || pendingDirs.length > 0 || hasSessionRefs
+  const stripsMounted = pendingFiles.length > 0 || pendingDirs.length > 0 || hasSessionRefs || hasQuoteRefs
   const stripHSettled = stripsMounted ? stripH > 0 : stripH === 0
   const prevStripH = useRef<number | null>(null)
   const dragMinH = INPUT_DRAG_MIN_H + stripH
@@ -3308,6 +3325,13 @@ function ChatInput({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        <QuoteAnnotationPill
+          quotes={quotedReplies}
+          onRemove={onRemoveQuote}
+          onClearAll={onClearQuotes}
+          onJumpToSource={onJumpToQuoteSource}
+          rootRef={quoteStripRef}
+        />
         <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} rootRef={sessionStripRef} />
         <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={onRemoveFile} onRemoveDir={onRemoveDir} rootRef={fileStripRef} />
 
@@ -3788,7 +3812,7 @@ function ChatInput({
                 WCAG 2.5.3 (Label in Name). `title` carries the longer
                 explanation for hover.
               */}
-              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs ? (
+              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuoteRefs ? (
                 <button
                   className="primary h-8 px-3 rounded-full bg-accent text-accent-fg border-none inline-flex items-center gap-1.5 text-[12px] font-medium leading-none cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
@@ -3804,7 +3828,7 @@ function ChatInput({
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuoteRefs) || disabled || optimizing || !connected}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >

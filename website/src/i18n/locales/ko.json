@@ -6848,6 +6848,17 @@
       "submitting": "제출 중…",
       "thanks": "피드백 감사합니다!"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "모든 인용문 삭제",
+      "jump_to_source": "인용한 메시지로 이동",
+      "n_quotes": "인용문 {{n}}개 · {{roles}}",
+      "one_quote": "{{role}} · ‘{{excerpt}}’",
+      "remove_quote": "인용문 삭제",
+      "review_quotes": "인용한 텍스트 검토",
+      "role_assistant": "어시스턴트",
+      "role_unknown": "인용문",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "메시지 {{n}}개",
       "remove_reference": "참조 삭제",

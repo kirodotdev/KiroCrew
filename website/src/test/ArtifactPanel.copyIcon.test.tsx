@@ -52,6 +52,10 @@ describe('SelectionToolbar copy action (ArtifactPanel defect #5)', () => {
     ]
     render(<Harness actions={actions} />)
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
-    expect(onCopy).toHaveBeenCalledWith('hello', expect.anything())
+    // Assert only what this case is about. `onClick` also receives an optional
+    // source descriptor from hosts that supply one, so matching the whole
+    // argument list would couple this test to that unrelated contract.
+    expect(onCopy.mock.calls[0][0]).toBe('hello')
+    expect(onCopy.mock.calls[0][1]).toBeTruthy()
   })
 })

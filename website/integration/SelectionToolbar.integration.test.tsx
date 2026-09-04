@@ -92,7 +92,11 @@ describe('SelectionToolbar', () => {
     act(() => { vi.advanceTimersByTime(60) })
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
-    expect(onClick).toHaveBeenCalledWith('Hello World', expect.any(DOMRect))
+    // Assert only the arguments this test is about. `onClick` also receives an
+    // optional source descriptor from hosts that supply one, so matching the
+    // whole argument list would couple this case to that unrelated contract.
+    expect(onClick.mock.calls[0][0]).toBe('Hello World')
+    expect(onClick.mock.calls[0][1]).toBeInstanceOf(DOMRect)
   })
 
   it('stays visible after copy action (does not dismiss)', () => {

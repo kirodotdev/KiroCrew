@@ -7056,6 +7056,17 @@
       "submitting": "Enviando...",
       "thanks": "Obrigado pelo seu feedback!"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "Remover todas as citações",
+      "jump_to_source": "Ir para a mensagem citada",
+      "n_quotes": "{{n}} citações · {{roles}}",
+      "one_quote": "{{role}} · “{{excerpt}}”",
+      "remove_quote": "Remover citação",
+      "review_quotes": "Revisar texto citado",
+      "role_assistant": "Assistente",
+      "role_unknown": "Citação",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} msgs",
       "remove_reference": "Remover referência",
