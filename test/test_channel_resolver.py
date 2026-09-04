@@ -6,6 +6,7 @@ import json
 import time
 from unittest.mock import AsyncMock
 
+import aiohttp
 import pytest
 
 from kiro_crew.slack.channel_resolver import (
@@ -13,6 +14,7 @@ from kiro_crew.slack.channel_resolver import (
     _CACHE_TTL_SECS,
     ChannelNameResolver,
 )
+from kiro_crew.slack.client import RealSlackClient
 
 
 def _make_slack(channels: list[dict] | Exception | None = None) -> AsyncMock:
@@ -96,6 +98,43 @@ class TestResolveMany:
         assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
 
         slack.conversations_list.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_real_client_first_page_failure_stays_retryable(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        web = AsyncMock()
+        web.conversations_list = AsyncMock(
+            side_effect=[
+                aiohttp.ClientError("temporary Slack failure"),
+                {"channels": [], "response_metadata": {}},
+            ]
+        )
+        slack = RealSlackClient.__new__(RealSlackClient)
+        slack._web = web
+
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+
+        assert web.conversations_list.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_real_client_keeps_channels_when_a_later_page_fails(self):
+        channel = {"id": "C111", "name": "engineering"}
+        web = AsyncMock()
+        web.conversations_list = AsyncMock(
+            side_effect=[
+                {
+                    "channels": [channel],
+                    "response_metadata": {"next_cursor": "next"},
+                },
+                aiohttp.ClientError("second page failed"),
+            ]
+        )
+        slack = RealSlackClient.__new__(RealSlackClient)
+        slack._web = web
+
+        assert await slack.conversations_list() == [channel]
 
 
 class TestDiskCache:
