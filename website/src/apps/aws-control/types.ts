@@ -397,3 +397,66 @@ export interface BackupRestoreResult {
 export interface IamPolicyResponse {
   policy: string
 }
+
+/* ── Remote crews ─────────────────────────────────────────────────────────
+ * A "remote crew" is a Kiro Crew gateway the owner deployed into their OWN AWS
+ * account as a service their customers reach: one CloudFormation stack per crew,
+ * one ECS service inside it. NOT the local agents the Agents page calls crews —
+ * hence "remote" everywhere in this block and in the copy the pane renders.
+ *
+ * These mirror `backend/crews.py`'s `crew_json` / `to_json` field for field, and
+ * that shape is pinned there by
+ * `test_the_wire_shape_carries_every_field_the_ui_reads`.
+ */
+
+/**
+ * How a crew handles memory, straight from the stack's own `Memory` parameter.
+ *
+ * `''` is a real, load-bearing value: a stack deployed before the parameter
+ * existed carries no answer, and the backend returns empty rather than
+ * defaulting so this UI can say it does not know. Rendering empty as `chatbot`
+ * would state a fact about someone's deployment that nothing was read from.
+ */
+export type CrewMemoryMode = 'chatbot' | 'persistent' | ''
+
+/**
+ * One deployed crew.
+ *
+ * Two fields are only populated by the DETAIL route: `service`, and the
+ * `running`/`desired` pair it needs one ECS call per crew to read. The list
+ * route deliberately does not make those calls, so on a list payload they
+ * arrive as `''`/`0`/`0`.
+ *
+ * `healthy` is derived from that same pair (`desired > 0 && running === desired`),
+ * which makes it **false for every crew on a list payload** — an artifact of the
+ * list not calling ECS, not a statement that the crew is down. Read it only from
+ * a detail payload; the card grid shows `stackStatus` instead.
+ */
+export interface RemoteCrew {
+  name: string
+  stack: string
+  stackStatus: string
+  memory: CrewMemoryMode
+  service: string
+  running: number
+  desired: number
+  image: string
+  controlBase: string
+  region: string
+  healthy: boolean
+}
+
+/**
+ * Payload of `GET /crews/{account}`.
+ *
+ * `baseMissing` is not an error and not "no crews": a crew runs behind the
+ * shared load balancer and cluster the base stack owns, so until that stack
+ * exists no crew CAN exist. The two states read differently in the pane
+ * because the repair is different.
+ */
+export interface CrewsResponse {
+  account: string
+  region: string
+  baseMissing: boolean
+  crews: RemoteCrew[]
+}

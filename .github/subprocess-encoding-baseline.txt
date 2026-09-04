@@ -59,7 +59,6 @@
 1 src/kiro_crew/service/macos.py
 1 test/installer_test_helpers.py
 2 test/test_acp_backend_kas.py
-1 test/test_agent_home_isolation.py
 1 test/test_agent_import_hoist.py
 1 test/test_beacon.py
 1 test/test_bench_cli.py

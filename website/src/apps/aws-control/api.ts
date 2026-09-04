@@ -32,6 +32,8 @@ import type {
   BackupRunResult,
   BackupRestoreResult,
   IamPolicyResponse,
+  CrewsResponse,
+  RemoteCrew,
 } from './types'
 
 import { recordError, findReport, requestPath, type ErrorReport } from '../../utils/errorReport'
@@ -332,5 +334,35 @@ export const awsControlApi = {
   /** Restore one archived key into a local staging folder (nothing is hot-swapped). */
   backupRestore(account: string, key: string): Promise<BackupRestoreResult> {
     return postJson<BackupRestoreResult>(`/backup/${enc(account)}/restore`, { key })
+  },
+
+  /* ── Remote crews ── */
+
+  /**
+   * Every crew deployed in the account, from the stacks alone.
+   *
+   * One `describe-stacks` answers presence, mode and endpoint for all of them, so
+   * this is a single AWS round trip however many crews there are. The serving
+   * counts are NOT here — see `crew` below.
+   *
+   * Codes: `account_mismatch` (409) means the profile now resolves to a
+   * DIFFERENT account than the one selected, so nothing was listed; reporting
+   * that other account's crews would be a disclosure. `aws_call_failed` (502) is
+   * a real AWS failure. There is no consent gate: every call behind this is free.
+   */
+  crews(account: string): Promise<CrewsResponse> {
+    return request<CrewsResponse>(`/crews/${enc(account)}`)
+  },
+
+  /**
+   * One crew, plus the `running`/`desired` counts the list omits.
+   *
+   * Costs one extra ECS call, which is exactly why it is per-crew and not folded
+   * into the listing. Codes: `crew_absent` (404) when no such stack is in the
+   * account (it may have finished deleting), plus `account_mismatch` and
+   * `aws_call_failed` as above.
+   */
+  crew(account: string, name: string): Promise<RemoteCrew> {
+    return request<RemoteCrew>(`/crews/${enc(account)}/${enc(name)}`)
   },
 }
