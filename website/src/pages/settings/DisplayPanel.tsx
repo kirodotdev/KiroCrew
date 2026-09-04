@@ -6,7 +6,8 @@ import type { FontFamily } from '../../hooks/useZoom'
 import { useTheme } from '../../hooks/useTheme'
 import type { ColorTheme } from '../../hooks/useTheme'
 import { useUIMode } from '../../hooks/useUIMode'
-import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsInput, SettingsCombobox } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsToggle, SettingsInput, SettingsCombobox } from '../../components/settings'
+import { usePlainDiff } from '../../hooks/usePlainDiff'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Input } from '../../components/ui'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
@@ -78,6 +79,9 @@ export function DisplayPanel() {
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
   const { preference, setTheme, colorTheme, setColorTheme, allThemes, loadCustomThemes, themeSwitching, overridesDropReport } = useTheme()
   const { uiMode, setUIMode } = useUIMode()
+  // Browser-local like the theme and terminal font above: the toggle below has no
+  // `configKey` because nothing about it reaches the server config.
+  const [plainDiff, setPlainDiff] = usePlainDiff()
   const editor = useThemeEditor()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -297,6 +301,15 @@ export function DisplayPanel() {
               { value: 'cli', label: 'CLI' },
             ]}
             onChange={v => setUIMode(v as 'chat' | 'cli')} />
+          {/* Phrased as "plain diffs ON" rather than "highlighting OFF" so the
+              switch position matches the stored value — no inverted checkbox.
+              Browser-local, hence no `configKey`. */}
+          <SettingsToggle
+            label={i18nT('settings.display.plainDiff.label')}
+            description={i18nT('settings.display.plainDiff.description')}
+            checked={plainDiff}
+            onChange={setPlainDiff}
+          />
         </SettingsCard>
       </SettingsSection>
 

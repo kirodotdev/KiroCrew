@@ -13886,6 +13886,10 @@
         "description": "Langue de l'interface du tableau de bord.",
         "label": "Langue",
         "sync_failed": "Impossible d'enregistrer ce réglage dans votre configuration {{productName}} — la langue ne s'applique qu'à ce navigateur et peut être réinitialisée au rechargement."
+      },
+      "plainDiff": {
+        "description": "Affiche les diffs sous forme de texte unified diff sans coloration syntaxique. Consomme moins de mémoire sur les diffs volumineux.",
+        "label": "Diffs en texte brut"
       }
     },
     "groups": {

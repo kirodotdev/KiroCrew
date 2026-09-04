@@ -96,7 +96,10 @@ export const PIERRE_EDIT_CARET_ALIGN_CSS = `
 
 /** Highlighting worker pool size. Each worker is spawned eagerly at pool
  *  init and loads its own copy of the highlighter bundle plus the WASM regex
- *  engine, so this is a startup cost paid whether or not a diff is on screen.
+ *  engine, so the whole pool is one up-front cost — which is why the pool is
+ *  built on demand by the first surface that intends to highlight rather than at
+ *  module scope, and why a surface that wants no colour (plain-diff mode) opts
+ *  out of it instead of merely bypassing it.
  *  A file is one task on one worker and is never split, so this only governs
  *  how many files tokenize concurrently — four covers a chat message or PR
  *  with several diffs open at once without spawning the library's default 8. */

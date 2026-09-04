@@ -8,6 +8,7 @@ import { PierrePatch } from '../pierre'
 import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS } from '../pierre/config'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { usePersistedBool } from '../hooks/usePersistedBool'
+import { usePlainDiff } from '../hooks/usePlainDiff'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -98,6 +99,11 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   // markdown panel (#6024): the choice made on any diff surface sticks and
   // seeds the next block, instead of every fence resetting to unified.
   const [sideBySide, setSideBySide] = usePersistedBool('mc-diff-split', true)
+  // Plain-diff preference (Settings → Display). PierrePatch honours it on its
+  // own; this block reads it too because the controls below are injected into
+  // PIERRE's file header, which the plain render does not draw — so without a
+  // header of our own here, turning colour off would also take Open/Copy away.
+  const [plain] = usePlainDiff()
   // Resolve the file path: prefer headers inside the diff, fall back to the
   // pathHint extracted from the surrounding chat text by MarkdownRenderer
   // (helps when a tool emits "Created /path/to/file:" before a
@@ -105,6 +111,13 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   const extracted = useMemo(() => extractFilePath(code), [code])
   // The header shows the basename only; `extracted` above keeps the full path
   // for the Open button, so shortening the copy Pierre parses costs nothing.
+  // Only in HIGHLIGHTED mode, though: there the `--- `/`+++ ` lines are consumed
+  // by Pierre to draw that header and never shown as text, so rewriting them is
+  // invisible. The plain render prints the patch verbatim, so the same rewrite
+  // would put a basename where the reader expects the original path — the one
+  // thing "show me the raw diff" promises not to do, and wrong in what gets
+  // copied out. So plain mode renders `code` untouched; its stand-in header
+  // below does its own basename shortening on `headerPath` instead.
   const displayPatch = useMemo(() => basenamePatchHeaders(code), [code])
   const headerPath = extracted?.path ?? pathHint ?? null
   // When a git prefix was stripped and the remainder starts with a
@@ -212,7 +225,11 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
           {i18nT('components.diffBlock.open')}
         </button>
       )}
-      <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => setSideBySide(!sideBySide)} title={sideBySide ? i18nT('components.diffBlock.unified_view') : i18nT('components.diffBlock.split_view')} aria-label={sideBySide ? i18nT('components.diffBlock.switch_to_unified_view') : i18nT('components.diffBlock.switch_to_split_view')}>{sideBySide ? <Rows2 size={13} /> : <Columns2 size={13} />}</button>
+      {/* Split/unified is a PIERRE layout option, so the control is omitted in
+          plain mode rather than left there doing nothing to the raw patch. */}
+      {!plain && (
+        <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => setSideBySide(!sideBySide)} title={sideBySide ? i18nT('components.diffBlock.unified_view') : i18nT('components.diffBlock.split_view')} aria-label={sideBySide ? i18nT('components.diffBlock.switch_to_unified_view') : i18nT('components.diffBlock.switch_to_split_view')}>{sideBySide ? <Rows2 size={13} /> : <Columns2 size={13} />}</button>
+      )}
       <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')} aria-label={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
     </span>
   )
@@ -247,7 +264,24 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
             />
           </button>
         )}
-        <PierrePatch patch={displayPatch} options={options} renderHeaderMetadata={headerControls} />
+        {/* Plain mode: Pierre's file header is what normally carries the
+            filename and hosts `headerControls`, so a header of our own stands
+            in for it — otherwise turning colour off would silently remove
+            Open/Copy and the filename too. Padded left when the fold chevron
+            is present, since that button overlays this row's left edge.
+            `min-h-8`, not `h-8`: `headerControls` grows its buttons to 40px on a
+            touch device (`HOVER_NONE_ACTIONS_ROW_CLS` pads them for thumbs), and
+            a fixed 32px band would clip the top of them against `.diff-block`'s
+            `overflow-hidden` and push the rest over the patch body. Pierre's own
+            header band — the thing this stands in for — is `min-height` for the
+            same reason. */}
+        {plain && (
+          <div className={`flex items-center justify-between gap-2 min-h-8 pr-2 border-b border-border text-[12px] text-muted ${onFold ? 'pl-8' : 'pl-3'}`}>
+            <span className="truncate font-mono">{headerPath ? headerPath.split('/').pop() : ''}</span>
+            {headerControls()}
+          </div>
+        )}
+        <PierrePatch patch={plain ? code : displayPatch} options={options} renderHeaderMetadata={headerControls} />
         {!complete && <div className="px-3 py-1 text-muted text-[12px] italic animate-pulse">{i18nT('components.diffBlock.generating_diff')}</div>}
       </div>
     </div>

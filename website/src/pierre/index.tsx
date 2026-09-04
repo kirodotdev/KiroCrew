@@ -7,6 +7,10 @@
  * Each component suspends into a plain monospace `<pre>` of the raw text while
  * the chunk loads, so content is readable immediately (and test environments
  * that never resolve the chunk still render the text).
+ *
+ * `PierrePatch` additionally makes that plain render the FINAL one when the
+ * user has turned off highlighted diffs (see `usePlainDiff`), which is why the
+ * fallback component is a real surface here rather than a loading state.
  */
 import { Suspense, forwardRef, lazy, memo, useContext, useEffect, useRef, useState } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
@@ -14,6 +18,7 @@ import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
 import { PlainCodeFallback } from './PlainCodeFallback'
 import { PierreFarmHoldContext } from '../components/pierreStaging'
+import { usePlainDiff } from '../hooks/usePlainDiff'
 
 const CodeImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierreCodeImpl })))
 const PatchImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierrePatchImpl })))
@@ -212,6 +217,23 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
    *  controls). Only rendered when the file header is enabled. */
   renderHeaderMetadata?: () => React.ReactNode
 }) {
+  // Plain-diff preference (Settings → Display): render the raw patch text and
+  // never request the Pierre chunk at all. This is the seam for EVERY unified-
+  // patch surface — chat fences, tool-call cards, tool input, PR file diffs —
+  // so one preference covers all of them instead of each call site opting in.
+  //
+  // Not requesting the chunk is the point rather than a side effect: loading it
+  // is what pulls in Pierre + Shiki, and the first surface inside it that wants
+  // colour is what builds the highlight worker pool (`highlightWorkerPool` in
+  // ./PierreImpl). So plain mode on a patch surface costs a `<pre>` and nothing
+  // else — no chunk, no pool, no workers.
+  //
+  // `PierreFilePair` below honours the same preference but cannot take this
+  // route: it is handed two file bodies and no patch, so there is nothing to
+  // print raw and the diff still has to be computed inside the chunk. It drops
+  // the colour and the workers instead — see `PierreFilePairImpl`.
+  const [plain] = usePlainDiff()
+  if (plain) return <PlainCodeFallback text={patch} className={className} />
   return (
     <WarmSwap warmKey={warmKeyOf(patch)} fallback={<PlainCodeFallback text={patch} />}>
       <Suspense fallback={<PlainCodeFallback text={patch} />}>

@@ -5399,6 +5399,10 @@
         "description": "Language for the dashboard interface.",
         "label": "Language",
         "sync_failed": "Couldn't save this to your {{productName}} config — the language applies in this browser only and may reset on reload."
+      },
+      "plainDiff": {
+        "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",
+        "label": "Plain diffs"
       }
     },
     "groups": {

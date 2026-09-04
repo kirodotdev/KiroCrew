@@ -13885,6 +13885,10 @@
         "description": "Lingua dell'interfaccia della dashboard.",
         "label": "Lingua",
         "sync_failed": "Non è stato possibile salvarlo nella configurazione di {{productName}} — la lingua vale solo in questo browser e potrebbe reimpostarsi al ricaricamento."
+      },
+      "plainDiff": {
+        "description": "Mostra i diff come testo unified diff senza evidenziazione della sintassi. Usa meno memoria sui diff di grandi dimensioni.",
+        "label": "Diff in testo semplice"
       }
     },
     "groups": {

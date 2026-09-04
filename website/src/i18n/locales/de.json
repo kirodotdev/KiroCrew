@@ -13707,6 +13707,10 @@
         "description": "Sprache für die Dashboard-Oberfläche.",
         "label": "Sprache",
         "sync_failed": "Dies konnte nicht in Ihrer {{productName}}-Konfiguration gespeichert werden — die Sprache gilt nur in diesem Browser und kann beim Neuladen zurückgesetzt werden."
+      },
+      "plainDiff": {
+        "description": "Diffs als einfachen Unified-Diff-Text ohne Syntaxhervorhebung anzeigen. Benötigt bei großen Diffs weniger Speicher.",
+        "label": "Einfache Diffs"
       }
     },
     "groups": {

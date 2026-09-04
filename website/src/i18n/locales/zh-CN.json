@@ -13529,6 +13529,10 @@
         "description": "仪表板界面的显示语言。",
         "label": "语言",
         "sync_failed": "无法保存到 {{productName}} 配置 — 此语言仅在此浏览器生效，重新加载后可能重置。"
+      },
+      "plainDiff": {
+        "description": "以普通 unified diff 文本显示差异，不使用语法高亮着色。在大型差异上占用更少内存。",
+        "label": "纯文本 diff"
       }
     },
     "groups": {
