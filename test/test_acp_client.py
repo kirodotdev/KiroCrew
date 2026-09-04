@@ -7001,6 +7001,93 @@ class TestExtractToolCallUpdate:
         assert event is not None
         assert "ls output here" in event.tool_output
 
+    def test_flat_raw_output_is_not_read_as_no_output(self):
+        """A captured KAS completion whose only carrier is a flat ``rawOutput``.
+
+        Mirrors ``_dispatch._build_tool_result_event``'s third path. Returning
+        None here also leaves the stall watchdog armed and PostToolUse unfired,
+        so the dropped event costs more than the transcript text.
+        """
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-kas",
+                "status": "completed",
+                "rawOutput": {"kind": "notEnabled", "retracted": False},
+            }
+        )
+        event = client._extract_tool_call_update(msg)
+        assert event is not None
+        assert event.tool_call_id == "tc-kas"
+        assert event.tool_final is True
+        assert "notEnabled" in event.tool_output
+
+    def test_flat_raw_output_loses_to_a_content_block(self):
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-kas2",
+                "status": "completed",
+                "content": [{"content": {"type": "text", "text": "real output"}}],
+                "rawOutput": {"output": "real output", "exitCode": 0},
+            }
+        )
+        event = client._extract_tool_call_update(msg)
+        assert event is not None
+        assert event.tool_output == "real output"
+        assert "exitCode" not in event.tool_output
+
+    def test_empty_items_envelope_still_returns_none(self):
+        """The gate is the ABSENCE of ``items``, so kiro-cli's space is unchanged."""
+        client = self._client()
+        for shape in ({"items": []}, {"items": [{"Text": ""}]}, {}):
+            msg = self._make_msg(
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc-empty",
+                    "status": "completed",
+                    "rawOutput": shape,
+                }
+            )
+            assert client._extract_tool_call_update(msg) is None, shape
+
+    def test_credential_straddling_the_bound_is_still_redacted(self):
+        """The 8000-char bound must be applied AFTER redaction, not before.
+
+        A cut taken first splits a connection URI into fragments the credential
+        prefilter (``://user:pass@``) no longer matches: the head slice keeps
+        ``://admin:<password>`` and drops the ``@``, so the password would reach
+        the dashboard in clear text. The padding here puts the ``@`` exactly on
+        byte 8000 of the serialised output, which is the worst case.
+        """
+        import json as _json
+
+        secret = "sUp3rS3cr3tPassw0rd"
+        uri = f"postgres://admin:{secret}@db.internal:5432/prod"
+        pad = 7900
+        while True:
+            raw = {"pad": "A" * pad, "conn": uri}
+            if _json.dumps(raw, default=str).index("@") >= 8000:
+                break
+            pad += 1
+        assert _json.dumps(raw, default=str).index("@") == 8000
+
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-cred",
+                "status": "completed",
+                "rawOutput": raw,
+            }
+        )
+        event = client._extract_tool_call_update(msg)
+        assert event is not None
+        assert secret not in event.tool_output
+        assert len(event.tool_output) <= 8000
+
     def test_raw_output_json_fallback(self):
         client = self._client()
         msg = self._make_msg(

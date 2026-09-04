@@ -6953,7 +6953,7 @@ class AcpClient:
                 if isinstance(inner, dict) and inner.get("type") == "text":
                     text = inner.get("text", "")
                     if text:
-                        output_parts.append(str(text)[:4000])
+                        output_parts.append(str(text))
 
         # Path 2: `rawOutput` (arrives with status=completed) — fallback when
         # there were no content blocks (e.g. some tools only emit rawOutput).
@@ -6969,12 +6969,12 @@ class AcpClient:
                         if not isinstance(item, dict):
                             continue
                         if "Text" in item and item.get("Text"):
-                            output_parts.append(str(item["Text"])[:4000])
+                            output_parts.append(str(item["Text"]))
                             continue
                         j = item.get("Json")
                         if isinstance(j, dict):
                             if "stdout" in j and j.get("stdout"):
-                                output_parts.append(str(j["stdout"])[:4000])
+                                output_parts.append(str(j["stdout"]))
                             else:
                                 # An unrecognised structured envelope reaches the
                                 # consumer through json.dumps, which escapes every
@@ -6993,9 +6993,24 @@ class AcpClient:
                                         "escape its payload. Envelope keys: %s",
                                         sorted(j.keys()),
                                     )
-                                    output_parts.append(_marker[:4000])
+                                    output_parts.append(_marker)
                                 else:
-                                    output_parts.append(json.dumps(j, default=str)[:4000])
+                                    output_parts.append(json.dumps(j, default=str))
+                # Path 3: an object that is not that envelope at all. Mirrors
+                # ``_dispatch._build_tool_result_event`` -- ``rawOutput`` is
+                # unstructured passthrough, so ``items[]`` is one producer's
+                # wrapper and an unrecognised object is not evidence the tool
+                # produced nothing. Returning None here is costlier than in the
+                # dispatch parser: both call sites use the result to disarm the
+                # stall watchdog and to fire PostToolUse hooks, so a dropped
+                # event leaves the watchdog armed and the hooks unfired. Gated on
+                # the ABSENCE of ``items`` so no ``items[]`` envelope changes.
+                # No per-part cut here or above: parts are collected RAW and
+                # the single bound is applied AFTER redaction at the end of this
+                # method, because a cut taken before redaction can split a
+                # credential into fragments no pattern matches.
+                if raw_output and "items" not in raw_output:
+                    output_parts.append(json.dumps(raw_output, default=str))
 
         if not output_parts:
             return None
@@ -7014,9 +7029,13 @@ class AcpClient:
                 content_free_digest(final_output),
             )
             final_output = _repaired
-        final_output = final_output[:8000]
-        final_output, _ = redact_exfiltration_urls(final_output)
-        final_output, _ = redact_credentials(final_output)
+        # Redact the WHOLE join, then bound -- never the reverse. Bounding first
+        # can split a credential across the cut into fragments no pattern
+        # matches: with a connection URI whose "@" lands on byte 8000, the head
+        # slice keeps "://user:password" and drops the "@" the prefilter needs,
+        # so the password reaches the dashboard in clear text. Same ordering as
+        # `_dispatch._build_tool_result_event` and as `_compaction_detail` below.
+        final_output = redact_text(final_output)[:8000]
         return AcpEvent(
             kind=EVENT_TOOL_RESULT,
             tool_call_id=tool_use_id,

@@ -222,9 +222,19 @@ invented one.
 
 | | kiro-cli | KAS | CC |
 |---|---|---|---|
-| How a tool result arrives | `content[].content.text` blocks, or `rawOutput.items[].Text` / `.Json.stdout` | same shapes, but an MCP result can arrive as an **already-serialised** JSON envelope under a key this repository does not recognise | `content[]` text blocks |
+| How a tool result arrives | `content[].content.text` blocks, or `rawOutput.items[].Text` / `.Json.stdout` | `content[].content.text` blocks, or a **flat `rawOutput` object with no `items`** (measured: `{output, exitCode, message}`, `{kind, retracted}`) — and an MCP result can arrive as an **already-serialised** JSON envelope under a key this repository does not recognise | `content[]` text blocks |
 | Marker survives untouched | yes | **no** — the envelope reaches the consumer through `json.dumps`, which escapes every quote in it | yes |
 | Recovery | not needed | `acp/_dispatch._repair_escaped_marker`, run over the joined output before redaction and the head cut | not needed |
+
+`rawOutput` is unstructured passthrough, so `items[]` is one producer's wrapper
+rather than a contract. `_build_tool_result_event` therefore serialises any other
+non-empty `rawOutput` object instead of reading it as "no output": treating an
+unfamiliar shape as absent discarded the whole `EVENT_TOOL_RESULT`, which is the
+event that writes both `meta["output"]` and `meta["done"]` for the pill — losing
+the Output tab outright, and leaving `done` to `chat_runner`'s post-tool text
+sweep, which only fires when assistant text follows the tool group. That third
+path joins its part into the same string the recovery row above runs over, so it
+needs no separate marker handling.
 
 Two consumers read a control marker out of the tool-result TEXT rather than out
 of a structured field: a session directive (`session_directive.peek` — how
