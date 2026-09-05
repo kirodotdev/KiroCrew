@@ -21,7 +21,7 @@ export function useNativeNotification(botName: string, avatar: string) {
 
   const prev = useRef(0)
   useEffect(() => {
-    if (notifCount > prev.current && prev.current >= 0) {
+    if (notifCount > prev.current) {
       if (typeof Notification !== 'undefined') {
         if (Notification.permission === 'granted') {
           const delta = notifCount - prev.current
@@ -37,6 +37,11 @@ export function useNativeNotification(botName: string, avatar: string) {
             new Notification(title, {
               body,
               icon: avatar,
+              // Always silent: WebAudio (useNotificationSound) is the single
+              // source of notification sound. Without this the OS toast plays
+              // its own system chime on top of the WebAudio tone — a double
+              // sound. Browsers that ignore `silent` are no worse than before.
+              silent: true,
               tag:
                 latestNotif?.approval_id ||
                 latestNotif?.job_id ||

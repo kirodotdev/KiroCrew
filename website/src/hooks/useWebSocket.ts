@@ -1188,7 +1188,7 @@ export function useWebSocket() {
               // Notification; an uncaught throw here kills the whole message
               // handler, so the native toast is best-effort.
               try {
-                new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), tag: 'kirocrew-approval' })
+                new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), silent: true, tag: 'kirocrew-approval' })
               } catch {
                 /* unsupported platform */
               }
