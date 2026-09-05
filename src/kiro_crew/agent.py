@@ -5327,6 +5327,64 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
 )
 
 
+#: The kirocrew-core verbs the goal conductor may call WITHOUT an approval
+#: prompt. Named one by one rather than as the whole ``@kirocrew-core`` server,
+#: which put 74 registered core tools behind a single auto-approve entry. The
+#: reason is the same one ``_CONDUCTOR_DASHBOARD_GRANTS`` states above and
+#: ``_PIPELINE_CONDUCTOR_CORE_GRANTS`` restates below: this agent ingests
+#: content it does not control (goal text, child-session transcripts, web
+#: reads) on nudge-driven cycles with nobody at the keyboard, and a
+#: server-wide grant let that content reach ``task_run``, ``workflow_run`` and
+#: the ``spawn_*`` family — starting persistent work or a fleet of subagents
+#: with no human in the loop.
+#:
+#: Dropping those three is not a new policy, it is the spec catching up with
+#: the prompt: ``_CONDUCTOR_SYSTEM_PROMPT`` already PROHIBITS them by name ("a
+#: work item never goes to ``spawn_run``, ``spawn_sub_agents``,
+#: ``workflow_run`` or ``task_run``"), so a grant that auto-approved them
+#: contradicted the charter it shipped with.
+#:
+#: DERIVED, not copied. The set is the union of the prompt's own "Your tools:"
+#: inventory and the ``goal-conductor`` skill's real call sites, filtered to
+#: the tools that actually register on ``kirocrew-core`` — the ``session_*``
+#: and ``chat_folder_*`` verbs the charter also names are
+#: ``@kirocrew-dashboard`` and are granted by the tuple above, while
+#: ``list_sessions`` is core (``mcp_tools/sessions.py``) despite sitting in the
+#: prompt's child-session paragraph. Deriving rather than reusing the sibling's
+#: thirteen is load-bearing: ``select_crew`` is absent from that tuple and is
+#: step 1 of this conductor's documented dispatch procedure
+#: (``goal-conductor/SKILL.md``), so copying would have broken dispatch on the
+#: first cycle while looking like a correct patch.
+#:
+#: ``select_crew`` earns its place under the invariant already stated for the
+#: dashboard tuple — a granted verb may CREATE or READ, never MUTATE something
+#: that already exists and is not the agent's own. ``_do_select_crew`` reads
+#: config, resolves the crew's bindings, and appends one routing-decision
+#: record keyed to its OWN session; it binds nothing and starts no work.
+#:
+#: What is granted: reads (``resource_status``, ``list_sessions``, skills), the
+#: patrol loop's own lifecycle (``monitor_*``, ``autonudge_stop``, ``wait``),
+#: the conductor's OWN durable ledger, routing (``select_crew``), and
+#: reporting to the owner (``send_message``, ``send_notification``,
+#: ``ask_question``).
+_CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
+    "@kirocrew-core/monitor_start",
+    "@kirocrew-core/monitor_update",
+    "@kirocrew-core/autonudge_stop",
+    "@kirocrew-core/wait",
+    "@kirocrew-core/resource_status",
+    "@kirocrew-core/list_sessions",
+    "@kirocrew-core/session_ledger_read",
+    "@kirocrew-core/session_ledger_record",
+    "@kirocrew-core/skill_search",
+    "@kirocrew-core/skill_fetch",
+    "@kirocrew-core/select_crew",
+    "@kirocrew-core/send_message",
+    "@kirocrew-core/send_notification",
+    "@kirocrew-core/ask_question",
+)
+
+
 def _install_conductor_agent() -> None:
     """Generate and install the kirocrew-conductor agent config.
 
@@ -5342,8 +5400,9 @@ def _install_conductor_agent() -> None:
     the explicit per-agent assignment that set requires — it is deliberately
     absent from the default agent's spec.
 
-    ``@kirocrew-dashboard`` is MOUNTED whole but auto-approved only verb by verb,
-    via ``_CONDUCTOR_DASHBOARD_GRANTS`` (see its comment for the per-verb
+    ``@kirocrew-core`` and ``@kirocrew-dashboard`` are both MOUNTED whole but
+    auto-approved only verb by verb, via ``_CONDUCTOR_CORE_GRANTS`` and
+    ``_CONDUCTOR_DASHBOARD_GRANTS`` (see their comments for the per-verb
     reasoning). Both backends honour a per-tool reference, so the narrowing is
     real rather than cosmetic: kiro-cli's ``is_tool_in_allowlist`` checks
     ``@server`` and then ``@server/<tool>``, and ``allowed_tools_to_permissions``
@@ -5425,7 +5484,7 @@ def _install_conductor_agent() -> None:
         "session",
         "report",
         "tool_search",
-        "@kirocrew-core",
+        *_CONDUCTOR_CORE_GRANTS,
         *_CONDUCTOR_DASHBOARD_GRANTS,
     ):
         (granted if _may_auto_approve(ref) else withheld).append(ref)
@@ -5570,8 +5629,10 @@ instruction with `monitor_update` so every later cycle honors it.
 #: extending the dashboard-grants invariant below to the core surface: the
 #: conductor ingests untrusted content (issue text, PR bodies) on unattended
 #: cycles, and a server-wide grant would let that content start persistent
-#: work (``task_run``, ``workflow_run``, ``cron_add``) or spawn arbitrary
-#: subagents with no human in the loop. What is granted is reads
+#: work (``task_run``, ``workflow_run``) or spawn arbitrary
+#: subagents with no human in the loop. (``cron_add`` used to be named here
+#: too; it registers on ``kirocrew-cron``, which neither conductor mounts, so
+#: it was never reachable through this grant either way.) What is granted is reads
 #: (``resource_status``, ``list_sessions``, skills), the conductor's OWN
 #: patrol-loop lifecycle (``monitor_*``, ``autonudge_stop``, ``wait``), its
 #: OWN durable ledger, and reporting to the owner (``send_message``,

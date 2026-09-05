@@ -352,7 +352,15 @@ watches, and that cost grows with the loop's own history.
   Auto-approved by name: `chat_folder_tree`, `chat_folder_create`,
   `session_create`, `session_read_message` — so a patrol cycle that wakes on a
   nudge with nobody at the keyboard never blocks, and filing rides the create
-  itself (the `folder` argument), so it costs no extra approval. **`session_send`
+  itself (the `folder` argument), so it costs no extra approval. The
+  `@kirocrew-core` verbs are granted by name too, and only these: `monitor_start`,
+  `monitor_update`, `autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
+  `session_ledger_read`, `session_ledger_record`, `skill_search`, `skill_fetch`,
+  `select_crew`, `send_message`, `send_notification`, `ask_question`. That covers
+  every core call this procedure asks you to make; **any other core tool is
+  mounted but prompts**, including `task_run`, `workflow_run` and the `spawn_*`
+  family, which this charter forbids you to route a work item to in the first
+  place. **`session_send`
   and `session_stop` are deliberately NOT auto-approved**, because each writes to
   a session that is not yours: a seed runs as the target's own turn, and a stop
   discards the target's in-flight work. You ingest external content by design, so
