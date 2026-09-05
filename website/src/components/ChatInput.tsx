@@ -335,6 +335,20 @@ function measuredContentHeight(el: HTMLTextAreaElement): number {
   return twin.scrollHeight
 }
 
+/** The inputs that produced each textarea's current auto-sized height, and the
+ *  height they produced. Both call sites below run for every keystroke — the
+ *  input handler, then the auto-size effect once the new `value` commits — so
+ *  without this the second call repeats a measurement whose every input is
+ *  unchanged. A WeakMap rather than an expando keeps the entry's lifetime tied
+ *  to the element's.
+ *
+ *  Only the MEASUREMENT is elided, never the write: `next !== prev` below still
+ *  runs on a memo hit, so a height this function did not write is still
+ *  corrected. That is what makes the drag handle's double-click reset work
+ *  without a measurement — it clears the inline height while the value stays
+ *  put, so the cached height is both still correct and no longer applied. */
+const lastMeasured = new WeakMap<HTMLTextAreaElement, { inputs: string; height: string }>()
+
 /** Auto-size textarea to fit content (only when not manually sized).
  *
  *  The measurement happens on an off-screen twin (see `measuredContentHeight`),
@@ -355,11 +369,32 @@ function applyHeight(
   prefillHint?: boolean,
   parked?: boolean,
 ) {
-  if (parked) return // clipped out of layout — there is nothing valid to measure
+  if (parked) {
+    // Clipped out of layout — there is nothing valid to measure. Drop the memo
+    // too: unparking re-runs the effect at an UNCHANGED value, so a cached
+    // height would be re-applied without measuring, and font metrics may have
+    // changed across the round-trip. One measurement per unpark is not a cost
+    // worth caching against.
+    lastMeasured.delete(el)
+    return
+  }
   if (manualHeight !== null) return // manual height — wrapper controls size
   const cap = prefillHint ? INPUT_PREFILL_MAX_H : INPUT_DEFAULT_MAX_H
   const prev = el.style.height
-  const next = Math.max(INPUT_MIN_H, Math.min(measuredContentHeight(el), cap)) + 'px'
+  // Everything the twin measures against: its width and box come from the live
+  // element, and an EMPTY value is measured as the placeholder (see
+  // `measuredContentHeight`), so a placeholder swap changes the height too.
+  // `value` last — it is user text and may itself contain the delimiter, so no
+  // content can forge a boundary against the fields in front of it.
+  const inputs = [el.clientWidth, cap, el.placeholder, el.value].join('\u0000')
+  const memo = lastMeasured.get(el)
+  let next: string
+  if (memo !== undefined && memo.inputs === inputs) {
+    next = memo.height
+  } else {
+    next = Math.max(INPUT_MIN_H, Math.min(measuredContentHeight(el), cap)) + 'px'
+    lastMeasured.set(el, { inputs, height: next })
+  }
   if (next !== prev) {
     el.style.height = next
     // Attribute the transcript's resulting viewport change to the composer, so the
