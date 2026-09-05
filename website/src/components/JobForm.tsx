@@ -58,7 +58,20 @@ function parseJobDefaults(job?: CronJob) {
   if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([sh])/); if (!m) return 3600; return m[2] === 'h' ? parseInt(m[1]) * 3600 : parseInt(m[1]) })()
-  const intUnit = secs >= 86400 ? 'days' as const : secs >= 3600 ? 'hours' as const : 'minutes' as const
+  // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
+  // <= `secs`. The magnitude test sent 5400s to 'hours', where Math.round(1.5) is
+  // 2, and buildBody re-serialises `intVal * 3600` — so opening a 90-minute job
+  // and saving an unrelated field silently rewrote its schedule to 2 hours. That
+  // is the #8469 class on the interval side: 90 minutes IS representable here, and
+  // the magnitude choice discarded that representation before rounding ever ran.
+  const evenUnit = secs % 86400 === 0 ? 'days' as const
+    : secs % 3600 === 0 ? 'hours' as const
+    : secs % 60 === 0 ? 'minutes' as const
+    : null
+  // Nothing divides evenly (e.g. 90s): no unit offered here can represent that
+  // schedule, so keep the pre-existing nearest-magnitude choice rather than widen
+  // the unit set. Sub-minute precision is a separate question from this defect.
+  const intUnit = evenUnit ?? (secs >= 86400 ? 'days' as const : secs >= 3600 ? 'hours' as const : 'minutes' as const)
   const intVal = Math.max(1, Math.round(intUnit === 'days' ? secs / 86400 : intUnit === 'hours' ? secs / 3600 : secs / 60))
   const cronRaw = job.cron_expr || ''
   const cronParts = cronRaw.split(/\s+/)
