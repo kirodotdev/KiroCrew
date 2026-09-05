@@ -574,18 +574,21 @@ async def api_member_rules_get(request: web.Request) -> web.Response:
     # Successful reads leave an audit trace too: the rules are the owner's
     # private safety boundary, so WHO read them matters as much as who was
     # refused — a denied-only trail cannot answer "was this boundary
-    # disclosed". The WHOLE call — _sel() included — runs off-loop: the first
-    # _sel() touch initializes the event log (HMAC key + chain-head
-    # filesystem reads), so evaluating it on the loop would stall the gateway.
-    await asyncio.to_thread(
-        lambda: _sel().log_api_access(
+    # disclosed". A direct enqueue, not a to_thread hop: the SEL singleton is
+    # warmed at startup (sel.warm_sel_singleton, #8608), so the first-touch
+    # initialization this used to offload never runs here. Guarded because a
+    # FAILED warm leaves construction to retry on this thread and possibly
+    # raise, and an audit must never change the outcome.
+    try:
+        _sel().log_api_access(
             caller=request.remote or "",
             operation="members.rules.read",
             outcome="allowed",
             source="dashboard",
             resources=f"slug={slug}",
         )
-    )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for members.rules.read failed", exc_info=True)
     return web.json_response(
         {"slug": slug, "rules": rules, "max_chars": members_mod.MEMBER_RULES_MAX_CHARS}
     )
@@ -711,16 +714,17 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
 
     # Same audit posture as the GET: a successful boundary WRITE is the event
     # an owner most needs a trace of — it is the moment the member's safety
-    # rules changed. Off-loop for the same reason (first-touch SEL init).
-    await asyncio.to_thread(
-        lambda: _sel().log_api_access(
+    # rules changed. Direct enqueue for the same reason (SEL warmed at startup).
+    try:
+        _sel().log_api_access(
             caller=request.remote or "",
             operation="members.rules.write",
             outcome="allowed",
             source="dashboard",
             resources=f"slug={slug}",
         )
-    )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for members.rules.write failed", exc_info=True)
     # A warm member session injected its rules at session start; without this,
     # the member keeps running under the OLD boundary until a compaction or a
     # cold start happens to refresh it. Flag the thread's session for
