@@ -669,7 +669,13 @@ caller cannot re-open the hole by passing the path:
   launcher binds over itself and then **remounts** `MS_RDONLY`. Both mounts are
   load-bearing — `MS_RDONLY` is ignored on the initial `MS_BIND` — and both go through
   `_mount_or_die`, so a seal that does not land refuses the spawn rather than silently
-  granting write. `test_sandbox_mount_checked.py` pins all six mount sites.
+  granting write. The sealing remount also **re-asserts the target's locked mount
+  flags** (`nosuid`/`nodev`/`noexec`, read off the fresh bind via `statvfs`): inside an
+  unprivileged user namespace the kernel rejects a remount that would drop a locked
+  bit, so on hosts whose `/tmp` or `/home` is mounted `nosuid,nodev` the plain
+  `MS_RDONLY` remount got EPERM and every spawn refused (#8386). Re-asserting bits
+  already in force only keeps restrictions. `test_sandbox_mount_checked.py` pins all
+  six mount sites; `test_sandbox_seal_locked_flags.py` pins the flag re-assertion.
 - **macOS** keeps the `file-write*` and `file-link` denies and drops only `file-read*`.
 
 On a host running **unconfined** — no sandbox backend, or `agent.sandbox='off'` with the

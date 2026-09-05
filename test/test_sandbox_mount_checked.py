@@ -166,6 +166,9 @@ def _run(
         "_MS_PRIVATE": 1 << 18,
         "_MS_RDONLY": 1,
         "_MS_REMOUNT": 32,
+        "_MS_NOSUID": 2,
+        "_MS_NODEV": 4,
+        "_MS_NOEXEC": 8,
         "ctypes": ctypes,
         "os": os,
         "sys": sys,
@@ -324,7 +327,8 @@ _ARMS: dict[str, tuple[str, str]] = {
     ),
     "site4": (
         "_mount_or_die(target, target,\n"
-        "                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY,\n"
+        "                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY\n"
+        "                              | _locked_mount_flags(target),\n"
         '                              "sealing read-only path %s" % d)',
         "_libc.mount(target, target, None, _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
     ),

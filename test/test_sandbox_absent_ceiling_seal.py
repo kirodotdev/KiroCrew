@@ -85,6 +85,10 @@ def _run_seal_loop(targets: list[str]) -> list[tuple[str, int]]:
             "_MS_BIND": _MS_BIND,
             "_MS_REMOUNT": _MS_REMOUNT,
             "_MS_RDONLY": _MS_RDONLY,
+            # Stubbed to 0 so this test keeps asserting the bind+remount PAIR
+            # exactly; the flag re-assertion itself is covered by
+            # test_sandbox_seal_locked_flags.py against the real helper.
+            "_locked_mount_flags": lambda _target: 0,
         },
     )
     return calls

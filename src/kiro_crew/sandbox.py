@@ -2861,6 +2861,9 @@ import struct as _struct
 _CLONE_NEWUSER = 0x10000000
 _CLONE_NEWNS   = 0x00020000
 _MS_RDONLY     = 1
+_MS_NOSUID     = 2
+_MS_NODEV      = 4
+_MS_NOEXEC     = 8
 _MS_REMOUNT    = 32
 _MS_BIND       = 4096
 _MS_REC        = 16384
@@ -2929,6 +2932,42 @@ def _mount_or_die(source, target, flags, what):
             "visible. Lower sandbox_level to run without it deliberately."
             % (what, _err, os.strerror(_err))
         )
+
+def _locked_mount_flags(target):
+    """Mount flags on *target* the kernel may have LOCKED, ready to re-assert.
+
+    Inside an unprivileged user namespace the kernel treats a mount's
+    nosuid / nodev / noexec bits as locked and rejects with EPERM any remount
+    whose flag set would clear them. A bind created over *target* inherits
+    those bits -- locks included -- from its source mount (/tmp carries
+    nosuid,nodev by default on AL2023 / Fedora / RHEL), so the sealing
+    remount must carry them again. Called AFTER the bind step, so ``f_flag``
+    reflects the new bind's effective flags. Re-asserting a bit already in
+    force can only keep restrictions, never widen access. atime is left
+    alone: a remount that passes no atime flag preserves the existing mode,
+    which already satisfies MNT_LOCK_ATIME.
+
+    On ``statvfs`` failure fall back to 0 extra flags: the remount then
+    behaves exactly as it did before this helper existed, and a locked-flag
+    rejection still fails closed at the call site. Never degrades the seal.
+    """
+    try:
+        f_flag = os.statvfs(target).f_flag
+    except OSError:
+        return 0
+    flags = 0
+    # getattr, never bare os.ST_*: the launcher only ever RUNS on Linux, where
+    # all three exist, but the sandbox tests execute this helper's extracted
+    # source on every POSIX host and macOS defines only ST_RDONLY / ST_NOSUID
+    # -- a bare os.ST_NODEV there raises AttributeError, which the OSError
+    # fallback above deliberately does not swallow.
+    if f_flag & getattr(os, "ST_NOSUID", 0):
+        flags |= _MS_NOSUID
+    if f_flag & getattr(os, "ST_NODEV", 0):
+        flags |= _MS_NODEV
+    if f_flag & getattr(os, "ST_NOEXEC", 0):
+        flags |= _MS_NOEXEC
+    return flags
 
 REAL_UID = {uid}
 REAL_GID = {gid}
@@ -3096,8 +3135,12 @@ def main():
         # Exposed-but-read-only dirs (the governance cache): bind the real dir over
         # itself, then remount that bind MS_RDONLY. Both steps are load-bearing --
         # MS_RDONLY is ignored on the initial MS_BIND, so without the remount this
-        # loop would grant exactly the write access it exists to withhold. Allowed
-        # in our own user+mount namespace because we created the bind ourselves.
+        # loop would grant exactly the write access it exists to withhold. Creating
+        # the bind ourselves is necessary but NOT sufficient inside a user
+        # namespace: the kernel locks the source mount's nosuid/nodev/noexec bits,
+        # and rejects a remount that would drop them, so the seal re-asserts them
+        # via _locked_mount_flags -- re-asserting bits already in force can only
+        # keep restrictions, never widen access.
         for d in READONLY_DIRS:
             target = d.encode()
             # ``exists``, not ``isdir``: a governance ceiling is a plain file
@@ -3109,7 +3152,8 @@ def main():
                 _mount_or_die(target, target, _MS_BIND,
                               "exposing read-only path %s" % d)
                 _mount_or_die(target, target,
-                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY,
+                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY
+                              | _locked_mount_flags(target),
                               "sealing read-only path %s" % d)
 
         # Restore selectively exposed files into the now-empty mounts
