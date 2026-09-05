@@ -422,10 +422,11 @@ dispatches zero turns.
 
 Terminal observer notifications are deduplicated for structured monitors within
 one gateway process. The retained monitor record also stores whether the dashboard
-accepted its terminal notice. Startup replays every terminal notice without that
-delivery marker and persists the marker only after acceptance, giving the
-persist-then-notify boundary at-least-once crash semantics: a crash can repeat a
-notice, but cannot suppress the only notice permanently. Gated
+durably appended its terminal notice. Startup replays every terminal notice without
+that delivery marker and persists the marker only after the captured notification
+append future succeeds, giving the persist-then-notify boundary at-least-once crash
+semantics: a crash or append failure can repeat a notice, but cannot suppress the
+only notice permanently. Gated
 legacy loops use only their existing `expired` notification; the following `fired`
 event must not deliver the same terminal notification again.
 Terminal notices identify the watched pull request by its stored target URL,

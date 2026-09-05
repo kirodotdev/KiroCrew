@@ -6390,14 +6390,39 @@ class GatewayOrchestrator:
                     exc_info=True,
                 )
 
-        def _schedule_terminal_notification_delivery(
-            monitor_id: str,
-            outcome: MonitorOutcome,
-            stopped_at: float,
+        async def _deliver_terminal_notification(
+            loop: NudgeLoop,
+            terminal_key: tuple[str, MonitorOutcome, float],
         ) -> None:
-            task = asyncio.create_task(
-                _record_terminal_notification_delivery(monitor_id, outcome, stopped_at)
-            )
+            if not self._notify_nudge_expired(loop):
+                return
+            assert self.dashboard_state is not None
+            # notify() synchronously installs the append future before it
+            # returns. Capture that exact future before yielding so another
+            # notification cannot replace the state-wide pointer underneath
+            # this terminal generation.
+            persisted = self.dashboard_state.last_notification_persist
+            try:
+                if persisted is not None and not await persisted:
+                    logger.warning(
+                        "AutoNudge: terminal notification persistence failed for %s",
+                        terminal_key[0],
+                    )
+                    return
+            except Exception:
+                logger.warning(
+                    "AutoNudge: terminal notification persistence raised for %s",
+                    terminal_key[0],
+                    exc_info=True,
+                )
+                return
+            await _record_terminal_notification_delivery(*terminal_key)
+
+        def _schedule_terminal_notification(
+            loop: NudgeLoop,
+            terminal_key: tuple[str, MonitorOutcome, float],
+        ) -> None:
+            task = asyncio.create_task(_deliver_terminal_notification(loop, terminal_key))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
 
@@ -6424,8 +6449,7 @@ class GatewayOrchestrator:
                     terminal_key = (loop.id, state.outcome, state.stopped_at)
                     if terminal_key not in notified_monitor_terminals:
                         notified_monitor_terminals.add(terminal_key)
-                        if self._notify_nudge_expired(loop):
-                            _schedule_terminal_notification_delivery(*terminal_key)
+                        _schedule_terminal_notification(loop, terminal_key)
             if self.dashboard_state and loop is not None:
                 loop_payload: dict[str, Any] = {
                     "id": loop.id,
@@ -6484,10 +6508,8 @@ class GatewayOrchestrator:
             ):
                 terminal_key = (loop.id, loop.monitor.outcome, loop.monitor.stopped_at)
                 notified_monitor_terminals.add(terminal_key)
-                if not loop.monitor.terminal_notification_delivered and self._notify_nudge_expired(
-                    loop
-                ):
-                    await _record_terminal_notification_delivery(*terminal_key)
+                if not loop.monitor.terminal_notification_delivered:
+                    await _deliver_terminal_notification(loop, terminal_key)
         self.autonudge_svc.subscribe(_observer)
 
     def _notify_nudge_expired(self, loop: NudgeLoop) -> bool:
