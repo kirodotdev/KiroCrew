@@ -241,7 +241,7 @@ class TestMemberRoutes:
         assert "AKIA" not in preview
 
     @pytest.mark.asyncio
-    async def test_roster_orders_by_message_ts_not_file_mtime(self, tmp_path):
+    async def test_roster_orders_by_message_ts_not_file_mtime(self, tmp_path, monkeypatch):
         """last_active_ts is the newest MESSAGE's own timestamp.
 
         Non-message writes (metadata, rehydration) bump the transcript file's
@@ -250,8 +250,30 @@ class TestMemberRoutes:
         newest time must NOT promote it above the thread whose message is
         actually newer.
         """
+        import datetime as _dt
         import os
         import time
+
+        # append stamps each row via monotonic_transcript_ts, whose correction
+        # only consults prior rows of the SAME file — two freshly created files
+        # each get a raw clock read. On a coarse clock (Windows' ~15ms tick)
+        # these back-to-back appends collide, and the strict `<` below fails on
+        # equal timestamps. Drive a strictly-increasing clock so the
+        # chronological order this test asserts is actually encoded in the
+        # timestamps, on every OS. The stand-in must be tz-aware: append calls
+        # .astimezone() on the result.
+        _base = _dt.datetime(2026, 7, 25, 0, 0, 0, tzinfo=_dt.timezone.utc)
+        _tick = {"n": 0}
+
+        # Subclass keeps datetime classmethods (fromisoformat) available while
+        # patched, so _parse_transcript_ts is not silently degraded.
+        class _IncDateTime(_dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                _tick["n"] += 1
+                return _base + _dt.timedelta(seconds=_tick["n"])
+
+        monkeypatch.setattr("kiro_crew.history.datetime", _IncDateTime)
 
         state = _make_state(tmp_path)
         write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
@@ -263,6 +285,9 @@ class TestMemberRoutes:
         state.conversation_log.append(old_key, "user", "older message")
         state.conversation_log.append(new_key, "user", "newer message")
         # Touch the OLDER thread's file so its mtime is the newest of the two.
+        # Deliberately the REAL clock (2026-09-xx+), far ahead of the fake
+        # message timestamps (fixed 2026-07-25): the mtime-vs-ts contrast is
+        # the point of this test — do not "align" the two clocks.
         old_path = state.conversation_log._path(old_key)
         now = time.time() + 60
         os.utime(old_path, (now, now))
