@@ -14024,16 +14024,18 @@
     "envOverrideWithSettingRef": "El heartbeat está desactivado porque <settingRef/> está configurada en este entorno. Desactívala para gestionar la telemetría aquí."
   },
   "settings": {
+    "chat": {
+      "plainDiff": {
+        "description": "Muestra los diffs como texto unified diff sin resaltado de sintaxis. Usa menos memoria en diffs grandes.",
+        "label": "Diffs en texto plano"
+      }
+    },
     "display": {
       "language": {
         "auto": "Automático",
         "description": "Idioma de la interfaz del panel.",
         "label": "Idioma",
         "sync_failed": "No se pudo guardar esto en tu configuración de {{productName}}: el idioma se aplica solo en este navegador y puede restablecerse al recargar."
-      },
-      "plainDiff": {
-        "description": "Muestra los diffs como texto unified diff sin resaltado de sintaxis. Usa menos memoria en diffs grandes.",
-        "label": "Diffs en texto plano"
       }
     },
     "groups": {

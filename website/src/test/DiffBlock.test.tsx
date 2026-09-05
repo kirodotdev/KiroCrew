@@ -311,10 +311,10 @@ describe('DiffBlock', () => {
     })
   })
 
-  /* Plain mode (Settings → Display → Plain diffs) replaces the whole Pierre
-   * surface with a `<pre>`, so unlike every other case above these assertions
-   * are SYNCHRONOUS on purpose: nothing here waits on the lazy chunk, because
-   * in this mode the chunk is never requested. */
+  /* Plain mode (Settings → Chat → Messages → Plain diffs) replaces the whole
+   * Pierre surface with a `<pre>`, so unlike every other case above these
+   * assertions are SYNCHRONOUS on purpose: nothing here waits on the lazy
+   * chunk, because in this mode the chunk is never requested. */
   describe('plain-diff preference', () => {
     it('renders the raw patch text and keeps Copy reachable without Pierre’s header', () => {
       localStorage.setItem('mc-diff-plain', '1')

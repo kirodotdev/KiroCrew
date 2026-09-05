@@ -13667,16 +13667,18 @@
     "envOverrideWithSettingRef": "<settingRef/>이(가) 이 환경에 설정되어 있어 하트비트가 꺼져 있습니다. 여기에서 텔레메트리를 관리하려면 해제하세요."
   },
   "settings": {
+    "chat": {
+      "plainDiff": {
+        "description": "차이를 구문 강조 없이 일반 unified diff 텍스트로 표시합니다. 큰 diff에서 메모리를 덜 사용합니다.",
+        "label": "일반 diff"
+      }
+    },
     "display": {
       "language": {
         "auto": "자동",
         "description": "대시보드 인터페이스 언어.",
         "label": "언어",
         "sync_failed": "{{productName}} 설정에 저장할 수 없습니다 — 언어는 이 브라우저에만 적용되며 다시 로드하면 초기화될 수 있습니다."
-      },
-      "plainDiff": {
-        "description": "차이를 구문 강조 없이 일반 unified diff 텍스트로 표시합니다. 큰 diff에서 메모리를 덜 사용합니다.",
-        "label": "일반 diff"
       }
     },
     "groups": {

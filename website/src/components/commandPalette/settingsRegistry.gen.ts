@@ -990,6 +990,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.plain-diffs",
+    "label": "Plain diffs",
+    "labelKey": "settings.chat.plainDiff.label",
+    "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.pr-and-issue-chips-on-session-cards",
     "label": "PR and Issue Chips on Session Cards",
     "labelKey": "pages.settings.chatPanel.session_card_source_links",
@@ -1352,15 +1361,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Choose a color palette for your sidebar sessions.",
     "tab": "display",
     "type": "buttonGroup",
-    "occurrence": 1
-  },
-  {
-    "id": "display.plain-diffs",
-    "label": "Plain diffs",
-    "labelKey": "settings.display.plainDiff.label",
-    "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",
-    "tab": "display",
-    "type": "toggle",
     "occurrence": 1
   },
   {

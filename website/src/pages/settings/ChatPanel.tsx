@@ -5,6 +5,7 @@ import { loadChatConfig, saveChatConfig, type ChatConfig, type ContentWidth, typ
 import { api } from '../../api/client'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
@@ -471,6 +472,12 @@ export function ChatPanel() {
     optimisticConfigOpts('agent.role_efforts.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
   )
 
+  // ── Plain diffs (localStorage, browser-local) ──
+  // Deliberately NOT server config, unlike every other row in the Messages
+  // section: the machine painting the diff is the one spending the CPU, so the
+  // choice belongs to this client rather than to the whole instance.
+  const [plainDiff, setPlainDiff] = usePlainDiff()
+
   // ── Local chat config (localStorage) ──
   const setChat = useCallback(<K extends keyof ChatConfig>(k: K, v: ChatConfig[K]) => {
     setChatCfg(prev => {
@@ -698,6 +705,17 @@ export function ChatPanel() {
           }} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} description={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.file_change_chips')} description={i18nT('pages.settings.chatPanel.how_file_diff_chips_appear_below_assistant_messa')} value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={[i18nT('pages.settings.chatPanel.expanded_icon_name_stats'), i18nT('pages.settings.chatPanel.minimal_stats_only_name_on_hover')]} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />
+          {/* Sits beside File change chips because it governs the same surface —
+              how a diff reads in the transcript. Phrased as "plain diffs ON"
+              rather than "highlighting OFF" so the switch position matches the
+              stored value — no inverted checkbox. Browser-local, hence no
+              `configKey`. */}
+          <SettingsToggle
+            label={i18nT('settings.chat.plainDiff.label')}
+            description={i18nT('settings.chat.plainDiff.description')}
+            checked={plainDiff}
+            onChange={setPlainDiff}
+          />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} description={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={[i18nT('pages.settings.chatPanel.more_encourage_widgets'), i18nT('pages.settings.chatPanel.less_only_when_needed')]} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} description={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />

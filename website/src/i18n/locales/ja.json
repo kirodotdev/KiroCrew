@@ -13667,16 +13667,18 @@
     "envOverrideWithSettingRef": "<settingRef/> がこの環境で設定されているため、ハートビートはオフです。ここでテレメトリを管理するには、設定を解除してください。"
   },
   "settings": {
+    "chat": {
+      "plainDiff": {
+        "description": "差分を構文ハイライトなしのプレーンな unified diff テキストとして表示します。大きな差分でのメモリ使用量が減ります。",
+        "label": "プレーン diff"
+      }
+    },
     "display": {
       "language": {
         "auto": "自動",
         "description": "ダッシュボードインターフェースの言語。",
         "label": "言語",
         "sync_failed": "{{productName}} 設定に保存できませんでした — 言語はこのブラウザーにのみ適用され、再読み込みでリセットされる場合があります。"
-      },
-      "plainDiff": {
-        "description": "差分を構文ハイライトなしのプレーンな unified diff テキストとして表示します。大きな差分でのメモリ使用量が減ります。",
-        "label": "プレーン diff"
       }
     },
     "groups": {

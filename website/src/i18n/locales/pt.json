@@ -14023,16 +14023,18 @@
     "envOverrideWithSettingRef": "O heartbeat está desativado porque <settingRef/> está definida neste ambiente. Remova-a para gerenciar a telemetria aqui."
   },
   "settings": {
+    "chat": {
+      "plainDiff": {
+        "description": "Exibe os diffs como texto unified diff sem realce de sintaxe. Usa menos memória em diffs grandes.",
+        "label": "Diffs em texto simples"
+      }
+    },
     "display": {
       "language": {
         "auto": "Automático",
         "description": "Idioma da interface do painel.",
         "label": "Idioma",
         "sync_failed": "Não foi possível salvar isso na sua configuração do {{productName}} — o idioma se aplica somente a este navegador e pode ser redefinido ao recarregar."
-      },
-      "plainDiff": {
-        "description": "Exibe os diffs como texto unified diff sem realce de sintaxe. Usa menos memória em diffs grandes.",
-        "label": "Diffs em texto simples"
       }
     },
     "groups": {
