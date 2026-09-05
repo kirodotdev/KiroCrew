@@ -353,7 +353,7 @@ describe('account selection', () => {
     expect(screen.getByTestId('rail-accounts').getAttribute('aria-current')).toBe('page')
   })
 
-  it('selecting a resolved row on the accounts pane switches account AND jumps to Files', async () => {
+  it('selecting a resolved row on the accounts pane switches account and STAYS on the pane', async () => {
     renderWithProviders(<AwsControlPage />)
     await screen.findByTestId('drive-section')
     fireEvent.click(screen.getByTestId('rail-accounts'))
@@ -365,10 +365,19 @@ describe('account selection', () => {
     expect(rows[1].getAttribute('data-current')).toBeNull()
 
     fireEvent.click(rows[1])
-    // Back on Files, on the newly selected account, and remembered.
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
-    expect(screen.queryByTestId('accounts-pane')).toBeNull()
+    // Still on Accounts — a row that looks informational must not teleport the
+    // reader to Files — with the app now on the selected account: the rail
+    // card, the check, and the keys section all follow it, and it is remembered.
+    expect(screen.getByTestId('accounts-pane')).toBeTruthy()
+    expect(screen.queryByTestId('drive-section')).toBeNull()
     expect(screen.getByTestId('switcher-id')).toHaveTextContent('444455556666')
+    await waitFor(() => {
+      const after = screen.getAllByTestId('account-card')
+      expect(after[1].getAttribute('data-current')).toBe('true')
+      expect(after[0].getAttribute('data-current')).toBeNull()
+    })
+    // The keys section is scoped by name to the account it lists.
+    expect(screen.getByTestId('connections-section')).toHaveTextContent('Keys for work')
     await waitFor(() => expect(localStorage.getItem(SELECTED_KEY)).toBe('444455556666'))
   })
 })
@@ -567,6 +576,54 @@ describe('edge states', () => {
     await screen.findByTestId('add-accounts-unsupported')
     expect(screen.getByTestId('aws-control-empty-title')).toBeTruthy()
     expect(screen.queryByTestId('aws-control-empty-subtitle')).toBeNull()
+  })
+
+  it('the empty state points at Add accounts, which opens itself', async () => {
+    // With nothing to select, the disclosure below the empty state is the only
+    // useful action on the pane, so it must not hide behind a chevron — and the
+    // sentence above it must name it rather than send the reader to Settings.
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(
+      accountsPayload({ accounts: [], totals: { accounts: 0, profiles: 0, profilesHealthy: 0 } }),
+    )
+    renderWithProviders(<AwsControlPage />)
+
+    await screen.findByTestId('aws-control-empty')
+    expect(await screen.findByTestId('add-accounts-body')).toBeTruthy()
+    expect(screen.getByTestId('add-accounts-toggle').getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByTestId('aws-control-empty')).toHaveTextContent(
+      i18nT('apps.awsControl.page.empty_body'),
+    )
+    expect(screen.getByTestId('aws-control-empty')).not.toHaveTextContent('Settings')
+    // The reader can still collapse it by hand.
+    fireEvent.click(screen.getByTestId('add-accounts-toggle'))
+    expect(screen.queryByTestId('add-accounts-body')).toBeNull()
+  })
+
+  it('a non-healthy account says so in words, in the same tone as its dot', async () => {
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(accountsPayload({
+      accounts: [...accountsPayload().accounts, UNRESOLVED_ROW],
+      totals: { accounts: 3, profiles: 3, profilesHealthy: 1 },
+    }))
+    renderWithProviders(<AwsControlPage />)
+    await screen.findByTestId('drive-section')
+    fireEvent.click(screen.getByTestId('rail-accounts'))
+    await screen.findByTestId('accounts-pane')
+
+    // Accounts list: the word carries the dot's hue — amber for degraded,
+    // grey for unknown — never one fact in two colours.
+    const words = screen.getAllByTestId('account-health-word')
+    expect(words).toHaveLength(2)
+    expect(words[0]).toHaveTextContent(i18nT('apps.awsControl.page.health_degraded'))
+    expect(words[0].className).toContain('text-warn')
+    expect(words[1]).toHaveTextContent(i18nT('apps.awsControl.page.health_unknown'))
+    expect(words[1].className).toContain('text-muted')
+    expect(words[1].className).not.toContain('text-warn')
+
+    // Switcher: the degraded entry gets the word too, the healthy one stays quiet.
+    fireEvent.click(screen.getByTestId('account-switcher'))
+    const health = await screen.findAllByTestId('switcher-option-health')
+    expect(health).toHaveLength(1)
+    expect(health[0]).toHaveTextContent(i18nT('apps.awsControl.page.health_degraded'))
   })
 })
 
@@ -889,26 +946,6 @@ describe('AwsControlPage — narrow viewport (iOS push stack)', () => {
     expect(await screen.findByTestId('aws-pane-detail')).toBeTruthy()
     expect(await screen.findByTestId('drive-section')).toBeTruthy()
     expect(screen.queryByTestId('aws-root-list')).toBeNull()
-  })
-
-  it('a pane->pane move keeps the push marker, so back still pops to the list', async () => {
-    // Drill in from the root list (a PUSH), then move pane->pane via the
-    // accounts pane's row (a REPLACE). The replace must carry the entry's
-    // push marker forward — dropping it would stack a duplicate root entry
-    // on back and leave the next platform back visibly inert.
-    renderWithProviders(<AwsControlPage />, { route: '/aws-control' })
-    await screen.findByTestId('aws-root-list')
-
-    fireEvent.click(screen.getByTestId('root-accounts'))
-    expect(await screen.findByTestId('accounts-pane')).toBeTruthy()
-
-    // Selecting an account jumps to Files (pane->pane replace).
-    fireEvent.click(screen.getAllByTestId('account-card')[0])
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
-
-    // Back must POP to the root list (marker preserved), not replace-write.
-    fireEvent.click(screen.getByText('AWS Control'))
-    expect(await screen.findByTestId('aws-root-list')).toBeTruthy()
   })
 
   it('a deep link goes straight to the detail pane', async () => {

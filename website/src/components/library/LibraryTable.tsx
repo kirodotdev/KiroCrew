@@ -245,7 +245,21 @@ export const ARTIFACT_COLUMNS: LibraryColumn[] = [
   { key: 'updated', label: 'pages.artifactsPage.updated', className: 'w-[110px]' },
 ]
 
-export function LibraryTableHead({ sort, onSort, edgeRight = false, columns = ARTIFACT_COLUMNS, actionsLabelKey = 'pages.artifactsPage.actions' }: {
+/**
+ * The surface a pinned cell sits ON, so its opaque fill and its seam gradient
+ * paint the same colour as the page behind the table. `--card` and `--bg`
+ * differ in every theme, so a cell that always paints `bg-card` inside a table
+ * with no card fill renders as a permanently tinted right-hand stripe.
+ */
+export type TableSurface = 'card' | 'bg'
+
+/** The opaque fill + `right-full` gradient pair for a pinned cell on a surface. */
+export const PINNED_SURFACE: Record<TableSurface, { fill: string; seam: string }> = {
+  card: { fill: 'bg-card', seam: 'from-card' },
+  bg: { fill: 'bg-bg', seam: 'from-bg' },
+}
+
+export function LibraryTableHead({ sort, onSort, edgeRight = false, columns = ARTIFACT_COLUMNS, actionsLabelKey = 'pages.artifactsPage.actions', surface = 'card' }: {
   sort: SortState
   onSort: (key: SortKey) => void
   edgeRight?: boolean
@@ -253,7 +267,10 @@ export function LibraryTableHead({ sort, onSort, edgeRight = false, columns = AR
    *  written literally below because its pin is the fragile part. */
   columns?: LibraryColumn[]
   actionsLabelKey?: string
+  /** What the table sits on; the pinned cell paints that colour. */
+  surface?: TableSurface
 }) {
+  const pinned = PINNED_SURFACE[surface]
   const th = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium'
   const sortable = (key: SortKey, label: string, extra: string) => {
     const active = sort?.key === key
@@ -306,9 +323,9 @@ export function LibraryTableHead({ sort, onSort, edgeRight = false, columns = AR
             left of the pin (says "columns continue"). Same treatment as the
             hooks and schedule tables, adapted for auto layout where a
             wrapper-anchored cue cannot know the pinned column's left edge. */}
-        <th className={`${th} w-[120px] sticky right-0 bg-card`}>
+        <th className={`${th} w-[120px] sticky right-0 ${pinned.fill}`}>
           {edgeRight && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
-          {edgeRight && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />}
+          {edgeRight && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l ${pinned.seam} to-transparent`} />}
           {i18nT(actionsLabelKey)}
         </th>
       </tr>

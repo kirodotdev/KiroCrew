@@ -56,6 +56,14 @@ const HEALTH_LABEL_KEY: Record<AccountHealth, string> = {
   unknown: 'apps.awsControl.page.health_unknown',
 }
 
+/** Text tone for the health WORD, the same hue as its dot: one fact must not
+ *  read as two states (a grey dot beside an amber "Unknown"). */
+const HEALTH_TEXT: Record<AccountHealth, string> = {
+  ok: 'text-ok',
+  degraded: 'text-warn',
+  unknown: 'text-muted',
+}
+
 /** The name a row leads with: the backend name, or the "not connected" label. */
 function accountName(account: AwsAccount): string {
   return account.name || i18nT('apps.awsControl.page.not_connected_yet')
@@ -170,6 +178,14 @@ function AccountSwitcher({ accounts, selected, onSelect, onManage }: {
           >
             <span className={`h-2 w-2 shrink-0 rounded-full ${HEALTH_DOT[a.health]}`} aria-hidden="true" />
             <span className="min-w-0 truncate">{accountName(a)}</span>
+            {/* A word beside the dot for anything not healthy: colour alone is
+                the only cue otherwise, and the rows in Accounts & credentials
+                already spell the state out the same way. */}
+            {a.health !== 'ok' && (
+              <span className={`shrink-0 text-[11px] ${HEALTH_TEXT[a.health]}`} data-testid="switcher-option-health">
+                {i18nT(HEALTH_LABEL_KEY[a.health])}
+              </span>
+            )}
             <span className="font-mono text-[11px] text-muted">{a.account}</span>
             {a.account === selected.account && <Check size={13} className="text-accent" aria-hidden="true" />}
           </DropdownMenuItem>
@@ -229,7 +245,7 @@ function AccountRow({ account, current, onUse, askAgent }: {
             not shrink-0: a fixed-width label at 320px pushes the keys count
             off the clipped row (longest German label measured). */}
         {account.health !== 'ok' && (
-          <span className="min-w-0 shrink truncate text-[12px] text-warn" data-testid="account-health-word">
+          <span className={`min-w-0 shrink truncate text-[12px] ${HEALTH_TEXT[account.health]}`} data-testid="account-health-word">
             {i18nT(HEALTH_LABEL_KEY[account.health])}
           </span>
         )}
@@ -264,10 +280,13 @@ function AccountRow({ account, current, onUse, askAgent }: {
  * An "Add accounts" disclosure: lists the LOCAL profiles the CLI knows but the
  * portal has not registered, each with a checkbox, and registers the checked
  * set. It stays collapsed by default so the account list remains the pane's
- * primary content. On success it invalidates the accounts query so a newly
- * registered profile appears without a manual refresh.
+ * primary content — except when that list is EMPTY: then this disclosure is
+ * the pane's only useful action, and the empty state above it points here, so
+ * it opens itself rather than making a first-run reader find a chevron. On
+ * success it invalidates the accounts query so a newly registered profile
+ * appears without a manual refresh.
  */
-function AddAccounts({ onDraftChange }: {
+function AddAccounts({ onDraftChange, autoOpen = false }: {
   /**
    * Fires with `true` while at least one profile is ticked and not yet
    * registered, `false` once the selection is empty again. The ticks live only
@@ -276,9 +295,17 @@ function AddAccounts({ onDraftChange }: {
    * to withhold those hand-offs while a selection is open.
    */
   onDraftChange: (hasDraft: boolean) => void
+  /** Start expanded — set while the account list above is empty. */
+  autoOpen?: boolean
 }) {
   const queryClient = useQueryClient()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(autoOpen)
+  // The list arrives after mount, so the empty-list signal can flip from
+  // false to true later; open on that edge only, never force closed — a reader
+  // who collapsed it by hand keeps their choice.
+  useEffect(() => {
+    if (autoOpen) setOpen(true)
+  }, [autoOpen])
   // The set of profile NAMES the operator has ticked. Names, not indices, so a
   // list refetch that reorders rows can't silently move a checkmark to another
   // profile — registering the wrong profile is a trust error, not a UI glitch.
@@ -612,7 +639,13 @@ function AccountsPane({ accountsQ, selected, onUse }: {
         </div>
       )}
 
-      <AddAccounts onDraftChange={setRegistrationDraft} />
+      {/* Opens itself when there is nothing above it to select: the empty
+          state's sentence points here, so the section it names is already
+          expanded when the eye arrives. */}
+      <AddAccounts
+        onDraftChange={setRegistrationDraft}
+        autoOpen={Boolean(data && data.accounts.length === 0)}
+      />
     </section>
   )
 }
@@ -810,27 +843,26 @@ export default function AwsControlPage() {
 
   // Narrow drill-in from the ROOT LIST is a PUSH carrying the same marker the
   // settings stack mints, so the platform back gesture pops one level exactly
-  // like the on-screen back bar. Everything else (wide rail clicks, pane→pane
-  // moves) REPLACES — walking every rail click on browser-back is not a
-  // history the reader asked for. Mirrors SettingsSubNav's contract.
+  // like the on-screen back bar. Wide rail clicks REPLACE — walking every rail
+  // click on browser-back is not a history the reader asked for. Mirrors
+  // SettingsSubNav's contract. On a narrow viewport every caller of this sits
+  // on the root list (the rows and the switcher's manage entry), so a narrow
+  // call is always the drill-in; a pane never navigates to another pane.
   const openPane = (p: RailPane) => {
     const drillIn = narrow && paneFromPath === null
-    // A narrow pane->pane REPLACE must carry the current entry's push marker
-    // forward: replacing a pushed entry with a marker-less one would make the
-    // back bar replace-write a second root entry, and the next platform back
-    // lands root->root — visibly inert. The marker describes the ENTRY's
-    // provenance, and a replace keeps the entry.
-    const keepMarker =
-      narrow && !drillIn &&
-      Boolean((location.state as Record<string, unknown> | null)?.[SUBNAV_PUSH_STATE])
     navigate(`${APP_PATH}/${p}`, {
       replace: !drillIn,
-      state: drillIn || keepMarker ? { [SUBNAV_PUSH_STATE]: true } : undefined,
+      state: drillIn ? { [SUBNAV_PUSH_STATE]: true } : undefined,
     })
   }
+  // Selecting a row changes WHICH account the app is on and nothing else: the
+  // reader stays on the Accounts pane, where the keys section below re-renders
+  // for the account they just picked. The rail's switcher already stays put on
+  // a select, so the two ways of selecting an account behave the same way;
+  // jumping to Files from here made a row that looks informational teleport
+  // the reader away from the keys they came to inspect.
   const useAccount = (a: AwsAccount) => {
     setStoredId(a.account)
-    openPane('files')
   }
   const paneCount = (p: RailPane): number | undefined =>
     p === 'shares'

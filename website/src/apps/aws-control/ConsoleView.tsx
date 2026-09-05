@@ -137,14 +137,20 @@ function ConnectionRow({ profile, askAgent }: { profile: AwsProfile; askAgent: b
 }
 
 /**
- * The Connections card: one thin row per key, with inline Reconnect for failing
- * ones. `askAgent` flows down to those Reconnect notices; the accounts pane
- * that hosts this card decides it from whether a registration draft is open.
+ * The keys card for ONE account: a thin row per key, with inline Reconnect for
+ * failing ones. The header names the account, because this section sits under
+ * a list of several accounts and a bare heading read as a global list — a
+ * reader concluded the other accounts had no keys. `askAgent` flows down to
+ * the Reconnect notices; the accounts pane that hosts this card decides it from
+ * whether a registration draft is open.
  */
 export function ConnectionsSection({ account, askAgent }: { account: AwsAccount; askAgent: boolean }) {
   return (
     <section data-testid="connections-section">
-      <SectionHeader icon={<Link2 size={15} />} title={i18nT('apps.awsControl.console.connections')} />
+      <SectionHeader
+        icon={<Link2 size={15} />}
+        title={i18nT('apps.awsControl.console.keys_for_account', { name: account.name || account.account })}
+      />
       {account.profiles.length === 0 ? (
         <p className="text-[13px] text-muted" data-testid="connections-empty">
           {i18nT('apps.awsControl.page.not_connected_yet')}
@@ -351,6 +357,16 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
           <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.stat_this_month')}</span>
           {costs && !costs.consentMissing && !costsQ.isError && !costs.fresh && (
             <span className="text-[12px] text-muted">{i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costs.fetchedAt) })}</span>
+          )}
+          {/* WHY there is no figure, said in the same slot the cached-as-of
+              note uses — visible, not a tooltip. A dash with its reason on
+              hover left a mouse-less reader with a blank they could not
+              explain; the same sentence is also the row's `title`, so a hover
+              still answers. Only the consent case lives here: it is status,
+              not a failure. A failed bill read is an error and is reported by
+              the notice under this card, never as a second inline string. */}
+          {costs?.consentMissing && (
+            <span className="text-[12px] text-muted" data-testid="console-cost-reason">{i18nT('apps.awsControl.console.costs_consent_missing')}</span>
           )}
           <span className="flex-1" />
           {costs?.consentMissing ? (

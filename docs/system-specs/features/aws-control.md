@@ -108,6 +108,16 @@ exist (404), and the copy-before-delete order is pinned by
 and `TestDriveMove.test_move_copy_failure_issues_no_delete`. The copy carries
 both `--expected-bucket-owner` and `--expected-source-bucket-owner`
 (`test_aws_control_storage.py::TestCopyObject.test_copy_object_is_owner_pinned_on_both_ends`).
+The dashboard reaches this route two ways with one mutation behind both: a
+pointer drag of a file row or tile onto a folder, and a "Move to folder…" item
+in the file's own overflow menu that opens a picker of the folders the current
+listing can see (the top level, the parent, and the sub-folders on screen) —
+the keyboard and touch path, since a drag is a convention only a pointer user
+discovers. While the copy runs the source row is dimmed and marked busy; a
+refused move (409 conflict, live share) is reported in the picker, which stays
+open for another choice. The picker can be dismissed at any point, including
+mid-move: the copy keeps running, the row stays busy until it lands, and a
+refusal that arrives after dismissal is reported on the pane's own error strip.
 
 ## Publishing and sharing
 

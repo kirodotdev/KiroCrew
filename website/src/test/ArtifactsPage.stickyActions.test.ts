@@ -49,7 +49,10 @@ const loadSource = async () => {
 }
 
 const SEAM = /\{edgeRight && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" \/>\}/
-const FADE = /\{edgeRight && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" \/>\}/
+// The fade is spelled two ways: the row cells paint the card literally, and the
+// shared header resolves its surface through `PINNED_SURFACE` so the borderless
+// drive table can pin on the page colour instead. Both are the same gated child.
+const FADE = /\{edgeRight && <div aria-hidden="true" className=(?:"pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent"|\{`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l \$\{pinned\.seam\} to-transparent`\}) \/>\}/
 
 describe('ArtifactsPage library tables sticky Actions column', () => {
   it('pins the shared Actions header cell on an opaque background, keeping its width', async () => {
@@ -59,7 +62,11 @@ describe('ArtifactsPage library tables sticky Actions column', () => {
     const cls = header![1]
     expect(cls).toContain('sticky')
     expect(cls).toContain('right-0')
-    expect(cls).toContain('bg-card')
+    // The fill is resolved per surface; the artifact tables sit on a card, which
+    // is the default, and that default must stay opaque `bg-card`.
+    expect(cls).toContain('${pinned.fill}')
+    expect(src).toMatch(/card: \{ fill: 'bg-card', seam: 'from-card' \}/)
+    expect(src).toMatch(/surface = 'card' \}: \{/)
     expect(cls, 'w-[120px] is counted by the table min-width arithmetic').toContain('w-[120px]')
   })
 

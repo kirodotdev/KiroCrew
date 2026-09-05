@@ -133,9 +133,11 @@ export default function AwsConsentGate({
   const account = c.identityResolved ? c.account : c.grant?.account || ''
 
   // A granted receipt in compact mode is one row: the service, where it runs,
-  // and the account it bills — with withdraw kept small on the right. The
-  // account-changed warning still forces the full card, because that state
-  // needs its sentence.
+  // the credentials it bills through, and the account — with withdraw kept
+  // small on the right. The credential source stays in the row because the
+  // only other way to read it was to withdraw and re-read the full ask, a
+  // destructive act to answer an audit question. The account-changed warning
+  // still forces the full card, because that state needs its sentence.
   if (compact && c.granted && !c.revokedOnAccountChange) {
     return (
       <div
@@ -145,6 +147,13 @@ export default function AwsConsentGate({
         <ShieldCheck size={14} className="shrink-0 text-ok" aria-hidden="true" />
         <span className="font-medium text-text-strong">{c.serviceLabel}</span>
         <span className="text-muted">{region}</span>
+        <span
+          className="min-w-0 truncate text-[12px] text-muted"
+          title={i18nT('components.awsConsentGate.credential_source')}
+          data-testid="aws-consent-source"
+        >
+          {c.credentialSource}
+        </span>
         <span className="min-w-0 truncate font-mono text-[12px] text-muted">
           {account || i18nT('components.awsConsentGate.unresolved_account')}
         </span>
