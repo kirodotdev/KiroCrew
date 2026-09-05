@@ -886,7 +886,7 @@ jobs:
           # only this buffer, and only as counts over markers -- the prose is
           # never consulted for the verdict.
           parse="$RUNNER_TEMP/adj-parse.md"
-          sed -E 's/^[[:space:]]*[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"
+          sed -E 's/^[[:space:]]*//; s/^[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"
           vline='^(UPHOLD|DOWNGRADE) F[0-9]+ [^[:space:]]+ reason=('"$REASONS"')$'
 
           decision="uphold"

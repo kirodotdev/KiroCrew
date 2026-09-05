@@ -876,7 +876,7 @@ jobs:
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-adjudication.md
 
           parse="$RUNNER_TEMP/adj-parse.md"
-          sed -E 's/^[[:space:]]*[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"
+          sed -E 's/^[[:space:]]*//; s/^[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"
           vline='^(UPHOLD|DOWNGRADE) F[0-9]+ [^[:space:]]+ reason=('"$REASONS"')$'
 
           decision="uphold"

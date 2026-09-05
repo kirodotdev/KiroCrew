@@ -3754,7 +3754,7 @@ class TestBlockAdjudicationArithmetic:
         exists to remove -- so normalize decoration before parsing."""
         decorated = _adjudication(
             f"- **{FOOTER.format(total=2, uph=0, dwn=2)}**",
-            f"  * `{DOWN.format(fid='F1')}`",
+            f"    {DOWN.format(fid='F1')}",
             f"- {DOWN.format(fid='F2')}",
             f"**{MARKER}**",
         )
