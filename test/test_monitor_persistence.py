@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -13,13 +14,25 @@ from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
     MonitorBudgets,
     MonitorDecision,
+    MonitorObservationStatus,
     MonitorOutcome,
     MonitorState,
     ProviderErrorKind,
+    monitor_frontend_contract,
     monitor_state_from_dict,
     monitor_state_public_dict,
     monitor_state_to_dict,
 )
+
+
+def test_frontend_monitor_contract_matches_backend_vocabulary() -> None:
+    path = Path(__file__).parents[1] / "website/src/monitoring/contract.json"
+
+    assert json.loads(path.read_text(encoding="utf-8")) == monitor_frontend_contract()
+
+
+def test_frontend_monitor_contract_has_one_version_authority() -> None:
+    assert "schemaVersion" not in monitor_frontend_contract()
 
 
 def test_legacy_loop_round_trip_does_not_acquire_monitor_state(tmp_path) -> None:
@@ -168,6 +181,23 @@ def test_monitor_nested_state_rejects_non_strict_json(
         monitor_state_from_dict({**base, **payload})
 
 
+def test_latest_classification_defaults_for_older_records_and_rejects_unknown_status() -> None:
+    """Older state stays readable, while an unknown classification cannot become public truth."""
+    payload = {
+        "kind": "github_pull_request",
+        "target": "owner/repo#123",
+        "objective": "review_ready",
+        "created_ts": 1_000.0,
+    }
+
+    restored = monitor_state_from_dict(payload)
+
+    assert restored.last_observation_status is None
+    assert restored.last_observation_reason_code == ""
+    with pytest.raises(ValueError, match="MonitorObservationStatus"):
+        monitor_state_from_dict({**payload, "last_observation_status": "unexpected"})
+
+
 def test_monitor_state_survives_store_round_trip(tmp_path) -> None:
     """Restart recovery retains the fingerprint, usage, budgets, and outcome."""
     monitor = MonitorState(
@@ -183,6 +213,8 @@ def test_monitor_state_survives_store_round_trip(tmp_path) -> None:
         ),
         cadence_secs=120,
         last_observation={"head_revision": "abc123", "checks": "failing"},
+        last_observation_status=MonitorObservationStatus.ACTIONABLE,
+        last_observation_reason_code="checks_failed",
         last_fingerprint="failure-a",
         last_observed_at=1_200.0,
         last_wake_fingerprint="failure-a",
@@ -219,6 +251,8 @@ def test_monitor_state_survives_store_round_trip(tmp_path) -> None:
     assert not restored_loop.active
     assert restored.kind == "github_pull_request"
     assert restored.last_observation == {"head_revision": "abc123", "checks": "failing"}
+    assert restored.last_observation_status is MonitorObservationStatus.ACTIONABLE
+    assert restored.last_observation_reason_code == "checks_failed"
     assert restored.last_fingerprint == "failure-a"
     assert restored.last_wake_fingerprint == "failure-a"
     assert restored.wake_count == 3
@@ -264,6 +298,66 @@ async def test_failed_legacy_loop_update_restores_live_state(tmp_path, monkeypat
     assert loop.next_due_ts == 1_500.0
 
 
+def test_public_projection_exposes_only_safe_latest_classification_fields() -> None:
+    """Inspection needs typed status without exposing persistence-only provider payloads."""
+    canonical_checks: dict[str, object] = {
+        "failed": [],
+        "passed": ["CI / test", "lint"],
+        "pending": [],
+        "unknown": [],
+    }
+    canonical: dict[str, object] = {
+        "blocking_review": "none",
+        "checks": canonical_checks,
+        "draft": False,
+        "head_revision": "0123456789abcdef0123456789abcdef01234567",
+        "kind": "github_pull_request",
+        "mergeability": "mergeable",
+        "review_decision": "approved",
+        "review_threads_complete": True,
+        "state": "open",
+        "target": "github.com/owner/repo#123",
+        "unresolved_review_threads": 0,
+    }
+    state = MonitorState(
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        created_ts=1_000.0,
+        last_observation={
+            **canonical,
+            "checks": {
+                **canonical_checks,
+                "provider_diagnostics": ["must-not-escape"],
+            },
+            "raw_provider_payload": {"secret": "must-not-escape"},
+        },
+        last_observation_status=MonitorObservationStatus.PENDING,
+        last_observation_reason_code="checks_pending",
+        extra_fields={
+            "last_observation_summary": "Deprecated summary must not escape.",
+            "raw_provider_payload": {"secret": "must-not-escape"},
+        },
+    )
+
+    public = monitor_state_public_dict(state)
+
+    assert public["last_observation_status"] is MonitorObservationStatus.PENDING
+    assert public["last_observation_reason_code"] == "checks_pending"
+    assert "last_observation_summary" not in public
+    assert public["last_observation"] == canonical
+    assert "raw_provider_payload" not in public
+    assert "must-not-escape" not in repr(public)
+    public_observation = public["last_observation"]
+    assert isinstance(public_observation, dict)
+    public_checks = public_observation["checks"]
+    assert isinstance(public_checks, dict)
+    passed = public_checks["passed"]
+    assert isinstance(passed, list)
+    passed.append("mutated public copy")
+    assert "mutated public copy" not in repr(state.last_observation)
+
+
 def test_monitor_public_projection_includes_lifecycle_timestamps_and_wake_reason() -> None:
     state = MonitorState(
         kind="github_pull_request",
@@ -279,6 +373,38 @@ def test_monitor_public_projection_includes_lifecycle_timestamps_and_wake_reason
     assert public["created_ts"] == 1_000.0
     assert public["last_wake_reason_code"] == "checks_failed"
     assert public["user_stop_reason"] == "Superseded by a newer review."
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["blocking_review", "mergeability", "review_decision", "state"],
+)
+def test_public_projection_rejects_unhashable_persisted_enum_fields(
+    field_name: str,
+) -> None:
+    observation: dict[str, object] = {
+        "blocking_review": "none",
+        "checks": {"failed": [], "passed": [], "pending": [], "unknown": []},
+        "draft": False,
+        "head_revision": "abc123",
+        "kind": "github_pull_request",
+        "mergeability": "mergeable",
+        "review_decision": "approved",
+        "review_threads_complete": True,
+        "state": "open",
+        "target": "github.com/acme/widgets#17",
+        "unresolved_review_threads": 0,
+    }
+    observation[field_name] = ["malformed"]
+    state = MonitorState(
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/17",
+        objective="review_ready",
+        created_ts=1_000.0,
+        last_observation=observation,
+    )
+
+    assert monitor_state_public_dict(state)["last_observation"] == {}
 
 
 def test_unknown_monitor_version_is_inspectable_inert_and_persisted_inactive(

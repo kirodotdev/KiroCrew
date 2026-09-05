@@ -40,7 +40,11 @@ import { createTestStore } from './helpers'
 import { ApiError } from '../api/client'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
+import { sseAutomation } from '../store/chatSlice'
 import type { ChatMessage } from '../types'
+import { structuredMonitorLoop } from './monitorFixtures'
+import { normalizeAutomationRecord, type AutomationRecord } from '../monitoring/automation'
 
 // --- Prop recorders for the two panels whose callbacks are under test --------
 
@@ -71,6 +75,10 @@ let userMsgProps: UserMessageProps | null = null
 
 interface ChatInputProps {
   onAgentClick?: (rect: DOMRect) => void
+  automation?: { kind?: string } | null
+  automationCreationReady?: boolean
+  automationSnapshotFailed?: boolean
+  onAutomationChange?: (automation: AutomationRecord | null) => void
 }
 let chatInputProps: ChatInputProps | null = null
 
@@ -331,7 +339,7 @@ function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
   if (messages.length) {
     act(() => { store.dispatch({ type: 'chat/replaceMessages', payload: messages }) })
   }
-  return { store }
+  return { store, qc }
 }
 
 /** All text currently on screen — ChatPage spans several sibling roots. */
@@ -365,6 +373,147 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe('ChatPage active-slot automation hydration', () => {
+  it('surfaces a failed snapshot and keeps bounded creation guarded', async () => {
+    apiMocks.autonudgeForSlot = vi.fn().mockResolvedValue({ enabled: true, loop: null })
+    apiMocks.monitorForSlot = vi.fn().mockRejectedValue(new Error('owner unavailable'))
+
+    renderChatPage([])
+
+    await waitFor(() => expect(chatInputProps?.automationSnapshotFailed).toBe(true))
+    expect(chatInputProps?.automationCreationReady).toBe(false)
+  })
+
+  it('caches a non-null mutation result before updating the store', async () => {
+    const next = normalizeAutomationRecord(structuredMonitorLoop({ probe_count: 2 }))!
+    apiMocks.autonudgeForSlot = vi.fn().mockResolvedValue({ enabled: true, loop: null })
+    apiMocks.monitorForSlot = vi.fn().mockResolvedValue({ enabled: true, monitor: null })
+    const { qc, store } = renderChatPage([])
+    await waitFor(() => expect(chatInputProps?.automationCreationReady).toBe(true))
+
+    act(() => { chatInputProps?.onAutomationChange?.(next) })
+
+    expect(qc.getQueryData(['session-automation', 'chat-1'])).toEqual(next)
+    expect(store.getState().chat.automations['chat-1']).toEqual(next)
+  })
+
+  it('forgets the cached legacy snapshot after a successful stop', async () => {
+    const loop = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 24, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    apiMocks.autonudgeForSlot = vi.fn().mockResolvedValue({ enabled: true, loop })
+    apiMocks.monitorForSlot = vi.fn().mockResolvedValue({ enabled: true, monitor: null })
+
+    const { qc } = renderChatPage([])
+    await waitFor(() => {
+      expect(chatInputProps?.automation).toMatchObject({ kind: 'legacy_goal_loop' })
+    })
+
+    act(() => { chatInputProps?.onAutomationChange?.(null) })
+
+    expect(qc.getQueryData(['session-automation', 'chat-1'])).toBeNull()
+    await waitFor(() => expect(chatInputProps?.automation).toBeNull())
+  })
+
+  it('blocks creation until REST discovers a monitor without a websocket frame', async () => {
+    let resolveLegacy!: (value: { enabled: boolean; loop: unknown }) => void
+    let resolveMonitor!: (value: { enabled: boolean; monitor: unknown }) => void
+    apiMocks.autonudgeForSlot = vi.fn().mockReturnValue(new Promise(resolve => {
+      resolveLegacy = resolve
+    }))
+    apiMocks.monitorForSlot = vi.fn().mockReturnValue(new Promise(resolve => {
+      resolveMonitor = resolve
+    }))
+
+    renderChatPage([])
+    await waitFor(() => expect(chatInputProps?.automationCreationReady).toBe(false))
+    expect(apiMocks.autonudgeForSlot).toHaveBeenCalledWith('chat-1')
+    expect(apiMocks.monitorForSlot).toHaveBeenCalledWith('chat-1')
+
+    const loop = structuredMonitorLoop()
+    act(() => {
+      resolveLegacy({ enabled: true, loop })
+      resolveMonitor({ enabled: true, monitor: loop })
+    })
+    await waitFor(() => {
+      expect(chatInputProps?.automation).toMatchObject({ kind: 'structured_monitor' })
+      expect(chatInputProps?.automationCreationReady).toBe(true)
+    })
+  })
+
+  it('keeps a disconnected REST snapshot query-local', async () => {
+    const freshLoop = structuredMonitorLoop({ active: false, stopped_reason: 'user_stop' })
+    const fresh = normalizeAutomationRecord(freshLoop)!
+    apiMocks.autonudgeForSlot = vi.fn().mockResolvedValue({ enabled: true, loop: null })
+    apiMocks.monitorForSlot = vi.fn().mockResolvedValue({ enabled: true, monitor: freshLoop })
+
+    const { store } = renderChatPage([])
+
+    await waitFor(() => {
+      expect(chatInputProps?.automation).toEqual(fresh)
+    })
+    expect(store.getState().chat.automations?.['chat-1']).toBeUndefined()
+  })
+
+  it('does not replace a live frame with cached data during or after a failed refetch', async () => {
+    const cachedLoop = structuredMonitorLoop({ probe_count: 1 })
+    const live = normalizeAutomationRecord(structuredMonitorLoop({ probe_count: 2 }))!
+    apiMocks.autonudgeForSlot = vi.fn().mockResolvedValue({ enabled: true, loop: null })
+    apiMocks.monitorForSlot = vi.fn().mockResolvedValue({ enabled: true, monitor: cachedLoop })
+
+    const { store, qc } = renderChatPage([])
+    act(() => { store.dispatch(sseConnected()) })
+    await waitFor(() => expect(qc.getQueryData(['session-automation', 'chat-1'])).toBeTruthy())
+    act(() => { store.dispatch(sseAutomation(live)) })
+
+    let rejectMonitor!: (reason: Error) => void
+    apiMocks.autonudgeForSlot = vi.fn().mockResolvedValue({ enabled: true, loop: null })
+    apiMocks.monitorForSlot = vi.fn().mockReturnValue(new Promise((_resolve, reject) => {
+      rejectMonitor = reject
+    }))
+    const refetch = qc.refetchQueries({ queryKey: ['session-automation', 'chat-1'] })
+    await waitFor(() => {
+      expect(qc.getQueryState(['session-automation', 'chat-1'])?.fetchStatus).toBe('fetching')
+    })
+
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(store.getState().chat.automations['chat-1']).toEqual(live)
+
+    act(() => { rejectMonitor(new Error('offline')) })
+    await refetch
+    await waitFor(() => {
+      expect(qc.getQueryState(['session-automation', 'chat-1'])?.fetchStatus).toBe('idle')
+    })
+    expect(store.getState().chat.automations['chat-1']).toEqual(live)
+  })
+
+  it('does not delete a live monitor when an older REST absence settles after disconnect', async () => {
+    let resolveLegacy!: (value: { enabled: boolean; loop: null }) => void
+    let resolveMonitor!: (value: { enabled: boolean; monitor: null }) => void
+    apiMocks.autonudgeForSlot = vi.fn().mockReturnValue(new Promise(resolve => {
+      resolveLegacy = resolve
+    }))
+    apiMocks.monitorForSlot = vi.fn().mockReturnValue(new Promise(resolve => {
+      resolveMonitor = resolve
+    }))
+    const live = normalizeAutomationRecord(structuredMonitorLoop({ probe_count: 2 }))!
+
+    const { store } = renderChatPage([])
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseAutomation(live))
+      store.dispatch(sseDisconnected())
+      resolveLegacy({ enabled: true, loop: null })
+      resolveMonitor({ enabled: true, monitor: null })
+    })
+
+    await waitFor(() => expect(chatInputProps?.automationCreationReady).toBe(true))
+    expect(store.getState().chat.automations['chat-1']).toEqual(live)
+    expect(chatInputProps?.automation).toEqual(live)
+  })
 })
 
 describe('ChatPage agent-switch failure feedback', () => {

@@ -86,6 +86,8 @@ async def run_shadow_probe(
     staged.last_probe_at = now
     staged.last_decision = decision
     observation = result.observation
+    staged.last_observation_status = observation.status
+    staged.last_observation_reason_code = observation.reason_code
     provider_error = observation.provider_error or observation.supplemental_provider_error
     if provider_error is not None:
         staged.provider_error_count += 1

@@ -21,6 +21,7 @@ import { i18nT } from '../i18n/t'
 import { secureRandomId } from '../utils/secureId'
 import { mergeIntoDraft } from '../utils/chatDrafts'
 import { isRejectedDecision } from '../utils/approvalDecision'
+import { automationForSlot, type AutomationRecord } from '../monitoring/automation'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -336,7 +337,8 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotSide, state.slotSideClosed, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.followups, state.folderSuggestions,
-  state.pendingQuestions, state.subagentQueued, state.goalLoops,
+  state.pendingQuestions, state.subagentQueued,
+  state.automations,
   // A surviving pane marker makes a recreated slot's hydrate early-return into
   // nothing, so these must die with the transcript they describe. The retained
   // server count belongs with them: kept past an eviction it would read as a
@@ -349,7 +351,7 @@ const slotKeyedMaps = (state: ChatState) => [
 /** Every slot key that still has residue anywhere in chat state.
  *
  *  A reconcile can only evict a slot it visits, so this has to cover the same
- *  surfaces `evictSlotState` clears — including the two that are not plain
+ *  ephemeral surfaces `evictSlotState` clears — including the two that are not plain
  *  slot-keyed maps: `mcpApps`, whose keys carry the slot as a prefix, and
  *  `slotHistory`, where a slot can outlive every map entry. */
 const slotKeysWithResidue = (state: ChatState): Set<string> => new Set([
@@ -358,13 +360,14 @@ const slotKeysWithResidue = (state: ChatState): Set<string> => new Set([
   ...(state.slotHistory ?? []),
 ])
 
-/** Drop every trace of one slot from chat state.
+/** Drop every ephemeral trace of one slot from chat state.
  *
  *  A local delete and a reconcile against the authoritative slot list both end
  *  here, so the two cannot disagree about what a departing slot leaves behind.
  *  Both spellings are removed: `safeKey` is identity for ordinary slot names and
  *  a no-op on an already-rewritten key, so one pass covers a caller holding
- *  either form. */
+ *  either form. Durable automation evidence remains on the server and is
+ *  available through the per-slot projection while the session exists. */
 /** Evict every slot carrying residue that the authoritative list does not name.
  *  Both authoritative writers (`sseSlots`, `fetchSlots.fulfilled`) reconcile
  *  through here, so neither can drift from the other. The active slot is never
@@ -790,18 +793,15 @@ interface ChatState {
    *  by slot name so it survives active-slot switches without the subagents
    *  map's active/non-active split. Populated by `subagent_queued` WS events. */
   subagentQueued: Record<string, number>
-  /** Live goal-loop (auto-nudge) progress per slot, keyed by the BARE slot key
-   *  the sidebar renders — `binding_key_for` strips the `dashboard:` prefix, so
-   *  these match `Slot.key` directly. Channel loops (`slack:`/`discord:` keys)
-   *  land here too and simply match no sidebar row.
-   *  Only ACTIVE loops are held: a loop that hit `max_cycles` stays in the
-   *  service registry with `active=false`, and a stopped loop must not keep
-   *  showing progress, so presence in this map IS "looping".
-   *  Cold-seeded from `GET /api/autonudge`, then kept live by `autonudge_state`
-   *  WS events — the service emits one per fired cycle (autonudge.py
-   *  `_emit("fired", …)` right after the `cycle_count` bump), which is what
-   *  makes the counter tick without rebroadcasting the whole slots list. */
-  goalLoops: Record<string, { cycle_count: number; max_cycles: number }>
+  /** The authoritative automation record for each bare slot key.
+   *
+   * Structured monitors remain here after reaching a terminal outcome so the
+   * dashboard can explain the stop and offer the explicit restart route.
+   * Legacy goal loops keep their historical presence-means-active behavior.
+   * Both REST snapshots and WS frames pass through the same pure normalizer
+   * before reaching this collection, so the sidebar and detail surface cannot
+   * disagree about transport fields or status. */
+  automations: Record<string, AutomationRecord>
   /** Agent id the user picked from the chip — the Activity Subagents tab
    *  scrolls to, expands, and auto-loads this card (1-click transcript). */
   selectedSubagentId: string | null
@@ -988,7 +988,7 @@ const initialState: ChatState = {
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},
-  goalLoops: {},
+  automations: {},
   selectedSubagentId: null,
   toolLog: [],
   workflowRuns: {},
@@ -3301,16 +3301,15 @@ export const selectSidebarWorkflowActiveKeys = createSelector(
   (active) => Object.keys(active),
 )
 
-/** Keys of sessions with an active goal loop — the same presence-only
- *  contract as `selectSidebarWorkflowActiveKeys`: a mid-loop cycle-count bump
- *  rewrites the map value but leaves this key set (and so, under
- *  `shallowEqual`, the subscriber) untouched. `Object.keys` returns own keys
- *  only, so membership tests over the result are inherently own-property —
- *  the `safeKey` prototype-pollution caveat on direct map reads does not
- *  apply here. */
-export const selectGoalLoopKeys = createSelector(
-  [(state: RootState) => state.chat.goalLoops],
-  (goalLoops) => Object.keys(goalLoops ?? {}),
+/** Slot keys with a live automation. Memoization keeps the sidebar shell from
+ * repainting when only a probe count or terminal detail changes. */
+export const selectSidebarAutomationRunningKeys = createSelector(
+  [(state: RootState) => state.chat.automations],
+  (automations) => Object.values(automations ?? {})
+    .filter(record => record.kind === 'legacy_goal_loop'
+      ? record.active
+      : record.active && !record.terminal)
+    .map(record => record.slotKey),
 )
 
 /**
@@ -4123,32 +4122,45 @@ const chatSlice = createSlice({
       if (n === 0) delete state.subagentQueued[safeKey(action.payload.slot)]
       else state.subagentQueued[safeKey(action.payload.slot)] = n
     },
-    /** Replace the whole goal-loop map from a cold `GET /api/autonudge` seed.
-     *  A full replace (not a merge) is correct here: the response is the
-     *  service's complete registry, so a loop this client still holds but the
-     *  server no longer reports has ended and must disappear. */
-    setGoalLoops(state, action: PayloadAction<{ slot: string; active: boolean; cycle_count: number; max_cycles: number }[]>) {
-      const next: Record<string, { cycle_count: number; max_cycles: number }> = {}
-      for (const loop of action.payload) {
-        if (!loop.active || isUnsafeKey(loop.slot)) continue
-        next[safeKey(loop.slot)] = {
-          cycle_count: Math.max(0, Math.floor(Number(loop.cycle_count) || 0)),
-          max_cycles: Math.max(0, Math.floor(Number(loop.max_cycles) || 0)),
+    /** Reconcile whichever independent REST snapshots completed successfully.
+     * A failed read is unknown, not an authoritative empty collection. */
+    setAutomations(state, action: PayloadAction<{
+      records: AutomationRecord[]
+      legacyComplete: boolean
+      structuredComplete: boolean
+      protectedSlots?: string[]
+    }>) {
+      const next: Record<string, AutomationRecord> = { ...(state.automations ?? {}) }
+      const protectedSlots = new Set(action.payload.protectedSlots ?? [])
+      for (const [key, record] of Object.entries(next)) {
+        if (!protectedSlots.has(record.slotKey)
+          && ((record.kind === 'legacy_goal_loop' && action.payload.legacyComplete)
+          || (record.kind === 'structured_monitor' && action.payload.structuredComplete))) {
+          delete next[key]
         }
       }
-      state.goalLoops = next
-    },
-    /** Upsert (or drop) one loop from an `autonudge_state` WS event. */
-    sseGoalLoop(state, action: PayloadAction<{ slot: string; active: boolean; cycle_count: number; max_cycles: number }>) {
-      const { slot, active } = action.payload
-      if (isUnsafeKey(slot)) return
-      // Same partial-preloaded-state tolerance as subagentQueued above.
-      state.goalLoops ??= {}
-      if (!active) { delete state.goalLoops[safeKey(slot)]; return }
-      state.goalLoops[safeKey(slot)] = {
-        cycle_count: Math.max(0, Math.floor(Number(action.payload.cycle_count) || 0)),
-        max_cycles: Math.max(0, Math.floor(Number(action.payload.max_cycles) || 0)),
+      for (const record of action.payload.records) {
+        if (isUnsafeKey(record.slotKey)) continue
+        if (record.kind === 'legacy_goal_loop' && !record.active) continue
+        next[safeKey(record.slotKey)] = record
       }
+      state.automations = next
+    },
+    /** Upsert one normalized WS or mutation result into the same collection. */
+    sseAutomation(state, action: PayloadAction<AutomationRecord>) {
+      const record = action.payload
+      if (isUnsafeKey(record.slotKey)) return
+      state.automations ??= {}
+      if (record.kind === 'legacy_goal_loop' && !record.active) {
+        delete state.automations[safeKey(record.slotKey)]
+        return
+      }
+      state.automations[safeKey(record.slotKey)] = record
+    },
+    removeAutomation(state, action: PayloadAction<string>) {
+      if (isUnsafeKey(action.payload)) return
+      state.automations ??= {}
+      delete state.automations[safeKey(action.payload)]
     },
     sseSubagentPending(state, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
@@ -6054,10 +6066,19 @@ export const {
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
-  setGoalLoops, sseGoalLoop,
+  setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
   sseSideResult, sseSideQueue, sideReleaseConsumed, sideClose, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions
+
+export function selectAutomationForSlot(
+  state: { chat: Pick<ChatState, 'automations'> },
+  slotKey: string,
+): AutomationRecord | null {
+  if (isUnsafeKey(slotKey)) return null
+  return automationForSlot(state.chat.automations, safeKey(slotKey))
+}
+
 export default chatSlice.reducer

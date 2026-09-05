@@ -47,6 +47,31 @@ MONITOR_STOP_UNSUPPORTED_VERSION = "unsupported_monitor_version"
 MONITOR_STOP_USER = "user_stop"
 MONITOR_STOP_SESSION_UNAVAILABLE = "session_unavailable"
 MONITOR_STOP_SESSION_CLOSE = "session_close"
+PULL_REQUEST_MONITOR_KINDS = frozenset({"github_pull_request"})
+_GITHUB_OBSERVATION_FIELDS = (
+    "blocking_review",
+    "checks",
+    "draft",
+    "head_revision",
+    "kind",
+    "mergeability",
+    "review_decision",
+    "review_threads_complete",
+    "state",
+    "target",
+    "unresolved_review_threads",
+)
+_GITHUB_CHECK_FIELDS = ("failed", "passed", "pending", "unknown")
+_GITHUB_BLOCKING_REVIEWS = {"unknown", "changes_requested", "unresolved_threads", "none"}
+_GITHUB_MERGEABILITY = {"conflicting", "behind", "blocked", "pending", "mergeable"}
+_GITHUB_REVIEW_DECISIONS = {
+    "none",
+    "approved",
+    "changes_requested",
+    "review_required",
+    "unknown",
+}
+_GITHUB_PULL_REQUEST_STATES = {"open", "closed", "merged", "unknown"}
 MONITOR_PUBLIC_FIELDS = (
     "version",
     "config_generation",
@@ -58,6 +83,8 @@ MONITOR_PUBLIC_FIELDS = (
     "cadence_secs",
     "wake_instructions",
     "last_observation",
+    "last_observation_status",
+    "last_observation_reason_code",
     "last_fingerprint",
     "last_observed_at",
     "last_wake_fingerprint",
@@ -155,6 +182,50 @@ class MonitorDispatchResult(str, Enum):
     DISPATCHED = "dispatched"
     BUSY = "busy"
     UNAVAILABLE = "unavailable"
+
+
+def monitor_frontend_contract() -> dict[str, object]:
+    """Return the checked data contract consumed by the dashboard bundle."""
+    return {
+        "monitorStateVersion": MONITOR_STATE_VERSION,
+        "limits": {
+            "cadenceSecs": {
+                "minimum": MIN_MONITOR_CADENCE_SECS,
+                "maximum": MAX_MONITOR_CADENCE_SECS,
+                "defaultValue": DEFAULT_MONITOR_CADENCE_SECS,
+            },
+            "maxRuntimeSecs": {
+                "minimum": 1,
+                "maximum": MAX_MONITOR_RUNTIME_SECS,
+                "defaultValue": DEFAULT_MONITOR_RUNTIME_SECS,
+            },
+            "maxAgentTurns": {
+                "minimum": 1,
+                "maximum": MAX_MONITOR_AGENT_TURNS,
+                "defaultValue": DEFAULT_MONITOR_AGENT_TURNS,
+            },
+            "maxTokens": {
+                "minimum": 1,
+                "maximum": MAX_MONITOR_TOKENS,
+                "defaultValue": DEFAULT_MONITOR_TOKENS,
+            },
+            "maxProviderErrors": {
+                "minimum": 1,
+                "maximum": MAX_MONITOR_PROVIDER_ERRORS,
+                "defaultValue": DEFAULT_MONITOR_PROVIDER_ERRORS,
+            },
+            "wakeInstructions": {"maximumLength": MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS},
+        },
+        "pullRequestMonitorKinds": sorted(PULL_REQUEST_MONITOR_KINDS),
+        "enums": {
+            "wakeDelivery": [item.value for item in MonitorDispatchResult],
+            "lastCompletionDisposition": [item.value for item in MonitorActionDisposition],
+            "lastDecision": [item.value for item in MonitorDecision],
+            "lastProviderError": [item.value for item in ProviderErrorKind],
+            "lastObservationStatus": [item.value for item in MonitorObservationStatus],
+            "outcome": [item.value for item in MonitorOutcome],
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -271,6 +342,8 @@ class MonitorState:
     cadence_secs: int = DEFAULT_MONITOR_CADENCE_SECS
     wake_instructions: str = ""
     last_observation: dict[str, object] = field(default_factory=dict)
+    last_observation_status: MonitorObservationStatus | None = None
+    last_observation_reason_code: str = ""
     last_fingerprint: str = ""
     last_observed_at: float = 0.0
     last_wake_fingerprint: str = ""
@@ -453,9 +526,14 @@ class MonitorState:
                 self.last_wake_fingerprint,
                 self.last_completion_fingerprint,
                 self.last_wake_reason_code,
+                self.last_observation_reason_code,
             )
         ):
-            raise ValueError("monitor fingerprints must be strings")
+            raise ValueError("monitor observation metadata must be strings")
+        if self.last_observation_status is not None and not isinstance(
+            self.last_observation_status, MonitorObservationStatus
+        ):
+            raise ValueError("last_observation_status must be a MonitorObservationStatus")
         if not isinstance(self.wake_in_flight, bool):
             raise ValueError("wake_in_flight must be a boolean")
         if self.wake_delivery is not None and not isinstance(
@@ -553,6 +631,9 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
     provider_error = values.get("last_provider_error")
     if provider_error is not None:
         values["last_provider_error"] = ProviderErrorKind(provider_error)
+    observation_status = values.get("last_observation_status")
+    if observation_status is not None:
+        values["last_observation_status"] = MonitorObservationStatus(observation_status)
     return MonitorState(**values)
 
 
@@ -593,8 +674,55 @@ def monitor_state_to_dict(state: MonitorState) -> dict[str, object]:
     return payload
 
 
+def _public_github_observation(raw: dict[str, object]) -> dict[str, object]:
+    """Project only the bounded canonical schema across the public boundary."""
+    if not raw:
+        return {}
+    checks = raw.get("checks")
+    if not isinstance(checks, dict):
+        return {}
+    for field_name in _GITHUB_OBSERVATION_FIELDS:
+        if field_name not in raw:
+            return {}
+    for field_name in _GITHUB_CHECK_FIELDS:
+        values = checks.get(field_name)
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            return {}
+    unresolved = raw.get("unresolved_review_threads")
+    blocking_review = raw.get("blocking_review")
+    mergeability = raw.get("mergeability")
+    review_decision = raw.get("review_decision")
+    pull_request_state = raw.get("state")
+    if (
+        raw.get("kind") != "github_pull_request"
+        or not isinstance(raw.get("target"), str)
+        or not raw.get("target")
+        or not isinstance(raw.get("head_revision"), str)
+        or not isinstance(raw.get("draft"), bool)
+        or not isinstance(raw.get("review_threads_complete"), bool)
+        or isinstance(unresolved, bool)
+        or not isinstance(unresolved, int)
+        or unresolved < 0
+        or not isinstance(blocking_review, str)
+        or blocking_review not in _GITHUB_BLOCKING_REVIEWS
+        or not isinstance(mergeability, str)
+        or mergeability not in _GITHUB_MERGEABILITY
+        or not isinstance(review_decision, str)
+        or review_decision not in _GITHUB_REVIEW_DECISIONS
+        or not isinstance(pull_request_state, str)
+        or pull_request_state not in _GITHUB_PULL_REQUEST_STATES
+    ):
+        return {}
+    public = {key: deepcopy(raw[key]) for key in _GITHUB_OBSERVATION_FIELDS}
+    public["checks"] = {key: deepcopy(checks[key]) for key in _GITHUB_CHECK_FIELDS}
+    return public
+
+
 def monitor_state_public_dict(state: MonitorState) -> dict[str, object]:
     """Return the stable inspect/dashboard fields without persistence internals."""
     payload = {key: deepcopy(getattr(state, key)) for key in MONITOR_PUBLIC_FIELDS}
     payload["budgets"] = asdict(state.budgets)
+    payload["last_observation"] = _public_github_observation(state.last_observation)
     return payload
