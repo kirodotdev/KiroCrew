@@ -777,6 +777,18 @@ describe('TerminalCompletion', () => {
       expect(sent).toEqual([])
     })
 
+    it('consumes the post-composition Tab without accepting the suggestion', async () => {
+      const h = await open()
+      h.compositionEnd()
+      const r = h.key({ key: 'Tab' })
+      // Native composition flags are already clear, so the grace latch owns
+      // both halves: the menu must not accept Tab, and xterm/browser must not
+      // pass it on to the PTY as shell completion.
+      expect(r.passedThrough).toBe(false)
+      expect(r.prevented).toBe(true)
+      expect(sent).toEqual([])
+    })
+
     it('still accepts on a plain Enter once composition is over', async () => {
       const h = await open()
       h.compositionEnd()
@@ -784,6 +796,15 @@ describe('TerminalCompletion', () => {
       vi.setSystemTime(Date.now() + 1000)
       await act(async () => { expect(h.key({ key: 'Enter' }).passedThrough).toBe(false) })
       expect(sent).toEqual(['s/'])
+    })
+
+    it('still completes on a plain Tab once composition is over', async () => {
+      const h = await open()
+      h.compositionEnd()
+      // Past the grace window: this Tab belongs to the menu again.
+      vi.setSystemTime(Date.now() + 1000)
+      await act(async () => { expect(h.key({ key: 'Tab' }).passedThrough).toBe(false) })
+      expect(sent).toEqual(['s'])
     })
 
     // Regression: this child's effects run BEFORE the parent's `term.open()`, so

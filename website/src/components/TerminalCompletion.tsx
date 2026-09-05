@@ -20,8 +20,8 @@ const ROW_H = 22
 /** Prompt-marker rows retained. Bounded so a long session cannot grow the map
  *  without limit; only the cursor's own row is ever read. */
 const MARKER_LIMIT = 64
-/** Grace window after `compositionend` in which Enter still belongs to the IME.
- *  Browsers disagree on whether the committing Enter is flagged as composing. */
+/** Grace window after `compositionend` in which a choose key still belongs to the IME.
+ *  Browsers disagree on whether the committing Enter or Tab is flagged as composing. */
 const IME_GRACE_MS = 60
 
 interface Entry {
@@ -484,12 +484,16 @@ export default function TerminalCompletion({ term, sessionId, active }: {
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
       // An IME candidate is committed with a keydown the browser marks as
-      // composing (Chrome reports keyCode 229 for it); swallowing that Enter
-      // would accept a path instead of the text the user just composed. Some
-      // browsers report the committing key as non-composing, hence the grace
-      // window after `compositionend`.
+      // composing (Chrome reports keyCode 229 for it). Leave that native action
+      // alone. Some browsers clear both flags before the committing key arrives,
+      // hence the grace window after `compositionend`: Enter keeps its established
+      // pass-through behavior, while Tab must be consumed so it can neither accept
+      // the menu suggestion nor escape to xterm as shell completion.
       if (e.isComposing || e.keyCode === 229) return true
-      if (e.key === 'Enter' && Date.now() - imeEndAt.current < IME_GRACE_MS) return true
+      if (Date.now() - imeEndAt.current < IME_GRACE_MS) {
+        if (e.key === 'Enter') return true
+        if (e.key === 'Tab') return claim(e)
+      }
       const s = stateRef.current.sug
       if (!s) return true
       if (e.ctrlKey || e.metaKey || e.altKey) return true
