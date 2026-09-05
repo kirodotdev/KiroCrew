@@ -10151,6 +10151,7 @@
         "agent_backend": "Backend do agente",
         "claude_code": "Claude Code",
         "claude_uses_its_own_permissions": "O Claude Code normalmente pede autorização antes de agir, e o {{productName}} filtra esse pedido. Mas uma ferramenta previamente aprovada nas configurações do próprio Claude — incluindo um .claude/settings.json dentro do projeto — não pergunta, pelo que as regras de recusa e o registo de auditoria não veem essa chamada.",
+        "codex_signs_in_separately": "O Codex faz login por conta própria: conclua o login do próprio Codex ou indique um model provider em ~/.codex/config.toml (CODEX_HOME move essa pasta). Nada disso é verificado aqui — quem lê é o adaptador, não o {{productName}}.",
         "could_not_load_the_agent_backend": "Não foi possível carregar o backend do agente.",
         "could_not_save_the_agent_backend": "Não foi possível salvar o backend do agente.",
         "default_all_features_supported": "Predefinição. Todas as funcionalidades são suportadas.",

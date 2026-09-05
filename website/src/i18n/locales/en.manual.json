@@ -5452,6 +5452,9 @@
       "show_controls": "Show controls"
     },
     "developer": {
+      "agentBackendTab": {
+        "codex_signs_in_separately": "Codex signs in on its own: finish its sign-in, or name a model provider in ~/.codex/config.toml (CODEX_HOME moves that folder). Neither is checked here — the adapter reads them, not {{productName}}."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat on a crew",
         "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet."

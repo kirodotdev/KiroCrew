@@ -10005,6 +10005,7 @@
         "agent_backend": "এজেন্ট ব্যাকএন্ড",
         "claude_code": "Claude Code",
         "claude_uses_its_own_permissions": "Claude Code সাধারণত কাজ করার আগে অনুমতি চায়, এবং {{productName}} সেই অনুরোধ যাচাই করে। কিন্তু Claude-এর নিজের সেটিংসে আগেই অনুমোদিত টুল — প্রকল্পের ভিতরের .claude/settings.json সহ — কিছু জিজ্ঞাসা করে না, তাই অস্বীকৃতির নিয়ম ও অডিট লগ সেই কলটি দেখতে পায় না।",
+        "codex_signs_in_separately": "Codex নিজেই সাইন ইন করে: তার নিজের সাইন-ইন সেরে নাও, বা ~/.codex/config.toml-এ একটি model provider উল্লেখ করো (CODEX_HOME এই ফোল্ডারটি সরিয়ে দেয়)। এর কোনোটিই এখানে যাচাই করা হয় না — এগুলো অ্যাডাপ্টার পড়ে, {{productName}} নয়।",
         "could_not_load_the_agent_backend": "এজেন্ট ব্যাকএন্ড লোড করা যায়নি।",
         "could_not_save_the_agent_backend": "এজেন্ট ব্যাকএন্ড সংরক্ষণ করা যায়নি।",
         "default_all_features_supported": "ডিফল্ট। সব বৈশিষ্ট্য সমর্থিত।",

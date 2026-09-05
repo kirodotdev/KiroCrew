@@ -9859,6 +9859,7 @@
         "agent_backend": "代理后端",
         "claude_code": "Claude Code",
         "claude_uses_its_own_permissions": "Claude Code 通常会先请求批准，{{productName}} 会对该请求做把关。但如果某个工具已在 Claude 自身设置里预先批准（包括项目内那份 .claude/settings.json），它就不会再请求，因此拒绝规则和审计日志看不到这次调用。",
+        "codex_signs_in_separately": "Codex 自己登录：完成它自己的登录，或在 ~/.codex/config.toml 里指定 model provider（CODEX_HOME 可移动该目录）。这两者这里都不检查，读取它们的是适配器，不是 {{productName}}。",
         "could_not_load_the_agent_backend": "无法加载代理后端。",
         "could_not_save_the_agent_backend": "无法保存代理后端。",
         "default_all_features_supported": "默认。支持所有功能。",

@@ -10005,6 +10005,7 @@
         "agent_backend": "Agent-Backend",
         "claude_code": "Claude Code",
         "claude_uses_its_own_permissions": "Claude Code fragt normalerweise nach, bevor es handelt, und {{productName}} prüft diese Anfrage. Ein in Claudes eigenen Einstellungen vorab genehmigtes Tool — auch über eine .claude/settings.json im Projekt — fragt jedoch nicht, sodass die Ablehnungsregeln und das Audit-Log diesen Aufruf nicht sehen.",
+        "codex_signs_in_separately": "Codex meldet sich selbst an: Schließe die eigene Anmeldung von Codex ab oder gib in ~/.codex/config.toml einen model provider an (CODEX_HOME verschiebt diesen Ordner). Beides wird hier nicht geprüft — gelesen wird es vom Adapter, nicht von {{productName}}.",
         "could_not_load_the_agent_backend": "Das Agent-Backend konnte nicht geladen werden.",
         "could_not_save_the_agent_backend": "Das Agent-Backend konnte nicht gespeichert werden.",
         "default_all_features_supported": "Standard. Alle Funktionen werden unterstützt.",

@@ -9859,6 +9859,7 @@
         "agent_backend": "エージェントバックエンド",
         "claude_code": "Claude Code",
         "claude_uses_its_own_permissions": "Claude Code は通常、実行前に承認を求め、{{productName}} がその要求を審査します。しかし Claude 自身の設定（プロジェクト内の .claude/settings.json を含む）で事前承認されたツールは要求を出さないため、拒否ルールと監査ログはその呼び出しを認識しません。",
+        "codex_signs_in_separately": "Codex は自分でサインインします。Codex 自身のサインインを済ませるか、~/.codex/config.toml で model provider を指定してください（CODEX_HOME でこのフォルダーを移動できます）。どちらもここでは確認しません。読むのはアダプターであり、{{productName}} ではありません。",
         "could_not_load_the_agent_backend": "エージェントバックエンドを読み込めませんでした。",
         "could_not_save_the_agent_backend": "エージェントバックエンドを保存できませんでした。",
         "default_all_features_supported": "デフォルト。すべての機能に対応しています。",

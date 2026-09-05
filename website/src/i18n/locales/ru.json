@@ -10297,6 +10297,7 @@
         "agent_backend": "Бэкенд агента",
         "claude_code": "Claude Code",
         "claude_uses_its_own_permissions": "Claude Code обычно запрашивает разрешение перед действием, и {{productName}} проверяет этот запрос. Но инструмент, заранее одобренный в собственных настройках Claude — включая .claude/settings.json внутри проекта — не запрашивает ничего, поэтому правила запрета и журнал аудита не видят такой вызов.",
+        "codex_signs_in_separately": "Codex входит в систему сам: заверши его собственный вход или укажи model provider в ~/.codex/config.toml (CODEX_HOME переносит эту папку). Здесь ни то, ни другое не проверяется — их читает адаптер, а не {{productName}}.",
         "could_not_load_the_agent_backend": "Не удалось загрузить бэкенд агента.",
         "could_not_save_the_agent_backend": "Не удалось сохранить бэкенд агента.",
         "default_all_features_supported": "По умолчанию. Все функции поддерживаются.",
