@@ -916,6 +916,35 @@ help a user enable and interpret it. It does not enable the feature or trigger
 generation, and holds no runtime-written frontmatter, since a builtin skill is
 re-synced by `rmtree` + `copytree` on upgrade.
 
+**`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
+The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
+path globs, per-skill resolve/read, agent annotation), and the defect this addresses is that
+N simultaneous skill-menu opens each paid for their own scan. `_assemble_skills_catalog` in
+`dashboard/handlers/prompts.py` fixes that with single-flight coalescing: the first reader
+assembles, readers queued alongside it take those rows instead of scanning again. Measured
+against a counting assembler, 8-way concurrency goes from 0% to 87.5% redundant-scan
+elimination — eight opens cost one scan.
+
+**There is no stored result and no TTL, and that is what makes the invariant cheap.** The
+leader's rows are offered only while another reader for the same key is still inside
+`_assemble_skills_catalog`; when the last one leaves, they are dropped. So a read that is not
+part of a concurrent burst always scans current on-disk state, the base's recorded default
+("No result cache: the endpoint always reflects current on-disk state, so freshly
+created/installed skills appear immediately") is preserved, and **no mutation path anywhere
+owes the catalog an invalidation**.
+
+**The mechanism is one assembly lock per key** (`LoopBoundLock` values in a registry, the shape
+#4800 established) — fast path, lock, re-check under it, where the re-check is the join. Per key
+rather than global, so readers of different projects still scan in parallel as the base did; the
+registry entry is dropped with the waiter count, and a test pins the parallelism.
+`_assemble_skills_catalog`'s docstring is authoritative for the contract — which readers can be
+served older rows, and the bound — so it stays next to the code it constrains and is spelled once.
+
+**The `?agent=` filter is deliberately NOT part of the key.** It is applied downstream as a
+comprehension over the assembled rows, and an end-to-end test drives two agents through the
+real endpoint in both orders to keep that true rather than merely currently-true — a join that
+ever shared the FILTERED result would fail whichever agent asked second.
+
 **Loading:**
 1. **Always-on**: skills with `always: true` have full content injected every new session
 2. **On-demand**: skill summaries (name + description + dir path) in session context; LLM can `cat` the file when relevant
