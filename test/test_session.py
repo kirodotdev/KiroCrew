@@ -6,6 +6,9 @@ import asyncio
 import logging
 import threading
 import time
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1086,6 +1089,1141 @@ class TestDeadProviderCleanup:
         assert provider is fresh_provider
         assert is_new is True
         assert mgr.count == 1
+        await mgr.close_all()
+
+
+def _default_workspace() -> str:
+    """The directory a provider binds to when handed no ``work_dir``."""
+    from kiro_crew.config.paths import default_workspace_dir
+
+    return str(default_workspace_dir())
+
+
+class TestReuseRefusesAMovedProject:
+    """Reuse is gated on the bound directory, not on liveness alone.
+
+    ``cwd`` is applied when a provider is CREATED and never re-applied, so a live
+    session whose project has since changed would otherwise be handed back bound
+    to the OLD directory and run the turn's relative writes there.
+
+    Validated where the SEMAPHORE IS HELD, not at the reuse decision: the decision
+    runs before the semaphore is claimed, so a turn can be streaming there and
+    evicting would tear a live reply down mid-stream -- the same harm the deferred
+    reset exists to prevent. Holding the semaphore means any such turn has
+    finished, and it still covers every acquisition because they all pass through
+    that claim.
+    """
+
+    # The gate normalises both sides through ``Path``, which on Windows means backslashes,
+    # so expecting the POSIX spelling would assert the separator rather than the directory.
+    ALPHA = str(Path("/projects/alpha"))
+    BETA = str(Path("/projects/beta"))
+    GAMMA = str(Path("/projects/gamma"))
+
+    def test_no_cwd_assertion_here_hard_codes_a_posix_separator(self):
+        """Ratchets the whole class against the bug that broke the Windows shard twice.
+
+        Every directory in these tests reaches the assertion through `resolved_cwd`, which
+        returns `str(Path(cwd))` -- the platform's own spelling. A raw `"/projects/x"` on
+        the expected side therefore asserts the SEPARATOR, not the directory: it passes on
+        every POSIX shard and fails only on Windows, so the local suite cannot see it.
+
+        It has now arrived twice from different directions -- a fixture echoing the request
+        verbatim, then an assertion literal predating the normalised constants -- which is
+        why this pins the shape rather than the two instances. Compare against `ALPHA` /
+        `BETA` / `GAMMA`, or build the expectation with the same `Path` call.
+        """
+        import re
+        from pathlib import Path as _P
+
+        src = _P(__file__).read_text(encoding="utf-8")
+        start = src.index(f"class {type(self).__name__}")
+        nxt = src.find("\nclass ", start + 1)
+        body = src[start : nxt if nxt != -1 else len(src)]
+
+        # The constants themselves are the sanctioned place a POSIX literal appears.
+        offenders = [
+            ln.strip()
+            for ln in body.splitlines()
+            if re.search(r'cwd\s*(==|!=)\s*"/', ln) or re.search(r'"/projects/\w+"\s*(==|!=)', ln)
+        ]
+        assert not offenders, (
+            "these compare a normalised cwd against a hard-coded POSIX path, so they assert "
+            "the separator and fail only on the Windows shard: " + "; ".join(offenders)
+        )
+
+    @staticmethod
+    def _factory(seen: list):
+        """A factory whose providers bind ``cwd`` the way a REAL provider does.
+
+        A real provider handed a falsy ``work_dir`` binds to ``config_dir()/workspace``
+        and reports that concrete path as ``cwd``. A mock echoing ``""`` back cannot
+        exercise the mismatch between an empty request and that default, which is the
+        shape that wedges a slot.
+        """
+
+        def factory(session_key=None, agent=None, channel_id=None, cwd=None, **kwargs):
+            m = AsyncMock()
+            m.start = AsyncMock()
+            m.shutdown = AsyncMock()
+            # A real provider reports a Path, so its cwd comes back in the platform's own
+            # spelling -- echoing the request verbatim passes on POSIX and fails on Windows.
+            m.cwd = str(Path(cwd)) if cwd else _default_workspace()
+            # Recorded so a test can assert WHICH agent was served, not merely that some
+            # session registered -- the two differ exactly when an arm re-points a retry.
+            m.requested_agent = agent
+            m.context_usage_pct = MagicMock(return_value=0.0)
+            m.is_alive = MagicMock(return_value=True)
+            m.is_process_alive = MagicMock(return_value=True)
+            m.has_active_turn = MagicMock(return_value=False)
+            m.runtime_info = MagicMock(return_value=(None, None))
+            seen.append(m)
+            return m
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_arming_an_unregistered_key_still_refuses_the_later_session(self, cfg):
+        """The arm must outlive the absence that made it necessary.
+
+        This is the cold-start window: the teardown is refused while nothing is
+        registered, so there is no object to pin. Arming the KEY carries the protection
+        forward, so a cold start that began BEFORE the project changed -- and is
+        therefore bound to the OLD directory -- is refused on its next claim rather
+        than reused. A successor already bound to the requested directory is what the
+        change asked for and is left alone; the arm has nothing to invalidate there.
+
+        Also pins termination: the arm is cleared by the successor bound to the
+        requested directory, not by the refusal, so the key does not churn forever.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+        folded_cold = mgr._fold_key("sess-cold")
+
+        # Nothing registered yet -- the arm must land on the key regardless.
+        mgr.mark_retire_on_next_claim("sess-cold", "/projects/beta")
+        assert "sess-cold" in boundary._retire_pending_cwd
+
+        # The in-flight cold start lands. It was composed BEFORE the change, so it names
+        # the superseded directory -- and the arm's recorded target is what reveals that.
+        provider, _, _ = await mgr.get_or_create("sess-cold", cwd="/projects/alpha")
+        mgr.release("sess-cold")
+
+        assert provider.cwd == self.BETA, (
+            "a key armed while nothing was registered must not serve a generation bound "
+            "to the superseded directory -- the turn's relative writes would land in the "
+            f"previous project; got {provider.cwd!r}"
+        )
+
+        # The next claim names the post-change directory and is correctly bound already.
+        _, is_new, _ = await mgr.get_or_create("sess-cold", cwd="/projects/beta")
+        assert is_new is False, (
+            "once the pre-change generation has been discarded at registration, the "
+            "session in the registry is bound to the requested directory and must be "
+            "reused rather than cold-started again"
+        )
+
+        mgr.release("sess-cold")
+        _, is_new_again, _ = await mgr.get_or_create("sess-cold", cwd="/projects/beta")
+        assert is_new_again is False, "a satisfied arm must not keep refusing the key"
+        assert folded_cold not in boundary._retire_pending_cwd, (
+            "the successor bound to the requested directory is what satisfies the arm, "
+            "so it must be clear once that session claims -- otherwise the key churns forever"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_arm_survives_discarding_one_pre_change_generation(self, cfg):
+        """One discarded generation must not spend the guard for the next one.
+
+        More than one cold start can be in flight when a project changes, so discarding
+        the first must leave the arm raised. If the eviction that discards a stale
+        generation also cleared the arm, the second pre-change provider would register
+        unguarded and its relative writes would land in the previous project.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+        folded = mgr._fold_key("sess-race")
+
+        mgr.mark_retire_on_next_claim("sess-race", "/projects/beta")
+        await mgr.get_or_create("sess-race", cwd="/projects/alpha")
+        mgr.release("sess-race")
+
+        assert folded in boundary._retire_pending_cwd, (
+            "discarding one pre-change generation must not spend the arm -- a second "
+            "cold start begun before the change is still on its way"
+        )
+
+        # A second generation begun before the change now reaches registration.
+        _, is_new, _ = await mgr.get_or_create("sess-race", cwd="/projects/alpha")
+        assert is_new is True, "the retained arm must refuse the second pre-change generation"
+        assert (
+            boundary._sessions["sess-race"].provider.cwd == self.BETA
+        ), "no generation bound to the superseded directory may be left serving the key"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_claimant_leaves_the_arm_for_the_next_stale_start(self, cfg):
+        """A refusal must not spend the arm, or the second stale start goes unguarded.
+
+        Clearing the project names no directory, so the moved-directory teardown
+        cannot fire and the arm is the ONLY guard. If the first stale cold start
+        consumes it merely by being registered, the second registers unguarded and
+        its relative writes still land in the pre-change project.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+
+        await mgr.get_or_create("sess-two", cwd="/projects/alpha")
+        mgr.release("sess-two")
+        first = mgr._sessions["sess-two"]
+
+        mgr.mark_retire_on_next_claim("sess-two", "")
+
+        # Claim with the project CLEARED. The first stale session is refused, but
+        # nothing about that refusal validates a successor against the new binding.
+        _, is_new, _ = await mgr.get_or_create("sess-two", cwd=None)
+        assert is_new is True, "precondition: the armed key refuses the pre-change session"
+        assert first.retire_on_identity_change is True, "precondition: the refusal marked it"
+        mgr.release("sess-two")
+
+        alloc = mgr._allocation_boundary()
+        # The arm is stored under the FOLDED key, so read it through the same accessor
+        # the production path uses rather than the raw name.
+        folded = mgr._fold_key("sess-two")
+        assert folded in alloc._retire_pending_cwd, (
+            "a claim the arm REFUSED must leave the arm set: a second cold start begun "
+            "before the change is still bound to the old directory, and with the arm "
+            "spent it registers unguarded and writes into the previous project"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_project_refuses_a_session_bound_to_a_directory(self, cfg):
+        """Clearing the project is a REQUIREMENT, not the absence of one.
+
+        A cleared slot states "no directory". Treating that as "no opinion" waives the
+        comparison entirely, so every claim passes and the reused session keeps writing
+        its relative paths into the project that was cleared away.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+
+        await mgr.get_or_create("sess-clear", cwd="/projects/alpha")
+        mgr.release("sess-clear")
+
+        _, is_new, _ = await mgr.get_or_create("sess-clear", cwd="")
+        mgr.release("sess-clear")
+
+        assert is_new is True, (
+            "a cleared project must refuse a session bound to a directory: an empty "
+            "requirement is still a requirement, and waiving it leaves the turn "
+            "writing into the project that was cleared away"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_first_cold_start_after_a_clear_is_not_served_the_old_binding(self, cfg):
+        """A cold start begun before a clear must not serve the turn that follows it.
+
+        Its own cwd was read before the change, so it cannot detect the change by
+        comparing against itself. Only the directory recorded WITH the arm separates a
+        pre-change generation from the successor.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+
+        # The project is cleared while a cold start carrying the OLD directory is still
+        # on its way, so the arm records "" while the claim still names alpha.
+        mgr.mark_retire_on_next_claim("sess-race", "")
+        provider, _, _ = await mgr.get_or_create("sess-race", cwd="/projects/alpha")
+        mgr.release("sess-race")
+
+        assert provider.cwd == _default_workspace(), (
+            "the first claim after a clear must be served a provider bound to the "
+            f"CLEARED project, not the superseded one; got {provider.cwd!r}"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_project_claim_converges_instead_of_wedging(self, cfg):
+        """A session naming no directory binds the default workspace, so it must match.
+
+        A provider handed a falsy directory does not report one back: it binds
+        ``config_dir()/workspace`` and reports that concrete path. So an arm or a request
+        recorded as the bare empty string can never equal what the session it is waiting
+        for actually binds. Every generation is then rejected as stale, the retry budget
+        runs out, and the slot is left permanently unclaimable -- and the same mismatch
+        cold-starts every project-less session on every turn. Both sides resolving the
+        empty case to that same workspace path is what makes the comparison terminate.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+
+        # Exactly the arm a refused teardown raises when the project is CLEARED.
+        mgr.mark_retire_on_next_claim("sess-wedge", "")
+        provider, _, _ = await mgr.get_or_create("sess-wedge", cwd="")
+        mgr.release("sess-wedge")
+
+        assert provider.cwd == _default_workspace(), (
+            "a claim naming no directory must be served the default workspace binding; "
+            f"got {provider.cwd!r}"
+        )
+
+        # The turn after it must REUSE. Evicting here would pay a cold start every turn
+        # for every session that has no project selected.
+        _, is_new, _ = await mgr.get_or_create("sess-wedge", cwd="")
+        assert is_new is False, (
+            "a session already bound to the default workspace satisfies a claim that "
+            "names no directory -- refusing it evicts every project-less session on "
+            "every turn"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_directory_match_does_not_spend_the_identity_arm(self, cfg):
+        """The two arms answer different questions, so one cannot satisfy the other.
+
+        A project-scope agent switch keeps `slot.project`, so the identity arm names the
+        directory the live session is already bound to. If a directory match spent the agent
+        arm, the mechanism would be defeated on its own intended consumer path: the claim
+        reuses a session still running the switched-away agent, the arm is gone, and nothing
+        self-corrects.
+
+        The arms are placed DIRECTLY rather than through `mark_retire_on_next_claim`, which
+        also flags the registered session -- that flag refuses the reuse on its own, so a
+        test going through it passes whether or not the pop rule is right. What is under
+        test here is the satisfaction rule, so the state it must handle is set up directly.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+        folded = mgr._fold_key("sess-arms")
+
+        await mgr.get_or_create("sess-arms", cwd=self.BETA, agent="oncall")
+        mgr.release("sess-arms")
+        first = seen[-1]
+
+        # Same directory, different agent -- and no identity flag on the live session.
+        boundary._retire_pending_cwd[folded] = self.BETA
+        boundary._retire_pending_agent[folded] = "research"
+        assert (
+            boundary._sessions[folded].retire_on_identity_change is False
+        ), "precondition: no flag, so only the arm can refuse this reuse"
+
+        provider, is_new, _ = await mgr.get_or_create("sess-arms", cwd=self.BETA, agent="research")
+
+        assert is_new is True, (
+            "the live session runs the switched-away agent, so a matching directory must "
+            "not let it be reused -- the identity arm is a separate, unsatisfied question"
+        )
+        assert provider is not first, "the replacement must be a different provider"
+        assert (
+            provider.requested_agent == "research"
+        ), f"and it must run the armed agent; got {provider.requested_agent!r}"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_post_switch_cold_start_cannot_register_the_old_agent(self, cfg):
+        """The generation and the directory both read clean for this one, so neither guards it.
+
+        A channel turn resolves its agent, the dashboard switch lands, and only THEN does the
+        turn reach `get_or_create`. Its generation snapshot is taken after the bump, so the
+        ordering test passes; a project-scope switch leaves the directory alone, so the arm's
+        directory test passes too. And unlike a live session there is no registered object to
+        have carried `retire_on_identity_change`. The registering session would therefore run
+        the agent the switch just replaced, permanently -- the arm is spent by the next
+        satisfied claim and nothing self-corrects.
+
+        So the arm has to state the DESIRED AGENT and the registration has to be checked
+        against it. That is the only one of the three disjuncts that can see this case.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+
+        # The switch: same directory, new agent. Nothing is registered yet -- this is the
+        # cold-start case, so there is no session for the identity flag to land on.
+        mgr.mark_retire_on_next_claim("sess-race", "/projects/beta", agent="research")
+        folded = mgr._fold_key("sess-race")
+        assert (
+            boundary._retire_pending_agent.get(folded) == "research"
+        ), "precondition: the arm records the agent a successor must be running"
+
+        # The turn had already resolved the OLD agent before the switch landed.
+        provider, is_new, _ = await mgr.get_or_create("sess-race", cwd=self.BETA, agent="oncall")
+
+        assert is_new is True, "precondition: this is a cold start, not a reuse"
+        assert provider.requested_agent == "research", (
+            "the turn must be served the agent the switch selected, not the one it had "
+            "already resolved: the generation is current and the directory matches the "
+            f"arm, so nothing but the agent distinguishes them; got "
+            f"{provider.requested_agent!r}"
+        )
+        assert [p.requested_agent for p in seen] == ["oncall", "research"], (
+            "and the old-agent provider must have been built and then REFUSED rather "
+            f"than never attempted, or the test proves nothing; got "
+            f"{[p.requested_agent for p in seen]}"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_same_directory_arm_still_refuses_the_flagged_session(self, cfg):
+        """An IDENTITY change cannot be satisfied by a directory match.
+
+        An agent switch keeps `slot.project` when the agent is project-scope, so the arm it
+        raises names the directory the live session is ALREADY bound to. Satisfaction is a
+        directory test, and a cwd-less channel claim cannot state otherwise, so the arm is
+        met by the very session the switch was replacing -- and the switched-away agent
+        serves the next turn. `mark_retire_on_next_claim` flags the REGISTERED session,
+        which is the part a matching directory cannot express; `note_project_change` does
+        not, which is why the two are not interchangeable at an identity change.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+
+        provider, _, _ = await mgr.get_or_create("sess-ident", cwd=self.BETA)
+        mgr.release("sess-ident")
+        first = seen[-1]
+
+        # The agent switch: same project, so the arm names where the session already is.
+        mgr.mark_retire_on_next_claim("sess-ident", "/projects/beta")
+        assert boundary._retire_pending_cwd.get(mgr._fold_key("sess-ident")) == self.BETA, (
+            "precondition: the arm names the directory the live session is bound to, "
+            "which is what makes a directory-only test insufficient here"
+        )
+
+        # A channel turn: states no cwd, so nothing in the claim can distinguish it.
+        second, is_new, _ = await mgr.get_or_create("sess-ident")
+
+        assert is_new is True, (
+            "the switched-away agent's session must NOT be reused: its directory matches "
+            "the arm, so only the identity flag can refuse it"
+        )
+        assert second is not first, "the replacement must be a different provider"
+        first.shutdown.assert_awaited()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_cwd_less_claim_satisfies_an_arm_its_binding_already_matches(self, cfg):
+        """Otherwise the arm is unsatisfiable for channel turns and reuse never returns.
+
+        A channel turn claims with NO cwd -- the dispatch builds its kwargs with `model`
+        and nothing else -- so it can never state agreement with the armed directory. If
+        satisfaction requires a stated cwd, the arm survives every such claim: turn after
+        turn retires and cold-starts, so the change costs a cold start FOREVER instead of
+        the one it is supposed to cost. The session's own binding has to settle it, and a
+        session bound to exactly the armed directory IS the successor the arm awaited.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+        folded = mgr._fold_key("sess-chan")
+
+        # The dashboard moved the project; the arm names where a successor must land.
+        mgr.note_project_change("sess-chan", "/projects/beta")
+        mgr.mark_retire_on_next_claim("sess-chan", "/projects/beta")
+
+        # First cwd-less claim: nothing registered, so it cold-starts -- and the eager
+        # spawn roots it at the new project, which is the one cold start being paid for.
+        _, first_new, _ = await mgr.get_or_create("sess-chan", cwd=self.BETA)
+        assert first_new is True, "precondition: the first claim after the change is cold"
+        mgr.release("sess-chan")
+
+        # The SECOND claim is the one under test: a real channel turn, stating no cwd.
+        _, second_new, _ = await mgr.get_or_create("sess-chan")
+
+        assert second_new is False, (
+            "the live session is bound to exactly the armed directory, so a claim that "
+            "states no cwd must REUSE it -- retiring here churns every channel turn"
+        )
+        assert boundary._retire_pending_cwd.get(folded) is None, (
+            "and the arm must be spent by that reuse, or it refuses the next turn too "
+            "and the churn is permanent rather than one cold start"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_stale_eviction_does_not_strand_the_permit(self, cfg):
+        """The frame holds the new session's permit, so it must survive a cancellation.
+
+        A stale generation is registered and its permit already taken, then the eviction
+        AWAITS the registry lock. Cancelled at that await, the eviction never runs, so the
+        session stays registered -- and without a release the permit it holds is owned by
+        nobody. Every later turn on the key then parks on that semaphore forever.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+
+        # Armed for a directory this cold start will NOT bind, so its registration is
+        # judged a stale generation and takes the eviction path.
+        mgr.mark_retire_on_next_claim("sess-cancel", "/projects/beta")
+
+        async def _cancelled_eviction(key, session):
+            raise asyncio.CancelledError
+
+        mgr._evict_stale_session = _cancelled_eviction  # type: ignore[method-assign]
+
+        # `finally`, not a trailing call: an assertion below can fail, and an early exit
+        # would leave this manager's cleanup loop running for the rest of the session.
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await mgr.get_or_create("sess-cancel", cwd="/projects/alpha")
+
+            stranded = boundary._sessions.get("sess-cancel")
+            assert (
+                stranded is not None
+            ), "precondition: the cancelled eviction leaves the session registered"
+            assert not stranded.semaphore.locked(), (
+                "a cancellation while the eviction waits for the registry lock must not "
+                "leave the permit held -- nothing else can release it and the key is "
+                "locked for good"
+            )
+        finally:
+            await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_provider_on_the_abc_default_is_not_read_as_the_workspace(self, cfg):
+        """The ABC's `cwd` default is `""`, and that means "tracks none", not "workspace".
+
+        A provider that never overrides `cwd` reports the base class's empty string. Read
+        as a binding it resolves to the default workspace, which then disagrees with every
+        project-scoped claim and evicts a warm session on every turn -- silently, since a
+        directory mismatch is exactly what the gate is entitled to act on. A real provider
+        bound to the workspace reports that concrete path instead, so the empty string can
+        only mean there is no directory to compare.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+
+        provider, _, _ = await mgr.get_or_create("sess-abc", cwd="/projects/alpha")
+        mgr.release("sess-abc")
+        # Exactly the shape the ABC hands a subclass that does not override `cwd`.
+        provider.cwd = ""
+
+        _, is_new, _ = await mgr.get_or_create("sess-abc", cwd="/projects/alpha")
+        assert is_new is False, (
+            "a provider reporting the ABC default states no directory, so it must not be "
+            "read as a MISMATCH against a project-scoped claim -- that evicts a warm "
+            "session every turn for every provider that never overrode cwd"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_change_landing_during_model_resolution_still_refuses_the_start(self, cfg):
+        """The snapshot must precede the whole start, not just the factory call.
+
+        Model resolution goes off-loop, so an agent or workspace switch can commit a new
+        project while a cold start is parked there. A generation read AFTER that await
+        records the NEW value, so the start compares equal to a key that has already moved
+        and is served -- and the turn writes relative paths into the previous project. The
+        snapshot has to be taken before the first await for the comparison to mean
+        anything.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+
+        resolved = {"n": 0}
+        original = boundary._deps.session_model
+
+        def _model_then_switch(*args, **kwargs):
+            # Runs inside the off-loop await, i.e. mid-start: the switch commits its new
+            # project here, exactly the window the snapshot has to sit in front of.
+            resolved["n"] += 1
+            if resolved["n"] == 1:
+                mgr.note_project_change("sess-midstart", "/projects/beta")
+            return original(*args, **kwargs)
+
+        # `_deps` is a frozen dataclass, so the hook goes in through object.__setattr__.
+        object.__setattr__(boundary._deps, "session_model", _model_then_switch)
+
+        provider, _, _ = await mgr.get_or_create("sess-midstart", cwd="/projects/alpha")
+
+        assert resolved["n"] >= 1, "precondition: model resolution ran, so the window opened"
+        assert len(seen) == 2, (
+            "the generation moved while this start was parked off-loop, so it belongs to "
+            "the superseded project and must be torn down and retried, not served; only "
+            f"{len(seen)} provider(s) were created, so the pre-change one was handed over"
+        )
+        assert provider.cwd == self.BETA, (
+            "and the retry must bind the directory the switch COMMITTED, not the one this "
+            f"frame was called with; got {provider.cwd!r}"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_newer_change_supersedes_the_earlier_arm(self, cfg):
+        """Two changes to one key leave ONE answer, and it is the newer one.
+
+        An arm records what a successor must bind at a point in time. If an earlier arm
+        survives a later change, the claim it decides is sent to a project the user has
+        already navigated away from -- the same stale-directory harm this guard exists to
+        prevent, arriving through the guard itself.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+        folded = mgr._fold_key("sess-super")
+
+        mgr.mark_retire_on_next_claim("sess-super", "/projects/beta")
+        first = boundary._retire_pending_cwd.get(folded)
+        assert first == self.BETA, "precondition: the first change armed beta"
+
+        # The agent switch commits a new project and resets directly. It records THAT
+        # directory with the bump, so the earlier beta entry is replaced, not merely aged.
+        mgr.note_project_change("sess-super", "/projects/gamma")
+
+        assert boundary._retire_pending_cwd.get(folded) == str(Path("/projects/gamma")), (
+            "an arm from an earlier change must not survive a newer one; retaining beta "
+            "would bind the next claim to the project the user left"
+        )
+        provider, _, _ = await mgr.get_or_create("sess-super", cwd="/projects/gamma")
+        assert provider.cwd == str(
+            Path("/projects/gamma")
+        ), f"the claim asked for gamma; got {provider.cwd!r}"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_recreated_slot_keeps_its_own_project(self, cfg):
+        """An arm from a closed slot must not decide a later slot's directory.
+
+        A project change arms the key, the tab closes, and a same-name slot is recreated
+        against a DIFFERENT project. What stops the dead slot's arm deciding that claim is
+        NOT the removal -- the arm must survive that, because a start still in flight has
+        nothing else to retry with. It is that selecting a project is itself a PRODUCER:
+        every live-slot project change records the directory it committed, so the recreated
+        slot's own pick replaces the arm. `test_live_slot_project_producers_bump_the_
+        generation` is what keeps that true of every producer.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        mgr.mark_retire_on_next_claim("sess-recreated", "/projects/beta")
+        await mgr.remove("sess-recreated")
+
+        # The recreated slot picks its project, which is a producer -- the path a real slot
+        # takes through the project endpoint or the workspace switch, never a bare claim.
+        mgr.note_project_change("sess-recreated", "/projects/gamma")
+        provider, _, _ = await mgr.get_or_create("sess-recreated", cwd="/projects/gamma")
+
+        assert provider.cwd == str(Path("/projects/gamma")), (
+            "the recreated slot asked for gamma, so serving beta would run its turn in "
+            f"the closed slot's project; got {provider.cwd!r}"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_temporary_removal_keeps_both_the_arm_and_the_generation(self, cfg):
+        """`remove` is cleanup, not the end of the slot: both survive it.
+
+        The arm names the directory a successor must bind, and it is ALSO the retry target
+        for a start this cleanup evicts -- which has nothing else to bind, since its own
+        frame carries the pre-change directory. A recreated slot is not misdirected by it,
+        because selecting a project is itself a producer and replaces the entry.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+        folded = mgr._fold_key("sess-drop")
+
+        await mgr.get_or_create("sess-drop", cwd="/projects/alpha")
+        mgr.release("sess-drop")
+        mgr.mark_retire_on_next_claim("sess-drop", "/projects/beta")
+        assert folded in boundary._retire_pending_cwd, "precondition: the key is armed"
+        armed_at = boundary._key_generation.get(folded)
+        assert armed_at is not None, "precondition: arming stamped a generation"
+
+        await mgr.remove("sess-drop")
+
+        assert boundary._retire_pending_cwd.get(folded) == self.BETA, (
+            "a transient removal must KEEP the arm: it is also the retry target a start "
+            "evicted after this cleanup has nothing else to bind"
+        )
+        assert (
+            boundary._key_generation.get(folded) == armed_at
+        ), "and the generation must survive too, or a start still in flight is served"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_destroying_a_key_outright_discards_its_arm(self, cfg):
+        """Permanent destruction retires the successor that would have paid the arm.
+
+        A destroyed key keeps no session and no history, so nothing remains that could
+        ever bind to the recorded directory and clear the entry. Left armed, the map
+        grows for the life of the process and a key later recreated on the same name is
+        refused by an arm no claim can satisfy.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+        folded = mgr._fold_key("sess-destroy")
+
+        await mgr.get_or_create("sess-destroy", cwd="/projects/alpha")
+        mgr.release("sess-destroy")
+        mgr.mark_retire_on_next_claim("sess-destroy", "/projects/beta")
+        assert folded in boundary._retire_pending_cwd, "precondition: the key is armed"
+
+        await mgr.destroy("sess-destroy")
+
+        assert (
+            folded not in boundary._retire_pending_cwd
+        ), "destroying a key must discard its arm -- no successor survives to pay it"
+        assert (
+            folded not in boundary._retire_pending_cwd
+        ), "the recorded directory must go with the arm, or the map grows forever"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_claim_gate_reads_the_providers_own_workspace_default(self, cfg):
+        """The gate must resolve the empty case through the provider's own rule.
+
+        Allocation compares a claim naming no directory against what a provider given no
+        directory binds to. Re-deriving that default here rather than reading the shared
+        one makes the comparison hold only while two modules stay textually in sync; a
+        drift silently cold-starts every project-less turn or wedges the slot.
+        """
+        from kiro_crew.acp.runtime import AcpRuntime
+        from kiro_crew.config.paths import default_workspace_dir, resolved_cwd
+
+        mgr = SessionManager(cfg, provider_factory=self._factory([]))
+        resolved = resolved_cwd("")
+
+        assert resolved == str(
+            default_workspace_dir()
+        ), "the gate must resolve an empty request to the SHARED workspace default"
+        assert resolved == str(
+            AcpRuntime(work_dir="")._work_dir
+        ), "and that default must be the one a provider handed no directory binds to"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_landed_teardown_discards_the_arm_it_satisfies(self, cfg):
+        """The arm is paid by the SUCCESSOR, not by the teardown that removed one session.
+
+        A landed reset removes the session in front of it, but other cold starts bound
+        to the old directory can still be in flight, so clearing the arm there would
+        leave them reusable. The arm is therefore retained past the teardown and paid at
+        the claim boundary instead, by a session provably bound to the requested
+        directory -- which still keeps the eager respawn from paying a cold start it
+        exists to hide.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+
+        mgr.mark_retire_on_next_claim("sess-sat", "/projects/gamma")
+        await mgr.get_or_create("sess-sat", cwd="/projects/beta")
+        mgr.release("sess-sat")
+
+        applied = await mgr.reset("sess-sat", skip_if_busy=True)
+        assert applied is True, "precondition: the teardown has to actually land"
+        assert "sess-sat" in boundary._retire_pending_cwd, (
+            "the teardown removed one session, but a cold start bound to the old "
+            "directory can still be in flight -- the arm must outlive it"
+        )
+
+        # The respawn's session must survive its first reuse claim.
+        await mgr.get_or_create("sess-sat", cwd="/projects/gamma")
+        mgr.release("sess-sat")
+        _, is_new, _ = await mgr.get_or_create("sess-sat", cwd="/projects/gamma")
+        assert is_new is False, "a stale arm must not cold-start a correctly-bound successor"
+        assert (
+            "sess-sat" not in boundary._retire_pending_cwd
+        ), "the successor bound to the requested directory pays the arm"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_session_is_not_reused_even_with_no_cwd_named(self, cfg):
+        """The pin must hold where the directory comparison structurally cannot.
+
+        This is the CLEARED-project hole. `cwd=slot.project or None` collapses "no
+        project" into `None`, and a caller naming no directory states no requirement,
+        so the mismatch test can never fire for a clear -- by construction, not by
+        oversight. The pin closes it because it does not consult the directory at
+        all: a session marked at deferral time is refused on the next claim however
+        that claim names its cwd.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-pinned", cwd="/projects/alpha")
+        mgr.release("sess-pinned")
+
+        live = mgr._sessions["sess-pinned"]
+        mgr.mark_retire_on_next_claim("sess-pinned", "/projects/beta")
+        assert (
+            live.retire_on_identity_change is True
+        ), "a registered session must carry the flag the validity check reads"
+
+        # Exactly the acquisition a turn makes after the project was CLEARED.
+        _, is_new, _ = await mgr.get_or_create("sess-pinned", cwd=None)
+        assert is_new is True, (
+            "a pinned session must not be reused when the caller names no cwd -- that "
+            "is the cleared-project case, where no directory requirement exists to "
+            "refuse the stale binding"
+        )
+        # An unknown key is armed too: the point is that a session need not exist yet.
+        mgr.mark_retire_on_next_claim("no-such-key", "/projects/beta")
+        assert "no-such-key" in mgr._allocation_boundary()._retire_pending_cwd
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_non_canonical_cwd_does_not_evict_its_own_binding(self, cfg):
+        """A consistent caller must never mismatch itself.
+
+        The binding is `str(Path(work_dir))`, so it has already lost a trailing
+        slash. Comparing a raw caller string against it makes "/p/a/" disagree with
+        its own binding "/p/a" and cold-start on EVERY turn -- silent, with no error,
+        and now on every reuse path rather than only the dashboard's realpath'd one.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-slash", cwd="/projects/alpha")
+        mgr.release("sess-slash")
+
+        _, is_new, _ = await mgr.get_or_create("sess-slash", cwd="/projects/alpha/")
+        assert is_new is False, (
+            "a trailing slash names the same directory, so it must reuse -- evicting "
+            "here churns a warm session on every turn with nothing reported"
+        )
+        assert len(seen) == 1, f"expected no respawn, providers spawned at: {seen}"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_non_canonical_BINDING_also_does_not_evict(self, cfg):
+        """Normalizing one side is not enough -- the asymmetry is the defect.
+
+        `bound_cwd` is whatever the provider reports. The ACP provider happens to
+        report `str(Path(...))`, but that is a property of one implementation, not a
+        guarantee of the attribute: any other provider, or one reporting a path it
+        was handed verbatim, states its binding un-normalized. Comparing a normalized
+        request against an un-normalized binding then mismatches on a difference that
+        names the same directory, and evicts a warm session every single turn.
+
+        Platform-independent instance of the failure that showed up as two Windows
+        reds, where `Path` also rewrites the separators and so made every reuse on
+        this path evict.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-bind", cwd="/projects/alpha")
+        mgr.release("sess-bind")
+
+        # The provider now states its binding in a non-canonical but equivalent form.
+        live = mgr._sessions["sess-bind"]
+        type(live.provider).cwd = property(lambda self: "/projects/alpha//")
+
+        _, is_new, _ = await mgr.get_or_create("sess-bind", cwd="/projects/alpha")
+        assert is_new is False, (
+            "an un-normalized BINDING names the same directory, so it must reuse -- "
+            "normalizing only the requested side leaves the comparison asymmetric and "
+            "evicts a warm session on every turn"
+        )
+        assert len(seen) == 1, f"expected no respawn, providers spawned at: {seen}"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_eviction_still_releases_the_permit(self, cfg):
+        """A wedged permit is worse than any window it closes.
+
+        The eviction awaits the registry lock, so a cancellation can land inside it.
+        Without a `finally`, the release is skipped and the permit is held forever --
+        every later turn on that key hangs, with no path back. Releasing is safe even
+        when the eviction was interrupted before popping, because the check is
+        IDEMPOTENT: the directory still does not match, so the next claim re-detects
+        it and evicts again.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-cancel", cwd="/projects/alpha")
+        mgr.release("sess-cancel")
+        live = mgr._sessions["sess-cancel"]
+        boundary = mgr._allocation_boundary()
+
+        async def _cancelled_evict(key, session):
+            raise asyncio.CancelledError
+
+        with patch.object(boundary, "_evict_stale_session", new=_cancelled_evict):
+            with pytest.raises(asyncio.CancelledError):
+                await boundary._reacquire_and_validate("sess-cancel", live, cwd="/projects/beta")
+
+        assert not live.semaphore.locked(), (
+            "a cancellation inside the eviction must NOT leave the permit held -- "
+            "that wedges the key for every later turn"
+        )
+        # Idempotent: the mismatch is still there, so the next claim evicts.
+        _, is_new, _ = await mgr.get_or_create("sess-cancel", cwd="/projects/beta")
+        assert is_new is True, "the next claim must re-detect the mismatch and evict"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_eviction_lands_before_the_permit_is_released(self, cfg):
+        """Releasing the permit first would hand a racing acquirer a doomed provider.
+
+        The validation runs with the permit held, so on a mismatch the session is
+        still registered. Releasing before the eviction leaves a registered session
+        with a FREE permit: another acquirer wins it, starts a command, and the
+        eviction then shuts that provider down underneath it. Popping while the
+        permit is held means the racing acquirer finds no entry and cold-starts, so
+        the provider is unreachable by the time it is torn down.
+
+        Only a moved directory can expose this window -- a session whose identity
+        already moved is no longer the registry occupant, and a dead process has
+        nothing usable to hand out.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-order", cwd="/projects/alpha")
+        mgr.release("sess-order")
+
+        observed: list = []
+        # Patched on the ALLOCATION BOUNDARY, not on the manager: the validation
+        # calls its own `self._evict_stale_session`, while the manager's method is a
+        # separate delegating wrapper the CALLER uses afterwards. Patching the
+        # wrapper would only ever observe that later call, which by design finds
+        # nothing left to do -- and would read as the fix being absent.
+        boundary = mgr._allocation_boundary()
+        real_evict = boundary._evict_stale_session
+
+        async def _spy(key, session):
+            observed.append(
+                {
+                    "permit_held": session.semaphore.locked(),
+                    "still_registered": boundary._sessions.get(key) is session,
+                }
+            )
+            return await real_evict(key, session)
+
+        with patch.object(boundary, "_evict_stale_session", new=_spy):
+            await mgr.get_or_create("sess-order", cwd="/projects/beta")
+
+        assert observed, "precondition: the eviction path must have been reached at all"
+        assert observed[0]["permit_held"] is True, (
+            "the eviction must run while the permit is still HELD; releasing first "
+            "lets another acquirer claim a provider this eviction then shuts down "
+            "mid-command"
+        )
+        assert observed[0]["still_registered"] is True, (
+            "and it must be the eviction that removes the registry entry, so the "
+            "pop and the release cannot be interleaved by a racing acquirer"
+        )
+        assert seen[0].shutdown.await_count == 1, "torn down exactly once"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_streaming_session_on_another_project_is_not_torn_down(self, cfg):
+        """The eviction must never land under a turn that is still streaming.
+
+        A deferred project change refuses precisely because a channel turn holds
+        this session, and that turn then reaches an acquisition for the NEW
+        directory. Evicting on the directory mismatch there would shut the provider
+        down underneath the reply being streamed -- moving the exact harm the
+        deferral prevents one layer down. The check therefore runs only with the
+        semaphore held, so a busy session is left alone until its turn ends.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-busy", cwd="/projects/alpha")
+        # NOT released: the semaphore stays held, which is what "a turn is
+        # streaming on this session" looks like to the registry.
+        live = mgr._sessions["sess-busy"]
+        assert live.semaphore.locked(), "precondition: the turn must hold the semaphore"
+
+        moved = asyncio.create_task(mgr.get_or_create("sess-busy", cwd="/projects/beta"))
+        await asyncio.sleep(0.05)
+
+        assert not moved.done(), (
+            "the acquisition for the new project must WAIT on the streaming turn, " "not evict it"
+        )
+        seen[0].shutdown.assert_not_awaited()
+        assert mgr._sessions.get("sess-busy") is live, (
+            "a session with a turn still streaming must not be removed from the "
+            "registry: the eviction would tear that reply down mid-stream"
+        )
+
+        moved.cancel()
+        try:
+            await moved
+        except asyncio.CancelledError:
+            pass
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_live_session_bound_to_another_project_is_not_reused(self, cfg):
+        """The alternative is silently running this turn's writes in the old project."""
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-cwd", cwd="/projects/alpha")
+        mgr.release("sess-cwd")
+
+        _, is_new, _ = await mgr.get_or_create("sess-cwd", cwd="/projects/beta")
+
+        assert is_new is True, (
+            "a session bound to /projects/alpha must not serve a turn that asked for "
+            "/projects/beta -- its relative writes would land in alpha"
+        )
+        assert seen[0].cwd == self.ALPHA, "precondition: the first bind was recorded"
+        seen[0].shutdown.assert_awaited_once()
+        assert seen[-1].cwd == self.BETA, "the replacement binds at the requested dir"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_same_project_still_reuses_the_live_session(self, cfg):
+        """The check must not churn the ordinary case, which is every other turn."""
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-cwd", cwd="/projects/alpha")
+        mgr.release("sess-cwd")
+
+        _, is_new, _ = await mgr.get_or_create("sess-cwd", cwd="/projects/alpha")
+
+        assert is_new is False, "an unchanged project must reuse, or every turn cold-starts"
+        seen[0].shutdown.assert_not_awaited()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_caller_naming_no_project_does_not_evict(self, cfg):
+        """No ``cwd`` states no requirement, so it cannot contradict a binding.
+
+        Most acquisitions pass none; reading that as a mismatch would tear down a
+        session that is serving its callers correctly.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-cwd", cwd="/projects/alpha")
+        mgr.release("sess-cwd")
+
+        _, is_new, _ = await mgr.get_or_create("sess-cwd")
+
+        assert is_new is False, "a caller expressing no directory must not evict"
+        seen[0].shutdown.assert_not_awaited()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_provider_with_no_readable_binding_is_not_evicted(self, cfg):
+        """An unreadable binding is not a disagreement.
+
+        A provider that does not track a real directory string reports nothing to
+        contradict the request, and evicting on that would churn every reuse
+        instead of protecting anything.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        await mgr.get_or_create("sess-cwd", cwd="/projects/alpha")
+        mgr.release("sess-cwd")
+        seen[0].cwd = None
+
+        _, is_new, _ = await mgr.get_or_create("sess-cwd", cwd="/projects/beta")
+
+        assert is_new is False, "an unreadable binding must not be read as a mismatch"
+        await mgr.close_all()
+
+    def test_the_real_acp_provider_reports_its_directory_through_public_cwd(self):
+        """The capability must land on the public property, not a private probe.
+
+        Reuse validation reads ``provider.cwd``. Without an override the ACP session
+        provider inherits the ABC's "" default, ``bound_cwd`` is falsy, and the directory
+        comparison is skipped for exactly those sessions -- the stale-cwd bug returns while
+        the suite stays green. Asserted against the REAL class rather than a mock, so
+        renaming either backing attribute fails here instead of silently disabling the
+        check. Which of the two wins is covered in ``test_acp_session_provider``.
+        """
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        assert "cwd" in vars(AcpSessionProvider), (
+            "AcpSessionProvider must OVERRIDE the public `cwd` property; inheriting "
+            "the LLMProvider default returns '' and skips cwd validation"
+        )
+
+        provider = object.__new__(AcpSessionProvider)
+        provider._runtime = SimpleNamespace(_work_dir=Path("/projects/alpha"))
+        # No per-session directory recorded: the single-session case, where the runtime's
+        # own directory IS this session's.
+        provider._handle = SimpleNamespace(_bound_cwd="")
+
+        assert provider.cwd == str(Path("/projects/alpha")), (
+            "the public cwd must report a real directory, so a rename of either backing "
+            "attribute breaks this test rather than degrading cwd to ''"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_replaced_claimant_does_not_consume_the_successors_arm(self, cfg):
+        """The arm belongs to the registered session, not to whoever claims first.
+
+        Two cold starts race a project change. The OLD claimant reaches this frame
+        holding a session the registry has already replaced. If it consumes the arm,
+        the SUCCESSOR -- the session the arm exists to invalidate -- is left reusable
+        and keeps serving turns bound to the old directory. Exercises two real
+        generations rather than mocking a counter, so it fails against the bug.
+        """
+        seen: list = []
+        mgr = SessionManager(cfg, provider_factory=self._factory(seen))
+        boundary = mgr._allocation_boundary()
+
+        await mgr.get_or_create("sess-gen", cwd="/projects/alpha")
+        mgr.release("sess-gen")
+        old_session = boundary._sessions["sess-gen"]
+
+        # Generation 2 registers, replacing generation 1 in the registry.
+        new_session = replace(old_session)
+        boundary._sessions["sess-gen"] = new_session
+
+        # The arm is raised for the key while generation 2 is the live entry.
+        mgr.mark_retire_on_next_claim("sess-gen", "/projects/alpha")
+        assert "sess-gen" in boundary._retire_pending_cwd
+
+        # The OLD claimant now reaches the claim boundary.
+        await boundary._reacquire_and_validate(
+            "sess-gen", old_session, cwd="/projects/alpha", wait_if_busy=True
+        )
+
+        assert "sess-gen" in boundary._retire_pending_cwd, (
+            "a claimant whose session was already replaced must NOT consume the arm; "
+            "spending it here leaves the successor reusable on the old directory"
+        )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_session_binding_its_directory_elsewhere_is_still_validated(self, cfg):
+        """An ACP-shaped provider's directory is still compared on reuse.
+
+        The ACP provider keeps its real directory in ``_work_dir`` and publishes it
+        through the ``cwd`` property the ABC defines. Reuse validation reads that
+        public capability, so a replan under a workspace override must not hand back
+        a session still bound to the OLD directory -- which would send the turn's
+        relative writes there.
+        """
+        seen: list = []
+
+        def acp_shaped(session_key=None, agent=None, channel_id=None, cwd=None, **kwargs):
+            m = AsyncMock()
+            m.start = AsyncMock()
+            m.shutdown = AsyncMock()
+            # Mirrors AcpSessionProvider: the directory lives in `_work_dir` and is
+            # published through the public `cwd` property that validation reads.
+            m._work_dir = Path(cwd) if cwd else None
+            m.cwd = str(m._work_dir) if cwd else ""
+            m.context_usage_pct = MagicMock(return_value=0.0)
+            m.is_alive = MagicMock(return_value=True)
+            m.is_process_alive = MagicMock(return_value=True)
+            m.has_active_turn = MagicMock(return_value=False)
+            m.runtime_info = MagicMock(return_value=(None, None))
+            seen.append(m)
+            return m
+
+        mgr = SessionManager(cfg, provider_factory=acp_shaped)
+        await mgr.get_or_create("sess-acp", cwd="/projects/alpha")
+        mgr.release("sess-acp")
+
+        _, is_new, _ = await mgr.get_or_create("sess-acp", cwd="/projects/beta")
+
+        assert is_new is True, "a session on /projects/alpha must not serve /projects/beta"
+        assert len(seen) == 2, f"expected a respawn on the new directory, spawned: {seen}"
+        assert seen[1]._work_dir == Path("/projects/beta"), "respawn binds the NEW directory"
+        assert seen[0].shutdown.await_count == 1, "the stale provider is torn down once"
         await mgr.close_all()
 
 

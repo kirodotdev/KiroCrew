@@ -23,6 +23,7 @@ from kiro_crew.config.loader import (
     refresh_materialized_agents,
     resolve_agent_bindings,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_state import (
     MAX_SIDE_QUEUE,
@@ -425,7 +426,7 @@ async def _run_side_turn(
             # name resolve_agent_bindings just returned. Mirrors
             # chat_runner._run_chat, which passes the same cwd for the same
             # reason.
-            cwd=slot.project or None,
+            cwd=slot.project or CWD_CLEARED,
         )
         acquired_key = side_key
         try:

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew.config.paths import resolved_cwd
 from kiro_crew.metrics.sessions import (
     END_REASON_EVICTED,
     discard_session_start,
@@ -126,6 +127,16 @@ class SessionRegistryState:
     subagent_runtime_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     continuable_keys: set[str] = field(default_factory=set)
     continuable_fallback: Callable[[str], bool] | None = None
+    # Keys whose next claim must NOT be served a reused session, armed when a
+    # teardown was refused. Keyed by string rather than by session object so it
+    # still covers a cold start that has not registered yet.
+    # The directory each armed key must end up bound to, already through `resolved_cwd`,
+    # so a cleared project is the concrete default-workspace path, never an empty string.
+    retire_pending_cwd: dict[str, str] = field(default_factory=dict)
+    # The agent an armed key's successor must run, for a change the DIRECTORY cannot
+    # express. Read only by the registration guard; see session.md.
+    retire_pending_agent: dict[str, str] = field(default_factory=dict)
+    key_generation: dict[str, int] = field(default_factory=dict)
 
 
 class _AllocationOwner(Protocol):
@@ -164,6 +175,7 @@ class _AllocationOwner(Protocol):
         session: Any,
         *,
         wait_if_busy: bool = True,
+        cwd: str | None = None,
     ) -> bool: ...
 
     async def _evict_stale_session(self, key: str, session: Any) -> None: ...
@@ -306,6 +318,27 @@ class SessionAllocationService:
         self.state.continuable_keys = value
 
     @property
+    def _retire_pending_cwd(self) -> dict[str, str]:
+        return self.state.retire_pending_cwd
+
+    @property
+    def _retire_pending_agent(self) -> dict[str, str]:
+        return self.state.retire_pending_agent
+
+    @property
+    def _key_generation(self) -> dict[str, int]:
+        """Monotonic per-key counter, bumped every time this key's project changes.
+
+        Staleness is an ORDERING question -- did this provider start before the change
+        it must honour -- and the directory a caller states cannot answer it: a cold
+        start begun before the change and a slot recreated under the same name after it
+        both state something other than the armed target. Comparing the generation the
+        provider started at against the current one separates them, so a recreated slot
+        keeps its own project instead of inheriting the previous slot's.
+        """
+        return self.state.key_generation
+
+    @property
     def _continuable_fallback(self) -> Callable[[str], bool] | None:
         return self.state.continuable_fallback
 
@@ -327,6 +360,93 @@ class SessionAllocationService:
 
     def has_session(self, key: str) -> bool:
         return self._owner._fold_key(key) in self._sessions
+
+    def spend_retire_arm(self, key: str) -> None:
+        """Drop *key*'s retirement arm, for a teardown that ENDS the slot generation.
+
+        Called only where the slot itself is gone -- ``destroy``, which deletes the
+        session-map entry. The arm names a directory a SUCCESSOR must bind, so once no
+        successor of that slot can arrive the only claim left to apply it to is a
+        different slot recreated under the same name, which would silently inherit the
+        previous project.
+
+        Cleanup that keeps the slot (``remove``, ``remove_if_unclaimed``) deliberately
+        calls nothing: the arm is still owed to a real claim, and it doubles as the retry
+        target for a start the cleanup evicts, whose own frame carries only the
+        pre-change directory.
+
+        The key's GENERATION is never dropped here. That counter is what refuses a start
+        still in flight, and a teardown it must survive is exactly the case where the arm
+        itself has to go.
+        """
+        folded = self._owner._fold_key(key)
+        self._retire_pending_cwd.pop(folded, None)
+        self._retire_pending_agent.pop(folded, None)
+
+    def discard_all_retire_arms(self) -> None:
+        """Drop every arm and generation, for a shutdown that retires all keys at once."""
+        self._retire_pending_cwd.clear()
+        self._retire_pending_agent.clear()
+        self._key_generation.clear()
+
+    def note_project_change(self, key: str, cwd: str) -> None:
+        """Record that this key's project moved TO ``cwd``, without arming a refusal.
+
+        Not every project change raises an arm: the agent and workspace switches commit a
+        new project and tear the session down directly. The generation bump alone is not
+        enough, because a start already in flight is then evicted and RETRIED -- and the
+        retry re-reads the cwd its own frame was called with, which is the pre-switch one.
+        So the committed directory is recorded with the generation and becomes what the
+        retry binds. Without it a generation-only switch evicts a provider and replaces it
+        with another bound to the project the user just left.
+
+        Distinct from ``mark_retire_on_next_claim`` only in not flagging a REGISTERED
+        session for retirement: these callers tear their session down themselves.
+        """
+        folded = self._owner._fold_key(key)
+        generation = self._key_generation.get(folded, 0) + 1
+        self._key_generation[folded] = generation
+        self._retire_pending_cwd[folded] = resolved_cwd(cwd)
+
+    def mark_retire_on_next_claim(self, key: str, cwd: str, *, agent: str | None = None) -> None:
+        """Mark this key's session invalid for reuse without touching a running turn.
+
+        For a teardown that had to be REFUSED. The refusal keeps a streaming reply
+        alive, but the reason for the teardown does not go away, so the next claim
+        must not be handed that session either.
+
+        Records the KEY, not just the object, because "no session registered" is NOT
+        the same as "nothing to protect against": a cold start holds no registry entry
+        until it finishes, so a probe during that window sees nothing while a provider
+        bound to the pre-change directory is already on its way. Pinning only a
+        registered object would miss exactly that case. `_reacquire_and_validate`
+        consumes the key, so a session that registers AFTER this call is refused on
+        its next claim just the same.
+
+        What this can and cannot promise: a turn already streaming keeps its provider
+        (that is what the refusal is FOR, and tearing it down mid-reply is the harm
+        `skip_if_busy` exists to prevent), so the guarantee is that no LATER turn is
+        served the stale session -- not that an in-flight one is retro-corrected.
+
+        `retire_on_identity_change` is the flag `session_lifecycle` already sets when
+        its own teardown finds the session locked, so the registered case reuses that
+        path rather than adding a second one.
+
+        Returns nothing: whether a session happened to be registered is not a decision
+        any caller makes -- the arm covers both shapes, which is the whole point -- so
+        reporting it would be a value with no reader.
+        """
+        folded = self._owner._fold_key(key)
+        # Stamped with the generation it belongs to, so a LATER change to the same key
+        # supersedes it rather than leaving two live answers to the same question.
+        generation = self._key_generation.get(folded, 0) + 1
+        self._key_generation[folded] = generation
+        self._retire_pending_cwd[folded] = resolved_cwd(cwd)
+        if agent is not None:
+            self._retire_pending_agent[folded] = agent or "kirocrew"
+        session = self._sessions.get(folded)
+        if session is not None:
+            session.retire_on_identity_change = True
 
     def get_provider(self, key: str) -> LLMProvider | None:
         session = self._sessions.get(self._owner._fold_key(key))
@@ -488,26 +608,145 @@ class SessionAllocationService:
         session: Any,
         *,
         wait_if_busy: bool = True,
+        cwd: str | None = None,
     ) -> bool:
-        """Acquire with the global lock released, then validate exact identity."""
+        """Acquire with the global lock released, then validate exact identity.
+
+        ``cwd`` also validates the session's BOUND directory. It is applied when a
+        provider is CREATED and never re-applied, so a live session whose project has
+        since changed would otherwise be handed back bound to the OLD directory and
+        the turn's relative writes would land there.
+
+        Checked HERE rather than at the reuse decision because this runs with the
+        semaphore HELD: any turn that was streaming on this provider has finished, so
+        returning False -- which sends the caller through ``_evict_stale_session`` --
+        cannot tear a live reply down mid-stream. The reuse decision runs before the
+        semaphore is claimed, where that guarantee does not hold.
+
+        Validating it here also covers every reuse path in this class rather than only
+        the callers that remember to ask: all four claims -- both in ``get_or_create``
+        and both in ``open_task_session`` -- pass their own ``cwd`` through this one
+        helper. A caller that passes none states no requirement and cannot mismatch.
+
+        Guarded on BOTH being set, mirroring the pool gate's own comparison: a caller
+        passing no ``cwd`` states no requirement and must not evict a session serving
+        others correctly. The isinstance check is that rule applied to the other side
+        -- a provider tracking no real directory string reports no binding to
+        disagree with, and evicting on an unreadable one would churn every reuse
+        rather than protect anything.
+        """
         if not wait_if_busy and session.semaphore.locked():
             raise SessionBusyError(key)
         # An idle Semaphore(1) acquires without suspension, so this is the
         # authoritative non-waiting claim boundary after the locked check.
         await session.semaphore.acquire()
+        cwd_moved = False
         try:
             async with self._lock:
+                raw_bound = getattr(session.provider, "cwd", None)
+                # A provider tracking no real directory STRING reports nothing to
+                # disagree with, which is not the same as reporting no directory.
+                # The ABC default is "", while a provider bound to the default
+                # workspace reports that concrete path -- so "" is the no-binding shape.
+                bound_readable = isinstance(raw_bound, str) and raw_bound != ""
+                # Normalize BOTH sides through the same constructor. Normalizing only
+                # the requested side makes the result depend on which side happens to
+                # have been through `Path` already: a provider reporting a raw string
+                # disagrees with a caller's normalized one, and on Windows `Path`
+                # rewrites the separators too, so `/p/a` and `\p\a` compare unequal
+                # and EVERY reuse evicts. Symmetric normalization also absorbs the
+                # difference this check was added for -- a trailing slash or doubled
+                # separator on either side -- so a caller naming a stable directory
+                # cannot churn a warm session, silently and with no error, on any
+                # platform. Deliberately NOT realpath: that is a filesystem call, and
+                # this runs under the registry lock.
+                bound_cwd = (
+                    resolved_cwd(raw_bound) if isinstance(raw_bound, str) and raw_bound else ""
+                )
+                requested_cwd = resolved_cwd(cwd) if cwd is not None else ""
+                # `None` states no requirement; `""` states "the default workspace",
+                # which is what a provider given no directory actually binds to.
+                cwd_stated = cwd is not None
+                cwd_moved = cwd_stated and bound_readable and requested_cwd != bound_cwd
+                armed_target = self._retire_pending_cwd.get(key)
+                armed_agent = self._retire_pending_agent.get(key)
+                retire_armed = armed_target is not None or armed_agent is not None
+                # Only the REGISTERED session interacts with the arm: a claimant holding a
+                # session already replaced would otherwise spend it for the successor.
+                is_registered = self._sessions.get(key) is session
+                cwd_satisfied = (
+                    is_registered
+                    and bound_readable
+                    and (
+                        (
+                            cwd_stated
+                            and requested_cwd == bound_cwd
+                            and (armed_target is None or bound_cwd == armed_target)
+                        )
+                        # A cwd-LESS claim cannot state agreement, so its BINDING has to
+                        # settle it -- channel turns are exactly this shape.
+                        or (
+                            not cwd_stated
+                            and armed_target is not None
+                            and bound_cwd == armed_target
+                        )
+                    )
+                )
+                # A SEPARATE question from the directory, so it needs its own answer: a
+                # project-scope switch keeps the directory. See session.md.
+                agent_satisfied = (
+                    armed_agent is None or (session.agent or "kirocrew") == armed_agent
+                )
+                retire_applies = retire_armed and not (cwd_satisfied and agent_satisfied)
+                if retire_applies:
+                    # This frame can refuse WITHOUT evicting, so a claim racing the
+                    # registration would find the arm gone and reuse the stale provider.
+                    session.retire_on_identity_change = True
+                if cwd_satisfied:
+                    self._retire_pending_cwd.pop(key, None)
+                if agent_satisfied:
+                    self._retire_pending_agent.pop(key, None)
                 still_valid = (
                     self._sessions.get(key) is session
                     and not session.retire_on_identity_change
+                    and not retire_applies
                     and self._deps.provider_effectively_alive(session.provider)
+                    and not cwd_moved
                 )
         except BaseException:
             # The held-semaphore contract was never returned to the caller.
             session.semaphore.release()
             raise
         if not still_valid:
-            session.semaphore.release()
+            try:
+                if cwd_moved:
+                    # Tear down BEFORE the permit is released, and ONLY for a moved
+                    # directory. Releasing first leaves the session still registered
+                    # with a FREE permit, so another acquirer can win it and be
+                    # mid-command when the eviction shuts its provider down. Only this
+                    # reason exposes that window: it is the one invalidity that fires
+                    # on a LIVE, registered, otherwise-usable provider, whereas a
+                    # session whose identity already moved is no longer the registry
+                    # occupant and a dead process has nothing to hand out. Popping
+                    # under the permit means a racing acquirer finds no entry and
+                    # cold-starts instead.
+                    #
+                    # Scoped rather than unconditional because the other reasons have
+                    # callers that deliberately do NOT evict -- `recycle_background`
+                    # returns and leaves the entry in place, since tearing it down
+                    # there would kill a session another path already owns.
+                    await self._evict_stale_session(key, session)
+            finally:
+                # In a `finally` so a cancellation while the eviction awaits the
+                # registry lock cannot leave this permit held: that would wedge the
+                # key for every later turn, which is worse than any window it closes.
+                # Safe to release even if the eviction was interrupted before popping,
+                # because the check is IDEMPOTENT -- the directory still does not
+                # match, so the next claim re-detects it and evicts again. NOT
+                # `asyncio.shield`: shielding would let the eviction keep running
+                # while this frame released, which is exactly the release-before-pop
+                # ordering the branch above exists to prevent.
+                session.semaphore.release()
         return still_valid
 
     async def _evict_stale_session(self, key: str, session: Any) -> None:
@@ -517,6 +756,11 @@ class SessionAllocationService:
             if self._sessions.get(key) is session:
                 del self._sessions[key]
                 dead = session.provider
+                # A session the arm ITSELF refused must not spend it: another cold start
+                # begun before the change may be in flight and would register unguarded.
+                if not getattr(session, "retire_on_identity_change", False):
+                    self._retire_pending_cwd.pop(key, None)
+                    self._retire_pending_agent.pop(key, None)
                 # Same tick as the removal. Left unrecorded, the start crumb
                 # survives and the next boot calls this a crash.
                 await record_session_ended(key, end_reason=END_REASON_EVICTED)
@@ -558,7 +802,7 @@ class SessionAllocationService:
                 if approval_policy:
                     existing.approval_policy = approval_policy
         if existing is not None:
-            if await owner._reacquire_and_validate(key, existing):
+            if await owner._reacquire_and_validate(key, existing, cwd=cwd):
                 return existing.provider, False, False
             await owner._evict_stale_session(key, existing)
 
@@ -615,7 +859,7 @@ class SessionAllocationService:
                     "open_task_session: duplicate session teardown failed",
                     exc_info=True,
                 )
-            if await owner._reacquire_and_validate(key, session):
+            if await owner._reacquire_and_validate(key, session, cwd=cwd):
                 return session.provider, False, False
             await owner._evict_stale_session(key, session)
             maximum = self._deps.constants.won_race_max_retries
@@ -1109,6 +1353,9 @@ class SessionAllocationService:
         owner = self._owner
         constants = self._deps.constants
         key = owner._fold_key(key)
+        # Snapshotted before the FIRST await, not before the factory call: everything
+        # between is part of this start, and a change landing in there must outrank it.
+        started_generation = self._key_generation.get(key, 0)
         stale_provider: LLMProvider | None = None
         stale_session: Any | None = None
         claimed: Any | None = None
@@ -1125,6 +1372,14 @@ class SessionAllocationService:
                 recycling = existing is not None and owner._recycling.get(key) is existing
                 if existing is not None and not recycling:
                     session = existing
+                    # The cwd match is NOT checked here. This runs under the registry
+                    # lock but BEFORE the session semaphore is claimed, so a turn can
+                    # be streaming on this provider right now -- evicting and shutting
+                    # it down from here would tear a live reply down mid-stream, which
+                    # is the very harm the deferred reset above exists to prevent.
+                    # ``_reacquire_and_validate`` checks it instead: that runs with the
+                    # semaphore HELD, so any turn that was streaming has finished and
+                    # the eviction cannot land under one. See its own comment.
                     alive = session.provider.is_process_alive()
                     if not alive:
                         if (
@@ -1188,6 +1443,7 @@ class SessionAllocationService:
                 key,
                 session,
                 wait_if_busy=wait_if_busy,
+                cwd=cwd,
             ):
                 first_turn = session.first_turn
                 if not speculative:
@@ -1359,7 +1615,9 @@ class SessionAllocationService:
                 raise
         else:
             effective_cwd = cwd
-            if not effective_cwd and resume_sid:
+            # `is None` and not falsy: an explicit `""` is a CLEARED project, and
+            # restoring the persisted directory over it re-binds the old one forever.
+            if effective_cwd is None and resume_sid:
                 stored_cwd = owner._session_map.get_cwd(key)
                 if stored_cwd and Path(stored_cwd).is_dir():
                     effective_cwd = stored_cwd
@@ -1418,6 +1676,7 @@ class SessionAllocationService:
             self._starting_pids.add(starting_pid)
 
         won_race_session: Any | None = None
+        stale_generation = False
         duplicate_provider: LLMProvider | None = None
         try:
             resumed = False
@@ -1488,6 +1747,17 @@ class SessionAllocationService:
                     )
 
                     provider_cwd = provider.cwd
+                    armed_cwd = self._retire_pending_cwd.get(key)
+                    armed_agent = self._retire_pending_agent.get(key)
+                    if (
+                        started_generation < self._key_generation.get(key, 0)
+                        or (armed_cwd is not None and armed_cwd != resolved_cwd(provider_cwd))
+                        or (armed_agent is not None and (agent or "kirocrew") != armed_agent)
+                    ):
+                        # Started before the change, bound where the arm contradicts, or
+                        # running a switched-away agent -- see session.md for why all three.
+                        stale_generation = True
+                        session.retire_on_identity_change = True
                     if not is_stateless and self._deps.is_acp_provider(provider):
                         sid = cast(Any, provider).client._session_id
                         provider_label = self._deps.provider_label(provider)
@@ -1523,6 +1793,46 @@ class SessionAllocationService:
             if starting_pid is not None:
                 self._starting_pids.discard(starting_pid)
 
+        if stale_generation:
+            # This frame already holds the new session's semaphore, so the won-race
+            # branch below cannot serve it: that path re-acquires and would self-block.
+            try:
+                await owner._evict_stale_session(key, session)
+            finally:
+                # The eviction AWAITS the registry lock, so a cancellation there would
+                # leave this session registered holding a permit nothing ever releases.
+                session.semaphore.release()
+            maximum = constants.won_race_max_retries
+            if _won_race_retries >= maximum:
+                raise RuntimeError(
+                    f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
+                    "a cold start kept starting before the project change it must honour"
+                )
+            return await owner.get_or_create(
+                key,
+                # Re-pointed at the arm like `cwd` below: the retry must be able to
+                # SATISFY what refused it, or the budget runs out and the slot wedges.
+                agent=(
+                    retry_agent
+                    if (retry_agent := self._retire_pending_agent.get(key)) is not None
+                    else agent
+                ),
+                channel_id=channel_id,
+                approval_policy=approval_policy,
+                model=model,
+                cwd=(
+                    retry_arm
+                    if (retry_arm := self._retire_pending_cwd.get(key)) is not None
+                    else cwd
+                ),
+                extra_env=extra_env,
+                speculative=speculative,
+                speculative_resume=speculative_resume,
+                wait_if_busy=wait_if_busy,
+                _won_race_retries=_won_race_retries + 1,
+                **extra_factory_kwargs,
+            )
+
         if won_race_session is not None:
             if duplicate_provider is not None:
                 try:
@@ -1537,6 +1847,7 @@ class SessionAllocationService:
                 key,
                 won_race_session,
                 wait_if_busy=wait_if_busy,
+                cwd=cwd,
             ):
                 first_turn = won_race_session.first_turn
                 if not speculative:
@@ -1552,13 +1863,17 @@ class SessionAllocationService:
                     f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
                     "session kept going stale between acquire and re-validate"
                 )
+            # The armed directory outranks the cwd this frame was called with: that one
+            # was read before the change, so reusing it would re-lose the same race.
+            live_arm = self._retire_pending_cwd.get(key)
+            retry_cwd = live_arm if live_arm is not None else cwd
             return await owner.get_or_create(
                 key,
                 agent=agent,
                 channel_id=channel_id,
                 approval_policy=approval_policy,
                 model=model,
-                cwd=cwd,
+                cwd=retry_cwd,
                 extra_env=extra_env,
                 speculative=speculative,
                 speculative_resume=speculative_resume,

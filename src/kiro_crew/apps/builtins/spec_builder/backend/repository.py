@@ -19,7 +19,7 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, default_workspace_dir
 from kiro_crew.platform_compat import RENAME_NOREPLACE_AVAILABLE, rename_noreplace
 
 from .parsers import (
@@ -74,7 +74,7 @@ _SETTINGS_PATH: Path | None = None
 
 def _state_dir() -> Path:
     """Where this app keeps its own state. Resolved per call, never cached."""
-    return _STATE_DIR if _STATE_DIR is not None else config_dir() / "workspace" / APP_NAME
+    return _STATE_DIR if _STATE_DIR is not None else default_workspace_dir() / APP_NAME
 
 
 def _index_path() -> Path:

@@ -495,10 +495,14 @@ class AcpSessionHandle:
         runtime: AcpRuntimeProtocol,
         watchdog: WatchdogSettings | None = None,
         crew_agent: str = "",
+        bound_cwd: str = "",
     ) -> None:
         self._session_id = session_id
         self._queue = queue
         self._runtime = runtime
+        # The directory THIS session was opened against, which on a shared runtime is
+        # not the runtime's own: sessions for different projects live on one process.
+        self._bound_cwd = bound_cwd
         # When True, destroy() skips the transcript unlink (subagent
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False

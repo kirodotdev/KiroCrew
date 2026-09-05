@@ -294,13 +294,142 @@ send time.
   semaphore may be held for a full turn, so it is ALWAYS acquired with the
   global `self._lock` RELEASED (pinning the lock across that wait would freeze
   session creation for every key and reintroduce a lock-ordering deadlock).
-  Because a session can be recycled/removed or its backing process can die
-  while a caller waits on the semaphore, every reuse path re-checks identity +
-  liveness AFTER acquiring it, through the single shared helper
-  `_reacquire_and_validate(key, sess)`. Its contract: it returns `True` with
+  Because a session can be recycled/removed, its backing process can die, or its
+  project directory can change while a caller waits on the semaphore, every reuse
+  path re-checks identity + liveness + BOUND CWD AFTER acquiring it, through the
+  single shared helper
+  `_reacquire_and_validate(key, sess, *, cwd=None)`. Its contract: it returns `True` with
   the semaphore **still held** (caller MUST `release`), or `False` having
   **already released** it (session went stale — caller evicts via
-  `_evict_stale_session` and cold-starts). Cancellation while parked on
+  `_evict_stale_session` and cold-starts). The cwd dimension is validated HERE and
+  not at the reuse decision, because that decision runs before the semaphore is
+  claimed and evicting there could tear down a turn still streaming. Both sides of
+  that comparison are normalized through `str(Path(...))` — the request AND the
+  provider's reported binding — so the result cannot depend on which side happened to
+  be canonicalised already, and a caller naming a stable directory (trailing slash,
+  doubled separator, or a platform whose `Path` rewrites the separators) cannot churn
+  a warm session every turn. A caller
+  passing no `cwd` states no requirement, so it cannot trigger a mismatch — which is
+  why a teardown that has to be REFUSED additionally ARMS THE KEY via
+  `mark_retire_on_next_claim`: a cleared project cannot be expressed as a cwd
+  requirement, so the arm, not the directory, is what stops the next claim being handed
+  the stale binding. The arm is keyed by STRING rather than by session object because a
+  cold start holds no registry entry until it finishes, so "nothing registered" can mean
+  a provider bound to the pre-change directory is already on its way; the key is
+  consumed as it is read, costing one cold start rather than refusing that key forever.
+
+  Alongside the arm, each key carries a MONOTONIC GENERATION (`key_generation`),
+  bumped by every project change — whether it arms (`mark_retire_on_next_claim`) or
+  not (`note_project_change`, which the agent- and workspace-switch handlers call
+  because they commit a new project and tear the session down directly, recording the
+  directory they committed so an evicted start's RETRY binds that rather than the one its
+  own frame carried). A cold start
+  snapshots the generation before its first `await` and is refused at registration if
+  the key has moved past it. This exists because the DIRECTORY a claim states cannot
+  order two claims: a start begun before the change and a slot recreated under the same
+  name after it both name something other than the armed target, so only the generation
+  separates them. Supersession of the arm ITSELF is a different and simpler mechanism: both
+  producers write the arm and bump the generation in one statement block, so a later change
+  to the same key OVERWRITES the earlier arm in the map and there is no stale entry for a
+  stamp comparison to find. An earlier version carried a per-arm generation stamp and a
+  `_live_arm` reader that dropped superseded entries; that branch was unreachable by
+  construction and has been removed, so nothing here reads a stamp.
+
+  The spend/keep matrix is asymmetric and deliberate, and it follows from what each
+  teardown does to the SESSION MAP rather than from a per-path preference. The arm names
+  a directory a SUCCESSOR must bind, so it may only be dropped where no successor of that
+  slot can arrive. A refused reset never spends the arm (the reason for the teardown has
+  not gone away); a landed reset does not either (the arm is keyed on the target
+  directory, so the eager respawn is reused rather than torn down). `destroy` DELETES the
+  session-map entry and `close_all` ends the process, so both spend it — the only claim
+  left for it to apply to would be a different slot recreated under the same name, which
+  would silently inherit the previous project. `remove` and `remove_if_unclaimed` PRESERVE
+  that entry, so they spend nothing: the arm is still owed to a real claim, and it doubles
+  as the retry target for a start the cleanup evicts, whose own frame carries only the
+  pre-change directory. Keeping it there is safe because a recreated slot's own project
+  selection is itself a producer and OVERWRITES the arm before any claim reads it.
+
+  One allocation-layer primitive spends it, `spend_retire_arm(key)`, called only from
+  `destroy`. The keep-side paths deliberately call nothing: keeping the arm IS the absence
+  of a call, so a no-op primitive existing to be countable by a census would be dead
+  weight. What ratchets a NEW teardown path onto one side is
+  `test_only_slot_ending_teardowns_spend_the_retirement_arm`, which asserts the keep-side
+  as an absence. The key's GENERATION survives every teardown here, which is what still
+  refuses a start already in flight.
+
+  Two properties of the arm's LIFECYCLE are load-bearing and neither is local to the
+  allocation layer, so both are recorded here rather than as comments at their sites.
+
+  It is raised by the PRODUCER, synchronously. A project change defers the RESET — the
+  endpoint is reachable over loopback HTTP from inside the kiro-cli process group, so an
+  inline teardown would `killpg` the caller — but deferring the ARM as well would leave a
+  window: the consumer runs behind the eager task's 1.5s debounce, and a channel turn
+  arriving inside it states no directory, so the claim-time cwd check cannot fire and the
+  arm is the only thing that would refuse the pre-change session. Arming is in-memory
+  bookkeeping and carries none of the `killpg` risk that forced the reset to be deferred,
+  so the two are deferred separately: the reset waits, the arm does not.
+
+  It is satisfied by a BINDING, not only by a stated directory. A claim that names no cwd
+  cannot state agreement with the armed target, and channel turns are exactly that shape —
+  the messaging dispatch builds its `get_or_create` kwargs with `model` and nothing else.
+  Gating satisfaction on a stated cwd therefore left the arm permanently unsatisfiable for
+  that consumer: every channel turn read as retire-applies, evicted, and cold-started, so
+  the change cost a cold start on EVERY turn instead of the single one it is supposed to
+  cost. A registered session already bound to exactly the armed directory is the successor
+  the arm was waiting for, whether or not the claimant restated that directory.
+
+  Which makes the two producers NOT interchangeable, and this is the sharp edge. Both
+  record the committed directory and bump the generation; `mark_retire_on_next_claim` also
+  flags the REGISTERED session via `retire_on_identity_change`. Because satisfaction is a
+  directory test, a change that moves the DIRECTORY is fully expressed by the arm alone —
+  that is `note_project_change`. A change of IDENTITY is not: an agent switch on a
+  project-scope agent keeps `slot.project`, so the arm names the directory the live session
+  is already bound to, a cwd-less channel claim reads it as satisfied, and the
+  switched-away agent serves the next turn. The identity flag is the only part of that a
+  matching directory cannot express, and it survives the busy-deferred reset that leaves
+  the old session alive. So: directory moved → `note_project_change`; session must be
+  replaced whatever its directory → `mark_retire_on_next_claim`.
+
+  Flagging the registered session is not sufficient on its own, because a COLD START has no
+  registered object to flag. Consider a channel turn that resolves its agent, then the
+  switch lands, and only then does the turn reach `get_or_create`: its generation snapshot
+  is taken AFTER the bump so the ordering test reads clean, and a project-scope switch left
+  the directory alone so the arm's directory test reads clean too — yet the session about to
+  register runs the agent the switch replaced. Nothing self-corrects, because the next
+  satisfied claim spends the arm. So an identity arm also records the DESIRED AGENT
+  (`retire_pending_agent`), and registration is refused when the registering session's agent
+  is not it.
+
+  Refusing is only half of it: a refusal has to leave the retry able to SATISFY it. The
+  retry already re-points `cwd` at the arm for exactly this reason, and the agent is
+  re-pointed the same way — a turn carrying the switched-away agent replayed unchanged is
+  refused identically every time, so without the re-point the won-race budget runs out and
+  the slot wedges. That failure is not hypothetical: it is what the first version of this
+  guard did, caught by `test_a_post_switch_cold_start_cannot_register_the_old_agent`.
+
+  Two constraints on the identity arm follow from that, and both were defects first.
+
+  It must be stated in the namespace the REGISTRATION reads. A claim's agent is
+  `kiro_agent or slot.agent` — an alias's resolved TARGET, preferred over the alias name —
+  so arming with the name the user picked never matches for any alias whose target differs.
+  The consequence is not a missed refusal but an inverted one: the correctly-resolved cold
+  start is refused, and the retry re-points to the armed alias name, running the wrong
+  identity. The handler therefore arms with `bindings.kiro_agent or agent_name`, degrading
+  to the alias exactly where the claim also degrades to `slot.agent`.
+
+  And it must be satisfied SEPARATELY from the directory. `cwd_satisfied` is a directory
+  test, and a project-scope switch keeps the directory, so letting a cwd match spend the
+  identity arm defeats the mechanism on its own intended consumer path — the claim reuses a
+  session still running the switched-away agent and the arm is gone. Each arm is answered by
+  its own predicate, the session is retired unless BOTH are satisfied, and each is spent only
+  by its own answer.
+  `key_generation` is cleared only by `close_all`, so on a long-lived gateway it grows
+  with the number of keys that ever saw a project change — bounded by project-change
+  count, and accepted rather than reclaimed.
+  On
+  `False` the helper evicts BEFORE releasing the permit: releasing first would
+  leave the session registered with a free permit, letting another acquirer win a
+  provider that the eviction then shuts down mid-command. Cancellation while parked on
   `self._lock` after the acquire releases the semaphore before propagating, so
   the key never stays permanently locked. Liveness uses
   `_provider_effectively_alive` (a dead Claude-Code `per_session` process
