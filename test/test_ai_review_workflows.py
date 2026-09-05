@@ -5246,9 +5246,7 @@ class TestGptRefusalTerminalState:
         # to remove.
         assert "re-run the workflow or inspect" not in proc.stdout
 
-    def test_completed_verdict_quoting_the_marker_is_not_reclassified(
-        self, tmp_path: Path
-    ) -> None:
+    def test_completed_verdict_quoting_the_marker_is_not_reclassified(self, tmp_path: Path) -> None:
         # On the clean path codex-review-output.md is verbatim model prose. A
         # review that QUOTES the refusal marker — say, while reviewing this
         # workflow — must not flip a completed verdict into a refusal: the
