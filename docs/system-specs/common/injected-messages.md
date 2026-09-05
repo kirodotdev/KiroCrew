@@ -346,6 +346,39 @@ next turn into the same slot:
 - Loops persist to `autonudge.json` under the data home and are re-armed on gateway
   restart. A slot that is unreachable (no history, deleted, or closed) has its loop
   removed.
+- **A loop stranded with no live timer is rescued by a periodic reconciler.** A
+  dashboard-bound loop's only re-arm path after a delivered fire is the slot's
+  `HOOK_EVENT_STOP`; if that never arrives (the nudge turn errors, times out, or is
+  cancelled on a hook-skipping path) or a deferred re-arm is dropped mid-fire, the
+  loop stays persisted `active` with a finished-or-absent timer and nothing on a
+  timer revives it. A finished timer task counts as "no live timer": nothing pops a
+  timer from the registry when it completes, so that is the shape the strandings
+  actually leave behind. The rescue requires **two consecutive** eligible passes,
+  because one observation cannot tell a stranded loop from a slot whose user turn is
+  still running or a loop inside another coroutine's mutation window; a user turn
+  starting clears the loop's candidacy, so any sign of life restarts the clock. A
+  pass that finds the service lock held defers entirely rather than arm a
+  mid-rollback shape. Re-arming targets the loop's **own persisted deadline**, so a
+  rescue never fires earlier than the schedule the user set. Deliberately skipped
+  whatever the passes observe: a loop mid-fire, one quiesced by administrative
+  cleanup, a monitor record whose version this gateway does not implement, and an
+  in-flight wake claim with no completion-evidence deadline — except a `BUSY` retry,
+  the one no-deadline shape that is legitimately live. An **inactive** loop still
+  awaiting terminal-completion evidence is deliberately **included**: its accepted-turn
+  correlation needs a timer to expire, and stranding it would refuse every replacement
+  watch on the slot forever.
+- **Delivered fires and reconciler rescues are both logged at INFO.** Fires were
+  otherwise unlogged, so a loop that had died and one with nothing to report were
+  byte-identical in the journal. One line per delivered turn — each of which already
+  spends a model turn — is what makes loop health observable from outside the process.
+- **The observation gate fails toward SPENDING.** An exception escaping the
+  pre-fire probe gate is treated as "not quiet" and the tick **fires**, matching the
+  service-wide invariant that every uncertain path resolves toward spending. Letting
+  it escape instead killed the timer task while the registry still held a strong
+  reference, so no "task exception was never retrieved" warning was ever emitted and
+  the loop went silent. Skipping the tick is the other wrong answer: a gate that
+  raises deterministically would keep the loop alive, re-arming and delivering
+  nothing forever — the silent mute the gate exists to prevent.
 - Structured monitor action accounting is a separate internal completion
   callback, not a new injected-message envelope. Until the probe dispatcher is
   attached, structured records remain fail-closed. The dormant adapters do not
