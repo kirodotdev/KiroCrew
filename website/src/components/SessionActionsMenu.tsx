@@ -1,10 +1,11 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop } from 'lucide-react'
+import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, ArrowRightLeft } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import SessionColorSwatches from './SessionColorSwatches'
+import MoveToCrewDialog from './MoveToCrewDialog'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
@@ -93,6 +94,9 @@ export default function SessionActionsMenu({
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
   const { toggleRead, togglePin, toggleMode, copyLink, move, reload, close } = useSessionActions(mode)
+  // Crew-to-crew work migration (issue #7577): the plan dialog is owned here
+  // because this menu is already "connected" — slotKey is all the endpoint needs.
+  const [movingToCrew, setMovingToCrew] = React.useState(false)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -179,6 +183,16 @@ export default function SessionActionsMenu({
           <PanelTop size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.open_in_new_tab')}
         </Item>
       ),
+      // Crew-to-crew migration (#7577). Internalised rather than bubbled: this
+      // menu is already "connected" (it reaches the store keyed on slotKey), and
+      // slotKey is everything the plan endpoint needs — so every surface that
+      // renders this menu gets the action without threading a prop through the
+      // memoised session row.
+      (
+        <Item key="move-to-crew" onSelect={() => setMovingToCrew(true)}>
+          <ArrowRightLeft size={13} className="shrink-0 text-muted" /> {i18nT('components.moveToCrew.menu_label')}
+        </Item>
+      ),
       // Pop out to a dedicated browser window — or, if already out, focus /
       // bring it back. Lets you keep typing to one session while looking at an
       // artifact or another view in the main window. Inside the popout window
@@ -259,6 +273,14 @@ export default function SessionActionsMenu({
           {group}
         </React.Fragment>
       ))}
+      {movingToCrew && (
+        <MoveToCrewDialog
+          unitKind="session"
+          unitId={slotKey}
+          onPlan={toCrew => api.planSessionMove(slotKey, toCrew)}
+          onClose={() => setMovingToCrew(false)}
+        />
+      )}
     </>
   )
 }

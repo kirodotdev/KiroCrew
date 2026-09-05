@@ -1402,6 +1402,56 @@ Examples:
     cron_trigger = cron_sub.add_parser("trigger", help="Trigger a cron job immediately")
     cron_trigger.add_argument("job_id", help="Job ID to trigger")
 
+    cron_move = cron_sub.add_parser(
+        "move",
+        help="Build a migration plan to move a cron job to another crew (issue #7577)",
+    )
+    cron_move.add_argument("job_id", help="Job ID to move")
+    cron_move.add_argument(
+        "--to",
+        dest="to_crew",
+        required=True,
+        help="Target crew id/label to migrate the job to",
+    )
+
+    # ── Crew-to-crew work migration: session and task-run move verbs (#7577) ──
+    # Registered via cli_help.add_command, NOT sub.add_parser: add_command raises
+    # KeyError for a name with no section in COMMAND_GROUPS, which is the guard
+    # that keeps the top-level help from drifting. These two were first added with
+    # a raw add_parser and so bypassed it -- caught only by the full suite's
+    # drift test, not by any migration test.
+    session_parser = cli_help.add_command(sub, "session")
+    session_sub = session_parser.add_subparsers(dest="session_action")
+    session_move = session_sub.add_parser(
+        "move", help="Move a chat session to another crew (issue #7577)"
+    )
+    session_move.add_argument("session_id", help="Session/slot id to move")
+    session_move.add_argument(
+        "--to",
+        dest="to_crew",
+        required=True,
+        help="Target crew id/label to migrate the session to",
+    )
+
+    taskrun_parser = cli_help.add_command(sub, "taskrun")
+    taskrun_sub = taskrun_parser.add_subparsers(dest="taskrun_action")
+    taskrun_move = taskrun_sub.add_parser(
+        "move", help="Build a migration plan to move a task run to another crew"
+    )
+    taskrun_move.add_argument("task_id", help="Task run id to move (e.g. TASK_abc)")
+    taskrun_move.add_argument(
+        "--to",
+        dest="to_crew",
+        required=True,
+        help="Target crew id/label to migrate the run to",
+    )
+    taskrun_move.add_argument(
+        "--runs-file",
+        dest="runs_file",
+        default=None,
+        help="Path to the workspace's runs.json (default: ./runs.json)",
+    )
+
     cron_adopt = cron_sub.add_parser(
         "adopt",
         help="Give a cron job an owning chat session, so that session can manage it and receives its results",
@@ -2703,6 +2753,14 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         from kiro_crew.cli_commands import _cron
 
         _cron(args)
+    elif args.command == "session":
+        from kiro_crew.cli_commands import _session_dispatch
+
+        _session_dispatch(args)
+    elif args.command == "taskrun":
+        from kiro_crew.cli_commands import _taskrun_dispatch
+
+        _taskrun_dispatch(args)
     elif args.command == "spawn":
         from kiro_crew.cli_commands import _spawn
 

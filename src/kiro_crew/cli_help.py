@@ -63,6 +63,8 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("run", "Run an autonomous task from a spec file"),
             ("cron", "Manage scheduled jobs"),
             ("spawn", "Manage background subagents"),
+            ("session", "Manage chat sessions (crew-to-crew migration)"),
+            ("taskrun", "Manage task-runner runs (crew-to-crew migration)"),
             ("computer", "Computer-use (desktop automation) diagnostics"),
         ),
     ),

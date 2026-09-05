@@ -4525,6 +4525,11 @@
     "messageErrorBoundary": {
       "message_failed_to_render": "Message failed to render"
     },
+    "migratedBadge": {
+      "aria_label": "Migrated to {{where}} as {{id}}",
+      "redirect_prefix": "migrated to",
+      "redirect_connector": "as"
+    },
     "migrationBanner": {
       "install_from_apps": "Install from Apps",
       "this_feature_is_moving_to_a_standalone_app": "This feature is moving to a standalone app"
@@ -4552,6 +4557,27 @@
     "monacoCodeBlock": {
       "close_editor": "Close editor",
       "edit_code_block": "Edit code block"
+    },
+    "moveToCrew": {
+      "error_target_required": "A target crew is required.",
+      "error_no_plan": "The crew did not return a plan.",
+      "dialog_label": "Move {{unitKind}} to another crew",
+      "heading": "Move {{unitKind}} <id>{{unitId}}</id> from this crew to another crew",
+      "menu_label": "Move to crew…",
+      "target_crew_label": "Target crew",
+      "target_crew_placeholder": "crew id or label",
+      "planning": "Planning…",
+      "plan_move": "Plan move",
+      "cancel": "Cancel",
+      "handoff_id": "Handoff id",
+      "bundle": "Bundle",
+      "fields_shipped": "Fields shipped",
+      "completed_kept": "Completed tasks kept (not re-run)",
+      "requirements_heading": "The target must satisfy",
+      "findings_heading": "Will not travel",
+      "plan_only_note_prefix": "This is the migration",
+      "plan_only_note_emphasis": "plan only",
+      "plan_only_note_suffix": "— nothing has moved. The transmit, quiesce and tombstone steps run over the crew tunnel and are wired in a later change."
     },
     "notifications": {
       "notificationDetailPanel": {

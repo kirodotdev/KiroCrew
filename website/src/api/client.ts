@@ -2601,6 +2601,15 @@ export const api = {
   cancelCron: (id: string) => post('/api/crons/' + id + '/cancel').then(j),
   cronToChat: (id: string) => post('/api/crons/' + id + '/to-chat').then(j),
   toggleCron: (id: string, enabled: boolean) => post('/api/crons/' + id + '/enable', { enabled }).then(j),
+  // Crew-to-crew work migration (issue #7577). These return a PLAN, not a
+  // performed move: handoff id, allow-listed field count, the target's blocking
+  // requirements and any advisory findings. Transmit lands with the tunnel wiring.
+  planCronMove: (id: string, toCrew: string) =>
+    post('/api/crons/' + encodeURIComponent(id) + '/move', { to_crew: toCrew }).then(j),
+  planTaskRunMove: (taskId: string, toCrew: string) =>
+    post('/api/taskrunner/' + encodeURIComponent(taskId) + '/move', { to_crew: toCrew }).then(j),
+  planSessionMove: (slot: string, toCrew: string) =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/move', { to_crew: toCrew }).then(j),
   cronHistory: (jobId: string, offset?: number, limit?: number) => {
     const p = new URLSearchParams()
     if (offset != null) p.set('offset', String(offset))

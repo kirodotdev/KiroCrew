@@ -1386,6 +1386,8 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/crons/{job_id}/cancel", handlers.api_cron_cancel)
     app.router.add_post("/api/crons/{job_id}/to-chat", handlers.api_cron_to_chat)
     app.router.add_post("/api/crons/{job_id}/ack", handlers.api_cron_ack)
+    # Crew-to-crew work migration (issue #7577): plan a cron job's move.
+    app.router.add_post("/api/crons/{job_id}/move", handlers.api_cron_move)
     app.router.add_get("/api/crons/{job_id}/history", handlers.api_cron_history)
     app.router.add_get("/api/crons/{job_id}/history/{run_id}", handlers.api_cron_history_detail)
     app.router.add_get("/api/crons/{job_id}/script", handlers.api_cron_script_source)
@@ -1396,6 +1398,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/taskrunner", handlers.api_taskrunner_status)
     app.router.add_post("/api/taskrunner", handlers.api_taskrunner_start)
     app.router.add_post("/api/taskrunner/cancel", handlers.api_taskrunner_cancel)
+    # Crew-to-crew work migration (issue #7577): plan a task run's move. The
+    # gateway holds the LIVE record, which carries WorkingMemory and
+    # current_task -- neither of which runs.json persists.
+    app.router.add_post("/api/taskrunner/{task_id}/move", handlers.api_taskrun_move)
     app.router.add_post("/api/send-message", handlers.api_send_message)
     app.router.add_post("/api/delete-message", handlers.api_delete_message)
     # send_notification MCP tool (RFC notification bus Phase 5) — registered

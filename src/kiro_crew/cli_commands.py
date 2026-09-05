@@ -970,6 +970,117 @@ def _agent_reset_model(args: argparse.Namespace) -> None:
     print("   It now tracks the shipped default; restart the gateway to apply.")
 
 
+def _taskrun_dispatch(args: argparse.Namespace) -> None:
+    """Dispatch `kirocrew taskrun` subcommands (issue #7577, Task 4.8)."""
+    import asyncio as _asyncio
+    import json as _json
+    from pathlib import Path as _Path
+
+    from kiro_crew.migration import protocol as _mig
+    from kiro_crew.migration.move_plan import plan_unit_move, render_plan
+    from kiro_crew.migration.taskrun_adapter import (
+        TaskRunMigrationAdapter,
+        describe_discarded_progress,
+        run_fidelity_findings,
+    )
+
+    action = getattr(args, "taskrun_action", None)
+    if action != "move":
+        print(f"Error: unknown taskrun action: {action}", file=sys.stderr)
+        sys.exit(1)
+
+    task_id = args.task_id
+    target_id = (getattr(args, "to_crew", "") or "").strip()
+
+    # runs.json is the persisted run registry. An explicit --runs-file wins;
+    # otherwise fall back to the workspace dir, matching TaskRunner's own rule.
+    runs_file = getattr(args, "runs_file", None)
+    runs_path = _Path(runs_file) if runs_file else _Path.cwd() / "runs.json"
+    try:
+        records = _json.loads(runs_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(
+            f"Error: no runs registry at {runs_path}; pass --runs-file to point "
+            f"at the workspace that owns this run",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except (OSError, ValueError) as exc:
+        print(f"Error: could not read runs registry {runs_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    record = next((r for r in records if isinstance(r, dict) and r.get("task_id") == task_id), None)
+    if record is None:
+        print(f"Error: task run not found: {task_id}", file=sys.stderr)
+        sys.exit(1)
+
+    adapter = TaskRunMigrationAdapter(run_lookup={task_id: record})
+
+    # Refuse a run with a task in flight BEFORE printing a plan for it: the
+    # plan would describe a move that quiesce is going to reject anyway.
+    try:
+        _asyncio.run(adapter.quiesce(task_id))
+    except _mig.MidRunError as exc:
+        print(f"Error: {exc} — cannot migrate a run with a task mid-execution", file=sys.stderr)
+        sys.exit(1)
+
+    bundle = _asyncio.run(
+        plan_unit_move(
+            adapter,
+            task_id,
+            target=_mig.CrewRef(crew_id=target_id, label=target_id),
+            source=_mig.CrewRef(crew_id="local", label="local"),
+        )
+    )
+    sel().log_api_access(
+        caller="cli",
+        operation="taskrun.move",
+        outcome="planned",
+        source="cli",
+        resources=f"task_id={task_id} target={target_id} " f"handoff_id={bundle.handoff_id}",
+    )
+
+    extra: list[str] = []
+    desc = describe_discarded_progress(record)
+    extra.append(f"completed tasks (kept, not re-run): {desc['completed_count']}")
+    for f in run_fidelity_findings(record):
+        extra.append(f"not available from this source: {f.detail_key} — {f.detail}")
+    print(render_plan(bundle, target_id, unit_id=task_id, extra=extra))
+
+
+def _session_dispatch(args: argparse.Namespace) -> None:
+    """Dispatch `kirocrew session` subcommands (issue #7577, Task 3.8).
+
+    `move` is deliberately refused HERE rather than half-performed. A session
+    bundle is Layer A (the transcript, which must be flushed consistently) plus
+    Layer B (the model context window, joined via session_map.json), and both
+    are only coherent when snapshotted from the LIVE slot with new turns
+    blocked. The CLI cannot block turns on a running session, so a CLI-side
+    snapshot would race the session it is copying — precisely the skew the
+    design exists to prevent. The refusal names the reason and the surface that
+    can do it.
+    """
+    action = getattr(args, "session_action", None)
+    if action != "move":
+        print(f"Error: unknown session action: {action}", file=sys.stderr)
+        sys.exit(1)
+
+    session_id = args.session_id
+    target_id = (getattr(args, "to_crew", "") or "").strip()
+    print(
+        f"Error: cannot migrate session {session_id!r} to {target_id!r} from the "
+        f"CLI.\n"
+        f"A session bundle is Layer A (transcript) + Layer B (the live model "
+        f"context window, joined via session_map.json), and it is only coherent "
+        f"when taken from the live slot with new turns blocked. The CLI cannot "
+        f"quiesce a running session, so a snapshot taken here would race it.\n"
+        f"Issue the move from the dashboard (the gateway owns the slot), which "
+        f"quiesces first and then hands off.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _cron(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands, translating a refused write into an error.
 
@@ -1002,10 +1113,37 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if not jobs:
             print("No cron jobs.")
             return
+        # Where migrated jobs went (Requirement 7.3). Read once for the whole
+        # listing rather than per row, and never let a broken registry take the
+        # listing down -- losing a redirect hint is recoverable, a crashed list
+        # hides every job the user has.
+        moved = {}
+        try:
+            from kiro_crew.migration.tombstones import TombstoneRegistry
+
+            moved = TombstoneRegistry(store_dir=config_dir() / "migration").list_for_kind("cron")
+        except Exception:
+            # Silent by design: this module has no logging (it is a CLI that
+            # prints), and the registry logs its own unreadable/corrupt cases.
+            # What is left here is an import or a permissions failure, for which
+            # omitting a redirect hint is the correct degradation -- the user
+            # still gets every job listed.
+            moved = {}
         for j in jobs:
             status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule)
             print(f"  {status} {j.id}  {j.name}  ({sched})  {j.message[:60]}")
+            # A migrated job is retained and non-executing, which on reload is
+            # indistinguishable from a user-paused one: cron persists
+            # enabled=False and derives user_paused from it. Without this line
+            # the work had moved to another crew and nothing said so.
+            tomb = moved.get(j.id)
+            if tomb is not None:
+                where = tomb.target_crew.label or tomb.target_crew.crew_id
+                print(
+                    f"      ↪ migrated to {where} "
+                    f"({tomb.target_crew.crew_id}) as {tomb.remote_unit_id}"
+                )
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
             # session's scope, so `cron_list` from chat does not list it and the
@@ -1097,6 +1235,50 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 f"Job {job_id} released: no owning session, so manage it from the CLI or "
                 f"the dashboard Schedule page."
             )
+
+    elif action == "move":
+        import asyncio as _asyncio
+
+        from kiro_crew.migration import protocol as _mig
+        from kiro_crew.migration.cron_adapter import CronMigrationAdapter
+        from kiro_crew.migration.cron_move import plan_cron_move
+
+        job_id = args.job_id
+        target_id = (getattr(args, "to_crew", "") or "").strip()
+        job = svc.get_job(job_id)
+        if job is None:
+            print(f"Error: job not found: {job_id}", file=sys.stderr)
+            sys.exit(1)
+        adapter = CronMigrationAdapter(job_lookup={job_id: job})
+        bundle = _asyncio.run(
+            plan_cron_move(
+                adapter,
+                job_id,
+                target=_mig.CrewRef(crew_id=target_id, label=target_id),
+                source=_mig.CrewRef(crew_id="local", label="local"),
+            )
+        )
+        sel().log_api_access(
+            caller="cli",
+            operation="cron.move",
+            outcome="planned",
+            source="cli",
+            resources=f"job_id={job_id} target={target_id} handoff_id={bundle.handoff_id}",
+        )
+        print(f"Migration plan for cron job {job_id} → crew {target_id!r}:")
+        print(f"  handoff_id: {bundle.handoff_id}")
+        print(f"  bundle:     {bundle.bundle_kind} v{bundle.bundle_version}")
+        print(f"  ships:      {len(bundle.payload)} allow-listed fields")
+        if bundle.requirements:
+            print("  target must satisfy (blocking):")
+            for r in bundle.requirements:
+                print(f"    - {r.kind}: {r.identity}")
+        else:
+            print("  target requirements: none")
+        print(
+            "\nThis is the migration PLAN only. The transmit/quiesce/tombstone steps "
+            "run over the crew tunnel and are wired in a later change."
+        )
 
     elif action == "add":
         every = getattr(args, "every", None)

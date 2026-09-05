@@ -49,6 +49,7 @@ mint, diagnostics, injection validation, run-marker) plus
 - [13. The SSM connection method (`connection_method`)](#13-the-ssm-connection-method-connection_method)
 - [14. Session transfer (send a session to another instance)](#14-session-transfer-send-a-session-to-another-instance)
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
+- [16. Crew work migration (move a live unit of work to another crew)](#16-crew-work-migration-move-a-live-unit-of-work-to-another-crew)
 
 ---
 
@@ -1433,3 +1434,208 @@ neither resume nor delete it:
 - Any federated-endpoint failure in the UI — including the `403` when the
   instances feature is off — falls back to the plain local search, which is
   always the floor.
+
+---
+
+## 16. Crew work migration (move a live unit of work to another crew)
+
+§14 sends a session to another instance and §15 searches every instance at once.
+Both are **copies**: §14's docstring says "Copy, never move," and a federated
+search never mutates the peer. This section is the one operation neither covers —
+**moving** a live unit of work so that exactly one crew owns it afterwards.
+
+Three kinds of unit can move: a **cron schedule**, a **chat session**, and a
+**task-runner run**. They share one protocol because the hard part is not the
+payload, it is the ownership transfer.
+
+### 16.1 Why a copy is not enough
+
+A copy is safe because both ends may hold it. A move is not: for a unit that
+*executes*, two owners is not a duplicate record, it is the job running twice. A
+cron schedule firing on two crews sends two Slack messages and does two writes; a
+task-runner run resuming on both re-executes tasks whose side effects already
+happened.
+
+So the requirement is stronger than "get the state there". It is
+**single-owner**, and the invariant that buys it is:
+
+> **Any failure short of a durable ack leaves the SOURCE owning the work.**
+
+Not "leaves it consistent" — leaves it *executing, here*. The source is only
+released after the target has fsync'd its acceptance. The cost of that choice is
+a crash window in which both ends believe the source owns it; §16.5 closes it.
+
+### 16.2 The five-step handoff
+
+`MigrationCoordinator.migrate()` in `migration/protocol.py`:
+
+| Step | What it does | On failure |
+| --- | --- | --- |
+| **preflight** | Ask the target whether it can host this unit. Pure, read-only, persists nothing. | `refused` — source untouched, never quiesced |
+| **quiesce** | Stop the source executing and snapshot it at a safe boundary. | `refused` — source resumes in place |
+| **transmit** | Send the bundle. | `failed` — source un-quiesces and resumes |
+| **durable ack** | Target materializes and **fsyncs** the mapping, then acks. | `failed` — source un-quiesces and resumes |
+| **tombstone / release** | Source becomes retained-but-non-executing, naming its new home. | see §16.5 |
+
+`refused` is deliberately distinct from `failed`. Refused means the migration was
+never attempted because the target could not host it — nothing was disturbed and
+retrying without changing something will refuse again. Failed means it was
+attempted and rolled back — retrying may well work. Collapsing them would tell a
+user to retry a move that cannot succeed.
+
+Preflight **refuses rather than falling back**. If the target has no agent by the
+required name, the answer is a blocking finding, not a silent substitution to the
+default agent — a cron job that quietly changes which agent runs it has been
+altered, not moved.
+
+### 16.3 What travels: allow-list, never exclude-list
+
+Every serializer names the fields that **ship** and the fields that **drop**, and
+a drift-guard test asserts the two sets partition every field of the dataclass.
+Add a field to `CronJob` or `Project` without deciding, and that test fails.
+
+This direction is the whole point. An exclude-list ships anything new by default,
+so a runtime-only or host-local field added later leaks to another host silently.
+An allow-list drops it by default and the guard test makes the omission loud.
+
+Findings name the **reference**, never the value: a dropped `project` path is
+reported by key so the user knows what was lost without the doc, the log, or the
+audit trail carrying the path itself. `scan_for_secrets` runs on the source
+before transmit **and again on the target in `accept()`** — a target that trusts
+the sender to have scanned has no defence against a compromised or older source.
+The refusal names the matched pattern, never the matched value.
+
+`accept()` also validates the bundle **format** (`SUPPORTED_VERSIONS`: cron 1,
+session 2, taskrun 1). An unknown kind or version is refused, because a
+half-understood bundle materializes a unit that is quietly missing state — worse
+than a refusal. Session bundles are v2 because they carry §14.1a's Layer A +
+Layer B envelope; a v1 session bundle read as if it were v2 would arrive without
+the layer that makes resume real.
+
+### 16.4 Per-kind specifics
+
+**Cron** is the smallest unit: no live process, all state on disk. The one trap is
+the double-fire guard — after the move the source must not fire however far the
+clock has advanced past the next due instant. `should_fire()` returns false for a
+tombstoned job. Note the guard survives a restart on its own, because
+`enabled=False` is persisted; what does not survive is the *reason* (see §16.6).
+`session_key` is re-bound to the target's scope, because an owning session id
+from the source crew means nothing on the target.
+
+**Session** extends §14 rather than replacing it: the same two layers travel, and
+migration adds quiesce (block new turns, drain the in-flight one) and the
+tombstone. The session ledger travels as durable working state, so goal, phase,
+`next` and the tried/rejected list survive the move. Non-portable references
+(`project`, `model`, `workspace`, an unmatched `agent`) are **reported, not
+swallowed** — §16.7's non-goal explains why they are not rematerialized. Armed
+monitor loops are disarmed on the source at quiesce and armed on the target only
+after ack: never both, which would double every check.
+
+**Task-runner** carries the most live state, so it has the only user-facing
+decision. A run can be *resumed* on the target only if the target can reproduce
+its git context; otherwise it must be *restarted*, discarding progress. The
+classifier is a git-reproducibility probe (repo root resolution, branch
+reachability, worktree recreatability) and it **names the unreproducible
+reference**. A `restart` classification requires explicit confirmation naming the
+discarded progress, because that is data loss the user has to choose. Quiesce
+happens at a **task boundary** — a run is never serialized with a task
+mid-execution. Resume does not re-execute tasks already recorded complete, and
+pending approvals are preserved: a migration is not an approval channel.
+
+### 16.5 The ack→tombstone crash window
+
+Between the target's durable ack and the source's tombstone, a source crash
+leaves the target holding the unit while the source still believes it owns it.
+`reconcile(handoff_id, unit_id)` resolves this to exactly one owner: it asks the
+target, by handoff id, whether it holds the unit. If yes, the source finishes the
+tombstone and the target owns. If no, the ack never landed — the source
+un-quiesces and reclaims. It never resumes unconditionally.
+
+`lookup()` is part of the receiver contract and is called directly. A receiver
+that cannot answer **raises**, because a silent "the target holds nothing" is
+precisely how a unit ends up with two owners.
+
+`handoff_id` also makes `accept()` idempotent: a retransmit returns the existing
+unit rather than materializing a second one.
+
+### 16.6 Discoverability: the tombstone is a redirect, not a delete
+
+A tombstoned source is **retained, readable, and non-executing**, and it names
+where the work went. Never a delete: a user who goes looking for the job or the
+session finds it, now displaying its new home.
+
+For a cron job the in-memory version of that was not enough. The guard survived a
+restart (`enabled=False` is persisted) but the *reason* did not: on reload
+`user_paused` is derived from `not enabled`, so a migrated job read back as an
+ordinary user-paused job — the work had moved to another crew and nothing said
+so. And nothing could *query* it: a listing surface would have had to hold the
+adapter instance that performed the move, which `kirocrew cron list` and the
+Schedule page never do.
+
+`migration/tombstones.py` therefore keeps a durable registry, `kind -> unit_id ->
+tombstone`, in one fsync'd JSON file at `<config dir>/migration/tombstones.json`
+— `config_dir()`, i.e. `~/.kiro/crew` by default and whatever `KIROCREW_HOME`
+overrides it to, the same base dir `CronService` is given:
+
+- **Kinds are namespaced** — a cron job id and a chat slot key can collide as
+  strings while being unrelated units.
+- **Reads degrade, never raise.** A corrupt file answers "nothing moved". Losing
+  a redirect hint is recoverable; a crashed schedule listing hides every job the
+  user has.
+- **`clear()` on materialize**, so a unit migrated *back* stops reporting that it
+  lives elsewhere.
+- **Only the four `Tombstone` fields are stored.** A tombstone is a redirect, not
+  a copy; the bundle's command line or transcript has no business in a file whose
+  only job is answering "where did this go?".
+
+`kirocrew cron list` prints a `↪ migrated to <crew> as <remote id>` line under a
+tombstoned row.
+
+Migration is also **reversible**: a migrated unit is migratable again from its new
+owner, including back to the original crew. A move is not a one-way door.
+
+### 16.7 Non-goals
+
+- **Project rematerialization.** Migration moves the unit of work, not the
+  checkout it referenced. A missing project is reported as a `HostRequirement`,
+  which is exactly why `HostRequirement` names things instead of moving them.
+- **Cross-version negotiation.** An incompatible bundle version is refused, not
+  down-converted.
+- **Merging two owners.** If reconciliation somehow found both ends holding the
+  unit, the answer is an error, not a merge.
+
+### 16.8 Audit
+
+A migration transfers the **right to execute** between hosts, which makes it a
+permission decision, so it belongs in the same audit trail as any other. Both
+crews record it: the coordinator writes `migrate.start` / `.quiesced` /
+`.refused` / `.failed` / `.done`, and the receiver writes `accept.persisted` (only
+*after* the fsync, so a line never claims durability the source has not been
+promised), `accept.replayed`, `accept.refused`. Every entry carries the unit,
+handoff id, source and target so one line is meaningful alone, and terminal
+entries carry an outcome and the per-unit duration, making handoff latency
+observable. An audit sink that raises is swallowed — an audit backend outage must
+not turn a good migration into a failed one.
+
+### 16.9 Current state — what is NOT wired yet
+
+Read this before assuming a move works end to end. What exists today is
+**preflight, planning, and the durable tombstone read model**. There are
+currently **zero production call sites** for `MigrationCoordinator`, `migrate()`,
+or `reconcile()`.
+
+- `kirocrew cron move <job-id> --to <crew>` and `kirocrew taskrun move <task-id>
+  --to <crew>` **print a plan**; they do not execute a handoff.
+- `kirocrew session move` deliberately **refuses with exit 2** and says why: a
+  session bundle is only coherent when snapshotted from the live slot with turns
+  blocked, and the CLI cannot quiesce a slot it does not own. Use the dashboard.
+- `POST /api/crons/{job_id}/move`, `POST /api/taskrunner/{task_id}/move` and
+  `POST /api/chat/slots/{slot}/move` return a **plan**. Error contract: `400`
+  blank/missing `to_crew`, `404` unknown unit, `409` mid-run, `503` no runner.
+- The **transmit step has no transport**. `MigrationReceiver` over a real
+  Instances tunnel (§3) is not implemented; the tested receiver is local.
+- **`reconcile()` has no startup caller.** Until one exists the crash window in
+  §16.5 does not converge on its own, which is why nothing calls `migrate()` yet.
+- `build_requirement_probe()` must be supplied in production. An absent probe
+  makes preflight conservative — it returns no findings, silently skipping
+  requirement checks.

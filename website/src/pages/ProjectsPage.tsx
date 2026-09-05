@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap } from 'lucide-react'
+import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap, ArrowRightLeft } from 'lucide-react'
+import MoveToCrewDialog from '../components/MoveToCrewDialog'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
@@ -54,6 +55,8 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
 
 export default function ProjectsPage() {
   const ime = useImeGuard()
+  // Crew-to-crew work migration (issue #7577): which run's move plan is open.
+  const [movingRunId, setMovingRunId] = useState<string | null>(null)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -537,6 +540,17 @@ export default function ProjectsPage() {
   // its own padding rather than inheriting page gutters.
   return (
     <div className={`flex h-full bg-bg text-text ${railBar ? 'flex-col' : ''}`}>
+      {/* Crew-to-crew work migration (issue #7577): the task-run move surface.
+          Plans from the LIVE run record, which carries WorkingMemory and
+          current_task -- neither of which runs.json persists. */}
+      {movingRunId && (
+        <MoveToCrewDialog
+          unitKind="taskrun"
+          unitId={movingRunId}
+          onPlan={toCrew => api.planTaskRunMove(movingRunId, toCrew)}
+          onClose={() => setMovingRunId(null)}
+        />
+      )}
       {rail.collapsed ? (
         <CollapsedRail width={rail.width} onExpand={rail.expand} horizontal={railBar} />
       ) : (
@@ -616,6 +630,18 @@ export default function ProjectsPage() {
               </>}
               {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelPlan(); setSelectedRun(null) }}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warn hover:border-warn transition-all" onClick={async () => { await api.pauseTaskRun(selectedRun.task_id); load() }}><Pause className="lucide-inline" /> {i18nT('pages.projectsPage.pause')}</button>}
+              {/* Crew-to-crew work migration (issue #7577). Offered for a run
+                  that is not executing: quiesce refuses a run with a task in
+                  flight, so planning one would describe a move that cannot
+                  happen. */}
+              {!selectedRun.running && (
+                <button
+                  className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all"
+                  onClick={() => setMovingRunId(selectedRun.task_id)}
+                >
+                  <ArrowRightLeft className="lucide-inline" /> {i18nT('components.moveToCrew.menu_label')}
+                </button>
+              )}
               {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelTaskRunner(selectedRun.task_id); load() }}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {!selectedRun.running && selectedRun.status !== 'planned' && selectedRun.status !== 'planning' && <>
                 {selectedRun.status === 'paused' && (
