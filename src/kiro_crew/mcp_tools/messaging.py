@@ -23,7 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import mcp_core
+from kiro_crew import file_delivery_consent, mcp_core
 from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.platform import redact_via_context as redact
@@ -769,15 +769,43 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             outcome="info",
             error="binary_file_skipping_content_scan",
         )
+    # A positive here is almost always CORRECT -- the reported case (a VPN device
+    # private key) matches the PEM branch, the highest-confidence detector in the
+    # catalogue -- so the remedy is not a looser scan but an owner who can say
+    # "that is mine". The grant covers ONLY this machine's outbox and the owner's
+    # own authenticated dashboard; the Slack and channel upload legs route through
+    # ``_gate_upload_file``, which does not read the consent store and refuses them
+    # regardless (see file_delivery_consent for why that is structural).
+    delivered_under_consent = False
     if is_text and redact(text) != text:
+        if not file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD):
+            mcp_core.sel().log_tool_invocation(
+                session_key="mcp_core",
+                source="mcp",
+                tool_name="file_send",
+                outcome="denied",
+                error="sensitive_content_detected",
+            )
+            return (
+                "Error: file content contains sensitive data; send aborted. The owner "
+                "can allow delivery to this machine's outbox and their own dashboard "
+                "by recording consent at POST /api/file-delivery/consent"
+                "?destination_class=owner_dashboard (owner-gated; no agent can write "
+                "it). The Slack and channel upload legs can never be granted."
+            )
+        delivered_under_consent = True
         mcp_core.sel().log_tool_invocation(
             session_key="mcp_core",
             source="mcp",
             tool_name="file_send",
-            outcome="denied",
-            error="sensitive_content_detected",
+            outcome="completed",
+            error="sensitive_content_delivered_with_consent",
         )
-        return "Error: file content contains sensitive data; send aborted"
+        file_delivery_consent.audit_decision(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD,
+            outcome="delivered",
+            detail=f"file_send: {clean_name}",
+        )
     dest = mcp_core.outbox_dir() / clean_name
     try:
         with dest.open("xb") as f:
@@ -807,6 +835,20 @@ def file_send(name: str, args: dict[str, Any]) -> str:
     )
     if d.get("error"):
         return f"Error: {d['error']}"
+    # Under an owner grant the third-party legs are not attempted AT ALL. The
+    # shared ``_gate_upload_file`` would refuse them anyway -- it does not read the
+    # consent store, which is what makes that refusal structural rather than a
+    # check someone could invert -- but handing flagged bytes to a handler that
+    # will refuse them is a needless hop for content the owner scoped to their own
+    # dashboard. Returning here keeps the grant's blast radius to exactly the
+    # destination class it names, and belt-and-braces means neither layer is load
+    # bearing alone.
+    if delivered_under_consent:
+        msg = f"File sent: {dest.name} ({desc})" if desc else f"File sent: {dest.name}"
+        return (
+            f"{msg} (delivered to the dashboard under the owner's file-delivery "
+            "consent; Slack and channel upload skipped)"
+        )
     # Native channel delivery first: when the caller's session is linked to a
     # non-Slack conversation with a document-capable transport (a Telegram
     # chat today), the file belongs THERE — the user who asked for it is

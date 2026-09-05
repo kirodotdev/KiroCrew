@@ -7764,6 +7764,18 @@ _CREW_SECRET_LEAVES: list[str] = [
     # and the ``kirocrew aws-consent`` CLI are the only writers and open the
     # path directly, not through this gate, so both keep working.
     "aws_service_consent.json",
+    # Recorded consent to deliver a file whose contents the credential scanner
+    # flagged. Same class of control as ``aws_service_consent.json`` above: the
+    # record is what AUTHORIZES a flagged file past four independent content
+    # gates, so an agent that could write it would consent on the owner's behalf
+    # to shipping the owner's secrets. Reading it is fenced too -- the file says
+    # which delivery destinations the owner has already blessed, which tells an
+    # agent where a flagged file would land unrefused, and that is reconnaissance
+    # it should not get for free from the shared gate. The authenticated,
+    # owner-gated dashboard ``/api/file-delivery/consent`` handler is the ONLY
+    # writer and opens the path directly, not through this gate, so it keeps
+    # working; there is deliberately no CLI verb to fence.
+    "file_delivery_consent.json",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",

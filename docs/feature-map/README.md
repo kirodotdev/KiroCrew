@@ -197,11 +197,19 @@ is `/settings/<key>`. Panels live in `pages/settings/`.
 | `webhooks` | Inbound webhook tokens and contexts | `WebhooksPanel.tsx` | `handlers/hooks.py` | `GET /api/webhooks`, `POST /api/webhooks/tokens`, `POST /api/webhooks/test` |
 | `instances` | Remote Kiro Crew instances to connect to | `RemoteCrewPanel.tsx`, `InstancesPanel.tsx` | `handlers_instances.py`, `handlers_cloud.py` | `GET,POST /api/instances`, `POST /api/instances/{id}/connect`, `GET /api/cloud/preflight` |
 | `privacy` | Telemetry disclosure and opt-out | `PrivacyPanel.tsx` | `handlers/telemetry.py` | `GET /api/telemetry/collection`, `GET /api/telemetry/beacon` |
-| `security` | Denied commands, sensitive paths, approval posture | `SecurityPanel.tsx`, `PostureDisclosure.tsx` | `handlers/security.py`, `handlers/tailnet.py` | `GET /api/security/denied-commands`, `PATCH .../builtins/{id}`, `POST .../user` |
+| `security` | Denied commands, sensitive paths, approval posture | `SecurityPanel.tsx`, `PostureDisclosure.tsx` | `handlers/security.py`, `handlers/tailnet.py`, `handlers/file_delivery_consent.py` | `GET /api/security/denied-commands`, `PATCH .../builtins/{id}`, `POST .../user`, `GET,POST,DELETE /api/file-delivery/consent` |
 | `secrets` | Stored credentials the agent may use | `SecretsPanel.tsx` | `handlers/secrets.py` | `GET,POST /api/secrets`, `DELETE /api/secrets/{name}` |
 | `developer` | Pointer into the developer surfaces | `DeveloperPanel.tsx` | — | — |
 | `releases` | Release channel, update check, changelog | `ReleasesPanel.tsx` | `handlers/updates.py` | `GET /api/update/check`, `POST /api/update`, `GET /api/changelog`, `GET /api/releases` |
 | `about` | Version, build, diagnostics bundle | `AboutPanel.tsx`, `ReportProblemCard.tsx` | `handlers/diagnostics.py`, `handlers/feedback.py` | `POST /api/diagnostics/collect`, `GET /api/diagnostics/download/{filename}` |
+
+Flagged-file delivery consent (`GET,POST,DELETE /api/file-delivery/consent`,
+owner-gated) is listed on the `security` row because that is the tab it belongs
+to, but **no panel is wired to it yet** -- the endpoints are the only way to
+record or withdraw the grant today (#8793). Stated rather than implied: the
+backend control landed first so the delivery gates could read it, and the panel
+is a follow-up. Nothing about the grant is reachable from an agent either way;
+the record sits on the sandbox-sealed keystone floor.
 
 Instances is deliberately not a rail row: it is set up here once and switched
 from the header tab strip. Webhooks carries both a preview flag and

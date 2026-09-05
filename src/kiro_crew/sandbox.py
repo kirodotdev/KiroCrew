@@ -263,6 +263,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # Recorded consent to deliver a scanner-flagged file. Same class as
+    # ``aws_service_consent.json``: a writable grant lets an auto-approved agent
+    # consent, on the owner's behalf, to shipping the owner's secrets. This seal is
+    # the load-bearing half of that design -- ``is_sensitive_path`` and the shell
+    # deny tiers do cover the leaf, but as the READONLY note above says, those tiers
+    # can be evaded by runtime path construction and a kernel write denial cannot.
+    "file_delivery_consent.json",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -362,6 +369,14 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # ``file_delivery_consent._read_all`` returns ``{}`` for both absent and
+    # unreadable, and ``is_granted`` then reports no consent -- so an EMPTY
+    # document means exactly what an ABSENT one means (criterion 1). A stale
+    # sealed read also fails toward refusal: the writer publishes through
+    # ``atomic_write`` (new inode), so a sandboxed reader keeps seeing ``{}`` and
+    # stays frozen at "no consent", which is narrower than the truth
+    # (criterion 2).
+    "file_delivery_consent.json",
 )
 
 #: What a materialised ceiling holds — the empty JSON object every reader above

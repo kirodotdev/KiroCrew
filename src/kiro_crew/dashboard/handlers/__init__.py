@@ -668,6 +668,14 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     logo,
     pwa_file,
 )
+
+# Flagged-file delivery consent — owner-gated, and the ONLY writer of
+# ``file_delivery_consent.json``. No CLI counterpart, deliberately.
+from kiro_crew.dashboard.handlers.file_delivery_consent import (  # noqa: E402, F401
+    api_file_delivery_consent_delete,
+    api_file_delivery_consent_get,
+    api_file_delivery_consent_post,
+)
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_push_notification,
 )

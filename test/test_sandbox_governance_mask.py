@@ -91,6 +91,12 @@ class TestKeystonesAreSealedInEveryMode:
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
+        # Recorded consent to deliver a scanner-flagged file (#7770). Sealing it
+        # is the load-bearing half of the whole design: the deny-list tiers can
+        # be evaded by runtime path construction, so only a kernel write denial
+        # makes "the owner consents, never the agent" true rather than merely
+        # intended.
+        "file_delivery_consent.json",
         # The app dev-mode authorization record (#6907): sealing it is what
         # makes the operator-attestation flag unforgeable from an agent shell
         # — a sandboxed process cannot mint a grant however the toggle was

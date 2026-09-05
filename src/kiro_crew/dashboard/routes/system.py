@@ -131,6 +131,12 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
     app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
     app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
+    # Flagged-file delivery consent. Owner-gated in the handler; deliberately NOT
+    # on the strict-internal list in server.py, because unlike the file_send legs
+    # its only legitimate caller IS the owner's browser.
+    app.router.add_get("/api/file-delivery/consent", handlers.api_file_delivery_consent_get)
+    app.router.add_post("/api/file-delivery/consent", handlers.api_file_delivery_consent_post)
+    app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 
