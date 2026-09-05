@@ -99,6 +99,22 @@ def _is_corruption_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _DB_CORRUPTION_MARKERS)
 
 
+def _read_text_lossy(path: Path) -> str:
+    """Read a user-editable state file, tolerating one bad byte (#8247).
+
+    Crash mid-write, editor slip, or a synced file can leave a single
+    non-UTF-8 byte in an otherwise valid file. Strict decoding would kill
+    every reader (dashboard, prompt assembly, index rebuild); lossy
+    decoding keeps the surviving valid content, which also keeps
+    read-merge-write baselines intact.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        logger.warning("memory file is not valid UTF-8: %s", path)
+        return path.read_text(encoding="utf-8", errors="replace")
+
+
 def workspace_dir() -> Path:
     return config_dir() / WORKSPACE_DIR_NAME
 
@@ -290,7 +306,20 @@ class MemoryStore:
     def read_preferences(self) -> str:
         """Read user preferences markdown file."""
         if self._preferences_file.exists():
-            return self._preferences_file.read_text(encoding="utf-8")
+            try:
+                return self._preferences_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # One bad byte (crash mid-write, editor slip, synced file)
+                # must degrade, not kill the dashboard tab, prompt assembly,
+                # or the repair path (#8247). Decode lossy rather than
+                # returning "": an empty baseline would pass the
+                # compare-and-swap check in write_preferences and let a
+                # consolidation overwrite the surviving valid content.
+                logger.warning(
+                    "preferences file is not valid UTF-8: %s",
+                    self._preferences_file,
+                )
+                return self._preferences_file.read_text(encoding="utf-8", errors="replace")
         return ""
 
     def write_preferences(self, content: str, *, expected_baseline: str | None = None) -> bool:
@@ -346,7 +375,15 @@ class MemoryStore:
     def read_projects(self) -> str:
         """Read active projects markdown file."""
         if self._projects_file.exists():
-            return self._projects_file.read_text(encoding="utf-8")
+            try:
+                return self._projects_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # Same lossy fallback as read_preferences (#8247).
+                logger.warning(
+                    "projects file is not valid UTF-8: %s",
+                    self._projects_file,
+                )
+                return self._projects_file.read_text(encoding="utf-8", errors="replace")
         return ""
 
     def write_projects(self, content: str, *, expected_baseline: str | None = None) -> bool:
@@ -469,7 +506,7 @@ class MemoryStore:
                     )
                 content = ""
                 if path.exists():
-                    content = path.read_text(encoding="utf-8")
+                    content = _read_text_lossy(path)
                 if not content:
                     date = datetime.now().strftime("%Y-%m-%d")
                     content = f"# {date}\n"
@@ -535,7 +572,7 @@ class MemoryStore:
             path = self._history_dir / f"{day.strftime('%Y-%m-%d')}.md"
             if not path.exists():
                 continue
-            content = path.read_text(encoding="utf-8").strip()
+            content = _read_text_lossy(path).strip()
             if not content:
                 continue
 
@@ -988,12 +1025,15 @@ class MemoryStore:
     def rebuild_index(self) -> int:
         """Rebuild the full FTS index from all memory files. Returns file count."""
         files: list[tuple[str, str]] = []
-        for path in (self._preferences_file, self._projects_file):
+        for reader, path in (
+            (self.read_preferences, self._preferences_file),
+            (self.read_projects, self._projects_file),
+        ):
             if path.exists():
-                files.append((str(path), path.read_text(encoding="utf-8")))
+                files.append((str(path), reader()))
         if self._history_dir.exists():
             for path in self._history_dir.glob("*.md"):
-                files.append((str(path), path.read_text(encoding="utf-8")))
+                files.append((str(path), _read_text_lossy(path)))
 
         conn = None
         try:
