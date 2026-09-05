@@ -23,6 +23,7 @@ from typing import Any
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import (
     _NAME_MAX,
+    _bump_slot_tags_revision,
     create_tag_definition,
     persist_tags_snapshot_unlocked,
     tags_write_lock,
@@ -133,7 +134,9 @@ async def _auto_tag_inner(state: Any, slot: Any) -> None:
         # otherwise a restart loses the flag and a later message re-runs
         # auto-tag, silently re-adding a tag the user removed.
         current_tags.append(tag_id)
+        prior_tags_revision = getattr(slot, "tags_revision", "")
         slot.tags = current_tags
+        written_tags_revision = _bump_slot_tags_revision(slot)
         slot._auto_tagged = True
         # Auto-tagging is asynchronous.  Pin the history target at the point
         # the metadata is applied so a concurrent session rebind cannot make
@@ -147,7 +150,9 @@ async def _auto_tag_inner(state: Any, slot: Any) -> None:
         if persisted is False:
             # The slot rebound while the guarded write waited.  Leave no
             # provisional tag on the newly bound live conversation.
-            slot.tags = [value for value in slot.tags if value != tag_id]
+            if slot.tags_revision == written_tags_revision:
+                slot.tags = [value for value in slot.tags if value != tag_id]
+                slot.tags_revision = prior_tags_revision
             slot._auto_tagged = False
             return
 

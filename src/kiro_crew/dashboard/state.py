@@ -3220,6 +3220,7 @@ class _ChatSlot:
         "_folder_suggested",
         "pinned",
         "tags",
+        "tags_revision",
         "_pending_subagent_failures",
         "_pending_synthesis",
         "_synthesis_inflight",
@@ -3588,6 +3589,10 @@ class _ChatSlot:
         self._folder_suggested: bool = False
         self.pinned: bool = False  # pinned to top of sidebar
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
+        # Opaque change identity for tag snapshots. Clients use equality, not
+        # ordering, to distinguish a stale predecessor frame from a later
+        # authoritative update that happens to restore the same list.
+        self.tags_revision: str = uuid.uuid4().hex
         self._pending_subagent_failures: list[str] = []
         # Fix 2 (B1): armed by gateway when the LAST sub-agent of a fan-out
         # completes; consumed once by chat_runner's drain/idle branch to fire a
@@ -4000,6 +4005,11 @@ class _ChatSlot:
         # "the agent is done and asked you something", and which entries a user
         # message may retire.
         self._question_pending: dict[str, dict] = {}
+
+    def bump_tags_revision(self) -> str:
+        """Rotate and return the opaque revision for the current tag list."""
+        self.tags_revision = uuid.uuid4().hex
+        return self.tags_revision
 
     @property
     def _dirty(self) -> bool:

@@ -179,6 +179,16 @@ def _tag_by_id(state: DashboardState, tag_id: str) -> dict | None:
     return next((t for t in state._tags if t.get("id") == tag_id), None)
 
 
+def _bump_slot_tags_revision(slot: Any) -> str:
+    """Rotate a slot's tag revision while preserving duck-typed callers."""
+    bump_revision = getattr(slot, "bump_tags_revision", None)
+    if callable(bump_revision):
+        return str(bump_revision())
+    revision = uuid.uuid4().hex
+    slot.tags_revision = revision
+    return revision
+
+
 def create_tag_definition(
     state: DashboardState,
     name: str,
@@ -415,6 +425,7 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                 # between this capture and the strip below.
                 authorized_history_key = slot_history_key(slot)
                 slot.tags = [t for t in slot.tags if t != tid]
+                _bump_slot_tags_revision(slot)
                 try:
                     applied = await save_slot_off_loop(
                         state,
@@ -559,7 +570,9 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
                 status=409,
             )
         prior_tags = slot.tags
+        prior_tags_revision = slot.tags_revision
         slot.tags = new_tags
+        written_tags_revision = _bump_slot_tags_revision(slot)
         if not await save_slot_off_loop(
             state, slot, force=True, expected_history_key=authorized_history_key
         ):
@@ -569,8 +582,9 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
             # a concurrent writer may have committed a newer value that an
             # unconditional restore would erase (the same guard
             # _restore_unfiled applies to its rollback).
-            if slot.tags == new_tags:
+            if slot.tags == new_tags and slot.tags_revision == written_tags_revision:
                 slot.tags = prior_tags
+                slot.tags_revision = prior_tags_revision
             # The UNPINNED periodic flush may have persisted the provisional
             # value to the slot's current transcript while this save awaited
             # (review-caught): mark dirty so the next flush reconverges the
@@ -597,7 +611,14 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
         source="dashboard",
         resources=name,
     )
-    return web.json_response({"ok": True, "tags": slot.tags})
+    return web.json_response(
+        {
+            "ok": True,
+            "tags": slot.tags,
+            "tags_revision": slot.tags_revision,
+            "prior_tags_revision": prior_tags_revision,
+        }
+    )
 
 
 # ── Sidebar columns (Trello-style filtered lanes) ──────────────────────────
@@ -979,8 +1000,10 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             return _rejected("session was deleted or rebound")
         kept = [t for t in slot.tags if t in tag_index and not tag_index[t].get("status")]
         prior_tags = slot.tags
+        prior_tags_revision = slot.tags_revision
         written_tags = kept + [target_id]
         slot.tags = written_tags
+        written_tags_revision = _bump_slot_tags_revision(slot)
         if not await save_slot_off_loop(
             state, slot, force=True, expected_history_key=authorized_history_key
         ):
@@ -990,8 +1013,9 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             # newer commit is not erased — and report the drop as rejected,
             # matching this endpoint's rejection shape (the card stays where
             # it was).
-            if slot.tags == written_tags:
+            if slot.tags == written_tags and slot.tags_revision == written_tags_revision:
                 slot.tags = prior_tags
+                slot.tags_revision = prior_tags_revision
             # The UNPINNED periodic flush may have persisted the provisional
             # value while this save awaited (review-caught): mark dirty so the
             # next flush reconverges the durable record to the live state.

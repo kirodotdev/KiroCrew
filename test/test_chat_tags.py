@@ -474,6 +474,7 @@ class TestSlotTags:
             t1 = await (await client.post("/api/chat/tags", json={"name": "T1"})).json()
             t2 = await (await client.post("/api/chat/tags", json={"name": "T2"})).json()
             slot = _ChatSlot("s1")
+            original_revision = slot.tags_revision
             state._slots["s1"] = slot
             with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
                 resp = await client.put(
@@ -483,7 +484,33 @@ class TestSlotTags:
             assert resp.status == 200
             data = await resp.json()
             assert data["tags"] == [t1["id"], t2["id"]]
+            assert data["tags_revision"] == slot.tags_revision
+            assert data["prior_tags_revision"] == original_revision
+            assert slot.tags_revision != original_revision
+            assert state.serialize_slot(slot)["tags_revision"] == slot.tags_revision
             assert slot.tags == [t1["id"], t2["id"]]
+
+    @pytest.mark.asyncio
+    async def test_assign_refusal_restores_tags_and_revision(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "T1"})).json()
+            slot = _ChatSlot("s1")
+            slot.tags = ["existing"]
+            original_revision = slot.tags_revision
+            state._slots["s1"] = slot
+
+            async def _refuse(*_args, **_kwargs):
+                return False
+
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop", _refuse):
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": [tag["id"]]})
+
+            assert resp.status == 409
+            assert slot.tags == ["existing"]
+            assert slot.tags_revision == original_revision
 
     @pytest.mark.asyncio
     async def test_assign_slot_not_found(self, tmp_path, monkeypatch):
@@ -809,6 +836,7 @@ class TestDrop:
                 resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
             data = await resp.json()
             assert data["ok"] is True
+            assert "tags_revision" not in data
             assert done["id"] in data["tags"]
             assert todo["id"] not in data["tags"]
             assert spike["id"] in data["tags"]
@@ -945,7 +973,15 @@ class TestLoadTagsSafety:
         )
         (tmp_path / "tag_boards.json").write_text(
             _json.dumps(
-                [{"id": "c1", "name": "L", "tag_ids": ["live1", "ghost"], "mode": "any", "order": 0}]
+                [
+                    {
+                        "id": "c1",
+                        "name": "L",
+                        "tag_ids": ["live1", "ghost"],
+                        "mode": "any",
+                        "order": 0,
+                    }
+                ]
             ),
             encoding="utf-8",
         )

@@ -272,6 +272,7 @@ class SlotProjection:
             "folder_id": slot.folder_id,
             "pinned": slot.pinned,
             "tags": list(slot.tags),
+            "tags_revision": getattr(slot, "tags_revision", ""),
             "color_index": slot.color_index,
             "color_hex": slot.color_hex,
             "color_theme": slot.color_theme,

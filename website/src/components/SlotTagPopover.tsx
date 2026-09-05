@@ -8,8 +8,13 @@ import { useTagPopover } from '../hooks/useTagPopover'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { Input } from './ui'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
+
+const sameTagIds = (left: string[], right: string[]) => left.length === right.length
+  && left.every((tag, i) => tag === right[i])
+
 /**
  * The single app-wide per-slot tag-assignment popover. Which slot's picker is
  * open comes from the ChatPage-scoped TagPopover context, so any surface (the
@@ -26,7 +31,6 @@ export default function SlotTagPopover() {
 
   const setSlotTagsMutation = useMutation({
     mutationFn: ({ slot, nextTags }: { slot: string; nextTags: string[] }) => api.setSlotTags(slot, nextTags),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-slots'] }),
   })
   const createTagMutation = useMutation({
     mutationFn: (name: string) => api.createChatTag(name),
@@ -37,8 +41,62 @@ export default function SlotTagPopover() {
   // render; `pendingRef` mirrors it so `toggle` reads the latest value
   // synchronously (rapid-burst composition) without a state closure.
   const [pending, setPending] = useState<string[] | null>(null)
+  const [writeError, setWriteError] = useState<string | null>(null)
+  const [confirmation, setConfirmation] = useState<{
+    baseline: string[]
+    desired: string[]
+    expectedRevisions: string[]
+  } | null>(null)
   const pendingRef = useRef<string[] | null>(null)
-  useEffect(() => { pendingRef.current = null; setPending(null) }, [slotKey])
+  const slotKeyRef = useRef(slotKey)
+  slotKeyRef.current = slotKey
+  const slotTagsRef = useRef<string[]>(slot?.tags ?? [])
+  const slotTagsRevisionRef = useRef<string | null>(slot?.tags_revision ?? null)
+  const writeQueuesRef = useRef<Map<string, Promise<boolean>>>(new Map())
+  const lastAcceptedTagsRef = useRef<Map<string, string[]>>(new Map())
+  const lastAcceptedRevisionRef = useRef<Map<string, string>>(new Map())
+  useEffect(() => {
+    const slotTags = slot?.tags ?? []
+    const tagsRevision = slot?.tags_revision ?? null
+    slotTagsRef.current = slotTags
+    slotTagsRevisionRef.current = tagsRevision
+    if (slotKey && !pendingRef.current) {
+      lastAcceptedTagsRef.current.set(slotKey, [...slotTags])
+      if (tagsRevision) lastAcceptedRevisionRef.current.set(slotKey, tagsRevision)
+      else lastAcceptedRevisionRef.current.delete(slotKey)
+    }
+  }, [slotKey, slot?.tags, slot?.tags_revision])
+  useEffect(() => {
+    if (slotKey) {
+      lastAcceptedTagsRef.current.set(slotKey, [...slotTagsRef.current])
+      const tagsRevision = slotTagsRevisionRef.current
+      if (tagsRevision) lastAcceptedRevisionRef.current.set(slotKey, tagsRevision)
+      else lastAcceptedRevisionRef.current.delete(slotKey)
+    }
+    pendingRef.current = null
+    setPending(null)
+    setConfirmation(null)
+    setWriteError(null)
+  }, [slotKey])
+  useEffect(() => {
+    if (!confirmation || pendingRef.current !== confirmation.desired) return
+    const slotTags = slot?.tags ?? []
+    const tagsRevision = slot?.tags_revision ?? null
+    if (tagsRevision && confirmation.expectedRevisions.length > 0) {
+      if (confirmation.expectedRevisions.includes(tagsRevision)) return
+    } else {
+      const stillBaseline = sameTagIds(slotTags, confirmation.baseline)
+      if (stillBaseline) return
+    }
+    if (slotKey) {
+      lastAcceptedTagsRef.current.set(slotKey, [...slotTags])
+      if (tagsRevision) lastAcceptedRevisionRef.current.set(slotKey, tagsRevision)
+      else lastAcceptedRevisionRef.current.delete(slotKey)
+    }
+    pendingRef.current = null
+    setPending(null)
+    setConfirmation(null)
+  }, [confirmation, slotKey, slot?.tags, slot?.tags_revision])
 
   // Move focus into the tag list on open so keyboard users can operate it
   // (skip on touch to avoid hijacking focus). Deferred a tick so the list has
@@ -55,14 +113,135 @@ export default function SlotTagPopover() {
   const currentTags = new Set(pending ?? slot?.tags ?? [])
   const toggle = (tagId: string) => {
     const base = pendingRef.current ?? slot?.tags ?? []
+    const baselineTags = [...slotTagsRef.current]
+    const baselineRevision = slotTagsRevisionRef.current
+    const previousTags = [...base]
     const nextTags = base.includes(tagId) ? base.filter(t => t !== tagId) : [...base, tagId]
     pendingRef.current = nextTags
     setPending(nextTags)
-    setSlotTagsMutation.mutate({ slot: slotKey, nextTags }, {
-      // Clear the overlay once this mutation settles, unless a later toggle
-      // (rapid burst) has already replaced `pending` with a newer list.
-      onSettled: () => { if (pendingRef.current === nextTags) { pendingRef.current = null; setPending(null) } },
+    setConfirmation(null)
+    setWriteError(null)
+    const targetSlot = slotKey
+    if (!lastAcceptedTagsRef.current.has(targetSlot)) {
+      lastAcceptedTagsRef.current.set(targetSlot, [...baselineTags])
+    }
+    const priorWrite = writeQueuesRef.current.get(targetSlot) ?? Promise.resolve(true)
+    let queuedWrite!: Promise<boolean>
+    queuedWrite = priorWrite.then(async canContinue => {
+      if (!canContinue) return false
+      const acceptedBeforeWriteRevision = lastAcceptedRevisionRef.current.get(targetSlot) ?? null
+      const expectedRevisions = [...new Set(
+        [baselineRevision, acceptedBeforeWriteRevision]
+          .filter((revision): revision is string => Boolean(revision)),
+      )]
+      try {
+        const result = await setSlotTagsMutation.mutateAsync({ slot: targetSlot, nextTags })
+        if (slotKeyRef.current === targetSlot) setWriteError(null)
+        const response = result as {
+          tags?: unknown
+          tags_revision?: unknown
+          prior_tags_revision?: unknown
+        } | undefined
+        const responseTags = response?.tags
+        const confirmedTags = Array.isArray(responseTags)
+          ? responseTags.filter((tag): tag is string => typeof tag === 'string')
+          : nextTags
+        const confirmedRevision = typeof response?.tags_revision === 'string'
+          ? response.tags_revision
+          : null
+        const serverPriorRevision = typeof response?.prior_tags_revision === 'string'
+          ? response.prior_tags_revision
+          : null
+        if (serverPriorRevision && !expectedRevisions.includes(serverPriorRevision)) {
+          expectedRevisions.push(serverPriorRevision)
+        }
+        lastAcceptedTagsRef.current.set(targetSlot, [...confirmedTags])
+        if (confirmedRevision) lastAcceptedRevisionRef.current.set(targetSlot, confirmedRevision)
+
+        // A newer click owns the overlay. This write still commits in order for
+        // its own slot, but it must not overwrite that newer visible intent.
+        if (pendingRef.current !== nextTags) return true
+        const currentSlotTags = slotTagsRef.current
+        const currentSlotRevision = slotTagsRevisionRef.current
+        const canCompareRevision = Boolean(currentSlotRevision && expectedRevisions.length > 0)
+        const isConfirmed = confirmedRevision && currentSlotRevision
+          ? currentSlotRevision === confirmedRevision
+          : sameTagIds(currentSlotTags, confirmedTags)
+        const isExpectedPredecessor = canCompareRevision
+          ? expectedRevisions.includes(currentSlotRevision as string)
+          : sameTagIds(currentSlotTags, baselineTags)
+            || sameTagIds(currentSlotTags, previousTags)
+        if (!isExpectedPredecessor) {
+          lastAcceptedTagsRef.current.set(targetSlot, [...currentSlotTags])
+          if (currentSlotRevision) {
+            lastAcceptedRevisionRef.current.set(targetSlot, currentSlotRevision)
+          }
+        }
+        if (isConfirmed || !isExpectedPredecessor) {
+          pendingRef.current = null
+          setPending(null)
+          setConfirmation(null)
+          return true
+        }
+
+        // The store still carries an expected predecessor revision/list. Keep
+        // the overlay until the matching result or a concurrent winner arrives.
+        setConfirmation({
+          baseline: [...currentSlotTags],
+          desired: nextTags,
+          expectedRevisions,
+        })
+        return true
+      } catch (error) {
+        if (slotKeyRef.current === targetSlot) {
+          setWriteError(error instanceof Error && error.message
+            ? error.message
+            : i18nT('pages.chatPage.unknown_error'))
+        } else {
+          return false
+        }
+        // A failed predecessor invalidates every later intent already queued
+        // behind it. Roll the active slot back, then propagate cancellation.
+        const currentSlotTags = slotTagsRef.current
+        const currentSlotRevision = slotTagsRevisionRef.current
+        const canCompareRevision = Boolean(currentSlotRevision && expectedRevisions.length > 0)
+        const isExpectedPredecessor = canCompareRevision
+          ? expectedRevisions.includes(currentSlotRevision as string)
+          : sameTagIds(currentSlotTags, baselineTags)
+            || sameTagIds(currentSlotTags, previousTags)
+        if (!isExpectedPredecessor) {
+          lastAcceptedTagsRef.current.set(targetSlot, [...currentSlotTags])
+          if (currentSlotRevision) {
+            lastAcceptedRevisionRef.current.set(targetSlot, currentSlotRevision)
+          }
+          pendingRef.current = null
+          setPending(null)
+          setConfirmation(null)
+          return false
+        }
+
+        const fallbackTags = [...(lastAcceptedTagsRef.current.get(targetSlot) ?? baselineTags)]
+        if (sameTagIds(currentSlotTags, fallbackTags)) {
+          pendingRef.current = null
+          setPending(null)
+          setConfirmation(null)
+          return false
+        }
+        pendingRef.current = fallbackTags
+        setPending(fallbackTags)
+        setConfirmation({
+          baseline: [...currentSlotTags],
+          desired: fallbackTags,
+          expectedRevisions: currentSlotRevision ? [currentSlotRevision] : [],
+        })
+        return false
+      }
+    }).finally(() => {
+      if (writeQueuesRef.current.get(targetSlot) === queuedWrite) {
+        writeQueuesRef.current.delete(targetSlot)
+      }
     })
+    writeQueuesRef.current.set(targetSlot, queuedWrite)
   }
 
   return (
@@ -120,6 +299,14 @@ export default function SlotTagPopover() {
             )
           })}
         </div>
+        {/* No hand-off: the adjacent new-tag input is an uncontrolled draft, so
+            navigating away for agent hand-off would discard unsaved text. */}
+        <ErrorNotice
+          message={writeError}
+          variant="inline"
+          onDismiss={() => setWriteError(null)}
+          className="mt-2 px-1"
+        />
         <div className="mt-2 border-t border-border pt-2 flex items-center gap-1">
           <Input
             className="flex-1 text-[12px] py-1"

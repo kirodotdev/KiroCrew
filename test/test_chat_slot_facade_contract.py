@@ -64,6 +64,7 @@ _TO_DICT_KEYS = (
     "folder_id",
     "pinned",
     "tags",
+    "tags_revision",
     "color_index",
     "color_hex",
     "color_theme",
