@@ -14028,7 +14028,22 @@
       "patrol_badge": "Auf Patrouille · {{cycle}}",
       "patrol_badge_stopped": "Patrouille gestoppt",
       "patrol_next_in": "Fällig in {{time}}",
-      "wake_patrol_every": "Alle {{every}}"
+      "wake_patrol_every": "Alle {{every}}",
+      "filter_starred": "Markiert",
+      "filter_starred_description": "Nur markierte Mitglieder anzeigen",
+      "filter_source_mine": "Eigene",
+      "filter_source_builtin": "Integriert",
+      "filter_source_package": "Aus Paketen",
+      "filters_hide_all": "Die aktiven Filter verbergen alle Mitglieder.",
+      "filters_clear": "Filter zurücksetzen",
+      "star": "{{name}} markieren",
+      "unstar": "Markierung von {{name}} entfernen",
+      "star_failed_title": "Markierung nicht gespeichert",
+      "star_failed": "Die Markierung dieses Mitglieds konnte nicht aktualisiert werden.",
+      "filter_source_mine_description": "Crews, die du im Crew-Manager erstellt hast",
+      "filter_source_builtin_description": "Crews, die mit {{productName}} ausgeliefert werden",
+      "filter_source_package_description": "Crews, die von Capability-Paketen installiert wurden",
+      "member_count_filtered": "{{shown}} von {{count}} Mitgliedern"
     }
   },
   "privacyDisclosure": {

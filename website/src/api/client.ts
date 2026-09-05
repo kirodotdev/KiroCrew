@@ -2132,6 +2132,12 @@ export interface MemberRosterRow {
   workspace?: string
   memory_store?: string
   model?: string
+  /** Crew origin, NORMALIZED by the server to exactly 'kirocrew' (created in
+   *  the crew manager), 'builtin', or 'package' (agent-sync-installed; the
+   *  legacy 'aim' spelling and any unknown value collapse to this). */
+  source?: 'kirocrew' | 'builtin' | 'package' | string
+  /** User's favourite mark; toggled via PUT /api/agents/{name}. */
+  starred?: boolean
   [extra: string]: unknown
 }
 

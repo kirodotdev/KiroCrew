@@ -14387,7 +14387,22 @@
       "patrol_badge": "Патрулирует · {{cycle}}",
       "patrol_badge_stopped": "Патруль остановлен",
       "patrol_next_in": "Через {{time}}",
-      "wake_patrol_every": "Каждые {{every}}"
+      "wake_patrol_every": "Каждые {{every}}",
+      "filter_starred": "Избранные",
+      "filter_starred_description": "Показывать только избранных участников",
+      "filter_source_mine": "Мои",
+      "filter_source_builtin": "Встроенные",
+      "filter_source_package": "Из пакетов",
+      "filters_hide_all": "Активные фильтры скрывают всех участников.",
+      "filters_clear": "Сбросить фильтры",
+      "star": "Добавить {{name}} в избранное",
+      "unstar": "Убрать {{name}} из избранного",
+      "star_failed_title": "Избранное не сохранено",
+      "star_failed": "Не удалось обновить отметку избранного для этого участника.",
+      "filter_source_mine_description": "Команды, созданные вами в менеджере команд",
+      "filter_source_builtin_description": "Команды, входящие в {{productName}}",
+      "filter_source_package_description": "Команды, установленные пакетами возможностей",
+      "member_count_filtered": "{{shown}} из {{count}} участников"
     }
   },
   "privacyDisclosure": {

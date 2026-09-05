@@ -10574,7 +10574,22 @@
       "patrol_badge": "[Øñ þàţŕøĺ · {{cycle}} ···········]",
       "patrol_badge_stopped": "[Þàţŕøĺ şţøþþèð ·············]",
       "patrol_next_in": "[Ðùè ìñ {{time}} ···········]",
-      "wake_patrol_every": "[Èṽèŕý {{every}} ·········]"
+      "wake_patrol_every": "[Èṽèŕý {{every}} ·········]",
+      "filter_starred": "[Şţàŕŕèð ···········]",
+      "filter_starred_description": "[Şĥøẁ øñĺý şţàŕŕèð ɱèɱƀèŕş ··················]",
+      "filter_source_mine": "[Ṁìñè ······]",
+      "filter_source_builtin": "[Ɓùìĺţ-ìñ ············]",
+      "filter_source_package": "[Ƒŕøɱ þàçķàğèş ············]",
+      "filters_hide_all": "[Ţĥè àçţìṽè ƒìĺţèŕş ĥìðè èṽèŕý ɱèɱƀèŕ. ···················]",
+      "filters_clear": "[Çĺèàŕ ƒìĺţèŕş ············]",
+      "star": "[Şţàŕ {{name}} ········]",
+      "unstar": "[Ùñşţàŕ {{name}} ···········]",
+      "star_failed_title": "[Şţàŕ ñøţ şàṽèð ·············]",
+      "star_failed": "[Çøùĺð ñøţ ùþðàţè ţĥìş ɱèɱƀèŕ'ş şţàŕ. ··················]",
+      "filter_source_mine_description": "[Çŕèẁş ýøù çŕèàţèð ìñ ţĥè çŕèẁ ɱàñàğèŕ ···················]",
+      "filter_source_builtin_description": "[Çŕèẁş ţĥàţ şĥìþ ẁìţĥ {{productName}} ···············]",
+      "filter_source_package_description": "[Çŕèẁş ìñşţàĺĺèð ƀý çàþàƀìĺìţý þàçķàğèş ···················]",
+      "member_count_filtered": "[{{shown}} øƒ {{count}} ɱèɱƀèŕş ···········]"
     },
     "migrationPage": {
       "app_migration": "[Àþþ Ṁìğŕàţìøñ ············]",

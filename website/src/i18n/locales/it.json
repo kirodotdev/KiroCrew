@@ -14207,7 +14207,22 @@
       "patrol_badge": "In pattuglia · {{cycle}}",
       "patrol_badge_stopped": "Pattuglia fermata",
       "patrol_next_in": "Tra {{time}}",
-      "wake_patrol_every": "Ogni {{every}}"
+      "wake_patrol_every": "Ogni {{every}}",
+      "filter_starred": "Preferiti",
+      "filter_starred_description": "Mostra solo i membri preferiti",
+      "filter_source_mine": "Miei",
+      "filter_source_builtin": "Integrati",
+      "filter_source_package": "Da pacchetti",
+      "filters_hide_all": "I filtri attivi nascondono tutti i membri.",
+      "filters_clear": "Cancella filtri",
+      "star": "Aggiungi {{name}} ai preferiti",
+      "unstar": "Rimuovi {{name}} dai preferiti",
+      "star_failed_title": "Preferito non salvato",
+      "star_failed": "Impossibile aggiornare il preferito di questo membro.",
+      "filter_source_mine_description": "Crew che hai creato nel gestore crew",
+      "filter_source_builtin_description": "Crew inclusi in {{productName}}",
+      "filter_source_package_description": "Crew installati da pacchetti di capacità",
+      "member_count_filtered": "{{shown}} membri su {{count}}"
     }
   },
   "privacyDisclosure": {

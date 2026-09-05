@@ -14208,7 +14208,22 @@
       "patrol_badge": "En patrouille · {{cycle}}",
       "patrol_badge_stopped": "Patrouille arrêtée",
       "patrol_next_in": "Dans {{time}}",
-      "wake_patrol_every": "Toutes les {{every}}"
+      "wake_patrol_every": "Toutes les {{every}}",
+      "filter_starred": "Favoris",
+      "filter_starred_description": "Afficher uniquement les membres favoris",
+      "filter_source_mine": "Les miens",
+      "filter_source_builtin": "Intégrés",
+      "filter_source_package": "Issus de packages",
+      "filters_hide_all": "Les filtres actifs masquent tous les membres.",
+      "filters_clear": "Effacer les filtres",
+      "star": "Ajouter {{name}} aux favoris",
+      "unstar": "Retirer {{name}} des favoris",
+      "star_failed_title": "Favori non enregistré",
+      "star_failed": "Impossible de mettre à jour le favori de ce membre.",
+      "filter_source_mine_description": "Crews que vous avez créés dans le gestionnaire de crews",
+      "filter_source_builtin_description": "Crews fournis avec {{productName}}",
+      "filter_source_package_description": "Crews installés par des packages de capacités",
+      "member_count_filtered": "{{shown}} membres sur {{count}}"
     }
   },
   "privacyDisclosure": {

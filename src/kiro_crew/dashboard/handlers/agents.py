@@ -3064,6 +3064,12 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         # Skip pruning if scan returned nothing -- likely a transient issue.
         # Invariant: for package-sourced entries, kiro_agent == dict key == agent name.
         # ("aim" is also accepted for backward-compat with older configs.)
+        # A STARRED package crew is pruned like any other -- a registry row with
+        # no spec on disk is not spawnable. The star goes with the row: a
+        # reinstalled crew comes back un-starred and one click restores it
+        # (deliberately no parking list -- a permanent config key is not worth
+        # a re-click, and a name-keyed list would pre-star an unrelated future
+        # package that reused the name).
         if discovered_names:
             for name, agent_cfg in list(cfg.agents.items()):
                 if agent_cfg.source in ("package", "aim") and (
@@ -3520,6 +3526,15 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": effort_reason, "code": "invalid_reasoning_effort"}, status=400
             )
+    # Same placement rule as reasoning_effort: validated up here, before the
+    # lock and before any field or avatar-file mutation. A body that pairs a
+    # bad `starred` with an avatar promotion would otherwise move the staged
+    # picture and then 400 without rolling it back. Strictly a bool: a string
+    # "false" from a hand-typed request must not read as truthy and star the crew.
+    if "starred" in body and not isinstance(body["starred"], bool):
+        return web.json_response(
+            {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
+        )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:
@@ -3666,6 +3681,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "source" in body:
             agent.source = body["source"]
             changed.append("source")
+        if "starred" in body:
+            # Already validated above, before any mutation.
+            agent.starred = body["starred"]
+            changed.append("starred")
         effort_inputs_after = _effort_inputs(agent)
         # The config write is the transaction's point of no return: on
         # failure the orphaned install is removed; on success the commit

@@ -61,12 +61,15 @@ ROSTER_ROW_KEYS = frozenset(
 
 # Record fields deliberately withheld, each verified to have no consumer in
 # ``website/src``: the two watchdog windows are backend scheduling knobs the
-# roster does not render, and ``telegram_account`` is deprecated and inert.
+# roster does not render, ``telegram_account`` is deprecated and inert, and
+# ``starred`` is a Crew Members roster preference that only ``GET /api/members``
+# renders (the crew manager has no star affordance).
 WITHHELD_RECORD_FIELDS = frozenset(
     {
         "watchdog_tool_stall_suspect_secs",
         "watchdog_tool_stall_hard_cap_secs",
         "telegram_account",
+        "starred",
     }
 )
 

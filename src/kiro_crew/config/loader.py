@@ -2602,6 +2602,10 @@ class KiroCrewConfig:
                         description=entry.get("description", ""),
                         triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),
+                        # Hand-editable config: a quoted "true" or a stray int
+                        # must not become a truthy star, so only a real bool
+                        # is honoured and anything else reads as un-starred.
+                        starred=_safe_bool(entry.get("starred", False), False),
                         # Same guard family as model/triggers: config.json is
                         # hand-editable, so a junk value must collapse to 0
                         # (inherit the global window), never crash the load.

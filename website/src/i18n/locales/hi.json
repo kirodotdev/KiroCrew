@@ -14029,7 +14029,22 @@
       "patrol_badge": "पेट्रोल पर · {{cycle}}",
       "patrol_badge_stopped": "पेट्रोल रुक गया",
       "patrol_next_in": "{{time}} में बाकी",
-      "wake_patrol_every": "हर {{every}}"
+      "wake_patrol_every": "हर {{every}}",
+      "filter_starred": "तारांकित",
+      "filter_starred_description": "केवल तारांकित सदस्य दिखाएँ",
+      "filter_source_mine": "मेरे",
+      "filter_source_builtin": "अंतर्निहित",
+      "filter_source_package": "पैकेज से",
+      "filters_hide_all": "सक्रिय फ़िल्टर सभी सदस्यों को छिपा देते हैं।",
+      "filters_clear": "फ़िल्टर हटाएँ",
+      "star": "{{name}} को तारांकित करें",
+      "unstar": "{{name}} का तारांकन हटाएँ",
+      "star_failed_title": "तारांकन सहेजा नहीं गया",
+      "star_failed": "इस सदस्य का तारांकन अपडेट नहीं हो सका।",
+      "filter_source_mine_description": "क्रू मैनेजर में तुम्हारे बनाए क्रू",
+      "filter_source_builtin_description": "{{productName}} के साथ आने वाले क्रू",
+      "filter_source_package_description": "क्षमता पैकेजों द्वारा इंस्टॉल किए गए क्रू",
+      "member_count_filtered": "{{count}} में से {{shown}} सदस्य"
     }
   },
   "privacyDisclosure": {

@@ -13849,7 +13849,22 @@
       "patrol_badge": "巡逻中 · {{cycle}}",
       "patrol_badge_stopped": "巡逻已停止",
       "patrol_next_in": "还有 {{time}}",
-      "wake_patrol_every": "每 {{every}}"
+      "wake_patrol_every": "每 {{every}}",
+      "filter_starred": "已收藏",
+      "filter_starred_description": "只显示已收藏的成员",
+      "filter_source_mine": "我创建的",
+      "filter_source_builtin": "内置",
+      "filter_source_package": "来自安装包",
+      "filters_hide_all": "当前筛选条件隐藏了所有成员。",
+      "filters_clear": "清除筛选",
+      "star": "收藏 {{name}}",
+      "unstar": "取消收藏 {{name}}",
+      "star_failed_title": "收藏未保存",
+      "star_failed": "无法更新该成员的收藏状态。",
+      "filter_source_mine_description": "你在 Crew 管理器里创建的成员",
+      "filter_source_builtin_description": "{{productName}} 自带的成员",
+      "filter_source_package_description": "由能力安装包安装的成员",
+      "member_count_filtered": "显示 {{shown}} / {{count}} 位成员"
     }
   },
   "privacyDisclosure": {

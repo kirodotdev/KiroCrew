@@ -14208,7 +14208,22 @@
       "patrol_badge": "En patrulla · {{cycle}}",
       "patrol_badge_stopped": "Patrulla detenida",
       "patrol_next_in": "Dentro de {{time}}",
-      "wake_patrol_every": "Cada {{every}}"
+      "wake_patrol_every": "Cada {{every}}",
+      "filter_starred": "Destacados",
+      "filter_starred_description": "Mostrar solo miembros destacados",
+      "filter_source_mine": "Míos",
+      "filter_source_builtin": "Integrados",
+      "filter_source_package": "De paquetes",
+      "filters_hide_all": "Los filtros activos ocultan todos los miembros.",
+      "filters_clear": "Borrar filtros",
+      "star": "Destacar {{name}}",
+      "unstar": "Quitar destacado de {{name}}",
+      "star_failed_title": "Destacado no guardado",
+      "star_failed": "No se pudo actualizar el destacado de este miembro.",
+      "filter_source_mine_description": "Crews que creaste en el gestor de crews",
+      "filter_source_builtin_description": "Crews incluidos con {{productName}}",
+      "filter_source_package_description": "Crews instalados por paquetes de capacidades",
+      "member_count_filtered": "{{shown}} de {{count}} miembros"
     }
   },
   "privacyDisclosure": {

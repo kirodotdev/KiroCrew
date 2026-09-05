@@ -74,6 +74,24 @@ class TestAgentSyncPrune:
         cfg.save.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_prune_removes_a_starred_package_agent_too(self):
+        """A star does not keep a spec-less row alive: the row is pruned like
+        any other and a reinstall comes back un-starred (one click restores it)."""
+        agents = {
+            "omni-reviewer": KiroCrewAgentConfig(
+                kiro_agent="omni-reviewer", source="aim", starred=True
+            ),
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+        }
+        cfg = _make_config(agents)
+        body = await _run_sync(cfg, [_make_aim_agent("omni-aws")])
+        assert body["pruned"] == ["omni-reviewer"]
+        assert "omni-reviewer" not in cfg.agents
+        body = await _run_sync(cfg, [_make_aim_agent("omni-aws"), _make_aim_agent("omni-reviewer")])
+        assert body["synced"] == ["omni-reviewer"]
+        assert cfg.agents["omni-reviewer"].starred is False
+
+    @pytest.mark.asyncio
     async def test_prune_skips_kirocrew_owned_agents(self):
         """Agents with source='kirocrew' are never pruned."""
         agents = {

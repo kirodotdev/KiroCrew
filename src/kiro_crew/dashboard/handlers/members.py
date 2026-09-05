@@ -118,6 +118,25 @@ def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
     return out
 
 
+#: The roster's origin vocabulary. ``source`` on the record is free text in a
+#: hand-editable, agent-writable config, so it never reaches the response raw:
+#: the two known non-package origins pass through and everything else -- the
+#: legacy ``aim`` spelling, a typo, a credential-shaped string -- collapses to
+#: ``package``, which is also what the sync's prune step treats as package.
+_SOURCE_KIROCREW = "kirocrew"
+_SOURCE_BUILTIN = "builtin"
+_SOURCE_PACKAGE = "package"
+
+
+def normalize_member_source(raw: object) -> str:
+    """Bound a record's ``source`` to the three values the roster renders."""
+    if raw == _SOURCE_KIROCREW:
+        return _SOURCE_KIROCREW
+    if raw == _SOURCE_BUILTIN:
+        return _SOURCE_BUILTIN
+    return _SOURCE_PACKAGE
+
+
 async def api_members(request: web.Request) -> web.Response:
     """GET /api/members — crew roster with DM binding and cheap live status.
 
@@ -159,6 +178,13 @@ async def api_members(request: web.Request) -> web.Response:
                 # it cannot carry a credential-shaped value. Without it every
                 # Members surface silently falls back to the name-derived face.
                 "avatar": agent_cfg.avatar,
+                # Roster-filter inputs. `source` lets the page collapse the
+                # package-installed majority the agent sync writes; it is
+                # NORMALIZED, never the raw config string (see
+                # normalize_member_source). `starred` is a load-time-coerced
+                # bool (the user's own favourite mark, PUT /api/agents/{name}).
+                "source": normalize_member_source(agent_cfg.source),
+                "starred": bool(agent_cfg.starred),
             }
         )
 

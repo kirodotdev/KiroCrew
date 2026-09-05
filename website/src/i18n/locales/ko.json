@@ -13849,7 +13849,22 @@
       "patrol_badge": "순찰 중 · {{cycle}}",
       "patrol_badge_stopped": "순찰 중지됨",
       "patrol_next_in": "{{time}} 후 예정",
-      "wake_patrol_every": "{{every}}마다"
+      "wake_patrol_every": "{{every}}마다",
+      "filter_starred": "즐겨찾기",
+      "filter_starred_description": "즐겨찾기한 멤버만 표시",
+      "filter_source_mine": "내가 만든",
+      "filter_source_builtin": "기본 제공",
+      "filter_source_package": "패키지 제공",
+      "filters_hide_all": "현재 필터로 모든 멤버가 숨겨졌습니다.",
+      "filters_clear": "필터 지우기",
+      "star": "{{name}} 즐겨찾기",
+      "unstar": "{{name}} 즐겨찾기 해제",
+      "star_failed_title": "즐겨찾기가 저장되지 않음",
+      "star_failed": "이 멤버의 즐겨찾기를 업데이트할 수 없습니다.",
+      "filter_source_mine_description": "크루 관리자에서 직접 만든 크루",
+      "filter_source_builtin_description": "{{productName}}에 기본 포함된 크루",
+      "filter_source_package_description": "기능 패키지로 설치된 크루",
+      "member_count_filtered": "멤버 {{count}}명 중 {{shown}}명"
     }
   },
   "privacyDisclosure": {

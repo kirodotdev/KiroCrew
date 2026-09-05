@@ -13849,7 +13849,22 @@
       "patrol_badge": "パトロール中 · {{cycle}}",
       "patrol_badge_stopped": "パトロール停止",
       "patrol_next_in": "あと{{time}}",
-      "wake_patrol_every": "{{every}}ごと"
+      "wake_patrol_every": "{{every}}ごと",
+      "filter_starred": "スター付き",
+      "filter_starred_description": "スター付きのメンバーのみ表示",
+      "filter_source_mine": "自分で作成",
+      "filter_source_builtin": "組み込み",
+      "filter_source_package": "パッケージ由来",
+      "filters_hide_all": "現在のフィルターですべてのメンバーが非表示になっています。",
+      "filters_clear": "フィルターをクリア",
+      "star": "{{name}} にスターを付ける",
+      "unstar": "{{name}} のスターを外す",
+      "star_failed_title": "スターを保存できませんでした",
+      "star_failed": "このメンバーのスターを更新できませんでした。",
+      "filter_source_mine_description": "クルーマネージャーで自分が作成したクルー",
+      "filter_source_builtin_description": "{{productName}} に同梱されているクルー",
+      "filter_source_package_description": "ケイパビリティパッケージによってインストールされたクルー",
+      "member_count_filtered": "{{count}} 人中 {{shown}} 人のメンバー"
     }
   },
   "privacyDisclosure": {

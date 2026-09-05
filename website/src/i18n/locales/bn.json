@@ -14029,7 +14029,22 @@
       "patrol_badge": "পেট্রোলে · {{cycle}}",
       "patrol_badge_stopped": "পেট্রোল বন্ধ হয়েছে",
       "patrol_next_in": "{{time}} পরে",
-      "wake_patrol_every": "প্রতি {{every}}"
+      "wake_patrol_every": "প্রতি {{every}}",
+      "filter_starred": "তারকাচিহ্নিত",
+      "filter_starred_description": "শুধু তারকাচিহ্নিত সদস্য দেখান",
+      "filter_source_mine": "আমার",
+      "filter_source_builtin": "অন্তর্নির্মিত",
+      "filter_source_package": "প্যাকেজ থেকে",
+      "filters_hide_all": "সক্রিয় ফিল্টার সব সদস্যকে লুকিয়ে রাখছে।",
+      "filters_clear": "ফিল্টার মুছুন",
+      "star": "{{name}} তারকাচিহ্নিত করুন",
+      "unstar": "{{name}} এর তারকাচিহ্ন সরান",
+      "star_failed_title": "তারকাচিহ্ন সংরক্ষিত হয়নি",
+      "star_failed": "এই সদস্যের তারকাচিহ্ন আপডেট করা যায়নি।",
+      "filter_source_mine_description": "ক্রু ম্যানেজারে আপনার তৈরি করা ক্রু",
+      "filter_source_builtin_description": "{{productName}}-এর সাথে আসা ক্রু",
+      "filter_source_package_description": "ক্ষমতা প্যাকেজ দ্বারা ইনস্টল করা ক্রু",
+      "member_count_filtered": "{{count}} জনের মধ্যে {{shown}} জন সদস্য"
     }
   },
   "privacyDisclosure": {
