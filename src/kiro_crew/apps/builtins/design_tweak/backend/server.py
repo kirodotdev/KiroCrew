@@ -44,6 +44,7 @@ from kiro_crew.platform_compat import (
     SIGKILL,
     SIGTERM,
     get_ppid,
+    is_link_or_junction,
     kill_process_tree,
     trusted_system_bin,
 )
@@ -72,6 +73,7 @@ _RUNTIME_COMPAT_IMPORTS = (
     get_ppid,
     glob,
     http.client,
+    is_link_or_junction,
     is_sensitive_path,
     kill_process_tree,
     parse_qs,
