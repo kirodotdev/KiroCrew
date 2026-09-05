@@ -8,7 +8,10 @@ they need a marker the model and the frontend can both recognise.
 **The user may not be present.** Process the envelope and act; do not answer it as
 though someone is waiting for a conversational reply.
 
-Every prefix is defined once, in `src/kiro_crew/dashboard/state.py`, so the
+Every prefix is defined once. Cron and subagent-completion openers live in
+`src/kiro_crew/constants.py` so platform/core can import them without the
+dashboard layer; `src/kiro_crew/dashboard/state.py` re-exports them next to
+`CRON_NOTIFY_END` / `CRON_NOTIFY_RE` and the other transcript markers so the
 frontend has one list to mirror and no second copy can drift. Classification is by
 `str.startswith` on the resolved prefix, never by a loose regex.
 
@@ -305,7 +308,10 @@ next turn into the same slot:
 <nudge message>
 ```
 
-- `N` is `cycle_count + 1`. Only DELIVERED nudges count toward `max_cycles`.
+- Prefix `AUTO_NUDGE_PREFIX = '[auto-nudge cycle '`. `is_injected_envelope`
+  treats it like cron / subagent completion: bind kwargs stay empty and a
+  leftover human principal is cleared. `N` is `cycle_count + 1`. Only
+  DELIVERED nudges count toward `max_cycles`.
 - `{{STOP_FILE}}` in the configured message is substituted with the resolved stop
   sentinel path before the tag is prepended.
 - The slot entry uses role `nudge` with a structured `nudge` meta block (`cycle`,

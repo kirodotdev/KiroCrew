@@ -51,6 +51,8 @@ class SlotQueueRepository:
         meta: dict | None = None,
         *,
         directive_user_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> str:
         """Append an entry and return its process-local queue ID."""
         queue_id = self._id_provider()
@@ -65,6 +67,7 @@ class SlotQueueRepository:
             item["meta"] = meta
         if directive_user_origin:
             item["_directive_user_origin"] = True
+        self._stamp_principal(item, principal_surface, principal_raw_id)
         owner._queue.append(item)
         owner._note_enqueue()
         return queue_id
@@ -86,6 +89,8 @@ class SlotQueueRepository:
         on_consumed: Callable[[bool], None] | None = None,
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> str:
         """Insert one entry while preserving retry callbacks and provenance."""
         queue_id = self._id_provider()
@@ -105,6 +110,7 @@ class SlotQueueRepository:
             item["_on_irreversibly_consumed"] = on_irreversibly_consumed
         if directive_user_origin:
             item["_directive_user_origin"] = True
+        self._stamp_principal(item, principal_surface, principal_raw_id)
         owner._queue.insert(index, item)
         owner._note_enqueue()
         return queue_id
@@ -159,6 +165,8 @@ class SlotQueueRepository:
         content: str,
         *,
         directive_user_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> bool:
         """Edit a user-owned entry without changing its identity or position."""
         for item in owner._queue:
@@ -173,8 +181,22 @@ class SlotQueueRepository:
                 item["_directive_user_origin"] = True
             else:
                 item.pop("_directive_user_origin", None)
+            # Replacement text is a new speaker unless both identity fields
+            # are present; a partial pair must not leave the old principal.
+            if principal_surface and principal_raw_id:
+                self._stamp_principal(item, principal_surface, principal_raw_id)
+            else:
+                item.pop("_principal_surface", None)
+                item.pop("_principal_raw_id", None)
             return True
         return False
+
+    @staticmethod
+    def _stamp_principal(item: dict[str, Any], surface: str, raw_id: str) -> None:
+        """Stamp queue-item provenance only when both identity fields are set."""
+        if surface and raw_id:
+            item["_principal_surface"] = surface
+            item["_principal_raw_id"] = raw_id
 
     def queue_promote_by_id(self, owner: Any, queue_id: str) -> bool:
         """Move the exact matching entry to the front without rebuilding it."""

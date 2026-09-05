@@ -245,12 +245,20 @@ async def test_openai_compat_response_survives_a_turn_end_purge(tmp_path):
         }
     )
     request.app = {"state": state, "kiro_prerequisite_service": _READY_PREREQUISITE}
-    request.get = MagicMock(side_effect=lambda k, d="": d)
+
+    def _get(key, default=""):
+        if key == "is_dashboard_user":
+            return True
+        if key == "user":
+            return "local-app"
+        return default
+
+    request.get = MagicMock(side_effect=_get)
     request.remote = "127.0.0.1"
 
     tokens = ["Hello", ", ", "world", "!"]
 
-    async def fake_run_chat(_state, sl, _prompt, *, _directive_user_origin):
+    async def fake_run_chat(_state, sl, _prompt, *, _directive_user_origin, **_kw):
         assert _directive_user_origin is True
         for tok in tokens:
             sl.append("chunk", tok, "chunk", broadcast=False)

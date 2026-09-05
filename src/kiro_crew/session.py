@@ -905,6 +905,10 @@ class _Session:
     # Consumed one-shot by the next prompt builder to re-inject the skills
     # index so the model can still discover skills post-compaction.
     needs_context_reinjection: bool = False
+    # Core-derived AgentCore principal (partitioned subject). Bound at turn
+    # start via ``publish_turn_identity``; survives ``adopt_provider`` because
+    # it names the caller, not the transcript.
+    principal: Any = None
 
     def adopt_provider(self, provider: LLMProvider) -> None:
         """Swap in a freshly-spawned *provider*, resetting conversation state.
@@ -915,8 +919,9 @@ class _Session:
         semaphore and the object identity the registry is keyed on survive.
         Everything reset below describes the OLD transcript, so carrying it onto
         a fresh provider would misreport its size or replay a preamble the new
-        conversation never lost. ``agent`` and ``approval_policy`` describe the
-        session's role, not its transcript, so they are kept.
+        conversation never lost. ``agent``, ``approval_policy``, and
+        ``principal`` describe the session's role / caller, not its transcript,
+        so they are kept.
         """
         self.provider = provider
         self.provider_switch_replay = False
@@ -2288,6 +2293,33 @@ class SessionManager:
     def get_agent(self, key: str) -> str:
         """Return a folded session agent name."""
         return self._allocation_boundary().get_agent(key)
+
+    def get_principal(self, key: str) -> Any:
+        """Return the AgentCore principal bound to *key*, or ``None``."""
+        key = self._fold_key(key)
+        session = self._sessions.get(key)
+        return session.principal if session else None
+
+    def set_principal(self, key: str, principal: Any) -> None:
+        """Store a core-derived AgentCore principal on an existing session.
+
+        No-op when the session is not live (same shape as
+        :meth:`set_approval_policy`). Does not invent a session key.
+        """
+        key = self._fold_key(key)
+        session = self._sessions.get(key)
+        if session:
+            session.principal = principal
+
+    def retract_principal_credentials(self, key: str) -> None:
+        """Drop live inbound credentials for *key* after a principal unbind.
+
+        This layer only stores metadata on ``_Session.principal``. Gateway
+        sidecar / ACP-child recycle lands in a later stack PR; until then
+        this is a documented no-op so every unbind goes through
+        :func:`kiro_crew.platform.agent_identity.clear_session_principal`
+        and cannot skip the retract hook once it exists.
+        """
 
     def set_approval_policy(self, key: str, policy: str) -> None:
         """Update a folded session approval policy with audit logging."""

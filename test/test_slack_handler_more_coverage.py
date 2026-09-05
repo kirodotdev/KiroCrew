@@ -1220,7 +1220,7 @@ class _Slot:
             "meta": {**(meta or {}), "mid": f"m-slot-{len(self.appended)}"},
         }
 
-    def queue_append(self, text, *, meta=None, directive_user_origin):
+    def queue_append(self, text, *, meta=None, directive_user_origin, **_kw):
         assert directive_user_origin is True
         # The linked-thread enqueue stamps the admission-time containment
         # snapshot (#5911) so the drain can re-assert it at delivery.
@@ -1252,7 +1252,7 @@ class TestLinkedThreadRouting:
 
         ran: list[str] = []
 
-        async def _fake_run_chat(state, slot, text, *, _directive_user_origin):
+        async def _fake_run_chat(state, slot, text, *, _directive_user_origin, **_kw):
             assert _directive_user_origin is True
             ran.append(text)
 
