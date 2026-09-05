@@ -11742,6 +11742,8 @@
         "send_the_copied_link_to_your_mobile_device_then_open_it": "コピーしたリンクをモバイル端末に送信して、そこで開いてください。",
         "dashboard_url_required_to_create_a_mobile_sign_in_link": "ダッシュボード URL が設定されていません。モバイル用サインインリンクを作成するには dashboard.url を設定してください。",
         "could_not_create_a_sign_in_link_try_again": "サインインリンクを作成できませんでした。もう一度試してください。",
+        "restricted_sessions_cannot_create_a_sign_in_link": "シークレットセッションと一時セッションではサインインリンクを作成できません。作成するにはデフォルトモードに戻してください。",
+        "session_expired_sign_in_again_to_create_a_link": "セッションの有効期限が切れました。もう一度サインインしてから、リンクを作成してください。",
         "copy_failed_select_the_link_and_copy_it_manually": "コピーに失敗しました。リンクを選択して手動でコピーしてください。"
       },
       "aboutPanel": {

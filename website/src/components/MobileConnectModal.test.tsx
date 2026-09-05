@@ -145,6 +145,34 @@ describe('MobileConnectModal', () => {
     await screen.findByText(/Could not create a link/)
   })
 
+  it('tells a restricted session to switch sessions instead of retrying', async () => {
+    mocks.mobileLoginLink.mockRejectedValue(
+      Object.assign(new Error('restricted session'), {
+        body: JSON.stringify({ code: 'restricted_session' }),
+      }),
+    )
+    mount(['login_link'])
+    fireEvent.click(screen.getByText('Create sign-in link'))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Incognito and temporary sessions cannot create sign-in links. Switch back to default mode to create one.',
+    )
+    expect(alert).not.toHaveTextContent('Try again')
+  })
+
+  it('tells an expired session to sign in again instead of retrying', async () => {
+    mocks.mobileLoginLink.mockRejectedValue(
+      Object.assign(new Error('caller session expired'), {
+        body: JSON.stringify({ code: 'caller_session_expired' }),
+      }),
+    )
+    mount(['login_link'])
+    fireEvent.click(screen.getByText('Create sign-in link'))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Your session has expired. Sign in again, then create the link.')
+    expect(alert).not.toHaveTextContent('Try again')
+  })
+
   it('Copy link confirms with a transient tick', async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,

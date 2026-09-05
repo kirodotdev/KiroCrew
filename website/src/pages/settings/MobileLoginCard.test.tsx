@@ -7,6 +7,12 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
+import {
+  __resetErrorJournalForTests,
+  consumeChatHandoff,
+  installSoftNavigate,
+  recordError,
+} from '../../utils/errorReport'
 import { MobileLoginCard } from './MobileLoginCard'
 
 describe('MobileLoginCard', () => {
@@ -63,6 +69,86 @@ describe('MobileLoginCard', () => {
       'The dashboard URL is not configured. Set dashboard.url to create a mobile sign-in link.',
     )
     expect(alert).not.toHaveTextContent('Try again')
+  })
+
+  it('tells a restricted session to switch sessions instead of retrying', async () => {
+    ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(
+      new Error('restricted session'),
+      { body: JSON.stringify({ code: 'restricted_session' }) },
+    ))
+
+    renderWithProviders(<MobileLoginCard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Incognito and temporary sessions cannot create sign-in links. Switch back to default mode to create one.',
+    )
+    expect(alert).not.toHaveTextContent('Try again')
+  })
+
+  it('tells an expired session to sign in again instead of retrying', async () => {
+    ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(
+      new Error('caller session expired'),
+      { body: JSON.stringify({ code: 'caller_session_expired' }) },
+    ))
+
+    renderWithProviders(<MobileLoginCard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Your session has expired. Sign in again, then create the link.',
+    )
+    expect(alert).not.toHaveTextContent('Try again')
+  })
+
+  it('still offers a retry for a code the card does not recognise', async () => {
+    // An unmapped code must degrade to the generic retry copy, not to a blank
+    // alert — the lookup replaced a ternary whose default did exactly this.
+    ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(
+      new Error('governance denied'),
+      { body: JSON.stringify({ code: 'governance_denied' }) },
+    ))
+
+    renderWithProviders(<MobileLoginCard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not create a sign-in link. Try again.',
+    )
+  })
+
+  it('hands the agent the structured report, not just the translated sentence', async () => {
+    // The journal keys on the message the api client threw, and the card renders
+    // a translated sentence instead — so a hand-off that looked the report up by
+    // what is on screen would miss and carry no endpoint, status or code. The
+    // sibling dialog (`MobileConnectModal`) passes `report` the same way.
+    __resetErrorJournalForTests()
+    recordError({
+      source: 'api',
+      message: 'HTTP 403',
+      status: 403,
+      code: 'restricted_session',
+      endpoint: '/api/auth/mobile-link',
+    })
+    installSoftNavigate(vi.fn())
+    ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(
+      new Error('HTTP 403'),
+      { body: JSON.stringify({ code: 'restricted_session' }) },
+    ))
+
+    renderWithProviders(<MobileLoginCard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Ask the agent' }))
+
+    const prompt = consumeChatHandoff()
+    expect(prompt).toContain('- Request: /api/auth/mobile-link -> HTTP 403')
+    expect(prompt).toContain('- Code: restricted_session')
+
+    installSoftNavigate(null)
+    __resetErrorJournalForTests()
   })
 
   it('explains how to copy manually when clipboard access is unavailable', async () => {

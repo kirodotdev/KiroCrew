@@ -6,13 +6,40 @@ import { api } from '../../api/client'
 import { Btn, Card, CardTitle, Input } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useAppSelector } from '../../store'
-import { parseErrorCode } from '../../utils/errorReport'
+import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
 
 const mobileLinkErrorCode = (error: unknown): string | undefined =>
   typeof error === 'object' && error !== null && 'body' in error
     ? parseErrorCode(typeof error.body === 'string' ? error.body : undefined)
     : undefined
+
+/**
+ * Handler error code → catalog key, written out in full.
+ *
+ * `api_auth_mobile_link` refuses a mint with seven distinct codes, and three of
+ * them need copy that names an action retrying cannot supply: two are 403s the
+ * caller can only clear by changing session (`restricted_session`,
+ * `caller_session_expired`), and one is a configuration gap
+ * (`external_origin_unavailable`). Everything else — `bad_origin`,
+ * `unauthenticated`, `app_token_forbidden`, `governance_denied` — is either
+ * transient or an operator decision the card cannot coach, so it keeps the
+ * generic retry copy.
+ *
+ * Each key is a plain string literal in an `as const` map rather than a key
+ * assembled at the call site: a constructed key is invisible to every static
+ * tool, so the keys would read as dead and a pruning pass would delete them —
+ * see `src/i18n/dynamicKeys.test.ts`, and `AboutPanel`'s `UPDATE_ERROR_KEYS`
+ * for the same shape.
+ */
+const MOBILE_LINK_ERROR_KEYS = {
+  external_origin_unavailable:
+    'pages.settings.mobileLoginCard.dashboard_url_required_to_create_a_mobile_sign_in_link',
+  restricted_session:
+    'pages.settings.mobileLoginCard.restricted_sessions_cannot_create_a_sign_in_link',
+  caller_session_expired:
+    'pages.settings.mobileLoginCard.session_expired_sign_in_again_to_create_a_link',
+} as const
 
 export function MobileLoginCard() {
   const { t } = useTranslation()
@@ -109,12 +136,22 @@ export function MobileLoginCard() {
           card holds no draft — and `external_origin_unavailable` is exactly the
           config gap (dashboard.url) the agent can fix. */}
       {createLink.isError && (
+        // Hand-off is on: the mint takes no user input, so the only thing this
+        // subtree holds is a read-only generated link that re-minting replaces.
+        // `report` is resolved from the RAW error message, not the copy below:
+        // the journal keys on what `apiFailure` threw, so a lookup by the
+        // translated sentence would miss and the hand-off would carry no
+        // endpoint, status or backend `code`.
         <ErrorNotice
-          className="mt-3"
+          variant="inline"
           askAgent
-          message={mobileLinkErrorCode(createLink.error) === 'external_origin_unavailable'
-            ? t('pages.settings.mobileLoginCard.dashboard_url_required_to_create_a_mobile_sign_in_link')
-            : t('pages.settings.mobileLoginCard.could_not_create_a_sign_in_link_try_again')}
+          className="mt-3"
+          report={findReport(createLink.error?.message)}
+          message={t(
+            MOBILE_LINK_ERROR_KEYS[
+              mobileLinkErrorCode(createLink.error) as keyof typeof MOBILE_LINK_ERROR_KEYS
+            ] || 'pages.settings.mobileLoginCard.could_not_create_a_sign_in_link_try_again',
+          )}
         />
       )}
       {copyFailed && (
