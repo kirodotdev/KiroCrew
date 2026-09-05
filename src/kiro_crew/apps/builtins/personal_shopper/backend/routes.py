@@ -481,9 +481,10 @@ def _sites_path() -> Path:
 async def _handle_get_sites(request: web.Request) -> web.Response:
     def _read():
         path = _sites_path()
-        if path.exists():
+        try:
             return json.loads(path.read_text(encoding="utf-8"))
-        return {"sites": []}
+        except FileNotFoundError:
+            return {"sites": []}
 
     data = await asyncio.to_thread(_read)
     return web.json_response(data)
