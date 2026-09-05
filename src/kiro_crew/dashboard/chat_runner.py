@@ -9479,6 +9479,21 @@ async def _run_chat(
                         request_id=event.request_id,
                         metadata={"reason": _safety_reason or "interactive"},
                     )
+                    # deny-notice-exempt: interactive user denial. The person
+                    # clicked Reject (or "reject once"), so kiro-cli's "User
+                    # denied tool execution" is the true and correct attribution
+                    # here — the sharpest case in the class, because steering a
+                    # policy notice would tell the model a rule blocked a call
+                    # the user personally refused. Two host-side auto-declines
+                    # still funnel to this shared reject (no turn budget,
+                    # Slack-delivery failure) and DO carry the wrong
+                    # attribution, but the correction belongs at their own
+                    # decision points upstream where the cause is known
+                    # (#8219 / #8578), not at this shared answer site where user
+                    # and host causes are indistinguishable. The approval
+                    # timeout used to be a third: it now steers
+                    # DENY_CAUSE_APPROVAL_TIMEOUT at its own branch above, which
+                    # is exactly the shape the remaining two want.
                     await client.reject_tool(event.request_id)
                     if _safety_reason:
                         _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
