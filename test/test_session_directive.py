@@ -26,6 +26,7 @@ _CASES = {
     "suggest_followup": {"items": [{"title": "t", "prompt": "p"}]},
     "ask_question": {"questions": [{"question": "Which approach?", "options": [{"label": "A"}]}]},
     "reset_conversation": {},
+    "section_marker": {"label": "item-42"},
 }
 
 

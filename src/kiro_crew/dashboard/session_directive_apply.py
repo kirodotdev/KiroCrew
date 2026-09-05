@@ -28,15 +28,27 @@ That is why the tool bodies phrase their own message to not over-claim an effect
 this consumer applies (and may refuse) after the fact.
 
 IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session and
-Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON``
-constant. ``sel`` is a genuine cycle
+Research ownership contracts, the immutable ``AUTONUDGE_STOP_REASON``
+constant, the ``security`` redactors, and the ``validation`` MODULE. ``sel`` is a
+genuine cycle
 (``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
 before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
-security, chat_handlers) are deferred on purpose: they keep this module cheap to
+chat_handlers) are deferred on purpose: they keep this module cheap to
 import from the turn loop's import graph, and they resolve the symbol at CALL
 time so patching the SOURCE module is what tests (and any runtime override)
 actually observe — a module-scope ``from X import name`` would freeze a stale
-binding and silently bypass it.
+binding and silently bypass it. ``chat_handlers`` is additionally a genuine
+cycle, annotated at its use site: it cannot be imported as an entry point at all.
+
+``validation`` is the one case where BOTH properties hold at once, which is why
+it is at module scope while the list above is not: it is imported AS A MODULE
+(``from kiro_crew import validation``), never as a from-import of the symbol, so
+the import STATEMENT satisfies AUTOSDE ``top-level-imports`` while every read
+goes through an attribute lookup performed at CALL time — so a patched
+``validation.SECTION_MARKER_SCHEMA`` is still observed. It also carries no cycle
+to defer around: importing it pulls in no ``kiro_crew.dashboard`` module at all.
+Do NOT "simplify" this to ``from kiro_crew.validation import SECTION_MARKER_SCHEMA``;
+that reintroduces exactly the frozen binding described above.
 """
 
 from __future__ import annotations
@@ -47,6 +59,7 @@ import os
 import time
 from typing import Any
 
+from kiro_crew import validation
 from kiro_crew.apps.builtins.auto_research.session_keys import (
     is_owned_research_slot,
 )
@@ -56,6 +69,8 @@ from kiro_crew.autonudge import (
     MONITOR_TERMINAL_REASON,
 )
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
@@ -63,8 +78,76 @@ logger = logging.getLogger(__name__)
 # Card directives require a connected dashboard surface. ``set_project`` is
 # admitted by the user-surface provenance gate below, then separately requires
 # the current turn to own the slot it would mutate.
-_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question"})
+#
+# ``section_marker`` is dashboard-only for a different reason than the two cards:
+# not that a card needs a client to receive it, but that the marker IS a
+# rendering. A messaging-channel transport has no transcript surface to draw a
+# labelled rule on, so there is nothing for the effect to mean there.
+_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question", "section_marker"})
 _USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation"})
+
+#: Directives that additionally require authenticated-HUMAN provenance for the
+#: turn, on TOP of whichever surface gate above already applies to them.
+#:
+#: A surface gate answers "is there a user-facing place for this effect to land",
+#: which is NOT the same question as "did a human ask for it" — and the two come
+#: apart precisely for the headless producers: a cron turn can run on a user's
+#: slot and a sub-agent can share its parent's slot, so both inherit an OPEN
+#: DASHBOARD TAB they did not open. ``section_marker`` is therefore listed here as
+#: well as in ``_DASHBOARD_ONLY_DIRECTIVES``: the dashboard-only gate asks only
+#: whether a tab exists, so on its own it admitted exactly the cron/taskrunner
+#: turns the tool's own description promises to refuse, whenever such a turn
+#: happened to run on a session with a tab open. Membership in the dashboard-only
+#: set is about where the effect can RENDER; membership here is about who is
+#: entitled to write a structural row into a human's transcript.
+_USER_ORIGIN_DIRECTIVES = _USER_SURFACE_DIRECTIVES | frozenset(
+    # ``ask_question`` is EXCLUDED deliberately: off the dashboard it degrades to
+    # an [OPTIONS:] steer rather than refusing, so its gate is surface, not origin.
+    {"section_marker", "suggest_followup"}
+)
+
+
+def _user_origin_refusal(kind: str, session_key: str, middle: str) -> str:
+    """Both provenance refusals share this head and tail, so neither can drift.
+
+    ``middle`` carries the ONLY clause that legitimately differs between them:
+    ``set_project``/``reset_conversation`` name the surfaces that would have
+    worked, while ``section_marker``/``suggest_followup`` have to say the refusal
+    stands even with a tab open, which is the counter-intuitive case. Splitting the
+    shared skeleton out keeps that difference deliberate instead of leaving two
+    hand-written sentences to fall out of step on the parts that must match.
+    """
+    return (
+        f"Error: {kind} only works from a user-facing session{middle} "
+        f"(this turn is {session_key!r}). Nothing was changed."
+    )
+
+
+def _max_section_label() -> int:
+    """Hard cap on a section label, READ OFF ``validation.SECTION_MARKER_SCHEMA``.
+
+    Re-checked in the applier because this module is reachable from the channel
+    consumer as well as the MCP tool, so it must not trust that a validator ran
+    upstream. But the cap is not re-SPELLED here: a second literal is a second
+    source of truth, and the first time either moved the applier's belt would
+    silently stop matching the schema's braces — with no failure at the moment of
+    divergence, since both numbers are individually valid.
+
+    Read through the ``validation`` MODULE imported at module scope, not via a
+    ``from … import SECTION_MARKER_SCHEMA``. That placement satisfies AUTOSDE
+    ``top-level-imports`` (the statement is at the top of the file) while the
+    attribute lookup below still happens at CALL time, so a test or runtime
+    override that patches ``validation.SECTION_MARKER_SCHEMA`` is observed rather
+    than frozen at import. A from-import would satisfy the rule and silently lose
+    that second property; there is no cycle here to justify deferring either.
+    """
+    for field in validation.SECTION_MARKER_SCHEMA.fields:
+        if field.name == "label":
+            return field.max_len
+    # Loud rather than a fallback literal: no ``label`` field means the schema and
+    # this applier have genuinely diverged, which is the one thing reading the cap
+    # from the schema exists to prevent. A default here would hide it.
+    raise AssertionError("SECTION_MARKER_SCHEMA declares no 'label' field")
 
 
 def _has_user_surface(session_key: str) -> bool:
@@ -146,18 +229,46 @@ async def apply_session_directive(
             f"Error: {kind} targets this turn's chat slot, and this turn "
             f"holds none (this turn is {session_key!r}). Nothing was changed."
         )
-    if kind in _USER_SURFACE_DIRECTIVES and (
+    if kind in _USER_ORIGIN_DIRECTIVES and (
         not producer_is_user_facing or not _has_user_surface(session_key)
     ):
         # A cron turn can run on a user's slot and a sub-agent can share its
         # parent's slot. Positive admission prevents either from silently
-        # retargeting the user's project/CWD.
+        # retargeting the user's project/CWD, or — for ``section_marker`` — from
+        # writing a structural row into a human's transcript on the strength of a
+        # tab it merely inherited. The surface gates above cannot cover this: they
+        # ask whether a tab or user surface EXISTS, which a headless producer
+        # riding a user's slot satisfies without a human having asked for
+        # anything.
         _audit(session_key, kind, "denied")
-        return (
-            f"Error: {kind} only works from a user-facing session (dashboard "
-            f"or a messaging channel); headless callers such as cron jobs and "
-            f"sub-agents are refused (this turn is {session_key!r}). "
-            "Nothing was changed."
+        logger.warning(
+            "session-directive %s REFUSED on human-provenance grounds "
+            "(session_key=%s, producer_is_user_facing=%s, has_user_surface=%s): an "
+            "injected cron, sub-agent or task-runner turn cannot drive this tool, "
+            "even on a slot whose dashboard tab is open. Nothing was changed.",
+            kind,
+            session_key,
+            producer_is_user_facing,
+            _has_user_surface(session_key),
+        )
+        if kind in _USER_SURFACE_DIRECTIVES:
+            # Unchanged from before ``section_marker`` joined this gate. Those two
+            # directives' wording is not this change's business: extending the set
+            # must not silently reword an unrelated tool's refusal.
+            return _user_origin_refusal(
+                kind,
+                session_key,
+                " (dashboard or a messaging channel); headless callers such as "
+                "cron jobs and sub-agents are refused",
+            )
+        # ``section_marker`` says more, because its refusal is the counter-intuitive
+        # one: the tab IS open, so a caller reading the dashboard-only rule alone
+        # would expect this to have worked.
+        return _user_origin_refusal(
+            kind,
+            session_key,
+            "; headless callers such as cron jobs, sub-agents and taskrunner "
+            "turns are refused even when this session has an open dashboard tab",
         )
     try:
         if kind == "monitor_start":
@@ -174,6 +285,8 @@ async def apply_session_directive(
             result = await _set_project(state, slot, args)
         elif kind == "reset_conversation":
             result = await _reset_conversation(slot, session_key, args)
+        elif kind == "section_marker":
+            result = await _section_marker(slot, session_key, args)
         elif kind == "suggest_followup":
             result = await _suggest_followup(state, slot, args)
         elif kind == "ask_question":
@@ -799,6 +912,169 @@ async def _reset_conversation(slot: Any, session_key: str, args: dict[str, Any])
         "message after it lands starts with no memory of this conversation. The "
         "transcript is untouched — earlier messages stay visible in the tab and "
         "on disk."
+    )
+
+
+async def _section_marker(slot: Any, session_key: str, args: dict[str, Any]) -> str:
+    """Hold a labelled chapter-break row for this slot's next turn boundary.
+
+    DEFERRED, not appended here, and the reason is positional rather than about
+    teardown. When a turn builds its prompt it passes ``exclude_last_n=1`` so the
+    current turn's user message is not fed back as history, and that exclusion is
+    a RAW POSITIONAL SLICE applied BEFORE role filtering (``context._replay_rows``
+    / ``_recall_rows``, ``history.recent``). So a row appended after the
+    current-turn user row becomes the physical tail, absorbs the exclusion, and
+    the user's message survives the slice and is replayed — sending the request
+    twice. Keeping the role out of ``RECALL_ROLES`` does NOT rescue this:
+    membership governs whether the row itself is replayed, never which row the
+    positional slice removes.
+
+    That is the same hazard ``/note`` defers its visible line for, so this reuses
+    ``/note``'s hold (``slot._deferred_notes``, flushed by
+    ``flush_deferred_notes`` at the seams that already call it) rather than adding
+    a third notion of "held". Deferral is arguably correct here anyway: a marker
+    held to the turn's end lands after the closing message for the item just
+    finished and before anything for the next one, which is where a chapter break
+    belongs. The honest limit, stated in the tool description too: a marker
+    separates TURNS, so several emitted in one turn clump at that turn's end.
+
+    That reuse holds for an ordinary in-flight turn but NOT inside multi-stage plan
+    execution, which is refused outright below rather than deferred. The hold's
+    flush seam is skipped while ``_in_stage_execution`` is set, and that flag spans
+    the whole plan rather than one stage, so a "turn-boundary" hold silently
+    becomes an end-of-PLAN hold there. See the refusal's own comment for the
+    mechanism.
+
+    Records the session THIS TURN runs on, captured by the caller, for the same
+    reason ``_reset_conversation`` does: a slot's ``linked_session_key`` is
+    mutable, so a cron or workflow injection can rebind the live slot between the
+    turn that asked and the flush that writes, and ``flush_deferred_notes``
+    re-checks this key against the live session before writing.
+    """
+    # circular import: ``chat_handlers`` cannot be imported at module scope from
+    # here. Measured — importing ``kiro_crew.dashboard.chat_handlers`` as the
+    # entry point raises ImportError from a partially initialised
+    # ``kiro_crew.artifacts`` (artifacts <-> validation), while importing THIS
+    # module first succeeds; hoisting would put that fragile subtree on the turn
+    # loop's import path, which chat_runner reaches before chat_handlers. This is
+    # AUTOSDE ``top-level-imports``' circular-import exception. The redactors used
+    # below are at module scope instead, since ``kiro_crew.security`` imports
+    # cleanly in both orders and carries no such cycle.
+    from kiro_crew.dashboard.chat_handlers import _MAX_DEFERRED_NOTES
+
+    label = str(args.get("label") or "").strip()
+    # Scrub the LABEL itself, not merely the rendered fallback built from it.
+    # ``label`` is caller-controlled text (an LLM's, or an injection that reached
+    # one through untrusted tool/web/channel content) and it reaches the visible
+    # transcript by TWO routes, not one: ``content`` below, and ``meta["label"]``
+    # — which is the field BOTH renderers actually draw (``meta?.label ?? content``).
+    # The row is appended with ``broadcast=True``, and on the live global-SSE path
+    # ``state._broadcast_chat_message`` merges direct meta UNREDACTED on the way
+    # out; that path's safety argument is that live tool meta is redacted AT ITS
+    # SOURCE, and this handler is that source. Redacting only ``content`` left the
+    # drawn field raw, so a credential or exfil URL reached the dashboard
+    # unscanned and was scrubbed only by ``_redact_meta`` on a later HTTP
+    # refetch — i.e. after it had already been rendered.
+    #
+    # Ordered BEFORE the length cap deliberately. Truncating first can cut a
+    # credential mid-pattern so the regex no longer matches it, which would leave
+    # a partial secret in both surfaces; redacting first replaces it whole.
+    # Redaction can lengthen the string (a 20-char key becomes a 22-char tag), so
+    # the cap is applied to the scrubbed value and still binds.
+    label, _ = redact_exfiltration_urls(label)
+    label, _ = redact_credentials(label)
+    cap = _max_section_label()
+    if len(label) > cap:
+        # Belt to the schema's braces: the tool validates, but the applier is
+        # also reachable from the channel consumer, and a structural row must
+        # never carry a paragraph of prose however it arrived.
+        label = label[:cap]
+
+    # ``content`` is the COMPATIBILITY surface: an older frontend that does not
+    # know the role draws this string rather than nothing (ChatPage) or renders
+    # nothing at all (the SDK path), so a legible degradation beats an empty row.
+    # ``meta`` is the machine surface and carries the label a renderer reads.
+    # Both are now derived from the one scrubbed ``label`` above, so the drawn
+    # field carries the same guarantee as the fallback rather than a weaker one.
+    content = f"— End of: {label} —" if label else "— End of section —"
+
+    if getattr(slot, "_in_stage_execution", False):
+        # REFUSED rather than deferred, because the hold does not survive a plan
+        # as a turn-boundary hold. ``chat_runner``'s per-cycle flush is gated
+        # ``if not will_synthesize and not slot._in_stage_execution``, and
+        # ``_in_stage_execution`` is set once around the WHOLE multi-stage loop
+        # (``chat_orchestrator`` sets it before the loop and clears it after), not
+        # per stage turn. So a marker queued during stage 2 of a 5-stage plan is
+        # not written at the end of stage 2 at all: it sits in ``_deferred_notes``
+        # until ``_stage_loop``'s exit, then lands together with every other
+        # marker the plan accumulated — the opposite of the turn separation the
+        # tool describes, and it silently consumes the shared per-turn
+        # ``_MAX_DEFERRED_NOTES`` budget across stages while doing it.
+        #
+        # Refusing is the conservative half of the fix: it makes the tool's
+        # promise true everywhere it is accepted, instead of accepting the call
+        # and mis-placing the row. Admitting markers here needs a per-STAGE flush
+        # seam that does not exist yet; adding one is a change to the plan
+        # lifecycle, not to this applier.
+        raise _DirectiveDenied(
+            "Error: a section break cannot be drawn during multi-stage plan "
+            "execution (in_stage_execution). A marker separates TURNS, but a "
+            "plan's stages share one deferred-note hold that is not flushed "
+            "until the whole plan exits, so the row would land at the end of the "
+            "plan rather than at this stage's boundary. Draw it before the plan "
+            "starts or after it finishes. Nothing was changed."
+        )
+
+    deferred = bool(getattr(slot, "running", False))
+    meta = {"label": label}
+    if not deferred:
+        # No turn in flight, so no positional tail to steal: write it now.
+        slot.append(role=SECTION_MARKER_ROLE, content=content, cls="", broadcast=True, meta=meta)
+        return (
+            f"Section break drawn{f' — {label}' if label else ''}. It changes only "
+            "what is rendered; no model context was dropped."
+        )
+
+    if len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
+        # Shares /note's per-turn hold cap, so a caller cannot park unbounded
+        # rows on one turn. The code string matches the HTTP endpoint's 429 body
+        # so both surfaces name the same condition.
+        raise _DirectiveDenied(
+            f"Error: this turn already holds {_MAX_DEFERRED_NOTES} deferred rows "
+            "(deferred_notes_full); the section break was not queued. Markers "
+            "separate turns — draw one at the seam rather than several per turn."
+        )
+
+    slot._deferred_notes.append(
+        {
+            "content": content,
+            "cls": "",
+            # No context half. That is the whole reason /note itself is not
+            # reused: /note ALWAYS queues a _pending_context entry drained into
+            # the next user message, and a chapter break must never enter a
+            # model's prompt.
+            "context": None,
+            "role": SECTION_MARKER_ROLE,
+            "meta": meta,
+            # The CALLER's key for this turn, not ``effective_session_key(slot)``.
+            # Re-deriving it from the slot defeats the very check it feeds:
+            # ``flush_deferred_notes`` compares this value against the slot's LIVE
+            # key, so if a cron or workflow result binds an unbound slot mid-turn
+            # BEFORE this directive is applied, a slot-derived key records the
+            # cron's key, matches the same rebound slot at flush, and writes this
+            # turn's marker into the cron's transcript. Both sides of the
+            # comparison would have followed the rebind, so the mismatch is
+            # undetectable by construction. ``session_key`` is captured by the
+            # consumer, which is the only layer that knows the authoritative
+            # session — the same reason ``_reset_conversation`` stores it rather
+            # than resolving the slot.
+            "session": session_key,
+        }
+    )
+    return (
+        f"Section break queued{f' — {label}' if label else ''}; it will appear at "
+        "the end of this turn, after this turn's closing message. It changes only "
+        "what is rendered; no model context is dropped."
     )
 
 

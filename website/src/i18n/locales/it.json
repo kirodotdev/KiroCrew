@@ -9504,6 +9504,10 @@
         "copy_text_failed": "Copia non riuscita",
         "copy_text_unavailable": "Gli appunti sono bloccati qui. Il testo del tuo post è selezionato: premi Ctrl+C / ⌘C. Il testo della card che hai modificato va copiato dalla card stessa.",
         "export_failed": "Impossibile generare la scheda di condivisione"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fine di: {{label}}",
+        "end_of_section": "Fine della sezione"
       }
     },
     "chatPage": {
@@ -9533,6 +9537,7 @@
       "filter_agents": "Filtra gli agenti",
       "focus_popped_out_window": "Metti a fuoco la finestra separata",
       "fork_failed_error": "Fork non riuscito: {{error}}",
+      "fork_too_large_error": "Questa conversazione è troppo grande per il fork. Prova un punto che copi meno messaggi.",
       "hide_sessions": "Nascondi sessioni",
       "hide_sessions_sidebar": "Nascondi la barra laterale delle sessioni",
       "in_split": "Nella vista divisa",

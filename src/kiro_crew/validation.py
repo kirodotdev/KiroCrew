@@ -1394,6 +1394,40 @@ RESET_CONVERSATION_SCHEMA = ToolSchema(
     fields=[],
 )
 
+# section_marker draws a labelled rule at the seam between two units of work in
+# the calling session's transcript. The label is capped hard at 120 chars: it is
+# a chapter heading, and a structural row must not become a smuggling route for
+# a paragraph of prose. The one field is optional — a caller with nothing
+# meaningful to say still gets a plain break.
+#
+# The ``pattern`` is what keeps a crafted label from breaking the row's own
+# rendering, and it is NOT redundant with the shared hidden-category sweep every
+# string field gets. Measured: that sweep STRIPS hidden-category characters (a
+# zero-width space is silently removed) but passes ``\n``, ``\r`` and ``\t``
+# through verbatim, because they are legitimate whitespace almost everywhere
+# else. Here they are not: the label is drawn as a ONE-LINE rule caption by both
+# renderers and persisted to the session jsonl, so a newline in it splits the
+# caption. Rejected at the schema rather than stripped at the applier, so the
+# caller learns the label was invalid instead of silently getting a different one.
+#
+# No collapse field: Phase 1 is "the event and the rule (no collapse)". A flag
+# recorded on every row with nothing reading it is Phase 2's surface, and Phase 2
+# can add it treating an absent key as true — byte-compatible with every row
+# written here.
+SECTION_MARKER_SCHEMA = ToolSchema(
+    tool_name="section_marker",
+    fields=[
+        FieldSpec(
+            "label",
+            str,
+            max_len=120,
+            # U+2028/U+2029 are Zl/Zp, so the shared Cc/Cf/Cs sweep leaves them
+            # intact, and a browser honours both as forced line breaks.
+            pattern=re.compile(r"[^\n\r\t\u2028\u2029]*\Z"),
+        ),
+    ],
+)
+
 # suggest_followup renders an agent-authored follow-up card in the calling
 # dashboard slot. Every string below is LLM-authored and lands in the DOM and
 # (for the worktree action) in a `git worktree add` argv, so the shapes are
@@ -2893,6 +2927,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "list_sessions": LIST_SESSIONS_SCHEMA,
     "set_project": SET_PROJECT_SCHEMA,
     "reset_conversation": RESET_CONVERSATION_SCHEMA,
+    "section_marker": SECTION_MARKER_SCHEMA,
     "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,
     "artifact_get": ARTIFACT_GET_SCHEMA,

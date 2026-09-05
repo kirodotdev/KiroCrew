@@ -5018,9 +5018,13 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # plain user message carries no `kind`, so this site would release the note
     # into stage N+1 before the dequeue gate ever holds that message back.
     # _stage_loop's exit flush is the seam that delivers it.
-    if not slot._in_stage_execution and not (slot._queue and slot._queue[0].get("kind")):
+    if not slot._in_stage_execution:
+        # A marker is exempt from the origin-tag withhold: a note is a MESSAGE owed
+        # to the next user turn, but a marker is a BOUNDARY, so holding it past the
+        # successor moves the seam over rows it never covered.
+        structural_next = bool(slot._queue and slot._queue[0].get("kind"))
         try:
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=structural_next)
         except Exception:
             # Everything below this point is the successor handoff -- the dequeue,
             # the row append and spawn_guarded_turn. A raise here would return
@@ -5467,9 +5471,11 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
     # stage of a plan -- this function runs per stage, from inside each stage's own
     # _run_chat finally, while _in_stage_execution is still set. Each has a later
     # seam that flushes: the cycle after synthesis, _stage_loop's exit for a plan.
-    if not will_synthesize and not slot._in_stage_execution:
+    if not slot._in_stage_execution:
+        # A marker is exempt from the synthesis withhold: a note is a MESSAGE owed
+        # to the next user turn, but a marker is a BOUNDARY that must not move.
         try:
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=will_synthesize)
         except Exception:
             # Below this are the two ways a cycle ends: the synthesis dispatch and
             # the terminal append("done") / slot.task = None / chat_done. A raise

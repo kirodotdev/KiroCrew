@@ -9371,6 +9371,10 @@
         "copy_text_failed": "कॉपी नहीं हो सका",
         "copy_text_unavailable": "यहाँ क्लिपबोर्ड ब्लॉक है। तुम्हारे पोस्ट का टेक्स्ट चुना हुआ है — Ctrl+C / ⌘C दबाओ। कार्ड का जो टेक्स्ट तुमने बदला है, उसे कार्ड से ही कॉपी कर लो।",
         "export_failed": "शेयर कार्ड नहीं बनाया जा सका"
+      },
+      "sectionMarkerRow": {
+        "end_of": "{{label}} का अंत",
+        "end_of_section": "अनुभाग का अंत"
       }
     },
     "chatPage": {
@@ -9400,6 +9404,7 @@
       "filter_agents": "एजेंट फ़िल्टर करें",
       "focus_popped_out_window": "पॉप-आउट विंडो पर फ़ोकस करें",
       "fork_failed_error": "फ़ॉर्क विफल: {{error}}",
+      "fork_too_large_error": "यह बातचीत फ़ॉर्क करने के लिए बहुत बड़ी है। कम संदेश कॉपी करने वाला बिंदु आज़माएँ।",
       "hide_sessions": "सेशन छिपाएँ",
       "hide_sessions_sidebar": "सेशन साइडबार छिपाएँ",
       "in_split": "स्प्लिट में",

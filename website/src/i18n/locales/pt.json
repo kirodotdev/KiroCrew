@@ -9504,6 +9504,10 @@
         "copy_text_failed": "Falha ao copiar",
         "copy_text_unavailable": "A área de transferência está bloqueada aqui. O texto da sua publicação está selecionado — pressione Ctrl+C / ⌘C. O texto do cartão que você editou, copie do próprio cartão.",
         "export_failed": "Não foi possível gerar o cartão de compartilhamento"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fim de: {{label}}",
+        "end_of_section": "Fim da seção"
       }
     },
     "chatPage": {
@@ -9533,6 +9537,7 @@
       "filter_agents": "Filtrar agentes",
       "focus_popped_out_window": "Focar a janela destacada",
       "fork_failed_error": "Falha na bifurcação: {{error}}",
+      "fork_too_large_error": "Esta conversa é grande demais para bifurcar. Tente um ponto que copie menos mensagens.",
       "hide_sessions": "Ocultar sessões",
       "hide_sessions_sidebar": "Ocultar a barra lateral de sessões",
       "in_split": "Na divisão",

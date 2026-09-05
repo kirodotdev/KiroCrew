@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 
 
 def _apply_message_patch(slot: Any, message: dict, content: str | None, meta: dict | None) -> dict:
@@ -145,14 +146,31 @@ class SlotBufferCoordinator:
         return sum(1 for note in slot._deferred_notes if note.get("context") is not None)
 
     @staticmethod
-    def flush_deferred_notes(slot: Any, *, logger: logging.Logger) -> int:
-        """Flush held notes in order, restoring the unwritten suffix on failure."""
+    def flush_deferred_notes(slot: Any, *, logger: logging.Logger, markers_only: bool) -> int:
+        """Flush held notes in order, restoring the unwritten suffix on failure.
+
+        ``markers_only`` releases just the section-marker rows and leaves the rest
+        held. It exists for the seams that owe a ``/note`` to the next USER turn but
+        must still let a section marker out: a note is a message, so delaying it is
+        delivery, while a marker is a boundary, so delaying it relocates the boundary.
+        """
         if not slot._deferred_notes:
             return 0
         from kiro_crew.dashboard.chat_utils import effective_session_key
 
-        held = slot._deferred_notes[:]
-        slot._deferred_notes.clear()
+        def _role(note: dict) -> str:
+            return note.get("role") or "inject"
+
+        if not markers_only:
+            held = slot._deferred_notes[:]
+            slot._deferred_notes.clear()
+        else:
+            held = [n for n in slot._deferred_notes if _role(n) == SECTION_MARKER_ROLE]
+            if not held:
+                return 0
+            slot._deferred_notes[:] = [
+                n for n in slot._deferred_notes if _role(n) != SECTION_MARKER_ROLE
+            ]
         live_session = effective_session_key(slot)
         written = 0
         for index, note in enumerate(held):
@@ -181,12 +199,27 @@ class SlotBufferCoordinator:
                 if context is not None:
                     context["noteSession"] = live_session
                     slot.append_pending_context(context)
+                # ``role``/``meta`` are optional so a /note entry keeps its exact
+                # prior shape. A section-marker row rides this same hold — held
+                # for the same positional reason, flushed at the same seams — and
+                # supplies its own role plus a ``label`` meta.
+                #
+                # ``noteSession`` is stamped ONLY on a note row. It is not an
+                # audit field to spread: it is the surviving half of the note wire
+                # contract (``website/src/lib/noteContract.ts``, whose ``isNoteRow``
+                # returns true for ANY row carrying it, because ``cls`` does not
+                # survive the write path for a non-system role). Stamping it on a
+                # marker would make that predicate call the marker a note. The
+                # rebind protection this flush actually relies on is
+                # ``note["session"]``, checked above, not the row's meta.
+                role = note.get("role") or "inject"
+                extra_meta = note.get("meta") or {}
                 slot.append(
-                    role="inject",
+                    role=role,
                     content=note["content"],
                     cls=note["cls"],
                     broadcast=True,
-                    meta={"noteSession": live_session},
+                    meta=({"noteSession": live_session} if role == "inject" else dict(extra_meta)),
                 )
             except Exception:
                 # New arrivals stay after this older, unwritten suffix.

@@ -60,6 +60,7 @@ from kiro_crew.validation import (
     MONITOR_WATCH_SCHEMA,
     REGISTER_HOOK_SCHEMA,
     RESET_CONVERSATION_SCHEMA,
+    SECTION_MARKER_SCHEMA,
     SELECT_CREW_SCHEMA,
     SET_PROJECT_SCHEMA,
     SUGGEST_FOLLOWUP_SCHEMA,
@@ -624,6 +625,61 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "section_marker",
+            "description": (
+                "Draw a labelled chapter break in the calling chat session's "
+                "transcript. The dashboard renders it as a horizontal rule with "
+                "your label on it, so a reader can see where one unit of work "
+                "ended and the next began."
+                "\n\n"
+                "Use when a session walks a list of independent items one at a "
+                "time (reviewing a queue, triaging tickets) and you have just "
+                "finished one. The boundary is an assertion only you hold — "
+                "nothing in the transcript records where item N ended, and no "
+                "reader can infer it afterwards."
+                "\n\n"
+                "A marker SEPARATES TURNS, not regions within a turn. It is "
+                "appended at a turn boundary, normally the end of this turn, so "
+                "it lands after your closing message for the item just finished "
+                "and before anything for the next one. If one turn walks several "
+                "items, every marker it emits clumps at that turn's end — so "
+                "call this once per turn, at the seam."
+                "\n\n"
+                "This changes only what is RENDERED. It does not touch the "
+                "model's memory: use reset_conversation for that, and the two "
+                "compose — mark the section for the view, reset the conversation "
+                "for the context."
+                "\n\n"
+                "Restrictions: dashboard chat sessions only, because the effect "
+                "is a rendering — a messaging-channel turn has no transcript "
+                "surface to draw a labelled rule on. Headless producers (cron "
+                "jobs, sub-agents, task runners) are refused too, and refused "
+                "EVEN when the session has an open dashboard tab: such a turn can "
+                "run on a user's slot and inherit a surface it did not open, and "
+                "writing a structural row into a human's transcript requires that "
+                "a human asked for it. Also refused during multi-stage plan "
+                "execution: a held row would not land at that stage's boundary "
+                "but at the end of the whole plan, so draw the marker before the "
+                "plan starts or after it finishes."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": (
+                            "Short heading for the section that is ENDING, e.g. "
+                            "the item id or name you just finished. The row "
+                            'renders it as "End of: <label>", so write the bare '
+                            "id and let the row supply the direction — do not "
+                            'write "End of" yourself. Max 120 chars. Omit to '
+                            'draw a generic "End of section" rule instead.'
+                        ),
+                    },
+                },
+            },
+        },
+        {
             "name": "suggest_followup",
             "description": (
                 "Offer the user up to 3 follow-up items as a card below the chat "
@@ -651,8 +707,10 @@ def schemas() -> list[dict[str, Any]]:
                 "label. Prefer 'branch' + the worktree route for work that should not "
                 "share this session's working tree."
                 "\n\n"
-                "Restrictions: dashboard sessions only (Slack, cron, and subagent "
-                "contexts are rejected — they have no card surface). One card at a "
+                "Restrictions: dashboard sessions only, and only when a human is "
+                "driving the turn (Slack, cron, and subagent contexts are rejected "
+                "— a headless turn is refused even when it inherited an open tab). "
+                "One card at a "
                 "time per slot: a new call replaces any card the user has not yet "
                 "acted on."
             ),
@@ -1433,6 +1491,25 @@ def reset_conversation(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def section_marker(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, SECTION_MARKER_SCHEMA)
+    # Stateless: the session-aware consumer (chat_runner) appends the row to ITS
+    # OWN slot's transcript — no session identity resolved here.
+    #
+    # The confirmation HEDGES because the applier refuses on three paths this tool
+    # cannot see; both consumer paths then replace this text with the real outcome.
+    return _emit_directive(
+        "section_marker",
+        {
+            "label": args.get("label", "") or "",
+        },
+        "Section break requested. If this turn is user-facing and not inside a "
+        "multi-stage plan, it appears at the end of this turn, after this turn's "
+        "closing message — but this tool does not apply it, so do not assume it "
+        "rendered. It changes only what is rendered — no model context is dropped.",
+    )
+
+
 def suggest_followup(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SUGGEST_FOLLOWUP_SCHEMA)
     items = args.get("items") or []
@@ -1464,5 +1541,6 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "monitor_update": monitor_update,
     "set_project": set_project,
     "reset_conversation": reset_conversation,
+    "section_marker": section_marker,
     "suggest_followup": suggest_followup,
 }

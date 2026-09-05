@@ -2955,7 +2955,7 @@ async def _persist_handover_tail(state: DashboardState, name: str, slot: _ChatSl
     count for the same reason.
     """
     try:
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
     except Exception:
         # The flush puts the unwritten suffix back before raising, so this count is
         # what is still held — and held notes are in-memory only, so they die with
@@ -5202,7 +5202,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # report the key in ``archived``: data loss reported as success.
             # Sharing the arm restores the slot with its notes still held and
             # reports the key in ``failed`` instead.
-            removed.flush_deferred_notes()
+            removed.flush_deferred_notes(markers_only=False)
             await save_slot_off_loop(
                 state, removed, closed=True, closed_at=closed_at, best_effort=False
             )

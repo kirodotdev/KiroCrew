@@ -3482,6 +3482,7 @@
       "file_not_found_on_disk_it_may_have_been_moved_or": "_File not found on disk. It may have been moved or deleted._",
       "file_too_large": "File too large: {{name}} (max 50 MB)",
       "fork_failed_error": "Fork failed: {{error}}",
+      "fork_too_large_error": "This conversation is too large to fork. Try a point that copies fewer messages.",
       "hide_sessions": "Hide sessions",
       "hide_sessions_sidebar": "Hide sessions sidebar",
       "knowledge_item_one": "{{count}} knowledge item",

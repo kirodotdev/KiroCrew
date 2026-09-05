@@ -207,10 +207,12 @@ export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import {
   consumeChatHandoff,
+  findReport,
   handoffToChat,
   persistClaimedChatHandoffs,
   subscribeChatHandoff,
 } from '../utils/errorReport'
+import type { ErrorReport } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, openPanelView, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -1156,6 +1158,21 @@ type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
  * points never touch. The two label keys stay under `pages.chatSidebar.*`
  * because the sidebar's own row still renders them.
  */
+/** Fork failure copy. The over-capacity refusal's wire message names API parameters
+ *  and advises forking at a message, which this control already does. */
+function forkErrorNotice(
+  code: string | undefined,
+  raw: string | undefined,
+) {
+  const tooLarge = code === 'fork_corpus_too_large'
+  const message = tooLarge
+    ? i18nT('pages.chatPage.fork_too_large_error')
+    : i18nT('pages.chatPage.fork_failed_error', { error: raw || i18nT('pages.chatPage.unknown_error') })
+  // The journal is keyed on the RAW wire message, so a localized replacement has to
+  // carry the report it can no longer be matched to (endpoint, status, backend code).
+  return { message, report: findReport(raw) }
+}
+
 function unresumableNoticeMessage(r: { key: string; title: string; surface: string; reason: 'surface' | 'failed' }): string {
   const title = r.title || r.key
   if (r.reason === 'failed') {
@@ -1244,6 +1261,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The one post-resolve answer for every resume entry point (#5925); rendered
   // above the composer, which is the only place all of them can see.
   const unresumableResume = useAppSelector(s => s.chat.unresumableResume)
+  const [forkError, setForkError] = useState<{ message: string; report?: ErrorReport } | null>(null)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
   // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
@@ -1378,6 +1396,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Row keys are only unique within a slot, so carrying them across a slot
   // switch would apply one session's choices to another's turns.
   useEffect(() => { setTurnDisclosure({}); setToolDisclosure({}) }, [activeSlot])
+  // A fork failure belongs to the slot it happened on: left up over another slot it
+  // asserts that slot's fork failed, and it outlives the failure it described.
+  useEffect(() => { setForkError(null) }, [activeSlot])
   // Shared composer-busy rule (chatSlice.selectComposerBusy). Drives the
   // composer's busy/queue affordance so a message sent during a sub-agent run
   // reads as "will queue".
@@ -3611,6 +3632,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
   const handleFork = useCallback(async (visibleIndex: number, messageId?: string) => {
     if (!activeSlot) return
+    setForkError(null)
     try {
       // Fork WITHOUT a prompt: an unsent composer draft must never be
       // auto-submitted into the freshly forked session. The
@@ -3629,10 +3651,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (result.ok) {
         await dispatch(switchSlot(result.key))
       } else {
-        alert(i18nT('pages.chatPage.fork_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
+        setForkError(forkErrorNotice(result.code, result.error))
       }
     } catch (e) {
-      alert(i18nT('pages.chatPage.fork_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+      // A refusal is a non-2xx, so the thunk rejects rather than resolving: the
+      // code arrives on the rejection payload, never on a `result` read here.
+      setForkError(
+        forkErrorNotice((e as { code?: string } | null)?.code, errMessage(e)),
+      )
     }
   }, [activeSlot, dispatch, forkCfg])
 
@@ -8890,6 +8916,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             pane's Older Sessions section starts closed, so a notice inside it is
             invisible to anyone who had not already opened it, which is everyone
             arriving from the other three paths. */}
+        {forkError && (
+          <div className="mx-4 mt-2 mb-0" data-testid="fork-error">
+            {/* Hand-off on: the composer draft this page holds is persisted to
+                localStorage per slot, so navigating to chat discards nothing. */}
+            <ErrorNotice
+              message={forkError.message}
+              report={forkError.report}
+              onDismiss={() => setForkError(null)}
+              variant="block"
+              askAgent
+            />
+          </div>
+        )}
         {unresumableResume && (
           <div className="mx-4 mt-2 mb-0" data-testid="unresumable-resume-error">
             <ErrorNotice

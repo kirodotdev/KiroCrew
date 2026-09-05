@@ -1,6 +1,6 @@
 """Exception safety of the deferred-note flush, at every seam that calls it.
 
-``slot.flush_deferred_notes()`` is called at four seams. Every one of them is a
+``slot.flush_deferred_notes`` is called at four seams. Every one of them is a
 bare statement whose *following* code is what frees the slot, so a raise inside
 the flush does not merely delay a held note -- it skips that cleanup:
 
@@ -92,7 +92,7 @@ class TestPartialFlushKeepsUnwrittenNotes:
 
         with patch.object(type(slot), "append", _append):
             with pytest.raises(_Boom):
-                slot.flush_deferred_notes()
+                slot.flush_deferred_notes(markers_only=False)
 
         # Note 1 was written and must not be replayed.
         assert calls == ["first", "second"]
@@ -114,10 +114,10 @@ class TestPartialFlushKeepsUnwrittenNotes:
 
         with patch.object(type(slot), "append", _append):
             with pytest.raises(_Boom):
-                slot.flush_deferred_notes()
+                slot.flush_deferred_notes(markers_only=False)
 
         # Second attempt, nothing patched: the held remainder is written.
-        assert slot.flush_deferred_notes() == 2
+        assert slot.flush_deferred_notes(markers_only=False) == 2
         assert [m["content"] for m in slot.messages] == ["first", "second", "third"]
         assert slot._deferred_notes == []
 
@@ -140,10 +140,10 @@ class TestPartialFlushKeepsUnwrittenNotes:
 
         with patch.object(type(slot), "append", _append):
             with pytest.raises(_Boom):
-                slot.flush_deferred_notes()
+                slot.flush_deferred_notes(markers_only=False)
 
         assert [e["content"] for e in slot._pending_context] == ["first", "second"]
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
         # "second" must appear exactly once, not twice.
         assert [e["content"] for e in slot._pending_context] == ["first", "second"]
 

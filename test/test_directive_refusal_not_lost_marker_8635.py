@@ -361,6 +361,9 @@ _HOSTILE_CALLS: dict[str, dict] = {
     "set_project": {"path": "/definitely/not/a/real/project/xyz"},
     "reset_conversation": {},
     "suggest_followup": {"items": [{}]},
+    # Over the schema's 120-char label cap, mirroring the over-long `reason` rows:
+    # the marker is a one-line rule, so an unbounded label is the hostile shape.
+    "section_marker": {"label": "z" * 500},
 }
 
 

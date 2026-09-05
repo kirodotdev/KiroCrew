@@ -340,29 +340,29 @@ describe('ChatPage row callbacks — fork', () => {
     expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 3, undefined, undefined, 'tail')
   })
 
-  it('reports a refused fork through an alert instead of switching sessions', async () => {
+  it('reports a refused fork through the error notice instead of switching sessions', async () => {
     apiSpy('forkChatSlot').mockResolvedValue({ ok: false, error: 'slot is busy' })
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
-    await waitFor(() => expect(alertSpy).toHaveBeenCalled())
-    expect(String(alertSpy.mock.calls[0][0])).toContain('slot is busy')
+    const notice = await waitFor(() => screen.getByTestId('fork-error'))
+    expect(notice.textContent).toContain('slot is busy')
+    // The surface moved off `alert` deliberately; asserting its absence is what
+    // stops a regression back to a modal that discards the agent hand-off.
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
-  it('still alerts when the fork request throws, naming the real reason', async () => {
+  it('still surfaces a thrown fork request, naming the real reason', async () => {
     apiSpy('forkChatSlot').mockRejectedValue(new Error('network down'))
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
-    await waitFor(() => expect(alertSpy).toHaveBeenCalled())
-    const said = String(alertSpy.mock.calls[0][0])
+    const notice = await waitFor(() => screen.getByTestId('fork-error'))
+    const said = notice.textContent ?? ''
     expect(said).toContain('Fork failed')
-    // Flipped, as this assertion's previous form asked to be: it pinned the
-    // reason being LOST — `unwrap()` rejects with a redux-toolkit
-    // SerializedError (a PLAIN OBJECT), so the handler's `e instanceof Error`
-    // test was false and the `String(e)` fallback rendered '[object Object]'.
-    // The handler now reads the message through `utils/thunkError.errMessage`,
-    // which knows that shape, so the alert carries the real text.
+    // `unwrap()` rejects with a SerializedError (a PLAIN OBJECT), so an `e instanceof
+    // Error` test reads false and a `String(e)` fallback renders '[object Object]'.
     expect(said).toContain('network down')
     expect(said).not.toContain('[object Object]')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 })
 

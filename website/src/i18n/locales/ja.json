@@ -9238,6 +9238,10 @@
         "copy_text_failed": "コピーできませんでした",
         "copy_text_unavailable": "この環境ではクリップボードがブロックされています。投稿テキストは選択済みです — Ctrl+C / ⌘C を押してください。編集したカードのテキストはカードから直接コピーしてください。",
         "export_failed": "共有カードを生成できませんでした"
+      },
+      "sectionMarkerRow": {
+        "end_of": "{{label}} の終わり",
+        "end_of_section": "セクションの終わり"
       }
     },
     "chatPage": {
@@ -9267,6 +9271,7 @@
       "filter_agents": "エージェントを絞り込む",
       "focus_popped_out_window": "切り離したウィンドウにフォーカス",
       "fork_failed_error": "フォークに失敗しました: {{error}}",
+      "fork_too_large_error": "この会話はフォークするには大きすぎます。コピーするメッセージが少ない位置をお試しください。",
       "hide_sessions": "セッションを非表示",
       "hide_sessions_sidebar": "セッションのサイドバーを非表示",
       "in_split": "分割表示中",
