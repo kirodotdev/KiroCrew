@@ -11037,6 +11037,9 @@ def _fence_hit_in_collapsed(
 #: loop, which is the wedge shape every other budget in this module exists to stop.
 #: Exhausting it REFUSES, for the same reason ``_ALT_MAX_STAGES`` does -- a subject
 #: past the cap was never inspected, so allowing would make the cap the bypass.
+#: (The measurement above predates the docstring exclusion, which no longer counts
+#: docstrings toward the cap, so the stated headroom is now understated -- the
+#: conservative direction.)
 _SOURCE_COMMAND_SUBJECT_CAP = 1024
 
 
@@ -11058,6 +11061,211 @@ def _parse_source_body(source: str) -> "ast.Module | None":
         return None
 
 
+def _docstring_constant_ids(
+    tree: "ast.Module", *, types: "tuple[type, ...]" = (str,)
+) -> "set[int]":
+    """ids of the ``Constant`` nodes in DOCSTRING POSITION in *tree*.
+
+    A docstring is positional: the first statement of a module, class or function
+    body that is a bare literal expression (``ast.get_docstring`` reads the same
+    position). *types* is the literal types that count, and the default is Python's
+    own semantics: only ``str`` in that position becomes ``__doc__`` -- ``bytes``
+    there is discarded and ``__doc__`` stays None -- so a caller EXCLUDING
+    docstrings (which errs toward allowing) takes the default and excludes only
+    what is provably documentation. The fence scan passes ``(str, bytes)`` because
+    it errs the other way: it RETAINS docstring-position constants for scanning,
+    and over-retaining is the deny direction. One spelling of the position check,
+    with the one intentional difference living in this argument rather than in two
+    hand-maintained walks.
+    """
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            body = getattr(node, "body", None)
+            if body and isinstance(body[0], ast.Expr):
+                first = body[0].value
+                if isinstance(first, ast.Constant) and isinstance(first.value, types):
+                    ids.add(id(first))
+    return ids
+
+
+#: The reflection surface whose presence WITHDRAWS the docstring exclusion in
+#: ``_source_command_subjects`` (see :func:`_reads_dunder_doc`). Grouped by the
+#: route it closes, because the second review finding of this class forced a
+#: whole-class audit rather than another per-spelling patch: (a) the direct
+#: spellings; (b) opaque code strings, which can carry ANY read the tree cannot
+#: see -- the same reason the ``re``-authenticity guard withdraws on these
+#: exact names; (c) generic attribute access with a computed name, which defeats
+#: the constant check (``getattr(f, "__do" + "c__")``) -- including the
+#: ``str.format`` family, whose FIELD syntax resolves attributes at runtime
+#: (``"{0.__doc__}".format(f)`` hands the docstring to the shell while the
+#: reflection lives only inside the format-string constant), the same
+#: stringify route the ``re``-guard already forfeits on, and ``operator``'s
+#: callable factories (``attrgetter``/``methodcaller``) plus ``Formatter``'s
+#: ``get_field``, each of which takes the attribute name as DATA; (d) namespace mappings,
+#: through which a module docstring is one subscript away
+#: (``globals()["__doc__"]``); (e) the stdlib modules and builtins whose PURPOSE
+#: is documentation/reflection access (``inspect.getattr_static``,
+#: ``pydoc.render_doc``, ``help`` under a stdout redirect, ``importlib`` as the
+#: uncovered import spelling, and ``doctest``, which does not merely READ a
+#: docstring but EXECUTES its ``>>>`` examples). Names are matched bare (an alias assignment
+#: ``g = getattr`` spells the Name) and the builtin ``compile`` only as a Name,
+#: so ``re.compile`` -- an Attribute -- does not withdraw, exactly as the
+#: ``re``-guard documents for the same pair.
+_DOC_REFLECTION_NAMES = frozenset(
+    {
+        "__doc__",
+        "getdoc",
+        "eval",
+        "exec",
+        "compile",
+        "__import__",
+        "getattr",
+        "attrgetter",
+        "methodcaller",
+        "vars",
+        "globals",
+        "locals",
+        "help",
+        "inspect",
+        "pydoc",
+        "doctest",
+        "importlib",
+        "import_module",
+    }
+)
+_DOC_REFLECTION_ATTRS = frozenset(
+    {
+        "getdoc",
+        "attrgetter",
+        "methodcaller",
+        "import_module",
+        "format",
+        "format_map",
+        "vformat",
+        "get_field",
+        # The accessor BUILTINS in attribute position, so a QUALIFIED spelling
+        # (``builtins.getattr``, ``builtins.eval``) withdraws exactly like the
+        # bare name: any qualification chain ends in an Attribute whose ``attr``
+        # IS the accessor name, so matching the name in both node positions
+        # closes the qualification class outright. ``compile`` is deliberately
+        # absent in this position -- ``re.compile`` must not withdraw (the same
+        # documented pair the ``re``-guard keeps) -- and that is sound because a
+        # code object cannot RUN without an executor (``eval``/``exec``) whose
+        # every spelling is a tell.
+        "getattr",
+        "eval",
+        "exec",
+        "vars",
+        "globals",
+        "locals",
+        "help",
+        # Frame-bearing attributes: a frame is a namespace on legs
+        # (``sys._getframe().f_globals`` reaches the module namespace without
+        # spelling ``globals``), and these names exist ONLY on frames,
+        # generators, coroutines and tracebacks -- zero real-corpus collateral.
+        "f_globals",
+        "f_locals",
+        "f_builtins",
+        "gi_frame",
+        "cr_frame",
+        "tb_frame",
+    }
+)
+_DOC_REFLECTION_CONSTANTS = frozenset({"__doc__", "getdoc"})
+#: ``builtins`` belongs here because RE-IMPORTING it is itself the tell: the
+#: only reason to spell ``from builtins import getattr as g`` instead of the
+#: bare builtin is to bind an accessor under a name no walk can recognize.
+#: ``gc`` and ``ctypes`` are the object-graph and raw-memory doors: importing
+#: either grants reads that reach a docstring without spelling any accessor
+#: (``gc.get_referents(f)`` hands back the docstring among the referents;
+#: ``ctypes`` reads process memory outright), and the IMPORT is the only way
+#: in -- neither is reachable as a builtin -- so the module rule closes every
+#: route through them at the door.
+_DOC_REFLECTION_MODULES = frozenset(
+    {"inspect", "pydoc", "importlib", "doctest", "builtins", "gc", "ctypes"}
+)
+
+
+def _reads_dunder_doc(tree: "ast.Module") -> bool:
+    """Whether *tree* can read a docstring back at runtime.
+
+    True when the body touches ANY of the docstring-reflection surface: the
+    direct ``__doc__``/``getdoc`` spellings, the opaque code-string executors,
+    the computed-attribute accessors and namespace mappings (matched by name in
+    BOTH Name and Attribute positions, so a qualified ``builtins.getattr`` is
+    the same tell as the bare name), ANY dunder attribute read except
+    ``__name__`` (a class rule -- ``__doc__`` is a dunder and every namespace an
+    object carries is reached through one, so the class closes what a spelling
+    list provably cannot), the frame-bearing attribute names, and the
+    documentation modules imported under any alias (the import is the tell,
+    exactly like the aliased ``from inspect import getdoc as gd``).
+
+    Deliberately name-based and over-broad: a false positive (a body that
+    merely calls ``getattr`` on its own config object) only WITHHOLDS the
+    docstring exclusion, which restores the stricter pre-#8643 treatment --
+    the fail-closed direction, and measured against the real cron scripts of
+    one install it re-includes one script (a single ``getattr``) whose verdict
+    does not change. A finer read (proving which object's docstring is
+    retrieved) would be the same reflection-following this module already
+    declines to do for ``re`` patterns. The enumeration is a closed audit of
+    the STDLIB routes to a docstring; a genuinely novel accessor outside it is
+    the accepted residual recorded in the module spec.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            if node.attr in _DOC_REFLECTION_ATTRS:
+                return True
+            # ANY dunder attribute read withdraws, as a CLASS: ``__doc__`` is
+            # itself a dunder, and every namespace an object drags behind it is
+            # reached through one (``__globals__``, ``__dict__``, ``__closure__``,
+            # ``__getattribute__``, ``__wrapped__``, ``__mro__`` ...). Enumerating
+            # them individually was falsified four review rounds in a row, which
+            # is the same allow-by-default-blocklist shape the ``re``-guard
+            # abandoned; the class rule ends the enumeration. ``__name__`` is the
+            # one exception, provable rather than convenient: it is a plain
+            # ``str`` naming the object, carries no reference back to it, and is
+            # the ubiquitous ``type(e).__name__`` logging idiom (the only dunder
+            # attribute the real corpus reads at all).
+            if (
+                node.attr.startswith("__")
+                and node.attr.endswith("__")
+                and node.attr != "__name__"
+            ):
+                return True
+        if isinstance(node, ast.Name) and node.id in _DOC_REFLECTION_NAMES:
+            return True
+        if isinstance(node, ast.Constant) and node.value in _DOC_REFLECTION_CONSTANTS:
+            return True
+        if isinstance(node, ast.Import) and any(
+            alias.name.split(".")[0] in _DOC_REFLECTION_MODULES for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.ImportFrom):
+            module_root = (node.module or "").split(".")[0]
+            if module_root in _DOC_REFLECTION_MODULES:
+                return True
+            # ANY surface name imported under ANY alias withdraws. A hand-kept
+            # tuple here was the round-6 falsification of the same
+            # allow-by-default shape the class rules above closed: the alias
+            # check must cover the WHOLE surface or an aliased import re-opens
+            # exactly the names the other branches guard. Today every module
+            # that EXPORTS a surface name is itself in the modules set
+            # (``builtins``, ``operator`` names are in the set above), so this
+            # breadth is deliberately redundant -- it exists so that a name
+            # added to the surface later is alias-covered by construction
+            # instead of by remembering this branch.
+            if any(
+                alias.name in _DOC_REFLECTION_NAMES
+                or alias.name in _DOC_REFLECTION_ATTRS
+                for alias in node.names
+            ):
+                return True
+    return False
+
+
 def _source_command_subjects(tree: "ast.Module") -> "tuple[str, ...] | None":
     """The command strings *tree* CARRIES, as subjects for the two traversal passes.
 
@@ -11068,16 +11276,43 @@ def _source_command_subjects(tree: "ast.Module") -> "tuple[str, ...] | None":
     STRING -- so the string constants are the command-line subjects inside it, and each
     is short enough that the structural budgets those two passes carry are never
     approached. Every ``str``/``bytes`` constant is collected, including an f-string's
-    literal fragments (each parses to its own ``Constant``) and the ones a docstring or
-    a discarded statement-position string holds. Nothing is filtered out on the grounds
-    that it "cannot be a command": a subject that names no traversal simply matches no
-    rule, so over-collecting costs a little work and can only ADD denials, while
-    under-collecting is a missed read. ``bytes`` are decoded latin-1 -- total over a
+    literal fragments (each parses to its own ``Constant``) and a discarded
+    statement-position string. ``bytes`` are decoded latin-1 -- total over a
     byte range, one code point per byte -- exactly as the fence scan decodes them,
     because ``subprocess`` accepts a bytes command too.
 
-    A whitespace-only value is the one exclusion, and it is provable rather than
-    heuristic: run as a command it names no program at all.
+    Two values are excluded, each on its own ground.
+
+    A whitespace-only value is provable rather than heuristic: run as a command it
+    names no program at all.
+
+    A DOCSTRING is prose by AST position (see :func:`_docstring_constant_ids`), and
+    the first version of this function shipped without this exclusion on the premise
+    that over-collecting "can only ADD denials" because a non-command matches no
+    rule. Measured, the premise is FALSE for prose: the ``find``-delivery pass reads
+    an English sentence opening with "Find ..." as a ``find`` invocation whose word
+    count exhausts its traversal-root budget, and that refuses fail-closed -- so
+    real cron scripts were permanently REFUSED for their documentation alone (2 of
+    23 scripts on one real install, #8643; the sibling literal-feedback scan
+    measured the same class as 3 of 23 scripts' docstrings DRAWING a traversal
+    verdict -- a verdict drawn is a superset of a script refused, hence the
+    different counts -- while ~3,700 non-docstring literals drew zero).
+
+    The exclusion is WITHDRAWN for a body that can read a docstring back
+    (:func:`_reads_dunder_doc`): ``subprocess.run(f.__doc__, shell=True)`` executes
+    the docstring VERBATIM -- no runtime assembly involved, the complete command
+    sits in the tree as one ``Constant`` -- so for such a body every docstring
+    stays a subject, exactly the pre-exclusion treatment. The guard's surface is
+    the closed stdlib audit in :data:`_DOC_REFLECTION_NAMES`; of the measured real
+    scripts exactly one touches it (a single ``getattr``) and its verdict is
+    unchanged under the withdrawal, so the availability fix survives the guard.
+    What remains outside both is a docstring read through a route no stdlib name
+    this audit enumerates can spell -- which requires either a genuinely novel
+    accessor or runtime assembly, and is listed in the module spec's accepted
+    residuals. The fence scan's own
+    docstring treatment (which RETAINS them) is unchanged. Non-docstring literals,
+    including a bare string in statement position that is not a docstring, still
+    flow through unfiltered.
 
     Collected in SOURCE ORDER, not walk order. ``ast.walk`` is breadth-first, so a
     left-nested ``+`` chain yields its right operands before descending and
@@ -11092,8 +11327,14 @@ def _source_command_subjects(tree: "ast.Module") -> "tuple[str, ...] | None":
     -- and the fragments are still each inspected on their own.
     """
     found: list[tuple[int, int, str]] = []
+    # The exclusion is withdrawn wholesale when the body can read a docstring back:
+    # a withheld exclusion only restores the stricter pre-#8643 treatment, so the
+    # guard can afford to be name-based and over-broad.
+    docstrings = set() if _reads_dunder_doc(tree) else _docstring_constant_ids(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Constant):
+            continue
+        if id(node) in docstrings:
             continue
         if isinstance(node.value, str):
             value = node.value
@@ -11149,19 +11390,10 @@ def _sensitive_run_in_source_literals(
     # DOCSTRING, which Python RETAINS as ``__doc__`` on its module, class or function.
     # A fenced literal parked in a docstring is therefore readable at runtime and can
     # be handed to a sink (``open(f.__doc__)``), so only a bare string that is NOT a
-    # docstring is genuinely discarded.
-    retained: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            body = getattr(node, "body", None)
-            if body and isinstance(body[0], ast.Expr):
-                first = body[0].value
-                if isinstance(first, ast.Constant) and isinstance(
-                    first.value, (str, bytes)
-                ):
-                    retained.add(id(first))
+    # docstring is genuinely discarded. ``bytes`` in docstring position is retained
+    # here too even though Python discards it: over-retaining errs toward scanning,
+    # the deny direction -- see the ``types`` note on ``_docstring_constant_ids``.
+    retained = _docstring_constant_ids(tree, types=(str, bytes))
 
     discarded: set[int] = set()
     for node in ast.walk(tree):
@@ -11548,7 +11780,15 @@ def is_sensitive_source_body(text: str) -> str | None:
         # runtime: a space would split `"AWS_SEC" + "RET_ACCESS_KEY"` into two
         # words and the rule would miss the very shape this closes. Fusing
         # unrelated literals can only ADD a denial, which is the direction this
-        # module takes everywhere else.
+        # module takes everywhere else. Docstrings drop out of this join along
+        # with the traversal subjects (the collection helper excludes them once,
+        # for both consumers): a docstring cannot be a fragment of a `+`-assembled
+        # command -- it is a standalone statement, not an operand -- so the join
+        # loses no assembled shape, while prose containing the rule's words in
+        # order stops convicting the body. The removal also makes the excluded
+        # docstring's NEIGHBOURS newly adjacent in the join, which can only ADD a
+        # match that the prose between them previously broke -- the deny
+        # direction, like the fusing above.
         _env_subject="".join(subjects),
     )
 

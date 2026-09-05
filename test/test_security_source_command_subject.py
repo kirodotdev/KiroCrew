@@ -283,3 +283,285 @@ class TestParseIsSharedAndSingle:
         tree = security._parse_source_body("".join(f'v_{i} = "t_{i}"\n' for i in range(cap + 1)))
         assert tree is not None
         assert security._source_command_subjects(tree) is None
+
+
+class TestDocstringsAreNotSubjects:
+    """A docstring is prose by AST position, not a command line (#8643).
+
+    The collection rule shipped on the premise that over-collecting "can only ADD
+    denials" because a non-command matches no rule. Measured, that is false for
+    prose: the ``find``-delivery pass reads an English sentence opening with
+    "Find ..." as a ``find`` invocation whose word count exhausts its
+    64-traversal-root budget, and the budget refuses FAIL-CLOSED -- so real cron
+    scripts were permanently refused for their documentation alone (2 of 23
+    scripts on one real install).
+
+    The fixture below is the (distilled) function docstring of one of those real
+    scripts. It must be allowed in every docstring position, and the SAME text must
+    still deny the moment it is an ordinary literal -- the pair is what pins the
+    exclusion to AST position rather than to content.
+    """
+
+    #: Distilled from the real ``pr_security_patrol.py`` docstring that issue #8643
+    #: measured: prose opening with "Find", wide enough to exhaust the find pass's
+    #: 64-root budget, carrying no path, no credential name, and no shell.
+    PROSE = (
+        "Find commits on main that belong to no pull request.\n"
+        "    A commit whose associatedPullRequests.totalCount is 0 reached main without a\n"
+        "    PR, bypassing every review gate. Squash merges are correctly excluded: they\n"
+        "    produce ordinary commits that stay associated with their PR.\n"
+        "    This used to be a stub returning [] that patrol() never even called, while\n"
+        "    the skill documented it as an active ALERT-level detector.\n"
+        "    caller may advance a baseline to -- both the sha anchor and the time floor --"
+    )
+
+    def test_the_prose_alone_still_trips_the_find_pass(self) -> None:
+        # Guard the fixture, and pin WHICH mechanism convicts it: the find pass's
+        # traversal-root budget refusing fail-closed on the prose's width. If a rule
+        # change stops the prose from matching -- or swaps the mechanism -- every
+        # allowed-verdict below goes vacuous and must be rebuilt.
+        reason = security._check_find_traversal_reaches_fence(self.PROSE)
+        assert reason is not None
+        assert "traversal roots" in reason
+
+    def test_a_module_docstring_is_allowed(self) -> None:
+        assert _refused(f'"""{self.PROSE}"""\nx = 1\n') is None
+
+    def test_a_function_docstring_is_allowed(self) -> None:
+        assert _refused(f'def f():\n    """{self.PROSE}"""\n    return 1\n') is None
+
+    def test_an_async_function_docstring_is_allowed(self) -> None:
+        assert _refused(f'async def f():\n    """{self.PROSE}"""\n    return 1\n') is None
+
+    def test_a_class_docstring_is_allowed(self) -> None:
+        assert _refused(f'class C:\n    """{self.PROSE}"""\n    pass\n') is None
+
+    def test_the_same_text_as_an_assigned_literal_still_denies(self) -> None:
+        # The discriminator: identical CONTENT, non-docstring POSITION. An exclusion
+        # keyed on content (or one that quietly widened to every bare string) passes
+        # the tests above and fails here.
+        assert security.is_sensitive_source_body(f'x = 1\nDOC = """{self.PROSE}"""\n') is not None
+
+    def test_a_bare_statement_string_that_is_not_a_docstring_still_denies(self) -> None:
+        # Second statement of the module: discarded by Python, but NOT documentation.
+        # It stays a subject, so a traversal in it stays caught -- this is what pins
+        # the exclusion to docstring position rather than to statement position.
+        body = f'x = 1\n"grep -r secret {CREW}"\ny = 2\n'
+        assert _refused(body) is not None
+
+    def test_a_first_statement_string_inside_an_if_block_still_denies(self) -> None:
+        # Only module/class/function bodies have docstrings; an ``if`` body does not.
+        body = f'if True:\n    "grep -r secret {CREW}"\n'
+        assert _refused(body) is not None
+
+    def test_a_docstring_naming_a_fenced_store_still_denies(self) -> None:
+        # The FENCE scan's docstring treatment is unchanged: it retains docstrings
+        # (``open(f.__doc__)`` is a real sink), so a docstring that NAMES a fenced
+        # store is still denied by the literal scan even though the traversal
+        # passes no longer see it.
+        body = f'"""config at {STORE}\\\\c.json"""\nx = 1\n'
+        assert _refused(body) is not None
+
+    def test_bytes_in_docstring_position_is_still_a_subject(self) -> None:
+        # ``b"..."`` first in a body is NOT a docstring -- Python leaves ``__doc__``
+        # None and discards it -- so the exclusion must not reach it: excluding errs
+        # toward allowing and may take only what is provably documentation.
+        tree = security._parse_source_body('def f():\n    b"payload"\n    return 1\n')
+        assert tree is not None
+        assert security._source_command_subjects(tree) == ("payload",)
+
+    def test_str_docstrings_are_dropped_from_the_collection(self) -> None:
+        tree = security._parse_source_body('"""module doc"""\nx = "kept"\n')
+        assert tree is not None
+        assert security._source_command_subjects(tree) == ("kept",)
+
+
+class TestDocstringExclusionIsWithdrawnForDocReaders:
+    """A body that can read a docstring back gets NO docstring exclusion.
+
+    ``subprocess.run(f.__doc__, shell=True)`` executes the docstring VERBATIM: the
+    complete command sits in the tree as one ``Constant``, no runtime assembly
+    involved, so treating the docstring as prose would let the one layer that
+    convicts a traversal rooted above the fence (passes 4 and 5) go blind to it.
+    The guard (:func:`security._reads_dunder_doc`) withdraws the exclusion for the
+    WHOLE body on any ``__doc__``/``getdoc`` spelling -- over-broad on purpose,
+    because a withheld exclusion only restores the stricter pre-#8643 treatment.
+    """
+
+    #: A traversal only passes 4/5 convict: rooted at the crew home, which HOLDS
+    #: fenced leaves without being fenced itself (see the CREW note at the top).
+    COMMAND = f"grep -r secret {CREW}"
+
+    def test_attribute_doc_read_keeps_the_docstring_a_subject(self) -> None:
+        body = (
+            "import subprocess\n"
+            f'def f():\n    """{self.COMMAND}"""\n'
+            "subprocess.run(f.__doc__, shell=True)\n"
+        )
+        assert _refused(body) is not None
+
+    def test_bare_name_doc_read_keeps_the_docstring_a_subject(self) -> None:
+        # The module-level spelling is a bare Name, not an Attribute.
+        body = f'"""{self.COMMAND}"""\nimport subprocess\nsubprocess.run(__doc__, shell=True)\n'
+        assert _refused(body) is not None
+
+    def test_getattr_string_doc_read_keeps_the_docstring_a_subject(self) -> None:
+        body = (
+            "import subprocess\n"
+            f'def f():\n    """{self.COMMAND}"""\n'
+            'subprocess.run(getattr(f, "__doc__"), shell=True)\n'
+        )
+        assert _refused(body) is not None
+
+    def test_inspect_getdoc_keeps_the_docstring_a_subject(self) -> None:
+        body = (
+            "import inspect, subprocess\n"
+            f'def f():\n    """{self.COMMAND}"""\n'
+            "subprocess.run(inspect.getdoc(f), shell=True)\n"
+        )
+        assert _refused(body) is not None
+
+    def test_aliased_getdoc_import_keeps_the_docstring_a_subject(self) -> None:
+        # `from inspect import getdoc as gd` binds a name no call-site walk can
+        # recognize, so the IMPORT is the tell -- the guard matches the ImportFrom
+        # alias itself. (A wildcard import cannot rename, so `from inspect import *`
+        # is caught later, at the `getdoc(...)` call's bare Name.)
+        body = (
+            "from inspect import getdoc as gd\nimport subprocess\n"
+            f'def f():\n    """{self.COMMAND}"""\n'
+            "subprocess.run(gd(f), shell=True)\n"
+        )
+        assert _refused(body) is not None
+
+    def test_eval_string_doc_read_keeps_the_docstring_a_subject(self) -> None:
+        # The read hides INSIDE an opaque code string the tree cannot parse into an
+        # Attribute -- `eval` itself is the tell, the same rule the re-authenticity
+        # guard applies to these exact names.
+        body = (
+            "import subprocess\n"
+            f'def command():\n    """{self.COMMAND}"""\n'
+            'subprocess.run(eval("command.__doc__"), shell=True)\n'
+        )
+        assert _refused(body) is not None
+
+    def test_namespace_mapping_doc_read_keeps_the_docstring_a_subject(self) -> None:
+        # A module docstring is one subscript away through globals(); the key is a
+        # computed string the constant check never sees, so the MAPPING is the tell.
+        body = (
+            f'"""{self.COMMAND}"""\n'
+            "import subprocess\n"
+            'key = "__do" + "c__"\n'
+            "subprocess.run(globals()[key], shell=True)\n"
+        )
+        assert _refused(body) is not None
+
+    def test_documentation_module_import_keeps_the_docstring_a_subject(self) -> None:
+        # `import inspect as i` binds a name the call-site walk cannot recognize,
+        # so the documentation-module IMPORT is the tell, under any alias.
+        body = (
+            "import inspect as i\nimport subprocess\n"
+            f'def f():\n    """{self.COMMAND}"""\n'
+            "subprocess.run(i.getattr_static, shell=True)\n"
+        )
+        assert _refused(body) is not None
+
+    def test_withdrawal_is_wholesale_so_prose_refuses_again(self) -> None:
+        # The fail-closed side of the guard: a body that reads __doc__ gets the
+        # pre-#8643 treatment for EVERY docstring, its prose ones included. This is
+        # the deliberate price of a guard that follows no reflection.
+        prose = TestDocstringsAreNotSubjects.PROSE
+        body = f'"""{prose}"""\nx = __doc__\n'
+        assert security.is_sensitive_source_body(body) is not None
+
+    def test_a_body_without_doc_reads_keeps_the_exclusion(self) -> None:
+        # The guard must not fire on ordinary bodies, or the availability fix is
+        # silently undone: none of the measured real scripts reads __doc__.
+        prose = TestDocstringsAreNotSubjects.PROSE
+        assert _refused(f'"""{prose}"""\nx = 1\n') is None
+
+    def test_format_field_doc_read_keeps_the_docstring_a_subject(self) -> None:
+        # str.format's FIELD syntax resolves attributes at runtime:
+        # "{0.__doc__}".format(f) hands the docstring to the shell while the
+        # reflection lives only inside the format-string constant -- no
+        # `.__doc__` Attribute node, no `__doc__` constant. The `.format` call
+        # itself is the tell, the same stringify route the re-guard forfeits on.
+        body = (
+            "import subprocess\n"
+            f'def f():\n    """{self.COMMAND}"""\n'
+            'subprocess.run("{0.__doc__}".format(f), shell=True)\n'
+        )
+        assert _refused(body) is not None
+
+    def test_doctest_import_keeps_the_docstring_a_subject(self) -> None:
+        # doctest does not merely READ a docstring -- it EXECUTES its `>>>`
+        # examples -- so its presence withdraws the exclusion like the other
+        # documentation modules. The fixture's docstring is a PLAIN command (the
+        # shape the traversal subjects convict); the `>>>`-example shape is a
+        # PRE-EXISTING gap on main's docstrings-included treatment too (measured:
+        # identical allow verdict under both subject treatments) and is tracked
+        # separately -- see the follow-up issue filed from PR #8811 round 3.
+        body = "import doctest\n" f'def f():\n    """{self.COMMAND}"""\n' "doctest.testmod()\n"
+        assert _refused(body) is not None
+
+    def test_reads_dunder_doc_spellings(self) -> None:
+        cases_true = (
+            "y = f.__doc__\n",
+            "y = __doc__\n",
+            'y = getattr(f, "__doc__")\n',
+            "import inspect\ny = inspect.getdoc(f)\n",
+            "from inspect import getdoc\ny = getdoc(f)\n",
+            "from inspect import getdoc as gd\ny = gd(f)\n",
+            'import inspect\ny = getattr(inspect, "getdoc")(f)\n',
+            'y = eval("f.__doc__")\n',
+            'exec("y = f.__doc__")\n',
+            'y = globals()["x"]\n',
+            "y = vars(f)\n",
+            "import pydoc\n",
+            "import doctest\ndoctest.testmod()\n",
+            "from doctest import testmod\n",
+            "import inspect as i\n",
+            "from importlib import import_module\n",
+            "help(f)\n",
+            "from operator import attrgetter\n",
+            'y = "{0.__doc__}".format(f)\n',
+            'y = "{d}".format_map(vars(f))\n',
+            'from operator import methodcaller as mc\ny = mc("__reduce__")(f)\n',
+            'import string\ny = string.Formatter().get_field("0.__doc__", (f,), {})\n',
+            # Round-5 routes: qualified accessor builtins and dunder-namespace
+            # attributes, each closed by a CLASS rule rather than a spelling.
+            "import builtins\ny = builtins.getattr(f, k)\n",
+            "y = f.__globals__[k]\n",
+            "y = f.__closure__\n",
+            "import sys\ny = sys._getframe().f_globals\n",
+            # Round-6 route: an aliased builtins import binds an accessor under
+            # a name no walk can recognize -- the IMPORT is the tell, and the
+            # alias check covers the WHOLE surface, not a hand-kept tuple.
+            "from builtins import getattr as g\n",
+            "import builtins as b\n",
+            # Round-7 route: the object-graph and raw-memory doors -- neither is
+            # reachable without its import, so the module rule closes them.
+            "import gc\ny = gc.get_referents(f)\n",
+            "import ctypes\n",
+            "from operator import methodcaller\n",
+            "y = f.__dict__\n",
+            'y = f.__getattribute__("x")\n',
+        )
+        for src in cases_true:
+            tree = security._parse_source_body(src)
+            assert tree is not None
+            assert security._reads_dunder_doc(tree), src
+        # Ordinary bodies must stay outside the surface, or the availability fix
+        # is silently undone -- including an ATTRIBUTE spelled `.compile`, which
+        # is the re-guard's own documented non-withdrawing pair, and `.__name__`,
+        # the one dunder exception (a plain str naming the object, no reference
+        # back to it -- the `type(e).__name__` logging idiom the real corpus uses).
+        cases_false = (
+            'x = 1\ny = "doc"\n',
+            'import re\np = re.compile("x")\n',
+            "import json\ny = json.dumps({})\n",
+            "y = type(e).__name__\n",
+        )
+        for src in cases_false:
+            tree = security._parse_source_body(src)
+            assert tree is not None
+            assert not security._reads_dunder_doc(tree), src
