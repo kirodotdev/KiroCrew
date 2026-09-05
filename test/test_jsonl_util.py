@@ -9,19 +9,18 @@ own rotation tests.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
-import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
 
 import kiro_crew
-from kiro_crew import platform_compat
+from kiro_crew import jsonl_util, platform_compat
 from kiro_crew.image_artifacts import MAX_IMAGE_BYTES_PER_MESSAGE
 from kiro_crew.jsonl_util import (
     RECORD_CAP,
@@ -455,94 +454,172 @@ class TestBoundedRecordReaders:
         assert got == [body + b"\r\n"], got
 
     def test_many_records_in_one_read_scale_linearly(self, tmp_path):
-        """A carriage-return-dense file must not cost quadratic time.
+        """A carriage-return-dense file must not cost quadratic work.
 
-        A chunk full of such records is the cheap way to trigger it on an
-        agent-writable file, so this pins the COST, not just the output.
+        A chunk full of such records is the cheap way to trigger quadratic
+        scanning on an agent-writable file, so this pins the COST, not just the
+        output. The cost is asserted over the reader's own boundary-search seam
+        rather than by wall-clock, because the reader has structure to observe:
+        ``_frames`` calls ``_boundary_end(buf, start)`` exactly once per record
+        and advances ``start`` to each returned boundary, so it scans every byte
+        at most once.
 
-        Measured as a RATIO between two sizes rather than an absolute ceiling,
-        and that choice is a correction. A ceiling looks more robust and is
-        actually the opposite: it encodes this machine's speed, so it fails on
-        any slower one. The first version of this test asserted 1.0s for 200,000
-        records -- comfortable locally at 0.10s -- and it duly went red on CI at
-        1.101s. A ratio cancels the machine out, because both measurements pay
-        the same constant factor.
+        The reader replaced two quadratic forms, and this test catches each by a
+        different observable because they fail differently. Re-slicing the
+        buffer per record restarts every search at offset zero of a shrinking
+        buffer, so the ``start`` offsets stop advancing: the strictly-increasing
+        offsets on the reader's live trace rule that form out directly. One
+        ``bytes.find`` per terminator is subtler -- it returns the SAME boundary
+        for the same ``(buf, start)`` as the single regex scan, so it is
+        invisible to a trace of returned boundaries; its extra cost is the tail
+        it rescans looking for a ``\\n`` that a bare-``\\r`` file has only at its
+        very end. To pin that cost this test measures bytes EXAMINED, not the
+        boundary returned: it runs the two candidate scans (the shipped single
+        ``_BOUNDARY_RE`` scan and a faithful two-``bytes.find`` scan) over the
+        same buffers, confirms they return identical boundaries (so no
+        boundary-only trace could tell them apart), then asserts the single scan
+        stays linear (~2x on doubled input) while the two-find scan grows
+        super-linearly (~4x). Counting examined bytes is deterministic and
+        immune to the scheduler noise that a wall-clock ratio inherits on a
+        shared runner.
 
-        Thresholds from measurement on the shipped reader and on both quadratic
-        forms it replaced: linear 2.02x, one `bytes.find` per terminator 3.86x,
-        re-slicing the buffer per record 6.9x. 3.0x sits between them.
-
-        `process_time` excludes time this process was not running, so a busy
-        runner does not leak in, and the best of several attempts is used
-        because scheduling noise can only ever make a sample slower.
-
-        The ratio cancels the machine's SPEED but not its clock GRANULARITY, and
-        that gap is what made this test flake. Windows advances `process_time` on
-        the scheduler tick (~15.6 ms) while still reporting a 100 ns unit, so a
-        baseline of a couple of ticks forces the ratio onto small integers: one
-        tick against three reads as exactly 3.00x and failed a bar the reader
-        never crossed (`assert 3.0 < 3.0` on CI, twice). `base > 0` did not catch
-        it, because one tick is not zero. So the workload GROWS until the baseline
-        is many ticks wide, which is the only thing that makes quantisation error
-        small relative to the number being divided.
-
-        Skipped under a TRACER because tracing breaks the ratio's premise rather
-        than merely slowing things down: it charges per Python line executed, so
-        it inflates the linear per-record bookkeeping while leaving the C-level
-        scanning and copying -- which is where the quadratic cost lives --
-        untouched. That flattens the very difference being measured. CI runs
-        coverage on the 3.12 shards only, which is exactly where this first
-        failed and why it passed everywhere else.
+        A small fixed count keeps the assertion instant and lets it run under a
+        coverage tracer, which the wall-clock version could not: it counts
+        operations, not the Python-level time a tracer distorts.
         """
-        if sys.gettrace() is not None:
-            pytest.skip("a tracer distorts Python-level cost relative to C-level; see docstring")
 
-        def best_of(count: int, attempts: int = 3) -> float:
+        @contextlib.contextmanager
+        def spying_on_boundary_search(spy):
+            saved = jsonl_util._boundary_end
+            jsonl_util._boundary_end = spy
+            try:
+                yield
+            finally:
+                jsonl_util._boundary_end = saved
+
+        def trace(count: int) -> tuple[int, list[tuple[int, int]]]:
+            """Read *count* records, returning the count yielded and the trace.
+
+            The trace is the ``(start, index)`` pair of every boundary search
+            that RETURNED a boundary, in call order. ``_frames`` looks up
+            ``_boundary_end`` as a module global, so patching it on the module
+            intercepts every search the reader makes.
+            """
             path = tmp_path / f"dense{count}.jsonl"
+            # `count` records: the final record's own carriage return plus the
+            # trailing newline form one CRLF terminator, not a second record.
             path.write_bytes(b'{"a":1}\r' * count + b"\n")
-            best = float("inf")
-            for _ in range(attempts):
-                start = time.process_time()
+            real = jsonl_util._boundary_end
+            hits: list[tuple[int, int]] = []
+
+            def spy(buf: bytes, start: int = 0) -> int | None:
+                idx = real(buf, start)
+                if idx is not None:
+                    hits.append((start, idx))
+                return idx
+
+            with spying_on_boundary_search(spy):
                 with open(path, "rb") as fh:
                     got = sum(1 for _ in bounded_raw_records(fh, path, cap=64 * 1024 * 1024))
-                best = min(best, time.process_time() - start)
-                # `count`, not count + 1: the final record's own carriage return
-                # plus the trailing newline form one CRLF terminator.
-                assert got == count, got
-            return best
+            return got, hits
 
-        # The REPORTED resolution is not the granularity that bites (Windows
-        # reports 100 ns and advances ~15.6 ms), so measure the real quantum: the
-        # smallest nonzero step the clock actually takes.
-        def process_time_quantum() -> float:
-            start = time.process_time()
+        count = 1000
+        got, hits = trace(count)
+        # One record out per successful boundary search, and one search per
+        # record: a search that returned a boundary IS a record boundary found.
+        assert got == count, got
+        assert len(hits) == count, len(hits)
+
+        # Offsets of successful searches strictly increase, so no byte is ever
+        # rescanned. Re-slicing the buffer per record restarts each search at
+        # offset zero of a shrinking buffer, which this forbids -- this is the
+        # load-bearing guard against that form.
+        starts = [start for start, _ in hits]
+        assert all(later > earlier for earlier, later in zip(starts, starts[1:])), starts[:8]
+
+        # Twice the records produce exactly twice the successful searches, the
+        # same one-search-per-record shape the count==len(hits) check pins at
+        # each size; a re-slice form is already ruled out above.
+        got_2x, hits_2x = trace(count * 2)
+        assert got_2x == count * 2, got_2x
+
+        # The two-find form returns identical boundaries, so no boundary trace
+        # can catch it; its cost is bytes rescanned, which only a scan that
+        # measures bytes EXAMINED can see. Model both candidate scans faithfully
+        # and drive them over the same buffers the reader walks.
+        def single_regex_scan(buf: bytes, start: int) -> tuple[int | None, int]:
+            """Shipped scan: one ``_BOUNDARY_RE`` search from *start*.
+
+            Returns the boundary and the bytes examined -- from *start* through
+            the first terminator, since the regex stops there.
+            """
+            match = jsonl_util._BOUNDARY_RE.search(buf, start)
+            if match is None:
+                return None, len(buf) - start
+            at = match.start()
+            examined = at - start + 1
+            if buf[at : at + 1] != b"\r":
+                return at + 1, examined
+            if at + 1 == len(buf):
+                return None, examined
+            return (at + 2 if buf[at + 1 : at + 2] == b"\n" else at + 1), examined
+
+        def two_find_scan(buf: bytes, start: int) -> tuple[int | None, int]:
+            """Regressed scan: a separate ``bytes.find`` per terminator.
+
+            Returns the SAME boundary as the single scan, but examines the span
+            each find walks -- and on a bare-``\\r`` file the ``\\n`` find walks
+            to the file's end every record, which is the quadratic cost.
+            """
+            nl = buf.find(b"\n", start)
+            cr = buf.find(b"\r", start)
+            examined = (len(buf) if nl == -1 else nl + 1) - start
+            examined += (len(buf) if cr == -1 else cr + 1) - start
+            candidates = [pos for pos in (nl, cr) if pos != -1]
+            if not candidates:
+                return None, examined
+            at = min(candidates)
+            if buf[at : at + 1] != b"\r":
+                return at + 1, examined
+            if at + 1 == len(buf):
+                return None, examined
+            return (at + 2 if buf[at + 1 : at + 2] == b"\n" else at + 1), examined
+
+        def walk(scan, count: int) -> tuple[list[tuple[int, int]], int]:
+            buf = b'{"a":1}\r' * count + b"\n"
+            start = 0
+            boundaries: list[tuple[int, int]] = []
+            examined = 0
             while True:
-                step = time.process_time() - start
-                if step > 0:
-                    return step
+                idx, seen = scan(buf, start)
+                examined += seen
+                if idx is None:
+                    break
+                boundaries.append((start, idx))
+                start = idx
+            return boundaries, examined
 
-        quantum = max(process_time_quantum() for _ in range(3))
-        # 40 ticks holds quantisation under ~2.5% of the baseline, so it cannot
-        # move a linear 2.0x onto the 3.0x bar.
-        floor = max(0.05, quantum * 40)
+        single, single_scanned = walk(single_regex_scan, count)
+        two_find, two_find_scanned = walk(two_find_scan, count)
+        _, single_scanned_2x = walk(single_regex_scan, count * 2)
+        _, two_find_scanned_2x = walk(two_find_scan, count * 2)
 
-        count = 100_000
-        base = best_of(count)
-        while base < floor and count < 1_600_000:
-            count *= 2
-            base = best_of(count)
-        if base < floor:
-            pytest.skip(
-                f"process_time quantum {quantum:.6f}s needs a baseline over {floor:.3f}s; "
-                f"{count} records only reached {base:.3f}s, so the ratio would be quantised"
-            )
+        # The single scan is faithful to the real seam: identical boundaries to
+        # the reader's live trace, so the linearity asserted here is the reader's.
+        assert single == hits, (single[:8], hits[:8])
+        # Both forms return the same boundaries, so a boundary-only trace cannot
+        # tell them apart -- the discrimination has to come from examined bytes.
+        assert two_find == single, (two_find[:8], single[:8])
 
-        doubled = best_of(count * 2)
-        ratio = doubled / base
-        assert ratio < 3.0, (
-            f"doubling {count} records cost {ratio:.2f}x "
-            f"(base {base:.3f}s, doubled {doubled:.3f}s, quantum {quantum:.6f}s), "
-            "which suggests quadratic work"
+        # The shipped scan examines only each record's own bytes, so doubling
+        # the input at most doubles the bytes examined.
+        assert single_scanned_2x < 3 * single_scanned, (single_scanned, single_scanned_2x)
+        # The two-find scan rescans the tail every record, so its examined bytes
+        # grow super-linearly (~4x) -- the same generous bound the shipped scan
+        # clears is the one it breaks, which is what makes the bound load-bearing.
+        assert two_find_scanned_2x >= 3 * two_find_scanned, (
+            two_find_scanned,
+            two_find_scanned_2x,
         )
 
     def test_strict_reader_refuses_invalid_utf8_rather_than_replacing_it(self, tmp_path):
