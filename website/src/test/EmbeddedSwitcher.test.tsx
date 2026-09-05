@@ -296,4 +296,85 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     })
     await waitFor(() => expect(store.getState().instances.host?.stableOrder).toBe(false))
   })
+
+  it('stops re-announcing on the distinct ack, but NOT on a plain host model', () => {
+    // The root fix: a single announce loses the mount/reload race where the
+    // parent's listener isn't wired yet, stranding the parent's loading overlay.
+    // A received host model is NOT the ack: the parent broadcasts its model to
+    // every warm pane on any input change, independent of the readiness
+    // handshake, so a spontaneous broadcast can race past a dropped announce, and
+    // a late announce re-marking readiness after the parent gave the pane up would
+    // suppress its Retry panel. Only the distinct `mc-embedded-ack` stops the
+    // retries. Fake timers exercise the schedule instantly — no real wait.
+    vi.useFakeTimers()
+    try {
+      const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+      const readyCount = () =>
+        post.mock.calls.filter(c => (c[0] as { type?: string })?.type === 'mc-embedded-ready').length
+      const store = createTestStore()
+      renderWithProviders(<EmbeddedHostBridge />, { store })
+
+      // Announced once synchronously on mount.
+      expect(readyCount()).toBe(1)
+      // First backoff step (250ms) re-announces because no ack has arrived.
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(readyCount()).toBe(2)
+
+      // A host model arrives — ingested, but it does NOT cancel the retries.
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', {
+          source: window.parent,
+          data: { type: 'mc-host-model', ...model() },
+        }))
+      })
+      expect(store.getState().instances.host?.tabs).toHaveLength(1)
+      act(() => { vi.advanceTimersByTime(600) })
+      expect(readyCount()).toBe(3) // still climbing — the model was not an ack
+
+      // The distinct ack lands: every outstanding retry is cancelled.
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', {
+          source: window.parent,
+          data: { type: 'mc-embedded-ack', v: 1 },
+        }))
+      })
+      // Advance well past the whole schedule — no further announcements fire.
+      act(() => { vi.advanceTimersByTime(60_000) })
+      expect(readyCount()).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('caps re-announcements when the parent never acks (finite, no infinite loop)', () => {
+    // The other half of the directive: bounded, not endless. With no ack ever,
+    // the schedule (initial + HANDSHAKE_RETRY_DELAYS_MS) tops out and goes quiet,
+    // so the pane falls through to the parent's error panel instead of re-posting
+    // forever. 6 = 1 immediate + 5 backoff steps. A host model in the meantime
+    // must not be mistaken for an ack, so it does not shorten the schedule.
+    vi.useFakeTimers()
+    try {
+      const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+      const readyCount = () =>
+        post.mock.calls.filter(c => (c[0] as { type?: string })?.type === 'mc-embedded-ready').length
+      const store = createTestStore()
+      renderWithProviders(<EmbeddedHostBridge />, { store })
+
+      // A broadcast model arrives but never an ack — retries run to the cap.
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', {
+          source: window.parent,
+          data: { type: 'mc-host-model', ...model() },
+        }))
+      })
+      // Drain the whole backoff (cumulative ~7.75s) and then some.
+      act(() => { vi.advanceTimersByTime(10_000) })
+      expect(readyCount()).toBe(6)
+      // Far past the schedule: it stays capped rather than climbing.
+      act(() => { vi.advanceTimersByTime(120_000) })
+      expect(readyCount()).toBe(6)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
