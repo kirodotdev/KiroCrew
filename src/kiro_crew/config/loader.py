@@ -2517,6 +2517,15 @@ class KiroCrewConfig:
                     # Same guard as model: a non-string triggers (e.g. `1`) must
                     # not survive load — select_crew's roster calls .strip() on it.
                     raw_triggers = entry.get("triggers", "")
+                    # Same guard, and the last free-text field on this record to
+                    # lack one. The schema validator logs the type mismatch but
+                    # keeps the value ("validated by its consumer"), and this
+                    # loader IS that consumer: an object-valued description
+                    # otherwise reaches every reader that is declared a ``str``,
+                    # including the browser-facing config view, whose redaction
+                    # recognizes only ``str`` — so credential-shaped bytes nested
+                    # inside the object would render there verbatim.
+                    raw_description = entry.get("description", "")
                     agents[name] = KiroCrewAgentConfig(
                         kiro_agent=entry.get("kiro_agent", ""),
                         workspace=entry.get("workspace", "default"),
@@ -2526,7 +2535,7 @@ class KiroCrewConfig:
                         # collapse to "" (inherit) rather than travel to the
                         # provider, where kiro-cli rejects the whole overlay.
                         reasoning_effort=coerce_effort(entry.get("reasoning_effort", "")),
-                        description=entry.get("description", ""),
+                        description=raw_description if isinstance(raw_description, str) else "",
                         triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),
                         # Same guard family as model/triggers: config.json is

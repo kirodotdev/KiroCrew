@@ -118,6 +118,16 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     is ever added it MUST treat ``_SENSITIVE_MASK`` as "unchanged" and keep the
     stored value. Sensitivity is schema-driven (``sensitive=True`` field
     metadata), so newly added sensitive fields are masked automatically.
+
+    In addition to the schema-``sensitive`` values, the agent-writable free-text
+    fields ``description`` and ``triggers`` on every agent record are redacted in
+    this browser-facing view. Both are writable by the agent itself and by an
+    installed package, and neither is schema-sensitive, so the schema-driven
+    ``_walk`` below leaves them untouched. The roster route (GET /api/agents)
+    still returns the same two fields verbatim: each route owns its own response,
+    so closing this one neither repairs that gap nor waits on it. As with
+    everything else in this function, the redaction lives only in the returned
+    copy and never feeds to_dict()/save().
     """
     from kiro_crew.config.schema import JSON_SCHEMA
     from kiro_crew.config.validation import _is_sensitive_path
@@ -150,6 +160,25 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
                     node[key] = _SENSITIVE_MASK
 
     _walk(masked, "")
+
+    # Redact the agent-writable free-text fields that are not schema-sensitive
+    # and so slip past the schema-driven walk above. Deliberately NOT the walk's
+    # ``isinstance(val, str) and val`` guard: these two fields are declared
+    # ``str`` but arrive from a hand- and agent-writable config.json, so a value
+    # that is not a string is exactly the untrusted case. Skipping it would be a
+    # redaction bypass — credential-shaped bytes nested in an object or a list
+    # would render verbatim — so anything other than an empty string is masked
+    # here, and the load path coerces the same shapes away upstream. "" alone is
+    # left as-is so the UI shows no "set (hidden)" placeholder for a field nobody
+    # set, and an absent key is not conjured into one. Operates on the
+    # deep-copied `masked` dict, so the real cfg (to_dict()/save()) is untouched.
+    for _agent in masked.get("agents", {}).values():
+        if not isinstance(_agent, dict):
+            continue
+        for _field in ("description", "triggers"):
+            if _field in _agent and _agent[_field] != "":
+                _agent[_field] = _SENSITIVE_MASK
+
     return masked
 
 
