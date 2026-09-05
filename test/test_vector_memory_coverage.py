@@ -1217,7 +1217,7 @@ class TestLessonDedupPaths:
         assert store.write_lesson("Quote every shell argument you interpolate", source="migration")
         assert store.get_lessons()[0]["confidence"] == 0.9
 
-    def test_semantic_dedup_keeps_the_longer_rule(self, tmp_path: Path) -> None:
+    def test_semantic_dedup_keeps_the_newer_rule_when_it_is_longer(self, tmp_path: Path) -> None:
         """Distinct wording, identical vectors: only the cosine path can dedup these."""
         short_rule = "Zebra crossings need beacons"
         long_rule = "Submarine hatches demand orange lanterns for visibility"
@@ -1227,14 +1227,25 @@ class TestLessonDedupPaths:
         assert store.write_lesson(long_rule)
         assert _lesson_texts(store) == [long_rule]
 
-    def test_semantic_dedup_rejects_the_shorter_rule(self, tmp_path: Path) -> None:
+    def test_semantic_dedup_keeps_the_newer_rule_when_it_is_shorter(self, tmp_path: Path) -> None:
+        """Same pair, submitted in the other order -- the newer rule still wins.
+
+        This branch used to tie-break on ``len(rule) > len(existing_text)`` and DROP
+        the submission when it lost, so character count decided which of two
+        near-identical rules was current. Corrections land on the losing side of
+        that comparison as a rule: a retraction collapses a detailed stale claim
+        into a short accurate one. The stale lesson then stayed in effect, which
+        misleads the agent instead of merely losing detail. The substring and
+        topic-overlap branches already superseded unconditionally; this one now
+        agrees with them.
+        """
         long_rule = "Submarine hatches demand orange lanterns for visibility"
         short_rule = "Zebra crossings need beacons"
         store = _store(tmp_path)
         store.embed_fn = _TableEmbedder({short_rule: _unit(0), long_rule: _unit(0)})
         assert store.write_lesson(long_rule)
-        assert not store.write_lesson(short_rule)
-        assert _lesson_texts(store) == [long_rule]
+        assert store.write_lesson(short_rule)
+        assert _lesson_texts(store) == [short_rule]
 
     def test_the_rule_vector_is_persisted(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

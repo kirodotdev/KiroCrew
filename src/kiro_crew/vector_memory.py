@@ -2923,19 +2923,29 @@ class VectorMemoryStore:
                 if row_blob is not None:
                     sim = similarity({"embedding": row_blob})
                     if sim > 0.85:
-                        logger.info("Lesson semantic dedup: %.2f sim with %r", sim, existing["key"])
-                        if len(rule) > len(existing_text):
-                            pending_backfills[:] = [
-                                (b, k, g)
-                                for b, k, g in pending_backfills
-                                if k != existing["key"]
-                            ]
-                            self.delete_semantic(existing["key"], source)
-                        else:
-                            _flush_backfills()
-                            return LessonWriteResult(
-                                LessonWriteOutcome.DEDUPED, "semantic_similarity"
-                            )
+                        # Newest wins, matching the substring and topic-overlap
+                        # branches above -- both supersede the stored row
+                        # unconditionally. This branch used to tie-break on
+                        # ``len(rule) > len(existing_text)`` and DROP the
+                        # submission when it lost, which made character count
+                        # decide which of two near-identical rules is current.
+                        # A correction is frequently SHORTER than the stale
+                        # lesson it corrects (a retracted claim collapses to a
+                        # one-line "not installed"), so the losing case landed
+                        # exactly on corrections -- and left the stale lesson in
+                        # effect, the one outcome that actively misleads the
+                        # agent rather than merely losing information.
+                        logger.info(
+                            "Lesson semantic supersede: %.2f sim, %r replaces %r",
+                            sim,
+                            rule[:60],
+                            existing["key"],
+                        )
+                        pending_backfills[:] = [
+                            (b, k, g) for b, k, g in pending_backfills if k != existing["key"]
+                        ]
+                        self.delete_semantic(existing["key"], source)
+                        continue
 
         _flush_backfills()
 
