@@ -522,3 +522,35 @@ fork bombs and memory balloons requires Linux with cgroup delegation; where it i
 unavailable (macOS, older Linux, no user session) it is a no-op with a loud
 warning and only the file-descriptor limit applies. See
 [`resource-protection.md`](resource-protection.md).
+
+**Launcher self-poisoning by the same user is accepted, not defended (CWE-345;
+tracked as CWE-778 by
+[#371](https://github.com/kirodotdev/KiroCrew/pull/371) /
+[#417](https://github.com/kirodotdev/KiroCrew/issues/417)).** The resolved
+`kiro-cli` launcher is executed in place with no signature, hash, ownership or
+install-source check — the only gate is `platform_compat.is_executable_file`
+(`kiro_cli.py`) — so an agent running as the invoking user can overwrite its own
+launcher and have those bytes executed on the next spawn. **Status: ACCEPTED.**
+The mechanism that would close it is *rejected by design*, not missing by
+oversight: see
+[`security.md` § Kiro prerequisite setup boundary](../system-specs/modules/security.md),
+which records that trust is "the CLI runs, and it has a valid login" regardless
+of install source, owner, or fixed path, because Kiro Crew is not the authority
+on where Kiro CLI lives and its own self-updater legitimately rewrites those
+bytes as the user — an owner / path / Developer-ID gate would strand real
+installs (toolbox, Homebrew, winget, a self-updated `/Applications` bundle) with
+no in-product recovery path. The same section records the sibling resolve-to-exec
+byte-binding copy as deliberately removed ("Do NOT reintroduce it") once Kiro CLI
+became a multi-call binary. The accepted tradeoff is therefore **install-model
+compatibility over a same-UID integrity check**: the attack presupposes local
+write access as the operator, which is outside this product's threat model (an
+attacker holding the operator's UID already owns the account) and is not
+defended against anywhere else — `~/.bashrc`, above, is the same class. Residual
+blast radius is bounded on the confined spawn paths (Linux namespace, macOS
+seatbelt) which run even a poisoned launcher inside Kiro Crew's own sandbox;
+only macOS internal-sandbox delegation exec's it directly. A multi-tenant or
+enterprise posture would need signing infrastructure, key management and an
+install-layout decision, and any such gate must default **off** — the
+`KIROCREW_PROVIDER_BIN_STRICT` precedent
+(`github_runner.py:validate_provider_executable`) records that requiring a
+root-owned copy made every stock package-manager install fail.
