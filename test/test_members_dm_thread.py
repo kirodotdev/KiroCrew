@@ -16,6 +16,7 @@ Covers spec task 2 of the Crew Members page:
 from __future__ import annotations
 
 import json
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1478,3 +1479,166 @@ class TestMemberActivityRoute:
                 data = await resp.json()
         assert data["capped"] is True
         assert len(data["entries"]) == handler_mod._ACTIVITY_LIMIT
+
+
+class TestDenialAuditOffload:
+    """Deny-path SEL audits must never run on the event loop (issue #8523).
+
+    On a fresh gateway the first ``_sel()`` touch performs synchronous
+    filesystem initialization (HMAC key load/create, chain-head read); a
+    denial that audits inline therefore stalls every gateway task. Each test
+    records the thread the audit actually ran on and fails if it is the
+    event-loop thread — reverting any call site to a bare
+    ``_sel().log_api_access(...)`` turns the recorded ident back into the
+    loop's and fails these.
+    """
+
+    @staticmethod
+    def _recording_sel(record: dict):
+        class _RecordingSel:
+            def log_api_access(self, **kwargs):
+                record["thread_ident"] = threading.get_ident()
+                record["kwargs"] = kwargs
+
+        return _RecordingSel()
+
+    @pytest.mark.asyncio
+    async def test_app_denial_audit_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path)
+        record: dict = {}
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: self._recording_sel(record))
+
+        @web.middleware
+        async def _as_app(request: web.Request, handler):
+            request["app"] = "some-app"
+            return await handler(request)
+
+        app = _make_members_app(state)
+        app.middlewares.insert(0, _as_app)
+        loop_ident = threading.get_ident()
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(app)) as client:
+                assert (await client.get("/api/members")).status == 404
+        assert record["kwargs"]["outcome"] == "denied"
+        assert record["kwargs"]["source"] == "app_isolation"
+        assert record["kwargs"]["operation"] == "members.list"
+        # The audit — including the ``_sel()`` accessor — ran off-loop.
+        assert record["thread_ident"] != loop_ident
+
+    @pytest.mark.asyncio
+    async def test_member_pin_denial_audit_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        """The pin-mismatch denial (binding names a non-owner) audits off-loop."""
+        state = _make_state(tmp_path)
+        record: dict = {}
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: self._recording_sel(record))
+        # ``Code_Reviewer`` slugifies to CREW's slug (so the binding reads back
+        # as present) but is NOT a config-registered owner → pin mismatch.
+        write_dm_binding(CREW, member="Code_Reviewer", slot_key=member_slot_key(CREW))
+        loop_ident = threading.get_ident()
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.post(f"/api/members/{CREW}/thread")
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "member_pin_mismatch"
+        assert record["kwargs"]["source"] == "member_pin"
+        assert record["kwargs"]["outcome"] == "denied"
+        assert record["thread_ident"] != loop_ident
+        assert not state._slots
+
+    @pytest.mark.asyncio
+    async def test_first_sel_touch_initializes_off_the_event_loop(self, tmp_path, monkeypatch):
+        """A deny-path audit that is SEL's FIRST touch initializes off-loop.
+
+        Uses a real ``SecurityEventLog`` against a fresh directory so the
+        first-touch work (HMAC key create, chain-head read) genuinely runs,
+        and records the thread ``_init_locked`` executes on.
+        """
+        from kiro_crew import sel as sel_mod
+
+        state = _make_state(tmp_path)
+        sel_dir = tmp_path / "sel-home"
+        init_record: dict = {}
+        real_init = sel_mod.SecurityEventLog._init_locked
+
+        def _recording_init(inst, base_dir, sync):
+            init_record["thread_ident"] = threading.get_ident()
+            return real_init(inst, base_dir, sync)
+
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_init_locked", _recording_init)
+        # sync=True keeps the append inline in the worker thread (no background
+        # writer to leak); the FIRST-TOUCH construction below is still real.
+        monkeypatch.setattr(
+            sel_mod, "sel", lambda: sel_mod.SecurityEventLog(base_dir=sel_dir, sync=True)
+        )
+        # Displace-then-RESTORE the process singleton, the ``sel_private_root``
+        # convention (that fixture itself is unusable here: it pre-builds the
+        # instance, which would consume the very first touch this test needs).
+        # The reset is immediately followed by the try so a failure can never
+        # lose ``prior_instance`` (see conftest's ordering warning).
+        prior_instance = sel_mod.SecurityEventLog._instance
+        sel_mod.SecurityEventLog._instance = None
+        sel_mod.SecurityEventLog._initialized = False
+        try:
+
+            @web.middleware
+            async def _as_app(request: web.Request, handler):
+                request["app"] = "some-app"
+                return await handler(request)
+
+            app = _make_members_app(state)
+            app.middlewares.insert(0, _as_app)
+            loop_ident = threading.get_ident()
+            with _patched_config([CREW]):
+                async with TestClient(TestServer(app)) as client:
+                    assert (await client.get("/api/members")).status == 404
+            # First touch happened HERE (singleton was reset above) …
+            assert init_record["thread_ident"] is not None
+            # … did its filesystem initialization for real …
+            assert (sel_dir / "trust" / "sel_hmac.key").is_file()
+            # … and never on the event loop.
+            assert init_record["thread_ident"] != loop_ident
+        finally:
+            # Restore the PRIOR singleton (not ``None``): leaving ``None`` would
+            # make the next default ``sel()`` mint a SECOND instance — and a
+            # second writer thread — on the worker's session-shared directory.
+            sel_mod.SecurityEventLog._instance = prior_instance
+            sel_mod.SecurityEventLog._initialized = False
+
+    def test_every_members_sel_audit_is_offloaded(self):
+        """AST guard: no ``log_api_access`` call in members.py runs on-loop.
+
+        Every such call — regardless of how the receiver is spelled
+        (``_sel().log_api_access``, a hoisted ``s = _sel()``, a module-level
+        ``sel()``) — must sit inside a lambda handed to ``asyncio.to_thread``,
+        covering the sites the thread-ident tests do not exercise individually
+        (orphan-history, live-slot mismatch) and any site added later.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew.dashboard.handlers import members as members_mod_py
+
+        tree = ast.parse(inspect.getsource(members_mod_py))
+        offloaded: set[int] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "to_thread"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "asyncio"
+            ):
+                for arg in node.args:
+                    if isinstance(arg, ast.Lambda):
+                        for inner in ast.walk(arg):
+                            offloaded.add(id(inner))
+        audits = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "log_api_access"
+        ]
+        assert audits, "expected log_api_access audit sites in members.py"
+        on_loop = [node.lineno for node in audits if id(node) not in offloaded]
+        assert not on_loop, f"synchronous _sel().log_api_access at lines {on_loop}"
