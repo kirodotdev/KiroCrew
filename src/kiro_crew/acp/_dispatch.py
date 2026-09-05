@@ -1317,6 +1317,236 @@ def _repair_escaped_marker(text: str) -> str | None:
     return candidate if session_directive.peek(candidate) is not None else None
 
 
+# ACP tool-call ``content`` entry types this parser understands: ``content``
+# wraps a ContentBlock, ``diff`` becomes a unified diff in the tool_call
+# builder above, ``terminal`` is a live-terminal handle that carries no text,
+# and ``text`` is the tolerated BARE ContentBlock form accepted by
+# :func:`tool_call_content_text`.
+_KNOWN_TOOL_CONTENT_TYPES = frozenset({"content", "diff", "terminal", "text"})
+
+# ContentBlock ``type`` values a WRAPPED ``{"type": "content"}`` entry can carry.
+# Only ``text`` renders here; the other four legitimately carry no text for this
+# parser, so they must stay SILENT or the diagnostic fires on healthy frames.
+#
+# Needed because a known OUTER type is not evidence the entry is renderable: the
+# wrapper is what this parser understands, and the block inside it is a second
+# place the shape can be wrong. `resource_link` is spelled as the protocol spells
+# it -- snake, matching the wire values the ACP tests use.
+#
+# An allowlist, so a block type added to the protocol later reports as a shape
+# until this set learns it. That is the safe direction: such an entry renders no
+# text either way, so the warning describes a real empty render rather than
+# suppressing one.
+_KNOWN_CONTENT_BLOCK_TYPES = frozenset({"text", "image", "audio", "resource", "resource_link"})
+
+# Distinguishes "no ``content`` key" from ``"content": null``. A plain
+# ``.get("content")`` collapses them, and they are not the same report: the first
+# is a wrapper carrying no claim, the second is a backend explicitly asserting a
+# null block.
+_INNER_ABSENT = object()
+
+# Bounds for the unrenderable-shape diagnostic below. Both exist because the
+# frame is unbounded backend input and the warning it feeds is RETAINED in the
+# log ring `/api/logs` serves, so an oversized one is held in memory rather than
+# scrolling away.
+_MAX_SHAPE_DIAGNOSTIC = 4000
+_MAX_SHAPE_KEYS = 20
+
+
+def tool_call_content_text(entry: Any) -> str | None:
+    """Text of one ACP tool-call ``content`` entry, or None if it carries none.
+
+    ACP's canonical entry WRAPS the ContentBlock:
+    ``{"type": "content", "content": {"type": "text", "text": ...}}``. Real
+    backends also send the ContentBlock BARE -- ``{"type": "text", "text": ...}``
+    -- and that form is unambiguous, so it is read as if it had been wrapped.
+    Rejecting it dropped every entry of the frame, so the dashboard had nothing
+    to render and fell through to "No input or output captured for this tool
+    call." while the backend believed it had reported the result
+    (kirodotdev/KiroCrew#8522).
+    """
+    if not isinstance(entry, dict):
+        return None
+    inner = entry.get("content")
+    if not isinstance(inner, dict) and entry.get("type") == "text":
+        # Bare ContentBlock: the entry IS the block it should have wrapped.
+        inner = entry
+    if not isinstance(inner, dict) or inner.get("type") != "text":
+        return None
+    text = inner.get("text")
+    return str(text) if text else None
+
+
+def redacted_tool_id(tool_use_id: Any) -> str:
+    """A frame's ``toolCallId``, made safe to put in a log line.
+
+    Three hazards, all from the same fact -- the id is whatever JSON the backend
+    sent, not a validated string:
+
+    * ``str()`` first because it need not BE a string. A numeric ``toolCallId``
+      reaches :func:`redact_text`'s regexes as an int and raises ``TypeError``,
+      which would abort the active turn from inside a diagnostic warning -- a
+      logging path must never be able to kill the thing it is reporting on.
+    * Redact before bounding, never the reverse: a cut taken first can split a
+      credential into fragments no pattern matches. Same ordering as the tool
+      output join below.
+    * Bound it, because the id is unbounded input and this warning is retained in
+      the log ring ``/api/logs`` serves. 200 chars keeps a real id (they are
+      short) while refusing a frame that pads it to megabytes.
+
+    The caller still formats the result with ``%r`` -- bounding does not
+    neutralise a newline, so escaping stays the caller's job.
+    """
+    return redact_text(str(tool_use_id))[:200]
+
+
+def _rendered_shape_type(value: Any) -> str:
+    """A frame-supplied ``type`` made safe to put in the shape diagnostic.
+
+    A string renders by ``repr`` -- the type NAME is the diagnostic. Anything else
+    renders by CLASS, because ``repr()`` of a dict or list prints its nested
+    values, so ``{"type": {"token": "..."}}`` would emit exactly what the
+    diagnostic promises to withhold.
+    """
+    return repr(value) if isinstance(value, str) else f"<{type(value).__name__}>"
+
+
+def _rendered_key_names(entry: dict[Any, Any]) -> list[str]:
+    """Key NAMES of one entry, capped structurally.
+
+    The cap drops WHOLE names and appends a count of the rest, rather than cutting
+    through one -- a cut could halve a credential-shaped key name ahead of
+    redaction.
+    """
+    names = sorted(str(k) for k in entry)
+    shown = names[:_MAX_SHAPE_KEYS]
+    if len(names) > _MAX_SHAPE_KEYS:
+        shown.append(f"+{len(names) - _MAX_SHAPE_KEYS} more")
+    return shown
+
+
+def unrenderable_content_shapes(blocks: Any) -> str:
+    """Shapes of ``content`` entries this parser cannot render text from.
+
+    Empty string for a frame whose every entry is a known ACP entry type --
+    including the ones that legitimately carry no text, such as an image
+    ContentBlock -- so a working backend never triggers the caller's warning.
+
+    Checked at BOTH levels. A known outer ``type`` is not evidence the entry is
+    renderable: ``{"type": "content"}`` is a wrapper, and a malformed block inside
+    it produces the same silent blank as an unknown entry. The line drawn is what
+    the backend CLAIMED -- a wrapper whose ``content`` key is absent asserts no
+    block and stays silent, while a ``content`` that is present but not a readable
+    block is reported: not a dict, or carrying a ``type`` outside
+    :data:`_KNOWN_CONTENT_BLOCK_TYPES`.
+
+    Renders TYPE values and KEY names. It does NOT render any other value, at
+    either level, and enforcing that takes one non-obvious step: ``type`` is
+    frame-supplied and need not be a string, and ``repr()`` of a dict or list
+    prints its nested VALUES -- so ``{"type": {"token": "..."}}`` would emit the
+    very thing this function withholds. A non-string ``type`` is therefore
+    rendered by CLASS (``type=<dict>``), never by repr. See
+    :func:`_rendered_shape_type`, which both levels share.
+
+    The caller writes the result into a warning that lands in the log ring
+    ``/api/logs`` serves, which persists beyond the transcript's own redaction, so
+    the redaction happens here rather than at each caller -- that keeps the two
+    drop sites from diverging.
+
+    Shapes are collected RAW and :func:`redact_text` runs ONCE over their JOIN,
+    never per shape, with the single text bound applied AFTER that. Same ordering
+    as ``_build_tool_result_event``'s output and for the same reason: redacting
+    fragment-by-fragment lets a credential that straddles two entries survive as
+    two halves that no single pattern matches, and cutting before redacting can
+    split one the same way.
+
+    Bounded THREE ways, because ``blocks`` is unbounded backend input and a final
+    ``[:4000]`` alone still builds the whole list and join first -- a near-limit
+    frame of unrecognised entries could allocate its way to an OOM before the cut
+    ever ran:
+
+    * entries stop being collected once the running length passes the budget;
+    * each entry renders at most ``_MAX_SHAPE_KEYS`` key names, plus a count of
+      the rest -- a STRUCTURAL truncation that drops whole names rather than
+      cutting through one, so it cannot halve a credential ahead of redaction;
+    * the redacted join is bounded once at the end.
+    """
+    if not isinstance(blocks, list):
+        return ""
+    shapes: list[str] = []
+    budget = _MAX_SHAPE_DIAGNOSTIC
+    for entry in blocks:
+        if budget <= 0:
+            break
+        if not isinstance(entry, dict):
+            shape = type(entry).__name__
+        else:
+            entry_type = entry.get("type")
+            if isinstance(entry_type, str) and entry_type in _KNOWN_TOOL_CONTENT_TYPES:
+                if entry_type != "content":
+                    continue
+                # A known WRAPPER is not a renderable entry. The block inside it is
+                # a second place the shape can be wrong, and the failure looks
+                # identical from the dashboard: `{"type": "content", "content":
+                # {"kind": "text", ...}}` -- `kind` where the reader wants `type` --
+                # renders nothing and, checked only at the outer level, said nothing
+                # either. That is the same undiagnosable blank this function exists
+                # to eliminate, one level down.
+                inner = entry.get("content", _INNER_ABSENT)
+                if inner is _INNER_ABSENT:
+                    # No block ASSERTED at all. Silent, deliberately: this is the
+                    # bare wrapper `_KNOWN_TOOL_CONTENT_TYPES` documents as
+                    # understood, and warning here would fire on a backend that
+                    # sends a wrapper before it has a block to put in it. The line
+                    # this draws is "the backend claimed a block and got it wrong"
+                    # (reported) versus "the backend did not claim one" (silent).
+                    continue
+                if not isinstance(inner, dict):
+                    shape = f"type='content' inner=<{type(inner).__name__}>"
+                else:
+                    inner_type = inner.get("type")
+                    if isinstance(inner_type, str) and inner_type in _KNOWN_CONTENT_BLOCK_TYPES:
+                        continue
+                    shape = (
+                        f"type='content' inner_type={_rendered_shape_type(inner_type)} "
+                        f"inner_keys={_rendered_key_names(inner)}"
+                    )
+            else:
+                shape = (
+                    f"type={_rendered_shape_type(entry_type)} " f"keys={_rendered_key_names(entry)}"
+                )
+        shapes.append(shape)
+        budget -= len(shape) + 2
+    return redact_text("; ".join(shapes))[:_MAX_SHAPE_DIAGNOSTIC] if shapes else ""
+
+
+def log_unrenderable_content(log: logging.Logger, tool_use_id: Any, content: Any) -> None:
+    """Emit the "this tool shows no output" warning, once, for both drop sites.
+
+    The two tool-result parsers (:func:`_build_tool_result_event` here and
+    ``AcpClient._extract_tool_call_update``) reach the same dead end, and this PR
+    exists because their leniency had drifted apart. Shipping the warning as two
+    copies would recreate exactly that: the message, the redaction, the ``%r``
+    escaping and the shape call all have to stay identical, and nothing but
+    convention would keep them so.
+
+    ``log`` is passed in rather than taken from this module so each parser's
+    records still carry ITS OWN logger name -- callers filter on that.
+    """
+    shapes = unrenderable_content_shapes(content)
+    if not shapes:
+        return
+    log.warning(
+        "tool_call_update %r: no content entry could be rendered, so this tool "
+        "shows no output at all. Unrecognised entry shapes: %s. ACP expects "
+        "{'type': 'content', 'content': {'type': 'text', 'text': ...}}; a bare "
+        "{'type': 'text', 'text': ...} block is also read. Shapes only -- entry "
+        "VALUES are withheld from this log.",
+        redacted_tool_id(tool_use_id),
+        shapes,
+    )
+
+
 def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> AcpEvent | None:
     """Build an ``EVENT_TOOL_RESULT`` from a ``tool_call_update`` carrying output.
 
@@ -1352,13 +1582,9 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
     content = update.get("content")
     if isinstance(content, list):
         for block in content:
-            if not isinstance(block, dict):
-                continue
-            inner = block.get("content")
-            if isinstance(inner, dict) and inner.get("type") == "text":
-                text = inner.get("text", "")
-                if text:
-                    output_parts.append(str(text))
+            text = tool_call_content_text(block)
+            if text:
+                output_parts.append(text)
     # Path 2: rawOutput (status=completed) fallback.
     if not output_parts:
         raw_output = update.get("rawOutput")
@@ -1432,6 +1658,7 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
             if raw_output and "items" not in raw_output:
                 output_parts.append(json.dumps(raw_output, default=str))
     if not output_parts:
+        log_unrenderable_content(logger, tool_use_id, content)
         return None
     joined = "\n".join(output_parts)
     # Repair a marker that arrived JSON-escaped, BEFORE redaction and the head

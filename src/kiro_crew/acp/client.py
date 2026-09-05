@@ -53,6 +53,7 @@ from kiro_crew.acp._dispatch import (
     build_permission_event,
     derive_edit_diff,
     extract_tool_purpose,
+    log_unrenderable_content,
     make_unified_diff,
     parse_claude_compaction_notice,
     parse_prompt_token_usage,
@@ -60,6 +61,7 @@ from kiro_crew.acp._dispatch import (
     parse_usage_cost,
     parse_usage_update,
     redact_text,
+    tool_call_content_text,
 )
 from kiro_crew.acp.liveness import (
     EVIDENCE_SAMPLING,
@@ -7257,13 +7259,9 @@ class AcpClient:
         content = update.get("content")
         if isinstance(content, list):
             for block in content:
-                if not isinstance(block, dict):
-                    continue
-                inner = block.get("content")
-                if isinstance(inner, dict) and inner.get("type") == "text":
-                    text = inner.get("text", "")
-                    if text:
-                        output_parts.append(str(text))
+                text = tool_call_content_text(block)
+                if text:
+                    output_parts.append(text)
 
         # Path 2: `rawOutput` (arrives with status=completed) — fallback when
         # there were no content blocks (e.g. some tools only emit rawOutput).
@@ -7323,6 +7321,7 @@ class AcpClient:
                     output_parts.append(json.dumps(raw_output, default=str))
 
         if not output_parts:
+            log_unrenderable_content(logger, tool_use_id, content)
             return None
 
         final_output = "\n".join(output_parts)

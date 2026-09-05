@@ -7417,6 +7417,328 @@ class TestExtractToolCallUpdate:
         msg = JsonRpcMessage(params=None)
         assert client._extract_tool_call_update(msg) is None
 
+    def test_bare_text_block_in_content_is_accepted(self):
+        # ACP wraps the ContentBlock: {"type": "content", "content": {...}}.
+        # Real backends also send the ContentBlock BARE, which is unambiguous —
+        # dropping it left the dashboard with nothing and it fell through to
+        # "No input or output captured for this tool call." (issue #8522).
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-bare",
+                "content": [{"type": "text", "text": "bare block output"}],
+            }
+        )
+        event = client._extract_tool_call_update(msg)
+        assert event is not None
+        assert "bare block output" in event.tool_output
+
+    def test_unrenderable_content_entries_are_logged_with_shape(self, caplog):
+        # An unknown entry shape used to vanish with no diagnostic anywhere, so
+        # the backend author had no way to see the mismatch. One warning naming
+        # the shape — TYPE and KEY names only, never a value: this lands in the
+        # log ring /api/logs serves and a tool result can carry a credential.
+        import logging
+
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-unknown",
+                "content": [{"type": "resource_link", "uri": "file:///etc/secret.txt"}],
+            }
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
+            assert client._extract_tool_call_update(msg) is None
+        hits = [r.getMessage() for r in caplog.records if "could be rendered" in r.getMessage()]
+        assert len(hits) == 1
+        assert "resource_link" in hits[0]
+        assert "secret.txt" not in hits[0]
+
+    def test_content_free_frame_is_not_warned_about(self, caplog):
+        # claude-agent-acp emits an initial tool_call with neither rawInput nor
+        # content and refines it later; warning on that would fire on every
+        # tool call of a healthy backend.
+        import logging
+
+        client = self._client()
+        msg = self._make_msg({"sessionUpdate": "tool_call_update", "toolCallId": "tc-quiet"})
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
+            assert client._extract_tool_call_update(msg) is None
+        assert [r for r in caplog.records if "could be rendered" in r.getMessage()] == []
+
+
+# ── issue #8522: non-canonical tool-call content shapes on the dispatch path ──
+
+
+class TestDispatchToolResultContentShapes:
+    """`_build_tool_result_event` walks the same `content` array as
+    `AcpClient._extract_tool_call_update`, so it must be equally lenient —
+    a backend's shape is not a function of which of the two loops read it."""
+
+    def test_bare_text_block_in_content_is_accepted(self):
+        from kiro_crew.acp._dispatch import _build_tool_result_event
+
+        event = _build_tool_result_event(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-bare-dispatch",
+                "content": [{"type": "text", "text": "bare on the dispatch path"}],
+            }
+        )
+        assert event is not None
+        assert "bare on the dispatch path" in event.tool_output
+
+    def test_unrenderable_content_entries_are_logged_with_shape(self, caplog):
+        import logging
+
+        from kiro_crew.acp._dispatch import _build_tool_result_event
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp._dispatch"):
+            assert (
+                _build_tool_result_event(
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc-unknown-dispatch",
+                        "content": [{"kind": "text", "value": "wrong key names"}],
+                    }
+                )
+                is None
+            )
+        hits = [r.getMessage() for r in caplog.records if "could be rendered" in r.getMessage()]
+        assert len(hits) == 1
+        assert "kind" in hits[0]
+        assert "wrong key names" not in hits[0]
+
+    def test_shape_diagnostics_and_tool_id_are_redacted(self, caplog):
+        """The warning lands in the ``/api/logs`` ring, which outlives the
+        transcript's own redaction. ``type`` and the tool id are frame-supplied
+        VALUES, not just key names, so a hostile or careless backend can put a
+        credential in either -- both must be scrubbed before they are logged."""
+        import logging
+
+        from kiro_crew.acp._dispatch import _build_tool_result_event
+
+        # Split so this file holds no literal-looking key; matches
+        # (?:AKIA|ASIA)[A-Z0-9]{16}, the same shape as
+        # test_core_path_redact_before_bound.
+        token = "AKIA" + "SHAPELEAK0123456"
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp._dispatch"):
+            assert (
+                _build_tool_result_event(
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": f"tc-{token}",
+                        "content": [{"type": token, "text": "unrecognised entry type"}],
+                    }
+                )
+                is None
+            )
+        hits = [r.getMessage() for r in caplog.records if "could be rendered" in r.getMessage()]
+        assert len(hits) == 1
+        assert token not in hits[0]
+        assert "[REDACTED" in hits[0]
+
+    def test_a_newline_bearing_tool_id_cannot_forge_a_log_line(self, caplog):
+        """The id is frame-supplied, so a newline in it would let a backend append
+        its own lines to the gateway log the dashboard renders. ``%r`` keeps the
+        whole id on one line with the newline escaped."""
+        import logging
+
+        from kiro_crew.acp._dispatch import _build_tool_result_event
+
+        forged = "tc-1\nWARNING kiro_crew: drive deleted by owner"
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp._dispatch"):
+            assert (
+                _build_tool_result_event(
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": forged,
+                        "content": [{"kind": "no-renderable-entry"}],
+                    }
+                )
+                is None
+            )
+        hits = [r.getMessage() for r in caplog.records if "could be rendered" in r.getMessage()]
+        assert len(hits) == 1
+        # The escaped form is present and the raw newline is not, so the forged
+        # text cannot start a line of its own.
+        assert "\\n" in hits[0]
+        assert "drive deleted by owner" not in hits[0].splitlines()[1:]
+        assert "\n" not in hits[0]
+
+    def test_every_documented_known_content_type_is_renderable_or_silent(self):
+        """The constant's docstring names four entry types as understood. If one is
+        dropped from the frozenset a real backend's frame starts warning, so pin
+        the documented set rather than trusting the comment above it."""
+        from kiro_crew.acp._dispatch import _KNOWN_TOOL_CONTENT_TYPES, unrenderable_content_shapes
+
+        assert _KNOWN_TOOL_CONTENT_TYPES == frozenset({"content", "diff", "terminal", "text"})
+        for known in sorted(_KNOWN_TOOL_CONTENT_TYPES):
+            assert unrenderable_content_shapes([{"type": known}]) == "", known
+        assert unrenderable_content_shapes([{"type": "not-a-known-type"}]) != ""
+
+    def test_a_numeric_tool_id_does_not_crash_the_turn(self, caplog):
+        """``toolCallId`` is whatever JSON the backend sent, so it need not be a
+        string. Passing an int straight into the redactor's regexes raises
+        ``TypeError`` -- and this is a diagnostic warning, which must never be able
+        to abort the turn it is reporting on."""
+        import logging
+
+        from kiro_crew.acp._dispatch import _build_tool_result_event, redacted_tool_id
+
+        assert redacted_tool_id(1234) == "1234"
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp._dispatch"):
+            assert (
+                _build_tool_result_event(
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": 1234,
+                        "content": [{"kind": "unrecognised"}],
+                    }
+                )
+                is None
+            )
+        assert [r for r in caplog.records if "could be rendered" in r.getMessage()]
+
+    def test_both_diagnostics_are_bounded(self):
+        """Both strings are unbounded backend input feeding a RETAINED log-ring
+        entry, so a frame that pads them cannot be held in memory in full. Bounds
+        are applied AFTER redaction, never before -- a cut taken first can split a
+        credential into fragments no pattern matches."""
+        from kiro_crew.acp._dispatch import redacted_tool_id, unrenderable_content_shapes
+
+        assert len(redacted_tool_id("t" * 100_000)) == 200
+        padded = [{"type": f"x{i}", "pad": "y" * 200} for i in range(2000)]
+        assert len(unrenderable_content_shapes(padded)) == 4000
+
+    def test_collection_stops_early_rather_than_building_the_whole_join(self):
+        """The final ``[:4000]`` alone still VISITS every entry and allocates the
+        full join before cutting, so a near-limit frame could OOM the gateway on the
+        way to a bounded string.
+
+        Asserted by counting entry visits, not by inspecting the output: a
+        length/content assertion passes either way, because the tail is cut off
+        regardless of whether the loop broke early. Counting is what discriminates.
+        """
+        from kiro_crew.acp._dispatch import unrenderable_content_shapes
+
+        visits = 0
+
+        class _CountingEntry(dict):
+            def get(self, *args, **kwargs):  # type: ignore[override]
+                nonlocal visits
+                visits += 1
+                return super().get(*args, **kwargs)
+
+        blocks = [_CountingEntry({"type": f"unknown-{i:06d}"}) for i in range(50_000)]
+        out = unrenderable_content_shapes(blocks)
+        assert len(out) <= 4000
+        assert "unknown-000000" in out
+        # ~4000 chars of shapes at ~40 chars each is a couple of hundred entries;
+        # anything near 50_000 means the loop consumed the whole frame.
+        assert visits < 1000, f"visited {visits} entries — the budget did not stop collection"
+
+    def test_an_object_valued_type_never_renders_its_nested_values(self):
+        """``type`` is frame-supplied and need not be a string. ``repr()`` of a dict
+        prints its nested VALUES, so a credential parked one level down would reach
+        the log ring through the very diagnostic that promises names only. A
+        non-string type renders by CLASS instead."""
+        from kiro_crew.acp._dispatch import unrenderable_content_shapes
+
+        token = "AKIA" + "NESTEDLEAK012345"
+        out = unrenderable_content_shapes([{"type": {"secret": token}, "other": 1}])
+        assert token not in out
+        assert "secret" not in out
+        assert "type=<dict>" in out
+        # Key NAMES are still reported -- that is the diagnostic's whole purpose.
+        assert "other" in out
+
+    def test_a_key_flood_is_truncated_structurally_not_mid_name(self):
+        """Per-entry key rendering is capped by DROPPING whole names, never by
+        cutting through one: a cut ahead of redaction could leave half a credential
+        that no pattern matches."""
+        from kiro_crew.acp._dispatch import unrenderable_content_shapes
+
+        entry = {"type": "unknown"} | {f"k{i:04d}": 1 for i in range(500)}
+        out = unrenderable_content_shapes([entry])
+        assert "more" in out
+        assert "k0499" not in out
+
+    def test_shapes_are_joined_with_one_separator(self):
+        """Two unrecognised entries render as two shapes in one string.
+
+        Deliberately does NOT claim to prove the redact-then-join ORDERING: a
+        separator count passes for a per-shape implementation too, so an assertion
+        of that shape discriminates nothing. The ordering is enforced by the
+        function returning a single joined string, not by a test.
+        """
+        from kiro_crew.acp._dispatch import unrenderable_content_shapes
+
+        joined = unrenderable_content_shapes([{"type": "one"}, {"type": "two"}])
+        assert "type='one'" in joined and "type='two'" in joined
+
+    def test_a_wrapped_entry_with_a_malformed_inner_block_is_reported(self):
+        """A known outer ``type`` is not evidence the entry renders.
+
+        ``{"type": "content", "content": {"kind": "text", ...}}`` -- ``kind`` where
+        the reader wants ``type`` -- renders nothing, and checked only at the outer
+        level it said nothing either: the same undiagnosable blank the shape
+        diagnostic exists to eliminate, one level down.
+        """
+        from kiro_crew.acp._dispatch import unrenderable_content_shapes
+
+        out = unrenderable_content_shapes(
+            [{"type": "content", "content": {"kind": "text", "text": "AKIAIOSFODNN7SECRET"}}]
+        )
+        assert out, "a wrapped entry with an unreadable inner block must be reported"
+        assert "inner_type=<NoneType>" in out
+        assert "'kind'" in out and "'text'" in out
+        # Key NAMES only at the inner level too -- this lands in the log ring.
+        assert "AKIAIOSFODNN7SECRET" not in out
+
+    def test_a_wrapped_inner_block_carrying_no_text_stays_silent(self):
+        """The negative control for the inner check, and the reason it is an
+        allowlist rather than "anything but text".
+
+        An image, audio or resource block renders no text and is NOT a defect, so
+        reporting it would fire this warning on a healthy backend -- the exact
+        false positive `test_content_free_frame_is_not_warned_about` guards at the
+        frame level.
+        """
+        from kiro_crew.acp._dispatch import unrenderable_content_shapes
+
+        for kind in ("text", "image", "audio", "resource", "resource_link"):
+            entry = {"type": "content", "content": {"type": kind}}
+            assert unrenderable_content_shapes([entry]) == "", f"{kind} must stay silent"
+
+    def test_a_wrapper_with_no_inner_block_stays_silent_but_an_explicit_null_does_not(self):
+        """The line the inner check draws, pinned in both directions.
+
+        A ``content`` key that is ABSENT asserts no block, so it stays silent --
+        that is the bare wrapper `_KNOWN_TOOL_CONTENT_TYPES` documents as
+        understood, and it is why the check cannot be a plain ``.get("content")``,
+        which would collapse this case into the null one below.
+        """
+        from kiro_crew.acp._dispatch import unrenderable_content_shapes
+
+        assert unrenderable_content_shapes([{"type": "content"}]) == ""
+        assert unrenderable_content_shapes([{"type": "content", "content": None}]) != ""
+
+    def test_a_wrapped_non_dict_inner_renders_by_class_not_value(self):
+        """``{"type": "content", "content": "<secret>"}`` is unreadable too, and the
+        inner is not a dict, so there are no key names -- only its CLASS may be
+        named, never the string itself."""
+        from kiro_crew.acp._dispatch import unrenderable_content_shapes
+
+        out = unrenderable_content_shapes([{"type": "content", "content": "AKIAIOSFODNN7SECRET"}])
+        assert "inner=<str>" in out
+        assert "AKIAIOSFODNN7SECRET" not in out
+
 
 # ── _extract_tool_call_refinement tests ──
 
