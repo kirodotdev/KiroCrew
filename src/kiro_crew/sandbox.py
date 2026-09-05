@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
@@ -188,6 +189,58 @@ _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 # in none of them. Spelled here rather than imported so this low-level module keeps not
 # importing the 7k-line security module (the ``_POLICY_CACHE_LEAF`` convention above).
 
+#: The md-notebook builtin's name, and its own state files under the crew data home.
+#: Named so the mask below and the ONE spawn allowed back in (the shipped md-notebook
+#: backend — see ``md_notebook_backend_state_paths`` and its caller in
+#: ``apps/backend.py``) cannot drift apart.
+MD_NOTEBOOK_APP_NAME: str = "md-notebook"
+_MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = (
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/pat",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json",
+)
+#: The backend's write-staging directory, masked as a WHOLE DIRECTORY like
+#: ``whatsapp``: every md-notebook state writer stages its temp file HERE and
+#: renames into place, because a temp staged beside the target (the previous
+#: shape) carries the real PAT bytes under a name the three leaf masks do not
+#: cover — and a SIGKILL between write and rename leaves that unmasked sibling
+#: readable forever. A directory mask covers every name inside it, present and
+#: future, so the staging window and the orphan both stay masked.
+_MD_NOTEBOOK_STAGING_LEAF: str = f"workspace/{MD_NOTEBOOK_APP_NAME}/.staging"
+#: Everything the shipped backend's spawn carves back out: its three state
+#: files plus the staging directory their writers publish through.
+_MD_NOTEBOOK_BACKEND_CARVEOUT_LEAVES: tuple[str, ...] = (
+    *_MD_NOTEBOOK_STATE_LEAVES,
+    _MD_NOTEBOOK_STAGING_LEAF,
+)
+
+#: What each md-notebook state leaf holds when MATERIALISED before a Linux launch.
+#:
+#: ``mount(2)`` cannot mask a path that does not exist, and the launcher's hiding
+#: loops guard on existence — so an ABSENT leaf gets no mask in the agent's
+#: namespace, and a namespace that outlives the leaf's later creation reads the
+#: real bytes (the PAT, once the backend saves one). That was moot while nothing
+#: could create these files on a sandboxed host; the backend carve-out below makes
+#: creation possible, so the mask must be made non-vacuous FIRST. Each document is
+#: the reader's absent-equivalent (the md-notebook backend is the only reader):
+#:
+#:   * ``vaults.json`` — ``_read_vaults_sync`` returns ``[]`` for absent (OSError)
+#:     and for ``[]`` alike;
+#:   * ``settings.json`` — ``_load_settings_sync`` returns the defaults for absent
+#:     and reads ``{}`` as every-field-default;
+#:   * ``pat`` — ``_read_pat_sync`` maps absent (OSError) and empty (``"" or None``)
+#:     both to ``None``.
+#:
+#: The agent-side view is the pinned empty mask file either way, which is exactly
+#: the mask's intent, so the stale-read concern that excludes most hidden leaves
+#: from materialisation does not arise here.
+_MD_NOTEBOOK_PRECREATE_CONTENT: dict[str, bytes] = {
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/pat": b"",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json": b"[]\n",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json": b"{}\n",
+}
+assert set(_MD_NOTEBOOK_PRECREATE_CONTENT) == set(_MD_NOTEBOOK_STATE_LEAVES)
+
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # Channel credentials. Already file-masked in cc/strict via ``_CC_FILES``; listing
@@ -199,9 +252,14 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "apps/aws-control/data",
     "apps/meetings/data/edits",
     "whatsapp",
-    "workspace/md-notebook/pat",
-    "workspace/md-notebook/vaults.json",
-    "workspace/md-notebook/settings.json",
+    # The md-notebook app's GitHub token, vault/settings state, and the staging
+    # directory their writers publish through. "No legitimate in-sandbox reader"
+    # holds for the AGENT's spawns; the md-notebook BACKEND itself is spawned
+    # under this same sandbox and OWNS these files, so its spawn site carves
+    # exactly these leaves back out (``md_notebook_backend_state_paths``,
+    # provenance-gated in ``apps/backend.py``) — without that the backend inherits
+    # the mask over its own state store and every attach/clone fails EPERM (#8762).
+    *_MD_NOTEBOOK_BACKEND_CARVEOUT_LEAVES,
     # Browser session material. The extension token reaches the CLI through the
     # environment, never by ``open()``, so masking the file costs nothing; the other
     # four are retired leaves with no reader left in the tree. The LIVE browser paths
@@ -506,8 +564,10 @@ def _refuse_if_dangling_symlink(target: str) -> None:
     )
 
 
-def _publish_empty_ceiling(target: str, parent: str) -> bool:
-    """Write the empty document to a sibling temp file, then link it into place.
+def _publish_empty_ceiling(
+    target: str, parent: str, content: bytes = _EMPTY_CEILING_DOCUMENT
+) -> bool:
+    """Write *content* (default: the empty document) to a sibling temp file, then link it into place.
 
     Two steps rather than ``open(target, O_CREAT | O_EXCL)`` followed by a write,
     because the one-step form publishes the NAME before the BYTES: a crash, a full
@@ -539,7 +599,7 @@ def _publish_empty_ceiling(target: str, parent: str) -> bool:
         # TRUNCATED document, which reads as corrupt rather than as absent and is the
         # exact outcome the temp-then-link shape exists to prevent. Loop, and treat zero
         # progress as an error so a filesystem that accepts nothing cannot spin here.
-        view = memoryview(_EMPTY_CEILING_DOCUMENT)
+        view = memoryview(content)
         while view:
             written = os.write(fd, view)
             if written <= 0:
@@ -640,6 +700,144 @@ def _materialize_sealable_ceilings() -> list[str]:
                 "inside the sandbox"
             )
 
+    return created
+
+
+def _materialize_md_notebook_mask_targets() -> list[str]:
+    """Create md-notebook's absent state files so their hiding masks can mount.
+
+    ``mount(2)`` cannot target a path that does not exist, and the launcher's
+    hiding loops guard on existence — so an ABSENT leaf gets no mask in the
+    spawned namespace at all. That gap was vacuous while nothing could create
+    these files on a sandboxed host; the backend carve-out
+    (:func:`md_notebook_backend_state_paths`) makes the md-notebook backend able
+    to create them, so a long-lived agent namespace spawned BEFORE the first
+    vault attach would read the PAT the backend saves later. Materialising the
+    absent-equivalent documents first (``_MD_NOTEBOOK_PRECREATE_CONTENT``
+    carries the per-leaf argument) gives every mask a mount target before any
+    agent runs.
+
+    Runs on the Linux spawn path only, at the same site as
+    :func:`_materialize_sealable_ceilings`; the macOS profile needs nothing here
+    because Seatbelt denies are path rules that hold for names that do not exist
+    yet. **Fail-closed** for the same reason the ceiling materialiser is:
+    launching anyway would run the agent with a mask the launcher silently
+    skipped. Creation happens only under the LIVE data home (``config_dir()``):
+    the deprecated home spelling can never receive bytes (the backend resolves
+    its state through the live home), so a stub there would be a file nothing
+    reads. An absent data home root is left absent, mirroring
+    ``_sealable_absent_ceilings``.
+
+    Never truncates and never removes: an existing file is left byte-for-byte
+    alone, and ``EEXIST`` outcomes are the benign race.
+    """
+    created: list[str] = []
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for md-notebook masking", exc_info=True)
+        return created
+    if not os.path.isdir(root):
+        return created
+
+    # The #4381 planted-link refusal, same guard the state writers carry:
+    # ``os.makedirs`` and the publish below FOLLOW a resolving symlink planted
+    # at an intermediate component (``workspace`` or ``workspace/md-notebook``
+    # — an agent-writable tree a spawned subprocess can symlink at OS level,
+    # around the file-tool gate). The materialised files would land at the
+    # link's target while the launcher masks the lexical path, so the mask
+    # mounts over an attacker-chosen redirection. Refuse the spawn instead.
+    #
+    # The LEAF gets the stricter form: any symlink or junction at a state leaf
+    # is refused, resolving or dangling. ``mount(2)`` resolves its target, so a
+    # RESOLVING ``pat`` link would put the mask on the referent while the
+    # lexical name stays an agent-replaceable link in a writable parent — the
+    # agent swaps it after launch and a later PAT write publishes to an
+    # unmasked name inside the live namespace. (atomic_write deliberately
+    # ALLOWS a leaf link because ``os.replace`` does not follow the final
+    # component; a mount target has the opposite requirement.)
+    def _chain_or_refuse(probe: str, what: str) -> None:
+        try:
+            refuse_linked_parent(probe)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(f"refusing to materialise the {what}: {exc}") from exc
+
+    def _refuse_any_leaf_link(target: str, what: str) -> None:
+        if platform_compat.is_link_or_junction(target):
+            raise SandboxCeilingUnsealable(
+                f"the {what} {target} is a symlink or junction. mount(2) would mask "
+                "its referent while the lexical name stays a replaceable link, so "
+                "the mask could be swapped out from under a live namespace. Remove "
+                "or replace it with a real file."
+            )
+
+    # The staging DIRECTORY needs to exist for the same reason the leaf files
+    # do: an absent dir gets no hiding mount, and the backend creates it on
+    # first write — inside a namespace that may already be running maskless.
+    staging = os.path.join(root, _MD_NOTEBOOK_STAGING_LEAF)
+    _refuse_any_leaf_link(staging, "md-notebook staging mask target")
+    _chain_or_refuse(os.path.join(staging, ".chain-probe"), "md-notebook staging directory")
+    if not os.path.isdir(staging):
+        try:
+            os.makedirs(staging, mode=0o700, exist_ok=True)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot create the md-notebook staging directory {staging}: {exc}. "
+                "Launching anyway would leave the PAT staging window maskless in "
+                "every agent namespace."
+            ) from exc
+        created.append(staging)
+    for leaf, content in _MD_NOTEBOOK_PRECREATE_CONTENT.items():
+        target = os.path.join(root, leaf)
+        _refuse_any_leaf_link(target, "md-notebook state mask target")
+        _chain_or_refuse(target, "md-notebook state mask target")
+        if os.path.exists(target):
+            # Present is acceptable only as a REGULAR file. The launcher's
+            # hiding loops classify each target with ``isdir``/``isfile``, and
+            # a FIFO, socket, or device node at the name matches NEITHER — the
+            # mask is silently skipped for the whole sandbox, and a later PAT
+            # replacement lands at an unmasked name inside the live namespace.
+            # Links were already refused above, so ``lstat`` here judges the
+            # real inode.
+            if not stat.S_ISREG(os.lstat(target).st_mode):
+                raise SandboxCeilingUnsealable(
+                    f"the md-notebook state mask target {target} exists but is not "
+                    "a regular file, so the launcher's hiding loops would silently "
+                    "skip its mask. Remove or replace it with a regular file."
+                )
+            continue
+        parent = os.path.dirname(target)
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot create {parent} to give the md-notebook state mask a mount "
+                f"target: {exc}. Launching anyway would leave {target} maskless in "
+                "every agent namespace once the Notes backend creates it."
+            ) from exc
+        if _publish_empty_ceiling(target, parent, content=content):
+            created.append(target)
+        else:
+            # A lost publish race is benign ONLY when what won it clears the
+            # SAME bar an existing target had to clear above: a regular file,
+            # not a link. Accepting bare existence here re-opened the window
+            # the pre-checks closed — an agent racing ``mkfifo``/``symlink``
+            # between the validation and the publish would have its non-file
+            # accepted, and the launcher's isdir/isfile loops skip it. lstat
+            # judges the winner's real inode; anything else refuses the spawn.
+            try:
+                winner = os.lstat(target)
+            except OSError as exc:
+                raise SandboxCeilingUnsealable(
+                    f"cannot publish the md-notebook state mask target {target}; its "
+                    "hiding mask would be silently skipped for the whole sandbox"
+                ) from exc
+            if not stat.S_ISREG(winner.st_mode):
+                raise SandboxCeilingUnsealable(
+                    f"the md-notebook state mask target {target} was raced by a "
+                    "non-regular file between validation and publish; the launcher "
+                    "would silently skip its mask, so the spawn is refused."
+                )
     return created
 
 
@@ -814,6 +1012,96 @@ def _relocated_policy_cache_dirs() -> list[str]:
         logger.debug("could not resolve the policy-cache path for sandbox masking", exc_info=True)
         return []
     return [] if resolved == default else [resolved]
+
+
+def md_notebook_backend_state_paths() -> tuple[str, ...]:
+    """Every masked spelling of the md-notebook app's own state files.
+
+    ``_CREW_HIDDEN_LEAVES`` bind-masks ``workspace/md-notebook/{pat,vaults.json,
+    settings.json}`` in every sandbox mode so an AGENT-spawned subprocess cannot
+    read the GitHub token or rewrite the vault list at OS level. But the
+    md-notebook BACKEND is spawned under that same sandbox (``apps/backend.py``
+    wraps every app backend with :func:`wrap_argv`), and those three files are
+    its own state store — masked from it, every attach/clone fails with EPERM
+    (#8762).
+
+    The spawn site passes these as ``extra_visible_dirs`` for exactly ONE spawn:
+    the shipped builtin md-notebook backend, provenance-checked against the
+    immutable package (see the caller in ``apps/backend.py``). Unlike the
+    governance cache carve-out this restores read AND write, because the backend
+    is the sole legitimate writer of all three files; the agent-side file-tool
+    gate (``security.is_sensitive_path``) still fences them from tool calls.
+
+    Returns every spelling the backend can actually reach — the default
+    ``~/.kiro/crew`` prefix plus the relocated data home. The deprecated
+    ``~/.kirocrew`` prefix is deliberately NOT carved even though the mask
+    covers it: no resolver returns it (``config/paths.py`` has no legacy
+    fallback and the backend resolves state through ``config_dir()``), so
+    unmasking it would expose a stale legacy PAT copy to the spawn for zero
+    functional gain. Its mask entries stay.
+
+    A spelling that sits BENEATH an independently masked directory is REFUSED,
+    not carved: ``extra_visible_dirs`` cancels any hidden entry that CONTAINS a
+    visible path, so with a data home placed under another masked tree (e.g.
+    ``KIROCREW_HOME`` beneath a credential directory) the carve-out would take
+    that whole foreign mask down with it. Dropping the spelling keeps the
+    backend's EPERM on such a host — the pre-existing shape of #8762 — which is
+    strictly safer than unmasking a credential tree, and the refusal is logged
+    with the offending ancestor so the misconfiguration is actionable.
+
+    Never raises: home or data-home resolution failures degrade to returning
+    fewer (or no) spellings, and a spawn proceeds with the mask intact.
+    """
+    try:
+        home = str(Path.home())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve home for the md-notebook carve-out", exc_info=True)
+        return ()
+    paths = [
+        os.path.join(home, _CREW_HOME_DEFAULT, leaf)
+        for leaf in _MD_NOTEBOOK_BACKEND_CARVEOUT_LEAVES
+    ]
+    paths.extend(_relocated_crew_targets(_MD_NOTEBOOK_BACKEND_CARVEOUT_LEAVES))
+    return tuple(path for path in dict.fromkeys(paths) if not _shadowed_by_foreign_mask(path, home))
+
+
+def _shadowed_by_foreign_mask(path: str, home: str) -> bool:
+    """Whether *path* sits beneath a masked directory that is not itself.
+
+    The check spans every tier's dir list (the spawn asks for ``standard``, but
+    a governance ``sandbox.min_level`` floor can clamp the mode up, so the
+    carve-out must be safe at whichever tier actually applies), sourced from the
+    active context's policy adapter so an edition's extra entries are honoured.
+    Equality is not shadowing — the md-notebook leaves ARE masked entries, and
+    unhiding exactly themselves is the carve-out's whole job; only a PROPER
+    ancestor is foreign.
+    """
+    candidate = os.path.abspath(path)
+    try:
+        policy = _sandbox_policy()
+        tier_dirs = [*policy.strict_dirs(), *policy.cc_dirs(), *_STANDARD_DIRS]
+    except Exception:  # pragma: no cover - defensive; fall back to the module lists
+        tier_dirs = [*_STRICT_DIRS, *_CC_DIRS, *_STANDARD_DIRS]
+    for rel in dict.fromkeys(tier_dirs):
+        ancestor = os.path.abspath(os.path.join(home, rel))
+        if candidate == ancestor:
+            continue
+        try:
+            contained = os.path.commonpath((ancestor, candidate)) == ancestor
+        except ValueError:
+            continue
+        if contained:
+            logger.warning(
+                "SECURITY: refusing the md-notebook state carve-out for %s — it sits "
+                "beneath the independently masked directory %s, and carving it out "
+                "would unmask that whole tree. The md-notebook backend will keep "
+                "failing EPERM on its state files until the data home moves out from "
+                "under that directory.",
+                path,
+                ancestor,
+            )
+            return True
+    return False
 
 
 _voice_runtime_paths_lock = threading.Lock()
@@ -3702,6 +3990,12 @@ def namespace_argv(
     # the child mounts, and raises ``SandboxCeilingUnsealable`` rather than launching
     # with a keystone the seal could not cover.
     _materialize_sealable_ceilings()
+    # Same mount(2) limit, opposite direction: the HIDING loops also skip absent
+    # targets, and the md-notebook backend carve-out makes its three state files
+    # creatable on a sandboxed host — so give their masks a mount target too, or
+    # an agent namespace spawned before the first vault attach reads the PAT
+    # saved after it.
+    _materialize_md_notebook_mask_targets()
 
     script = _build_launcher_script(
         sandbox_level,

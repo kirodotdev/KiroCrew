@@ -7549,6 +7549,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # HMAC-gated ``PUT /api/settings``; the app's own backend opens the file
     # directly rather than through this gate, so it keeps working.
     "workspace/md-notebook/settings.json",
+    # The Notes builtin's write-staging directory. Every state writer above
+    # stages its temp file in here before renaming into place, so during a
+    # write — and after a crash between write and rename — a file in this
+    # directory holds the same bytes as the leaves above, PAT included.
+    # Classified as the whole DIRECTORY (like ``whatsapp``) so every temp name,
+    # present and future, is covered. The app's own backend opens it directly
+    # rather than through this gate, so writes keep working.
+    "workspace/md-notebook/.staging",
     # The AWS Control builtin's app data directory. ``backup.json`` in here holds
     # ``nightly``, the bit that AUTHORIZES the app's startup loop to upload the
     # gateway's memory and workspace to S3 unattended, so a prompt-injected agent

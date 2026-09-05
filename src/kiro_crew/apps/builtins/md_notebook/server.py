@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path, PurePosixPath
@@ -39,7 +40,7 @@ from kiro_crew import hooks, platform_compat, security
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
 from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
-from kiro_crew.atomic_write import atomic_write, replace_with_retry
+from kiro_crew.atomic_write import refuse_linked_parent, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import restrict_to_owner
@@ -365,9 +366,11 @@ def _discard_staged_sync(tmp: Path) -> None:
 def _atomic_write_text_sync(path: Path, content: str) -> None:
     """Stage, publish, and clean up on failure -- the single-attempt whole.
 
-    Kept for callers that write a file with no freshness contract and no retry
-    (the settings store). The note save drives the two halves itself so it can
-    republish one temp across attempts.
+    Stages BESIDE the target (a note inside the vault, possibly a different
+    filesystem from the crew home). State files (vaults/settings/PAT) use
+    ``_write_state_staged_sync`` instead, which stages in the masked staging
+    dir. The note save drives the two halves itself so it can republish one
+    temp across attempts.
     """
     tmp = _new_staged_note_path(path)
     with git_ops.inflight_temp(tmp):
@@ -379,18 +382,81 @@ def _atomic_write_text_sync(path: Path, content: str) -> None:
             raise
 
 
+def _staging_dir() -> Path:
+    """The masked write-staging directory beside the state files.
+
+    Every STATE writer (vaults/settings/PAT) stages its temp file HERE and
+    renames into place. A temp staged beside the target — the previous shape —
+    carries the real PAT bytes under a name the OS sandbox's three leaf masks
+    do not cover, and a SIGKILL between write and rename left that unmasked
+    sibling readable by a same-uid sandboxed agent forever (GPT review finding
+    on #8778). The sandbox masks this directory WHOLE
+    (``sandbox._MD_NOTEBOOK_STAGING_LEAF``), so the staging window and any
+    crash orphan stay invisible to agent subprocesses. Renames stay atomic: the
+    staging dir lives on the same filesystem as the targets. NOTE saves are
+    deliberately untouched — they stage beside the note inside the vault, which
+    may be a different filesystem, and hold no secret.
+    """
+    base = _HOME if _HOME is not None else _crew_data_home()
+    return base / ".staging"
+
+
+def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = False) -> None:
+    """Stage *content* in the masked staging dir, then rename onto *target*.
+
+    ``mkstemp`` opens the temp 0600 on POSIX before any payload byte;
+    ``restrict_to_owner`` adds the owner-only DACL on Windows (chmod is a no-op
+    there), warn-not-fail per the original PAT policy — losing the credential
+    write is worse than a permissions warning. On failure the temp is removed;
+    a removal that itself fails leaves the orphan inside the mask, not beside
+    the target.
+    """
+    staging = _staging_dir()
+    # The #4381 planted-link refusal, carried over from atomic_write: the old
+    # PAT write went through atomic_write(restrict_to_owner=True), which
+    # refuses a secret write whose parent chain passes through a pre-planted
+    # symlink/junction — otherwise mkdir(parents=True), mkstemp and the rename
+    # all follow the link and the token lands OUTSIDE the sensitive-path fence
+    # while the caller sees success. Moving the staging off atomic_write must
+    # not shed that guard. Both chains this write walks, checked BEFORE the
+    # mkdirs (mkdir walks THROUGH a planted link and would build the tree
+    # under its target); the probe name is never created, only its chain is
+    # judged.
+    refuse_linked_parent(target)
+    refuse_linked_parent(staging / ".chain-probe")
+    staging.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(staging), suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        try:
+            restrict_to_owner(tmp)
+        except OSError:
+            logger.warning("could not restrict a staged state temp to owner-only", exc_info=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = -1
+            fh.write(content)
+            if fsync_file:
+                fh.flush()
+                os.fsync(fh.fileno())
+        replace_with_retry(tmp, target)
+    except BaseException:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+
+
 def _write_vaults_sync(vaults: list[dict[str, Any]]) -> None:
     """Replace the vault registry, retrying the Windows rename window.
 
     Same reason as the note writer above: this file is read back by every
     later request, so a handle can be open on it when the rename lands.
+    Staged in the masked staging dir — see :func:`_staging_dir`.
     """
-    target = _vaults_json()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f"vaults.json.{uuid.uuid4().hex}.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(vaults, fh, indent=2)
-    replace_with_retry(tmp, target)
+    _write_state_staged_sync(_vaults_json(), json.dumps(vaults, indent=2))
 
 
 def _read_pat_sync() -> Optional[str]:
@@ -411,22 +477,15 @@ def _read_pat_sync() -> Optional[str]:
 
 
 def _write_pat_sync(pat: str) -> None:
-    target = _pat_file()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Write to an owner-only sibling temp, fsync, then atomically replace. A
-    # direct O_TRUNC open would empty the existing token before the new bytes
-    # land, so a failure partway (a full disk is the realistic one) would lose a
-    # valid credential.
-    #
-    # os.chmod's 0600 is a no-op on Windows (it only toggles read-only), leaving
-    # the token readable by other accounts. restrict_to_owner applies an
-    # owner-only DACL there and chmod 0600 on POSIX, and atomic_write applies it
-    # to the temp BEFORE any payload byte — narrower than the previous
-    # write-then-restrict here, which left the token in a parent-inherited-DACL
-    # file until the lockdown landed. restrict_on_error="warn"
-    # keeps the original policy: a chmod failure warns rather than losing the
-    # credential. Written 0600 and never echoed back (only a boolean).
-    atomic_write(target, pat, fsync=True, restrict_to_owner=True, restrict_on_error="warn")
+    # Stage in the MASKED staging dir, fsync, then atomically replace. A direct
+    # O_TRUNC open would empty the existing token before the new bytes land, so
+    # a failure partway (a full disk is the realistic one) would lose a valid
+    # credential — and a temp staged BESIDE the target would hold the real PAT
+    # bytes at a name the sandbox's leaf masks do not cover (see _staging_dir).
+    # The temp is 0600 from mkstemp on POSIX and owner-only-DACL'd on Windows
+    # before any payload byte, warn-not-fail; written 0600 and never echoed
+    # back (only a boolean).
+    _write_state_staged_sync(_pat_file(), pat, fsync_file=True)
 
 
 async def read_vaults() -> list[dict[str, Any]]:
@@ -521,13 +580,14 @@ def _read_settings_sync() -> dict[str, Any]:
 
 
 def _write_settings_sync(settings: dict[str, Any]) -> None:
-    # Create the settings file's OWN parent, like the PAT write does — since
-    # settings.json now resolves under the crew data home (or the _HOME test
-    # hook), not under _home(), the two dirs diverge and mkdir'ing _home() would
-    # leave the settings dir absent and the write failing with ENOENT.
-    target = _settings_json()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text_sync(target, json.dumps(settings, indent=2))
+    # Staged in the masked staging dir like the other state writers (see
+    # _staging_dir); the helper creates both the staging dir and the target's
+    # own parent, which diverges from _home() when the _HOME test hook is unset.
+    # fsync preserved from the previous path (_stage_note_text_sync fsync'd):
+    # settings carry the autoSync authorization bit and the lastSync stamp, and
+    # a rename published from an unflushed page cache can discard an
+    # acknowledged toggle on power loss.
+    _write_state_staged_sync(_settings_json(), json.dumps(settings, indent=2), fsync_file=True)
 
 
 async def read_settings() -> dict[str, Any]:
@@ -1442,13 +1502,14 @@ async def api_pat(request: web.Request) -> web.Response:
     if pat:
         await asyncio.to_thread(_write_pat_sync, str(pat))
     else:
-        def _remove() -> None:
-            try:
-                os.unlink(_pat_file())
-            except FileNotFoundError:
-                pass
-
-        await asyncio.to_thread(_remove)
+        # Clear by atomically REPLACING with an empty file, never by unlink:
+        # the empty file is the reader's absent-equivalent (_read_pat_sync maps
+        # "" to None), while removing the inode deletes the sandbox mask's
+        # mount target — a clear landing between the launcher's materialize and
+        # mount steps would leave that namespace maskless, and a later PAT save
+        # would be readable inside it (GPT review on #8778). Routed through the
+        # same staged writer as the save so the guards match.
+        await asyncio.to_thread(_write_pat_sync, "")
     return web.json_response(
         {"hasPat": bool(await read_pat()), "hasGhAuth": bool(await gh_token())}
     )
