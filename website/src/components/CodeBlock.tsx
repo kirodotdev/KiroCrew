@@ -5,9 +5,35 @@ import { PierreCode } from '../pierre'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { useStagedMount, VIEWPORT_PRELOAD_MARGIN_PX } from './pierreStaging'
 import { useNearViewport } from '../hooks/useNearViewport'
+import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+
+/** A block taller than this repeats its action row at the bottom, so copying
+ *  or editing never costs a scroll back to the top. Fixed rather than
+ *  viewport-relative: it matches the editor's own `max-h-[480px]` cap
+ *  (EditableCodeBlock), keeps the check deterministic across window sizes,
+ *  and avoids a resize listener for a threshold the content itself already
+ *  measures via ResizeObserver. */
+const TALL_CODE_BLOCK_PX = 480
+
+/** The copy button, plus any caller-supplied actions (e.g. the pencil edit
+ *  button), as one reusable row -- shared between the header and the footer
+ *  duplicate so the two stay visually identical without a copy-pasted JSX
+ *  block. */
+function CodeBlockActions(
+  { headerActions, copied, onCopy }: { headerActions?: React.ReactNode; copied: boolean; onCopy: () => void },
+) {
+  return (
+    <div className={`flex items-center gap-1 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
+      {headerActions}
+      <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={onCopy} title={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')} aria-label={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')}>
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+      </button>
+    </div>
+  )
+}
 
 export const CodeBlock = memo(function CodeBlock(
   { code, lang, complete, headerActions }: {
@@ -17,6 +43,8 @@ export const CodeBlock = memo(function CodeBlock(
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
   const copy = () => { copyCode(code); setCopied(true); setTimeout(() => setCopied(false), 1500) }
+  const [contentRef, contentHeight] = useMeasuredHeight<HTMLDivElement>()
+  const isTall = contentHeight > TALL_CODE_BLOCK_PX
   // Stable file identity per (code, lang): Pierre diffs options/files by
   // reference first, so a fresh object every render would force re-renders.
   const file = useMemo(() => ({ name: `snippet.${lang || 'txt'}`, contents: code }), [code, lang])
@@ -41,18 +69,13 @@ export const CodeBlock = memo(function CodeBlock(
     <div ref={nearRef} className="code-block group/code rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
         <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
-        <div className={`flex items-center gap-1 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
-          {headerActions}
-          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')} aria-label={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')}>
-            {copied ? <Check size={13} /> : <Copy size={13} />}
-          </button>
-        </div>
+        <CodeBlockActions headerActions={headerActions} copied={copied} onCopy={copy} />
       </div>
       {/* tabIndex=0 + role/label: a horizontally-scrollable region must be keyboard
           focusable so keyboard-only users can scroll it (axe scrollable-region-focusable).
           The region role is a labelled landmark, so the tabIndex here is intentional. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div className="pierre-surface scroll-fade" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
+      <div ref={contentRef} className="pierre-surface scroll-fade" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
         {complete && highlighted ? (
           <PierreCode file={file} langHint={lang} />
         ) : (
@@ -70,6 +93,11 @@ export const CodeBlock = memo(function CodeBlock(
         )}
         {!complete && <div className="px-3 pb-2 text-muted text-[12px] italic animate-pulse">{i18nT('components.codeBlock.generating')}</div>}
       </div>
+      {isTall && (
+        <div className="flex items-center justify-end px-3 py-1 border-t border-border">
+          <CodeBlockActions headerActions={headerActions} copied={copied} onCopy={copy} />
+        </div>
+      )}
     </div>
   )
 })
