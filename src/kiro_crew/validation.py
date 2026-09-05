@@ -2781,6 +2781,20 @@ SESSION_SEND_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("message", str, required=True, max_len=MAX_LONG_STRING),
+        # Escalation-only fields, meaningful with ``target="user"``. Shapes are
+        # bounded here; semantics (deadline window, option count) are enforced
+        # by ``session_control.escalate_to_user`` where the numbers live.
+        FieldSpec("deadline", str, required=False, max_len=64),
+        FieldSpec("default_action", str, required=False, max_len=500),
+        FieldSpec("goal", str, required=False, max_len=500),
+        FieldSpec(
+            "options",
+            list,
+            required=False,
+            item_type=str,
+            item_max_len=120,
+            max_items=6,
+        ),
     ],
 )
 

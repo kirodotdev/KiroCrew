@@ -6,6 +6,29 @@ from collections.abc import Callable
 from typing import Any
 
 
+def _member_needs_you(slot: Any) -> bool:
+    """``needs_you`` for a crew member's DM slot; ``False`` for every other slot.
+
+    Memory-only: this runs on the event loop inside every slots push, so it
+    reads the index module's in-memory pending view and never touches the
+    filesystem. The view is refreshed by the index writers (which run off-loop)
+    and primed by the roster read. Lazy import: the index module imports
+    ``members`` which sits below the dashboard package.
+    """
+    if getattr(slot, "mode", "") != "member":
+        return False
+    try:
+        from kiro_crew.crew_conversation import needs_you
+        from kiro_crew.members import DM_SLOT_KEY_PREFIX
+
+        key = getattr(slot, "key", "") or ""
+        if not key.startswith(DM_SLOT_KEY_PREFIX):
+            return False
+        return needs_you(key[len(DM_SLOT_KEY_PREFIX) :])
+    except Exception:  # noqa: BLE001 - a projection field must never fail the frame
+        return False
+
+
 class SlotProjection:
     """Build cached source links and the public summary of a slot.
 
@@ -242,6 +265,12 @@ class SlotProjection:
             "last_activity_ts": last_activity_ts,
             "waiting_for_input": waiting_for_input,
             "needs_input": needs_input,
+            # Derived from the member's conversation index (pending escalations),
+            # NOT stored on the slot: the slot is a process, the conversation is
+            # what the human is in. Always present so the frontend can branch on
+            # it without an absent-vs-false ambiguity; only member slots can be
+            # true.
+            "needs_you": _member_needs_you(slot),
             "interrupted": interrupted,
             "stop_state": slot._stop_state,
             "wait_state": slot._wait_state,

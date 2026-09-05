@@ -16,7 +16,7 @@ identity of its own — but it is deliberately **not** a second transcript.
 | `ref` | `{session_key, mid, role, ts}` | "This transcript row belongs in the conversation" — used when a row from a session *other than* the DM slot is surfaced (a worker's final report). Rows in the DM slot itself need no ref; the projection reads that session whole. |
 | `escalation` | `{id, session_key, mid, from_session, state, created_ts, deadline, default_action, goal, options, answered_ts}` | One `session_send target="user"` delivery and where it stands. The text lives on the transcript row the pointer names. |
 
-`state` ∈ `pending | answered | expired | defaulted`. The record also carries
+`state` ∈ `pending | answered | expired | defaulted | retracted`. The record also carries
 `participants` (`{kind: human}` + `{kind: member, slug, name}`) and `sessions`
 (every session key the conversation spans). The key is `dm:<slug>` today; a
 later multi-member `goal:<id>` conversation is a new key shape and a longer
@@ -67,6 +67,19 @@ Lifecycle transitions:
   rewritten the next time something else writes it (an answer, a new record),
   so a deadline passing while the gateway is down still reads correctly on
   restart.
+- **pending → retracted / answered (recovery)** — the transcript is the truth
+  and the index a projection of it, so on restore the projection is re-derived
+  from the transcript (`reconcile_with_transcript`, run by the roster read
+  until nothing is deferred): a pending record whose card row the transcript
+  does not hold and that is older than `ORPHAN_GRACE_SECS` (120 s) is an
+  orphan — the gateway exited between the index write and the slot's flush —
+  and moves to `retracted` with `retracted_reason: orphan`; a pending record
+  whose card row is present and that a later durable `user` row with
+  `meta.human_reply` answers under the live rule moves to `answered` — the
+  gateway exited between the reply's save and the live hook's index write. A
+  record still inside the grace is deferred and reconsidered on the next read.
+  A record whose append failed outright is removed on the spot instead
+  (`retract_escalation`).
 
 There is no background poller: nothing needs to *fire* at the deadline, because
 the member that set it is the one that acts on it (it stated the default), and
