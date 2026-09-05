@@ -4441,11 +4441,13 @@ def _settle_consumed_steers(
     # echo is no evidence, so keep entries pending and let the requeue show a
     # cancellable card); whether the main chat should follow is a separate
     # change, because its requeue is not exercised here.
-    remaining = settle_consumed_steers(slot._pending_steers, snapshot, settle_all_on_empty=True)
+    previous = list(slot._pending_steers)
+    remaining = settle_consumed_steers(previous, snapshot, settle_all_on_empty=True)
+    settled_count = len(previous) - len(remaining)
     logger.debug(
         "Steer consumed for slot %s (%d settled, %d still pending)",
         slot.key,
-        len(slot._pending_steers) - len(remaining),
+        settled_count,
         len(remaining),
     )
     if state is not None and snapshot.strip():
@@ -4490,6 +4492,19 @@ def _settle_consumed_steers(
             # own keys. When a twin stayed pending the count is 2 again and the
             # refusal stands, because then which row is which is unknowable.
             _mark_steer_row_state(state, slot, _msg, STEER_STATE_CONSUMED, remaining + [_msg])
+        if settled_count:
+            # A steer row is persisted as soon as the RPC accepts it, while this
+            # echo is the later authority that the running turn actually consumed
+            # the user's message. The agent can post an ``ask_question`` card in
+            # between. In that order the earlier row append found no card to
+            # retire, so finish the same next-user-message lifecycle here.
+            #
+            # Keep the filter narrow: an unmatched/empty echo proves nothing,
+            # and a legacy blocking ask owns a parked wait that only its
+            # round-trip may resolve. ``clear_question_pending`` also broadcasts
+            # the card ids and pushes the slot status, so reconnecting clients
+            # cannot rehydrate the stale card.
+            state.clear_question_pending(slot.key, blocking=False)
     slot._pending_steers[:] = remaining
 
 

@@ -609,6 +609,79 @@ class TestSteerLifecycleState:
         assert patch_payload["meta"]["steerState"] == "consumed"
 
     @pytest.mark.asyncio
+    async def test_a_consumed_steer_retires_a_late_stateless_question(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """Provider consumption closes the card-registration ordering gap.
+
+        The dashboard persists the user's steer row as soon as the steer RPC
+        accepts it. The agent can then post an ``ask_question`` card before
+        kiro-cli emits ``steering_consumed`` for that same user message. The
+        earlier row append cannot retire a card that did not exist yet, so the
+        consumption event must finish that lifecycle without disturbing a
+        legacy blocking ask.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.broadcast_ws_owners = MagicMock()
+        slot = _running_slot(state)
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(return_value=True)
+        slot._acp_client = client_mock
+
+        from kiro_crew.dashboard.chat_delivery import steer_into_running_turn
+        from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
+
+        # The accepted steer writes its row first. The card is registered only
+        # afterwards, reproducing the ordering from the dashboard report.
+        await steer_into_running_turn(state, slot, "build the recommended option")
+        state.mark_question_pending(
+            "test",
+            blocking=False,
+            card_id="card-late",
+            questions=[{"question": "Which option?", "options": [{"label": "B"}]}],
+        )
+        state.mark_question_pending("test", blocking=True, card_id="ask-parked")
+
+        _settle_consumed_steers(
+            slot,
+            "<user_message>\nbuild the recommended option\n</user_message>",
+            state,
+        )
+
+        assert list(slot._question_pending) == ["ask-parked"]
+        state.broadcast_ws_owners.assert_any_call(
+            "question_card_resolved", {"card_id": "card-late", "slot": "test"}
+        )
+
+    def test_unmatched_or_empty_echo_does_not_retire_a_question(self, tmp_path, monkeypatch):
+        """Only positive consumption evidence closes the answer channel."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws_owners = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._pending_steers = ["still pending"]
+        state.mark_question_pending(
+            "test",
+            blocking=False,
+            card_id="card-live",
+            questions=[{"question": "Which option?", "options": [{"label": "B"}]}],
+        )
+
+        from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
+
+        _settle_consumed_steers(slot, "<user_message>\nsomething else\n</user_message>", state)
+        assert list(slot._question_pending) == ["card-live"]
+
+        # Legacy empty echoes settle the steer list to avoid message loss, but
+        # they prove no user message was consumed and must not retire the card.
+        _settle_consumed_steers(slot, "", state)
+        assert list(slot._question_pending) == ["card-live"]
+        state.broadcast_ws_owners.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_a_requeued_steer_row_stops_claiming_injection(
         self, tmp_path, monkeypatch, _patch_sel
     ):
