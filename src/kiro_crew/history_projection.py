@@ -432,6 +432,7 @@ class TranscriptReadProjection:
                 # (see the docstring). A healthy read skips these too, so this one
                 # must stay a plain skip.
                 continue
+            seg_rows: list[dict] = []
             for ln in lines[1:]:
                 if not ln.strip():
                     continue
@@ -451,7 +452,23 @@ class TranscriptReadProjection:
                 if "_type" not in row:
                     # `_type` rows are deliberate control records, not messages --
                     # skipping them IS the classification this corpus wants.
-                    rows.append(row)
+                    seg_rows.append(row)
+            # Two SEGMENTS can overlap, not just the archive and the live file.
+            # Archiving is a precondition of the live-file rewrite, so a crash
+            # between those two steps leaves the archived prefix in the live file
+            # as well; the next rotation then computes its own `dropped` from a
+            # live file that still begins with those rows and archives them again
+            # as the following segment. The header check above already names this
+            # ("a retry rotation can archive the same rows successfully") — this
+            # is the guard for it.
+            #
+            # Same identity rule as the archive/live seam, one level down: a
+            # producer only ever persists a PREFIX, so the duplication is always
+            # this segment's head against what the corpus already ends with.
+            # Appending blind instead would not merely show a row twice — this is
+            # the index space `before`/`next_before` and the fork index path
+            # resolve against, so each extra row shifts every index above it.
+            rows.extend(drop_persisted_tail_prefix(rows, seg_rows))
         if complete:
             if not rows:
                 # Segments exist yet no rotate rows parsed — the exact signature
