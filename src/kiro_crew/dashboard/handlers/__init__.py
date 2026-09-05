@@ -225,6 +225,8 @@ from kiro_crew.dashboard.handlers.mcp_apps import (  # noqa: E402, F401
 # ── Crew Members (handlers/members.py) ──
 from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_activity,
+    api_member_rules_get,
+    api_member_rules_put,
     api_member_thread,
     api_members,
 )

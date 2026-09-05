@@ -5804,6 +5804,14 @@ async def _run_chat(
     # re-queue), every `except` arm, and a hard CancelledError — not just the
     # graceful-cancel and empty-re-queue paths that reach the success check.
     _turn_landed = False
+    # True while a member DM thread's FIRST turn is in flight: the session
+    # client is allocated before the context build, so a build failure (e.g.
+    # MemberRulesUnreadable aborting on a malformed rules file) leaves a warm
+    # session whose session-start context — the [MEMBER IDENTITY] block,
+    # [PERMANENT RULES] included — was never delivered. The generic error arm
+    # reads this to re-arm the reinjection flag so the next turn re-delivers
+    # the member section instead of running the member with no bounds.
+    _member_session_start_pending = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
     # recorded during this turn as (redacted_title, reason). Each deny also gets
     # its reason steered in-band (see _refusal_notices); this ledger is what the
@@ -6247,6 +6255,14 @@ async def _run_chat(
             reasoning_effort_override=slot.reasoning_effort or None,
         )
         _acquired = True
+        # A member DM's first turn carries the four-layer member section as
+        # session-start context. Record that it is at stake HERE — the moment
+        # the session client exists — not at the context build: every early
+        # return between this point and build_message (a blocked/oversized
+        # @prompt expansion, a pre-build abort) leaves a warm session whose
+        # member section was never delivered, and the finally-block re-arm
+        # reads this flag to make the next turn re-deliver it.
+        _member_session_start_pending = bool(slot.mode == "member" and is_new)
         # Member activity pointer — once per SESSION, not per turn: the log
         # answers "which sessions did this member take part in", so a per-turn
         # append would inflate every count taken from it. `slot.agent` is the
@@ -6745,6 +6761,11 @@ async def _run_chat(
                 exclude_last_n=1,
                 folder_path=folder_path,
                 model_window=model_window,
+                # Member DM threads get the four-layer member identity block.
+                # `slot.agent` is the member the human picked (the crew name);
+                # the `agent=` above is the TEMPLATE it resolved to, which is
+                # why the member identity travels separately.
+                member=slot.agent if slot.mode == "member" and slot.agent else "",
                 user_text_range=user_text_span(
                     _user_prepend_offset,
                     user_typed_len,
@@ -11489,7 +11510,17 @@ async def _run_chat(
         # because most of those paths never reach it; without this the index is
         # lost for the remaining life of the session. Wrapped for the same
         # reason as the flush above.
-        if _needs_reinjection and not _turn_landed:
+        #
+        # The member condition rides the same re-arm for the same reason: a
+        # member DM's FIRST turn that dies before landing (MemberRulesUnreadable
+        # abort, provider error — or a user Stop, whose cancelled completion
+        # never enters the except arm at all) leaves a warm session client, so
+        # the next turn would skip both member-section injection paths — no
+        # identity, no working protocol, and above all no [PERMANENT RULES].
+        # Re-arming here (the one block on EVERY exit path) makes the next turn
+        # rebuild the member section; the rules read inside stays fail-closed
+        # until the user repairs or clears the file.
+        if (_needs_reinjection or _member_session_start_pending) and not _turn_landed:
             try:
                 state.sessions.mark_needs_reinjection(session_key)
             except Exception:

@@ -8275,6 +8275,55 @@ class TestRuntimeWiring:
             c["kwargs"].get("needs_reinjection") is False for c in build_message_calls
         ), "the flag must be one-shot, not sticky for every later turn"
 
+    @pytest.mark.asyncio
+    async def test_member_first_turn_that_never_lands_rearms_reinjection(
+        self, tmp_path, monkeypatch
+    ):
+        """A member DM's FIRST turn that ends without landing — a user Stop's
+        cancelled completion, an empty stream, a graceful cancel — never enters
+        the except arm, so an except-arm-only re-arm leaves the warm session
+        running WITHOUT [PERMANENT RULES] for the rest of its life. The re-arm
+        must live in the finally, on every exit path."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        monkeypatch.setattr(
+            ctx_builder,
+            "build_message",
+            lambda text, is_new, session_key=None, **kw: (text, MagicMock(action=None, text="")),
+        )
+
+        state = _make_state(tmp_path, context_builder=ctx_builder)
+        slot = state.get_or_create_slot("member-rearm-test", mode="member")
+
+        mock_client = MagicMock()
+        # Empty stream: the turn ends with no landing and NO exception — the
+        # same observable shape as a Stop's cancelled completion.
+        mock_client.stream = MagicMock(return_value=AsyncIterator([]))
+        # is_new=True: this is the member session's FIRST turn.
+        state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
+        state.sessions.get_pid = MagicMock(return_value=None)
+        # The compaction flag is OFF, so only the member condition can re-arm.
+        state.sessions.consume_needs_reinjection = MagicMock(return_value=False)
+        state.sessions.mark_needs_reinjection = MagicMock()
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "first member turn")
+
+        assert state.sessions.mark_needs_reinjection.called, (
+            "a member first turn that never landed must re-arm reinjection on "
+            "EVERY exit path (finally), or the next warm turn runs without the "
+            "member section and its [PERMANENT RULES]"
+        )
+
 
 class TestRunChatToolBoundarySegments:
     """Test that _run_chat inserts whitespace across tool call boundaries."""
