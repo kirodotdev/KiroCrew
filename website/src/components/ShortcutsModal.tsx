@@ -1,5 +1,5 @@
 import { safeSetItem } from '../utils/safeStorage'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { X, Keyboard } from 'lucide-react'
 import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY } from '../hooks/useKeyboardShortcuts'
 import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
@@ -10,7 +10,7 @@ import { PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcut
 import { formatAcceleratorKeys } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
-import { Toggle } from './ui'
+import { Toggle, SearchInput, FilteredEmpty } from './ui'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -87,16 +87,16 @@ export function ShortcutRow({ label, keys }: { label: string; keys: string[] }) 
  * strings come from {@link formatQuickSearchKeys} / {@link formatChordKeys} —
  * dynamic values, never JSX string literals, so they carry no translatable copy.
  */
-export function KeyCapSequence({ caps, plus }: { caps: string[]; plus?: boolean }) {
+export function KeyCapSequence({ caps, plus = false }: { caps: string[]; plus?: boolean }) {
   return (
-    <>
-      {caps.map((cap, i) => (
+    <span className="flex items-center gap-1">
+      {caps.map((c, i) => (
         <span key={i} className="flex items-center gap-1">
-          {i > 0 && plus && <span className="text-muted text-[11px]">+</span>}
-          <Kbd>{cap}</Kbd>
+          <Kbd>{c}</Kbd>
+          {plus && i < caps.length - 1 && <span className="text-muted text-[11px]">+</span>}
         </span>
       ))}
-    </>
+    </span>
   )
 }
 
@@ -116,6 +116,7 @@ export function SearchEverywhereRow() {
   // ⌘K / Ctrl+K stays live as an alias in double-shift mode (see
   // useCommandPalette), so advertise it alongside the primary gesture.
   const showAlias = config.mode === 'double-shift'
+
   return (
     <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
       <span className="text-[13px] text-text">{i18nT('components.shortcutsModal.search_everywhere')}</span>
@@ -157,15 +158,19 @@ export const PANEL_TOGGLE_LABEL_KEY: Record<PanelToggleId, string> = {
  * unbound), so the caps reflect the live binding — or a muted "not set" when the
  * user has cleared it. Editing happens in Settings → Shortcuts.
  */
-export function PanelToggleRows() {
+export function PanelToggleRows({ ids }: { ids?: PanelToggleId[] } = {}) {
   const { bindings } = usePanelToggleShortcuts()
   // Reactive, not a one-shot read: the enabled flag resolves from a config probe,
   // so a static read leaves the terminal row rendered from a stale value until
   // something else re-renders this surface. Mirrors SidePanel / EditableCodeBlock.
   const terminalEnabled = useTerminalEnabled()
+  const displayIds = ids ?? PANEL_TOGGLE_IDS.filter(id => id !== 'terminal' || terminalEnabled)
+
+  if (displayIds.length === 0) return null
+
   return (
     <>
-      {PANEL_TOGGLE_IDS.filter(id => id !== 'terminal' || terminalEnabled).map(id => {
+      {displayIds.map(id => {
         const chord = bindings[id]
         return (
           <div key={id} className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
@@ -205,13 +210,83 @@ export function GlobalHotkeyRow() {
 
 export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
   const { enabled, macCtrl, toggle, toggleMacCtrl } = useShortcutPrefs()
+  const { config: quickSearchConfig } = useQuickSearchShortcut()
+  const { bindings: panelBindings } = usePanelToggleShortcuts()
+  const terminalEnabled = useTerminalEnabled()
   const globalHotkey = useGlobalHotkey()
+  const [searchQuery, setSearchQuery] = useState('')
+  const normalizedQuery = searchQuery.trim().toLowerCase()
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (searchQuery) {
+          setSearchQuery('')
+        } else {
+          onClose()
+        }
+      }
+    }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
+  }, [onClose, searchQuery])
+
+  const filteredGroups = useMemo(() => {
+    return SHORTCUT_GROUPS.map(group => {
+      const entries = groupShortcuts(group, macCtrl)
+      const groupName = shortcutGroupLabel(group).toLowerCase()
+      const matchingEntries = entries.filter(s => {
+        if (!normalizedQuery) return true
+        const label = shortcutLabel(s).toLowerCase()
+        const keys = formatShortcut(s).toLowerCase()
+        return label.includes(normalizedQuery) || keys.includes(normalizedQuery) || groupName.includes(normalizedQuery)
+      })
+      return { group, entries: matchingEntries }
+    }).filter(g => g.entries.length > 0)
+  }, [macCtrl, normalizedQuery])
+
+  const showSearchEverywhere = useMemo(() => {
+    if (!normalizedQuery) return true
+    const label = i18nT('components.shortcutsModal.search_everywhere').toLowerCase()
+    const sectionName = i18nT('components.shortcutsModal.search').toLowerCase()
+    const capsStr = formatQuickSearchKeys(quickSearchConfig).join(' ').toLowerCase()
+    const kKey = i18nT('components.shortcutsModal.k').toLowerCase()
+    const aliasCaps = [IS_MAC ? '⌘' : 'ctrl', kKey].join(' ').toLowerCase()
+    return (
+      label.includes(normalizedQuery) ||
+      sectionName.includes(normalizedQuery) ||
+      capsStr.includes(normalizedQuery) ||
+      aliasCaps.includes(normalizedQuery)
+    )
+  }, [normalizedQuery, quickSearchConfig])
+
+  const matchingPanelToggleIds = useMemo(() => {
+    const activeIds = PANEL_TOGGLE_IDS.filter(id => id !== 'terminal' || terminalEnabled)
+    if (!normalizedQuery) return activeIds
+    const sectionName = i18nT('components.shortcutsModal.panel_toggles').toLowerCase()
+    if (sectionName.includes(normalizedQuery)) return activeIds
+    return activeIds.filter(id => {
+      const label = i18nT(PANEL_TOGGLE_LABEL_KEY[id]).toLowerCase()
+      const chord = panelBindings[id]
+      const chordStr = chord ? formatChordKeys(chord).join(' ').toLowerCase() : ''
+      return label.includes(normalizedQuery) || chordStr.includes(normalizedQuery)
+    })
+  }, [normalizedQuery, panelBindings, terminalEnabled])
+
+  const showGlobalHotkey = useMemo(() => {
+    if (!globalHotkey) return false
+    if (!normalizedQuery) return true
+    const label = i18nT('components.shortcutsModal.show_or_focus_the_kiro_crew_window').toLowerCase()
+    const sectionName = i18nT('components.shortcutsModal.desktop_app').toLowerCase()
+    const keys = formatAcceleratorKeys(globalHotkey.accelerator, IS_MAC).join(' ').toLowerCase()
+    return label.includes(normalizedQuery) || sectionName.includes(normalizedQuery) || keys.includes(normalizedQuery)
+  }, [globalHotkey, normalizedQuery])
+
+  const hasAnyResults =
+    filteredGroups.length > 0 ||
+    showSearchEverywhere ||
+    matchingPanelToggleIds.length > 0 ||
+    showGlobalHotkey
 
   return (
     // Backdrop click-to-dismiss is a supplementary mouse affordance; keyboard
@@ -223,44 +298,74 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
           dismiss handler; it is event plumbing, not an interactive control. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div className="bg-card border border-border rounded-xl p-6 max-w-lg w-full mx-4 shadow-xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex justify-between items-center mb-5">
+        <div className="flex justify-between items-center mb-4">
           <div className="flex items-center gap-2 text-sm font-bold text-text-strong"><Keyboard size={16} /> {i18nT('components.shortcutsModal.keyboard_shortcuts_2')}</div>
           <button className="text-muted cursor-pointer hover:text-text bg-transparent border-none" onClick={onClose} aria-label={i18nT('components.shortcutsModal.close')}><X size={16} /></button>
         </div>
-        {SHORTCUT_GROUPS.map(group => {
-          const entries = groupShortcuts(group, macCtrl)
-          if (entries.length === 0) return null
-          return (
-            <div key={group} className="mb-5 last:mb-0">
-              <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{shortcutGroupLabel(group)}</div>
-              <div className="grid gap-1">
-                {entries.map(s => (
-                  <ShortcutRow key={s.id} label={shortcutLabel(s)} keys={formatShortcut(s).split(' + ')} />
-                ))}
+
+        {/* Instant Search Filter */}
+        <div className="relative mb-4">
+          <SearchInput
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder={i18nT('components.shortcutsModal.search')}
+            autoFocus
+            aria-label={i18nT('components.shortcutsModal.search')}
+            className={searchQuery ? 'pr-6' : ''}
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-text bg-transparent border-none cursor-pointer flex items-center justify-center p-0.5"
+              aria-label={i18nT('components.ui.clear_filter')}
+              data-testid="shortcuts-search-clear"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {!hasAnyResults && normalizedQuery ? (
+          <FilteredEmpty query={searchQuery} onClear={() => setSearchQuery('')} />
+        ) : (
+          <>
+            {filteredGroups.map(({ group, entries }) => (
+              <div key={group} className="mb-5 last:mb-0">
+                <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{shortcutGroupLabel(group)}</div>
+                <div className="grid gap-1">
+                  {entries.map(s => (
+                    <ShortcutRow key={s.id} label={shortcutLabel(s)} keys={formatShortcut(s).split(' + ')} />
+                  ))}
+                </div>
               </div>
-            </div>
-          )
-        })}
-        <div className="mb-5 last:mb-0">
-          <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.search')}</div>
-          <div className="grid gap-1">
-            <SearchEverywhereRow />
-          </div>
-        </div>
-        <div className="mb-5 last:mb-0">
-          <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.panel_toggles')}</div>
-          <div className="grid gap-1">
-            <PanelToggleRows />
-          </div>
-        </div>
-        {globalHotkey && (
-          <div className="mb-5 last:mb-0">
-            <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.desktop_app')}</div>
-            <div className="grid gap-1">
-              <GlobalHotkeyRow />
-            </div>
-            <div className="text-[11px] text-muted mt-1 px-2">{i18nT('components.shortcutsModal.global_hotkey_hint')}</div>
-          </div>
+            ))}
+            {showSearchEverywhere && (
+              <div className="mb-5 last:mb-0">
+                <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.search')}</div>
+                <div className="grid gap-1">
+                  <SearchEverywhereRow />
+                </div>
+              </div>
+            )}
+            {matchingPanelToggleIds.length > 0 && (
+              <div className="mb-5 last:mb-0">
+                <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.panel_toggles')}</div>
+                <div className="grid gap-1">
+                  <PanelToggleRows ids={matchingPanelToggleIds} />
+                </div>
+              </div>
+            )}
+            {showGlobalHotkey && (
+              <div className="mb-5 last:mb-0">
+                <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.desktop_app')}</div>
+                <div className="grid gap-1">
+                  <GlobalHotkeyRow />
+                </div>
+                <div className="text-[11px] text-muted mt-1 px-2">{i18nT('components.shortcutsModal.global_hotkey_hint')}</div>
+              </div>
+            )}
+          </>
         )}
         <div className="mt-4 pt-3 border-t border-border flex items-center justify-between">
           <span className="flex items-center gap-2 text-[12px] text-muted cursor-pointer">
