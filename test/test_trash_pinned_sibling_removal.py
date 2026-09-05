@@ -15,6 +15,7 @@ import errno
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -771,6 +772,86 @@ class TestPutBackNoClobber:
 
         assert not (tmp_path / "tree" / "index").exists(), "nothing may be placed from a swap"
         assert secret.read_text() == "a credential this code has never read"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="planting a FIFO needs mkfifo (POSIX)")
+    def test_a_source_swapped_for_a_fifo_is_refused_rather_than_waited_on(
+        self, tmp_path: Path
+    ) -> None:
+        """``O_NOFOLLOW`` refuses a symbolic link. It does NOT refuse a FIFO.
+
+        Opening a named pipe for reading blocks until a writer appears, so the guard that
+        makes the moved-aside name safe is also the thing that can hang on it -- forever, with
+        no timeout and no message. That failure produces no answer rather than a wrong one,
+        which is why no review lane and no green board can see it: the run simply stops.
+
+        The call is made on a bounded thread so this test REDDENS on the hang instead of
+        joining it. Without ``O_NONBLOCK`` on the source open the thread is still running when
+        the deadline passes; with it, the open returns and the screen below refuses the FIFO.
+        """
+        (tmp_path / "aside").mkdir()
+        (tmp_path / "tree").mkdir()
+        recorded = tmp_path / "aside" / "debris"
+        recorded.write_text("the moved copy")
+        ino = recorded.stat().st_ino
+        # The swap: same name, now a pipe with no writer on the other end.
+        recorded.unlink()
+        os.mkfifo(recorded, 0o600)
+
+        answered: list[str | None] = []
+
+        def _attempt() -> None:
+            src = os.open(str(tmp_path / "aside"), pinned_fs.dir_flags())
+            dst = os.open(str(tmp_path / "tree"), pinned_fs.dir_flags())
+            try:
+                answered.append(
+                    pinned_fs.put_back_no_clobber(src, dst, "debris", "index", expect_ino=ino)
+                )
+            finally:
+                pinned_fs.close_all((src, dst))
+
+        # daemon: a thread parked in a blocking open cannot be reclaimed from outside, so on
+        # the failing path it is left to the interpreter rather than joined forever here.
+        caller = threading.Thread(target=_attempt, daemon=True)
+        caller.start()
+        caller.join(20)
+        assert not caller.is_alive(), (
+            "the open never returned: a FIFO at the moved-aside name blocked it, "
+            "which is the hang this flag exists to prevent"
+        )
+        assert answered == [pinned_fs.PUT_BACK_FAILED]
+
+        assert not (tmp_path / "tree" / "index").exists(), "nothing may be placed from a pipe"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="planting a FIFO needs mkfifo (POSIX)")
+    def test_a_fifo_carrying_the_recorded_inode_is_still_refused(self, tmp_path: Path) -> None:
+        """An inode number is REUSABLE, so the inode check alone does not identify a file.
+
+        Once the entry is unlinked its number is free, and a FIFO created afterwards can carry
+        the very number this call recorded -- so the identity check agrees and the mode is the
+        only thing left that can tell them apart. Reaching that state deterministically is
+        simpler than racing for it: the FIFO's own inode is handed in as the recorded one,
+        which is the same input the reuse produces.
+
+        Without the mode screen the pipe is hard-linked to the manifest's name and the landed
+        inode matches, so the call reports SUCCESS and leaves a FIFO where the index belongs --
+        every later reader of that name then blocks on it.
+        """
+        (tmp_path / "aside").mkdir()
+        (tmp_path / "tree").mkdir()
+        os.mkfifo(tmp_path / "aside" / "debris", 0o600)
+        reused = os.stat(tmp_path / "aside" / "debris", follow_symlinks=False).st_ino
+
+        src = os.open(str(tmp_path / "aside"), pinned_fs.dir_flags())
+        dst = os.open(str(tmp_path / "tree"), pinned_fs.dir_flags())
+        try:
+            assert (
+                pinned_fs.put_back_no_clobber(src, dst, "debris", "index", expect_ino=reused)
+                == pinned_fs.PUT_BACK_FAILED
+            )
+        finally:
+            pinned_fs.close_all((src, dst))
+
+        assert not (tmp_path / "tree" / "index").exists(), "a pipe may not take the index name"
 
 
 class TestTheCoarsePlatform:

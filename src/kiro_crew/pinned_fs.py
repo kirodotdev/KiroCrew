@@ -1421,11 +1421,14 @@ def put_back_no_clobber(
     *src_name* is treated as UNTRUSTED, which is the part that is easy to skip. It is a name
     in a directory an actor may be able to write to, and the whole reason this function runs
     is that an earlier step already failed -- so time has passed. The name is opened
-    ``O_NOFOLLOW`` and its inode checked against *expect_ino* before anything is read from
-    it, and the copy reads that DESCRIPTOR rather than re-opening the name. Without that, a
-    name swapped for a symbolic link is followed and whatever it points at -- a credential,
-    say -- is linked or copied into the destination under a name the caller will treat as its
-    own.
+    ``O_NOFOLLOW | O_NONBLOCK``, screened for a regular file, and its inode checked against
+    *expect_ino* before anything is read from it, and the copy reads that DESCRIPTOR rather
+    than re-opening the name. Without ``O_NOFOLLOW``, a name swapped for a symbolic link is
+    followed and whatever it points at -- a credential, say -- is linked or copied into the
+    destination under a name the caller will treat as its own. ``O_NOFOLLOW`` alone is not
+    enough: it does not refuse a FIFO, and opening one for reading blocks until a writer
+    appears, so the hardening itself hangs. Both flags are needed, and neither is what
+    decides -- the screen below is.
 
     First choice is ``os.link``, which cannot clobber, and it is called with
     ``follow_symlinks=False`` so a swap landing after the verification links the link itself
@@ -1455,14 +1458,24 @@ def put_back_no_clobber(
     Returns ``None`` when the name is back, :data:`PUT_BACK_NAME_TAKEN` when something else
     holds it (nothing was overwritten), or :data:`PUT_BACK_FAILED`.
     """
+    # O_NONBLOCK for the same reason `copy_file_pinned` carries it: O_NOFOLLOW refuses a
+    # symbolic link and does NOT refuse a FIFO, so a named pipe at this name blocks the open
+    # until a writer appears -- forever, with no timeout and no message. That is not a wrong
+    # answer, it is NO answer, and it is the one failure an operator cannot read off a log.
+    # The flag has no effect on a regular file; it only guarantees the screen below is reached.
+    src_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        src = os.open(src_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=src_parent_fd)
+        src = os.open(src_name, src_flags, dir_fd=src_parent_fd)
     except OSError:
         return PUT_BACK_FAILED
     try:
-        if os.fstat(src).st_ino != expect_ino:
+        st = os.fstat(src)
+        if not _stat.S_ISREG(st.st_mode) or st.st_ino != expect_ino:
             # The name no longer holds what was moved aside, so there is nothing here this
             # function may put anywhere. Refusing leaves the caller to report the name.
+            # S_ISREG is checked as well as the inode because an inode number is reusable:
+            # a FIFO created after the entry was unlinked can carry the number this call
+            # recorded, and only the mode tells the two apart.
             return PUT_BACK_FAILED
         linked = False
         try:
