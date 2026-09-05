@@ -321,7 +321,8 @@ import {
 import { deriveFollowUpOptions, parseOptions } from '../app-sdk/protocol'
 import { isNoteRow } from '../lib/noteContract'
 import OverlayDrawer from '../components/OverlayDrawer'
-import { loadChatConfig, saveChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
+import { loadChatConfig, saveChatConfig, CONTENT_WIDTH } from './chat/ChatSettings'
+import { useChatConfig } from '../hooks/useChatConfig'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
 import { focusComposer, focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
@@ -372,6 +373,7 @@ import { parseSubagentCompletionMessage } from './chat/subagentCompletion'
 import { headline as subagentHeadline } from './chat/SubagentCompletionCard'
 import { fmtDateFields, fmtNumber } from '../i18n/format'
 import { fmtMessageTime, fmtMessageTimeFull } from './chat/messageTime'
+import { mintSendId } from '../chat-core/transport/sendTurn'
 /**
  * Human-readable reason from a rejected thunk. `unwrap()` rejects with RTK's
  * SERIALIZED error — a plain object, never an `Error` instance — so an
@@ -500,19 +502,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
  *  suffix is as reload-stable as the key it disambiguates. Rows without a
  *  `mid` (locally-minted streaming/optimistic bubbles) fall back to `msgKey`
  *  alone, which is exactly the uniqueness they had before. */
-/** Client-generated one-shot correlation id for an optimistic user bubble.
- *  The server preserves meta fields on the user row it appends, so an echo or
- *  transcript page carries this id back and the bubble is matchable without
- *  relying on content equality (#2845). Shared by the plain send path and the
- *  mid-turn steer path (#6075) so the two cannot drift in id shape. */
 /** ChatPage's tool rows derive their auto-denied state inside ToolCallLine;
  *  the registry default that reads this set is never reached here. Frozen and
  *  shared so the per-row context does not allocate. */
 const NO_AUTO_DENIED = new Set<string>()
-
-function mintSendId(): string {
-  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
 
 function msgIdentityKey(m: ChatMessage, msgKey: (m: ChatMessage) => string): string {
   const mid = m.meta?.mid
@@ -1529,13 +1522,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [showHistorySuggestions])
   const pendingInput = useAppSelector(s => s.chat.pendingInput)
 
-  const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
-  useEffect(() => {
-    const reload = () => { const next = loadChatConfig(); setChatConfig(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next) }
-    window.addEventListener('focus', reload)
-    window.addEventListener('mc-config-changed', reload)
-    return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
-  }, [])
+  const chatConfig = useChatConfig()
 
   // Project is part of the roster's identity: re-pointing this slot at another
   // project changes which project-scoped agents exist. Derived here rather than

@@ -15,11 +15,14 @@ vi.mock('../app-sdk/ChatMessageList', () => ({
 }))
 
 import ChatEmbed from '../app-sdk/ChatEmbed'
+import { Provider } from 'react-redux'
+import { createTestStore } from './helpers'
 
 let queryClient: QueryClient
 
 function renderWithProviders(ui: React.ReactElement) {
-  return render(React.createElement(QueryClientProvider, { client: queryClient }, ui))
+  return render(React.createElement(Provider, { store: createTestStore() },
+    React.createElement(QueryClientProvider, { client: queryClient }, ui)))
 }
 
 beforeEach(() => {
