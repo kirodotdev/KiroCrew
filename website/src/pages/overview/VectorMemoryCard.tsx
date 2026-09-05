@@ -215,14 +215,18 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
     }, 2000)
   }, [load])
 
+  const setupInProgress = !!embStatus?.setup_step
+    && embStatus.setup_step !== 'idle'
+    && embStatus.setup_step !== 'done'
+    && embStatus.setup_step !== 'error'
+
   useEffect(() => {
-    const step = embStatus?.setup_step
-    if (step && step !== 'idle' && step !== 'done' && step !== 'error' && !enabling) {
+    if (setupInProgress && !pollRef.current) {
       setEnabling(true)
       pollEmbeddingStatus()
       return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
     }
-  }, [embStatus?.setup_step]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setupInProgress, pollEmbeddingStatus])
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
 
