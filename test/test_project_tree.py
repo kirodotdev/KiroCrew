@@ -224,6 +224,68 @@ class TestProjectTree:
         assert "src/mod.py" in paths
 
     @pytest.mark.asyncio
+    async def test_deep_paths_are_not_collapsed_into_one_key(self, repo, mock_sel):
+        """#8042: a deep slash-only path must NOT be swallowed as one secret run.
+
+        ``redact()``'s bare-secret matcher has ``/`` in its payload class, so a
+        directory chain with no ``.``/``-``/``_`` scans as ONE >=40-char run and
+        the whole-run amplification replaces the entire path. Two genuinely
+        different vendored binaries then collapse to a byte-identical key and
+        the de-dup (above) silently drops the second file from the tree.
+        The path-aware listing endpoints now redact SEGMENT-WISE, so ordinary
+        path segments survive and distinct files stay distinct.
+        """
+        from kiro_crew.dashboard.handlers.files import _redact_path_display
+        from kiro_crew.platform import redact_via_context
+
+        deep = "Binaries/ThirdParty/OpenSSL/Win64/VS2015"
+        path_a = f"{deep}/libeay32.dll"
+        path_b = f"{deep}/ssleay32.dll"
+        # Premise check: the general matcher DOES mangle this shape (it is the
+        # #8042 mechanism). If this stops holding, the fixture no longer
+        # exercises the slow path and needs a deeper chain.
+        assert redact_via_context(path_a) != path_a
+        # The path-aware redactor keeps every ordinary segment.
+        assert _redact_path_display(path_a) == path_a
+        assert _redact_path_display(path_b) == path_b
+
+        d = repo / deep
+        d.mkdir(parents=True)
+        (d / "libeay32.dll").write_text("one\n")
+        (d / "ssleay32.dll").write_text("two\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            data = await resp.json()
+        paths = data["paths"]
+        assert path_a in paths
+        assert path_b in paths
+        assert len(paths) == len(set(paths))
+
+    def test_redact_path_display_still_redacts_a_secret_segment(self):
+        """Segment-wise redaction is not a coverage hole: a credential-shaped
+        SINGLE segment still redacts (the separator is a boundary, not an
+        exemption)."""
+        from kiro_crew.dashboard.handlers.files import _redact_path_display
+
+        # Documented example AWS id (Semgrep-allowlisted fixture value).
+        secret_path = "config/AKIAIOSFODNN7EXAMPLE_model.txt"
+        out = _redact_path_display(secret_path)
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert out.startswith("config/")  # the ordinary segment survives
+
+    def test_redact_path_display_keeps_a_deep_root_value(self):
+        """The single-path display values (``root``/``repoRoot``/``branch``)
+        route through the same helper (Design/FP advisory on #8055): a deep
+        slash-only absolute root must render intact, not as a placeholder."""
+        from kiro_crew.dashboard.handlers.files import _redact_path_display
+        from kiro_crew.platform import redact_via_context
+
+        deep_root = "/srv/Binaries/ThirdParty/OpenSSL/Win64/VS2015/build"
+        # Premise: the general matcher mangles this shape (same #8042 run).
+        assert redact_via_context(deep_root) != deep_root
+        assert _redact_path_display(deep_root) == deep_root
+
+    @pytest.mark.asyncio
     async def test_walk_caps_entries_and_flags_truncation(self, tmp_path, mock_sel, monkeypatch):
         from kiro_crew.dashboard.handlers import files as files_mod
 

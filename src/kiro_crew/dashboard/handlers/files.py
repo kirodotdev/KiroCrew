@@ -3616,8 +3616,10 @@ def _project_git_branch(base: str) -> dict:
     # ``root`` is derived from an allow-listed project directory, but a directory
     # NAME is itself agent-influenceable via set_project and this value is echoed
     # to the dashboard, so it goes through the same egress redaction as the branch
-    # label. A normal path is unchanged.
-    out: dict = {"repo": True, "repoRoot": redact(root)}
+    # label. A normal path is unchanged. Path-aware (the caller proves ``root``
+    # is a filesystem path), matching the identical ``repoRoot`` display value in
+    # ``api_project_git_status`` — a deep slash-only root must render intact.
+    out: dict = {"repo": True, "repoRoot": _redact_path_display(root)}
     head_path = _git_head_path(root)
     if head_path is None:
         return out
@@ -3709,8 +3711,11 @@ async def api_project_git(request: web.Request) -> web.Response:
         # Redacted like every other echoed path: this arm is reachable whenever a
         # known project directory is deleted or replaced between the allow-list
         # match and the stat, so it is a live egress surface, not a dead branch.
+        # Path-aware (``base`` is an allow-listed project directory, same
+        # provenance as the ``repoRoot``/``root`` display values): a deep
+        # slash-only project path must render intact, not as a placeholder.
         return web.json_response(
-            {"error": "Not a directory", "path": redact(base)}, status=400
+            {"error": "Not a directory", "path": _redact_path_display(base)}, status=400
         )
     if status == "sensitive":
         _sel().log_api_access(
@@ -3726,7 +3731,8 @@ async def api_project_git(request: web.Request) -> web.Response:
     )
     # The SEL audit above records the real path; the response body is an egress
     # surface the dashboard renders, so the echoed path is redacted like the rest.
-    return web.json_response({"path": redact(base), **info})
+    # Path-aware for the same reason as the 400 arm above.
+    return web.json_response({"path": _redact_path_display(base), **info})
 
 
 async def api_browse_files(request: web.Request) -> web.Response:
@@ -4666,6 +4672,34 @@ def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bo
     return False
 
 
+def _redact_path_display(path: str) -> str:
+    """Redact a value KNOWN to be a project-relative POSIX path, segment-wise.
+
+    ``redact()``'s bare-secret matcher treats ``/`` as a payload character
+    (it is in the base64 alphabet), so a deep path whose directory chain
+    carries no ``.``/``-``/``_`` chains into ONE candidate run; the
+    whole-run amplification in ``redact_credentials`` then replaces the
+    entire path with a single placeholder, collapsing genuinely different
+    files into byte-identical keys (#8042; the render crash this used to
+    cause was fixed by #7678, which left this matcher alone on purpose).
+
+    Here the caller PROVES the value is a path (git/walk-derived listing),
+    so a separator is a hard boundary: on the slow path each ``/``-separated
+    segment is redacted independently. A genuine >=40-char secret appearing
+    as a single segment still redacts; segments that are ordinary names
+    survive, so distinct paths keep distinct outputs. The general
+    ``redact()`` behaviour for unknown-provenance text is untouched.
+
+    Fast path: the overwhelmingly common case is a path ``redact()`` leaves
+    unchanged - return it after one call, so the listing endpoints do not
+    pay per-segment scanning on every entry.
+    """
+    red = redact(path)
+    if red == path:
+        return path
+    return "/".join(redact(segment) for segment in path.split("/"))
+
+
 async def api_project_git_status(request: web.Request) -> web.Response:
     """GET /api/project/git/status?path=... - working tree status for a project dir.
 
@@ -4869,8 +4903,14 @@ async def api_project_git_status(request: web.Request) -> web.Response:
     # so it goes through the same redaction as api_project_git. Normal values
     # pass through unchanged.
     if result.get("repoRoot"):
-        result["repoRoot"] = redact(result["repoRoot"])
+        result["repoRoot"] = _redact_path_display(result["repoRoot"])
     if result.get("branch"):
+        # Whole-string redact(), NOT the path helper: a branch NAME is
+        # free-form text, not a provable path — it can itself BE a
+        # slash-bearing 40-char secret, and segment-wise splitting would
+        # render it raw (GPT review finding on #8055). The provenance
+        # argument that justifies segment-wise treatment holds only for
+        # values the caller derived from the filesystem/git listing.
         result["branch"] = redact(result["branch"])
     # Redact each file path, then drop entries that duplicate an earlier one
     # (preserving order and first occurrence). Same collision class as
@@ -4892,7 +4932,7 @@ async def api_project_git_status(request: web.Request) -> web.Response:
     deduped_files: list[dict] = []
     seen_keys: set[tuple[str, str | None, bool | None]] = set()
     for f in result.get("files", []):
-        f["path"] = redact(f["path"])
+        f["path"] = _redact_path_display(f["path"])
         key = (f["path"], f.get("status"), f.get("staged"))
         if key in seen_keys:
             continue
@@ -4978,7 +5018,9 @@ async def api_project_tree(request: web.Request) -> web.Response:
         caller=caller, operation="project_tree", outcome="allowed", resources=base
     )
     if not await asyncio.to_thread(os.path.isdir, base):
-        return web.json_response({"root": redact(base), "paths": [], "repo": False})
+        return web.json_response(
+            {"root": _redact_path_display(base), "paths": [], "repo": False}
+        )
 
     def _run() -> dict:
         # git listing first: honors .gitignore, includes tracked-but-deleted
@@ -5053,7 +5095,7 @@ async def api_project_tree(request: web.Request) -> web.Response:
     result = await asyncio.to_thread(_run)
     # Egress redaction, same rationale as api_project_git_status: listed names
     # are repo content and this body is rendered by the dashboard.
-    result["root"] = redact(result["root"])
+    result["root"] = _redact_path_display(result["root"])
     # De-duplicate after redaction, preserving order and first occurrence.
     # redact() collapses each matched token to a fixed placeholder, so two
     # genuinely-different project-relative paths (e.g. a src/ vs target/ Maven
@@ -5062,7 +5104,7 @@ async def api_project_tree(request: web.Request) -> web.Response:
     # @pierre/trees, whose appendPresortedPaths throws "Duplicate path" on
     # adjacent identical entries. dict.fromkeys keeps first occurrence. This
     # does not affect "truncated": the cap is applied to the raw listing above.
-    result["paths"] = list(dict.fromkeys(redact(p) for p in result["paths"]))
+    result["paths"] = list(dict.fromkeys(_redact_path_display(p) for p in result["paths"]))
     return web.json_response(result)
 
 
