@@ -237,7 +237,7 @@ describe('chatSlice prototype-pollution guards', () => {
     store.dispatch(setActiveSlot('real'))
     for (const bad of POISON) {
       store.dispatch(setStopPressedAt({ slotId: bad, ts: 1 }))
-      store.dispatch(setSlotStatusDetail({ slot: bad, kind: 'tool', text: 't', ts: 1 }))
+      store.dispatch(setSlotStatusDetail({ slot: bad, kind: 'tool', label: 't', ts: 1 }))
       store.dispatch(sseContextUsage({ slot: bad, pct: 50, window_tokens: 100 }))
       store.dispatch(hydrateSlotMessages({ slot: bad, messages: [{ role: 'user', content: 'x' } as ChatMessage] }))
       store.dispatch(appendSlotMessage({ slot: bad, message: { role: 'user', content: 'x' } as ChatMessage }))

@@ -74,8 +74,8 @@ import type { ChatSlot } from '../types'
 
 const TOOL_DETAIL = {
   kind: 'tool',
-  text: 'Looking up the mic permission handler',
-  toolName: 'grep --include=*.ts setPermissionCheckHandler',
+  purpose: 'Looking up the mic permission handler',
+  label: 'grep --include=*.ts setPermissionCheckHandler',
   ts: 1,
 }
 
@@ -135,7 +135,7 @@ describe('chat sidebar — tool status honors simplifiedToolNames', () => {
     // going through the catalog rather than falling into the tool branch.
     cfg.value = { ...cfg.value, simplifiedToolNames: false }
     const { getByText } = renderSidebar(slots, {
-      slotStatusDetail: { k: { kind: 'thinking', text: 'Thinking…', ts: 1 } },
+      slotStatusDetail: { k: { kind: 'thinking', label: 'Thinking…', ts: 1 } },
     })
     expect(getByText(/Thinking…/)).toBeTruthy()
   })

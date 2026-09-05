@@ -204,7 +204,7 @@ describe('chat sidebar — session row memo boundary', () => {
       // (toolStatusLabel), so the assertion is independent of the
       // simplifiedToolNames preference.
       store.dispatch(setSlotStatusDetail({
-        slot: 'k-b', kind: 'status', text: 'Poking the build', ts: 1,
+        slot: 'k-b', kind: 'status', label: 'Poking the build', ts: 1,
       }))
     })
 
