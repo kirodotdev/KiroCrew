@@ -6,12 +6,19 @@ import { Toggle } from '../../components/ui'
 import { api } from '../../api/client'
 import type { NotificationChannel } from '../../types'
 import {
-  SOUND_PRESETS, type SoundPreset, type SoundCategory,
-  loadSoundSettings, saveSoundSettings, playPreset,
+  SOUND_PRESETS, type SoundPreset, type SoundCategory, type SoundSettings,
+  loadSoundSettings, saveSoundSettings, playPreset, presetForKind,
 } from '../../hooks/useNotificationSound'
 
 import { i18nT } from '../../i18n/t'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
+
+/** localStorage key the sound settings persist under. Mirrors the private
+ *  `STORAGE_KEY` in useNotificationSound.ts; kept as a local literal because
+ *  the hook module does not export it and this change is scoped to this file.
+ *  Used only to FILTER cross-window `storage` events — the actual read goes
+ *  through `loadSoundSettings()` so validation/clamping is reused. */
+const SOUND_STORAGE_KEY = 'mc-notification-sound'
 
 /**
  * Catalog KEY for each sound preset's display label.
@@ -213,20 +220,62 @@ function ChannelsSection() {
 export function NotificationsPanel() {
   const [settings, setSettings] = useState(() => loadSoundSettings())
 
-  const update = (partial: Partial<typeof settings>) => {
-    const next = { ...settings, ...partial }
-    setSettings(next)
-    saveSoundSettings(next)
+  // Cross-window sync: a settings write in ANOTHER tab (or the running session's
+  // own useNotificationSound reacting to one) fires a DOM `storage` event here.
+  // The same-window MC_SOUND_SETTINGS_CHANGED_EVENT never crosses tabs, so this
+  // is the only way an open panel learns another window changed the sound
+  // config. Reload through loadSoundSettings() (reusing its validation/clamping
+  // and its adopt-DEFAULTS-on-clear behaviour where e.newValue is null) rather
+  // than parsing e.newValue by hand.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      // Ignore writes to a different storageArea (e.g. sessionStorage in a
+      // same-origin iframe). Guarded because a locked-down storageArea getter
+      // can throw; on that failure fall through to the key filter alone.
+      try {
+        if (e.storageArea && e.storageArea !== localStorage) return
+      } catch {
+        /* locked-down storage: fall through to the key filter alone */
+      }
+      // key === null is a whole-store clear() and must be honoured; otherwise
+      // only our key matters.
+      if (e.key !== null && e.key !== SOUND_STORAGE_KEY) return
+      setSettings(loadSoundSettings())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  // Every write derives its next value from a FRESH persisted snapshot, not from
+  // the `settings` React state, which can be stale relative to localStorage: a
+  // cross-window write or the mutator function may have advanced a field the
+  // panel's last render never saw. Merging `partial` onto the freshly loaded
+  // snapshot means a local edit to one field can never silently clobber a newer
+  // persisted value in another field.
+  const applyUpdate = (mutate: (current: SoundSettings) => SoundSettings): void => {
+    const next = mutate(loadSoundSettings())
+    // Persist first; adopt into local state only if the write landed. On a
+    // quota-dropped save, saveSoundSettings returns false and does NOT fire the
+    // settings-changed event — so we keep the previous local state, leaving the
+    // UI showing the persisted truth rather than a value that vanishes on
+    // reload.
+    if (saveSoundSettings(next)) setSettings(next)
+  }
+
+  const update = (partial: Partial<SoundSettings>) => {
+    applyUpdate(current => ({ ...current, ...partial }))
   }
 
   const setCategoryPreset = (cat: SoundCategory, preset: SoundPreset) => {
-    update({ perCategory: { ...settings.perCategory, [cat]: preset } })
+    applyUpdate(current => ({ ...current, perCategory: { ...current.perCategory, [cat]: preset } }))
   }
 
   const clearCategoryOverride = (cat: SoundCategory) => {
-    const { [cat]: _drop, ...rest } = settings.perCategory
-    void _drop
-    update({ perCategory: rest })
+    applyUpdate(current => {
+      const { [cat]: _drop, ...rest } = current.perCategory
+      void _drop
+      return { ...current, perCategory: rest }
+    })
   }
 
   const fallback = settings.perCategory.all ?? 'chime'
@@ -292,9 +341,14 @@ export function NotificationsPanel() {
         <SettingsCard index={1}>
           {CATEGORY_ROWS.map(cat => {
             const hasOverride = cat !== 'all' && settings.perCategory[cat] !== undefined
+            // Preview EXACTLY what runtime would play: presetForKind applies the
+            // built-in category default (approval -> pulse) and the global
+            // all='none' silence rule. A naive `perCategory[cat] ?? fallback`
+            // diverged from playback for approval (showed the fallback, played
+            // pulse). 'all' has no kind, so it previews the fallback directly.
             const effective: SoundPreset = cat === 'all'
               ? fallback
-              : (settings.perCategory[cat] ?? fallback)
+              : presetForKind(cat, settings)
             const selectValue: string = cat === 'all'
               ? fallback
               : (hasOverride ? (settings.perCategory[cat] as SoundPreset) : DEFAULT_SENTINEL)
