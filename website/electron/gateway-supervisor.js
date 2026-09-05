@@ -55,6 +55,8 @@ const {
   snapshotPortPids,
   incumbentSnapshotBlocksRespawn,
   unrecoverableGatewayDialog,
+  shouldReresolveBackend,
+  isStaleBundleSignal,
 } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const {
@@ -169,6 +171,70 @@ function createGatewaySupervisor({
   // Set before updater shutdown begins. It keeps an intentional stop from being
   // read as a wedge and resurrected while the bundle is being replaced.
   let installingUpdate = false;
+  // Re-resolves spent on the current stale-bundle incident (see
+  // shouldReresolveBackend). Reset whenever a fresh gateway is asked for and
+  // whenever one reaches handoff, so each incident gets its own budget.
+  let reresolveAttempts = 0;
+
+  /**
+   * Can app.relaunch() still find something to re-exec? Electron relaunches
+   * this process's own executable (process.execPath; inside the .app bundle on
+   * a packaged macOS build), so the bundle being pruned out from under a
+   * running app is visible as that path no longer existing. A swapped bundle
+   * leaves a new executable at the same path and reads as relaunchable.
+   */
+  function canRelaunchThisApp() {
+    const target = processObj.execPath;
+    if (typeof target !== "string" || !target) return false;
+    try {
+      fs.accessSync(target, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Restart the app by starting a fresh copy of it and exiting only once that
+   * copy is confirmed running.
+   *
+   * app.relaunch() is not usable here: it returns nothing and only schedules a
+   * re-exec for exit time, so when the bundle is pruned between the probe
+   * above and that re-exec the app exits into nothing and no code is left to
+   * notice. Spawning the successor ourselves closes that window: Node reports
+   * exec success ("spawn") or failure ("error", ENOENT on a pruned bundle)
+   * before this process gives anything up, so a failed start falls back to
+   * the ordinary failure dialog with the current instance still alive.
+   *
+   * The single-instance lock is released first so the successor does not read
+   * us as the running instance and quit; on failure it is taken back so a
+   * later manual launch still routes to this window.
+   *
+   * @param {() => void} onFailed  the caller's ordinary failure bookkeeping.
+   */
+  function relaunchViaConfirmedSuccessor(onFailed) {
+    const target = processObj.execPath;
+    const args = Array.isArray(processObj.argv) ? processObj.argv.slice(1) : [];
+    app.releaseSingleInstanceLock();
+    let settled = false;
+    const successor = spawn(target, args, { detached: true, stdio: "ignore" });
+    successor.once("spawn", () => {
+      if (settled) return;
+      settled = true;
+      successor.unref();
+      glog(`successor app started (pid ${successor.pid}) — exiting this instance`);
+      app.exit(0);
+    });
+    successor.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      glog(`successor app failed to start (${error.code || error.message}) from ${target} — cannot relaunch; surfacing the failure instead`);
+      try { app.requestSingleInstanceLock(); } catch (lockError) {
+        glog(`could not re-take the single-instance lock: ${lockError && lockError.message}`);
+      }
+      onFailed();
+    });
+  }
 
   function sendStatus(message) {
     mainWindow()?.webContents?.send("status", message);
@@ -411,6 +477,7 @@ function createGatewaySupervisor({
   }
 
   function startGateway() {
+    reresolveAttempts = 0;
     glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${processObj.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
     sendStatus("Checking if gateway is running…");
     return new Promise((resolve) => {
@@ -482,6 +549,11 @@ function createGatewaySupervisor({
     return path.resolve(dirname, "..");
   }
 
+  // Every call probes the candidate list afresh (findKirocrewBin does live
+  // access() checks), which is what lets a stale-bundle respawn pick up a
+  // backend swapped in at the same path. resourcesPath itself is a launch-time
+  // snapshot and so is every other Electron path API; there is nothing newer to
+  // read.
   function spawnGateway(resolve) {
     // The gateway owns its data root. Create it before deriving the redirected
     // bytecode cache, honoring an explicit KIROCREW_HOME without touching the
@@ -506,7 +578,7 @@ function createGatewaySupervisor({
     let execState = "executable";
     try { fs.accessSync(bin, fs.constants.X_OK); }
     catch (error) { execState = `NOT-EXECUTABLE(${error.code})`; }
-    glog(`no gateway on :${PORT} — spawning bundled backend: bin=${bin} bundled=${bundled} ${execState}`);
+    glog(`no gateway on :${PORT} — spawning bundled backend: bin=${bin} bundled=${bundled} ${execState} staleRetries=${reresolveAttempts}`);
 
     // The Windows installer writes backend-dist incrementally. Refusing an
     // incomplete interpreter is preventive but cannot see package siblings that
@@ -624,12 +696,64 @@ function createGatewaySupervisor({
     // Bind handlers to this child, not the mutable slot. Recovery can replace a
     // child before its late error/exit event arrives; stale events must never
     // orphan the replacement or fabricate a start failure for it.
+    //
+    // Both handlers share one stale-bundle recovery. It returns true when it
+    // took the child's fate over (respawned, or a fresh copy of the app is
+    // being started), so the caller skips its ordinary failure bookkeeping;
+    // `giveUp` is that bookkeeping, for the one case where taking over fails
+    // later (the successor never started). `resolve` may already be settled by
+    // then; a second call is a no-op, which is what a child that dies hours
+    // after boot needs.
+    const recoverStaleBackend = ({ exitCode = null, spawnErrorCode = "", giveUp }) => {
+      // Probe the relaunch target first: when the bundle was swapped in place
+      // the new executable sits at the same path; when it was pruned the path
+      // is gone and exiting would leave the user with no app at all.
+      const relaunchTargetExists = canRelaunchThisApp();
+      const verdict = shouldReresolveBackend({
+        isMac: IS_MAC,
+        bundled,
+        exitCode,
+        spawnErrorCode,
+        attempts: reresolveAttempts,
+        quitting: quitting(),
+        installingUpdate,
+        relaunchTargetExists,
+      });
+      const cause = exitCode === null ? `spawn ${spawnErrorCode}` : `exit ${exitCode}`;
+      if (verdict === "none") {
+        // reresolveAttempts only ever rises on macOS, so a spent budget plus a
+        // stale signal plus a missing executable is exactly the pruned case.
+        if (
+          reresolveAttempts >= 1 && !relaunchTargetExists
+          && isStaleBundleSignal({ exitCode, spawnErrorCode })
+        ) {
+          glog(`stale bundle persists after re-resolve (${cause} on bin=${bin}) but this app's executable is gone (${processObj.execPath || "?"}) — cannot relaunch; surfacing the failure instead`);
+        }
+        return false;
+      }
+      if (verdict === "reresolve") {
+        reresolveAttempts += 1;
+        glog(`stale bundle (${cause} on bin=${bin}) — re-resolving the backend and respawning (attempt ${reresolveAttempts})`);
+        gatewayProcess = null;
+        gatewayStartFailure = null;
+        spawnGateway(resolve);
+        return true;
+      }
+      glog(`stale bundle persists after re-resolve (${cause} on bin=${bin}) — starting a fresh copy of the app from ${processObj.execPath}`);
+      relaunchViaConfirmedSuccessor(giveUp);
+      return true;
+    };
+
     child.on("error", (error) => {
       glog(`spawn ERROR code=${error.code || "?"} msg=${error.message}`);
       if (gatewayProcess !== child) return;
-      gatewayStartFailure = { error: error.message, bundled };
-      sendStatus(`Gateway failed: ${error.message}`);
-      resolve(false);
+      const giveUp = () => {
+        gatewayStartFailure = { error: error.message, bundled };
+        sendStatus(`Gateway failed: ${error.message}`);
+        resolve(false);
+      };
+      if (recoverStaleBackend({ spawnErrorCode: error.code || "", giveUp })) return;
+      giveUp();
     });
     child.on("exit", (code, signal) => {
       glog(`gateway child exited code=${code} signal=${signal}`);
@@ -639,8 +763,12 @@ function createGatewaySupervisor({
         glog("HINT: SIGKILL on a freshly-spawned bundled binary almost always means macOS Gatekeeper blocked an unsigned/quarantined nested executable. On the recipient's Mac run: xattr -cr <path to KiroCrew.app>");
       }
       if (gatewayProcess !== child) return;
-      if (!gatewayStartFailure) gatewayStartFailure = { code, signal, bundled };
-      gatewayProcess = null;
+      const giveUp = () => {
+        if (!gatewayStartFailure) gatewayStartFailure = { code, signal, bundled };
+        gatewayProcess = null;
+      };
+      if (recoverStaleBackend({ exitCode: code, giveUp })) return;
+      giveUp();
     });
     resolve(true);
   }
@@ -1032,6 +1160,9 @@ function createGatewaySupervisor({
 
   /** Start or replace the primary own-port post-handoff liveness monitor. */
   function startLivenessMonitor(window) {
+    // A gateway that reached handoff is healthy; a stale-bundle incident that
+    // hits it later starts with a fresh re-resolve budget.
+    reresolveAttempts = 0;
     if (livenessMonitor) {
       livenessMonitor.stop();
       livenessMonitor = null;
