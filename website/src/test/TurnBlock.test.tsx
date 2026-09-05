@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import TurnBlock from '../pages/chat/TurnBlock'
 import type { DisplayItem, TurnItem } from '../pages/chat/types'
 
@@ -47,6 +47,17 @@ describe('TurnBlock — interim fan-out fold', () => {
     const { container } = render(<TurnBlock turn={turn} renderItem={renderItem} />)
     expect(container.querySelector('button')).toBeNull()
     expect(screen.getByTestId('item-0')).toBeInTheDocument()
+  })
+
+  it('marks the fold with data-collapsed while collapsed and clears it on expand', () => {
+    // The bubble-vanish probe keys its hidden-in-place bucket off this
+    // attribute: present exactly while the section hides its mounted rows.
+    const turn = { ...makeTurn(interimItems()), interim: true }
+    const { container } = render(<TurnBlock turn={turn} renderItem={renderItem} />)
+    const fold = collapsed(container) as HTMLElement
+    expect(fold.getAttribute('data-collapsed')).toBe('true')
+    fireEvent.click(container.querySelector('button')!)
+    expect(fold.hasAttribute('data-collapsed')).toBe(false)
   })
 })
 
