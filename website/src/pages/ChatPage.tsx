@@ -10,6 +10,7 @@ import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { toApiDecision } from '../utils/approvalDecision'
 import { isBrowseCommand } from '../utils/browseCommand'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 // Re-exported so the symbol `ChatPage` exported before this extraction stays
@@ -5424,14 +5425,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [])
 
   const approve = useCallback(async (action: string) => { if (activeSlot) await api.approveChatSlot(activeSlot, action) }, [activeSlot])
-  // Approvals dismissed through this mapping resolve via the ONE-SHOT
-  // `api.resolveApproval` endpoint, which has no trust verb: it can honor
-  // exactly `approve` or `reject`, and the next identical call prompts again.
-  // Any UI feeding this path must offer only those decisions — a Trust
-  // affordance here would claim a standing grant the backend never records
-  // (#5400 on the spawn-approval card, #5434 on the collapsed tool row).
-  const toApiDecision = useCallback((action: string): 'approve' | 'reject' =>
-    action === 'approved' ? 'approve' : 'reject', [])
+  // Approvals dismissed through the CollapsibleToolGroup mounts resolve via the
+  // ONE-SHOT `api.resolveApproval` endpoint, which has no trust verb. The shared
+  // `toApiDecision` (utils/approvalDecision.ts) is fail-closed and is the only
+  // place that mapping is spelled — a Trust affordance on this path would claim
+  // a standing grant the backend never records (#5400, #5434).
   const dismissApproval = useCallback((aid: string, decision?: string) => {
     dispatch(resolveByApprovalId({ id: aid, decision }))
     const n = store.getState().notifications.items.find(x => x.approval_id === aid)
@@ -7906,7 +7904,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         >{it.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(it.startIdx + j, m)}</div>)}</CollapsibleToolGroup>)
       })() : renderMessage(it.idx, it.msg)}
     </div>
-  }, [stableMsgKey, renderMessage, approve, toApiDecision, dismissApproval, toggleAct, activityOpen])
+  }, [stableMsgKey, renderMessage, approve, dismissApproval, toggleAct, activityOpen])
 
   // ---- Measure-farm wiring ----
   // The farm's renderItem must reproduce the transcript row wrappers EXACTLY

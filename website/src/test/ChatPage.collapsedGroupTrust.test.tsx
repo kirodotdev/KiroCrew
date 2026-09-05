@@ -2,13 +2,14 @@
  * Source contract for #5434: ChatPage's CollapsibleToolGroup mounts must not
  * declare the standing-trust tier.
  *
- * Both mounts resolve approvals through `toApiDecision` into the one-shot
- * `api.resolveApproval` endpoint, which has no trust verb. The group component
- * is fail-closed (`canTrust` opt-in), so the regression this pins is someone
- * flipping `canTrust` on a ChatPage mount: the Trust button would render, and
- * with `toApiDecision` narrowed to `'approved' -> approve, else reject`, a
- * user's Trust click would resolve as a SILENT DENIAL — worse than the silent
- * one-shot approve #5434 removed.
+ * Both mounts resolve approvals through the shared `toApiDecision`
+ * (`utils/approvalDecision.ts`, single-sourced by #8193 — ChatPage held its own
+ * copy until then) into the one-shot `api.resolveApproval` endpoint, which has no
+ * trust verb. The group component is fail-closed (`canTrust` opt-in), so the
+ * regression this pins is someone flipping `canTrust` on a ChatPage mount: the
+ * Trust button would render, and because that mapping is fail-closed
+ * (`'approved' -> approve`, else `reject`), a user's Trust click would resolve as
+ * a SILENT DENIAL — worse than the silent one-shot approve #5434 removed.
  *
  * Why a source contract and not a render test: these mounts are currently
  * unreachable — `groupDisplayItems` skips `permission` rows entirely (the

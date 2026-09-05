@@ -27,6 +27,7 @@ import { sanitizeLlmOutput } from '../utils/sanitize'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../i18n/LanguageProvider'
 import { pickToolLabel } from '../utils/toolLabel'
+import { toApiDecision } from '../utils/approvalDecision'
 import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -179,22 +180,13 @@ function sameBlocks(a: PasteBlock[], b: PasteBlock[]): boolean {
   return b.every(x => ids.has(x.id))
 }
 
-// Decisions mapped here resolve via the ONE-SHOT `api.resolveApproval`
-// endpoint, which has no trust verb: POST /api/approvals/{id}/{action} honors
-// exactly `approve`, `reject` and `reject_once` (dashboard/handlers/sessions.py),
-// and the next identical call prompts again. Any UI feeding this path must offer
-// only those decisions — mapping a trust verb to `approve` here runs the tool
-// once while the composer reports a standing grant the backend never recorded
-// (#5400 on the spawn-approval card, #5434 on the collapsed tool row, #5486
-// here). The Trust affordances are withheld from this path at their render
-// sites (`approvalTrustGrantable`); this arm stays fail-closed so a trust verb
-// that reaches it anyway is rejected rather than silently upgraded — the same
-// rule ChatPage's `toApiDecision` carries verbatim.
-function toApiDecision(d: string): 'approve' | 'reject' | 'reject_once' {
-  if (d === 'approved') return 'approve'
-  if (d === 'rejected_once') return 'reject_once'
-  return 'reject'
-}
+// Decisions resolved through the ONE-SHOT `api.resolveApproval` endpoint are
+// mapped by the shared `toApiDecision` (utils/approvalDecision.ts), which is
+// fail-closed and is the only place that mapping is spelled — see that module
+// for why a local ternary here cannot be caught by any downstream guard (#5400,
+// #5434, #5486). The Trust affordances are withheld from this path at their
+// render sites (`approvalTrustGrantable`); a trust verb that reaches the mapping
+// anyway is rejected rather than silently upgraded.
 
 /** Approval sources that run unattended, with no human bound to the chat the
  *  card renders in. Session-scoped Trust is meaningless for these (see

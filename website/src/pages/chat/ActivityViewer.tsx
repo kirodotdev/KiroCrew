@@ -7,6 +7,7 @@ import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import { countDiffStats } from '../../utils/diffLineCounts'
+import { toApiDecision } from '../../utils/approvalDecision'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
@@ -294,7 +295,7 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
     setActing(true)
     setLocalDecision(action)
     try {
-      await api.resolveApproval(entry.approval_id!, action === 'rejected' ? 'reject' : 'approve')
+      await api.resolveApproval(entry.approval_id!, toApiDecision(action))
     } catch { setLocalDecision(null); setActing(false) }
   }, [entry.approval_id])
 
@@ -304,6 +305,14 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   // out are a one-shot approve or reject. Offering trust tiers here (or
   // labelling a decision "Trusted") would overstate the grant: the next
   // identical call prompts again (#5400).
+  //
+  // `onAction` above maps through the shared fail-closed `toApiDecision` rather
+  // than the inline `action === 'rejected' ? 'reject' : 'approve'` it used to
+  // spell. That ternary was fail-OPEN — any verb but `rejected` became an
+  // `approve` — and was safe only because the two buttons below pass literals.
+  // It was the last in-tree instance of the shape #5400/#5434/#5486 each shipped
+  // (#8193): a render gate is one edit away from being widened, and the mapping
+  // is what decides whether a widened gate grants or denies.
   const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approved')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.rejected')}</> }
   const btnClass = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all'
   return (
