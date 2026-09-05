@@ -12151,6 +12151,19 @@
       "empty_failed_next_step": "Повторите «Удалить навсегда». Подробности в журнале шлюза.",
       "kept_identity_changed": "Одна партия изменилась на диске после выбора, поэтому она сохранена."
     },
+    "sessionsPage": {
+      "page_title": "Все сессии",
+      "new_session_failed": "Не удалось начать новую сессию: {{error}}",
+      "search_placeholder": "Поиск сессий…",
+      "new_session": "Новая сессия",
+      "filter_all": "Все",
+      "filter_unread": "Непрочитанные",
+      "group_today": "Сегодня",
+      "group_yesterday": "Вчера",
+      "group_earlier": "Ранее",
+      "empty_title": "Нет сессий",
+      "empty_subtitle": "Создайте новую, чтобы начать."
+    },
     "sessionsTab": {
       "agent": "Агент",
       "channel": "Канал",

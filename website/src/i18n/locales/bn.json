@@ -11819,6 +11819,19 @@
       "empty_failed_next_step": "«স্থায়ীভাবে মুছুন» আবার চেষ্টা করুন। বিবরণ গেটওয়ে লগে আছে।",
       "kept_identity_changed": "আপনি বাছাই করার পর ডিস্কে একটি ব্যাচ বদলে গেছে, তাই সেটি রাখা হয়েছে।"
     },
+    "sessionsPage": {
+      "page_title": "সব সেশন",
+      "new_session_failed": "নতুন সেশন শুরু করা গেল না: {{error}}",
+      "search_placeholder": "সেশন খুঁজুন…",
+      "new_session": "নতুন সেশন",
+      "filter_all": "সব",
+      "filter_unread": "অপঠিত",
+      "group_today": "আজ",
+      "group_yesterday": "গতকাল",
+      "group_earlier": "আগের",
+      "empty_title": "কোনো সেশন নেই",
+      "empty_subtitle": "শুরু করতে একটি তৈরি করো।"
+    },
     "sessionsTab": {
       "agent": "এজেন্ট",
       "channel": "চ্যানেল",

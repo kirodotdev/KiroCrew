@@ -11652,6 +11652,19 @@
       "empty_failed_next_step": "请再次尝试“永久删除”。详细信息见网关日志。",
       "kept_identity_changed": "有一批在你选择之后于磁盘上发生了变化，因此被保留。"
     },
+    "sessionsPage": {
+      "page_title": "全部会话",
+      "new_session_failed": "无法启动新会话：{{error}}",
+      "search_placeholder": "搜索会话…",
+      "new_session": "新建会话",
+      "filter_all": "全部",
+      "filter_unread": "未读",
+      "group_today": "今天",
+      "group_yesterday": "昨天",
+      "group_earlier": "更早",
+      "empty_title": "暂无会话",
+      "empty_subtitle": "新建一个开始吧。"
+    },
     "sessionsTab": {
       "agent": "代理",
       "channel": "渠道",

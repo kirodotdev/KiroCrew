@@ -11984,6 +11984,19 @@
       "empty_failed_next_step": "Tente Excluir permanentemente novamente. Os detalhes estão no log do gateway.",
       "kept_identity_changed": "Um lote mudou no disco depois de você selecioná-lo, por isso foi mantido."
     },
+    "sessionsPage": {
+      "page_title": "Todas as sessões",
+      "new_session_failed": "Não foi possível iniciar uma nova sessão: {{error}}",
+      "search_placeholder": "Pesquisar sessões…",
+      "new_session": "Nova sessão",
+      "filter_all": "Todas",
+      "filter_unread": "Não lidas",
+      "group_today": "Hoje",
+      "group_yesterday": "Ontem",
+      "group_earlier": "Anteriores",
+      "empty_title": "Nenhuma sessão",
+      "empty_subtitle": "Crie uma para começar."
+    },
     "sessionsTab": {
       "agent": "Agente",
       "channel": "Canal",

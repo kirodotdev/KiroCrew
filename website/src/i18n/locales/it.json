@@ -11984,6 +11984,19 @@
       "empty_failed_next_step": "Riprova Elimina definitivamente. I dettagli sono nel log del gateway.",
       "kept_identity_changed": "Un lotto è cambiato sul disco dopo la selezione, quindi è stato conservato."
     },
+    "sessionsPage": {
+      "page_title": "Tutte le sessioni",
+      "new_session_failed": "Non è stato possibile avviare una nuova sessione: {{error}}",
+      "search_placeholder": "Cerca sessioni…",
+      "new_session": "Nuova sessione",
+      "filter_all": "Tutte",
+      "filter_unread": "Non lette",
+      "group_today": "Oggi",
+      "group_yesterday": "Ieri",
+      "group_earlier": "Precedenti",
+      "empty_title": "Nessuna sessione",
+      "empty_subtitle": "Creane una per iniziare."
+    },
     "sessionsTab": {
       "agent": "Agente",
       "channel": "Canale",

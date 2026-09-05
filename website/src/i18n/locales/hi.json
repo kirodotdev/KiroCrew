@@ -11819,6 +11819,19 @@
       "empty_failed_next_step": "«हमेशा के लिए हटाएँ» फिर आज़माएँ। विवरण गेटवे लॉग में हैं।",
       "kept_identity_changed": "तुम्हारे चुनने के बाद डिस्क पर एक बैच बदल गया, इसलिए उसे रखा गया।"
     },
+    "sessionsPage": {
+      "page_title": "सभी सत्र",
+      "new_session_failed": "नया सत्र शुरू नहीं हो सका: {{error}}",
+      "search_placeholder": "सत्र खोजें…",
+      "new_session": "नया सत्र",
+      "filter_all": "सभी",
+      "filter_unread": "अपठित",
+      "group_today": "आज",
+      "group_yesterday": "बीता कल",
+      "group_earlier": "पहले",
+      "empty_title": "कोई सत्र नहीं",
+      "empty_subtitle": "शुरू करने के लिए एक बनाओ।"
+    },
     "sessionsTab": {
       "agent": "एजेंट",
       "channel": "चैनल",

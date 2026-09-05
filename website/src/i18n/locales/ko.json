@@ -11652,6 +11652,19 @@
       "empty_failed_next_step": "'완전히 삭제'를 다시 시도하세요. 자세한 내용은 게이트웨이 로그에 있습니다.",
       "kept_identity_changed": "선택한 뒤 디스크에서 바뀐 배치가 있어 그대로 두었습니다."
     },
+    "sessionsPage": {
+      "page_title": "전체 세션",
+      "new_session_failed": "새 세션을 시작할 수 없습니다: {{error}}",
+      "search_placeholder": "세션 검색…",
+      "new_session": "새 세션",
+      "filter_all": "전체",
+      "filter_unread": "읽지 않음",
+      "group_today": "오늘",
+      "group_yesterday": "어제",
+      "group_earlier": "이전",
+      "empty_title": "세션이 없습니다",
+      "empty_subtitle": "새로 만들어 시작하세요."
+    },
     "sessionsTab": {
       "agent": "에이전트",
       "channel": "채널",

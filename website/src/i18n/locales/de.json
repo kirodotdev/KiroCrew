@@ -11818,6 +11818,19 @@
       "empty_failed_next_step": "Versuchen Sie „Endgültig löschen“ erneut. Details stehen im Gateway-Log.",
       "kept_identity_changed": "Ein Stapel hat sich nach der Auswahl auf der Festplatte geändert und wurde daher behalten."
     },
+    "sessionsPage": {
+      "page_title": "Alle Sitzungen",
+      "new_session_failed": "Eine neue Sitzung konnte nicht gestartet werden: {{error}}",
+      "search_placeholder": "Sitzungen durchsuchen…",
+      "new_session": "Neue Sitzung",
+      "filter_all": "Alle",
+      "filter_unread": "Ungelesen",
+      "group_today": "Heute",
+      "group_yesterday": "Gestern",
+      "group_earlier": "Früher",
+      "empty_title": "Keine Sitzungen",
+      "empty_subtitle": "Erstelle eine, um loszulegen."
+    },
     "sessionsTab": {
       "agent": "Agent",
       "channel": "Kanal",

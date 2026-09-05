@@ -4586,6 +4586,19 @@
       "no_matches_for_query": "No matches for \"{{query}}\".",
       "truncated_showing_first_200kb": "… truncated (showing first 200KB) …"
     },
+    "sessionsPage": {
+      "page_title": "All sessions",
+      "new_session_failed": "Could not start a new session: {{error}}",
+      "search_placeholder": "Search sessions…",
+      "new_session": "New session",
+      "filter_all": "All",
+      "filter_unread": "Unread",
+      "group_today": "Today",
+      "group_yesterday": "Yesterday",
+      "group_earlier": "Earlier",
+      "empty_title": "No sessions",
+      "empty_subtitle": "Create one to get started."
+    },
     "settings": {
       "mobileLoginCard": {
         "sign_in_on_mobile": "Sign in on mobile",

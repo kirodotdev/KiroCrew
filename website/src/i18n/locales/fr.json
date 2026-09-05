@@ -11985,6 +11985,19 @@
       "empty_failed_next_step": "Réessayez Supprimer définitivement. Les détails sont dans le journal du gateway.",
       "kept_identity_changed": "Un lot a changé sur le disque après votre sélection, il a donc été conservé."
     },
+    "sessionsPage": {
+      "page_title": "Toutes les sessions",
+      "new_session_failed": "Impossible de démarrer une nouvelle session : {{error}}",
+      "search_placeholder": "Rechercher des sessions…",
+      "new_session": "Nouvelle session",
+      "filter_all": "Toutes",
+      "filter_unread": "Non lues",
+      "group_today": "Aujourd'hui",
+      "group_yesterday": "Hier",
+      "group_earlier": "Plus ancien",
+      "empty_title": "Aucune session",
+      "empty_subtitle": "Créez-en une pour commencer."
+    },
     "sessionsTab": {
       "agent": "Agent",
       "channel": "Canal",
