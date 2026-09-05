@@ -156,18 +156,26 @@ Pin an exact version:
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
-**Experimental** — run on a fully managed Python instead of the system one.
-The installer fetches a SHA-256-pinned [uv](https://docs.astral.sh/uv/) and
-provisions a self-contained CPython 3.12 into `~/.kiro/crew-python`, so the
-install never depends on (or breaks with) the system interpreter:
+**Managed Python by default.** The installer runs Kiro Crew on a fully managed
+Python instead of the system one: it fetches a SHA-256-pinned
+[uv](https://docs.astral.sh/uv/) and provisions a self-contained CPython 3.12
+into `~/.kiro/crew-python`, so the install never depends on (or breaks with)
+the system interpreter. Existing installs migrate the next time this installer
+itself runs — a staged update applied from the dashboard or the CLI's update
+command keeps its current interpreter. To run
+on the system interpreter instead:
 
 ```bash
-curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --managed-python
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --system-python
 ```
 
 The choice is sticky: it is recorded next to the channel, so later re-runs of
-the installer — including the one `kirocrew update` performs — keep using the
-managed interpreter without the flag. Opt back out with `--system-python`.
+the installer keep it without
+the flag. Opt back in with `--managed-python`. If the managed interpreter
+cannot be downloaded (no network path to the mirror), the installer falls back
+to a usable system Python 3.12+ for that run; point air-gapped hosts at a
+mirror with `KIROCREW_UV_URL` (the uv tarball) and `UV_PYTHON_INSTALL_MIRROR`
+(the interpreter archive).
 
 Open `http://localhost:5476` and start a conversation. The web dashboard works
 without messaging credentials. Add a messaging channel —
@@ -395,12 +403,13 @@ the published manifest, installs through `pipx` when available or a managed
 virtual environment at `~/.kiro/crew-venv` (beside the data home; override with
 `KIROCREW_VENV`), and records the channel in `~/.kiro/crew/channel`. The channels
 are `stable`, `insider`, and `nightly`, and `KIROCREW_CHANNEL` sets the default.
-On Linux and macOS, when the system lacks a Python 3.12+ interpreter the
-installer provisions one itself — no package manager, no sudo: it downloads a
-SHA-256-pinned [uv](https://docs.astral.sh/uv/) binary (or uses your installed
-`uv`) and installs a python-build-standalone CPython 3.12 into
-`~/.kiro/crew-python`. Pass `--managed-python` to always use the provisioned
-interpreter and skip the system ones. The
+On Linux and macOS the installer provisions its own Python by default — no
+package manager, no sudo: it downloads a SHA-256-pinned
+[uv](https://docs.astral.sh/uv/) binary (an installed `uv` on `PATH` is
+deliberately not used) and
+installs a python-build-standalone CPython 3.12 into `~/.kiro/crew-python`.
+Pass `--system-python` to run on a system Python 3.12+ instead (sticky across
+updates). The
 signed installer never pipes an unsigned third-party script into a shell.
 
 **Pin an exact wheel.** You can also install one exact wheel directly and pin it to its published
