@@ -72,7 +72,10 @@ class TestUpdateCheckGitGuard:
 
     def test_apply_rejects_non_git_checkout(self, monkeypatch, tmp_path):
         # POST /api/update on a tarball install must 409 with a clear
-        # "redeploy" message instead of running git status/pull and failing.
+        # "run `kirocrew update`" message instead of running git status/pull
+        # and failing. `kirocrew update` (unlike this endpoint) dispatches on
+        # install layout and handles wheel/cli.sh installs correctly, so it is
+        # the right redirect — see cli_server.py::_update().
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         def _boom(*a, **k):  # pragma: no cover - must not be called
@@ -85,7 +88,7 @@ class TestUpdateCheckGitGuard:
 
         resp = asyncio.run(updates.api_update_apply(_Req()))
         assert resp.status == 409
-        assert b"redeploy" in resp.body
+        assert b"kirocrew update" in resp.body
 
     def test_apply_refuses_a_diverged_checkout_before_pulling(self, monkeypatch, tmp_path):
         # The render-site guards only cover clients that ran a fresh check; a
