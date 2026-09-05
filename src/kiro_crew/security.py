@@ -2258,12 +2258,127 @@ def pinned_builtin_command_ids_for_snapshot() -> set[str]:
 # Exceptions are NOT applied when the input contains command separators
 # (;, &&, ||, |, newlines) to prevent chaining bypasses.
 #
-# Currently empty: the only former entry (``git stash push`` excepted from
-# ``*git*push*``) is obsolete now that git-publish is detected by a
-# verb-anchored regex that never matches ``git stash push`` in the first
-# place. The two-pass exception machinery in ``is_denied`` is retained as a
-# general mechanism for any future pattern that needs a scoped carve-out.
-_DENY_EXCEPTIONS: dict[str, list[str]] = {}
+# Scoped carve-out for INERT MENTIONS of a destructive literal (see #8802).
+#
+# A read-only search verb cannot execute its own operands, so a destructive
+# string handed to it as a pattern is text, not an action:
+#
+#     grep -rn "rm -rf /" tests/     <- searching FOR the rule, not running it
+#
+# Before this carve-out those were denied identically to the real command,
+# which prevented nothing (the same work completes by moving the payload into
+# a file, which is not scanned -- see the #2660 thread) while blocking anyone
+# working ON these rules, and surfaced to the agent as
+# ``User denied tool execution`` -- indistinguishable from a human cancelling.
+#
+# Two conditions make this safe, and BOTH are load-bearing -- an earlier
+# revision of this carve-out got each one wrong and re-allowed a real wipe:
+#
+#   1. The glob must be ANCHORED AT THE VERB. ``fnmatch`` is a full match but
+#      ``*`` crosses spaces, so a LEADING ``*`` is an unanchored substring
+#      test: ``*/grep *`` matches ``rm -rf / /bin/grep x`` -- a genuine
+#      root-wipe with a ``/grep `` fragment anywhere in its operand list --
+#      and would exonerate it. Only the bare ``<verb> *`` form is safe, because
+#      it forces the segment to BEGIN with the verb. Path-qualified
+#      invocations (``/usr/bin/grep ...``) are therefore NOT exonerated: a
+#      glob cannot express "the first token's basename is the verb", and
+#      losing a denial is a worse outcome than a search that still needs
+#      rewording.
+#
+#   2. The view must contain NO shell-active character at all, enforced by
+#      :func:`_exception_eligible`. An earlier revision blocklisted the opener
+#      it knew about (``(``) and was promptly defeated by the next one -- a
+#      bash 5.3 funsub, ``grep x ${ rm -rf /;}``, which the splitter cuts only
+#      at the ``;`` so the destructive command stays glued to the search verb.
+#      Enumerating opener SPELLINGS is the losing side of that game (#8074
+#      makes the same point about a spelling-based recognizer), so the guard is
+#      inverted: an eligible view may contain none of ``$`` ``(`` ``)`` ``{``
+#      ``}`` `` ` `` ``<`` ``>``. That covers command substitution, process
+#      substitution, funsubs, subshells and redirection as a CLASS rather than
+#      one opener at a time. Gating the EXCEPTION rather than widening
+#      ``_CMD_SPLIT_RE`` keeps the blast radius to this carve-out; the splitter
+#      feeds every other rule, which were measured against its behaviour.
+#
+# The verb list is confined to the ``grep`` family for the same reason. The
+# premise of this whole carve-out is that the verb CANNOT execute its operands,
+# and that is a property of the specific tool: ``rg --pre <cmd>`` runs a
+# preprocessor and ``ack --pager <cmd>`` runs a pager, so
+# ``rg --pre sh "rm -rf /tmp/victim" payload.sh`` really does execute. ``grep``
+# / ``egrep`` / ``fgrep`` have no flag that spawns a helper, so for them the
+# premise holds rather than merely being asserted.
+#
+# With all of this in force the chaining cases stay denied on the destructive
+# SEGMENT in Pass 2 (``grep "x" && <destructive>``); the Pass 1 whole-string
+# exception only ever defers to that pass.
+#
+# Because nothing in an eligible segment executes, whether the literal was
+# quoted is irrelevant -- so this needs no quote awareness, which is what keeps
+# it compatible with #7013 (quote-NORMALIZED matching, added to close evasion:
+# quoting must never exculpate a command that does run).
+#
+# Deliberately NOT included, pending the maintainer decision asked for on
+# #8802: ``echo``/``printf`` (inert to execute, but ``>`` is not a segment
+# separator, so an exoneration there also covers writing the string to a file)
+# and ``git commit -m`` (the arguable non-search verb).
+_INERT_SEARCH_VERBS = ("grep", "egrep", "fgrep")
+#: Verb-anchored ONLY -- see condition 1 above. A leading ``*`` here would be a
+#: bypass, not a convenience.
+_INERT_SEARCH_GLOBS: list[str] = [f"{verb} *" for verb in _INERT_SEARCH_VERBS]
+
+#: Any one of these in a view means it is not a single plain command: it can
+#: open a command, an expansion or a redirection, or chain to another command.
+#: An ALLOWLIST of inert text, not a blocklist of opener spellings -- see
+#: condition 2.  The separators are here for the PASS 1 view specifically: a
+#: Pass 2 segment never contains one (the splitter consumed it), but the
+#: whole-string view does, and an exception must not speak for a compound
+#: command whose later stage is an interpreter
+#: (``grep '<destructive>' payload.py | python``).
+_SHELL_ACTIVE_CHARS = frozenset("$`(){}<>|;&\n\r")
+
+
+def _exception_eligible(view: str) -> bool:
+    """Whether a deny-exception may be consulted for ``view`` at all.
+
+    An eligible view must be a SINGLE PLAIN COMMAND: no character from
+    :data:`_SHELL_ACTIVE_CHARS`, which covers command substitution, process
+    substitution, funsubs, subshells, redirection AND chaining.
+
+    Two independent reasons, each of which was a reachable bypass during review:
+
+    * ``_CMD_SPLIT_RE`` is not a complete execution-boundary oracle -- it does
+      not treat ``<(``, ``>(``, ``${`` or a bare ``(`` as a boundary -- so such a
+      construct stays glued INSIDE a segment instead of being isolated into its
+      own command position, and an exception keyed to the segment's leading verb
+      would exonerate the command hiding in it (``grep x <(rm -rf /tmp/v)``,
+      ``grep x ${ rm -rf /;}``).
+    * A pipeline's later stage can EXECUTE what the search emitted
+      (``grep '<destructive>' payload.py | python``).  The pipe is a splitter
+      boundary, so the Pass 2 grep segment looks innocent on its own; refusing
+      the separators here keeps the Pass 1 whole-string match denying outright
+      instead of deferring to that segment.
+
+    Deliberately a character-class test rather than a list of opener spellings:
+    the spelling list lost twice during review, once to ``<(`` and once to a
+    bash 5.3 funsub.
+
+    Fails CLOSED: an unrecognised construct means no exception, i.e. the deny
+    stands.  This gates only the exception path, so no other rule's matching
+    behaviour changes.
+    """
+    return not _SHELL_ACTIVE_CHARS.intersection(view)
+
+
+# Maps a deny pattern to the globs that exonerate it.  When an input matches
+# a deny pattern AND one of that pattern's exceptions, the deny is skipped.
+# This avoids a blanket allowlist that could bypass unrelated deny rules.
+#
+# Scoped to the two ``local-destructive`` rm rules: they are plain literal
+# strings, so they are the ones an ordinary search for their own subject
+# matter trips over.
+_DENY_EXCEPTIONS: dict[str, list[str]] = {
+    "rm -rf /.*": list(_INERT_SEARCH_GLOBS),
+    "rm -rf ~.*": list(_INERT_SEARCH_GLOBS),
+}
 
 # Used to *split* a command into independently-evaluatable segments.
 # Splits on every shell separator that can chain commands or carve out a
@@ -18203,8 +18318,10 @@ def is_denied(
     for pattern, is_regex in all_patterns:
         if _deny_pattern_matches(pattern, lower, is_regex):
             exceptions = _DENY_EXCEPTIONS.get(pattern, [])
-            whole_string_exception_match = exceptions and any(
-                fnmatch.fnmatch(lower, e.lower()) for e in exceptions
+            whole_string_exception_match = (
+                exceptions
+                and _exception_eligible(lower)
+                and any(fnmatch.fnmatch(lower, e.lower()) for e in exceptions)
             )
             if not whole_string_exception_match:
                 _emit_deny_event(tool_name, pattern, lower)
@@ -18265,7 +18382,11 @@ def is_denied(
             for pattern, is_regex in all_patterns:
                 if _deny_pattern_matches(pattern, view, is_regex):
                     exceptions = _DENY_EXCEPTIONS.get(pattern, [])
-                    if exceptions and any(fnmatch.fnmatch(view, e.lower()) for e in exceptions):
+                    if (
+                        exceptions
+                        and _exception_eligible(view)
+                        and any(fnmatch.fnmatch(view, e.lower()) for e in exceptions)
+                    ):
                         if not _emit_deny_exception_event(tool_name, pattern):
                             _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
                             return _reason(pattern)
