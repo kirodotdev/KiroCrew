@@ -297,7 +297,7 @@ jobs:
       # the same step in claude-review.yml -- keep the two lanes in sync.
       - name: Opus 4.8 discovery
         id: discover
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@fa2b2666b747000bf42767d1f332065b375e3c8f # v1
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -391,7 +391,7 @@ jobs:
       # unchanged.
       - name: Opus 4.8 validation
         id: review
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@fa2b2666b747000bf42767d1f332065b375e3c8f # v1
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
