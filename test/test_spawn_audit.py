@@ -204,6 +204,20 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
 BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
+        # The browser library probe. Fixed two-element argv `["ldd", <path>]`, no
+        # shell, no cwd. The path is never agent-influenced: it is enumerated by
+        # rglob under Playwright's own browser cache (a directory whose contents
+        # this product downloads from Playwright's CDN), so an agent cannot name
+        # the file probed, and a hostile FILE NAME cannot become a command
+        # because argv is a list. It reads only the ELF headers of files already
+        # on disk and mutates nothing. Routing it through sandboxed_spawn_argv
+        # would defeat its purpose: the probe exists to answer whether this HOST
+        # can resolve the browser's libraries, and a sandbox with a scrubbed
+        # environment would answer for the sandbox instead -- LD_LIBRARY_PATH is
+        # the one input that must survive to the child (see
+        # os_deps._library_search_dirs, without which a working firefox reports
+        # ten missing libraries).
+        "browser_cli/os_deps.py::missing_shared_libraries",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent

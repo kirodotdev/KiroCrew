@@ -702,6 +702,62 @@ def _step(
     }
 
 
+def _engine_cache_dirs(engine: str) -> list[Path]:
+    """Cache directories holding builds for *engine*.
+
+    Prefix-matched rather than composed from a revision, so the CHROMIUM entry
+    also picks up ``chromium_headless_shell-<rev>``. That is not a bonus: headless
+    is the default launch mode, so the headless shell is the binary a browse
+    actually starts, and a library check that looked only at ``chromium-<rev>``
+    would clear the build that is not the one being run.
+    """
+    cache = _browsers_cache_dir()
+    if cache is None:
+        return []
+    try:
+        return [
+            child
+            for child in cache.iterdir()
+            if child.is_dir() and child.name.startswith(engine)
+        ]
+    except OSError:
+        return []
+
+
+def _verify_browser_libraries(engine: str) -> dict[str, Any] | None:
+    """Step reporting that *engine*'s downloaded build cannot resolve its libraries.
+
+    ``None`` when there is nothing to report -- no missing library, or the probe
+    could not run (see :func:`os_deps.missing_shared_libraries`). An unknown must
+    not fail an install: the browser download itself needs no privilege, and
+    turning "could not check" into "broken" would withdraw a working browser.
+
+    A step of its own rather than flipping the download's verdict, because the
+    download genuinely SUCCEEDED. Labelling it failed would send the operator to
+    re-download bytes that are already on disk, when what they need is root and a
+    package manager.
+    """
+    missing = os_deps.missing_shared_libraries(_engine_cache_dirs(engine))
+    if not missing:
+        return None
+    listed = ", ".join(sorted(missing))
+    hint = os_deps.missing_deps_hint()
+    detail = (
+        f"{engine} downloaded, but {len(missing)} shared "
+        f"librar{'y' if len(missing) == 1 else 'ies'} cannot be resolved on this "
+        f"host, so the browser cannot launch: {listed}"
+    )
+    return {
+        "name": f"verify-browser-libraries-{engine}",
+        "ok": False,
+        # Nothing exited non-zero -- the download really did succeed. Reported
+        # honestly rather than borrowing a failure code from a process that
+        # never ran.
+        "returncode": 0,
+        "stderr": f"{detail}\n\n{hint}" if hint else detail,
+    }
+
+
 def _download_browser(path: str, engine: str | None = None) -> list[dict[str, Any]]:
     """Download a browser build, adapting to what this host's OS allows.
 
@@ -718,7 +774,10 @@ def _download_browser(path: str, engine: str | None = None) -> list[dict[str, An
     tried instead of only the last verdict.
 
     Every attempt is judged on its output as well as its exit code: a build whose
-    libraries are missing downloads "successfully" and cannot launch.
+    libraries are missing downloads "successfully" and cannot launch. That check
+    is not sufficient by itself either -- Playwright's validation false-negatives
+    on linux-arm64 -- so a successful download is FOLLOWED by a real library
+    probe (:func:`_verify_browser_libraries`).
     """
     selected_engine = engine or _DEFAULT_BROWSER_ENGINE
     base = [path, "install-browser", selected_engine]
@@ -736,13 +795,20 @@ def _download_browser(path: str, engine: str | None = None) -> list[dict[str, An
             failure_signal=os_deps.host_deps_unsatisfied,
         )
 
+    def with_library_check(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Append the library verdict when the download succeeded."""
+        if not steps[-1]["ok"]:
+            return steps
+        verdict = _verify_browser_libraries(selected_engine)
+        return steps if verdict is None else [*steps, verdict]
+
     if not os_deps.with_deps_supported():
-        return [attempt(f"install-browser{suffix}", base, True)]
+        return with_library_check([attempt(f"install-browser{suffix}", base, True)])
 
     first = attempt(f"install-browser{suffix}", base + ["--with-deps"], False)
     if first["ok"]:
-        return [first]
-    return [first, attempt(f"install-browser{suffix}-no-deps", base, True)]
+        return with_library_check([first])
+    return with_library_check([first, attempt(f"install-browser{suffix}-no-deps", base, True)])
 
 
 def install() -> dict[str, Any]:

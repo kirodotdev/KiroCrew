@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import subprocess
 
 import pytest
 
@@ -205,3 +206,117 @@ class TestTheHostValidationWarningIsAFailure:
 
     def test_none_is_tolerated(self):
         assert mod.host_deps_unsatisfied(None) is False  # type: ignore[arg-type]
+
+
+class TestMissingSharedLibrariesDoesNotTrustPlaywright:
+    """The probe that exists because Playwright's own validation false-negatives.
+
+    MEASURED on Amazon Linux 2023 arm64: Playwright's registry declares the scan
+    directory as ``chrome-linux`` while the arm64 build unpacks into
+    ``chrome-linux-arm64``, so it scans a non-existent path, finds nothing, calls
+    the host good and writes ``DEPENDENCIES_VALIDATED`` -- 23 minutes BEFORE the
+    libraries were installed. That marker then suppresses re-validation for 30
+    days. So this probe reads real files and never hardcodes a build subdirectory.
+    """
+
+    @staticmethod
+    def _browser_dir(tmp_path, name: str = "chrome-linux-arm64"):
+        """A build laid out under a subdirectory Playwright's constant does NOT name."""
+        d = tmp_path / "chromium-1243" / name
+        d.mkdir(parents=True)
+        binary = d / "chrome"
+        binary.write_bytes(b"\x7fELF fake")
+        binary.chmod(0o755)
+        return tmp_path / "chromium-1243"
+
+    def test_missing_sonames_are_reported(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        browser = self._browser_dir(tmp_path)
+
+        def fake_run(argv, **kwargs):
+            assert argv[0] == "ldd"
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout=(
+                    "\tlinux-vdso.so.1 (0x0000ffff)\n"
+                    "\tlibatk-1.0.so.0 => not found\n"
+                    "\tlibgbm.so.1 => not found\n"
+                    "\tlibc.so.6 => /lib64/libc.so.6 (0x0000ffff)\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        assert mod.missing_shared_libraries([browser]) == {"libatk-1.0.so.0", "libgbm.so.1"}
+
+    def test_a_resolvable_build_reports_empty_not_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        """Empty and ``None`` are different answers and callers branch on both."""
+        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        browser = self._browser_dir(tmp_path)
+        monkeypatch.setattr(
+            mod.subprocess,
+            "run",
+            lambda argv, **kw: subprocess.CompletedProcess(
+                argv, 0, stdout="\tlibc.so.6 => /lib64/libc.so.6\n", stderr=""
+            ),
+        )
+
+        assert mod.missing_shared_libraries([browser]) == set()
+
+    def test_an_unprobeable_host_answers_unknown_rather_than_clean(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        """No ``ldd`` on the host must not read as "no libraries missing".
+
+        Returning an empty set here would let a broken browser through as
+        verified -- the exact false-negative shape this probe replaces.
+        """
+        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        browser = self._browser_dir(tmp_path)
+
+        def no_ldd(argv, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory: 'ldd'")
+
+        monkeypatch.setattr(mod.subprocess, "run", no_ldd)
+
+        assert mod.missing_shared_libraries([browser]) is None
+
+    def test_off_linux_is_unknown(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        monkeypatch.setattr(platform_compat, "IS_LINUX", False)
+        assert mod.missing_shared_libraries([self._browser_dir(tmp_path)]) is None
+
+    def test_an_absent_directory_is_unknown(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        assert mod.missing_shared_libraries([tmp_path / "never-downloaded"]) is None
+
+    def test_the_main_executable_is_probed_before_satellites(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        """Ordering is load-bearing when the file ceiling truncates.
+
+        Without it the ceiling drops an arbitrary subset, which is how a check
+        reports a clean host for a browser whose main binary was never examined.
+        """
+        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        root = tmp_path / "chromium-1243"
+        deep = root / "chrome-linux-arm64" / "swiftshader"
+        deep.mkdir(parents=True)
+        (deep / "libGLESv2.so").write_bytes(b"\x7fELF")
+        main = root / "chrome-linux-arm64" / "chrome"
+        main.write_bytes(b"\x7fELF")
+        main.chmod(0o755)
+
+        probed: list[str] = []
+
+        def record(argv, **kwargs):
+            probed.append(argv[1])
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", record)
+        mod.missing_shared_libraries([root])
+
+        assert probed[0] == str(main)
