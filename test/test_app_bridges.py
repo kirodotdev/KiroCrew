@@ -2335,6 +2335,7 @@ class TestCronServiceBridge:
             enabled=True,
             timezone="America/New_York",
             skip_dates=["2026-12-25"],
+            folder_id="",
         )
 
     def test_cron_without_timezone_passes_the_empty_sentinel(
@@ -2510,6 +2511,7 @@ class TestCronServiceBridge:
             enabled=True,
             timezone="",
             skip_dates=None,
+            folder_id="",
         )
 
     def test_rejects_malicious_command(self, tmp_path, app_env, monkeypatch):

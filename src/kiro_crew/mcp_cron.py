@@ -38,6 +38,7 @@ from kiro_crew.cron import (
     get_local_tz,
     is_valid_skip_date,
     is_valid_timezone,
+    lookup_cron_folder_id,
 )
 from kiro_crew.cron_script import (
     compute_secret_env_pin,
@@ -48,6 +49,7 @@ from kiro_crew.cron_script import (
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_core import (
+    _post,
     _resolve_session_key,
     require_strict_session_key,
     strict_identity_diagnosis,
@@ -936,6 +938,52 @@ def _log_cron_denial(tool_name: str, error: str) -> None:
         logger.debug("SEL logging failed for cron denial", exc_info=True)
 
 
+_CRON_FOLDER_ID_RE = re.compile(r"[0-9a-f]{8}")
+
+
+def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str | None]:
+    """Resolve a cron-folder reference (id or name) to a folder id, creating it.
+
+    Returns ``(folder_id, error)``; ``""`` with no error means ungrouped (empty
+    reference). The matching itself is ``cron.lookup_cron_folder_id`` — one
+    implementation of "empty / exact id / case-insensitive name / refuse an
+    ambiguous name", so the MCP tool and the CLI can never drift on which
+    folder a reference means. Only the two legs the read-only resolver
+    deliberately lacks live here, and both hang off ``missing``:
+
+    * An id-SHAPED reference that matched nothing is REFUSED rather than
+      created: folder ids are minted server-side, so a folder literally named
+      after a hex id is never what the caller meant (same contract as the chat
+      sidebar-folder resolver).
+    * A missing NAME is created through ``POST /api/cron-folders`` — the
+      dashboard's own endpoint — so the create happens under the same lock and
+      lands in the same in-memory list as a Schedule-page create; appending to
+      ``cron_folders.json`` directly from this process would be clobbered by
+      the dashboard's next wholesale save of its own list.
+
+    Any non-missing error is passed through untouched: an ambiguous name must
+    stay a refusal here too, never a second folder with the same name.
+    """
+    ref = str(ref or "").strip()
+    if not ref:
+        return "", None
+    found = lookup_cron_folder_id(ref)
+    if not found.missing:
+        return found.folder_id, (redact(found.error) if found.error else None)
+    if _CRON_FOLDER_ID_RE.fullmatch(ref):
+        return "", (
+            f"cron folder not found: {redact(ref)} — folder ids are minted "
+            "server-side; pass a folder name to create one"
+        )
+    made = _post("/api/cron-folders", {"name": ref}, session_key=session_key)
+    if made.get("error"):
+        return "", f"could not create cron folder {redact(ref)}: {made['error']}"
+    fid = str(made.get("id") or "")
+    if not fid:
+        return "", f"could not create cron folder {redact(ref)}: no id returned"
+    return fid, None
+
+
 def _parse_time_string(s: str) -> float | str:
     """Parse a human time string into a Unix timestamp. Returns error string on failure."""
     s = s.strip()
@@ -1111,6 +1159,12 @@ def _list_tools() -> list[dict[str, Any]]:
                         "interpreted in this timezone. Falls back to global config timezone, "
                         "then UTC.",
                     },
+                    "folder": {
+                        "type": "string",
+                        "description": "Schedule-page folder to file this job in, by name or "
+                        "id (e.g. 'Veille'). A missing name is created. Empty or omitted "
+                        "leaves the job ungrouped.",
+                    },
                     "persistent_session": {
                         "type": "boolean",
                         "description": "Whether this cron reuses one agent session across "
@@ -1204,6 +1258,12 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                     "agent": {"type": "string", "description": "New agent name"},
                     "channel": {"type": "string", "description": "New channel ID"},
+                    "folder": {
+                        "type": "string",
+                        "description": "Move the job to this Schedule-page folder, by name "
+                        "or id. A missing name is created. Empty string moves the job out "
+                        "of its folder (ungrouped).",
+                    },
                     "thread_ts": {
                         "type": "string",
                         "description": "New thread timestamp to reply in.",
@@ -1927,6 +1987,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         strict_schedule = args.get("strict_schedule")
         timeout_val = args.get("timeout", 0)
         timeout_secs_val = args.get("timeout_secs", 0)
+        # Resolve the folder BEFORE add_job so an unresolvable reference never
+        # leaves an orphaned job behind (same position as the model check
+        # above). A folder auto-created here that a subsequent add_job failure
+        # strands is benign: an empty folder, removable from the Schedule page.
+        folder_id = ""
+        if args.get("folder"):
+            folder_id, folder_err = _resolve_cron_folder(args["folder"], session_key=session_key)
+            if folder_err:
+                return f"Error: {folder_err}"
         try:
             job = svc.add_job(
                 name=n,
@@ -1945,6 +2014,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 silent=bool(silent),
                 strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
                 hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
+                folder_id=folder_id,
                 command=command or "",
                 script=script or "",
                 persistent_session=(
@@ -2007,6 +2077,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             kwargs["timezone"] = tz_val
         if "strict_schedule" in args:
             kwargs["strict_schedule"] = args["strict_schedule"]
+        if "folder" in args:
+            # "" resolves to "" (ungrouped) with no error, so an explicit empty
+            # string moves the job out of its folder.
+            fid, folder_err = _resolve_cron_folder(
+                args["folder"], session_key=_authz_session_key()
+            )
+            if folder_err:
+                return f"Error: {folder_err}"
+            kwargs["folder_id"] = fid
         if "persistent_session" in args:
             kwargs["persistent_session"] = args["persistent_session"]
         if "minimal_context" in args:

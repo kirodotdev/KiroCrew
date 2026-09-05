@@ -56,7 +56,13 @@ from kiro_crew.config.loader import (
     read_local_secret,
     update_config_locked,
 )
-from kiro_crew.cron import CronSchedule, CronService, CronStoreUnreadable, format_schedule
+from kiro_crew.cron import (
+    CronSchedule,
+    CronService,
+    CronStoreUnreadable,
+    format_schedule,
+    lookup_cron_folder_id,
+)
 from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.origin import parse_dashboard_url
@@ -1110,6 +1116,19 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         approval_mode = getattr(args, "approval_mode", "") or ""
         agent = (getattr(args, "agent", "") or "").strip()
         silent = getattr(args, "silent", False)
+        folder_ref = (getattr(args, "folder", "") or "").strip()
+        # Resolve BEFORE add_job so a typo'd folder never leaves an orphaned
+        # job behind. Existing folders only: cron_folders.json is owned by the
+        # dashboard (its state rewrites the file wholesale), so a CLI-side
+        # create could be silently clobbered by the next Schedule-page folder
+        # operation.
+        folder_id = ""
+        if folder_ref:
+            found = lookup_cron_folder_id(folder_ref)
+            if found.error:
+                print(f"Error: {found.error}", file=sys.stderr)
+                sys.exit(1)
+            folder_id = found.folder_id
         if agent and not _AGENT_NAME_RE.match(agent):
             print(
                 "Error: invalid agent name (alphanumeric, hyphens, underscores; 1-64 chars)",
@@ -1128,6 +1147,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 cron_expr=cron_expr,
                 channel=channel,
                 approval_mode=approval_mode,
+                folder_id=folder_id,
             )
         elif every:
             job = svc.add_job(
@@ -1136,6 +1156,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 every_secs=every,
                 channel=channel,
                 approval_mode=approval_mode,
+                folder_id=folder_id,
             )
         else:
             print("Provide --every or --cron")

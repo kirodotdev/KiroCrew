@@ -46,7 +46,7 @@ from kiro_crew.config.loader import (
     schedule_materialized_agents_refresh,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
+from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, lookup_cron_folder_id
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
@@ -1405,6 +1405,7 @@ def _cron_defs_from_manifest(
                 "enabled": cron.enabled,
                 "timezone": cron.timezone,
                 "skip_dates": cron.skip_dates,
+                "folder": cron.folder,
             }
         )
         registered.append(namespaced)
@@ -1587,6 +1588,26 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 )
                 continue
         try:
+            # Resolve the manifest's folder NAME against existing Schedule-page
+            # folders (read-only: cron_folders.json is dashboard-owned and
+            # rewritten wholesale by its state, so creating from here could be
+            # silently clobbered). An unresolved folder degrades to ungrouped
+            # with a logged warning rather than failing the app's enable — the
+            # job matters more than its grouping, and the next enable re-files
+            # it once the folder exists.
+            folder_id = ""
+            folder_ref = d.get("folder") or ""
+            if folder_ref:
+                # Off-loop: the lookup reads and JSON-parses cron_folders.json,
+                # and this coroutine is awaited on the gateway loop (app enable,
+                # gateway startup), so a large or slow-to-read file would stall
+                # every request and the heartbeat with it.
+                found = await asyncio.to_thread(lookup_cron_folder_id, folder_ref)
+                folder_id = found.folder_id
+                if found.error:
+                    logger.warning(
+                        "App %s: cron %r registered ungrouped: %s", app_name, name, found.error
+                    )
             # Atomic add-if-absent: the name check and the append happen under
             # one store lock (fresh _sync first), so a CLI enable racing the
             # gateway's own registration cannot persist duplicate jobs. The
@@ -1611,6 +1632,7 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 # second write after the job already exists.
                 timezone=d.get("timezone") or "",
                 skip_dates=d.get("skip_dates") or None,
+                folder_id=folder_id,
             )
             if job is None:
                 # Lost the race (or already present): another registrar

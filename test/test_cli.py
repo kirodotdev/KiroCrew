@@ -620,6 +620,7 @@ class TestCronCli:
                 every_secs=300,
                 channel="C0AP77JJSN6",
                 approval_mode="",
+                folder_id="",
             )
 
     def test_cron_add_with_cron_expr_and_channel(self, tmp_path):
@@ -654,6 +655,7 @@ class TestCronCli:
                 cron_expr="0 9 * * 1-5",
                 channel="C0APAPQ5GSY",
                 approval_mode="",
+                folder_id="",
             )
 
     def test_cron_add_with_approval_mode(self, tmp_path):
@@ -688,6 +690,7 @@ class TestCronCli:
                 every_secs=600,
                 channel=None,
                 approval_mode="auto",
+                folder_id="",
             )
             mock_sel.return_value.log_api_access.assert_called_once_with(
                 caller="cli",
@@ -729,6 +732,7 @@ class TestCronCli:
                 every_secs=300,
                 channel=None,
                 approval_mode="",
+                folder_id="",
             )
             # silent is set via post-create mutation, mirroring agent_id
             assert mock_job.silent is True
@@ -866,6 +870,7 @@ class TestCronCli:
                 every_secs=600,
                 channel=None,
                 approval_mode="",
+                folder_id="",
             )
             assert mock_job.agent_id == "customer360-code-agent"
             mock_svc._save.assert_called_once()
@@ -907,6 +912,7 @@ class TestCronCli:
                 cron_expr="0 9 * * 1-5",
                 channel=None,
                 approval_mode="",
+                folder_id="",
             )
             assert mock_job.agent_id == "ea-briefing"
             mock_svc._save.assert_called_once()
