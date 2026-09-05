@@ -3110,6 +3110,84 @@ async def _reset_slot_session(
     return reloaded
 
 
+# Advisory response field for a committed switch whose old-session teardown
+# raised. One literal shared by every switch handler (agent, reasoning effort,
+# model, workspace) so a frontend that ever starts reading it never has to
+# match per-handler spellings.
+_TEARDOWN_INCOMPLETE_WARNING = "old session teardown incomplete"
+
+
+async def _reset_slot_session_or_warn(
+    state: DashboardState,
+    slot: _ChatSlot,
+    session_key: str,
+    *,
+    switch_kind: str,
+) -> bool | None:
+    """:func:`_reset_slot_session` for the commit-before-reset switch handlers.
+
+    Returns the reset verdict, or ``None`` when the teardown RAISED after the
+    session pop. The model and workspace handlers commit the new setting
+    BEFORE this await, and ``SessionManager.reset`` pops the session before
+    its shutdown can fail, so a post-pop raise is a success with a degraded
+    teardown — the committed value is what every replacement session runs.
+    That premise is VERIFIED, not assumed: a raise with the SAME provider
+    instance still registered (a pre-pop failure, e.g. in the pending-wait
+    unblock) is re-raised, because the old session then survives on the old
+    value and a 200 would be a false success. Identity, not presence: a
+    successor session registered by a concurrent send after the pop must not
+    be misclassified as the unpopped old one. Propagating a post-pop raise
+    instead would answer 500 without ever reaching
+    ``state.push_slots_update()``, leaving every
+    connected client rendering the OLD value over a switch that actually
+    happened (the acting tab's ``performSlotSwitch`` also keeps its old store
+    value on a non-2xx). ``None`` tells the caller to record the degraded
+    teardown and FALL THROUGH — its rebind guard (``effective_session_key``)
+    must still run, so a slot rebound during the raising await keeps answering
+    rollback + 409 — and then answer 200 with
+    :data:`_TEARDOWN_INCOMPLETE_WARNING` after the usual slots push. This is
+    the agent and reasoning-effort handlers' precedent, shared here so the
+    model and workspace handlers' four call sites (first attempt +
+    idle-decline retry each) do not repeat the try block. Only the raise path
+    is new: a normal ``bool`` verdict passes through untouched, so the decline
+    (``False``) ladders keep their semantics.
+
+    ``skip_if_busy`` is fixed at True because every caller is a switch handler
+    whose destructive fallback must decline atomically against a slipped-in
+    turn (their shared invariant); a caller that wants propagation keeps using
+    :func:`_reset_slot_session` directly.
+    """
+    # Captured BEFORE the await: the post-raise probe must compare INSTANCE
+    # IDENTITY, not mere presence. A concurrent send can register a SUCCESSOR
+    # session for the same key after the pop and before the old session's
+    # shutdown raises — a bare "is a provider registered?" probe would
+    # misclassify that successor as the unpopped old session and answer 500
+    # for a committed switch (GPT review finding on 295817e70). The successor
+    # cold-started from the slot's CURRENT (committed) bindings, so the
+    # committed-success answer is truthful for it.
+    prior_provider = state.sessions.get_provider(session_key)
+    try:
+        return await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
+    except Exception:
+        if (
+            prior_provider is not None
+            and state.sessions.get_provider(session_key) is prior_provider
+        ):
+            # The SAME instance is still registered: the raise came BEFORE the
+            # session pop (e.g. the pending-wait unblock that
+            # _reset_slot_session runs first), so the old session is still
+            # alive on the old value and a 200 here would be exactly the false
+            # success the switch handlers' decline ladders treat as worse than
+            # any retryable error. Propagate — a pre-pop failure keeps the
+            # pre-#8598 semantics (Opus review finding: the committed-switch
+            # answer is only truthful once the pop has happened).
+            raise
+        logger.exception(
+            "Slot %s %s switch: old session teardown incomplete", slot.key, switch_kind
+        )
+        return None
+
+
 def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
     """Update the in-flight stop_event message in place with final state."""
     stop_id = slot._stop_event_id
@@ -5496,7 +5574,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     if teardown_incomplete:
         # Advisory only — the switch itself succeeded and the response
         # carries the committed state the acting tab writes optimistically.
-        resp_body["warning"] = "old session teardown incomplete"
+        resp_body["warning"] = _TEARDOWN_INCOMPLETE_WARNING
     return web.json_response(resp_body)
 
 
@@ -5864,6 +5942,10 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                 return str(raw or "").strip() == wire
             return False
 
+        # Set on the reset path when the old session's teardown RAISED after
+        # the pop: the switch is committed, the response carries an advisory
+        # warning (agent-handler precedent via _reset_slot_session_or_warn).
+        teardown_incomplete = False
         try:
             went_live = await _try_live_model_switch(name, slot, provider, model_name)
         except AcpModelUnavailable as exc:
@@ -5950,8 +6032,21 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             # authoritative-backstop split api_chat_slot_reload documents), so
             # a turn that slipped into the window is declined here instead of
             # torn down mid-stream.
-            reset_ok = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
-            if not reset_ok:
+            reset_ok = await _reset_slot_session_or_warn(
+                state, slot, session_key, switch_kind="model"
+            )
+            if reset_ok is None:
+                # Teardown raised after the session pop: the switch is
+                # COMMITTED (see _reset_slot_session_or_warn), so the answer
+                # is the committed state with an advisory warning — never a
+                # 500 that strands clients on the old value. Deliberately no
+                # _rollback_pick(): rollback is only for the decline/409
+                # paths, where nothing was torn down. NOT an early return:
+                # the rebind guard below must still run (GPT review finding),
+                # so a slot rebound during the raising await answers the same
+                # rollback + 409 as any other rebind.
+                teardown_incomplete = True
+            elif not reset_ok:
                 # Disambiguate the decline FAIL-CLOSED — with one truth-based
                 # exception checked first. Provider identity or registration
                 # time cannot prove which model a live session runs: dispatch
@@ -5994,10 +6089,15 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                     # (api_chat_slot_reload's template for this exact race); a
                     # second decline means another turn is genuinely racing,
                     # which is the turn-in-flight case again.
-                    reset_ok = await _reset_slot_session(
-                        state, slot, session_key, skip_if_busy=True
+                    reset_ok = await _reset_slot_session_or_warn(
+                        state, slot, session_key, switch_kind="model"
                     )
-                    if not reset_ok:
+                    if reset_ok is None:
+                        # Retry teardown raised: same committed-switch answer
+                        # as the first attempt, and same fall-through to the
+                        # rebind guard below.
+                        teardown_incomplete = True
+                    elif not reset_ok:
                         _rollback_pick()
                         return web.json_response(
                             {"error": "a turn is in flight", "code": "turn_in_flight"},
@@ -6024,7 +6124,12 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                 )
             _broadcast_context_reset(state, slot.key, None)
     state.push_slots_update()
-    return web.json_response({"ok": True, "model": model_name})
+    model_resp: dict = {"ok": True, "model": model_name}
+    if teardown_incomplete:
+        # Advisory only — the switch itself succeeded and the response
+        # carries the committed state (agent-handler precedent).
+        model_resp["warning"] = _TEARDOWN_INCOMPLETE_WARNING
+    return web.json_response(model_resp)
 
 
 # Per-slot transaction locks for the autocompact endpoint. The write span
@@ -6599,7 +6704,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     {
                         "ok": True,
                         "reasoning_effort": effort,
-                        "warning": "old session teardown incomplete",
+                        "warning": _TEARDOWN_INCOMPLETE_WARNING,
                     }
                 )
         # Live-update and deferral paths commit here (the reset path already
@@ -6772,8 +6877,25 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         # atomically with the session pop (the authoritative backstop
         # api_chat_slot_reload documents), so the slipped-in turn is declined
         # here instead of torn down mid-stream.
-        reset_ok = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
-        if not reset_ok:
+        # Set when the old session's teardown RAISED after the pop: the
+        # switch is committed, the response carries an advisory warning
+        # (agent-handler precedent via _reset_slot_session_or_warn).
+        teardown_incomplete = False
+        reset_ok = await _reset_slot_session_or_warn(
+            state, slot, session_key, switch_kind="workspace"
+        )
+        if reset_ok is None:
+            # Teardown raised after the session pop: the switch is COMMITTED
+            # (see _reset_slot_session_or_warn), so the answer is the
+            # committed state with an advisory warning — never a 500 that
+            # strands clients on the old bindings. Deliberately no rollback
+            # of slot.workspace/slot.project: rollback is only for the
+            # decline/409 paths, where nothing was torn down. NOT an early
+            # return: the rebind guard below must still run (GPT review
+            # finding), so a slot rebound during the raising await answers
+            # the same rollback + 409 as any other rebind.
+            teardown_incomplete = True
+        elif not reset_ok:
             # Disambiguate FAIL-CLOSED, same as the model handler: dispatch
             # captures the slot bindings at its call site but registers the
             # session only after a multi-second provider.start(), so no
@@ -6812,8 +6934,15 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 # session is always safe, so retry once
                 # (api_chat_slot_reload's template); a second decline means
                 # another turn is genuinely racing.
-                reset_ok = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
-                if not reset_ok:
+                reset_ok = await _reset_slot_session_or_warn(
+                    state, slot, session_key, switch_kind="workspace"
+                )
+                if reset_ok is None:
+                    # Retry teardown raised: same committed-switch answer as
+                    # the first attempt, and same fall-through to the rebind
+                    # guard below.
+                    teardown_incomplete = True
+                elif not reset_ok:
                     slot.workspace = prior_workspace
                     slot.project = prior_project
                     return web.json_response(
@@ -6834,7 +6963,12 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 status=409,
             )
     state.push_slots_update()
-    return web.json_response({"ok": True, "workspace": ws_name})
+    ws_resp: dict = {"ok": True, "workspace": ws_name}
+    if teardown_incomplete:
+        # Advisory only — the switch itself succeeded and the response
+        # carries the committed state (agent-handler precedent).
+        ws_resp["warning"] = _TEARDOWN_INCOMPLETE_WARNING
+    return web.json_response(ws_resp)
 
 
 async def api_chat_slot_project(request: web.Request) -> web.Response:

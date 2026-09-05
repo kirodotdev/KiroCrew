@@ -330,10 +330,11 @@ class TestSlotModelSwitchAtomicity:
         state = _mock_state(slot)
         newborn = MagicMock(spec=LLMProvider)
         newborn.has_active_turn.return_value = True
-        # Pre-check and the last-instant pre-reset re-check see no provider;
-        # the post-decline re-read sees the session a slipped-in send
-        # registered after the commit.
-        state.sessions.get_provider = MagicMock(side_effect=[None, None, newborn])
+        # Pre-check, the last-instant pre-reset re-check, and the reset
+        # helper's pre-await identity snapshot all see no provider; the
+        # post-decline re-read sees the session a slipped-in send registered
+        # after the commit.
+        state.sessions.get_provider = MagicMock(side_effect=[None, None, None, newborn])
         state.sessions.reset = AsyncMock(return_value=False)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
@@ -394,6 +395,143 @@ class TestSlotModelSwitchAtomicity:
             assert resp.status == 200
             assert slot.model == _MODEL_B
             state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_raise_answers_200_with_warning_and_pushes(self):
+        # A teardown that RAISES (#8598): SessionManager.reset pops the
+        # session before its shutdown can fail, so the switch is COMMITTED
+        # regardless — the handler must answer 200 with the committed model
+        # plus an advisory warning and still push the slots update. The old
+        # unwrapped await propagated a 500 that never reached
+        # push_slots_update, stranding every connected client on the OLD
+        # value while the slot already carried the new one.
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(side_effect=RuntimeError("shutdown boom"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["ok"] is True
+            assert data["model"] == _MODEL_B
+            assert data["warning"] == "old session teardown incomplete"
+            assert slot.model == _MODEL_B
+            state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_retry_raise_answers_200_with_warning_and_pushes(self):
+        # The idle-decline RETRY can raise too (#8598): first reset declined
+        # (idle live session), the retry's teardown throws. Same
+        # committed-switch answer as the first attempt — 200 + warning +
+        # slots push, no rollback to the old model.
+        from kiro_crew.providers.base import LLMProvider
+
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        state = _mock_state(slot)
+        stale = MagicMock(spec=LLMProvider)
+        stale.has_active_turn.return_value = False
+        state.sessions.get_provider = MagicMock(return_value=stale)
+        calls = {"n": 0}
+
+        async def _decline_then_pop_and_raise(*_a, **_k):
+            if calls["n"] == 0:
+                calls["n"] += 1
+                return False
+            # The retry pops the session BEFORE its shutdown raises, so the
+            # helper's post-pop probe sees no registered provider.
+            state.sessions.get_provider = MagicMock(return_value=None)
+            raise RuntimeError("shutdown boom")
+
+        state.sessions.reset = AsyncMock(side_effect=_decline_then_pop_and_raise)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["ok"] is True
+            assert data["model"] == _MODEL_B
+            assert data["warning"] == "old session teardown incomplete"
+            assert slot.model == _MODEL_B
+            assert state.sessions.reset.await_count == 2
+            state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_raise_before_pop_propagates(self):
+        # A raise with the session STILL REGISTERED came before the pop: the
+        # old session survives on the old model, so a 200 would be the false
+        # success the decline ladders treat as worse than any retryable
+        # error. The helper re-raises (pre-#8598 semantics) instead of
+        # answering a committed-switch success it cannot vouch for.
+        from kiro_crew.providers.base import LLMProvider
+
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        state = _mock_state(slot)
+        alive = MagicMock(spec=LLMProvider)
+        alive.has_active_turn.return_value = False
+        state.sessions.get_provider = MagicMock(return_value=alive)
+        state.sessions.reset = AsyncMock(side_effect=RuntimeError("pre-pop boom"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
+            assert resp.status == 500
+            state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reset_raise_with_successor_session_still_succeeds(self):
+        # A concurrent send can register a SUCCESSOR session for the same key
+        # after the pop and before the old session's shutdown raises (server
+        # GPT lane finding on 295817e70): the probe compares instance
+        # IDENTITY, so a different registered provider is NOT the unpopped
+        # old session — the switch is committed, the successor cold-started
+        # from the committed bindings, and the answer is 200 + warning.
+        from kiro_crew.providers.base import LLMProvider
+
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        old = MagicMock(spec=LLMProvider)
+        old.has_active_turn.return_value = False
+        state = _mock_state(slot, provider=old)
+
+        async def _pop_register_successor_and_raise(*_a, **_k):
+            successor = MagicMock(spec=LLMProvider)
+            successor.has_active_turn.return_value = False
+            state.sessions.get_provider = MagicMock(return_value=successor)
+            raise RuntimeError("shutdown boom")
+
+        state.sessions.reset = AsyncMock(side_effect=_pop_register_successor_and_raise)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["ok"] is True
+            assert data["model"] == _MODEL_B
+            assert data["warning"] == "old session teardown incomplete"
+            assert slot.model == _MODEL_B
+            state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rebind_during_raising_reset_rolls_back_to_409(self):
+        # The teardown-raise path must NOT bypass the rebind guard (GPT
+        # review finding on the #8598 fix): a slot rebound while the raising
+        # reset awaited answers the same rollback + 409 as any other rebind —
+        # never a 200 that advertises the committed model over a newly bound
+        # session that never saw the switch.
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        state = _mock_state(slot, provider=None)
+
+        async def _rebind_and_raise(*_a, **_k):
+            slot.linked_session_key = "cron:job-1"
+            raise RuntimeError("shutdown boom")
+
+        state.sessions.reset = AsyncMock(side_effect=_rebind_and_raise)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "session_rebound"
+            assert slot.model == _MODEL_A
 
     @pytest.mark.asyncio
     async def test_attached_subagents_refuse_the_reset_and_roll_back(self):
@@ -742,6 +880,90 @@ class TestSlotWorkspaceSwitchAtomicity:
             resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
             assert resp.status == 200
             assert seen_during_reset == [("new-ws", "/workspace/new-ws")]
+
+    @pytest.mark.asyncio
+    async def test_reset_raise_answers_200_with_warning_and_pushes(self):
+        # A teardown that RAISES (#8598): the workspace/project pair is
+        # committed before the reset and SessionManager.reset pops the
+        # session before its shutdown can fail, so the handler must answer
+        # 200 with the committed workspace plus an advisory warning and still
+        # push the slots update — never a 500 that strands clients on the old
+        # bindings.
+        slot = _ChatSlot("test")
+        slot.workspace = "old-ws"
+        slot.project = "/workspace/old-ws"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(side_effect=RuntimeError("shutdown boom"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["ok"] is True
+            assert data["workspace"] == "new-ws"
+            assert data["warning"] == "old session teardown incomplete"
+            assert slot.workspace == "new-ws"
+            assert slot.project == "/workspace/new-ws"
+            state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_retry_raise_answers_200_with_warning_and_pushes(self):
+        # The idle-decline RETRY can raise too (#8598): first reset declined
+        # (idle live session), the retry's teardown throws. Same
+        # committed-switch answer — 200 + warning + slots push, no rollback
+        # to the old bindings.
+        from kiro_crew.providers.base import LLMProvider
+
+        slot = _ChatSlot("test")
+        slot.workspace = "old-ws"
+        slot.project = "/workspace/old-ws"
+        idle = MagicMock(spec=LLMProvider)
+        idle.has_active_turn.return_value = False
+        state = _mock_state(slot, provider=idle)
+        calls = {"n": 0}
+
+        async def _decline_then_pop_and_raise(*_a, **_k):
+            if calls["n"] == 0:
+                calls["n"] += 1
+                return False
+            # The retry pops the session BEFORE its shutdown raises, so the
+            # helper's post-pop probe sees no registered provider.
+            state.sessions.get_provider = MagicMock(return_value=None)
+            raise RuntimeError("shutdown boom")
+
+        state.sessions.reset = AsyncMock(side_effect=_decline_then_pop_and_raise)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["ok"] is True
+            assert data["workspace"] == "new-ws"
+            assert data["warning"] == "old session teardown incomplete"
+            assert slot.workspace == "new-ws"
+            assert slot.project == "/workspace/new-ws"
+            assert state.sessions.reset.await_count == 2
+            state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rebind_during_raising_reset_rolls_back_to_409(self):
+        # The teardown-raise path must NOT bypass the rebind guard (GPT
+        # review finding on the #8598 fix): a slot rebound while the raising
+        # reset awaited answers the same rollback + 409 as any other rebind.
+        slot = _ChatSlot("test")
+        slot.workspace = "old-ws"
+        slot.project = "/workspace/old-ws"
+        state = _mock_state(slot, provider=None)
+
+        async def _rebind_and_raise(*_a, **_k):
+            slot.linked_session_key = "cron:job-1"
+            raise RuntimeError("shutdown boom")
+
+        state.sessions.reset = AsyncMock(side_effect=_rebind_and_raise)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "session_rebound"
+            assert (slot.workspace, slot.project) == ("old-ws", "/workspace/old-ws")
 
 
 def _make_app_as(state: DashboardState, app_name: str) -> web.Application:
