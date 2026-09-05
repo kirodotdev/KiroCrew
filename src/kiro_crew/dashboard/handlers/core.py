@@ -107,6 +107,77 @@ _SSE_INTERVAL_SECS = 5
 # distinct from "" so the UI can render a "set (hidden)" placeholder.
 _SENSITIVE_MASK = "••••••••"
 
+# Agent-record fields that carry agent- or package-writable FREE TEXT. An agent
+# can edit ``config.json`` directly, and agent sync copies ``description``
+# straight off a discovered agent spec, so a third-party package controls these
+# strings. They are not schema-``sensitive`` (they are not secrets the OWNER
+# stored), so the schema-driven walk in ``_masked_config_dict`` never touches
+# them — this named list is what closes that gap on the config endpoint (#8717).
+#
+# Scope: every ``str`` field of ``KiroCrewAgentConfig`` whose LOAD path does not
+# pin its shape. ``reasoning_effort`` (``coerce_effort`` collapses anything but
+# a known level to ``""``) and ``session_color`` (``_safe_color`` pins to
+# ``#rrggbb``) are excluded because their guards already refuse redactable
+# content; everything else — including fields with only an isinstance-str
+# guard, which constrains type but not content — is in. A test enumerates the
+# dataclass's ``str`` fields against this tuple plus that exception set, so a
+# newly added free-text field fails loudly instead of shipping unmasked.
+#
+# The record KEY (the agent name) is handled separately in the pass below:
+# a suspicious-keyed record is REMOVED from the browser-facing view (masking a
+# key would collide two suspicious records into one entry), and the
+# name-reference fields that could still spell it are masked. PR #8472 refuses
+# a credential-shaped name at creation, which will close that hazard at its
+# source for names arriving through the create route once it lands.
+_AGENT_UNTRUSTED_TEXT_FIELDS = (
+    "description",
+    "triggers",
+    "kiro_agent",
+    "workspace",
+    "memory_store",
+    "model",
+    "source",
+    "telegram_account",
+)
+
+
+def _mask_agent_free_text(value: object) -> object:
+    """Render ONE agent-record free-text value for the config response.
+
+    Same rule PR #8472 proposes for the roster endpoint's rows: a value the
+    redactors would alter — credential- or exfiltration-URL-shaped text — is
+    replaced WHOLESALE by ``_SENSITIVE_MASK``; a non-string is masked too (it
+    is not renderable content, and ``description`` has no load-time type guard,
+    so one can genuinely arrive here). Benign content passes through
+    byte-identical, so an ordinary stored value renders exactly as written.
+    Until #8472 lands, ``GET /api/agents`` still ships these fields verbatim —
+    that half of the class is tracked there, not here.
+
+    A fixed sentinel rather than an in-place scrub: a scrubbed view is a
+    FUNCTION of the stored value, so any future write-side "treat the mask as
+    unchanged" rule would have to recompute the transform and breaks under
+    redaction-chain drift or a stale view; the sentinel is recognizable
+    regardless of either. Named cost: a value containing one credential-shaped
+    token is masked entirely, the same trade ``_masked_config_dict`` already
+    makes for schema-sensitive values.
+
+    Keyed on ``_redact_external`` itself rather than a second detector so this
+    rule and the roster's cannot drift apart. The import is function-local to
+    match this module's handler-import style, not for boot-path weight —
+    ``handlers.agents`` already imports ``discover`` at module level, so it is
+    loaded at handler setup regardless.
+    """
+    from kiro_crew.dashboard.handlers.discover import _redact_external
+
+    if not isinstance(value, str):
+        return _SENSITIVE_MASK
+    # No falsy pre-check on purpose: ``_redact_external`` returns falsy input
+    # unchanged, so ``""`` compares equal and passes through — a ``value and``
+    # guard here would only look like the fail-open bug class without being it.
+    if _redact_external(value) != value:
+        return _SENSITIVE_MASK
+    return value
+
 
 def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     """Return ``cfg.to_dict()`` with sensitive string values masked.
@@ -118,6 +189,25 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     is ever added it MUST treat ``_SENSITIVE_MASK`` as "unchanged" and keep the
     stored value. Sensitivity is schema-driven (``sensitive=True`` field
     metadata), so newly added sensitive fields are masked automatically.
+
+    Two masking passes. The schema walk covers owner-stored secrets
+    (``sensitive=True``). A second pass covers agent-record free text
+    (``_AGENT_UNTRUSTED_TEXT_FIELDS``): those values are agent- and
+    package-writable, so a credential- or exfiltration-URL-shaped one is
+    masked wholesale (``_mask_agent_free_text``) instead of shipping to the
+    browser verbatim. The write-side note above holds for this pass too:
+    neither branch of this endpoint can echo the mask into storage — the
+    PATCH allowlist (``_EDITABLE_CONFIG``) names no ``agents.*`` path, and
+    the PUT branch reads only the singular ``agent`` section against a
+    hardcoded key list. The agents CRUD route is the write path for these
+    fields; its read pair is ``GET /api/agents``, which today still ships
+    them verbatim — that half of the class is PR #8472's, which proposes the
+    same mask plus the mask-means-unchanged write rule this endpoint does not
+    need. Named cost of the wider field set: the overview's config tab renders
+    ``kiro_agent``/``workspace``/``memory_store`` and cross-references the
+    latter two against the workspace and store lists, so a masked value breaks
+    that "used by" row — but only for a record whose value is already
+    credential-shaped, and therefore already meaningless as a reference.
     """
     from kiro_crew.config.schema import JSON_SCHEMA
     from kiro_crew.config.validation import _is_sensitive_path
@@ -150,6 +240,44 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
                     node[key] = _SENSITIVE_MASK
 
     _walk(masked, "")
+
+    # Second pass: agent-record free text. These fields are absent from the
+    # schema's sensitive set by design (they are not owner secrets), so the walk
+    # above cannot cover them; see _AGENT_UNTRUSTED_TEXT_FIELDS. Both response
+    # sites of this endpoint (the GET body and the PATCH echo) funnel through
+    # this one function, so this pass gives the redaction rule surface coverage
+    # here rather than the point coverage #8717 records.
+    #
+    # The record KEY (the agent name) is handled by REMOVAL, not masking: agent
+    # sync stores a discovered agent's name as this dict's key, so a
+    # credential-shaped package name would ship verbatim as a key — and masking
+    # a key would collide two suspicious records into one entry. Dropping the
+    # record from this browser-facing view (save() still carries it) leaks
+    # nothing and collides nothing; the name-reference fields that could still
+    # spell the removed name (``default_agent``, ``session.pool_agent``) are
+    # masked when they match. Named cost: a suspicious-keyed record is invisible
+    # in the config tab — the same trade the roster's project rows make, and the
+    # name was never renderable content.
+    agents = masked.get("agents")
+    if isinstance(agents, dict):
+        removed: set[object] = set()
+        for name in list(agents.keys()):
+            if not isinstance(name, str) or _mask_agent_free_text(name) != name:
+                agents.pop(name)
+                removed.add(name)
+                continue
+            record = agents[name]
+            if not isinstance(record, dict):
+                continue
+            for field_name in _AGENT_UNTRUSTED_TEXT_FIELDS:
+                if field_name in record:
+                    record[field_name] = _mask_agent_free_text(record[field_name])
+        if removed:
+            if masked.get("default_agent") in removed:
+                masked["default_agent"] = _SENSITIVE_MASK
+            session_section = masked.get("session")
+            if isinstance(session_section, dict) and session_section.get("pool_agent") in removed:
+                session_section["pool_agent"] = _SENSITIVE_MASK
     return masked
 
 
