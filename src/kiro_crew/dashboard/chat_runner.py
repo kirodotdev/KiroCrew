@@ -3806,17 +3806,20 @@ _eager_spawn_sem = asyncio.Semaphore(_EAGER_SPAWN_MAX_CONCURRENT)
 # How long a speculatively RESUMED session may sit unclaimed before it is
 # torn down. A resumed session holds kiro-cli's native per-session lock, so
 # a prefetch the user walked away from must release it cleanly rather than
-# wait out the 30-minute idle sweep. Fresh (non-resumed) eager sessions keep
-# the idle-sweep-only behavior — they hold no prior transcript's lock.
+# wait out the 30-minute idle sweep. Fresh (non-resumed) eager sessions hold
+# no prior transcript's lock, so they skip the TTL and are reaped by the idle
+# sweep — but they still count against the live-population cap below.
 _RESUME_PREFETCH_TTL_SECS = 600.0
 
-# Population cap on live-but-unclaimed prefetched sessions. The spawn
-# semaphore bounds concurrent SPAWNS, not accumulated LIVE processes: after a
-# gateway restart restores many resumable tabs, flipping through them could
-# stack one full kiro-cli process (RSS + native session lock) per dwelled tab
-# for the whole TTL. Arming a new prefetch beyond the cap evicts the OLDEST
-# unclaimed one via the conditional remove_if_unclaimed — a claimed session is
-# never touched, it just falls out of the accounting.
+# Population cap on live-but-unclaimed speculative sessions — resumed AND
+# fresh. The spawn semaphore bounds concurrent SPAWNS, not accumulated LIVE
+# processes: restored resumable tabs flipped through after a gateway restart,
+# or slots created/reconfigured in sequence, each stack one full kiro-cli
+# process (RSS, plus the session's own MCP servers; the native session lock
+# too when resumed) until the TTL or idle sweep fires. Arming a new
+# speculative session beyond the cap evicts the OLDEST unclaimed one via the
+# conditional remove_if_unclaimed — a claimed session is never touched, it
+# just falls out of the accounting.
 _RESUME_PREFETCH_MAX_LIVE = 3
 # Insertion-ordered arm registry (loop-owned, like all chat_runner state):
 # session_key -> None. Entries leave on TTL fire, on eviction, or lazily when
@@ -4134,7 +4137,13 @@ async def _eager_spawn(
             )
             if allow_resume and resumed:
                 _schedule_prefetch_ttl(state, slot, session_key)
-                await _cap_armed_prefetches(sessions, session_key)
+            # Fresh and resumed sessions alike count against the live-
+            # population cap: without this, sequential slot signals (create,
+            # agent/project set) stack one unclaimed agent process per slot
+            # until the idle sweep — the semaphore above only bounds
+            # concurrent handshakes. The TTL stays resume-only; fresh
+            # sessions hold no native session lock.
+            await _cap_armed_prefetches(sessions, session_key)
             # allow_resume and not resumed cannot happen: a speculative
             # resume whose load fell back is rejected BEFORE registration
             # (SpeculativeResumeRefused, caught above) precisely so no

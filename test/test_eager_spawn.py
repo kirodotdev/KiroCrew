@@ -20,6 +20,16 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.session import FirstTurnState
 
 
+@pytest.fixture(autouse=True)
+def _isolate_armed_registry():
+    """Every successful ``_eager_spawn`` registers in the module-global
+    ``_armed_prefetches``; clear it around every test so registrations made
+    by one test can never trigger a spurious over-cap eviction in another."""
+    chat_runner._armed_prefetches.clear()
+    yield
+    chat_runner._armed_prefetches.clear()
+
+
 def _mock_state(slot: _ChatSlot) -> DashboardState:
     state = MagicMock(spec=DashboardState)
     state.get_slot = MagicMock(return_value=slot)
@@ -935,6 +945,83 @@ class TestArmedPrefetchCap:
             await chat_runner._cap_armed_prefetches(sessions, f"dashboard:k{i}")
         sessions.remove_if_unclaimed.assert_awaited_once_with("dashboard:k0")
         assert len(chat_runner._armed_prefetches) == chat_runner._RESUME_PREFETCH_MAX_LIVE
+
+
+class TestFreshSpawnPopulationCap:
+    """FRESH eager sessions count against the live-population cap.
+
+    The cap machinery above only bounds what registers into it. Before this
+    wiring, only the resumed-prefetch path registered, so sequential fresh
+    signals (slot create, agent/project set) stacked one live-but-unclaimed
+    agent process per slot — each with its own MCP servers — until the idle
+    sweep, unbounded by the spawn semaphore (which gates concurrency, not
+    population).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_debounce(self, monkeypatch):
+        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+
+    @pytest.mark.asyncio
+    async def test_fresh_spawn_registers_in_live_population(self):
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        bindings = MagicMock()
+        bindings.kiro_agent = "kirocrew"
+        bindings.model = ""
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            patch.object(chat_runner, "resolve_agent_bindings", return_value=bindings),
+        ):
+            await _eager_spawn(state, slot)
+        key = state.sessions.get_or_create.await_args.args[0]
+        assert key in chat_runner._armed_prefetches
+
+    @pytest.mark.asyncio
+    async def test_fresh_spawns_beyond_cap_evict_the_oldest_unclaimed(self):
+        shared_sessions = MagicMock()
+        shared_sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        shared_sessions.release = MagicMock()
+        shared_sessions.reset = AsyncMock()
+        shared_sessions.remove = AsyncMock()
+        shared_sessions.remove_if_unclaimed = AsyncMock(return_value=True)
+        bindings = MagicMock()
+        bindings.kiro_agent = "kirocrew"
+        bindings.model = ""
+        keys: list[str] = []
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            patch.object(chat_runner, "resolve_agent_bindings", return_value=bindings),
+        ):
+            for i in range(chat_runner._RESUME_PREFETCH_MAX_LIVE + 1):
+                slot = _ChatSlot(f"t{i}")
+                state = _mock_state(slot)
+                state.sessions = shared_sessions
+                await _eager_spawn(state, slot)
+                keys.append(shared_sessions.get_or_create.await_args.args[0])
+        shared_sessions.remove_if_unclaimed.assert_awaited_once_with(keys[0])
+        assert keys[0] not in chat_runner._armed_prefetches
+        assert len(chat_runner._armed_prefetches) == chat_runner._RESUME_PREFETCH_MAX_LIVE
+
+    @pytest.mark.asyncio
+    async def test_lost_race_does_not_enter_the_population(self):
+        """is_new=False means a real creator owns that session — it must not
+        enter unclaimed accounting where an eviction attempt would target it
+        (the conditional remove makes that attempt a no-op, but the registry
+        slot it burns would let a genuinely unclaimed session survive over
+        the cap)."""
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
+        bindings = MagicMock()
+        bindings.kiro_agent = "kirocrew"
+        bindings.model = ""
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            patch.object(chat_runner, "resolve_agent_bindings", return_value=bindings),
+        ):
+            await _eager_spawn(state, slot)
+        assert not chat_runner._armed_prefetches
 
 
 class TestResumableHint:
