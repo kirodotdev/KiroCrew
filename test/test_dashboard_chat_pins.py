@@ -1130,6 +1130,34 @@ async def test_delete_by_query_app_isolation(tmp_path):
         assert [pin["id"] for pin in state._chat_pins] == ["pin-other"]
 
 
+@pytest.mark.parametrize("query_field", ["mid", "message_ts"])
+@pytest.mark.asyncio
+async def test_delete_by_query_selects_callers_record_before_foreign_collision(
+    tmp_path, query_field
+):
+    """A stale foreign record must not mask the caller's own matching pin."""
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("slot-reused", app="app-b")
+    foreign = _pin("foreign-pin", "slot-reused", "ts-shared", origin_app="app-a")
+    own = _pin("own-pin", "slot-reused", "ts-shared", origin_app="app-b")
+    if query_field == "mid":
+        foreign["mid"] = own["mid"] = "m-shared"
+        query = "mid=m-shared"
+    else:
+        foreign.pop("mid")
+        own.pop("mid")
+        query = "message_ts=ts-shared"
+    state._chat_pins.extend([foreign, own])
+
+    async with _client(tmp_path, state=state, app_name="app-b") as client:
+        resp = await client.delete(f"/api/chat/pins/by-query?slot=slot-reused&{query}")
+
+    assert resp.status == 200
+    assert [(pin["id"], pin["origin_app"]) for pin in state._chat_pins] == [
+        ("foreign-pin", "app-a")
+    ]
+
+
 # ── Finding 1: Race condition — slot deleted concurrently ──
 
 
@@ -1574,7 +1602,7 @@ async def test_slot_reuse_cross_app_delete_denial(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_slot_reuse_cross_app_delete_by_query_denial(tmp_path):
+async def test_slot_reuse_cross_app_delete_by_query_denial(tmp_path, monkeypatch):
     """After slot recreation, new app cannot delete old app pins by query."""
     state = _make_state(tmp_path)
     state.get_or_create_slot("slot-reuse", app="app-b")
@@ -1590,12 +1618,21 @@ async def test_slot_reuse_cross_app_delete_by_query_denial(tmp_path):
             "origin_app": "app-a",
         }
     )
+    audit = MagicMock()
+    monkeypatch.setattr("kiro_crew.dashboard.chat_pins.sel", lambda: audit)
 
     async with _client(tmp_path, state=state, app_name="app-b") as client:
         resp = await client.delete("/api/chat/pins/by-query?slot=slot-reuse&mid=m-old-app-a-two")
         assert resp.status == 404
         assert (await resp.json())["code"] == "pin_not_found"
         assert len(state._chat_pins) == 1
+    denied = [
+        call.kwargs
+        for call in audit.log_api_access.call_args_list
+        if call.kwargs.get("source") == "pin_record_ownership"
+    ]
+    assert len(denied) == 1
+    assert denied[0]["caller"] == "app-b"
 
 
 @pytest.mark.asyncio
