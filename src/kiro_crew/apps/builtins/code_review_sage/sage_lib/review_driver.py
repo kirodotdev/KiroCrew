@@ -33,6 +33,7 @@ the phase switch, not the verdict itself.
 Usage:
     python3 sage_lib/review_driver.py run --changes "<pr-url>[,<pr-url>...]" [--concurrency 3]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,7 +43,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import sys
 import threading
 import time
@@ -85,6 +85,7 @@ except ImportError:  # pragma: no cover - standalone fallback
             urllib.request.ProxyHandler({}), _FallbackNoRedirect()
         ).open(req, timeout=timeout)
 
+
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _APP_ROOT not in sys.path:  # allow `python3 sage_lib/review_driver.py` (run as script)
     sys.path.insert(0, _APP_ROOT)
@@ -110,12 +111,12 @@ def _redact(text: str) -> str:
     return redact_credentials(redact_exfiltration_urls(text)[0])[0]
 
 
-DEFAULT_TASK_TIMEOUT = 5400      # 90 min per review turn (the governing cap — passed
+DEFAULT_TASK_TIMEOUT = 5400  # 90 min per review turn (the governing cap — passed
 #   through run_review -> _one -> dispatch -> pool.send -> handle.prompt). A single
 #   thorough pass needs headroom that a 30-min cap would force-kill on large PRs.
 #   Stays under the runtime's 2h prompt default.
-_REPORT_ARTIFACT_TAG = "sage-report"   # tags every per-run report artifact
-DEFAULT_REPORT_RETENTION = 20    # keep the N most-recent report artifacts; prune older
+_REPORT_ARTIFACT_TAG = "sage-report"  # tags every per-run report artifact
+DEFAULT_REPORT_RETENTION = 20  # keep the N most-recent report artifacts; prune older
 
 
 def _api_request(method: str, path: str, body: dict | None = None, timeout: int = 30) -> dict:
@@ -155,7 +156,7 @@ def _prune_old_reports(keep: int) -> None:
     if not items:
         return
     items = sorted(items, key=lambda a: a.get("updated_at", ""), reverse=True)
-    for a in items[max(0, keep):]:
+    for a in items[max(0, keep) :]:
         slug = a.get("slug")
         if slug:
             _api_request("DELETE", "/api/artifacts/" + slug)
@@ -167,12 +168,17 @@ def _archive_report(html_body: str, root: Path | None = None) -> str | None:
     html_body = _redact(html_body)  # scrub LLM output before posting to the dashboard
     ts = time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime())
     slug = "sage-report-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    d = _api_request("POST", "/api/artifacts", {
-        "name": "Code Review Sage Report — " + ts,
-        "content": html_body, "kind": "widget",
-        "tags": ["cr", _REPORT_ARTIFACT_TAG],
-        "slug": slug,
-    })
+    d = _api_request(
+        "POST",
+        "/api/artifacts",
+        {
+            "name": "Code Review Sage Report — " + ts,
+            "content": html_body,
+            "kind": "widget",
+            "tags": ["cr", _REPORT_ARTIFACT_TAG],
+            "slug": slug,
+        },
+    )
     if d.get("error"):
         return None
     new_slug = d.get("slug") or slug
@@ -324,8 +330,9 @@ def _fetch_instruction(link: str) -> str:
     return pipeline.fetch_spec(platform, host=host)
 
 
-def build_consolidation_task(namespace: str, live_path: str, candidate_path: str,
-                             out_path: str) -> str:
+def build_consolidation_task(
+    namespace: str, live_path: str, candidate_path: str, out_path: str
+) -> str:
     """Prompt for the one-shot merge that turns staged candidates into the ruleset.
 
     The judgment is the model's: whether a candidate is already covered, whether
@@ -393,8 +400,7 @@ def _accepts_activity(dispatch: Callable[..., Any]) -> bool:
     return _accepts_kwarg(dispatch, "on_activity")
 
 
-def build_review_task(change_link: str, result_capability: str | None = None,
-                      result_path: str | None = None) -> str:
+def build_review_task(change_link: str) -> str:
     """Single-pass review prompt: ONE isolated session does the WHOLE review —
     design reasoning AND every code-level dimension — in a single turn, and writes
     the complete result record (phase1 design fields + findings + counts +
@@ -406,7 +412,8 @@ def build_review_task(change_link: str, result_capability: str | None = None,
     return (
         "You are a Code Review Sage reviewer running in an ISOLATED, CLEAN session. "
         "Do the COMPLETE review of EXACTLY ONE change in a SINGLE thorough pass: "
-        + change_link + ". There is NO separate gate and NO follow-up round — cover "
+        + change_link
+        + ". There is NO separate gate and NO follow-up round — cover "
         "everything now, carefully, at maximum thinking effort.\n"
         "Run every `sage_lib/...` command — the ones below AND the ones the skill "
         "writes as `<python> ...` — with this interpreter: `" + py + "`. Use that "
@@ -417,7 +424,10 @@ def build_review_task(change_link: str, result_capability: str | None = None,
         "(`" + py + " sage_lib/learning.py list-for-review`).\n"
         "  2. Resolve the per-repo rule pack (if any) and apply it as additional rules.\n"
         "  3. Fetch the change — " + _fetch_instruction(change_link) + " — and "
-        "normalize via `" + py + " sage_lib/pipeline.py prepare --link " + change_link
+        "normalize via `"
+        + py
+        + " sage_lib/pipeline.py prepare --link "
+        + change_link
         + " --payload-file <file>`.\n"
         "  4. DESIGN dimension (THINK DEEPLY — highest leverage): work the change "
         "through the skill's `Deep design reasoning` lenses (architectural fit, "
@@ -446,23 +456,16 @@ def build_review_task(change_link: str, result_capability: str | None = None,
         "actually reviewed, and `coverage_complete` to true ONLY if that list covers "
         "every changed file — otherwise set it false (the driver will run ONE "
         "targeted follow-up on the remainder). Do not pad the list; report honestly.\n"
-        "  7. RECORD ONLY — do NOT post any comments. Write "
-        + (result_path or "data/results/<id>.json") + ": "
+        "  7. RECORD ONLY — do NOT post any comments. Return the complete record "
+        "in your final response, wrapped exactly once in `<code-review-sage-result>` "
+        "and `</code-review-sage-result>` tags: "
         "phase1 (gate_verdict, design_risk, criticality, design_headline, problem, "
         "why_it_matters, solution_assessment) + blast_radius; `findings` (each with "
         "file, line, severity 🔴/🟡, dimension, headline, observation, consequence, "
         "suggestion, snippet, lang); `counts` {red,yellow}; `ship_summary` (ONE straightforward "
         "line: good-to-ship + reason when there are no 🔴, or not-ready + the "
         "must-fix/design reason otherwise); `files_covered`; `coverage_complete`; "
-        "deep_reviewed=true."
-        + (
-            " Include top-level `result_capability` exactly as `"
-            + result_capability
-            + "`; it binds this record to this review dispatch."
-            if result_capability
-            else ""
-        )
-        + " The driver builds the redacted bodies and a separate "
+        "deep_reviewed=true. Do not write the result record to disk. The driver builds the redacted bodies and a separate "
         "poster publishes them — you MUST NOT call any comment tool.\n"
         "     `headline` is the finding's CONCLUSION in ONE sentence under about 100 "
         "characters: what is actually wrong, stated directly. It is the only line a "
@@ -479,10 +482,7 @@ def build_review_task(change_link: str, result_capability: str | None = None,
     )
 
 
-def build_review_followup_task(
-    change_link: str, result_capability: str | None = None,
-    result_path: str | None = None,
-) -> str:
+def build_review_followup_task(change_link: str, record: dict | None = None) -> str:
     """Bounded coverage backstop — dispatched AT MOST ONCE, and only when the single
     review reported ``coverage_complete=false``. It reviews the STILL-UNCOVERED
     changed files and APPENDS only net-new findings (never repeats/removes existing
@@ -492,8 +492,9 @@ def build_review_followup_task(
     return (
         "You are a Code Review Sage reviewer running in an ISOLATED, CLEAN session. "
         "A prior pass reviewed EXACTLY ONE change: " + change_link + " but reported "
-        "INCOMPLETE file coverage (coverage_complete=false) in "
-        + (result_path or "data/results/<id>.json") + ".\n"
+        "INCOMPLETE file coverage (coverage_complete=false). Its trusted prior record is:\n"
+        + json.dumps(record or {}, ensure_ascii=True)
+        + "\n"
         "Run every `sage_lib/...` command — the ones below AND the ones the skill "
         "writes as `<python> ...` — with this interpreter: `" + py + "`. Use that "
         "absolute path verbatim (quote it as YOUR shell requires if it contains "
@@ -503,7 +504,10 @@ def build_review_followup_task(
         "(`" + py + " sage_lib/learning.py list-for-review`).\n"
         "  2. Resolve the per-repo rule pack (if any) and apply it as additional rules.\n"
         "  3. Fetch the change — " + _fetch_instruction(change_link) + " — and "
-        "normalize via `" + py + " sage_lib/pipeline.py prepare --link " + change_link
+        "normalize via `"
+        + py
+        + " sage_lib/pipeline.py prepare --link "
+        + change_link
         + " --payload-file <file>`. READ the existing record: its `findings` and "
         "`files_covered`.\n"
         "  4. Review ONLY the changed files NOT already in `files_covered`, against "
@@ -518,20 +522,15 @@ def build_review_followup_task(
         "{red,yellow} over "
         "the FULL list; refresh `ship_summary`; extend `files_covered` to include "
         "every changed file and set `coverage_complete=true`; keep deep_reviewed=true "
-        "and PRESERVE the phase1 block."
-        + (
-            " Preserve top-level `result_capability` exactly as `"
-            + result_capability
-            + "`."
-            if result_capability
-            else ""
-        )
-        + " You MUST NOT call any comment tool.\n"
+        "and PRESERVE the phase1 block. Return the complete replacement record in your final "
+        "response, wrapped exactly once in `<code-review-sage-result>` and "
+        "`</code-review-sage-result>` tags. Do not write any result record to disk. "
+        "You MUST NOT call any comment tool.\n"
         "Do NOT spawn further subagents. Execute; do not ask questions."
     )
 
 
-def build_post_task(change_link: str, result_path: str | None = None) -> str:
+def build_post_task(change_link: str, payload: dict | None = None) -> str:
     """Poster prompt: publish the driver-built, Python-REDACTED DRAFT comments for
     one change. The bodies are authoritative and already scrubbed in Python — the
     poster posts them VERBATIM and only resolves the (non-sensitive) anchor. This
@@ -566,15 +565,15 @@ def build_post_task(change_link: str, result_path: str | None = None) -> str:
     # the poster posts it verbatim and never submits. A HUMAN submits it.
     return (
         _preamble
-        + "  1. Read " + (result_path or "data/results/<id>.json")
-        + " and take its `github_review_payload` "
-        "object (fields: body, comments[], optional commit_id). It was assembled "
-        "AND redacted in Python — use it EXACTLY as given; do NOT rebuild it. Parse "
+        + "  1. Use this `github_review_payload` object (built from `pending_comments`; fields: body, comments[], optional "
+        "commit_id), assembled AND redacted in Python: "
+        + json.dumps(payload or {}, ensure_ascii=True)
+        + ". Use it EXACTLY as given; do NOT rebuild it. Parse "
         "<owner>/<repo>/<number> from the PR URL.\n"
         "  2. FIRST clear any stale sage draft: GitHub allows only ONE pending "
         "review per PR per user, so a leftover one would make step 3 fail with 422. "
         "GET repos/<owner>/<repo>/pulls/<number>/reviews and, if a review with "
-        "state==\"PENDING\" exists WHOSE BODY CONTAINS the exact marker "
+        'state=="PENDING" exists WHOSE BODY CONTAINS the exact marker '
         "`[code-review-sage]`, DELETE just that one (DELETE "
         "repos/<owner>/<repo>/pulls/<number>/reviews/<review_id>) — it is a stale "
         "sage draft. NEVER delete a non-PENDING review or a PENDING review lacking "
@@ -589,11 +588,9 @@ def build_post_task(change_link: str, result_path: str | None = None) -> str:
         "call any submit/approve/dismiss endpoint, and MUST NOT run `gh pr review` "
         "(that would submit immediately). `gh` uses its own stored auth — never "
         "read, print, or pass any token.\n"
-        "  4. Update " + (result_path or "data/results/<id>.json")
-        + ": set posted_comments = len(comments) "
-        "plus 1 when `body` is non-empty; set design_comment_posted = true when "
-        "`body` is non-empty (else false). Do NOT modify findings, phase1, "
-        "pending_comments, or github_review_payload.\n"
+        '  4. Return `<code-review-sage-posted>{"posted_comments": N, '
+        '"design_comment_posted": true|false}</code-review-sage-posted>` in your final '
+        "response. Do not write any result record to disk.\n"
         "Do NOT spawn further subagents. Execute; do not ask questions."
     )
 
@@ -652,12 +649,13 @@ def _probe(base: str, secret: str) -> bool:
     port, so a cold resolve that misses sends the secret up to len(candidates)
     times -- this is the highest-multiplicity secret-bearing send in the app."""
     try:
-        req = urllib.request.Request(base + "/api/spawn",
-                                     headers={"X-Internal-Secret": secret} if secret else {})
+        req = urllib.request.Request(
+            base + "/api/spawn", headers={"X-Internal-Secret": secret} if secret else {}
+        )
         with loopback_urlopen(req, timeout=3) as resp:
             return resp.status < 500
     except urllib.error.HTTPError:
-        return True   # a gateway responded (e.g. 401/404) — it's the right port
+        return True  # a gateway responded (e.g. 401/404) — it's the right port
     except Exception:
         return False
 
@@ -725,15 +723,24 @@ def _unconfigured_dispatch(task: str, timeout: int = DEFAULT_TASK_TIMEOUT) -> di
     misconfigured/standalone call, and fails loudly rather than silently spawning.
     """
     return {
-        "ok": False, "output": "",
+        "ok": False,
+        "output": "",
         "error": "review pool dispatch not configured (no worker pool wired into run_review)",
     }
 
 
-def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = None,
-                  run_id: str | None = None,
-                  timeout: float = DEFAULT_TASK_TIMEOUT,
-                  keys: list[str] | None = None, confirm=None) -> dict:
+def post_recorded(
+    change_id: str,
+    link: str,
+    *,
+    dispatch,
+    root: Path | None = None,
+    run_id: str | None = None,
+    timeout: float = DEFAULT_TASK_TIMEOUT,
+    record: dict | None = None,
+    keys: list[str] | None = None,
+    confirm=None,
+) -> dict:
     """Publish an ALREADY-RECORDED review to its pull request.
 
     Builds the draft comment bodies from the recorded findings plus the always-on
@@ -754,25 +761,47 @@ def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = No
     on GitHub, so re-sending one would duplicate it on the pull request. Omitting
     ``keys`` posts everything not yet posted.
     """
-    cur = results.read_result(change_id, root, run_id)
+    cur = record if record is not None else results.read_result(change_id, root, run_id)
     if not cur:
         # No record means no review to publish. Without this the always-on
         # ship-readiness comment would be built from an empty record and posted as
         # a review of nothing (and the write-back would fail validation).
-        return {"post_ok": True, "posted_comments": 0,
-                "design_comment_posted": False, "pending": 0,
-                "post_error": "no recorded review for this change"}
+        return {
+            "post_ok": True,
+            "posted_comments": 0,
+            "design_comment_posted": False,
+            "pending": 0,
+            "post_error": "no recorded review for this change",
+        }
+    held_in_memory = record is not None or run_id is not None
+    if record is None and run_id is not None:
+        try:
+            results.result_path(change_id, root, run_id).unlink()
+        except OSError:
+            return {
+                "post_ok": False,
+                "posted_comments": 0,
+                "design_comment_posted": False,
+                "pending": 0,
+                "post_error": "could not remove the record before posting",
+            }
     all_entries = pipeline.build_pending_comments(cur)
     already = set(cur.get("posted_keys") or [])
-    wanted = (set(keys) if keys is not None
-              else {str(e.get("key")) for e in all_entries})
-    new = [e for e in all_entries
-           if str(e.get("key")) in wanted and str(e.get("key")) not in already]
+    wanted = set(keys) if keys is not None else {str(e.get("key")) for e in all_entries}
+    new = [
+        e for e in all_entries if str(e.get("key")) in wanted and str(e.get("key")) not in already
+    ]
     if not new:
-        return {"post_ok": True, "posted_comments": 0,
-                "design_comment_posted": False, "pending": 0,
-                "posted_keys": sorted(already),
-                "post_error": "nothing left to post" if all_entries else ""}
+        if record is None and run_id is not None:
+            results.write_result(cur, root, run_id)
+        return {
+            "post_ok": True,
+            "posted_comments": 0,
+            "design_comment_posted": False,
+            "pending": 0,
+            "posted_keys": sorted(already),
+            "post_error": "nothing left to post" if all_entries else "",
+        }
     # The draft is the UNION of what is already drafted and what was just
     # selected — not the selection alone.
     #
@@ -788,8 +817,7 @@ def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = No
     # pending review to replace and the re-included comments post a second time.
     # That is the deliberate trade this module already takes elsewhere: a visible
     # duplicate can be removed, a silently dropped finding cannot be recovered.
-    pending = [e for e in all_entries
-               if str(e.get("key")) in (wanted | already)]
+    pending = [e for e in all_entries if str(e.get("key")) in (wanted | already)]
     cur["pending_comments"] = pending
     # GitHub posts a single PENDING review, so assemble the deterministic,
     # already-redacted envelope in Python here — the poster posts it verbatim via
@@ -811,10 +839,17 @@ def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = No
             cur["post_error"] = str(e)
             cur["posted_comments"] = 0
             cur["design_comment_posted"] = False
-            results.write_result(cur, root, run_id)
-            return {"post_ok": False, "post_error": str(e), "posted_comments": 0,
-                    "design_comment_posted": False, "pending": len(pending),
-                    "expected_units": 0, "posted_keys": list(already)}
+            if record is None:
+                results.write_result(cur, root, run_id)
+            return {
+                "post_ok": False,
+                "post_error": str(e),
+                "posted_comments": 0,
+                "design_comment_posted": False,
+                "pending": len(pending),
+                "expected_units": 0,
+                "posted_keys": list(already),
+            }
     # Clear the delivery fields before the record goes to the poster. They are
     # what the poster writes back as its ONLY evidence of delivery, so a value
     # left over from an earlier attempt is indistinguishable from one it just
@@ -829,58 +864,34 @@ def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = No
     # reason; this is the sibling that did not.
     cur["posted_comments"] = 0
     cur["design_comment_posted"] = False
-    results.write_result(cur, root, run_id)
-    # The poster reads github_review_payload from the shared path named in its
-    # prompt, and writes posted_comments back there.
-    #
-    # A False return on a RUN-SCOPED record means the trusted record is NOT what
-    # sits at that path -- `publish_to_shared` refuses when its own no-follow read
-    # is blocked, which is exactly the case where a sibling worker replaced the
-    # record with a link. Dispatching anyway would point the poster at whatever IS
-    # there and publish it to the pull request, so the failure has to abort.
-    #
-    # Without a run_id the record already IS the shared one: publishing is a no-op
-    # that also reports False, and treating that as refusal would abort every
-    # unscoped post. The guard therefore applies only where a copy was required.
-    capability = cur.get("result_capability")
-    dispatch_path = (
-        str(results.dispatch_result_path(change_id, capability, root))
-        if isinstance(capability, str) else None
-    )
-    if run_id and not results.publish_to_shared(
-        change_id, root, run_id,
-        result_capability=capability if isinstance(capability, str) else None,
-    ):
-        staged = "could not stage the review record for the poster"
-        cur["post_ok"] = False
-        cur["post_error"] = staged
+    if not held_in_memory:
         results.write_result(cur, root, run_id)
-        return {"post_ok": False, "post_error": staged, "posted_comments": 0,
-                "design_comment_posted": False, "pending": len(pending),
-                "expected_units": 0, "posted_keys": list(already)}
+    # The poster receives the already-redacted payload in its dispatcher prompt,
+    # never through a filesystem handoff shared with sibling sessions.
     # The prompt builder FAILS CLOSED when the link's host no longer revalidates
     # (see build_post_task): a prompt built with an unconfirmed host would let
     # its `gh api` calls default to public github.com and land this draft on a
     # public same-slug PR. Surface that as a per-change post failure — the
     # record stays on disk for a retry once the host is configured again.
     try:
-        post_prompt = build_post_task(link, result_path=dispatch_path)
+        post_prompt = build_post_task(link, payload=cur.get("github_review_payload") or {})
     except pipeline.adapters.AdapterError as exc:
         refused = f"refusing to post: {exc}"
         cur["post_ok"] = False
         cur["post_error"] = refused
-        results.write_result(cur, root, run_id)
-        return {"post_ok": False, "post_error": refused, "posted_comments": 0,
-                "design_comment_posted": False, "pending": len(pending),
-                "expected_units": 0, "posted_keys": list(already)}
+        if record is None:
+            results.write_result(cur, root, run_id)
+        return {
+            "post_ok": False,
+            "post_error": refused,
+            "posted_comments": 0,
+            "design_comment_posted": False,
+            "pending": len(pending),
+            "expected_units": 0,
+            "posted_keys": list(already),
+        }
     spawn = dispatch(post_prompt, timeout)
-    results.adopt_from_shared(
-        change_id,
-        root,
-        run_id,
-        expected_capability=capability if isinstance(capability, str) else None,
-    )
-    after = results.read_result(change_id, root, run_id) or {}
+    after = cur if held_in_memory else (results.read_result(change_id, root, run_id) or {})
     ok = bool(spawn.get("ok", False))
     # The poster writes the count it actually delivered. That write is the ONLY
     # evidence of delivery — a spawn that merely returned cleanly proves nothing,
@@ -894,8 +905,11 @@ def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = No
     # over-counts and a complete delivery read as short. `posted_keys` then went
     # unwritten and the next post duplicated comments already on the pull request.
     # Non-GitHub platforms have no payload; there the finding count is the unit count.
-    expected_units = (pipeline.review_payload_units(cur["github_review_payload"])
-                      if _platform == "github" else len(pending))
+    expected_units = (
+        pipeline.review_payload_units(cur["github_review_payload"])
+        if _platform == "github"
+        else len(pending)
+    )
     # `confirm` is a seam, not a bypass: it defaults to the real read-back and
     # exists so tests about WHICH comments a rebuilt draft carries do not each
     # need a live pull request.
@@ -924,8 +938,7 @@ def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = No
         # leaves the ledger untouched and reports failure, so the records survive and
         # the next post re-sends. A visible duplicate can be removed; a silently
         # dropped finding cannot be recovered.
-        after["posted_keys"] = sorted(
-            already | {str(e.get("key")) for e in pending})
+        after["posted_keys"] = sorted(already | {str(e.get("key")) for e in pending})
         # A confirmed delivery makes the poster's self-reported count redundant, so
         # the read-back's own accounting replaces it. Leaving the poster's number in
         # place let a correct delivery be under-reported: the draft is proven on the
@@ -937,12 +950,15 @@ def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = No
         # replaces the draft by deleting and re-creating it, so a changed id is the
         # signal that the pending draft belongs to someone else.
         after["posted_review_id"] = confirmed_id
-        results.write_result(after, root, run_id)
+        if not held_in_memory:
+            results.write_result(after, root, run_id)
     elif ok and delivered:
         # A partial post cannot be attributed to specific comments, so nothing is
         # marked delivered. Re-posting the selection is the safe direction: a
         # duplicate is visible and removable, a silently-dropped finding is not.
         after["post_partial"] = True
+    if record is None and run_id is not None:
+        results.write_result(after, root, run_id)
     return {
         # `post_ok` means DELIVERED, not "the spawn exited cleanly". Two readers
         # depend on that meaning: `_record_reviewed` indexes the pull request as
@@ -951,8 +967,8 @@ def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = No
         "post_ok": confirmed,
         "post_error": (
             spawn.get("error", "")
-            or ("" if confirmed else
-                "the posted draft could not be confirmed on the pull request")),
+            or ("" if confirmed else "the posted draft could not be confirmed on the pull request")
+        ),
         # Authoritative once confirmed: `after["posted_comments"]` was replaced with
         # the payload's own unit count above, so this no longer echoes the poster.
         "posted_comments": int(after.get("posted_comments", 0) or 0),
@@ -1014,7 +1030,7 @@ def _draft_confirmed(link: str, payload: dict) -> str:
     durable ledger untouched and lets the next post re-send.
     """
     if pipeline.review_payload_units(payload) <= 0:
-        return ""        # nothing was sent -> nothing to confirm
+        return ""  # nothing was sent -> nothing to confirm
     # An unanchored draft is not identifiable, and the payload builder already
     # refuses to produce one; requiring it here means a draft can never be
     # confirmed against a revision the record does not name.
@@ -1024,7 +1040,7 @@ def _draft_confirmed(link: str, payload: dict) -> str:
     try:
         host, owner, repo, number = adapters.github_pr_ref(link)
     except Exception:
-        return ""        # not a GitHub pull request URL -> nothing to confirm
+        return ""  # not a GitHub pull request URL -> nothing to confirm
     try:
         reviews = discovery.run_gh_json(
             # `jq` is required with `paginate`, not decoration: `gh --paginate`
@@ -1032,50 +1048,70 @@ def _draft_confirmed(link: str, payload: dict) -> str:
             # when no jq is given, so page two onward makes the document invalid.
             # `.[]` streams the elements as JSONL instead. A parse failure here reads
             # as "unproven", so a busy pull request would silently never confirm.
-            f"repos/{owner}/{repo}/pulls/{number}/reviews", jq=".[]", paginate=True,
-            host=host)
+            f"repos/{owner}/{repo}/pulls/{number}/reviews",
+            jq=".[]",
+            paginate=True,
+            host=host,
+        )
     except Exception:
-        return ""        # gh unavailable / not authorized / timeout -> unproven
+        return ""  # gh unavailable / not authorized / timeout -> unproven
     for rev in reviews:
         if str(rev.get("state") or "") != "PENDING":
             continue
         if pipeline.DRAFT_MARKER not in str(rev.get("body") or ""):
-            continue        # a human's in-progress draft, not ours
+            continue  # a human's in-progress draft, not ours
         rid = rev.get("id")
         if rid is None:
             continue
         if _confirm_text(rev.get("body")) != _confirm_text(payload.get("body")):
-            return ""    # some other sage draft, not the one just sent
+            return ""  # some other sage draft, not the one just sent
         if str(rev.get("commit_id") or "") != expected_commit:
-            return ""    # right text, wrong revision -> anchored to other code
+            return ""  # right text, wrong revision -> anchored to other code
         try:
             comments = discovery.run_gh_json(
                 f"repos/{owner}/{repo}/pulls/{number}/reviews/{rid}/comments",
-                jq=".[]", paginate=True, host=host)
+                jq=".[]",
+                paginate=True,
+                host=host,
+            )
         except Exception:
             return ""
         want = sorted(
-            (str(c.get("path") or ""), int(c.get("line") or 0),
-             _confirm_text(c.get("body")))
-            for c in (payload.get("comments") or []))
+            (str(c.get("path") or ""), int(c.get("line") or 0), _confirm_text(c.get("body")))
+            for c in (payload.get("comments") or [])
+        )
         # `line` reads null on a comment GitHub considers outdated, where the
         # position survives as `original_line`. Accepting that fallback avoids a
         # false negative without loosening identity: path, body and the review's
         # commit still have to match.
         got = sorted(
-            (str(c.get("path") or ""),
-             int(c.get("line") or c.get("original_line") or 0),
-             _confirm_text(c.get("body")))
-            for c in comments)
+            (
+                str(c.get("path") or ""),
+                int(c.get("line") or c.get("original_line") or 0),
+                _confirm_text(c.get("body")),
+            )
+            for c in comments
+        )
         return str(rid) if want == got else ""
     return ""
 
 
-def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
-               concurrency: int = 0, timeout: int = DEFAULT_TASK_TIMEOUT,
-               generate_report: bool = True, root: Path | None = None,
-               progress=None, run_id: str | None = None, cancelled=None,
-               post: bool | None = None, confirm=None, preflight=None) -> dict:
+def run_review(
+    changes: list[str],
+    *,
+    dispatch=None,
+    archiver=_default_archiver,
+    concurrency: int = 0,
+    timeout: int = DEFAULT_TASK_TIMEOUT,
+    generate_report: bool = True,
+    root: Path | None = None,
+    progress=None,
+    run_id: str | None = None,
+    cancelled=None,
+    post: bool | None = None,
+    confirm=None,
+    preflight=None,
+) -> dict:
     """Two-stage per change (bounded concurrency): a Phase-1 gate task, then a
     Phase-2 deep-review task for every usable verdict (PASS / CONCERNS / BLOCK).
     Each task is dispatched to the reusable worker pool (``dispatch``) and the
@@ -1120,7 +1156,7 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
     if not changes:
         return {"ok": False, "error": "no changes to review", "spawned": 0}
     dispatch = dispatch or _unconfigured_dispatch
-    progress = progress or (lambda *a, **k: None)   # (change_id, phase, extra) sink
+    progress = progress or (lambda *a, **k: None)  # (change_id, phase, extra) sink
     is_cancelled = cancelled or (lambda: False)
 
     # Fail-fast runtime preflight. Runs BEFORE the clean-slate resets below, so a
@@ -1132,23 +1168,38 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         failed_records: list[dict] = []
         for link in changes:
             change_id = _cid(link)
-            progress(change_id, "failed", {
-                "error": runtime_error, "reason": "runtime_unavailable"})
-            failed_records.append({
-                "change": link, "change_id": change_id,
-                "gate_spawn_ok": False, "gate_error": runtime_error,
-                "gate_verdict": "UNKNOWN", "phase2_ran": False,
-                "deep_spawn_ok": False, "deep_error": runtime_error,
-                "deep_reviewed": False, "result_recorded": False,
-                "design_block": False, "deep_rounds": 0,
-                "skipped_reason": "runtime_unavailable",
-            })
+            progress(change_id, "failed", {"error": runtime_error, "reason": "runtime_unavailable"})
+            failed_records.append(
+                {
+                    "change": link,
+                    "change_id": change_id,
+                    "gate_spawn_ok": False,
+                    "gate_error": runtime_error,
+                    "gate_verdict": "UNKNOWN",
+                    "phase2_ran": False,
+                    "deep_spawn_ok": False,
+                    "deep_error": runtime_error,
+                    "deep_reviewed": False,
+                    "result_recorded": False,
+                    "design_block": False,
+                    "deep_rounds": 0,
+                    "skipped_reason": "runtime_unavailable",
+                }
+            )
         return {
-            "ok": False, "error": runtime_error,
-            "changes": len(failed_records), "gate_spawns": 0, "deep_spawns": 0,
-            "design_blocked": 0, "phase2_skipped_on_block": 0, "cancelled": 0,
-            "deep_reviewed": 0, "deep_rounds": 0, "design_comments_posted": 0,
-            "result_records": 0, "failures": failed_records,
+            "ok": False,
+            "error": runtime_error,
+            "changes": len(failed_records),
+            "gate_spawns": 0,
+            "deep_spawns": 0,
+            "design_blocked": 0,
+            "phase2_skipped_on_block": 0,
+            "cancelled": 0,
+            "deep_reviewed": 0,
+            "deep_rounds": 0,
+            "design_comments_posted": 0,
+            "result_records": 0,
+            "failures": failed_records,
             "per_change": failed_records,
         }
 
@@ -1171,18 +1222,6 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
     # behaving exactly as before.
     report.reset(root, run_id)
     results.clear_results(root, run_id)
-    # Also sweep the SHARED staging path for the changes this run will review.
-    #
-    # The worker writes its record to the shared dir and the driver adopts it into
-    # the run dir; a crash between those two steps leaves an orphan that nothing
-    # reaps (`_reap_orphan_run_dirs` only walks `data/runs/`). Without this sweep,
-    # the next review of that change whose worker completes but records nothing
-    # would adopt the residue and report a stale review as a fresh success — and
-    # `_record_reviewed` would then durably mark the change reviewed at the NEW
-    # head. The legacy whole-run flow got this for free by clearing the whole
-    # shared dir at run start; a run-scoped run has to clear its own keys.
-    results.clear_staged([_cid(c) for c in changes], root)
-
     # Mark everything queued upfront so the page renders all rows at once.
     for _link in changes:
         progress(_cid(_link), "queued", {})
@@ -1195,18 +1234,20 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         concurrency = 1
     per_change: list[dict] = []
 
-    def _post_pending(change_id: str, link: str) -> dict:
-        return post_recorded(change_id, link, dispatch=dispatch, root=root,
-                             run_id=run_id, timeout=timeout, confirm=confirm)
+    def _post_pending(change_id: str, link: str, record: dict | None = None) -> dict:
+        return post_recorded(
+            change_id,
+            link,
+            dispatch=dispatch,
+            root=root,
+            run_id=run_id,
+            timeout=timeout,
+            record=record,
+            confirm=confirm,
+        )
 
     def _one(link: str) -> dict:
         change_id = _cid(link)
-        result_capability = secrets.token_urlsafe(32) if run_id else None
-        dispatch_path = (
-            str(results.dispatch_result_path(change_id, result_capability, root))
-            if result_capability else None
-        )
-
         # Cooperative cancellation checkpoint. A change that has not started yet is
         # dropped here rather than paying for a full review the user already
         # abandoned; one already past this point runs to completion (see the
@@ -1214,11 +1255,19 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         if is_cancelled():
             progress(change_id, "cancelled", {})
             return {
-                "change": link, "change_id": change_id,
-                "gate_spawn_ok": False, "gate_error": "", "gate_verdict": "CANCELLED",
-                "phase2_ran": False, "deep_spawn_ok": False, "deep_error": "",
-                "deep_reviewed": False, "result_recorded": False,
-                "design_block": False, "deep_rounds": 0, "cancelled": True,
+                "change": link,
+                "change_id": change_id,
+                "gate_spawn_ok": False,
+                "gate_error": "",
+                "gate_verdict": "CANCELLED",
+                "phase2_ran": False,
+                "deep_spawn_ok": False,
+                "deep_error": "",
+                "deep_reviewed": False,
+                "result_recorded": False,
+                "design_block": False,
+                "deep_rounds": 0,
+                "cancelled": True,
                 "skipped_reason": "cancelled",
             }
 
@@ -1241,44 +1290,35 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
             # progress writer that raises must never be able to fail a review
             # that is otherwise going fine.
             try:
-                progress(change_id, "reviewing",
-                         {"activity": {"tool": tool, "step": step}})
+                progress(change_id, "reviewing", {"activity": {"tool": tool, "step": step}})
             except Exception:
                 pass
 
-        # Nothing may be sitting at this change's shared path when its reviewer starts.
-        # Adoption proves only that a record NAMES this change, not who wrote it, and every
-        # worker can write any change's path in the shared dir -- so a record present
-        # beforehand is a leftover or another worker's plant, and adopting it would put
-        # someone else's findings on this pull request. If the slot cannot be cleared, skip
-        # adoption rather than trust it.
-        # Build the prompt BEFORE staking the shared slot: the builder FAILS
+        # Build the prompt before dispatch: the builder FAILS
         # CLOSED (raises) when the link's host no longer revalidates against
         # `allowed_hosts()`, and a fetch instruction with an unconfirmed host
         # would route the worker at public github.com — reviewing (and later
         # posting about) a same-slug public PR instead of the intended one.
         try:
-            task_kwargs = {"result_capability": result_capability}
-            if _accepts_kwarg(build_review_task, "result_path"):
-                task_kwargs["result_path"] = dispatch_path
-            review_prompt = build_review_task(link, **task_kwargs)
+            review_prompt = build_review_task(link)
         except pipeline.adapters.AdapterError as exc:
             refused = f"refusing to review: {exc}"
-            progress(change_id, "failed", {
-                "error": refused, "reason": "review_failed"})
+            progress(change_id, "failed", {"error": refused, "reason": "review_failed"})
             return {
-                "change": link, "change_id": change_id,
-                "gate_spawn_ok": False, "gate_error": refused,
-                "gate_verdict": "UNKNOWN", "phase2_ran": False,
-                "deep_spawn_ok": False, "deep_error": refused,
-                "deep_reviewed": False, "result_recorded": False,
-                "design_block": False, "deep_rounds": 0,
+                "change": link,
+                "change_id": change_id,
+                "gate_spawn_ok": False,
+                "gate_error": refused,
+                "gate_verdict": "UNKNOWN",
+                "phase2_ran": False,
+                "deep_spawn_ok": False,
+                "deep_error": refused,
+                "deep_reviewed": False,
+                "result_recorded": False,
+                "design_block": False,
+                "deep_rounds": 0,
                 "skipped_reason": "review_failed",
             }
-        slot_clear = (
-            results.stake_dispatch(change_id, result_capability, root)
-            if result_capability else results.stake_shared(change_id, root)
-        )
         # Keep THIS session (the deep review) resumable: the findings' reasoning
         # is in its context, so it is the only one worth asking about. The
         # gate/follow-up/post sessions are not kept.
@@ -1286,20 +1326,15 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         if _accepts_activity(dispatch):
             review_kwargs["on_activity"] = report
         if _accepts_kwarg(dispatch, "keep_session_key"):
-            review_kwargs["keep_session_key"] = followup.chat_key(
-                run_id or "", change_id)
+            review_kwargs["keep_session_key"] = followup.chat_key(run_id or "", change_id)
         review_spawn = dispatch(review_prompt, timeout, **review_kwargs)
-        # The worker writes the shared data/results/<id>.json its prompt names;
-        # move it into this run's private dir before reading. Without this the
-        # run's dir stays empty and a completed review reports no findings.
-        if slot_clear:
-            results.adopt_from_shared(
-                change_id,
-                root,
-                run_id,
-                expected_capability=result_capability,
-            )
-        rev_rec = results.read_result(change_id, root, run_id)
+        handoff_rec = results.result_from_handoff(review_spawn.get("output"), change_id)
+        rev_rec = handoff_rec
+        # Standalone callers retain their pre-run-id file contract. A run-scoped
+        # worker must return the response-bound handoff; falling back to a file
+        # would let a sibling plant the record it is missing.
+        if rev_rec is None and not run_id:
+            rev_rec = results.read_result(change_id, root, run_id)
         verdict = str(((rev_rec or {}).get("phase1") or {}).get("gate_verdict", "")).upper()
 
         # The gate_*/deep_* keys are kept for downstream compatibility — the run
@@ -1307,7 +1342,8 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         # single-pass model they reflect the ONE review dispatch (there is no
         # distinct gate).
         rec: dict = {
-            "change": link, "change_id": change_id,
+            "change": link,
+            "change_id": change_id,
             "gate_spawn_ok": review_spawn.get("ok", False),
             "gate_error": review_spawn.get("error", ""),
             "gate_verdict": verdict or "UNKNOWN",
@@ -1319,15 +1355,19 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
             "design_block": (verdict == "BLOCK"),
             "deep_rounds": 1,
         }
+        if handoff_rec is not None:
+            rec["_result"] = rev_rec
 
         # Fail only when the turn failed OR nothing usable was recorded — never
         # discard a record that DID land, so a trailing abnormal stop cannot drop
         # already-written verdicts/findings.
         if not review_spawn.get("ok", False):
             rec["skipped_reason"] = "review_failed"
-            progress(change_id, "failed", {
-                "error": review_spawn.get("error", "review failed"),
-                "reason": "review_failed"})
+            progress(
+                change_id,
+                "failed",
+                {"error": review_spawn.get("error", "review failed"), "reason": "review_failed"},
+            )
             return rec
         if not rec["deep_reviewed"]:
             if rev_rec is None:
@@ -1337,17 +1377,24 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
                 # consumers key on; environment failures are discriminated by
                 # the preflight before any dispatch.
                 rec["skipped_reason"] = "no_review_recorded"
-                progress(change_id, "failed", {
-                    "error": "review produced no result record",
-                    "reason": "no_review_recorded"})
+                progress(
+                    change_id,
+                    "failed",
+                    {"error": "review produced no result record", "reason": "no_review_recorded"},
+                )
             else:
                 # A record landed but never marked the review complete: the
                 # worker got far enough to write, then stopped short. Distinct
                 # from "wrote nothing" so the two can be triaged apart.
                 rec["skipped_reason"] = "review_record_incomplete"
-                progress(change_id, "failed", {
-                    "error": "review wrote a result record but never completed the review",
-                    "reason": "review_record_incomplete"})
+                progress(
+                    change_id,
+                    "failed",
+                    {
+                        "error": "review wrote a result record but never completed the review",
+                        "reason": "review_record_incomplete",
+                    },
+                )
             return rec
 
         # --- Bounded coverage backstop: AT MOST ONE targeted follow-up, and only
@@ -1356,35 +1403,21 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         # recorded.
         if (rev_rec or {}).get("coverage_complete") is False:
             progress(change_id, "reviewing", {"coverage": "followup"})
-            # The follow-up turn UPDATES the record, so it needs the current one
-            # visible at the path its prompt names, and re-adopted afterwards. A
-            # failed publish means the record there is not ours, and the follow-up
-            # would adopt whatever replaced it -- skip the turn instead.
-            published = results.publish_to_shared(
-                change_id, root, run_id, result_capability=result_capability)
             # Same fail-closed contract as the first pass: no confirmed host, no
             # follow-up turn. A failed follow-up keeps the first pass's record.
             try:
-                followup_kwargs = {"result_capability": result_capability}
-                if _accepts_kwarg(build_review_followup_task, "result_path"):
-                    followup_kwargs["result_path"] = dispatch_path
-                followup_prompt: str | None = build_review_followup_task(
-                    link, **followup_kwargs)
+                followup_prompt: str | None = build_review_followup_task(link, rev_rec)
             except pipeline.adapters.AdapterError:
                 followup_prompt = None
-            second_pass = (dispatch(followup_prompt, timeout)
-                           if followup_prompt and (published or not run_id)
-                           else {"ok": False})
+            second_pass = dispatch(followup_prompt, timeout) if followup_prompt else {"ok": False}
             if second_pass.get("ok", False):
-                results.adopt_from_shared(
-                    change_id,
-                    root,
-                    run_id,
-                    expected_capability=result_capability,
+                rev_rec = (
+                    results.result_from_handoff(second_pass.get("output"), change_id) or rev_rec
                 )
-                rev_rec = results.read_result(change_id, root, run_id) or rev_rec
                 rec["deep_rounds"] = 2
                 rec["deep_reviewed"] = bool((rev_rec or {}).get("deep_reviewed"))
+                if rev_rec is not None:
+                    rec["_result"] = rev_rec
                 # The kept transcript is the FIRST pass's session, and this
                 # follow-up just added findings for files that pass never saw.
                 # Asking it about one of those would get a confident answer
@@ -1413,16 +1446,21 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
             rec["posting_expected"] = 0
             rec["post_ok"] = True
             rec["design_comment_posted"] = False
-            progress(change_id, "done", {
-                "counts": {"red": red, "yellow": yellow},
-                "design_block": rec.get("design_block", False),
-                "posted": 0, "expected": 0,
-            })
+            progress(
+                change_id,
+                "done",
+                {
+                    "counts": {"red": red, "yellow": yellow},
+                    "design_block": rec.get("design_block", False),
+                    "posted": 0,
+                    "expected": 0,
+                },
+            )
             return rec
         # Opt-in path: the review only RECORDS findings; the driver builds the
         # Python-redacted comment bodies and a separate poster publishes them
         # verbatim — no LLM free-text reaches the CR (security control, unchanged).
-        post = _post_pending(change_id, link)
+        post = _post_pending(change_id, link, rev_rec if handoff_rec is not None else None)
         posted = post["posted_comments"]
         # What the poster was actually asked to deliver, not red+yellow+1: an
         # unanchored finding folds into the review body rather than becoming its
@@ -1433,29 +1471,50 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         # Shared with the explicit-retry path in the backend, so a retry records
         # delivery exactly the way the first attempt would have.
         apply_post_outcome(rec, post)
-        progress(change_id, "done", {
-            "counts": {"red": red, "yellow": yellow},
-            "design_block": rec.get("design_block", False),
-            "posted": posted, "expected": expected,
-        })
+        progress(
+            change_id,
+            "done",
+            {
+                "counts": {"red": red, "yellow": yellow},
+                "design_block": rec.get("design_block", False),
+                "posted": posted,
+                "expected": expected,
+            },
+        )
         return rec
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         per_change = list(pool.map(_one, changes))
 
+    # The response channel is private to the dispatcher turn. Persist its record
+    # only after every worker turn has completed, so a sibling session never gets
+    # a filesystem window onto another worker's mutable handoff.
+    if run_id:
+        results.clear_results(root, run_id)
+    for item in per_change:
+        handoff = item.pop("_result", None)
+        if handoff is not None:
+            try:
+                results.write_result(handoff, root, run_id)
+            except (OSError, ValueError):
+                item["result_recorded"] = False
+                item["deep_reviewed"] = False
+
     design_blocked = [r for r in per_change if r.get("design_block")]
     cancelled_changes = [r for r in per_change if r.get("cancelled")]
-    failures = [r for r in per_change
-                if not r.get("cancelled")
-                and (not r["gate_spawn_ok"] or r.get("deep_spawn_ok") is False)]
+    failures = [
+        r
+        for r in per_change
+        if not r.get("cancelled") and (not r["gate_spawn_ok"] or r.get("deep_spawn_ok") is False)
+    ]
     result_records = sum(1 for r in per_change if r["result_recorded"])
     summary = {
         "ok": True,
         "changes": len(per_change),
-        "gate_spawns": len(per_change),                       # every change is gated
+        "gate_spawns": len(per_change),  # every change is gated
         "deep_spawns": sum(1 for r in per_change if r["phase2_ran"]),
-        "design_blocked": len(design_blocked),                # BLOCK verdicts (still deep-reviewed)
-        "phase2_skipped_on_block": 0,                         # BLOCK does not skip Phase 2
+        "design_blocked": len(design_blocked),  # BLOCK verdicts (still deep-reviewed)
+        "phase2_skipped_on_block": 0,  # BLOCK does not skip Phase 2
         "cancelled": len(cancelled_changes),
         "deep_reviewed": sum(1 for r in per_change if r["deep_reviewed"]),
         "deep_rounds": sum(r.get("deep_rounds", 0) for r in per_change),  # total Phase-2 rounds
@@ -1563,8 +1622,12 @@ def _main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     rp = sub.add_parser("run", help="Review each change on the reusable worker pool")
     rp.add_argument("--changes", required=True, help="newline/comma-separated links or CR ids")
-    rp.add_argument("--concurrency", type=int, default=0,
-                    help="parallel reviews; 0 = auto (worker pool concurrency cap)")
+    rp.add_argument(
+        "--concurrency",
+        type=int,
+        default=0,
+        help="parallel reviews; 0 = auto (worker pool concurrency cap)",
+    )
     rp.add_argument("--timeout", type=int, default=DEFAULT_TASK_TIMEOUT)
     rp.add_argument("--no-report", dest="report", action="store_false")
     args = ap.parse_args(argv)
@@ -1579,8 +1642,13 @@ def _main(argv: list[str] | None = None) -> int:
         pool = review_pool.ReviewPool()
         dispatch = review_pool.make_sync_dispatch(loop, pool, default_timeout=args.timeout)
         try:
-            out = run_review(changes, dispatch=dispatch, concurrency=args.concurrency,
-                             timeout=args.timeout, generate_report=args.report)
+            out = run_review(
+                changes,
+                dispatch=dispatch,
+                concurrency=args.concurrency,
+                timeout=args.timeout,
+                generate_report=args.report,
+            )
         finally:
             try:
                 asyncio.run_coroutine_threadsafe(pool.shutdown(), loop).result(timeout=30)

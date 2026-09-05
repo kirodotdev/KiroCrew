@@ -1,4 +1,5 @@
 """Unit tests for the code-enforced two-stage review driver (gap A + phase switch)."""
+
 import re
 import shutil
 import sys
@@ -22,20 +23,23 @@ class TestHostQualifiedIdentity(unittest.TestCase):
 
     def test_github_keys_unchanged(self):
         self.assertEqual(D.change_id_for("https://github.com/o/r/pull/7"), "GH-o-r-7")
-        self.assertEqual(D.reviewed_key_for("https://github.com/o/r/pull/7"),
-                         "github.com/o/r#7")
+        self.assertEqual(D.reviewed_key_for("https://github.com/o/r/pull/7"), "github.com/o/r#7")
 
     def test_ghe_keys_carry_the_host(self):
-        with mock.patch.object(D.pipeline.adapters.store, "read_config_quiet",
-                               return_value=self.GHE_CFG):
-            self.assertEqual(D.change_id_for("https://acme.ghe.com/o/r/pull/7"),
-                             "GH-acme.ghe.com-o-r-7")
-            self.assertEqual(D.reviewed_key_for("https://acme.ghe.com/o/r/pull/7"),
-                             "acme.ghe.com/o/r#7")
+        with mock.patch.object(
+            D.pipeline.adapters.store, "read_config_quiet", return_value=self.GHE_CFG
+        ):
+            self.assertEqual(
+                D.change_id_for("https://acme.ghe.com/o/r/pull/7"), "GH-acme.ghe.com-o-r-7"
+            )
+            self.assertEqual(
+                D.reviewed_key_for("https://acme.ghe.com/o/r/pull/7"), "acme.ghe.com/o/r#7"
+            )
 
     def test_fetch_and_post_prompts_route_to_the_ghe_api(self):
-        with mock.patch.object(D.pipeline.adapters.store, "read_config_quiet",
-                               return_value=self.GHE_CFG):
+        with mock.patch.object(
+            D.pipeline.adapters.store, "read_config_quiet", return_value=self.GHE_CFG
+        ):
             fetch = D._fetch_instruction("https://acme.ghe.com/o/r/pull/7")
             post = D.build_post_task("https://acme.ghe.com/o/r/pull/7")
             gh_fetch = D._fetch_instruction("https://github.com/o/r/pull/7")
@@ -63,10 +67,17 @@ class TestHostQualifiedIdentity(unittest.TestCase):
         calls silently default to public github.com would fetch from, or post
         an internal enterprise draft onto, a public same-slug PR."""
         link = "https://acme.ghe.com/o/r/pull/7"
-        with mock.patch.object(D.pipeline.adapters.store, "read_config_quiet",
-                               return_value={"github_hosts": ["github.com"]}):
-            for builder in (D.build_post_task, D._fetch_instruction,
-                            D.build_review_task, D.build_review_followup_task):
+        with mock.patch.object(
+            D.pipeline.adapters.store,
+            "read_config_quiet",
+            return_value={"github_hosts": ["github.com"]},
+        ):
+            for builder in (
+                D.build_post_task,
+                D._fetch_instruction,
+                D.build_review_task,
+                D.build_review_followup_task,
+            ):
                 with self.assertRaises(D.pipeline.adapters.AdapterError):
                     builder(link)
                 # A scheme is a named host too, even when it cannot be parsed.
@@ -79,16 +90,25 @@ class TestHostQualifiedIdentity(unittest.TestCase):
         either the host revalidates and the flag is embedded, or the builder
         raises (asserted above). "Resolved as github.com" and "failed to
         resolve" must never look identical."""
-        with mock.patch.object(D.pipeline.adapters.store, "read_config_quiet",
-                               return_value=self.GHE_CFG):
-            for builder in (D.build_post_task, D._fetch_instruction,
-                            D.build_review_task, D.build_review_followup_task):
+        with mock.patch.object(
+            D.pipeline.adapters.store, "read_config_quiet", return_value=self.GHE_CFG
+        ):
+            for builder in (
+                D.build_post_task,
+                D._fetch_instruction,
+                D.build_review_task,
+                D.build_review_followup_task,
+            ):
                 prompt = builder("https://acme.ghe.com/o/r/pull/7")
-                self.assertIn("--hostname acme.ghe.com", prompt,
-                              f"{builder.__name__} lost the hostname routing")
+                self.assertIn(
+                    "--hostname acme.ghe.com",
+                    prompt,
+                    f"{builder.__name__} lost the hostname routing",
+                )
                 gh = builder("https://github.com/o/r/pull/7")
-                self.assertIn("--hostname github.com", gh,
-                              f"{builder.__name__} left github.com unpinned")
+                self.assertIn(
+                    "--hostname github.com", gh, f"{builder.__name__} left github.com unpinned"
+                )
 
 
 def _confirmed(_link, _units):
@@ -112,8 +132,9 @@ class TestReviewDriver(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _fake_dispatch(self, verdict="PASS", write_records=True, max_seen=None,
-                       coverage_complete=True):
+    def _fake_dispatch(
+        self, verdict="PASS", write_records=True, max_seen=None, coverage_complete=True
+    ):
         """A dispatch fn modeling the SINGLE-PASS reviewer:
         - a REVIEW session writes the COMPLETE record in one turn (phase1 verdict +
           one finding + counts + deep_reviewed=true + the coverage signal);
@@ -123,6 +144,7 @@ class TestReviewDriver(unittest.TestCase):
         The pool's send() returns when the worker's turn ends; this fake models
         that by writing the record and returning synchronously.
         """
+
         def dispatch(task, timeout=0):
             with self.lock:
                 self.calls.append(task)
@@ -138,23 +160,44 @@ class TestReviewDriver(unittest.TestCase):
                 if is_poster:
                     rec = results.read_result(cid, self.root) or {}
                     pending = rec.get("pending_comments", []) or []
-                    rec["posted_comments"] = len(pending)   # posts each verbatim
-                    rec["design_comment_posted"] = any(
-                        e.get("kind") == "design" for e in pending)
+                    rec["posted_comments"] = len(pending)  # posts each verbatim
+                    rec["design_comment_posted"] = any(e.get("kind") == "design" for e in pending)
                     results.write_result(rec, self.root)
                 elif is_review:
-                    results.write_result({
-                        "schema": "code-review-sage-result", "version": 1, "change_id": cid,
-                        "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
-                        "phase1": {"gate_verdict": verdict, "design_risk": "low", "criticality": "low"},
-                        "blast_radius": {"rating": "SMALL", "signals": {}},
-                        "counts": {"red": 0, "yellow": 1},
-                        "findings": [{"dimension": "correctness", "severity": "yellow",
-                                      "file": "f", "line": 1, "snippet": "x",
-                                      "observation": "o", "consequence": "c", "suggestion": "s"}],
-                        "deep_reviewed": True, "title": cid,
-                        "files_covered": ["f"], "coverage_complete": coverage_complete,
-                    }, self.root)
+                    results.write_result(
+                        {
+                            "schema": "code-review-sage-result",
+                            "version": 1,
+                            "change_id": cid,
+                            "platform": "github",
+                            "repo_identity": "github.com/o/r",
+                            "revision": "1",
+                            "phase1": {
+                                "gate_verdict": verdict,
+                                "design_risk": "low",
+                                "criticality": "low",
+                            },
+                            "blast_radius": {"rating": "SMALL", "signals": {}},
+                            "counts": {"red": 0, "yellow": 1},
+                            "findings": [
+                                {
+                                    "dimension": "correctness",
+                                    "severity": "yellow",
+                                    "file": "f",
+                                    "line": 1,
+                                    "snippet": "x",
+                                    "observation": "o",
+                                    "consequence": "c",
+                                    "suggestion": "s",
+                                }
+                            ],
+                            "deep_reviewed": True,
+                            "title": cid,
+                            "files_covered": ["f"],
+                            "coverage_complete": coverage_complete,
+                        },
+                        self.root,
+                    )
                 elif is_followup:
                     rec = results.read_result(cid, self.root) or {}
                     rec["coverage_complete"] = True
@@ -163,6 +206,7 @@ class TestReviewDriver(unittest.TestCase):
             with self.lock:
                 self._concurrent -= 1
             return {"ok": True, "output": "done", "error": ""}
+
         return dispatch
 
     def _archiver(self, html, root=None):
@@ -170,8 +214,14 @@ class TestReviewDriver(unittest.TestCase):
         return "sage-report-test"
 
     def test_single_pass_reviews_all_changes(self):
-        out = D.run_review(["CR-1", "CR-2", "CR-3"], dispatch=self._fake_dispatch(verdict="PASS"), confirm=_confirmed,
-                           archiver=self._archiver, root=self.root, post=True)
+        out = D.run_review(
+            ["CR-1", "CR-2", "CR-3"],
+            dispatch=self._fake_dispatch(verdict="PASS"),
+            confirm=_confirmed,
+            archiver=self._archiver,
+            root=self.root,
+            post=True,
+        )
         self.assertEqual(out["changes"], 3)
         self.assertEqual(out["gate_spawns"], 3)
         self.assertEqual(out["deep_spawns"], 3)
@@ -179,7 +229,7 @@ class TestReviewDriver(unittest.TestCase):
         self.assertEqual(out["design_blocked"], 0)
         # ONE review pass + poster per change (coverage complete -> no follow-up)
         self.assertEqual(len(self.calls), 6)
-        self.assertEqual(out["deep_rounds"], 3)           # one review pass per change
+        self.assertEqual(out["deep_rounds"], 3)  # one review pass per change
         self.assertEqual(out["report"]["total"], 3)
         # report archived as a per-run artifact, then records cleaned
         self.assertEqual(out["report_slug"], "sage-report-test")
@@ -187,8 +237,13 @@ class TestReviewDriver(unittest.TestCase):
         self.assertEqual(results.list_results(self.root), [])
 
     def test_concerns_still_proceeds_to_phase2(self):
-        out = D.run_review(["CR-5"], dispatch=self._fake_dispatch(verdict="CONCERNS"),
-                           generate_report=False, root=self.root, post=True)
+        out = D.run_review(
+            ["CR-5"],
+            dispatch=self._fake_dispatch(verdict="CONCERNS"),
+            generate_report=False,
+            root=self.root,
+            post=True,
+        )
         self.assertEqual(out["deep_spawns"], 1)
         self.assertEqual(out["deep_reviewed"], 1)
 
@@ -196,29 +251,42 @@ class TestReviewDriver(unittest.TestCase):
         # A design BLOCK does not skip Phase 2 — the full code review still runs so
         # the author sees design + code issues in one pass. BLOCK only informs the
         # ship decision.
-        out = D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(verdict="BLOCK"),
-                           archiver=self._archiver, root=self.root, post=True)
+        out = D.run_review(
+            ["CR-1", "CR-2"],
+            dispatch=self._fake_dispatch(verdict="BLOCK"),
+            archiver=self._archiver,
+            root=self.root,
+            post=True,
+        )
         self.assertEqual(out["gate_spawns"], 2)
-        self.assertEqual(out["deep_spawns"], 2)            # BLOCK proceeds to Phase 2
+        self.assertEqual(out["deep_spawns"], 2)  # BLOCK proceeds to Phase 2
         self.assertEqual(out["phase2_skipped_on_block"], 0)
-        self.assertEqual(out["design_blocked"], 2)         # BLOCK verdicts, still deep-reviewed
+        self.assertEqual(out["design_blocked"], 2)  # BLOCK verdicts, still deep-reviewed
         self.assertEqual(out["deep_reviewed"], 2)
         # every reviewed change gets the always-on ship-readiness (design) comment
         self.assertEqual(out["design_comments_posted"], 2)
         self.assertEqual(out["report"]["total"], 2)
 
     def test_archive_failure_keeps_records(self):
-        out = D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(verdict="PASS"),
-                           archiver=lambda html, root=None: None, root=self.root, post=True)
+        out = D.run_review(
+            ["CR-1", "CR-2"],
+            dispatch=self._fake_dispatch(verdict="PASS"),
+            archiver=lambda html, root=None: None,
+            root=self.root,
+            post=True,
+        )
         self.assertIn("archive_error", out)
         self.assertNotIn("results_cleaned", out)
-        self.assertEqual(len(results.list_results(self.root)), 2)   # records preserved
+        self.assertEqual(len(results.list_results(self.root)), 2)  # records preserved
 
     def test_no_record_marks_failed(self):
         # dispatch that completes but writes no record -> review produced nothing usable
         def no_record(task, timeout=0):
             return {"ok": True, "output": "", "error": ""}
-        out = D.run_review(["CR-7"], dispatch=no_record, generate_report=False, root=self.root, post=True)
+
+        out = D.run_review(
+            ["CR-7"], dispatch=no_record, generate_report=False, root=self.root, post=True
+        )
         self.assertEqual(out["deep_reviewed"], 0)
         # The residual "turn completed, nothing written" case keeps this value;
         # environment failures carry their own discriminated reasons instead.
@@ -237,19 +305,35 @@ class TestReviewDriver(unittest.TestCase):
                 errors[cid] = (extra or {}).get("error", "")
 
         def partial(task, timeout=0):
-            results.write_result({
-                "schema": "code-review-sage-result", "version": 1, "change_id": "CR-8",
-                "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
-                "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
-                "blast_radius": {"rating": "SMALL", "signals": {}},
-                "counts": {"red": 0, "yellow": 0}, "findings": [],
-                "deep_reviewed": False, "title": "CR-8",
-                "files_covered": [], "coverage_complete": True,
-            }, self.root)
+            results.write_result(
+                {
+                    "schema": "code-review-sage-result",
+                    "version": 1,
+                    "change_id": "CR-8",
+                    "platform": "github",
+                    "repo_identity": "github.com/o/r",
+                    "revision": "1",
+                    "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
+                    "blast_radius": {"rating": "SMALL", "signals": {}},
+                    "counts": {"red": 0, "yellow": 0},
+                    "findings": [],
+                    "deep_reviewed": False,
+                    "title": "CR-8",
+                    "files_covered": [],
+                    "coverage_complete": True,
+                },
+                self.root,
+            )
             return {"ok": True, "output": "", "error": ""}
 
-        out = D.run_review(["CR-8"], dispatch=partial, generate_report=False,
-                           root=self.root, post=True, progress=prog)
+        out = D.run_review(
+            ["CR-8"],
+            dispatch=partial,
+            generate_report=False,
+            root=self.root,
+            post=True,
+            progress=prog,
+        )
         rec = out["per_change"][0]
         self.assertEqual(rec["skipped_reason"], "review_record_incomplete")
         self.assertTrue(rec["result_recorded"])
@@ -266,11 +350,16 @@ class TestReviewDriver(unittest.TestCase):
             errors[cid] = (phase, (extra or {}).get("error", ""))
 
         out = D.run_review(
-            ["CR-1", "CR-2"], dispatch=self._fake_dispatch(),
-            generate_report=False, root=self.root, post=True, progress=prog,
+            ["CR-1", "CR-2"],
+            dispatch=self._fake_dispatch(),
+            generate_report=False,
+            root=self.root,
+            post=True,
+            progress=prog,
             preflight=lambda: "the reviewer cannot run: no kiro-cli executable "
-                              "was found on this host")
-        self.assertEqual(self.calls, [])            # nothing was dispatched
+            "was found on this host",
+        )
+        self.assertEqual(self.calls, [])  # nothing was dispatched
         self.assertFalse(out["ok"])
         self.assertIn("kiro-cli", out["error"])
         self.assertEqual(out["changes"], 2)
@@ -283,30 +372,48 @@ class TestReviewDriver(unittest.TestCase):
 
     def test_passing_preflight_runs_the_review(self):
         # "" means the runtime is available — the run proceeds normally.
-        out = D.run_review(["CR-1"], dispatch=self._fake_dispatch(),
-                           generate_report=False, root=self.root, post=True,
-                           preflight=lambda: "")
+        out = D.run_review(
+            ["CR-1"],
+            dispatch=self._fake_dispatch(),
+            generate_report=False,
+            root=self.root,
+            post=True,
+            preflight=lambda: "",
+        )
         self.assertTrue(out["ok"])
         self.assertEqual(out["deep_reviewed"], 1)
         self.assertGreater(len(self.calls), 0)
 
     def test_each_task_is_single_change(self):
-        D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(), archiver=self._archiver,
-                     root=self.root, post=True)
+        D.run_review(
+            ["CR-1", "CR-2"],
+            dispatch=self._fake_dispatch(),
+            archiver=self._archiver,
+            root=self.root,
+            post=True,
+        )
         for task in self.calls:
             self.assertIn("EXACTLY ONE change", task)
 
     def test_concurrency_capped(self):
         max_seen = [0]
-        D.run_review(["CR-1", "CR-2", "CR-3", "CR-4", "CR-5"],
-                     dispatch=self._fake_dispatch(max_seen=max_seen), archiver=self._archiver,
-                     concurrency=2, root=self.root, post=True)
+        D.run_review(
+            ["CR-1", "CR-2", "CR-3", "CR-4", "CR-5"],
+            dispatch=self._fake_dispatch(max_seen=max_seen),
+            archiver=self._archiver,
+            concurrency=2,
+            root=self.root,
+            post=True,
+        )
         self.assertLessEqual(max_seen[0], 2)
 
     def test_review_failure_surfaced(self):
         def failing(task, timeout=0):
             return {"ok": False, "output": "", "error": "boom"}
-        out = D.run_review(["CR-9"], dispatch=failing, generate_report=False, root=self.root, post=True)
+
+        out = D.run_review(
+            ["CR-9"], dispatch=failing, generate_report=False, root=self.root, post=True
+        )
         self.assertEqual(len(out["failures"]), 1)
         self.assertEqual(out["deep_reviewed"], 0)
         self.assertEqual(out["per_change"][0]["skipped_reason"], "review_failed")
@@ -332,14 +439,16 @@ class TestReviewDriver(unittest.TestCase):
             if phase == "failed":
                 entries[c] = dict(extra or {})
 
-        out = D.run_review([cid], generate_report=False, root=self.root,
-                           post=True, progress=prog, **kw)
+        out = D.run_review(
+            [cid], generate_report=False, root=self.root, post=True, progress=prog, **kw
+        )
         self.out = out
         return entries.get(cid, {})
 
     def test_progress_entry_names_no_review_recorded(self):
         entry = self._failed_entry(
-            "CR-7", dispatch=lambda task, timeout=0: {"ok": True, "output": "", "error": ""})
+            "CR-7", dispatch=lambda task, timeout=0: {"ok": True, "output": "", "error": ""}
+        )
         self.assertEqual(entry.get("reason"), "no_review_recorded")
         # The sentence is unchanged -- the token is carried BESIDE it.
         self.assertEqual(entry.get("error"), "review produced no result record")
@@ -347,16 +456,25 @@ class TestReviewDriver(unittest.TestCase):
 
     def test_progress_entry_names_review_record_incomplete(self):
         def partial(task, timeout=0):
-            results.write_result({
-                "schema": "code-review-sage-result", "version": 1, "change_id": "CR-8",
-                "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
-                "phase1": {"gate_verdict": "PASS", "design_risk": "low",
-                           "criticality": "low"},
-                "blast_radius": {"rating": "SMALL", "signals": {}},
-                "counts": {"red": 0, "yellow": 0}, "findings": [],
-                "deep_reviewed": False, "title": "CR-8",
-                "files_covered": [], "coverage_complete": True,
-            }, self.root)
+            results.write_result(
+                {
+                    "schema": "code-review-sage-result",
+                    "version": 1,
+                    "change_id": "CR-8",
+                    "platform": "github",
+                    "repo_identity": "github.com/o/r",
+                    "revision": "1",
+                    "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
+                    "blast_radius": {"rating": "SMALL", "signals": {}},
+                    "counts": {"red": 0, "yellow": 0},
+                    "findings": [],
+                    "deep_reviewed": False,
+                    "title": "CR-8",
+                    "files_covered": [],
+                    "coverage_complete": True,
+                },
+                self.root,
+            )
             return {"ok": True, "output": "", "error": ""}
 
         entry = self._failed_entry("CR-8", dispatch=partial)
@@ -366,8 +484,8 @@ class TestReviewDriver(unittest.TestCase):
 
     def test_progress_entry_names_review_failed(self):
         entry = self._failed_entry(
-            "CR-9",
-            dispatch=lambda task, timeout=0: {"ok": False, "output": "", "error": "boom"})
+            "CR-9", dispatch=lambda task, timeout=0: {"ok": False, "output": "", "error": "boom"}
+        )
         self.assertEqual(entry.get("reason"), "review_failed")
         # The spawn's own text, which for this cause is the information: it can be
         # a missing-agent-spec message carrying its own repair command, so the
@@ -383,10 +501,15 @@ class TestReviewDriver(unittest.TestCase):
                 entries[cid] = dict(extra or {})
 
         out = D.run_review(
-            ["CR-1", "CR-2"], dispatch=self._fake_dispatch(),
-            generate_report=False, root=self.root, post=True, progress=prog,
+            ["CR-1", "CR-2"],
+            dispatch=self._fake_dispatch(),
+            generate_report=False,
+            root=self.root,
+            post=True,
+            progress=prog,
             preflight=lambda: "the reviewer cannot run: no kiro-cli executable "
-                              "was found on this host")
+            "was found on this host",
+        )
         # Every change of a preflight-failed run, not just the first.
         for cid, rec in zip(("CR-1", "CR-2"), out["per_change"]):
             self.assertEqual(entries[cid].get("reason"), "runtime_unavailable")
@@ -414,14 +537,13 @@ class TestReviewDriver(unittest.TestCase):
         self.assertIn("spawn further subagents", task)
         self.assertIn("github.com/o/r/pull/7", task)
 
-    def test_review_task_binds_the_result_to_its_dispatch(self):
-        dispatch_path = "/private/dispatch/CR-7.json"
-        task = D.build_review_task("CR-7", "dispatch-capability", dispatch_path)
-        followup = D.build_review_followup_task("CR-7", "dispatch-capability")
-        self.assertIn("result_capability", task)
-        self.assertIn("dispatch-capability", task)
-        self.assertIn(dispatch_path, task)
-        self.assertIn("dispatch-capability", followup)
+    def test_review_task_returns_the_result_through_the_dispatcher(self):
+        task = D.build_review_task("CR-7")
+        followup = D.build_review_followup_task("CR-7", {"change_id": "CR-7"})
+        self.assertIn("<code-review-sage-result>", task)
+        self.assertIn("Do not write the result record to disk", task)
+        self.assertIn("<code-review-sage-result>", followup)
+        self.assertNotIn("result_capability", task)
 
     def test_review_task_has_inline_learning(self):
         task = D.build_review_task("CR-8")
@@ -446,23 +568,37 @@ class TestReviewDriver(unittest.TestCase):
         def prog(cid, phase, extra=None):
             with plock:
                 seen.append((cid, phase))
-        D.run_review(["CR-1"], dispatch=self._fake_dispatch(verdict="PASS"),
-                     generate_report=False, root=self.root, progress=prog, post=True)
+
+        D.run_review(
+            ["CR-1"],
+            dispatch=self._fake_dispatch(verdict="PASS"),
+            generate_report=False,
+            root=self.root,
+            progress=prog,
+            post=True,
+        )
         phases = [p for (c, p) in seen if c == "CR-1"]
-        self.assertEqual(phases[0], "queued")     # marked queued upfront
-        self.assertIn("reviewing", phases)        # single review pass in progress
-        self.assertEqual(phases[-1], "done")      # terminal
+        self.assertEqual(phases[0], "queued")  # marked queued upfront
+        self.assertIn("reviewing", phases)  # single review pass in progress
+        self.assertEqual(phases[-1], "done")  # terminal
 
     def test_progress_block_still_reviews(self):
         seen = []
 
         def prog(cid, phase, extra=None):
             seen.append(phase)
-        D.run_review(["CR-2"], dispatch=self._fake_dispatch(verdict="BLOCK"),
-                     generate_report=False, root=self.root, progress=prog, post=True)
-        self.assertIn("reviewing", seen)          # BLOCK is still fully reviewed
-        self.assertNotIn("blocked", seen)         # no design-block short-circuit
-        self.assertNotIn("gating", seen)          # no gate phase
+
+        D.run_review(
+            ["CR-2"],
+            dispatch=self._fake_dispatch(verdict="BLOCK"),
+            generate_report=False,
+            root=self.root,
+            progress=prog,
+            post=True,
+        )
+        self.assertIn("reviewing", seen)  # BLOCK is still fully reviewed
+        self.assertNotIn("blocked", seen)  # no design-block short-circuit
+        self.assertNotIn("gating", seen)  # no gate phase
         self.assertEqual(seen[-1], "done")
 
     def test_review_task_blast_radius_never_blocks(self):
@@ -478,10 +614,17 @@ class TestReviewDriver(unittest.TestCase):
         def prog(cid, phase, extra=None):
             if phase == "done":
                 seen[cid] = extra or {}
-        out = D.run_review(["CR-1"], dispatch=self._fake_dispatch(verdict="PASS"),
-                           generate_report=False, root=self.root, progress=prog, post=True)
-        self.assertEqual(seen["CR-1"]["posted"], 2)       # 1 finding + always-on ship comment
-        self.assertEqual(seen["CR-1"]["expected"], 2)     # red0 + yellow1 + 1 ship comment
+
+        out = D.run_review(
+            ["CR-1"],
+            dispatch=self._fake_dispatch(verdict="PASS"),
+            generate_report=False,
+            root=self.root,
+            progress=prog,
+            post=True,
+        )
+        self.assertEqual(seen["CR-1"]["posted"], 2)  # 1 finding + always-on ship comment
+        self.assertEqual(seen["CR-1"]["expected"], 2)  # red0 + yellow1 + 1 ship comment
         self.assertEqual(out["per_change"][0]["posted_comments"], 2)
 
     def test_progress_done_flags_unposted_findings(self):
@@ -492,21 +635,43 @@ class TestReviewDriver(unittest.TestCase):
             assert m is not None
             cid = m.group(0)
             if "SINGLE thorough pass" in task:
-                results.write_result({
-                    "schema": "code-review-sage-result", "version": 1, "change_id": cid,
-                    "platform": "github", "repo_identity": "x", "revision": "1",
-                    "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
-                    "blast_radius": {"rating": "SMALL", "signals": {}},
-                    "counts": {"red": 1, "yellow": 0},
-                    "findings": [{"dimension": "correctness", "severity": "red",
-                                  "file": "f", "line": 1, "snippet": "x",
-                                  "observation": "o", "consequence": "c", "suggestion": "s"}],
-                    "deep_reviewed": True, "title": cid,
-                    "files_covered": ["f"], "coverage_complete": True,
-                }, self.root)
+                results.write_result(
+                    {
+                        "schema": "code-review-sage-result",
+                        "version": 1,
+                        "change_id": cid,
+                        "platform": "github",
+                        "repo_identity": "x",
+                        "revision": "1",
+                        "phase1": {
+                            "gate_verdict": "PASS",
+                            "design_risk": "low",
+                            "criticality": "low",
+                        },
+                        "blast_radius": {"rating": "SMALL", "signals": {}},
+                        "counts": {"red": 1, "yellow": 0},
+                        "findings": [
+                            {
+                                "dimension": "correctness",
+                                "severity": "red",
+                                "file": "f",
+                                "line": 1,
+                                "snippet": "x",
+                                "observation": "o",
+                                "consequence": "c",
+                                "suggestion": "s",
+                            }
+                        ],
+                        "deep_reviewed": True,
+                        "title": cid,
+                        "files_covered": ["f"],
+                        "coverage_complete": True,
+                    },
+                    self.root,
+                )
             elif "pre-redacted DRAFT review comments" in task:
                 rec = results.read_result(cid, self.root) or {}
-                rec["posted_comments"] = 0   # nothing posted despite a finding
+                rec["posted_comments"] = 0  # nothing posted despite a finding
                 results.write_result(rec, self.root)
             return {"ok": True, "output": "", "error": ""}
 
@@ -515,10 +680,17 @@ class TestReviewDriver(unittest.TestCase):
         def prog(cid, phase, extra=None):
             if phase == "done":
                 seen[cid] = extra or {}
-        D.run_review(["CR-2"], dispatch=review_no_post, generate_report=False,
-                     root=self.root, progress=prog, post=True)
+
+        D.run_review(
+            ["CR-2"],
+            dispatch=review_no_post,
+            generate_report=False,
+            root=self.root,
+            progress=prog,
+            post=True,
+        )
         self.assertEqual(seen["CR-2"]["posted"], 0)
-        self.assertEqual(seen["CR-2"]["expected"], 2)     # red1 + 1 ship comment; UI flags mismatch
+        self.assertEqual(seen["CR-2"]["expected"], 2)  # red1 + 1 ship comment; UI flags mismatch
 
     def test_archive_report_posts_and_returns_slug(self):
         calls = []
@@ -528,7 +700,8 @@ class TestReviewDriver(unittest.TestCase):
             calls.append((method, path))
             if method == "POST":
                 return {"slug": "sage-report-xyz"}
-            return {"artifacts": []}      # GET (prune) — nothing to prune
+            return {"artifacts": []}  # GET (prune) — nothing to prune
+
         D._api_request = fake_api
         try:
             slug = D._archive_report("<b>report</b>")
@@ -555,7 +728,7 @@ class TestReviewDriver(unittest.TestCase):
         # workers aren't /api/spawn sub-agents, so the gateway cap does not apply.
         self.assertEqual(D._resolve_concurrency(0), D.review_pool.MAX_CONCURRENT)
         self.assertEqual(D._resolve_concurrency(None), D.review_pool.MAX_CONCURRENT)
-        self.assertEqual(D.review_pool.MAX_CONCURRENT, 5)   # max 5 concurrent reviews
+        self.assertEqual(D.review_pool.MAX_CONCURRENT, 5)  # max 5 concurrent reviews
 
     def test_resolve_concurrency_explicit_wins(self):
         self.assertEqual(D._resolve_concurrency(7), 7)
@@ -565,16 +738,20 @@ class TestReviewDriver(unittest.TestCase):
         # First pass reports incomplete coverage -> the driver runs EXACTLY ONE
         # targeted follow-up (not a blanket loop), then posts. deep_rounds == 2.
         disp = self._fake_dispatch(verdict="PASS", coverage_complete=False)
-        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True)
+        out = D.run_review(
+            ["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True
+        )
         self.assertEqual(out["per_change"][0]["deep_rounds"], 2)
-        self.assertEqual(len(self.calls), 3)   # review + one follow-up + poster
+        self.assertEqual(len(self.calls), 3)  # review + one follow-up + poster
         self.assertTrue(any("INCOMPLETE file coverage" in c for c in self.calls))
 
     def test_coverage_complete_skips_followup(self):
         disp = self._fake_dispatch(verdict="PASS", coverage_complete=True)
-        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True)
+        out = D.run_review(
+            ["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True
+        )
         self.assertEqual(out["per_change"][0]["deep_rounds"], 1)
-        self.assertEqual(len(self.calls), 2)   # review + poster only
+        self.assertEqual(len(self.calls), 2)  # review + poster only
         self.assertFalse(any("INCOMPLETE file coverage" in c for c in self.calls))
 
 
@@ -586,15 +763,15 @@ class TestWorkerPromptScriptPaths(unittest.TestCase):
 
     def test_prompts_reference_existing_script_paths(self):
         app_root = Path(__file__).resolve().parents[1]
-        prompts = [D.build_review_task("CR-12345678"),
-                   D.build_review_followup_task("CR-12345678")]
+        prompts = [D.build_review_task("CR-12345678"), D.build_review_followup_task("CR-12345678")]
         refs = set()
         for p in prompts:
             refs.update(re.findall(r"(sage_lib/[\w./-]+\.py)", p))
         self.assertTrue(refs, "expected the worker prompts to reference a script")
         for rel in sorted(refs):
-            self.assertTrue((app_root / rel).is_file(),
-                            f"worker prompt references a missing path: {rel}")
+            self.assertTrue(
+                (app_root / rel).is_file(), f"worker prompt references a missing path: {rel}"
+            )
 
 
 class TestWorkerPromptInterpreter(unittest.TestCase):
@@ -624,8 +801,9 @@ class TestWorkerPromptInterpreter(unittest.TestCase):
         py = D.python_command()
         for p in self._prompts():
             for cmd in re.findall(r"`([^`]*sage_lib/[\w./-]+\.py[^`]*)`", p):
-                self.assertTrue(cmd.startswith(py + " "),
-                                f"script command does not name the interpreter: {cmd}")
+                self.assertTrue(
+                    cmd.startswith(py + " "), f"script command does not name the interpreter: {cmd}"
+                )
 
     def test_prompt_states_the_interpreter_for_the_skill_commands(self):
         # The shipped skills write their commands as `<python> ...`; the prompt is
@@ -668,10 +846,12 @@ class TestInterpreterIsHandedOverRaw(unittest.TestCase):
         # Injected at the seam the interpreter now comes from: the gateway's own
         # ``sys.executable``. Whatever it contains -- a space, a ``$``, a backslash
         # run -- must arrive verbatim, since each of those was a separate defect.
-        for exe in (r"C:\Program Files\Py\python.exe",
-                    r"C:\tools\$python v2\python.exe",
-                    "/home/u/my py/bin/python3",
-                    r"/home/u/kiro\home/bin/python3"):
+        for exe in (
+            r"C:\Program Files\Py\python.exe",
+            r"C:\tools\$python v2\python.exe",
+            "/home/u/my py/bin/python3",
+            r"/home/u/kiro\home/bin/python3",
+        ):
             with mock.patch.object(D.sys, "executable", exe):
                 self.assertEqual(D.python_command(), exe)
 
@@ -679,8 +859,7 @@ class TestInterpreterIsHandedOverRaw(unittest.TestCase):
         # Without this instruction a space-containing path -- ordinary on Windows,
         # where profiles are named "First Last" -- would be split by the shell and
         # the command would run nothing, which is the failure this PR removes.
-        for prompt in (D.build_review_task(self.LINK),
-                       D.build_review_followup_task(self.LINK)):
+        for prompt in (D.build_review_task(self.LINK), D.build_review_followup_task(self.LINK)):
             self.assertIn("quote it as YOUR shell requires", prompt)
 
 
@@ -700,8 +879,7 @@ class TestShippedSkillsNameNoBareInterpreter(unittest.TestCase):
         self.assertTrue(found, "expected the app to ship skills")
         for md in found:
             for i, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
-                self.assertNotRegex(line, bare,
-                                    f"{md.name}:{i} names a bare interpreter")
+                self.assertNotRegex(line, bare, f"{md.name}:{i} names a bare interpreter")
 
 
 class TestDeterministicPosting(unittest.TestCase):
@@ -711,17 +889,17 @@ class TestDeterministicPosting(unittest.TestCase):
 
     def test_review_prompt_records_only_and_never_posts(self):
         p = D.build_review_task("https://github.com/o/r/pull/12345678")
-        self.assertIn("RECORD ONLY", p)                  # writes findings, no posting
+        self.assertIn("RECORD ONLY", p)  # writes findings, no posting
         self.assertIn("do NOT post", p)
         self.assertIn("MUST NOT call any comment tool", p)
-        self.assertNotIn("CRAddComment", p)              # reviewer never posts
+        self.assertNotIn("CRAddComment", p)  # reviewer never posts
 
     def test_post_task_posts_prebuilt_redacted_bodies_verbatim(self):
         p = D.build_post_task("https://github.com/o/r/pull/12345678")
-        self.assertIn("pending_comments", p)             # reads driver-built bodies
-        self.assertIn("VERBATIM", p)                     # posts exactly, no compose
-        self.assertIn("already redacted in Python", p)   # redaction is deterministic
-        self.assertIn("posted_comments", p)              # records count
+        self.assertIn("pending_comments", p)  # reads driver-built bodies
+        self.assertIn("VERBATIM", p)  # posts exactly, no compose
+        self.assertIn("already redacted in Python", p)  # redaction is deterministic
+        self.assertIn("posted_comments", p)  # records count
         self.assertIn("design_comment_posted", p)
 
 
@@ -742,7 +920,8 @@ class TestChangeIdAndFetch(unittest.TestCase):
         # written record and the driver's read would hit different files.
         link = "https://github.com/o/r/pull/7"
         target = D.pipeline.adapters.parse_github_payload(
-            {"number": 7, "body": "x", "files": [{"path": "a", "diff": "d"}]}, link=link)
+            {"number": 7, "body": "x", "files": [{"path": "a", "diff": "d"}]}, link=link
+        )
         self.assertEqual(D._cid(link), target.change_id)
 
     def test_cid_fallback_is_filesystem_safe(self):
@@ -777,16 +956,16 @@ class TestGithubPosting(unittest.TestCase):
     def test_github_poster_prompt_is_pending_and_never_submits(self):
         p = D.build_post_task("https://github.com/o/r/pull/5")
         self.assertIn("PENDING", p)
-        self.assertIn("NO `event` key", p)             # unsubmitted review
+        self.assertIn("NO `event` key", p)  # unsubmitted review
         self.assertIn("gh api", p)
         self.assertIn("--method POST", p)
-        self.assertIn("github_review_payload", p)      # uses the Python-built envelope
-        self.assertIn("MUST NOT", p)                   # submit/approve prohibition
+        self.assertIn("github_review_payload", p)  # uses the Python-built envelope
+        self.assertIn("MUST NOT", p)  # submit/approve prohibition
         self.assertIn("VERBATIM", p)
         self.assertIn("already redacted in Python", p)
         # Re-review safety: clear only a prior SAGE pending review (watermark-gated),
         # never a human's, so a second run doesn't 422 on "one pending review per PR".
-        self.assertIn('state==\"PENDING\"', p)
+        self.assertIn('state=="PENDING"', p)
         self.assertIn("[code-review-sage]", p)
 
     def test_github_poster_prompt_is_pending_review(self):
@@ -798,43 +977,65 @@ class TestGithubPosting(unittest.TestCase):
 
     def test_github_run_attaches_review_payload_and_posts(self):
         link = "https://github.com/o/r/pull/5"
-        cid = D._cid(link)   # GH-o-r-5
+        cid = D._cid(link)  # GH-o-r-5
 
         def dispatch(task, timeout=0):
             if "SINGLE thorough pass" in task:
-                results.write_result({
-                    "schema": "code-review-sage-result", "version": 1, "change_id": cid,
-                    "platform": "github", "repo_identity": "github.com/o/r",
-                    "revision": "sha123",
-                    "phase1": {"gate_verdict": "PASS", "design_risk": "low",
-                               "criticality": "low"},
-                    "blast_radius": {"rating": "SMALL", "signals": {}},
-                    "counts": {"red": 1, "yellow": 0},
-                    "findings": [{"dimension": "correctness", "severity": "red",
-                                  "file": "src/a.rs", "line": 5, "snippet": "x",
-                                  "observation": "o", "consequence": "c",
-                                  "suggestion": "s"}],
-                    "deep_reviewed": True, "title": cid,
-                    "files_covered": ["src/a.rs"], "coverage_complete": True,
-                }, self.root)
+                results.write_result(
+                    {
+                        "schema": "code-review-sage-result",
+                        "version": 1,
+                        "change_id": cid,
+                        "platform": "github",
+                        "repo_identity": "github.com/o/r",
+                        "revision": "sha123",
+                        "phase1": {
+                            "gate_verdict": "PASS",
+                            "design_risk": "low",
+                            "criticality": "low",
+                        },
+                        "blast_radius": {"rating": "SMALL", "signals": {}},
+                        "counts": {"red": 1, "yellow": 0},
+                        "findings": [
+                            {
+                                "dimension": "correctness",
+                                "severity": "red",
+                                "file": "src/a.rs",
+                                "line": 5,
+                                "snippet": "x",
+                                "observation": "o",
+                                "consequence": "c",
+                                "suggestion": "s",
+                            }
+                        ],
+                        "deep_reviewed": True,
+                        "title": cid,
+                        "files_covered": ["src/a.rs"],
+                        "coverage_complete": True,
+                    },
+                    self.root,
+                )
             elif "pre-redacted DRAFT review comments" in task:
                 rec = results.read_result(cid, self.root) or {}
                 pay = rec.get("github_review_payload") or {}
-                rec["posted_comments"] = (len(pay.get("comments", []))
-                                          + (1 if pay.get("body") else 0))
+                rec["posted_comments"] = len(pay.get("comments", [])) + (
+                    1 if pay.get("body") else 0
+                )
                 rec["design_comment_posted"] = bool(pay.get("body"))
                 results.write_result(rec, self.root)
             return {"ok": True, "output": "", "error": ""}
 
-        out = D.run_review([link], dispatch=dispatch, generate_report=False, root=self.root, post=True)
+        out = D.run_review(
+            [link], dispatch=dispatch, generate_report=False, root=self.root, post=True
+        )
         rec = results.read_result(cid, self.root)
         pay = rec["github_review_payload"]
-        self.assertNotIn("event", pay)                 # PENDING (unsubmitted)
-        self.assertEqual(pay["commit_id"], "sha123")   # anchored to head SHA
+        self.assertNotIn("event", pay)  # PENDING (unsubmitted)
+        self.assertEqual(pay["commit_id"], "sha123")  # anchored to head SHA
         self.assertEqual(len(pay["comments"]), 1)
         self.assertEqual(pay["comments"][0]["path"], "src/a.rs")
         self.assertEqual(pay["comments"][0]["side"], "RIGHT")
-        self.assertEqual(rec["posted_comments"], 2)    # 1 finding + ship-readiness body
+        self.assertEqual(rec["posted_comments"], 2)  # 1 finding + ship-readiness body
         self.assertEqual(out["per_change"][0]["posted_comments"], 2)
 
     def test_post_recorded_reports_a_record_with_no_revision(self):
@@ -849,11 +1050,14 @@ class TestGithubPosting(unittest.TestCase):
         run_id = "r1"
         cid = "GH-acme-repo-1"
         rec = {
-            "schema": "code-review-sage/result", "version": 1, "change_id": cid,
-            "platform": "github", "repo_identity": "acme/repo",
-            "phase1": {"gate_verdict": "PASS", "design_risk": "low",
-                       "criticality": "low"},
-            "findings": [], "counts": {"red": 0, "yellow": 0},
+            "schema": "code-review-sage/result",
+            "version": 1,
+            "change_id": cid,
+            "platform": "github",
+            "repo_identity": "acme/repo",
+            "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
+            "findings": [],
+            "counts": {"red": 0, "yellow": 0},
             # No `revision` -- contract-valid, unanchorable.
         }
         results.write_result(rec, root, run_id)
@@ -865,8 +1069,12 @@ class TestGithubPosting(unittest.TestCase):
             return {"ok": True}
 
         out = D.post_recorded(
-            cid, "https://github.com/acme/repo/pull/1",
-            dispatch=_dispatch, run_id=run_id, root=root, keys=None,
+            cid,
+            "https://github.com/acme/repo/pull/1",
+            dispatch=_dispatch,
+            run_id=run_id,
+            root=root,
+            keys=None,
         )
         self.assertFalse(out["post_ok"])
         self.assertIn("commit_id", out["post_error"])
