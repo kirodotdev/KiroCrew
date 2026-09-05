@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import shutil
+import stat
+from pathlib import Path
 
 import pytest
 from hypothesis import given, settings
@@ -19,6 +21,7 @@ from kiro_crew.apps.manager import (
     _read_installed,
     _validate_source_path,
     _write_installed,
+    app_enabled_state,
     disable_app,
     enable_app,
     get_app,
@@ -1748,6 +1751,196 @@ def _ship_test_builtin(monkeypatch, root, manifest_data):
     )
     monkeypatch.setattr(execution, "_BUILTINS_DIR", shipped)
     return shipped_app
+
+
+class TestEnabledStateTellsUnreadableFromNotInstalled:
+    """``app_enabled_state`` exists to keep those apart, and ``is_file()`` cannot.
+
+    ``Path.is_file()`` answers a silent False for five path shapes that are not
+    absence -- a dangling symlink, a directory or fifo in the file's place, a symlink
+    loop, and a non-directory parent component -- so leading with it made each of them
+    indistinguishable from a deliberate uninstall. A genuine ``stat`` fault such as
+    EACCES was already correct, because ``is_file`` re-raises it.
+
+    The cost is asymmetric now that ``hook_reconcile`` consumes this state unattended
+    on a 15s tick: a wrong ``False`` fires an automatic teardown of a live app's
+    routes and modules, while a ``None`` defers to the next tick.
+    """
+
+    def test_a_dangling_symlink_is_unknown(self, app_home):
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").symlink_to(app_root / "gone.json")
+
+        assert app_enabled_state("shape-probe") is None
+
+    def test_a_directory_in_its_place_is_unknown(self, app_home):
+        (app_home / "apps" / "shape-probe" / "installed.json").mkdir(parents=True)
+
+        assert app_enabled_state("shape-probe") is None
+
+    @pytest.mark.skipif(
+        not hasattr(os, "mkfifo"),
+        reason="a FIFO is a POSIX-only path shape; os.mkfifo does not exist on Windows",
+    )
+    def test_a_fifo_in_its_place_is_unknown(self, app_home):
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        os.mkfifo(app_root / "installed.json")
+
+        assert app_enabled_state("shape-probe") is None
+
+    def test_a_symlink_loop_is_unknown(self, app_home):
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").symlink_to(app_root / "other.json")
+        (app_root / "other.json").symlink_to(app_root / "installed.json")
+
+        assert app_enabled_state("shape-probe") is None
+
+    def test_a_non_directory_parent_is_unknown(self, app_home):
+        """Something occupies the app directory's own path."""
+        (app_home / "apps").mkdir(parents=True, exist_ok=True)
+        (app_home / "apps" / "shape-probe").write_text("not a directory", encoding="utf-8")
+
+        assert app_enabled_state("shape-probe") is None
+
+    def test_a_non_directory_parent_is_unknown_under_the_windows_error_class(
+        self, app_home, monkeypatch
+    ):
+        """The verdict must come from the path's SHAPE, not the exception class.
+
+        One condition, two classes: POSIX raises NotADirectoryError (ENOTDIR) while
+        Windows maps ERROR_PATH_NOT_FOUND to ENOENT and raises FileNotFoundError --
+        the same class a genuinely missing file raises. Keying absence on that class
+        told the truth on Linux and not on Windows, where a wrong-shape parent still
+        read as a deliberate uninstall and the hook reconciler would tear a LIVE app
+        down for it.
+
+        The Windows mapping is injected so this runs on every platform; the natural
+        path is covered by the test above on whichever platform produces it.
+        """
+        (app_home / "apps").mkdir(parents=True, exist_ok=True)
+        (app_home / "apps" / "shape-probe").write_text("not a directory", encoding="utf-8")
+
+        real_stat = Path.stat
+
+        def as_windows(self, *args, **kwargs):
+            try:
+                return real_stat(self, *args, **kwargs)
+            except NotADirectoryError as exc:
+                raise FileNotFoundError(2, "No such file or directory", str(self)) from exc
+
+        monkeypatch.setattr(Path, "stat", as_windows)
+
+        assert app_enabled_state("shape-probe") is None
+
+    def test_genuine_absence_stays_false_under_the_windows_error_class(
+        self, app_home, monkeypatch
+    ):
+        """The control for the above: the shape check must not swallow real absence.
+
+        Uninstall depends on this False, so a fix for the wrong-shape case that also
+        reported unknown for a missing file would break the caller it exists to serve.
+        """
+        (app_home / "apps" / "shape-probe").mkdir(parents=True)
+
+        real_stat = Path.stat
+
+        def as_windows(self, *args, **kwargs):
+            try:
+                return real_stat(self, *args, **kwargs)
+            except NotADirectoryError as exc:
+                raise FileNotFoundError(2, "No such file or directory", str(self)) from exc
+
+        monkeypatch.setattr(Path, "stat", as_windows)
+
+        assert app_enabled_state("shape-probe") is False
+
+    def test_a_dangling_windows_junction_ancestor_is_unknown(self, app_home, monkeypatch):
+        """A dangling junction occupies the path while looking absent to every predicate.
+
+        The same mistake as the error-class one, one predicate over: ``is_symlink`` is
+        False for a Windows directory junction, so a junction whose target is gone
+        presents as ``is_dir=False, exists=False, is_symlink=False`` -- indistinguishable
+        from nothing at all, which is why this walk stepped over it and reported genuine
+        absence. ``app_enabled_state`` then answers False and the hook reconciler tears a
+        LIVE app down.
+
+        Fed as a SHAPE rather than a real junction: os.mkfifo has a POSIX equivalent to
+        skip for, but a junction has none at all, so requiring one would mean this case
+        is only ever exercised on the platform it breaks. The three ordinary predicates
+        are already False for a path that does not exist, which IS the dangling
+        junction's shape, so only the junction probe has to be stood in for.
+        """
+        (app_home / "apps").mkdir(parents=True, exist_ok=True)
+        junction = app_home / "apps" / "shape-probe"
+        assert not junction.exists() and not junction.is_symlink() and not junction.is_dir()
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.is_link_or_junction",
+            lambda path: Path(path) == junction,
+        )
+
+        assert app_enabled_state("shape-probe") is None
+
+    def test_a_dangling_junction_at_the_metadata_path_is_unknown(self, app_home, monkeypatch):
+        """The same shape ON the metadata path, which the ancestor walk cannot reach.
+
+        ``Path.parents`` excludes the path itself, so `_absence_is_genuine` inspects
+        every ancestor and never `installed.json`. The self-check beside it asked only
+        `is_symlink`, which a junction answers False, so a junction occupying the
+        metadata path read as a deliberate uninstall while every ancestor was a healthy
+        directory.
+        """
+        (app_home / "apps" / "shape-probe").mkdir(parents=True)
+        meta = app_home / "apps" / "shape-probe" / "installed.json"
+        assert not meta.exists() and not meta.is_symlink() and not meta.is_dir()
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.is_link_or_junction",
+            lambda path: Path(path) == meta,
+        )
+
+        assert app_enabled_state("shape-probe") is None
+
+    def test_an_unreadable_directory_was_already_correct(self, app_home):
+        """The boundary: is_file() RE-RAISES EACCES, so this case never regressed.
+
+        Kept so the distinction is pinned -- the bug was path SHAPES reading as
+        absence, not permission faults.
+        """
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").write_text('{"enabled": true}', encoding="utf-8")
+        os.chmod(app_root, 0o000)
+        try:
+            if os.access(app_root / "installed.json", os.R_OK):
+                pytest.skip("this user bypasses directory permissions")
+            assert app_enabled_state("shape-probe") is None
+        finally:
+            os.chmod(app_root, stat.S_IRWXU)
+
+    def test_nothing_there_is_still_a_definite_false(self, app_home):
+        """The one case that DOES mean not installed, which uninstall relies on."""
+        (app_home / "apps" / "shape-probe").mkdir(parents=True)
+
+        assert app_enabled_state("shape-probe") is False
+
+    def test_a_readable_record_still_reports_its_flag(self, app_home):
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").write_text(
+            '{"name": "shape-probe", "enabled": false}', encoding="utf-8"
+        )
+
+        assert app_enabled_state("shape-probe") is False
+
+        (app_root / "installed.json").write_text(
+            '{"name": "shape-probe", "enabled": true}', encoding="utf-8"
+        )
+
+        assert app_enabled_state("shape-probe") is True
 
 
 class TestBootSkillReconcile:

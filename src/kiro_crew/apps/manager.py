@@ -48,6 +48,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -1672,6 +1673,39 @@ def get_app_manifest(name: str) -> AppManifest | None:
         return None
 
 
+def _absence_is_genuine(meta_path: Path) -> bool:
+    """Whether nothing at *meta_path* really means nothing is there.
+
+    The nearest ancestor that exists has to be a DIRECTORY. If something else
+    occupies part of the path, the file cannot exist for a reason that is NOT
+    absence, and that must not read as "the app was uninstalled".
+
+    Separated from the exception class deliberately: POSIX reports this as
+    ``NotADirectoryError`` while Windows raises ``FileNotFoundError``, so the class
+    identifies the platform rather than the condition.
+
+    ``is_link_or_junction`` is checked for the same reason, one predicate over:
+    ``is_symlink`` is False for a Windows directory junction, so a DANGLING junction
+    would present as ``is_dir=False, exists=False, is_symlink=False`` and this walk
+    would step over the thing occupying the path. Something IS at that component, so
+    the answer is unknown, not absence.
+
+    Walks upward because the non-directory component need not be the immediate
+    parent. Terminates: the filesystem root exists and is a directory. An ancestor
+    that cannot be inspected at all is treated as not-genuine, which is the same
+    fail-to-unknown direction as the rest of this function.
+    """
+    for ancestor in meta_path.parents:
+        try:
+            if ancestor.is_dir():
+                return True
+            if ancestor.exists() or ancestor.is_symlink() or is_link_or_junction(ancestor):
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def app_enabled_state(name: str) -> bool | None:
     """Tri-state enablement: True, False, or None when the metadata cannot be READ.
 
@@ -1683,12 +1717,66 @@ def app_enabled_state(name: str) -> bool | None:
     unrecoverable. This keeps the two apart.
 
     A missing metadata file is a definite False — the app is not installed — not a
-    failure to read one.
+    failure to read one, and NOTHING ELSE is. Leading with ``Path.is_file()`` broke
+    that: it answers a silent False for five path shapes that are not absence, all
+    verified against this interpreter — a dangling symlink, a directory in the file's
+    place, a fifo in its place, a symlink loop (ELOOP), and a non-directory parent
+    component (ENOTDIR). Only a genuine ``stat`` fault such as EACCES was reported
+    correctly, because ``is_file`` re-raises that and the handler below turns it into
+    None.
+
+    Absence is decided from the path's SHAPE, never from the exception class, because
+    one condition does not produce one class across platforms: a non-directory parent
+    component raises ``NotADirectoryError`` (ENOTDIR) on POSIX but
+    ``FileNotFoundError`` on Windows, which maps ERROR_PATH_NOT_FOUND to ENOENT — the
+    same class a genuinely missing file raises. Keying "definitely not installed" on
+    ``FileNotFoundError`` therefore told the truth on Linux and not on Windows, where
+    a wrong-shape parent still read as a deliberate uninstall. See
+    :func:`_absence_is_genuine`; ``_spawn_exec_shim`` records the same lesson for
+    ``chdir`` ("the errno is not the thing to key on").
+
+    The cost of the wrong answer is asymmetric, which is why the callers that already
+    respect the tri-state are the ones that make this worth fixing. ``apps.backend``
+    reads it before DELETING materialized resources -- ``_drop_disabled_app_resources``
+    on a False, ``_undo_promotion_of_disabled_app`` likewise -- and its own comments
+    say a None "must not be collapsed into disabled" and is retried instead. That
+    contract was already written correctly; it was this function that did not honour
+    it, so a dangling symlink or a directory in the metadata's place deleted an app's
+    agent files.
+
+    ``apps.hook_reconcile`` consumes it too, and only because this fix put it there.
+    Its unattended 15s teardown decides "gone" from ``get_app`` -> ``_read_installed``,
+    which has the same ``Path.is_file()`` collapse and additionally folds a corrupt
+    JSON body into None -- so before this change every one of those shapes unloaded a
+    healthy app's routes and modules on the next tick. That reader has 24 callers and
+    ``get_app``/``list_apps`` 63, so it is not made tri-state here; the reconciler
+    confirms absence through THIS function instead and defers on unknown.
     """
     meta_path = app_dir(name) / INSTALLED_META_FILENAME
     try:
-        if not meta_path.is_file():
+        try:
+            st = meta_path.stat()
+        except FileNotFoundError:
+            # A dangling link is a path that EXISTS and whose target cannot be
+            # seen, which is not the same as nothing being there. Both predicates
+            # are asked because is_symlink is False for a Windows junction, and
+            # _absence_is_genuine below walks the PARENTS -- never meta_path itself.
+            if meta_path.is_symlink() or is_link_or_junction(meta_path):
+                logger.warning("Metadata path %s is a dangling link or junction", meta_path)
+                return None
+            # This class is reached for TWO different conditions depending on the
+            # platform, so it cannot decide the verdict on its own.
+            if not _absence_is_genuine(meta_path):
+                logger.warning(
+                    "Metadata path %s cannot exist: a component of it is not a "
+                    "directory",
+                    meta_path,
+                )
+                return None
             return False
+        if not stat.S_ISREG(st.st_mode):
+            logger.warning("Metadata path %s is not a regular file", meta_path)
+            return None
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         return bool(InstalledApp.from_dict(data).enabled)
     # No `json.JSONDecodeError` member: it subclasses ValueError, so pairing the two is

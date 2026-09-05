@@ -22,6 +22,7 @@ import pytest
 
 import kiro_crew.apps.hook_reconcile as hr
 import kiro_crew.apps.hooks_integration as hi
+import kiro_crew.apps.teardown as teardown
 
 
 @pytest.fixture(autouse=True)
@@ -568,6 +569,139 @@ async def test_loaded_app_uninstalled_is_torn_down(_harness):
     await hr.reconcile_once([])
     assert calls == [("disable", "watchtower")]
     assert hi.loaded_hook_signature("watchtower") is None
+
+
+@pytest.mark.asyncio
+async def test_unreadable_metadata_does_not_read_as_uninstalled(_harness, tmp_path):
+    """``get_app`` returning None does not mean the app is gone.
+
+    ``_read_installed`` leads with ``Path.is_file()``, which answers a silent False
+    for a dangling symlink, a directory or fifo in the metadata's place, a symlink
+    loop and a non-directory parent -- and folds every OSError and a corrupt JSON
+    body into the same None. Acting on that collapsed answer means one broken path
+    unloads a HEALTHY app's routes and modules on the next tick, every tick, until
+    the fault clears. Absence is confirmed through the tri-state read instead.
+    """
+    calls, (set_current, _, _) = _harness
+    # A real broken shape on disk: something occupies the app directory's own path,
+    # so app_enabled_state reports unknown rather than a definite False.
+    apps = tmp_path / "home" / "apps"
+    apps.mkdir(parents=True, exist_ok=True)
+    (apps / "watchtower").write_text("not a directory", encoding="utf-8")
+
+    set_current()  # get_app -> None, which alone would look like an uninstall
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower"))
+
+    await hr.reconcile_once([])
+
+    assert calls == [], "a healthy app was torn down on an unreadable metadata path"
+    assert hi.loaded_hook_signature("watchtower") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_absence_still_tears_down(_harness, tmp_path):
+    """The control: a genuinely missing record must still be acted on.
+
+    Deferring on unknown must not become deferring on everything, or the teardown
+    this reconciler exists to perform would never run.
+    """
+    calls, (set_current, _, _) = _harness
+    # The app directory exists and is a directory; installed.json is simply absent.
+    (tmp_path / "home" / "apps" / "watchtower").mkdir(parents=True, exist_ok=True)
+
+    set_current()
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower"))
+
+    await hr.reconcile_once([])
+
+    assert calls == [("disable", "watchtower")]
+    assert hi.loaded_hook_signature("watchtower") is None
+
+
+@pytest.mark.asyncio
+async def test_uninstall_drops_the_apps_in_process_hook_registries(_harness):
+    """A surviving slot-close hook makes an uninstalled app's tabs undismissable.
+
+    ``forget_app_hooks`` had exactly one caller -- the DASHBOARD uninstall handler --
+    so a CLI uninstall reached this reconciler's teardown and left the registries
+    behind. The stale hook closes over a store the uninstall deleted, and
+    ``notify_slot_closed`` reporting its failure is what ``api_chat_slot_delete``
+    turns into a tab the user cannot dismiss for an app that no longer exists.
+    """
+
+    async def _stale(_key: str) -> None:
+        raise RuntimeError("store is gone")
+
+    calls, (set_current, _, _) = _harness
+    teardown.register_slot_close_hook("watchtower", _stale)
+    try:
+        assert await teardown.notify_slot_closed("watchtower", "slot-1") is False
+
+        set_current()  # get_app -> None, i.e. uninstalled
+        await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower"))
+        await hr.reconcile_once([])
+
+        assert calls == [("disable", "watchtower")]
+        # No hook registered is the path that returns True and lets the close through.
+        assert await teardown.notify_slot_closed("watchtower", "slot-1") is True
+    finally:
+        teardown.forget_app_hooks("watchtower")
+
+
+@pytest.mark.asyncio
+async def test_a_plain_disable_keeps_the_hook_registries(_harness):
+    """The asymmetry forget_app_hooks documents: only uninstall is terminal.
+
+    These registries are repopulated from the app's own watchdog, not by the
+    gateway, so clearing them on a disable would leave a window after a re-enable
+    in which a dismissal silently fails to reach a live worker.
+    """
+    seen: list[str] = []
+
+    async def _live(key: str) -> None:
+        seen.append(key)
+
+    calls, (set_current, _, _) = _harness
+    teardown.register_slot_close_hook("watchtower", _live)
+    try:
+        app_off = _app_info("watchtower", enabled=False)
+        set_current(app_off)
+        await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower"))
+        await hr.reconcile_once([app_off])
+
+        assert calls == [("disable", "watchtower")]
+        assert await teardown.notify_slot_closed("watchtower", "slot-1") is True
+        assert seen == ["slot-1"], "the app's own hook was not consulted"
+    finally:
+        teardown.forget_app_hooks("watchtower")
+
+
+@pytest.mark.asyncio
+async def test_an_unsettled_uninstall_keeps_them_for_the_retry(_harness):
+    """Unsettled means app code is still running, so its off-switch stays.
+
+    The reconciler retries next tick and drops them once teardown settles.
+    """
+
+    seen: list[str] = []
+
+    async def _live(key: str) -> None:
+        seen.append(key)
+
+    calls, (set_current, set_disable_result, _) = _harness
+    teardown.register_slot_close_hook("watchtower", _live)
+    try:
+        set_current()  # uninstalled
+        set_disable_result({"startup_cleanup": "failed: detached startup hook is still running"})
+        await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower"))
+        await hr.reconcile_once([])
+
+        assert calls == [("disable", "watchtower")]
+        # Still registered, so the app's off-switch is still reachable.
+        assert await teardown.notify_slot_closed("watchtower", "slot-1") is True
+        assert seen == ["slot-1"]
+    finally:
+        teardown.forget_app_hooks("watchtower")
 
 
 @pytest.mark.asyncio

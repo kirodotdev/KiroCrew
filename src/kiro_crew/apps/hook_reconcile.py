@@ -75,8 +75,9 @@ from kiro_crew.apps.hooks_integration import (
     record_loaded_hook_signature,
 )
 from kiro_crew.apps.lifecycle import app_has_retained_startup, apps_with_retained_startup
-from kiro_crew.apps.manager import app_lifecycle_lock, get_app, list_apps
+from kiro_crew.apps.manager import app_enabled_state, app_lifecycle_lock, get_app, list_apps
 from kiro_crew.apps.module_loader import unload_app_modules
+from kiro_crew.apps.teardown import forget_app_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +261,29 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
         loaded = loaded_hook_signature(name)
 
         # --- teardown branch: loaded, but now gone / disabled / hookless ---
+        # ``get_app`` cannot tell "no metadata" from "metadata I could not read":
+        # ``_read_installed`` leads with ``Path.is_file()``, which answers a silent
+        # False for a dangling symlink, a directory or fifo in the file's place, a
+        # symlink loop and a non-directory parent component, and then folds every
+        # OSError and a corrupt JSON body into the same None. This branch DELETES a
+        # live app's runtime -- routes, modules, and now its hook registries -- so
+        # acting on that collapsed answer means one broken path, or a transient read
+        # fault, unloads a healthy app every 15s until the fault clears.
+        #
+        # ``app_enabled_state`` is the tri-state read that keeps the two apart, so
+        # absence is CONFIRMED through it before it is acted on. Only a definite False
+        # is "the app is gone"; unknown defers the whole app to the next tick, which is
+        # the same fail-to-unknown direction ``_disable_loaded`` already takes when
+        # startup ownership cannot be proven clear. Off-loop for the same reason
+        # ``get_app`` is.
         gone = current is None
+        if gone and await asyncio.to_thread(app_enabled_state, name) is not False:
+            logger.warning(
+                "hook reconcile: %s has no readable metadata and its absence cannot "
+                "be confirmed; leaving its runtime in place and retrying next tick",
+                name,
+            )
+            return
         turned_off = current is not None and (
             not current.get("enabled") or not manifest_declares_hooks(current)
         )
@@ -272,6 +295,22 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
         if (loaded is not None or retained) and (gone or turned_off):
             if await _disable_loaded(name, current):
                 logger.info("hook reconcile: tore down hooks for %s", name)
+                # UNINSTALL only, matching the asymmetry forget_app_hooks
+                # documents: these registries are repopulated from each app's own
+                # watchdog rather than by the gateway, so clearing them on a
+                # DISABLE would leave a window after a re-enable in which a
+                # dismissal silently fails to reach a live worker. Nothing
+                # re-registers behind an uninstall.
+                #
+                # Reached only from here, because the dashboard uninstall handler
+                # is the sole other caller and a CLI uninstall never touches it.
+                # Without this the app's slot-close hook survives in this process
+                # as a closure over a store the uninstall deleted, and
+                # notify_slot_closed reporting its failure is what
+                # api_chat_slot_delete turns into a tab the user cannot dismiss
+                # for an app that no longer exists.
+                if gone:
+                    forget_app_hooks(name)
             return
 
         # Past teardown, every remaining branch (re)starts app code. Once the
