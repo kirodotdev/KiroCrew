@@ -216,7 +216,11 @@ tool set, mounted **per session** rather than through the on-disk agent
 template: a member DM session's ACP `session/new` **and `session/load`** carry
 the dashboard server as a session-level `mcpServers` entry (built by
 `members.member_dispatch_session_server`, identity via `KIROCREW_SESSION_KEY`
-in the entry's env) — both establishment paths, because `session/load`
+in the entry's env, plus `KIROCREW_BOUND_PORT` — the entry's env is built from
+scratch rather than inherited, and a child left to rediscover the port falls
+through to the run-marker check, which needs an `lsof` view the sandbox's user
+namespace does not have, so a gateway on any non-default port would be dialled
+at the default one) — both establishment paths, because `session/load`
 re-initializes the session's MCP servers, so a resume that skipped the
 injection would strip a member thread of its tools mid-conversation. On the
 KAS backend the wire agent projection additionally grants the server in

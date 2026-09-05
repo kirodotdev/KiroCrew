@@ -163,12 +163,28 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     applies to the agent-declared ``mcpServers`` block, not to what the host
     itself injects per session).
 
+    The env also carries ``KIROCREW_BOUND_PORT`` — the port this gateway is
+    actually serving. Unlike a chat session's MCP child, which inherits the
+    gateway's whole environment, this entry is built from scratch, so without
+    the port the child's resolution chain falls through to the run marker; that
+    check needs :func:`platform_compat.find_listening_pids` (``lsof``), which
+    sees no listener from inside the sandbox's user namespace, and the child
+    then dials the default port. On a gateway bound anywhere else that is a
+    connection refused on every dispatch call. ``KIROCREW_BOUND_PORT`` rather
+    than ``KIROCREW_PORT`` because the latter means "the port an operator
+    asked for" and is persisted, while this is the transient fact of what got
+    bound.
+
     ``None`` when the server command cannot be resolved — the member thread
     then runs as plain chat and the caller logs the degradation.
     """
     # circular import: agent's module graph is heavy and imports config, which
     # sits below this module for the thread-endpoint path.
     from kiro_crew.agent import _kirocrew_mcp_invocation
+
+    # circular import, same shape: port_resolution reaches config.loader, whose
+    # provider-backend path imports this module.
+    from kiro_crew.port_resolution import resolve_serving_port
 
     try:
         command, args = _kirocrew_mcp_invocation("mcp-dashboard")
@@ -177,11 +193,17 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
         return None
     if not command:
         return None
+    env: list[dict[str, str]] = [{"name": "KIROCREW_SESSION_KEY", "value": session_key}]
+    # resolve_serving_port() reads KIROCREW_BOUND_PORT first and only then falls
+    # through the client order, so one call covers both "the gateway exported the
+    # port it bound" and "derive it" — and a malformed export is ignored rather
+    # than forwarded.
+    env.append({"name": "KIROCREW_BOUND_PORT", "value": str(resolve_serving_port())})
     return {
         "name": MEMBER_DISPATCH_SERVER,
         "command": command,
         "args": list(args),
-        "env": [{"name": "KIROCREW_SESSION_KEY", "value": session_key}],
+        "env": env,
         "type": "stdio",
     }
 
