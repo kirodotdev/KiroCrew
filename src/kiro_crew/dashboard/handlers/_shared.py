@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import logging
@@ -10,7 +11,7 @@ import os
 import sys
 import sysconfig
 import time
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 import aiohttp
@@ -479,34 +480,141 @@ def _edition_package_roots(canonical: set[Path] | None = None) -> list[Path]:
     return out
 
 
-def _dedupe_resolved(paths: list[Path]) -> list[Path]:
-    """Collapse paths that resolve to the same file, preserving order.
+# Key prefix for a skill contributed by an installed edition/package bundle.
+# Read by key enumeration, path resolution, and the detail endpoint, so none of
+# the three can drift on the one string that decides which grammar a key is read
+# under. The guard against a fourth site respelling it is a test, not this comment.
+PACKAGE_KEY_PREFIX = "package/"
 
-    One skill is routinely reachable through two roots — an edition may advertise
-    both a directory and a symlink into it — and that is NOT an ambiguity. Only
-    distinct FILES are.
+# Separates an optional root qualifier from the relative path in a ``package/``
+# key: ``package/<qualifier>:<rel>``. A qualifier is a DERIVED IDENTITY — a digest
+# of the holding root's canonical path, e.g. ``05c564ec5e9e4b7a8c1d2e3f4a5b6c7d`` — and NOT itself a
+# path segment of any root, so nothing may test it as one. Deriving it from the root
+# ALONE is what makes one relative path bundled by several packages addressable
+# while keeping the key stable: it cannot be re-spelled by installing or removing an
+# unrelated bundle, and NO replacement re-derives its qualifier — not at a different path,
+# nor at the SAME one (the digest folds dev, inode and ctime). Resolution RE-DERIVES with the
+# same function enumeration used, so the two sides cannot disagree about a key.
+#
+# ``:`` and not ``-``: the route grammar reserves a lone ``-`` segment as the
+# separator before the ``tree``/``file`` verbs (``/api/skills/{name}/-/tree``),
+# so a ``-`` segment inside a key would make ``package/Pkg/-/tree`` ambiguous
+# between a detail GET and a tree GET. ``:`` is a legal path character (RFC 3986
+# pchar) needing no escaping.
+#
+# It is NOT absent from the keys the core emits today: ``:`` is legal in a POSIX
+# directory name, so a skill directory literally named ``foo:bar`` already
+# enumerated and resolved before this grammar existed. The separator is RESERVED
+# anyway, and that is the whole of the grammar: a key carrying it has exactly ONE
+# reading, the qualified one. A literal ``foo:bar`` skill is therefore omitted
+# from the catalog and 404s on open — :func:`_resolve_skill_root` has no verbatim
+# fallback. Reserving it is what keeps a key's MEANING independent of which roots
+# happen to be installed; under a dual reading, uninstalling a root re-pointed an
+# existing key at a different package's skill. A key without the separator still
+# takes exactly the pre-existing code path.
+_SKILL_KEY_QUALIFIER_SEP = ":"
 
-    ``Path.resolve()`` raises ``RuntimeError`` (not ``OSError``) on a symlink
-    loop, and a looping ``SKILL.md`` is yielded by ``glob`` because a literal
-    pattern matches the dirent without following it. Catching only ``OSError``
-    would turn that into a 500 on a browser-triggered request, so an
-    unresolvable path is skipped instead: it cannot be read anyway.
+# The characters read as PATTERN syntax rather than as a name — by ``Path.glob`` when a
+# key's remainder is resolved, and by ``fnmatch`` when a ``skill://`` URI is inverted. One
+# spelling for both, because it is one rule: a pattern names a SET, which no single
+# catalog key can address. ``]`` is absent deliberately: it is only special INSIDE a
+# ``[`` class, so refusing it alone would reject an ordinary directory name for no gain.
+_GLOB_CHARS = ("*", "?", "[")
+
+
+def _split_package_skill_key(pkg_rel: str) -> tuple[str | None, str]:
+    """Split a ``package/`` key remainder into ``(qualifier, relative_path)``.
+
+    ``None`` for the qualifier means the key is unqualified and resolves exactly
+    as it always has. A qualifier is only recognised when both halves are
+    non-empty, so a stray leading or trailing separator degrades to "no
+    qualifier" rather than to an empty glob pattern.
     """
-    out: list[Path] = []
-    seen: set[Path] = set()
-    for p in paths:
-        try:
-            key = p.resolve()
-        except (OSError, RuntimeError):
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(p)
-    return out
+    if _SKILL_KEY_QUALIFIER_SEP not in pkg_rel:
+        return None, pkg_rel
+    qualifier, _, rel = pkg_rel.partition(_SKILL_KEY_QUALIFIER_SEP)
+    if not qualifier or not rel:
+        return None, pkg_rel
+    return qualifier, rel
 
 
-def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -> Path | None:
+def _names_a_relative_path(name: str) -> bool:
+    """Whether *name* is a relative pattern under a root on the current host.
+
+    ``Path.glob`` raises ``NotImplementedError: Non-relative patterns are
+    unsupported`` on a non-relative pattern, and NON-RELATIVE means carrying a drive
+    OR a root — not merely being absolute. A qualified key is caller-supplied, so an
+    unvalidated remainder would surface that as a 500 rather than a 404.
+
+    Validation uses HOST semantics, because enumeration and resolution run on the
+    SAME host and the binding contract is between those two: every catalogued key
+    must resolve. Asking ``ntpath`` unconditionally broke that. ``ntpath.splitdrive``
+    treats ANY single character before ``:`` as a drive, so ``a:b`` was refused
+    everywhere — while on POSIX ``a:b`` is a legal directory name that the enumerator
+    happily catalogues, leaving the pair catalogued-but-unresolvable. That is not the
+    fail-closed direction; it is the phantom row. On Windows such a directory cannot
+    exist, so refusing it there costs nothing and keeps the glob from raising.
+
+    Host semantics is also interpreter-stable, which was the reason the flavour's
+    ``.drive`` was avoided: pathlib only adopted the permissive drive rule in 3.12, so
+    ``PureWindowsPath("~:x").drive`` is empty on 3.10/3.11 and ``"~:"`` on 3.12.
+    ``os.path.splitdrive`` is ``posixpath``'s (always no drive) or ``ntpath``'s (the
+    permissive rule, measured identical on 3.10-3.12) — never the version-dependent
+    one.
+
+    A component carrying ANY glob metacharacter — ``*``, ``?`` or ``[`` — is refused,
+    for the two different reasons they are wrong. ``**`` EMBEDDED in a component
+    (``***``, ``a**b``) is an INVALID pattern and ``Path.glob`` raises ``ValueError:
+    Invalid pattern: '**' can only be an entire path component`` — the same
+    500-instead-of-404 this predicate exists to stop, just a different exception type
+    than the non-relative case above. Every other spelling is VALID but is a WILDCARD,
+    so the key would not name a directory: ``**`` matches at any depth, ignoring
+    ``_SKILL_NEST_DEPTH``, while ``*``, ``?`` and ``[`` match SIBLINGS — so one key
+    resolves to whichever skill happens to match, or to several, which is the
+    one-key-two-skills divergence the reserved separator exists to prevent.
+
+    Refusing them cannot strand a row, because :func:`_merge_package_walks` holds every
+    walked rel to this SAME predicate and omits what it refuses. An earlier revision
+    admitted a single ``*`` or ``?`` precisely to avoid that phantom row, when only
+    separator-carrying rels were omitted; the enumerator mirror removed the tradeoff, so
+    the narrow admission is no longer needed and the ambiguity is no longer worth
+    carrying. The declared cost is the same class as the separator's: a skill directory
+    named with a glob metacharacter is invisible in the catalog and 404s on open — and
+    the same now holds for a name CONTAINING ``..``, which the resolver's own first gate
+    refuses as a substring (see the inline note below).
+    """
+    if not name:
+        return False
+    if os.path.splitdrive(name)[0]:
+        return False
+    if ".." in name:
+        # SUBSTRING, deliberately, and not ``".." in host.parts``: the resolver's own
+        # first gate is ``".." in name``, so a component merely CONTAINING ``..``
+        # (``foo..bar``, ``pkg..v2``) passes a parts test — its only part is
+        # ``"foo..bar"``, which is not ``".."`` — while the resolver refuses the key
+        # whole. That pair is catalogued-but-unresolvable: the phantom row this grammar
+        # exists to remove, reintroduced by the two sides testing traversal differently.
+        # Matching the resolver is the fail-CLOSED direction; loosening the resolver to
+        # a parts test instead would relax a pre-existing traversal guard shared with
+        # the ``kiro-user/`` and ``kiro-workspace/`` territories, which is not this
+        # change's to weaken. The declared cost is the same class as the separator's: a
+        # skill directory whose name contains ``..`` is invisible in the catalog.
+        return False
+    host = PurePath(name)
+    if host.root or host.drive:
+        return False
+    if any(c in part for part in host.parts for c in _GLOB_CHARS):
+        return False
+    # ``Path.glob`` recurses per pattern component, so a deep enough remainder raises
+    # RecursionError inside the resolver; the enumerator cannot mint one this deep anyway.
+    if len(host.parts) > _SKILL_NEST_DEPTH:
+        return False
+    return True
+
+
+def _resolve_package_skill_path(
+    name: str, canonical: set[Path] | None = None, qualifier: str | None = None
+) -> Path | None:
     """Find SKILL.md for an edition-contributed skill by its key remainder.
 
     Searched over the ``package/`` territory of the edition skill roots
@@ -525,20 +633,114 @@ def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -
 
     An exact relative-path hit wins over a nested leaf hit. Within a tier, two
     DISTINCT files matching is a genuine ambiguity — the same relative path
-    bundled by two packages, which this key grammar cannot tell apart — so it
-    returns ``None`` and logs instead of picking one. Serving an arbitrary one of
-    the two looks completely successful and shows the wrong skill's content,
-    which is the failure mode worth being loud about.
+    bundled by two packages — so it returns ``None`` and logs instead of picking
+    one. Serving an arbitrary one of the two looks completely successful and shows
+    the wrong skill's content, which is the failure mode worth being loud about.
+
+    *qualifier* is how a caller resolves that ambiguity, and it is the CANONICAL
+    catalog-derived value for the wanted copy's root — the identity digest
+    :func:`_root_identity_token` derives — not any segment that root happens to carry. So for
+    roots ``packages/PkgA/eventId-1/skills`` and ``packages/PkgB/eventId-2/skills`` the
+    qualifiers are the two roots' digests, and neither ``package/PkgA:<rel>`` nor
+    ``package/eventId-1:<rel>`` resolves even though both name a unique segment of one
+    root: the catalogue never offers those spellings, and answering one would be
+    answering a key ``/tree`` does not list.
+
+    That narrowing is deliberate and is the invariant this grammar exists to restore
+    (see :func:`_merge_package_walks`): every key enumeration EMITS resolves, so a
+    qualified key resolves to the copy the catalogue would list it for, or to nothing.
+    The converse does not hold — resolution also accepts a leaf-name key through its
+    nested tier — so this is one direction, not an inverse.
+    Accepting any carried segment instead is what let a stale key bind to a DIFFERENT
+    bundle — uninstall the root a qualifier was derived from, install another that also
+    carries that segment, and the same key silently served the new bundle's content.
+
+    Selection still applies to ROOTS and never to assembled candidate paths, because a
+    candidate's segments cannot tell a root segment from a relative-path segment: testing
+    candidates would let a qualifier match inside another root's rel and serve that
+    bundle's file. A root that is not among the copies of this rel yields nothing, so
+    ``package/PkgB:shared-skill`` does not answer with ``PkgA``'s copy when only ``PkgA``
+    bundles that path.
+
+    The core still needs no root-to-package mapping: the qualifier is derived from the
+    root's own canonical path, and that knowledge belongs to whichever edition installs
+    the roots. A qualifier that is not a digest any installed root yields narrows to no
+    roots rather than to all of them, so an unrecognised one answers nothing.
+
+    A qualified key is answered with the candidate whose identity was CHECKED, and never
+    by re-globbing the root the check selected. Re-globbing reopened the rebind twice
+    over. Once through TIME: the digest is taken over a root's device, inode and creation
+    time, so a second read of that path can land on a REPLACEMENT installed since, and
+    the key would then serve the replacement's file under the replaced bundle's identity.
+    Once through TIER: the qualifier is derived over the exact-relative-path glob alone,
+    so the shared loop's nested-leaf tier can only ever offer a file that was NOT in the
+    checked set — reachable exactly when the re-glob finds nothing, which is what a
+    replacement produces. Re-CHECKING the identity after the glob closes neither: it
+    leaves the same window open between the recheck and the read, and says nothing about
+    a file the nested tier admitted from outside the derivation set. Fewer or more than
+    one match refuses rather than guessing, so a digest collision cannot pick a winner.
     """
-    exact: list[Path] = []
-    nested: list[Path] = []
-    for root in _edition_package_roots(canonical):
-        exact.extend(root.glob(f"{name}/SKILL.md"))
-        nested.extend(root.glob(f"*/{name}/SKILL.md"))
+    exact: list[tuple[Path, Path]] = []
+    nested: list[tuple[Path, Path]] = []
+    if not _names_a_relative_path(name):
+        # A name that cannot be a relative path under a root names nothing, and
+        # handing it to ``glob`` would raise rather than 404 (see the predicate).
+        return None
+    if _SKILL_KEY_QUALIFIER_SEP in name:
+        # The remainder still carries the RESERVED separator, so this key is not a
+        # well-formed ``<qualifier>:<rel>`` pair: either a half-empty qualifier
+        # (``package/:foo``, which :func:`_split_package_skill_key` degrades to an
+        # unqualified key whose rel keeps the colon) or a rel with a second separator
+        # (``package/A:B:C`` splits once, leaving rel ``B:C``). Enumeration OMITS any
+        # rel carrying the separator, so admitting one here would resolve a
+        # colon-named skill the catalogue never listed — the same one-key-two-readings
+        # divergence the reservation exists to remove, reached through the rel half.
+        return None
+    roots = _edition_package_roots(canonical)
+    if qualifier is not None:
+        # RE-DERIVE the qualifier per root and require equality, rather than testing
+        # membership. Membership (``qualifier in root.parts``) accepts ANY root that
+        # happens to carry a segment of that name, which is not the same thing as the
+        # root the key was minted for: uninstall the root a qualifier was derived from,
+        # install a different one that also carries that segment, and the stale key
+        # binds to the new bundle and serves its content. Re-deriving cannot do that,
+        # because :func:`_root_identity_token` is a digest of the root's own canonical path
+        # and no other root produces it — a stale key fails to resolve instead.
+        #
+        # Deriving with the SAME function enumeration uses makes resolution its exact
+        # inverse: a qualified key resolves to the copy the catalogue would list it
+        # for, or to nothing.
+        # ONE collision-set computation, shared with the enumerator's fold rather than
+        # spelled again here -- see :func:`_package_collision`. Both of its ``None``
+        # cases refuse alike: fewer than two distinct copies means enumeration minted
+        # the UNQUALIFIED key and never offered a qualified spelling for this rel, and
+        # an all-or-nothing failure means it omitted the rel whole. Answering either
+        # anyway is what let a stale qualifier reach a root it was never minted for.
+        copies, qualifiers = _package_collision(
+            [(root, hit) for root in roots for hit in root.glob(f"{name}/SKILL.md")]
+        )
+        if qualifiers is None:
+            return None
+        # Answer with the candidate whose identity was CHECKED, rather than re-globbing the
+        # matched root: see the two rebinds this closes, above.
+        matched = [
+            (root, skill_md)
+            for (root, skill_md), q in zip(copies, qualifiers, strict=True)
+            if q == qualifier
+        ]
+        if len(matched) != 1:
+            return None
+        return matched[0][1]
+    for root in roots:
+        exact.extend((root, hit) for hit in root.glob(f"{name}/SKILL.md"))
+        nested.extend((root, hit) for hit in root.glob(f"*/{name}/SKILL.md"))
     for tier, label in ((exact, "relative path"), (nested, "leaf name")):
-        candidates = _dedupe_resolved(tier)
+        # One entry per distinct resolved FILE, shared with the enumerator's fold rather
+        # than spelled twice: two implementations of "collapse aliases, preserve order,
+        # skip the unreadable" diverge on the next exception-handling fix.
+        candidates = _dedupe_entries(tier)
         if len(candidates) == 1:
-            return candidates[0]
+            return candidates[0][1]
         if candidates:
             logger.warning(
                 "edition skill %r matches %d distinct files by %s (%s); refusing "
@@ -546,7 +748,7 @@ def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -
                 name,
                 len(candidates),
                 label,
-                ", ".join(sorted(str(p) for p in candidates)),
+                ", ".join(sorted(str(f) for _root, f in candidates)),
             )
             return None
     return None
@@ -1052,6 +1254,11 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
     - ``foo`` → ``~/.kiro/crew/skills/foo``
     - ``utils/tiny-url`` → ``~/.kiro/crew/skills/utils/tiny-url``
     - ``package/<skill>`` → resolved via _resolve_package_skill_path() lookup
+    - ``package/<qualifier>:<skill>`` → same, narrowed to the root whose CANONICAL
+      qualifier equals ``<qualifier>`` — the identity digest :func:`_root_identity_token`
+      derives for that root, not a segment the root happens to carry, so a
+      unique-but-non-canonical segment does not resolve (see
+      :func:`_split_package_skill_key`)
     - ``kiro-user/<skill>`` → ``~/.kiro/skills/<skill>``
     - ``kiro-workspace/<skill>`` → ``<project>/.kiro/skills/<skill>``
 
@@ -1081,16 +1288,32 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
         if proj is None:
             return None
         root = proj / ".kiro" / "skills"
-    elif name.startswith("package/"):
+    elif name.startswith(PACKAGE_KEY_PREFIX):
         # Locate via existing helper (sync version). The active project's
         # ``.kiro/skills`` joins the canonical exclusion here because this caller
         # is the one that knows the chat slot.
-        pkg_rel = name[len("package/") :]
+        pkg_rel = name[len(PACKAGE_KEY_PREFIX) :]
+        qualifier, rel = _split_package_skill_key(pkg_rel)
         canonical = _resolved_set(_canonical_skill_roots())
         proj = active_project_dir(state, session_key)
         if proj is not None:
             canonical |= _resolved_set([proj / ".kiro" / "skills"])
-        path = _resolve_package_skill_path(pkg_rel, canonical)
+        # The separator is RESERVED: a ``package/`` key carrying it is always the
+        # qualified reading, and one that no longer resolves 404s. There is no
+        # verbatim retry of the whole remainder, because the remainder of a qualified
+        # key has exactly the same shape as a colon-carrying literal path — so a
+        # retry cannot tell "PkgA is gone" from "a skill is named PkgA:shared-skill",
+        # and would answer a stale key with whatever OTHER root holds a directory of
+        # that literal name, serving another bundle's content under this key.
+        #
+        # Deciding by the installed ROOT SET was the earlier attempt at that, and it
+        # made a key's MEANING depend on which roots happen to exist: uninstalling a
+        # root, or installing an unrelated one whose path carries the segment, would
+        # silently flip an existing key between the two readings. Reserving the
+        # separator removes the ambiguity at its source rather than adjudicating it.
+        # The enumerator omits colon-carrying paths for the same reason, so both
+        # halves of the API agree.
+        path = _resolve_package_skill_path(rel, canonical, qualifier)
         if not path:
             return None
         candidate = path.parent
@@ -1175,11 +1398,6 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
 # unbounded list is a context-exhaustion footgun, not a feature.
 MAX_AGENT_SKILLS = 100
 
-# fnmatch metacharacters. A URI containing any of these matches a SET of skills
-# ("every skill in this root"), which has no single catalog key — such entries
-# are surfaced read-only and preserved verbatim across edits.
-_GLOB_CHARS = ("*", "?", "[")
-
 
 def _skill_key_roots(state: DashboardState, session_key: str = "") -> list[tuple[str, Path]]:
     """``(key_prefix, root)`` pairs for every location skills are keyed from.
@@ -1202,7 +1420,7 @@ def _skill_key_roots(state: DashboardState, session_key: str = "") -> list[tuple
     # resolution cannot drift apart. A key the catalog offers must be one the
     # resolver accepts, and vice versa.
     canonical = _resolved_set(root for _prefix, root in out)
-    out.extend(("package/", root) for root in _edition_package_roots(canonical))
+    out.extend((PACKAGE_KEY_PREFIX, root) for root in _edition_package_roots(canonical))
     return out
 
 
@@ -1212,6 +1430,23 @@ def _skill_key_roots(state: DashboardState, session_key: str = "") -> list[tuple
 _SKILL_NEST_DEPTH = 3
 
 
+def _resolver_answers_catalog_key(key: str, *, refuse_leading_tilde: bool) -> bool:
+    """Whether :func:`_resolve_skill_root` can answer *key* — the ONE place this is decided.
+
+    Tested on the minted KEY, the exact string resolution receives, so the two sides
+    cannot drift. Each rule carries the resolver's own scope: ``..`` anywhere is refused
+    in every territory, that gate being reached before any prefix is dispatched; a leading
+    ``~`` only when *refuse_leading_tilde*, since the unprefixed branch alone refuses it
+    and the others join the rel literally. Passed as data because the package walk walks
+    with an empty prefix deliberately, to compare two roots' rels before either is a key.
+    """
+    if ".." in key:
+        return False
+    if refuse_leading_tilde and key.startswith("~"):
+        return False
+    return True
+
+
 def _collect_skills_under(
     directory: Path,
     root: Path,
@@ -1219,6 +1454,7 @@ def _collect_skills_under(
     prefix: str,
     out: dict[str, Path],
     depth: int,
+    refuse_leading_tilde: bool = False,
 ) -> None:
     """Add every ``<dir>/SKILL.md`` at or under *directory* to *out*.
 
@@ -1254,10 +1490,15 @@ def _collect_skills_under(
                 continue
             if is_sensitive_path(str(target)):
                 continue
+            key = prefix + entry.relative_to(root).as_posix()
+            if not _resolver_answers_catalog_key(key, refuse_leading_tilde=refuse_leading_tilde):
+                continue
             # First root wins, matching _skill_key_roots precedence.
-            out.setdefault(prefix + entry.relative_to(root).as_posix(), skill_md)
+            out.setdefault(key, skill_md)
         else:
-            _collect_skills_under(entry, root, root_resolved, prefix, out, depth - 1)
+            _collect_skills_under(
+                entry, root, root_resolved, prefix, out, depth - 1, refuse_leading_tilde
+            )
 
 
 def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dict[str, Path]:
@@ -1280,8 +1521,13 @@ def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dic
     It is additionally the single source of truth for BOTH directions of the
     key <-> URI mapping, so they cannot disagree: a mapping written against a
     symlinked skill directory inverts back to the same key it was written from.
+
+    ``package/`` roots are walked separately and folded in by
+    :func:`_merge_package_walks`, because whether a relative path needs a
+    qualifier is only knowable once every package root has been walked.
     """
     catalog: dict[str, Path] = {}
+    package_walks: list[tuple[Path, dict[str, Path]]] = []
     for prefix, root in _skill_key_roots(state, session_key):
         if is_sensitive_path(str(root)) or not root.is_dir():
             continue
@@ -1289,8 +1535,364 @@ def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dic
             root_resolved = root.resolve(strict=True)
         except OSError:
             continue
-        _collect_skills_under(root, root, root_resolved, prefix, catalog, _SKILL_NEST_DEPTH)
+        if prefix == PACKAGE_KEY_PREFIX:
+            # Walked unprefixed into its own dict so the relative paths of two
+            # roots can be compared before either becomes a key.
+            found: dict[str, Path] = {}
+            _collect_skills_under(root, root, root_resolved, "", found, _SKILL_NEST_DEPTH)
+            package_walks.append((root, found))
+            continue
+        _collect_skills_under(
+            root,
+            root,
+            root_resolved,
+            prefix,
+            catalog,
+            _SKILL_NEST_DEPTH,
+            # Only the unprefixed branch of the resolver refuses a leading ``~``; the
+            # prefixed territories join the rel literally and resolve such a name.
+            refuse_leading_tilde=(prefix == ""),
+        )
+    # A core row whose own relative path is literally ``package/<rel>`` keys into the
+    # reserved prefix, but detail and tree now route a ``package/`` key exclusively to
+    # the package roots, so nothing will ever reach it. Prune before the merge, or the
+    # catalogue offers a key the resolver cannot answer.
+    #
+    # The ABSOLUTE path is logged, not just the key: the file stays on disk and drops
+    # out of the catalog, so this warning is the only surface naming where it is — and it
+    # is the only REMEDIATION surface too, because ``api_skill_detail`` refuses every
+    # mutating verb on a ``package/`` key unconditionally, stranded or not. An operator
+    # removes the file by hand, at the path this line names.
+    for reserved in [k for k in catalog if k.startswith(PACKAGE_KEY_PREFIX)]:
+        logger.warning(
+            "core skill %r keys into the reserved %r prefix, which only package "
+            "roots can answer; omitting it — its SKILL.md remains on disk at %s. "
+            "Rename or remove that directory to reclaim the key: no API verb can, "
+            "because every mutating verb refuses a reserved-prefix key",
+            reserved,
+            PACKAGE_KEY_PREFIX,
+            catalog[reserved],
+        )
+        del catalog[reserved]
+    _merge_package_walks(package_walks, catalog)
     return catalog
+
+
+# Wide enough that finding a second root with the same qualifier is not a search anyone
+# can run: a narrow digest is GROUND, not merely collided with by accident.
+_ROOT_IDENTITY_DIGEST_BYTES = 16
+
+
+def _root_identity_token(root: Path) -> str | None:
+    """The qualifier for *root*: a stable, collision-resistant token for its identity.
+
+    A qualifier answers one question — WHICH of several roots bundling the same relative
+    path does this key mean — so the only thing it carries is *root*'s own identity, and
+    it must be an identity rather than a distinguishing path segment. A segment is chosen
+    against whichever roots collide at derivation time, so a root that is REPLACED
+    (uninstalled, and a different root installed that still carries the same segment,
+    e.g. ``<...>/A/skills`` giving way to ``<...>/A/v2/skills``) would re-derive the very
+    same qualifier. A key an editor still holds would then resolve to a DIFFERENT file,
+    and because the agent-config write path (:func:`apply_skill_mapping`) resolves keys
+    against a FRESH catalog at write time, it would persist a ``skill://`` URI for a
+    skill the user never selected — silent, and durable in the agent's config.
+
+    This token closes that, and both of its halves matter. It is derived from the root's
+    own CANONICAL path plus that directory's device, inode and INODE CREATION TIME, so it
+    is the same for the same root no matter what else is installed or removed alongside
+    it: a key stays valid across an unrelated bundle install, and the editor's held key
+    and the agent config's persisted URI keep meaning what they meant. The inode is what
+    makes it an identity rather than an ADDRESS: the path alone re-derives when one bundle
+    is uninstalled and another is installed at the SAME path, so a held key would resolve
+    to the replacement's file and the write path would persist a skill nobody selected.
+    The creation time is what makes that identity NON-REUSABLE, and it is load-bearing
+    rather than belt-and-braces: an inode number is a reusable resource, so a replacement
+    directory at the same path can be handed the identical ``st_ino`` — ordinary
+    ext-family behaviour on a normal uninstall/reinstall — and dev:ino alone would then
+    re-derive the replaced bundle's own qualifier. ``st_ctime_ns`` cannot be recycled
+    with it, because it records the moment THIS inode was created and the clock does not
+    run backwards. Per-instance, that stale key fails to resolve, which the write path
+    turns into a whole-request rejection. **Residual, recorded rather than implied:** a
+    filesystem's timestamp granularity is coarse (measured ~20ms on xfs), so an
+    uninstall and reinstall completing inside ONE granule AND handed the recycled inode
+    re-derives the replaced key after all. Closing that needs a creation time the
+    platform will not give us — Linux exposes no ``st_birthtime`` through ``os.stat``
+    (verified: absent from ``os.stat_result`` on this interpreter) — so the narrowed
+    window is what this basis buys, not its elimination.
+
+    The cost is that the identity tracks the root's own top-level contents: adding or
+    removing a skill directory in a root moves that directory's ``st_ctime_ns`` and so
+    re-spells every qualified key in it (a write further down, inside a skill, does not).
+    That is a mutation of the bundle itself rather than an unrelated install, and the
+    re-enumerate-only contract already tolerates it — as it tolerates re-materialising the
+    same bundle through a remount or a restore. The cost of re-spelling is a 404, never
+    another bundle's bytes. A root that does not exist keeps a path-only identity, because
+    a qualifier must be derivable for every path the OS can name — not a way back to the
+    rebind, since minting requires copies on disk, so a minted digest always carried an
+    inode and a later path-only one cannot match it. That last claim is only as strong as
+    the digest is wide: a narrow one can be GROUND against, so an install path could be
+    chosen to collide with a key already minted for another root.
+    :data:`_ROOT_IDENTITY_DIGEST_BYTES` is the bound that makes the search infeasible
+    rather than merely unlikely.
+
+    Lowercase hex is also already key-safe: it carries neither
+    :data:`_SKILL_KEY_QUALIFIER_SEP` nor a glob metacharacter nor a traversal element, so
+    the key round-trips without a per-candidate filter. What it gives up is legibility —
+    ``package/a1b2c3d4e5f67890abcdef1234567890:tool`` does not say which bundle it means. The omission
+    warnings carry the absolute path instead, which is the surface a reader needs, and a
+    resolved row still shows its own file.
+
+    Canonical and not the advertised path, so an edition that advertises one root
+    through a symlink alias keeps ONE identity. ``blake2b`` and not ``hash()``, which
+    is salted per process and would mint a different key on every restart. A root that
+    does not canonicalise yields ``None`` and the caller omits the path: identity that
+    cannot be established fails closed.
+    """
+    try:
+        resolved = root.resolve()
+        basis = str(resolved)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        st: os.stat_result | None = resolved.stat()
+    except (OSError, ValueError):
+        st = None
+    # ``os.fsencode`` and NOT ``basis.encode("utf-8")``: on POSIX a path is bytes, so a
+    # byte the encoding cannot decode arrives as a lone surrogate that utf-8 refuses.
+    material = os.fsencode(basis)
+    if st is not None:
+        # ``st_ctime_ns`` is the non-reusable part: an inode number can be recycled, the
+        # moment a replacement inode was created cannot.
+        material += b"\x00" + f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}".encode("ascii")
+    return hashlib.blake2b(material, digest_size=_ROOT_IDENTITY_DIGEST_BYTES).hexdigest()
+
+
+def _dedupe_entries(entries: list[tuple[Path, Path]]) -> list[tuple[Path, Path]]:
+    """One ``(root, file)`` pair per DISTINCT file, CONTAINED by its root, in order.
+
+    The single dedupe for both sides of the grammar: the enumerator's collision fold and
+    the resolver's tier loop. One skill is routinely reachable through two roots — an
+    edition may advertise both a directory and a symlink into it — and that is NOT an
+    ambiguity; only distinct FILES are. Qualified keys are emitted per distinct COPY, so
+    a third root holding a symlink to another root's copy is a genuine collision by
+    count yet the same file: iterating raw entries would give it its own key pointing at
+    a file another key already names, two catalog rows for one skill.
+
+    **Containment is enforced here, on the CANONICAL forms of both sides.** ``Path.glob``
+    matches a symlinked directory's dirent and yields a path that is LEXICALLY under the
+    root while resolving anywhere on the filesystem, so a skill directory — or any
+    intermediate directory on the way to it — that is a symlink pointing outside the root
+    would otherwise hand the detail endpoint a file outside the package territory
+    entirely. A prefix test on the unresolved path cannot see that, and neither can the
+    glob result itself; only ``resolve()`` on both sides can. That makes this the one
+    place the check belongs: all three call sites (both resolver tiers and the fold) pass
+    through it, so enumeration and resolution refuse the same entries by construction
+    rather than by two rules kept in step by hand — an escaping entry omitted from only
+    one side would be a catalogued row that 404s on open, or a resolvable key ``/tree``
+    never lists.
+
+    ``Path.resolve()`` raises ``RuntimeError`` (not ``OSError``) on a symlink loop, and a
+    looping ``SKILL.md`` IS yielded by ``glob`` because a literal pattern matches the
+    dirent without following it. Catching only ``OSError`` would turn that into a 500 on
+    a browser-triggered request, so an unresolvable entry is skipped instead: it cannot
+    be read anyway. An unresolvable ROOT fails the same way — closed, not open, since
+    containment cannot be established against a root that does not canonicalise.
+    """
+    kept: list[tuple[Path, Path]] = []
+    seen: set[Path] = set()
+    canonical_roots: dict[Path, Path | None] = {}
+    for root, skill_md in entries:
+        if root not in canonical_roots:
+            try:
+                canonical_roots[root] = root.resolve()
+            except (OSError, RuntimeError):
+                canonical_roots[root] = None
+        canonical_root = canonical_roots[root]
+        try:
+            identity = skill_md.resolve()
+        except (OSError, RuntimeError):
+            # Unreadable anyway — see the symlink-loop paragraph above.
+            continue
+        if canonical_root is None or not identity.is_relative_to(canonical_root):
+            # Escapes the root it was found under. Logged with both absolute paths
+            # because the row simply will not appear, and this line is the only
+            # remediation surface an edition author gets.
+            logger.warning(
+                "edition skill %s resolves to %s, outside its root %s — omitting it; "
+                "a package skill directory may not symlink out of its own root",
+                skill_md,
+                identity,
+                canonical_root if canonical_root is not None else root,
+            )
+            continue
+        if identity in seen:
+            continue
+        seen.add(identity)
+        kept.append((root, skill_md))
+    return kept
+
+
+def _package_collision(
+    entries: list[tuple[Path, Path]],
+) -> tuple[list[tuple[Path, Path]], list[str] | None]:
+    """The ONE collision-set computation, shared by enumeration and resolution.
+
+    Returns ``(copies, qualifiers)`` for a single walked rel:
+
+    * *copies* is the deduplicated ``(root, file)`` list — one entry per DISTINCT
+      file, contained by its root (see :func:`_dedupe_entries`).
+    * *qualifiers* is one qualifier per entry of *copies*, in the same order, or
+      ``None`` when this rel has no addressable qualified spelling at all.
+
+    ``None`` covers BOTH of the ways that happens, because both mean the catalogue
+    offers no qualified key: fewer than two distinct copies (so the rel is keyed
+    unqualified), or a collision in which some root does not canonicalise and so yields
+    no identity. Callers distinguish the two by ``len(copies)``, which is what lets
+    enumeration mint the unqualified key in the first case and omit in the second, while
+    resolution refuses in both.
+
+    The all-or-nothing shape is kept as a FAIL-CLOSED backstop rather than a rule that
+    fires in normal operation. Since :func:`_root_identity_token` is a digest of the root's
+    own canonical path, every root that canonicalises yields one, and two distinct roots
+    cannot yield the same one — so neither the missing-qualifier nor the duplicate branch
+    is reachable except when the filesystem refuses to canonicalise a root.
+
+    **Both sides call this rather than each computing it**, and that is the point: every
+    key the catalog EMITS must resolve to the file it was emitted for, so any difference
+    in how the two build this set is a phantom row — a key ``/tree`` lists and ``detail``
+    404s. That is the direction this shares, and it is the whole of it: resolution is
+    deliberately WIDER than enumeration, because the resolver also accepts a leaf-name
+    key through its nested tier, so a rel the catalog lists at its full relative path
+    stays reachable under the bare leaf. Two copies of the rule agreeing today is not
+    even the narrow guarantee; it is a pair that drifts on the next edit to either one.
+    One implementation cannot disagree with itself.
+    """
+    copies = _dedupe_entries(entries)
+    if len(copies) < 2:
+        return copies, None
+    roots = [root for root, _skill_md in copies]
+    qualifiers = [_root_identity_token(root) for root in roots]
+    if any(q is None for q in qualifiers) or len(set(qualifiers)) != len(qualifiers):
+        return copies, None
+    # Every element is a str once none is None; narrowed for the caller's benefit.
+    return copies, [q for q in qualifiers if q is not None]
+
+
+def _omitted_paths(entries: Iterable[tuple[Path, Path]]) -> str:
+    """Absolute ``SKILL.md`` paths of *entries*, sorted, for an omission warning.
+
+    Every omission warning owes the reader the ABSOLUTE path, because the row is simply
+    absent afterwards and the key alone is relative to a root the reader cannot infer —
+    so the log line is the only remediation surface there is. Two of the warnings named
+    just the relative key, which told an operator that something was dropped without
+    telling them where to find it.
+
+    The FILE and not its root: a root can bundle several skills, and the operator's next
+    action is on the one directory this key named.
+    """
+    return ", ".join(sorted(str(skill_md) for _root, skill_md in entries))
+
+
+def _merge_package_walks(
+    walks: list[tuple[Path, dict[str, Path]]], catalog: dict[str, Path]
+) -> None:
+    """Fold per-root ``package/`` walks into *catalog*, qualifying collisions.
+
+    A relative path found in one root only — or found in several that all reach
+    the SAME file through a symlink — keeps the plain ``package/<rel>`` key it has
+    always had. A relative path backed by two DISTINCT files is what today's
+    single key cannot address: whichever root won ``setdefault`` produced a key
+    the resolver then refused, so the entry was a phantom in the editor. Those
+    become one qualified key per copy instead.
+
+    A relative path is OMITTED and logged only when the collision has no addressable
+    qualified spelling at all: a root that does not canonicalise yields no identity, so
+    :func:`_package_collision` returns no qualifiers. That is a fail-closed backstop
+    rather than a normal outcome, since every root that canonicalises has a digest.
+    Omitting keeps the documented invariant intact in the ONE direction it claims —
+    every key this walk offers is one :func:`_resolve_skill_root` accepts — which is what
+    lets a caller treat an enumerated key as routable without re-checking it. The
+    converse is deliberately NOT claimed: resolution is wider, because it also accepts a
+    leaf-name key through its nested tier, so a key this walk never offered can still
+    resolve. Read as two-way, that reads like a defect; it is the intended asymmetry.
+
+    A relative path that itself contains the qualifier separator is omitted for the
+    same reason: its key is indistinguishable from a qualified one, so the resolver
+    reads it as a ``<qualifier>:<rel>`` pair rather than the path meant. The resolver
+    agrees rather than guessing — it does not retry the remainder verbatim, because
+    the remainder of a genuine qualified key has the same shape, and a stale qualified
+    key would then be answered by whatever root happened to hold a directory of that
+    literal name. So such a path is not addressable under this grammar at all.
+
+    A qualified key is written unconditionally. This helper does NOT re-check whether
+    the key is already taken, because it cannot be: the caller prunes every
+    ``package/``-prefixed key before folding, which settles a core-versus-package
+    contest, and the fold cannot contend with itself because a qualifier never carries
+    the separator. That precondition is the caller's and is asserted against the
+    caller.
+    """
+    owners: dict[str, list[tuple[Path, Path]]] = {}
+    for root, found in walks:
+        for rel, skill_md in found.items():
+            owners.setdefault(rel, []).append((root, skill_md))
+    for rel, entries in owners.items():
+        if _SKILL_KEY_QUALIFIER_SEP in rel:
+            logger.warning(
+                "edition skill %r carries the reserved key qualifier separator %r, so "
+                "its key would be read as a qualified key naming another path; "
+                "omitting it — the affected SKILL.md files remain on disk at %s",
+                rel,
+                _SKILL_KEY_QUALIFIER_SEP,
+                _omitted_paths(entries),
+            )
+            continue
+        if not _names_a_relative_path(rel):
+            # The SAME predicate the resolver applies, for the same reason the separator
+            # check above exists: a rel the resolver refuses would be catalogued and
+            # then 404 on open — the phantom row this grammar removes. A directory
+            # literally named ``**`` is legal on POSIX and IS walked, so without this it
+            # is the one reachable divergence left (an anchor, a drive or a traversal
+            # element cannot be a dirent, and a colon-carrying name is already omitted
+            # above). Derived qualifiers are held to this predicate too, so holding the
+            # rel to it makes the rule uniform rather than a special case.
+            logger.warning(
+                "edition skill %r is not a relative path the resolver accepts (a glob "
+                "wildcard, an anchor or a traversal element), so its key would be "
+                "catalogued and unresolvable; omitting it — the affected SKILL.md files "
+                "remain on disk at %s",
+                rel,
+                _omitted_paths(entries),
+            )
+            continue
+        entries, qualifiers = _package_collision(entries)
+        if not entries:
+            continue
+        if qualifiers is None:
+            if len(entries) < 2:
+                catalog.setdefault(PACKAGE_KEY_PREFIX + rel, entries[0][1])
+                continue
+            logger.warning(
+                "edition skill %r is bundled by %d roots that share every path "
+                "segment; omitting it — no key could address one copy. The affected "
+                "SKILL.md files remain on disk at %s",
+                rel,
+                len(entries),
+                _omitted_paths(entries),
+            )
+            continue
+        for qualifier, (_root, skill_md) in zip(qualifiers, entries, strict=True):
+            key = f"{PACKAGE_KEY_PREFIX}{qualifier}{_SKILL_KEY_QUALIFIER_SEP}{rel}"
+            # Assigned unconditionally: no key written here can already be present.
+            # Every one carries ``PACKAGE_KEY_PREFIX``, and the sole caller prunes every
+            # prefixed key out of *catalog* immediately before folding, so a
+            # core-versus-package contest for a qualified key is already settled. Nor
+            # can this fold contend with itself: a qualifier is lowercase hex, so it
+            # never carries the separator and a key splits back to exactly one
+            # ``(qualifier, rel)`` pair, and within one *rel* the qualifiers are distinct
+            # because each is a digest of a distinct root. The precondition belongs to
+            # the caller and is asserted there by
+            # ``test_the_fold_is_handed_a_catalog_free_of_reserved_prefix_keys``.
+            catalog[key] = skill_md
 
 
 def _skill_uri_for_path(skill_md: Path) -> str:

@@ -2338,6 +2338,7 @@ def safe_read_file_bytes_nolink(
     *,
     max_bytes: int | None = None,
     allow_truncate: bool = False,
+    dir_fd: int | None = None,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
@@ -2368,12 +2369,21 @@ def safe_read_file_bytes_nolink(
     read_limit = MAX_FILE_BYTES if max_bytes is None else max_bytes
     if read_limit < 0:
         raise ValueError("max_bytes must be non-negative")
-    path = validate_file_path(raw)
+    if dir_fd is not None:
+        # *raw* names a file under the pinned directory, so the canonicalising validator
+        # does not apply -- every check below reads the DESCRIPTOR, not the name.
+        if within_root is None:
+            raise ValueError("dir_fd requires within_root, or nothing checks containment")
+        if os.path.isabs(raw) or ".." in Path(raw).parts:
+            return None
+        path: str | None = raw
+    else:
+        path = validate_file_path(raw)
     if path is None:
         return None
 
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
     except OSError:
         return None
     try:
