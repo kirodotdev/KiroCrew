@@ -284,6 +284,277 @@ class TestHandleMessage:
         assert "[REDACTED: credential]" in wire
 
     @pytest.mark.asyncio
+    async def test_trailing_run_survives_on_stream_wire(self, monkeypatch):
+        """A reply ending in credential-class chars is not truncated on the wire
+        (the append_stream frames, since stop_stream's final_text is ignored)."""
+        import kiro_crew.slack.handler as _h
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text="How can I "),
+                LLMEvent(kind="text_chunk", text="help you"),
+                LLMEvent(kind="text_chunk", text=" with?"),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+
+        # What Slack renders is the append_stream frames, not stop_stream's final_text.
+        wire = "".join(a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream")
+        assert wire == "How can I help you with?"
+
+    @pytest.mark.asyncio
+    async def test_redacted_render_drops_flushed_tail_from_wire(self, monkeypatch):
+        """When the end-of-turn render redacts anything, the withheld tail must
+        NOT be appended. An ANSI escape splits the key: the per-chunk redactor
+        commits ``Key: AKIA<esc>[`` raw (no match across the escape) and
+        withholds ``0mIOSFODNN7EXAMPLE`` — flushing that tail would render the
+        complete credential the instant the frame lands, visible (and
+        capturable) before _safe_final_update replaces it. The tail is dropped
+        and the guaranteed overwrite posts the complete redacted text."""
+        import kiro_crew.slack.handler as _h
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text="Key: AKIA\x1b[0m"),
+                LLMEvent(kind="text_chunk", text="IOSFODNN7EXAMPLE"),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "key?", None, "msg1", "U1")
+
+        appended = "".join(a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream")
+        # The withheld half never reaches the wire, so no reading of the
+        # appended stream can reassemble the credential.
+        assert "IOSFODNN7EXAMPLE" not in appended
+        # The reader still gets the complete turn via the final overwrite,
+        # fully redacted.
+        updates = [a[1].get("text") or "" for a in slack.actions if a[0] == "update"]
+        assert any("[REDACTED: credential]" in u for u in updates)
+
+    @pytest.mark.asyncio
+    async def test_exfil_url_in_flushed_tail_is_redacted(self, monkeypatch):
+        """A suspicious URL split across chunks never reaches Slack raw. The
+        per-chunk scan misses it (no single chunk is a whole URL), but the
+        end-of-turn render redacts it — which also means the withheld tail is
+        dropped rather than appended (a frame is visible the instant it lands),
+        and the complete redacted text arrives via the final overwrite."""
+        import kiro_crew.slack.handler as _h
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        blob = "A" * 48  # base64-like blob (>=40) trips the exfil scanner
+        # No single chunk is a complete URL: chunk 1 has no TLD, chunk 2 no scheme.
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text="See https://evil"),
+                LLMEvent(kind="text_chunk", text=f".example/x?data={blob}"),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "link me", None, "msg1", "U1")
+
+        # Raw URL never on the append wire, in any frame or reassembled.
+        appended = [a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream"]
+        for frame in appended:
+            assert "evil.example" not in frame or "[REDACTED" in frame
+        wire = "".join(appended)
+        assert f"evil.example/x?data={blob}" not in wire
+        # The redacting render drops the withheld tail from the wire entirely
+        # (appending it would land a visible frame before the overwrite)...
+        assert blob not in wire
+        # ...and the reader still gets the complete turn: the guaranteed final
+        # overwrite carries the fully-redacted text.
+        updates = [a[1].get("text") or "" for a in slack.actions if a[0] == "update"]
+        assert any("[REDACTED: suspicious URL to evil.example]" in u for u in updates)
+
+    @pytest.mark.asyncio
+    async def test_wait_boundary_does_not_flush_uncorrectable_tail(self, monkeypatch):
+        """The rolling redactor's withheld tail must NOT be flushed at a mid-turn
+        `wait` boundary. That message is stopped and never re-rendered, so —
+        unlike the end-of-turn stop — there is no full-text render (which
+        strip_ansi's and canonicalises before redacting) to catch a credential
+        the per-chunk redactor missed; an appended tail there is final and
+        uncorrectable. A zero-width space splits the key: the per-chunk redactor
+        commits ``…AKIA<zwsp>`` and withholds ``IOSFODNN7EXAMPLE``, but the
+        display canonicaliser drops the zwsp and rejoins the whole key — so
+        flushing the withheld half at this boundary would leak it. It stays
+        buffered instead."""
+        import kiro_crew.slack.handler as _h
+        from kiro_crew.acp.types import EVENT_TOOL_CALL
+        from kiro_crew.messaging.display_safety import canonicalize_display
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        zwsp = "​"  # invisible; dropped at render, rejoining the halves
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text=f"Key: AKIA{zwsp}IOSFODNN7EXAMPLE"),
+                LLMEvent(kind=EVENT_TOOL_CALL, title="wait"),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "go", None, "msg1", "U1")
+
+        appended = [a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream"]
+        # As the reader sees it (zero-width chars collapsed), the reassembled
+        # credential must never reach the uncorrectable wait-boundary wire.
+        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display("".join(appended))
+        # The withheld suffix specifically is not flushed at the wait boundary.
+        assert "IOSFODNN7EXAMPLE" not in "".join(appended)
+
+    @pytest.mark.asyncio
+    async def test_tail_buffered_before_wait_never_flushed_after_it(self, monkeypatch):
+        """A credential-class tail withheld BEFORE a `wait` must not surface in
+        the post-wait message either. The wait boundary resets `accumulated`,
+        so the end-of-turn render verdict only covers post-wait text -- if the
+        pre-wait tail stayed buffered in `_sred`, a clean post-wait verdict
+        would append it raw, reconstructing the split credential across the
+        two Slack messages. The boundary resets `_sred` alongside
+        `accumulated`, so the tail dies with the message it belonged to."""
+        import kiro_crew.slack.handler as _h
+        from kiro_crew.acp.types import EVENT_TOOL_CALL
+        from kiro_crew.messaging.display_safety import canonicalize_display
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        zwsp = "\u200b"  # invisible; dropped at render, rejoining the halves
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text=f"Key: AKIA{zwsp}IOSFODNN7EXAMPLE"),
+                LLMEvent(kind=EVENT_TOOL_CALL, title="wait"),
+                LLMEvent(kind="text_chunk", text="Done waiting."),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "go", None, "msg1", "U1")
+
+        appended = "".join(a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream")
+        # The pre-wait withheld half never reaches the wire -- not at the wait
+        # boundary, and not via the post-wait end-of-turn flush.
+        assert "IOSFODNN7EXAMPLE" not in appended
+        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(appended)
+        # The post-wait reply itself still arrives intact.
+        assert "Done waiting." in appended
+
+    @pytest.mark.asyncio
+    async def test_clean_tail_flushed_into_pre_wait_message(self, monkeypatch):
+        """An ordinary reply whose trailing characters are credential-class
+        (here a number) must NOT lose them to a `wait` boundary. The boundary
+        renders the complete pre-wait text; a clean verdict proves the withheld
+        tail safe, so it is appended into the pre-wait message before that
+        message is stopped -- dropping it unconditionally would re-create the
+        truncation bug this PR exists to fix."""
+        import kiro_crew.slack.handler as _h
+        from kiro_crew.acp.types import EVENT_TOOL_CALL
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text="The answer is "),
+                LLMEvent(kind="text_chunk", text="42"),
+                LLMEvent(kind=EVENT_TOOL_CALL, title="wait"),
+                LLMEvent(kind="text_chunk", text="More text."),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "q", None, "msg1", "U1")
+
+        appended = "".join(a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream")
+        # The withheld "42" is flushed into the pre-wait message (clean
+        # verdict), and the post-wait text arrives too.
+        assert "The answer is 42" in appended
+        assert "More text." in appended
+
+    @pytest.mark.asyncio
+    async def test_redacted_pre_wait_turn_overwritten_not_truncated(self, monkeypatch):
+        """A redacted pre-wait turn must not silently lose its SAFE trailing
+        text. The withheld tail (`42`) is not appended (its bytes are not
+        covered by any later verdict), but the stopped message is overwritten
+        with the complete REDACTED render -- the same recovery the end-of-turn
+        stop uses -- so the reader gets the full text with only the credential
+        masked, and the obfuscated credential the per-chunk redactor streamed
+        raw is corrected in place."""
+        import kiro_crew.slack.handler as _h
+        from kiro_crew.acp.types import EVENT_TOOL_CALL
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        provider = FakeProvider(
+            [
+                # ANSI escape hides the key from the per-chunk redactor; the
+                # trailing space ends the credential-class run so everything
+                # up to it commits, leaving only "42" withheld.
+                LLMEvent(kind="text_chunk", text="Key: AKIA\x1b[0mIOSFODNN7EXAMPLE and "),
+                LLMEvent(kind="text_chunk", text="42"),
+                LLMEvent(kind=EVENT_TOOL_CALL, title="wait"),
+                LLMEvent(kind="text_chunk", text="Post."),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "q", None, "msg1", "U1")
+
+        appended = "".join(a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream")
+        # The withheld tail is not appended under a redacted verdict...
+        assert "42" not in appended
+        # ...but the stopped pre-wait message is overwritten with the complete
+        # redacted render: safe trailing text survives, credential masked.
+        updates = [a[1].get("text") or "" for a in slack.actions if a[0] == "update"]
+        assert any("[REDACTED: credential]" in u and "and 42" in u for u in updates)
+        # Post-wait streaming continues normally.
+        assert "Post." in appended
+
+    @pytest.mark.asyncio
+    async def test_flush_retry_failure_falls_back_to_final_update(self, monkeypatch):
+        """If the end-of-turn tail append fails AND its post-rotation retry
+        fails, streaming is abandoned so the final update posts the complete
+        text -- the turn must not silently end without its tail."""
+        import kiro_crew.slack.handler as _h
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        class TailRefusingSlack(MockSlackClient):
+            """append_stream refuses frames carrying the withheld tail."""
+
+            async def append_stream(self, channel, ts, text):
+                await super().append_stream(channel, ts, text)
+                return "12345" not in (text or "")
+
+        slack = TailRefusingSlack()
+        slack._stream_enabled = True
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text="Result: "),
+                LLMEvent(kind="text_chunk", text="12345"),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "q", None, "msg1", "U1")
+
+        # The complete text reaches the reader via the final update fallback.
+        updates = [a[1].get("text") or "" for a in slack.actions if a[0] == "update"]
+        assert any("Result: 12345" in u for u in updates)
+
+    @pytest.mark.asyncio
     async def test_edit_mode_snapshot_not_truncated(self, monkeypatch):
         """Edit-mode live previews must show the complete accumulated text, not a
         trailing-token-truncated snapshot: the complete tail (`42`)
