@@ -96,7 +96,7 @@ def cli_env() -> dict[str, str]:
     PATH now matches the path the binary was resolved on.
     """
     env = dict(os.environ)
-    env["PATH"] = node_augmented_path(augmented_path(env.get("PATH", "")))
+    env["PATH"] = _search_path(node_augmented_path(augmented_path(env.get("PATH", ""))))
     return env
 
 
@@ -136,8 +136,13 @@ def cli_path() -> str | None:
     inherit it on ``$PATH``. Without this the standalone install would SUCCEED
     and the panel would keep reporting the CLI as absent -- the worst shape of
     failure available here, since nothing errors and the offer never withdraws.
+
+    The private install prefix is appended on top of that (:func:`_search_path`),
+    because no PATH heuristic can guess a directory Kiro Crew itself chose.
     """
-    return find_node_tool(CLI_BIN, base_path=augmented_path(os.environ.get("PATH", "")))
+    return find_node_tool(
+        CLI_BIN, base_path=_search_path(augmented_path(os.environ.get("PATH", "")))
+    )
 
 
 def _first_version(text: str) -> str | None:
@@ -220,12 +225,40 @@ _PLAYWRIGHT_CORE_PKG = "playwright-core"
 _CLI_PKG_SCOPE = "@playwright"
 _CLI_PKG_NAME = "cli"
 
-#: Where the standalone installer puts the package tree. `npm --global --prefix`
+#: Where an unprivileged install puts the package tree. `npm --global --prefix`
 #: writes under ``<prefix>/lib/node_modules`` on POSIX and ``<prefix>/node_modules``
 #: on Windows, so both are probed.
 _STANDALONE_PREFIX_ENV = "KIROCREW_PLAYWRIGHT_CLI_HOME"
 _STANDALONE_PREFIX_DIR = "playwright-cli"
 _NODE_MODULES = "node_modules"
+
+#: Where the standalone installer drops its launcher, and where the private-prefix
+#: retry links its own. On ``$PATH`` for an ordinary login shell, which the private
+#: prefix's own ``bin`` is not -- see :func:`_link_private_launcher`.
+_USER_BIN_DIR = ".local/bin"
+
+
+def standalone_prefix() -> Path:
+    """The install prefix used when the npm global prefix is not writable.
+
+    One definition shared by the package-tree probe, the launcher search and the
+    private-prefix install itself, so a relocated prefix
+    (``KIROCREW_PLAYWRIGHT_CLI_HOME``) cannot move the install away from where
+    detection looks for it. Mirrors ``playwright-cli.sh``, which defaults to the
+    same ``<data home>/playwright-cli``.
+    """
+    override = os.environ.get(_STANDALONE_PREFIX_ENV, "").strip()
+    return Path(override) if override else config_dir() / _STANDALONE_PREFIX_DIR
+
+
+def standalone_bin_dir() -> Path:
+    """Directory the private prefix's launcher lands in.
+
+    ``npm --global --prefix P`` writes ``P/bin/<name>`` on POSIX and ``P/<name>.cmd``
+    on Windows -- npm's own layout, not a choice made here.
+    """
+    prefix = standalone_prefix()
+    return prefix if platform_compat.IS_WINDOWS else prefix / "bin"
 
 
 def _standalone_node_modules() -> list[Path]:
@@ -238,9 +271,25 @@ def _standalone_node_modules() -> list[Path]:
     for that install shape at all, and the check would silently degrade to the
     presence-only answer whose false positives it exists to remove.
     """
-    prefix_override = os.environ.get(_STANDALONE_PREFIX_ENV, "").strip()
-    prefix = Path(prefix_override) if prefix_override else config_dir() / _STANDALONE_PREFIX_DIR
+    prefix = standalone_prefix()
     return [prefix / "lib" / _NODE_MODULES, prefix / _NODE_MODULES]
+
+
+def _search_path(base: str) -> str:
+    """*base* plus the private prefix's bin dir, which no PATH heuristic knows.
+
+    APPENDED, not prepended: a system-wide ``npm install -g`` is the standard
+    shape and stays authoritative when both exist. The private prefix is the
+    fallback for a host whose npm prefix is root-owned, and it is reached by
+    KNOWN PATH because it is a directory Kiro Crew chose -- no version manager
+    puts anything there, so :func:`augmented_path`'s guesses can never include it.
+    Without this the private-prefix install would SUCCEED and the panel would
+    keep reporting the CLI absent: the failure shape :func:`cli_path` documents
+    as the worst available here.
+    """
+    return (
+        os.pathsep.join([base, str(standalone_bin_dir())]) if base else str(standalone_bin_dir())
+    )
 
 
 def _launcher_node_modules(anchor: Path) -> list[Path]:
@@ -702,6 +751,101 @@ def _step(
     }
 
 
+# npm's own error codes for "this user may not write the install prefix". A
+# root-owned global ``node_modules`` (a distribution tarball unpacked into
+# /usr/local, a system package, a container image built as root) is the ordinary
+# shape of this, not an exotic one -- MEASURED on an Amazon Linux host whose
+# prefix ``/usr/local/node-v22.12.0-linux-arm64/lib/node_modules`` is owned by
+# ``nobody``, where the panel's install button could only ever fail.
+#
+# Matched on the CODE rather than on the prose, because npm's advice line ("try
+# running the command again as root/Administrator") is the one thing here that
+# must NOT be followed: the fix is a prefix this user owns, and installing the
+# browsing toolchain as root would leave a root-owned tree the gateway then
+# cannot upgrade.
+_PREFIX_DENIED_CODES = ("EACCES", "EPERM", "EROFS")
+
+
+def _prefix_write_denied(text: str) -> bool:
+    """Whether *text* is npm reporting that it cannot write the install prefix.
+
+    Deliberately narrow: only a permission/read-only failure earns the private
+    prefix retry. A registry rejection, a proxy failure or a missing package is a
+    different problem that retrying elsewhere would merely repeat, and whose real
+    remedy is the standalone installer (:func:`_standalone_install_command`).
+    """
+    return any(code in text for code in _PREFIX_DENIED_CODES)
+
+
+def _link_private_launcher(prefix_bin: Path) -> None:
+    """Best-effort ``~/.local/bin`` launcher for a private-prefix install.
+
+    Not required for correctness -- :func:`cli_path` searches the prefix bin dir
+    directly, so the gateway and the panel work without it. It is required for
+    the AGENT, which is documented to run ``playwright-cli`` as an ordinary shell
+    command: that shell resolves the login ``$PATH``, which holds
+    ``~/.local/bin`` but can never hold a Kiro-Crew-chosen prefix. This is the
+    same convention ``playwright-cli.sh`` follows, so the two install shapes leave
+    the host looking alike.
+
+    Failure is logged, never raised or reported as a failed step: a read-only or
+    absent ``~/.local/bin`` costs the shell shortcut, not the install.
+    """
+    source = prefix_bin / CLI_BIN
+    target = Path.home() / _USER_BIN_DIR / CLI_BIN
+    try:
+        if not source.exists():
+            # Windows (``<prefix>/playwright-cli.cmd``) and any future npm layout
+            # change: nothing to link, and a broken link would be worse than none.
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Replace only a symlink we would have written. A real file there is
+        # somebody else's launcher (or their own script) and is not ours to remove.
+        if target.is_symlink():
+            target.unlink()
+        elif target.exists():
+            logger.info("%s already exists and is not a symlink; leaving it alone", target)
+            return
+        target.symlink_to(source)
+    except OSError as exc:
+        logger.warning("could not link %s -> %s: %s", target, source, exc)
+
+
+def _install_into_private_prefix(npm: str) -> dict[str, Any]:
+    """Install the CLI into a prefix this user owns, after the global one refused.
+
+    ``--global --prefix`` and not a project-local ``npm install``: the global
+    layout is what puts a launcher in ``<prefix>/bin`` and the package under
+    ``<prefix>/lib/node_modules``, which is exactly what
+    :func:`_standalone_node_modules` already probes and what
+    :func:`_launcher_node_modules` already knows how to read a browser revision
+    out of. Reusing that layout means detection needs no new special case.
+    """
+    prefix = standalone_prefix()
+    try:
+        prefix.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {
+            "name": "npm-install-private-prefix",
+            "ok": False,
+            "returncode": 1,
+            "stderr": f"cannot create the private install prefix {prefix}: {exc}",
+        }
+    step = _step(
+        "npm-install-private-prefix",
+        [npm, "install", "--global", "--prefix", str(prefix), NPM_SPEC],
+        _NPM_INSTALL_TIMEOUT_S,
+        hint=(
+            "The npm global prefix is not writable by this user, so the CLI was "
+            f"installed into {prefix} instead. If this failed too, run the "
+            "standalone installer shown in the Browser settings panel."
+        ),
+    )
+    if step["ok"]:
+        _link_private_launcher(standalone_bin_dir())
+    return step
+
+
 def _download_browser(path: str, engine: str | None = None) -> list[dict[str, Any]]:
     """Download a browser build, adapting to what this host's OS allows.
 
@@ -773,6 +917,13 @@ def install() -> dict[str, Any]:
     steps.append(
         _step("npm-install-global", [npm, "install", "-g", NPM_SPEC], _NPM_INSTALL_TIMEOUT_S)
     )
+    # A root-owned npm prefix is a host property, not an operator mistake, and it
+    # made the panel's install button unable to succeed at all: the only exit was
+    # the standalone installer, which the operator had to notice, copy and run in
+    # their own terminal. Retrying into a prefix this user owns keeps the failure
+    # visible in the step list while letting the install finish by itself.
+    if not steps[-1]["ok"] and _prefix_write_denied(steps[-1]["stderr"]):
+        steps.append(_install_into_private_prefix(npm))
     if not steps[-1]["ok"]:
         return {"ok": False, "steps": steps}
 
