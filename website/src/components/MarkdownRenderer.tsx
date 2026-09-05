@@ -3346,8 +3346,216 @@ export function fixUnencodedLinkDestinations(content: string): string {
   return out + content.slice(pos)
 }
 
-export function fixCodeFences(s: string): string {
-  // Escape bare "N." lines so markdown doesn't render them as ordered lists.
+/** Normalize LaTeX-native math delimiters to the `$$` form remark-math parses.
+ *
+ * Models emit `\[ … \]` (display) and `\( … \)` (inline) — the delimiters
+ * LaTeX itself uses — but remark-math only tokenizes dollar math, and this
+ * renderer deliberately runs it with `singleDollarTextMath: false` (the
+ * currency guard; see REMARK_PLUGINS). Valid math therefore rendered as raw
+ * source text (#7803). Rewriting each delimiter to `$$` hands the content to
+ * the existing math pipeline unchanged.
+ *
+ * Scope guards: fenced code blocks and inline code spans are never rewritten
+ * (a shell snippet legitimately contains `\[`), and a lone opener without its
+ * matching closer outside code is left alone. Display-math conversion
+ * additionally requires the delimiters to be WHITESPACE-SHAPED — `\[` followed
+ * by whitespace and `\]` preceded by whitespace (`\[ x \]`, `\[\n…\n\]`) —
+ * because a backslash-escaped literal bracket hugs its text (`\[a\]`,
+ * `\[REDACTED: …\]`): the ADF converter escapes brackets precisely so text
+ * cannot become markup, and converting those to math would defeat that escape
+ * (see MarkdownRenderer.adfSafety.test.tsx). A closer immediately followed by
+ * `(` is link/image syntax and never converts. Every replacement is 2 chars →
+ * 2 chars, so source coordinates are preserved and the pass is safe in
+ * `sourcePos` mode (unlike the column-shifting link fixers gated off there).
+ */
+export function normalizeMathDelimiters(s: string): string {
+  if (!s.includes('\\[') && !s.includes('\\(')) return s
+  const chars = s.split('')
+  const n = s.length
+  let inFence = false
+  let fenceMarker = ''
+  let inCode = false
+  let codeTicks = 0
+  let atLineStart = true
+  // Fences may sit inside blockquotes (`> ```): the prefix is consumed so the
+  // fence still opens/closes code protection there.
+  const fenceRe = /^(?:> ?)* {0,3}(```+|~~~+)/
+  // SINGLE FORWARD PASS: openers are remembered as pending and paired when
+  // their closer arrives. An unmatched opener costs nothing beyond its own
+  // visit — the previous per-opener closer search re-scanned the suffix for
+  // every opener, which made a pathological body of unmatched `\[` openers
+  // quadratic (a rendered-content DoS; both review lanes flagged it). Every
+  // position is now visited once; the display-shape line checks at pair time
+  // are bounded by their own line.
+  let pendingParen = -1
+  let pendingBracket = -1
+  // Indented-code tracking: `prevLineBlank` starts true so a file BEGINNING
+  // with an indented code block is recognized.
+  let prevLineBlank = true
+  let inIndentedCode = false
+  let i = 0
+  const lineAt = (idx: number): string => {
+    const end = s.indexOf('\n', idx)
+    return s.slice(idx, end === -1 ? n : end)
+  }
+  const lineBoundedDisplay = (open: number, close: number): boolean => {
+    // Display math must OWN its line ends: `\[` preceded on its line only by
+    // whitespace, `\]` followed on its line only by whitespace. Jira/ADF
+    // escaped brackets (`see \[ x \] here`) live inside a sentence and must
+    // stay literal — the converter escaped them precisely so they cannot
+    // become markup.
+    let a = open - 1
+    while (a >= 0 && s[a] !== '\n') {
+      if (!/\s/.test(s[a])) return false
+      a--
+    }
+    let b = close + 2
+    while (b < n && s[b] !== '\n') {
+      if (!/\s/.test(s[b])) return false
+      b++
+    }
+    return true
+  }
+  while (i < n) {
+    const ch = chars[i]
+    if (atLineStart && !inCode) {
+      const line = lineAt(i)
+      // CommonMark indented code: 4+ spaces (or a tab), opened after a blank
+      // line (or file start) and continued by further indented/blank lines.
+      // Also matched inside blockquote prefixes (`>     code`). Skipping errs
+      // safe — an indented delimiter stays raw rather than being rewritten
+      // inside what the real parser will render as code.
+      const indentedCode = /^(?:> ?)* {4,}\S|^(?:> ?)*\t/.test(line)
+      if (!inFence && indentedCode && (prevLineBlank || inIndentedCode)) {
+        inIndentedCode = true
+        pendingParen = -1
+        pendingBracket = -1
+        prevLineBlank = false
+        i += line.length
+        atLineStart = false
+        continue
+      }
+      if (/^\s*$/.test(line)) prevLineBlank = true
+      else {
+        prevLineBlank = false
+        inIndentedCode = false
+      }
+      // A reference-link DEFINITION (`[label]: destination "title"`) is a
+      // block-level construct whose destination is a URL — `\(`/`\)` there
+      // are literal path characters, and rewriting them corrupts the href.
+      // The whole line is non-prose: skip it and kill pendings (math cannot
+      // span a block construct). An ESCAPED leading bracket (`\[x\]: …`) is
+      // prose and deliberately does not match.
+      if (/^(?:> ?)* {0,3}\[[^\]]*\]:/.test(line)) {
+        pendingParen = -1
+        pendingBracket = -1
+        i += line.length
+        atLineStart = false
+        continue
+      }
+      const m = fenceRe.exec(line)
+      if (m) {
+        // A CLOSING fence is the marker followed only by whitespace —
+        // `~~~not-close` inside a tilde fence is content, not a closer
+        // (CommonMark: closing fences carry no info string).
+        const restIsWs = /^\s*$/.test(line.slice(line.indexOf(m[1]) + m[1].length))
+        if (!inFence) { inFence = true; fenceMarker = m[1] }
+        else if (m[1][0] === fenceMarker[0] && m[1].length >= fenceMarker.length && restIsWs) inFence = false
+        // Math cannot cross a fence boundary: any pending opener dies here
+        // (same semantics as the old search aborting at a fence line).
+        pendingParen = -1
+        pendingBracket = -1
+        i += line.length
+        atLineStart = false
+        continue
+      }
+    }
+    atLineStart = ch === '\n'
+    if (inFence) { i++; continue }
+    if (ch === '`') {
+      let ticks = 1
+      while (chars[i + ticks] === '`') ticks++
+      if (!inCode) { inCode = true; codeTicks = ticks }
+      else if (ticks === codeTicks) inCode = false
+      i += ticks
+      continue
+    }
+    if (inCode) { i++; continue }
+    if (ch === ']' && chars[i + 1] === '(') {
+      // A markdown link/image DESTINATION: skip to its matching unescaped `)`
+      // so `\(`/`\)` inside a URL are never rewritten (they are literal path
+      // characters there; rewriting corrupts the destination). Escaped parens
+      // do not change depth. Any pending inline opener survives the skip —
+      // math spanning a link pairs as before, just never inside the URL.
+      let j = i + 2
+      let depth = 1
+      while (j < n && depth > 0) {
+        if (s[j] === '\n') break
+        if (s[j] === '\\') { j += 2; continue }
+        if (s[j] === '(') depth++
+        else if (s[j] === ')') depth--
+        j++
+      }
+      // Terminated OR not, consume the scanned range: re-examining it per
+      // `](` occurrence made repeated-`](` junk quadratic within a line (a
+      // rendered-content stall). The cost of the unterminated case is that a
+      // math pair after a stray `](` on the SAME line stays raw — the safe
+      // direction (unrendered, never corrupted).
+      i = j
+      continue
+    }
+    if (ch === '\\' && chars[i + 1] === '\\') {
+      // Escaped backslash: consume the PAIR so a delimiter branch below only
+      // ever fires on a backslash that is genuinely unescaped. `\\(x\\)` is a
+      // literal backslash + paren (Jira's escaper emits these), not math —
+      // pairwise consumption is the streaming equivalent of isEscapedAt's
+      // odd/even parity test, with no per-candidate rescan.
+      i += 2
+      continue
+    }
+    if (ch === '\\' && (chars[i + 1] === '[' || chars[i + 1] === '(')) {
+      if (chars[i + 1] === '[') { if (pendingBracket === -1) pendingBracket = i }
+      else if (pendingParen === -1) pendingParen = i
+      i += 2
+      continue
+    }
+    if (ch === '\\' && (chars[i + 1] === ']' || chars[i + 1] === ')')) {
+      const isDisplay = chars[i + 1] === ']'
+      const open = isDisplay ? pendingBracket : pendingParen
+      if (open !== -1) {
+        const close = i
+        const closerFollowedByParen = s[close + 2] === '('
+        // Whitespace-shaped test: escaped literal brackets hug their text
+        // (`\[a\]`, `\[REDACTED: …\]`) while display math is padded
+        // (`\[ x \]`, `\[\n…\n\]`). Inline `\(…\)` has no escape collision
+        // (`\(` is not a markdown escape) so it converts without the shape test.
+        const wsAfterOpen = /\s/.test(s[open + 2] ?? '')
+        const wsBeforeClose = /\s/.test(s[close - 1] ?? '')
+        const eligible =
+          !closerFollowedByParen &&
+          (!isDisplay || (wsAfterOpen && wsBeforeClose && lineBoundedDisplay(open, close)))
+        if (eligible) {
+          chars[open] = '$'
+          chars[open + 1] = '$'
+          chars[close] = '$'
+          chars[close + 1] = '$'
+        }
+        // Paired or refused, this opener/closer pair is consumed either way —
+        // an ineligible pair (escape usage) must not lie in wait for a later
+        // closer.
+        if (isDisplay) pendingBracket = -1
+        else pendingParen = -1
+      }
+      i += 2
+      continue
+    }
+    i++
+  }
+  return chars.join('')
+}
+
+
+export function fixCodeFences(s: string): string {  // Escape bare "N." lines so markdown doesn't render them as ordered lists.
   // CommonMark: 0-3 leading spaces = list item, 4+ = indented code block.
   // Tracks backtick and tilde fences with length matching per CommonMark spec.
   let inFence = false
@@ -3522,7 +3730,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   // characters per fixed URL, which shifts every later column on that line and
   // would anchor a comment to the wrong occurrence — so that surface keeps the
   // unfixed (but coordinate-accurate) render.
-  const fenced = fixCodeFences(clean)
+  const fenced = normalizeMathDelimiters(fixCodeFences(clean))
   // `fixUnencodedLinkDestinations` runs BEFORE the CJK pass: repairing a
   // refused `[text](url)` turns the URL's autolinked head back into a real
   // link node, so the CJK boundary pass must judge the repaired shape, not

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLineRef } from '../components/MarkdownRenderer'
+import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLineRef, normalizeMathDelimiters } from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { api } from '../api/client'
 
@@ -1619,5 +1619,155 @@ describe('MarkdownRenderer softBreaks', () => {
   it('preserves multiple soft breaks in a paragraph as multiple <br> when softBreaks is set', () => {
     const { container } = render(<MarkdownRenderer content={'a\nb\nc'} softBreaks />)
     expect(container.querySelectorAll('br').length).toBe(2)
+  })
+})
+
+describe('MarkdownRenderer LaTeX-native delimiters (#7803)', () => {
+  it('renders \\[ ... \\] display math via KaTeX', () => {
+    const content = '\\[\n\\text{Incremental value} = V(a) - V(b)\n\\]'
+    const { container } = render(<MarkdownRenderer content={content} />)
+    expect(container.querySelector('.katex, .katex-display')).not.toBeNull()
+    expect(container.textContent).not.toContain('\\[')
+  })
+
+  it('renders \\( ... \\) inline math via KaTeX', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'The value \\(a^2 + b^2\\) grows.'} />
+    )
+    expect(container.querySelector('.katex')).not.toBeNull()
+    expect(container.textContent).toContain('grows.')
+  })
+
+  it('leaves \\[ inside fenced code blocks literal', () => {
+    const content = '```sh\ngrep "\\[x\\]" file\n```'
+    const { container } = render(<MarkdownRenderer content={content} />)
+    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.textContent).toContain('\\[x\\]')
+  })
+
+  it('leaves \\[ inside inline code literal', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'Use `\\[escape\\]` in the pattern.'} />
+    )
+    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.textContent).toContain('\\[escape\\]')
+  })
+
+  it('leaves an unmatched \\[ opener alone', () => {
+    const { container } = render(<MarkdownRenderer content={'A lone \\[ bracket here'} />)
+    expect(container.querySelector('.katex')).toBeNull()
+  })
+
+  it('does not defeat markdown bracket-escapes (ADF safety shapes)', () => {
+    // Escaped literal brackets HUG their text — converting them to math
+    // would defeat the escape the ADF converter emits for security.
+    const image = render(<MarkdownRenderer content={'!\\[a\\](http://example.com/i.png)'} />)
+    expect(image.container.querySelector('.katex')).toBeNull()
+    expect(image.container.textContent).toContain('![a](http://example.com/i.png)')
+    const redacted = render(<MarkdownRenderer content={'\\[REDACTED: credential\\]'} />)
+    expect(redacted.container.querySelector('.katex')).toBeNull()
+    expect(redacted.container.textContent).toContain('[REDACTED: credential]')
+  })
+
+  it('converts whitespace-padded single-line display math', () => {
+    const { container } = render(<MarkdownRenderer content={'\\[ a^2 + b^2 = c^2 \\]'} />)
+    expect(container.querySelector('.katex, .katex-display')).not.toBeNull()
+  })
+
+  it('leaves mid-sentence escaped brackets literal even when padded (Jira/ADF shape)', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'have you seen \\[ x \\] in the board column?'} />
+    )
+    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.textContent).toContain('[ x ]')
+  })
+
+  it('does not let an unmatched opener consume a closer inside inline code', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'A lone \\( here, then code `f\\(x\\)` stays code.'} />
+    )
+    expect(container.textContent).toContain('f\\(x\\)')
+  })
+
+  it('does not treat a non-closing fence-like line as ending code protection', () => {
+    const content = '~~~\ncontent\n~~~not-close\n\\[ still in fence \\]\n~~~'
+    const { container } = render(<MarkdownRenderer content={content} />)
+    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.textContent).toContain('still in fence')
+  })
+
+  it('normalizeMathDelimiters preserves string length (sourcePos safety)', () => {
+    const content = 'Before \\(x\\) and\n\\[\ny = z\n\\]\nafter'
+    expect(normalizeMathDelimiters(content).length).toBe(content.length)
+  })
+
+  it('leaves escaped parens inside link destinations untouched', () => {
+    const content = 'see [the page](https://example.com/wiki/Name_\\(disambiguation\\)) for more'
+    expect(normalizeMathDelimiters(content)).toBe(content)
+    const { container } = render(<MarkdownRenderer content={content} />)
+    expect(container.querySelector('.katex')).toBeNull()
+    const a = container.querySelector('a')
+    expect(a?.getAttribute('href')).toContain('disambiguation')
+  })
+
+  it('handles pathological unmatched-opener input in linear time', () => {
+    // 50k unmatched openers = 100k chars. The pre-fix per-opener suffix
+    // rescan was O(n²) (~1.25e9 steps) and would trip vitest's 5s test
+    // timeout; the single-pass scanner completes in milliseconds. This test
+    // IS the regression guard — a quadratic reintroduction fails by timeout.
+    const pathological = '\\('.repeat(50000)
+    const out = normalizeMathDelimiters(pathological)
+    expect(out).toBe(pathological) // nothing pairs, nothing rewritten
+  })
+
+  it('handles pathological repeated ]( junk in linear time', () => {
+    // Repeated `](` with no terminating `)` previously re-scanned the rest
+    // of the line per occurrence (quadratic within a line). Same implicit
+    // timeout guard as the unmatched-opener case. The scanned range is
+    // consumed, so same-line math after the junk stays RAW (the safe
+    // direction); math on the next line converts normally.
+    const junk = ']('.repeat(50000)
+    const out = normalizeMathDelimiters(junk + ' \\( x \\)\n\\( y \\)')
+    expect(out).toContain('\\( x \\)') // same line as junk: left raw
+    expect(out).toContain('$$ y $$') // next line: converts
+  })
+
+  it('leaves math delimiters inside indented code blocks literal', () => {
+    // A 4-space-indented code block is code to the parser even with no
+    // fence; the parser-derived mask protects it where fence tracking
+    // could not.
+    const content = 'Example:\n\n    result = \\(x\\) + 1\n\nDone.'
+    const { container } = render(<MarkdownRenderer content={content} />)
+    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.textContent).toContain('\\(x\\)')
+  })
+
+  it('leaves double-escaped delimiters literal (escape parity)', () => {
+    // `\\(x\\)` is an escaped backslash followed by a plain paren — the
+    // shape Jira's inline escaper emits for a literal backslash-paren. The
+    // backslash pair must be consumed as an escape, never read as `\(` math.
+    const out = normalizeMathDelimiters('literal \\\\(x\\\\) stays')
+    expect(out).toBe('literal \\\\(x\\\\) stays')
+    // Parity, not blanket suppression: `\\\(` is an escaped backslash THEN a
+    // real opener, so a triple-backslash pair still converts.
+    expect(normalizeMathDelimiters('\\\\\\( x \\\\\\)')).toBe('\\\\$$ x \\\\$$')
+  })
+
+  it('leaves math delimiters inside blockquoted fenced code literal', () => {
+    const content = '> ```\n> \\(x\\)\n> ```\n\n\\( y \\)'
+    const out = normalizeMathDelimiters(content)
+    expect(out).toContain('> \\(x\\)') // fenced inside blockquote: untouched
+    expect(out).toContain('$$ y $$') // prose after: converts
+  })
+
+  it('leaves reference-link definition destinations untouched', () => {
+    // `[label]: url` is a block construct whose destination is a URL —
+    // escaped parens there are literal path characters, never math.
+    const content = '[fn]: https://example.test/Name_\\(detail\\)\n\n\\( y \\)'
+    const out = normalizeMathDelimiters(content)
+    expect(out).toContain('[fn]: https://example.test/Name_\\(detail\\)')
+    expect(out).toContain('$$ y $$')
+    // An ESCAPED leading bracket is prose, not a definition: still eligible.
+    expect(normalizeMathDelimiters('\\( a \\) [x]: kept-inline')).toContain('$$ a $$')
   })
 })
