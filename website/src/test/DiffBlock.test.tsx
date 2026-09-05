@@ -99,17 +99,60 @@ describe('DiffBlock', () => {
     expect(onFileOpen).toHaveBeenCalledWith('file.ts')
   })
 
-  /* Pierre builds its file header from the `---`/`+++` lines; hunks alone give
-     it nothing to title, so it renders the body and NO metadata slot at all.
-     Asserting only that Open is absent would therefore pass even with the path
-     guard deleted — the assertion has to be that NOTHING is slotted, which is
-     also the pin on this known limitation (a headerless patch loses Open,
-     Split and Copy together). */
-  it('slots no controls at all for a headerless patch', async () => {
+  /** A named header earns a file header independently of whether it produces an
+   *  Open target. This keeps one-character names valid and keeps `/dev/null`
+   *  visible as patch structure even though the extractor deliberately refuses
+   *  it as a path. */
+  const fileHeaderRendered = async () => {
+    await headerMounted()
+    const host = Array.from(document.querySelectorAll('*')).find(e => e.shadowRoot)
+    return !!host?.shadowRoot?.querySelector('[data-diffs-header]')
+  }
+
+  it('keeps the file header for a one-character path', async () => {
+    render(<DiffBlock code={`--- x\n+++ x\n@@ -1,1 +1,1 @@\n-a\n+b`} complete={true} />)
+    expect(await fileHeaderRendered()).toBe(true)
+  })
+
+  it('keeps the file header when both sides name /dev/null', async () => {
+    render(<DiffBlock code={`--- /dev/null\n+++ /dev/null\n@@ -1,1 +1,1 @@\n-a\n+b`} complete={true} />)
+    expect(await fileHeaderRendered()).toBe(true)
+  })
+
+  it('hides the file header only for a patch that names no file', async () => {
+    render(<DiffBlock code={`@@ -1,1 +1,1 @@\n-a\n+b`} complete={true} />)
+    expect(await fileHeaderRendered()).toBe(false)
+  })
+
+  it('keeps the file header for a named section announced after an open hunk', async () => {
+    // A fence can open mid-patch, so the first line is a bare `@@` and the real
+    // `--- `/`+++ ` pair arrives later, announced by the `@@` under it. Pierre
+    // parses that pair as a named file and renders its header, so the block must
+    // not suppress it — a scan that gave up at the first `@@` did.
+    const midPatch = `@@ -1,1 +1,1 @@\n-a\n+b\ndiff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1,1 +1,1 @@\n-c\n+d`
+    render(<DiffBlock code={midPatch} complete={true} />)
+    expect(await fileHeaderRendered()).toBe(true)
+  })
+
+  it('renders a headerless patch as a diff, with Copy but no Open', async () => {
+    // A headerless patch used to parse to zero files and degrade to plain text,
+    // losing Open, Split and Copy together. It now renders through a synthesized
+    // file section, so the patch-level controls are back — but Open still must
+    // not appear, because there is no path to open. Asserting Copy PRESENT is
+    // what makes the Open assertion falsifiable: both would vanish together if
+    // the block fell back to plain text again, so a bare "Open is absent" check
+    // would pass for the wrong reason.
     const noPathDiff = `@@ -1,2 +1,2 @@\n-old\n+new`
     render(<DiffBlock code={noPathDiff} complete={true} onFileOpen={() => {}} />)
-    await expect(screen.findByTitle('Copy patch', undefined, { timeout: 1500 })).rejects.toThrow()
+    await headerMounted()
     expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
+    // The synthesized name is a parser placeholder, never shown to the reader.
+    const shadowText = (root: Element | ShadowRoot): string =>
+      Array.from(root.querySelectorAll('*'))
+        .map(el => (el.shadowRoot ? shadowText(el.shadowRoot) : ''))
+        .concat(root.textContent ?? '')
+        .join(' ')
+    expect(shadowText(document.body)).not.toContain('snippet')
   })
 
   it('does not probe or offer View file when the headers name only /dev/null', async () => {
@@ -235,7 +278,7 @@ describe('DiffBlock', () => {
       const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
       globalThis.fetch = fetchMock as unknown as typeof fetch
       render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} />)
-      await new Promise(r => setTimeout(r, 20))
+      await headerMounted()
       expect(fetchMock).not.toHaveBeenCalled()
       expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
     })
@@ -265,7 +308,7 @@ describe('DiffBlock', () => {
       const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
       globalThis.fetch = fetchMock as unknown as typeof fetch
       render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} pathHint="/somewhere/else.ts" />)
-      await new Promise(r => setTimeout(r, 20))
+      await headerMounted()
       expect(fetchMock).not.toHaveBeenCalled()
       expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
     })
@@ -306,7 +349,7 @@ describe('DiffBlock', () => {
       // The old verdict is keyed to the old header — button gone immediately
       // and it never comes back for the missing new path.
       expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
-      await new Promise(r => setTimeout(r, 10))
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
       expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
     })
   })
