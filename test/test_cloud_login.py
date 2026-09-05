@@ -420,3 +420,82 @@ class TestWaitUntilLoggedIn:
         monkeypatch.setattr(ssm, "_sleep", lambda *_a: None)
         monkeypatch.setattr(login, "is_logged_in", lambda *a, **k: False)
         assert login.wait_until_logged_in("i-0abc", "dev", attempts=3) is False
+
+
+class TestIdentityProviderFlags:
+    """The --identity-provider, --license, and --region flags must be forwarded
+    to the kiro-cli login command on the remote instance."""
+
+    def test_device_login_command_appends_all_flags(self):
+        cmd = login._device_login_command(
+            replace_existing=False,
+            identity_provider="https://d-1234567890.awsapps.com/start",
+            license_="pro",
+            idp_region="us-east-1",
+        )
+        assert "--identity-provider https://d-1234567890.awsapps.com/start" in cmd
+        assert "--license pro" in cmd
+        assert "--region us-east-1" in cmd
+        # Flags appear on BOTH the stdbuf and the non-stdbuf branches.
+        lines_with_login = [ln for ln in cmd.splitlines() if "login --use-device-flow" in ln]
+        for line in lines_with_login:
+            assert "--identity-provider" in line
+
+    def test_device_login_command_omits_flags_when_empty(self):
+        cmd = login._device_login_command(replace_existing=False)
+        assert "--identity-provider" not in cmd
+        assert "--license" not in cmd
+        # --region should NOT appear (avoid confusion with the cloud/EC2 region)
+        assert "--region" not in cmd
+
+    def test_device_login_command_partial_flags(self):
+        cmd = login._device_login_command(
+            replace_existing=False,
+            identity_provider="https://d-abc.awsapps.com/start",
+        )
+        assert "--identity-provider https://d-abc.awsapps.com/start" in cmd
+        assert "--license" not in cmd
+        assert "--region" not in cmd
+
+    def test_resume_login_command_forwards_flags(self):
+        cmd = login._resume_login_command(
+            identity_provider="https://d-1234567890.awsapps.com/start",
+            license_="builder",
+            idp_region="eu-west-1",
+        )
+        assert "--identity-provider https://d-1234567890.awsapps.com/start" in cmd
+        assert "--license builder" in cmd
+        assert "--region eu-west-1" in cmd
+
+    def test_start_device_login_passes_flags_to_command(self, monkeypatch):
+        monkeypatch.setattr(login, "is_logged_in", lambda *a, **k: False)
+        captured: dict[str, str] = {}
+
+        def fake_run_command(_instance_id, command, *_args, **_kwargs):
+            captured["command"] = command
+            return ssm.CommandResult(
+                "Success",
+                "Open https://device.sso.example.com/?user_code=TEST-1234 code: TEST-1234",
+                "",
+                0,
+            )
+
+        monkeypatch.setattr(ssm, "run_command", fake_run_command)
+        login.start_device_login(
+            "i-0abc",
+            "dev",
+            open_browser=False,
+            identity_provider="https://d-test.awsapps.com/start",
+            license_="pro",
+            idp_region="us-east-1",
+        )
+        assert "--identity-provider https://d-test.awsapps.com/start" in captured["command"]
+        assert "--license pro" in captured["command"]
+        assert "--region us-east-1" in captured["command"]
+
+    def test_callback_login_command_does_not_get_identity_flags(self):
+        """The social/callback login path uses plain `kiro-cli login` (no
+        --use-device-flow), so it should NOT receive the identity flags."""
+        cmd = login._callback_login_command()
+        assert "--identity-provider" not in cmd
+        assert "--license" not in cmd

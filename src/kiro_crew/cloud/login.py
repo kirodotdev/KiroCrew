@@ -195,13 +195,24 @@ def logout(instance_id: str, profile: str = "", region: str = "") -> bool:
 
 
 def start_device_login(
-    instance_id: str, profile: str = "", region: str = "", *, open_browser: bool = True
+    instance_id: str,
+    profile: str = "",
+    region: str = "",
+    *,
+    open_browser: bool = True,
+    identity_provider: str = "",
+    license_: str = "",
+    idp_region: str = "",
 ) -> LoginPrompt:
     """Kick off ``kiro-cli login`` on the instance and return the sign-in prompt.
 
     Prefer the device-code flow. If kiro-cli cannot produce a device-code URL,
     fall back to the social-provider callback flow by opening the required SSM
     port-forward automatically.
+
+    Enterprise / IAM Identity Center users pass *identity_provider* (the start
+    URL), *license_* (``pro`` or ``builder``), and *idp_region* (the Identity
+    Center region, e.g. ``us-east-1``) to select the correct identity.
     """
     if is_logged_in(instance_id, profile, region):
         return LoginPrompt(already_logged_in=True)
@@ -211,7 +222,12 @@ def start_device_login(
     # log. The same process keeps polling for the exact code shown to the user.
     res = ssm.run_command(
         instance_id,
-        _device_login_command(replace_existing=True),
+        _device_login_command(
+            replace_existing=True,
+            identity_provider=identity_provider,
+            license_=license_,
+            idp_region=idp_region,
+        ),
         profile,
         region,
         total_wait=90,
@@ -231,7 +247,15 @@ def start_device_login(
     return prompt
 
 
-def resume_login_daemon(instance_id: str, profile: str = "", region: str = "") -> None:
+def resume_login_daemon(
+    instance_id: str,
+    profile: str = "",
+    region: str = "",
+    *,
+    identity_provider: str = "",
+    license_: str = "",
+    idp_region: str = "",
+) -> None:
     """Ensure a background ``kiro-cli login`` exists.
 
     ``start_device_login`` already keeps the displayed device-code process
@@ -240,7 +264,11 @@ def resume_login_daemon(instance_id: str, profile: str = "", region: str = "") -
     """
     ssm.run_command(
         instance_id,
-        _resume_login_command(),
+        _resume_login_command(
+            identity_provider=identity_provider,
+            license_=license_,
+            idp_region=idp_region,
+        ),
         profile,
         region,
         total_wait=30,
@@ -325,7 +353,13 @@ exit 0
 """.strip()
 
 
-def _device_login_command(*, replace_existing: bool) -> str:
+def _device_login_command(
+    *,
+    replace_existing: bool,
+    identity_provider: str = "",
+    license_: str = "",
+    idp_region: str = "",
+) -> str:
     """Build the remote command that starts login and captures its prompt."""
     replace = ""
     if replace_existing:
@@ -334,6 +368,14 @@ if command -v pkill >/dev/null 2>&1; then
   pkill -u "$(id -u)" -f "kiro-cli login --use-device-flow" 2>/dev/null || true
 fi
 """.strip()
+    # Build optional kiro-cli flags for enterprise / IAM Identity Center login.
+    extra_flags = ""
+    if identity_provider:
+        extra_flags += f" --identity-provider {identity_provider}"
+    if license_:
+        extra_flags += f" --license {license_}"
+    if idp_region:
+        extra_flags += f" --region {idp_region}"
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
@@ -345,9 +387,9 @@ rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
 # files below 0600.
 umask 077
 if command -v stdbuf >/dev/null 2>&1; then
-  nohup stdbuf -oL -eL "$KIRO" login --use-device-flow >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
+  nohup stdbuf -oL -eL "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
 else
-  nohup "$KIRO" login --use-device-flow >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
+  nohup "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
 fi
 echo $! > "{_LOGIN_PID_PATH}"
 for _ in $(seq 1 {_DEVICE_LOGIN_CAPTURE_ATTEMPTS}); do
@@ -509,14 +551,19 @@ cat "{_LOGIN_LOG_PATH}" 2>/dev/null || true
 """.strip()
 
 
-def _resume_login_command() -> str:
+def _resume_login_command(
+    *,
+    identity_provider: str = "",
+    license_: str = "",
+    idp_region: str = "",
+) -> str:
     """Build a daemon-only login command for fallback use."""
     return f"""
 set +e
 if [ -s "{_LOGIN_PID_PATH}" ] && kill -0 "$(cat "{_LOGIN_PID_PATH}")" 2>/dev/null; then
   exit 0
 fi
-{_device_login_command(replace_existing=False)}
+{_device_login_command(replace_existing=False, identity_provider=identity_provider, license_=license_, idp_region=idp_region)}
 """.strip()
 
 
