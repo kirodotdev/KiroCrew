@@ -1996,7 +1996,9 @@ class TestSteerLifecycle:
             chat_runner._settle_consumed_steers(slot, "a")
 
         assert slot._pending_steers == ["b"]
-        assert settle.call_args.kwargs["settle_all_on_empty"] is True
+        # No opt-out kwarg: the shared rules settle nothing on an empty echo,
+        # and this call site must not select anything else.
+        assert settle.call_args.kwargs == {}
 
     def test_requeue_is_a_noop_without_pending_steers(self, tmp_path):
         state, slot = _state(tmp_path), _slot()

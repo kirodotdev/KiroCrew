@@ -19,8 +19,6 @@ _BLOCK_RE = re.compile(r"<user_message>\n(.*?)\n</user_message>", re.DOTALL)
 def settle_consumed_steers(
     pending: list[str],
     snapshot: str,
-    *,
-    settle_all_on_empty: bool = False,
 ) -> list[str]:
     """Return the entries of *pending* that ``snapshot`` did NOT account for.
 
@@ -45,14 +43,9 @@ def settle_consumed_steers(
     A NON-empty echo carrying no envelope is treated as one bare block rather than
     as no evidence, so it settles only the entry it EQUALS -- unrelated prose still
     matches nothing and still settles nothing.
-
-    ``settle_all_on_empty=True`` selects the opposite, and exists only because the
-    main chat has long behaved that way; this argument keeps that path byte-identical
-    rather than changing a behaviour whose requeue this change does not exercise.
-    New callers should leave it False.
     """
     if not snapshot.strip():
-        return [] if settle_all_on_empty else list(pending)
+        return list(pending)
     counts: dict[str, int] = {}
     blocks = _BLOCK_RE.findall(snapshot)
     if not blocks:
