@@ -7,7 +7,39 @@ import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../stor
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { i18nT } from '../i18n/t'
+import type { ChatSlot } from '../types'
+import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
+
+interface PinMutationEntry {
+  key: string
+  pinned: boolean
+  succeeded: boolean | null
+  optimisticSlot?: ChatSlot
+  slotsGeneration: number
+}
+
+interface PinMutationBatch {
+  baseline: string[]
+  storedBaseline: string[]
+  entries: PinMutationEntry[]
+  snapshotVersion: number
+}
+
+let activePinMutationBatch: PinMutationBatch | null = null
+const pinMutationTails = new Map<string, Promise<unknown>>()
+
+/** Preserve invocation order at the server for rapid toggles of one session. */
+function setSlotPinInOrder(key: string, pinned: boolean) {
+  const request = (pinMutationTails.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => api.setSlotPin(key, pinned))
+  pinMutationTails.set(key, request)
+  return request.finally(() => {
+    if (pinMutationTails.get(key) === request) pinMutationTails.delete(key)
+  })
+}
 
 /**
  * The surface-agnostic session actions — the ones that need only a slot key and
@@ -48,6 +80,83 @@ export function useSessionActions(mode?: string): SessionActions {
   const queryClient = useQueryClient()
   const moveSlotToFolder = useMoveSlotToFolder()
 
+  const finishPinMutation = useCallback(async (
+    batch: PinMutationBatch, entry: PinMutationEntry, succeeded: boolean,
+  ) => {
+    entry.succeeded = succeeded
+    if (batch.entries.some(candidate => candidate.succeeded === null)) return
+    const snapshotVersion = ++batch.snapshotVersion
+    try {
+      let slots: ChatSlot[]
+      for (let attempt = 0; ; attempt += 1) {
+        const slotsGeneration = store.getState().dashboard.slotsGeneration ?? 0
+        slots = await api.chatSlots() as ChatSlot[]
+        // A newer mutation may have joined this batch while the snapshot was in flight.
+        // Its own settlement will fetch again; only that newest request may reconcile.
+        if (snapshotVersion !== batch.snapshotVersion
+          || batch.entries.some(candidate => candidate.succeeded === null)) return
+        if ((store.getState().dashboard.slotsGeneration ?? 0) === slotsGeneration) break
+        // Continuous live frames must not create an unbounded GET loop. After
+        // bounded retries, Redux itself is the newest accepted full-slot snapshot.
+        if (attempt >= 2) {
+          slots = store.getState().dashboard.slots
+          break
+        }
+      }
+      if (activePinMutationBatch === batch) activePinMutationBatch = null
+      const latest = new Map<string, boolean>()
+      for (const candidate of batch.entries) latest.set(candidate.key, candidate.pinned)
+      const snapshotByKey = new Map(slots.map(slot => [slot.key, slot]))
+      for (const key of latest.keys()) {
+        // Snapshot request generations reject older local mutations above. Redux
+        // divergence alone is not newer-writer evidence: a delayed pre-mutation
+        // slots frame can arrive while this request is in flight.
+        const pinned = snapshotByKey.get(key)?.pinned ?? false
+        const current = store.getState().dashboard.slots.find(slot => slot.key === key)?.pinned ?? false
+        if (current !== pinned) dispatch(updateSlotPin({ key, pinned }))
+      }
+      const currentSlots = store.getState().dashboard.slots
+      const pinnedKeys = new Set(currentSlots.filter(slot => slot.pinned).map(slot => slot.key))
+      const currentKeys = new Set(currentSlots.map(slot => slot.key))
+      const baselineKeys = new Set(batch.storedBaseline)
+      for (const slot of slots) {
+        if (slot.pinned && baselineKeys.has(slot.key) && !currentKeys.has(slot.key)) pinnedKeys.add(slot.key)
+      }
+      const baselineMembership = new Set(batch.baseline)
+      const newlyPinnedKeys = [...pinnedKeys]
+        .filter(key => !baselineMembership.has(key))
+      commitPinnedSessionSnapshot(
+        [...pinnedKeys], batch.baseline, newlyPinnedKeys, batch.storedBaseline,
+      )
+    } catch {
+      // A newer request (or an entry that has not settled yet) owns reconciliation.
+      if (snapshotVersion !== batch.snapshotVersion
+        || batch.entries.some(candidate => candidate.succeeded === null)) return
+      if (activePinMutationBatch === batch) activePinMutationBatch = null
+      const latest = new Map<string, PinMutationEntry>()
+      for (const candidate of batch.entries) latest.set(candidate.key, candidate)
+      const ownedKeys = new Set([...latest]
+        .filter(([key, candidate]) => {
+          const dashboard = store.getState().dashboard
+          const current = dashboard.slots.find(slot => slot.key === key)
+          return (dashboard.slotsGeneration ?? 0) === candidate.slotsGeneration
+            && current === candidate.optimisticSlot
+            && (current?.pinned ?? false) === candidate.pinned
+        })
+        .map(([key]) => key))
+      const operations = batch.entries
+        .filter(candidate => candidate.succeeded && ownedKeys.has(candidate.key))
+        .map(({ key, pinned }) => ({ key, pinned }))
+      const expected = new Set(commitPinnedSessionOperations(operations, batch.baseline, batch.storedBaseline))
+      for (const key of ownedKeys) {
+        const pinned = expected.has(key)
+        const current = store.getState().dashboard.slots.find(slot => slot.key === key)?.pinned ?? false
+        if (current !== pinned) dispatch(updateSlotPin({ key, pinned }))
+      }
+      queryClient.invalidateQueries({ queryKey: ['chat-slots'] })
+    }
+  }, [dispatch, queryClient])
+
   const forkMutation = useMutation({
     mutationFn: (slot: string) => api.forkChatSlot(slot),
     onSuccess: (data) => {
@@ -59,16 +168,47 @@ export function useSessionActions(mode?: string): SessionActions {
   })
 
   const pinMutation = useMutation({
-    mutationFn: ({ key, pinned }: { key: string; pinned: boolean }) => api.setSlotPin(key, pinned),
+    mutationFn: ({ key, pinned }: { key: string; pinned: boolean }) => setSlotPinInOrder(key, pinned),
     onMutate: ({ key, pinned }) => {
-      const prev = store.getState().dashboard.slots.find(s => s.key === key)?.pinned ?? false
+      const dashboard = store.getState().dashboard
+      const byKey = new Map(dashboard.slots.map(slot => [slot.key, slot]))
+      const renderedPinned = dashboard.sidebarOrder.filter(candidate => byKey.get(candidate)?.pinned)
+      const renderedSet = new Set(renderedPinned)
+      const fallbackSort = readSessionSortKey()
+      const completePinnedOrder = dashboard.slots
+        .filter(slot => slot.pinned)
+        .sort((a, b) => compareBySort(a, b, fallbackSort))
+        .map(slot => slot.key)
+      const naturalPinned = renderedPinned.length === completePinnedOrder.length
+        && renderedSet.size === completePinnedOrder.length
+        ? renderedPinned
+        : completePinnedOrder
+      const storedPinnedOrder = readPinnedSessionOrder()
+      const prevPinnedOrder = reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinned)
+      const batch = activePinMutationBatch ?? {
+        baseline: prevPinnedOrder,
+        storedBaseline: storedPinnedOrder,
+        entries: [],
+        snapshotVersion: 0,
+      }
+      activePinMutationBatch = batch
+      const entry: PinMutationEntry = {
+        key,
+        pinned,
+        succeeded: null,
+        slotsGeneration: dashboard.slotsGeneration ?? 0,
+      }
+      batch.entries.push(entry)
       dispatch(updateSlotPin({ key, pinned }))
-      return { key, prev }
+      entry.optimisticSlot = store.getState().dashboard.slots.find(slot => slot.key === key)
+      return { batch, entry }
     },
-    onError: (_err, _vars, ctx) => {
-      if (ctx) dispatch(updateSlotPin({ key: ctx.key, pinned: ctx.prev }))
-      queryClient.invalidateQueries({ queryKey: ['chat-slots'] })
-    },
+    onSuccess: (_data, _vars, ctx) => ctx
+      ? finishPinMutation(ctx.batch, ctx.entry, true)
+      : undefined,
+    onError: (_err, _vars, ctx) => ctx
+      ? finishPinMutation(ctx.batch, ctx.entry, false)
+      : undefined,
   })
 
   // Orchestrator/Autopilot mode toggle (optimistic, server-persisted).

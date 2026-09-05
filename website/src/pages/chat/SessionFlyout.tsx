@@ -3,8 +3,9 @@ import type { MutableRefObject } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { Plus } from 'lucide-react'
 import type { ChatSlot } from '../../types'
-import { comparePinnedThenSort } from './sessionOrder'
+import { compareBySort, comparePinnedThenSort } from './sessionOrder'
 import { i18nT } from '../../i18n/t'
+import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../../utils/pinnedSessionOrder'
 
 /** Rows shown before the list defers to "show all". Sized so the flyout stays
  *  a glance rather than a panel: past ~8 rows the eye has to scan, at which
@@ -124,14 +125,36 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
 
   const unread = useMemo(() => new Set(unreadSlots), [unreadSlots])
   const pinned = useMemo(() => new Set(slots.filter(s => s.pinned).map(s => s.key)), [slots])
+  const [storedPinnedOrder, setStoredPinnedOrder] = useState(readPinnedSessionOrder)
+  const naturalPinnedOrder = useMemo(
+    () => slots.filter(s => s.pinned).sort((a, b) => compareBySort(a, b, 'date-desc')).map(s => s.key),
+    [slots],
+  )
+  const pinnedOrder = useMemo(
+    () => reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinnedOrder),
+    [storedPinnedOrder, naturalPinnedOrder],
+  )
+  const pinnedRank = useMemo(() => new Map(pinnedOrder.map((key, index) => [key, index])), [pinnedOrder])
+  useEffect(() => {
+    const refresh = () => setStoredPinnedOrder(readPinnedSessionOrder())
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key === PINNED_SESSION_ORDER_KEY) refresh()
+    }
+    window.addEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
 
   // Always date-desc, regardless of the sidebar's saved sort. This surface is
   // "what was I just doing" — a name-sorted flyout would answer a different
   // question than the one hovering it asks. Pin-first still applies so a row
   // does not change position between the two surfaces.
   const ordered = useMemo(
-    () => [...slots].sort((a, b) => comparePinnedThenSort(a, b, 'date-desc', pinned)),
-    [slots, pinned],
+    () => [...slots].sort((a, b) => comparePinnedThenSort(a, b, 'date-desc', pinned, pinnedRank)),
+    [slots, pinned, pinnedRank],
   )
   const rows = ordered.slice(0, FLYOUT_MAX_ROWS)
   const hidden = ordered.length - rows.length

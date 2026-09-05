@@ -88,7 +88,7 @@ const slot = (key: string, title: string, lastTs: string, pinned = false): ChatS
 const SLOTS = [
   slot('chat-target', 'Managing session overload strategies', '2026-01-01T00:00:00Z'),
   slot('chat-pinned', 'Pinned unrelated title', '2026-03-01T00:00:00Z', true),
-  slot('chat-fresh', 'Fresh unrelated title', '2026-02-01T00:00:00Z'),
+  slot('chat-fresh', 'Fresh unrelated title', '2026-02-01T00:00:00Z', true),
 ]
 
 function renderSidebar() {
@@ -162,6 +162,25 @@ describe('ChatSidebar – active-session search preserves backend relevance orde
       expect(target.compareDocumentPosition(pinnedDecoy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
       expect(pinnedDecoy.compareDocumentPosition(fresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
+  })
+
+  it('disables pinned reordering while backend relevance rank is active', async () => {
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['chat-fresh', 'chat-pinned']))
+    renderSidebar()
+
+    fireEvent.change(screen.getByPlaceholderText(/search sessions/i), {
+      target: { value: 'session overload' },
+    })
+    await waitFor(() => expect(sessionsSearchMock).toHaveBeenCalledWith('session overload'))
+
+    const pinnedRow = () => document.querySelector<HTMLElement>(
+      '[data-session-row="chat-pinned"][data-session-scope="list"]',
+    )
+    await waitFor(() => expect(pinnedRow()).not.toHaveAttribute('aria-keyshortcuts'))
+    fireEvent.keyDown(pinnedRow()!, { key: 'ArrowDown', altKey: true })
+
+    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
+      .toEqual(['chat-fresh', 'chat-pinned'])
   })
 
   it('pin-first + date-desc re-sort would have inverted this fixture (guards fixture validity)', () => {

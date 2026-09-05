@@ -6,7 +6,7 @@
  * still activates) against a rendered ChatSidebar.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { render, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -231,6 +231,24 @@ describe('chat sidebar — session list arrow navigation', () => {
     fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
     expect(document.activeElement).toBe(row('k1'))
   })
+
+  it('reorders against the next rendered pin instead of a filtered-out peer', async () => {
+    const pins = [
+      { key: 'k1', title: 'keep first', running: false, messages: 1, pinned: true },
+      { key: 'k2', title: 'drop second', running: false, messages: 1, pinned: true },
+      { key: 'k3', title: 'keep third', running: false, messages: 1, pinned: true },
+    ]
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['k1', 'k2', 'k3']))
+    const { findByText, getByPlaceholderText, queryByText } = renderSidebar(pins)
+    await findByText('drop second')
+
+    fireEvent.change(getByPlaceholderText(/search/i), { target: { value: 'keep' } })
+    await waitFor(() => expect(queryByText('drop second')).toBeNull())
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+
+    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
+      .toEqual(['k2', 'k3', 'k1'])
+  })
 })
 
 /**
@@ -246,8 +264,8 @@ describe('chat sidebar — board column arrow navigation', () => {
   const boardColumns = [{ id: COL, name: 'Blocked', tag_ids: [TAG], mode: 'any', order: 0 }]
   const boardFolders = [{ id: FOLDER, name: 'CDF', order: 0, collapsed: false }]
   const boardSlots = [
-    { key: 'b1', title: 'in folder', running: false, messages: 1, tags: [TAG], folder_id: FOLDER },
-    { key: 'b2', title: 'at column root', running: false, messages: 1, tags: [TAG] },
+    { key: 'b1', title: 'in folder', running: false, messages: 1, tags: [TAG], folder_id: FOLDER, pinned: true },
+    { key: 'b2', title: 'at column root', running: false, messages: 1, tags: [TAG], pinned: true },
   ]
 
   function renderBoard() {
@@ -303,5 +321,16 @@ describe('chat sidebar — board column arrow navigation', () => {
     expect(rooted.dataset.sessionScope).toBe(COL)
     // …and the rove therefore reaches across the boundary in one step.
     expect(siblingSessionRow(foldered, 1)).toBe(rooted)
+  })
+
+  it('does not advertise or execute pinned ordering in a board projection', async () => {
+    const { findByText } = renderBoard()
+    await findByText('in folder')
+    const foldered = document.querySelector<HTMLElement>('[data-session-row="b1"]')!
+    expect(foldered.getAttribute('aria-keyshortcuts')).toBeNull()
+
+    fireEvent.keyDown(foldered, { key: 'ArrowDown', altKey: true })
+
+    expect(localStorage.getItem('mc-pinned-session-order')).toBeNull()
   })
 })

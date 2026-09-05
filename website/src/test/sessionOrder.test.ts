@@ -141,6 +141,21 @@ describe('comparePinnedThenSort', () => {
     ]
     expect(pinnedOrder(items, [])).toEqual(order(items))
   })
+
+  it('uses manual rank within pinned sessions while leaving the rest on the selected sort', () => {
+    const items: Sortable[] = [
+      { key: 'pin-new', created: '2026-08-05T00:00:00Z' },
+      { key: 'free-old', created: '2026-08-02T00:00:00Z' },
+      { key: 'pin-old', created: '2026-08-01T00:00:00Z' },
+      { key: 'free-new', created: '2026-08-06T00:00:00Z' },
+    ]
+    const pinned = new Set(['pin-new', 'pin-old'])
+    const rank = new Map([['pin-old', 0], ['pin-new', 1]])
+    const ranked = [...items]
+      .sort((a, b) => comparePinnedThenSort(a, b, 'created-desc', pinned, rank))
+      .map(item => item.key)
+    expect(ranked).toEqual(['pin-old', 'pin-new', 'free-new', 'free-old'])
+  })
 })
 
 describe('compareBySort created-*', () => {

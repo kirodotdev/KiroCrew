@@ -14,6 +14,8 @@ interface DashboardState {
   status: StatusData | null
   connected: boolean
   slots: ChatSlot[]
+  /** Increments for every accepted authoritative full-slot frame/reply. */
+  slotsGeneration: number
   // Slot keys in the order the session sidebar actually DISPLAYS them
   // (pinned-first + the user's sort, flat-view aware). Published by
   // ChatSidebar; consumed by the chat-jump / chat-cycle keyboard shortcuts so
@@ -65,6 +67,7 @@ const initialState: DashboardState = {
   status: null,
   connected: false,
   slots: [],
+  slotsGeneration: 0,
   sidebarOrder: [],
   approvalMode: 'normal',
   channelTrusted: false,
@@ -220,6 +223,7 @@ const dashboardSlice = createSlice({
       // claim a snapshot arrived when none has.
       if (action.payload.length === 0 && !state.slotsLoaded) return
       applySlots(state, action.payload)
+      state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
       state.slotsLoaded = true
       reconcileSlots(state, new Set(action.payload.map(s => s.key)))
     },
@@ -448,6 +452,7 @@ const dashboardSlice = createSlice({
         // badge self-heals — but eviction is withheld once the stream is live.
         const fresh = !state.slotsLoaded
         applySlots(state, action.payload)
+        state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
         state.slotsLoaded = true
         reconcileSlots(state, new Set(action.payload.map((s: { key: string }) => s.key)), fresh)
       })

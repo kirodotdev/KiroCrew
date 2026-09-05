@@ -56,6 +56,7 @@ import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { safeSetItem } from '../utils/safeStorage'
+import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, movePinnedSession, persistPinnedSessionOrder, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { LAYOUT } from '../components/layout'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
@@ -87,7 +88,7 @@ import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
 import { focusSiblingSessionRow, sessionRowsInScope, SESSION_ROW_SELECTOR } from './chat/sessionRowNav'
 import { heldSeat, type HoverPin } from './chat/hoverHold'
 import { focusComposer } from './chat/composerFocus'
-import { compareBySort, comparePinnedThenSort, fmtRelativeTime, lastActivityEpoch, slotActivityTs } from './chat/sessionOrder'
+import { compareBySort, comparePinnedThenSort, fmtRelativeTime, lastActivityEpoch, readSessionSortKey, SESSION_SORT_STORAGE_KEY, slotActivityTs } from './chat/sessionOrder'
 import { DEFAULT_STALE_COLLAPSE_MS, STALE_COLLAPSE_PRESETS_MS, STALE_COLLAPSE_TICK_MS, splitStaleSlots } from './staleCollapse'
 import type { StaleSplit } from './staleCollapse'
 import type { SortKey } from './chat/sessionOrder'
@@ -199,7 +200,13 @@ function slotStatusText(detail: { kind?: string; text?: string; toolName?: strin
 // asserts the collision uses the MEASURED header height, not
 // FOLDER_HEADER_DROP_BAND — the specific regression codex flagged in review.
 export const sidebarCollision: CollisionDetection = (args) => {
-  const activeData = args.active?.data?.current as { type?: string; nested?: boolean; subtree?: string[] } | undefined
+  const activeData = args.active?.data?.current as {
+    type?: string
+    nested?: boolean
+    subtree?: string[]
+    pinned?: boolean
+    container?: string
+  } | undefined
   const activeType = activeData?.type
   if (activeType === 'folder') {
     const subtree = new Set(activeData?.subtree ?? [])
@@ -287,9 +294,14 @@ export const sidebarCollision: CollisionDetection = (args) => {
   // with no DOM relation between the two trees containment cannot arbitrate —
   // a pointer inside any sidebar droppable belongs to the sidebar, and the
   // pane wins only when nothing in the sidebar contains the pointer.
-  const sidebarContainers = args.droppableContainers.filter(
-    c => (c.data?.current as { type?: string } | undefined)?.type !== CHAT_PANE_DROP_TYPE
-  )
+  const sidebarContainers = args.droppableContainers.filter(c => {
+    const d = c.data?.current as { type?: string; container?: string } | undefined
+    if (d?.type === CHAT_PANE_DROP_TYPE) return false
+    if (d?.type === 'pinned-session') {
+      return activeData?.pinned === true && d.container === activeData.container
+    }
+    return true
+  })
   const within = pointerWithinDeepest({ ...args, droppableContainers: sidebarContainers })
   if (within.length) return within
   const paneWithin = pointerWithinDeepest(args)
@@ -489,6 +501,17 @@ function RootDropHint() {
     <div ref={setNodeRef} className={`m-1 min-h-[72px] flex items-center justify-center rounded-md border border-dashed transition-all ${isOver ? 'border-accent bg-accent/10 ring-2 ring-accent text-accent' : 'border-border text-muted'}`}>
       <span className="text-[12px]">{i18nT('pages.chatSidebar.drop_here_to_remove_from_folder')}</span>
     </div>
+  )
+}
+
+/** Quiet boundary between manually ordered pins and automatically sorted rows. */
+function PinnedSessionDivider() {
+  return (
+    <div
+      data-testid="pinned-session-divider"
+      aria-hidden="true"
+      className="mx-3 my-1 h-[4px] shrink-0 border-y border-border-strong opacity-70"
+    />
   )
 }
 
@@ -1418,6 +1441,11 @@ interface SessionRowProps {
   renameValue: string
   revealFlash: 'flash' | 'fade' | null
   dragInFlight: boolean
+  activeDraggedKey: string | null
+  activeDraggedPinnedIndex: number
+  pinnedOrderIndex: number
+  pinnedReorderEnabled: boolean
+  onPinnedKeyboardReorder: (key: string, container: string, delta: -1 | 1, row: HTMLElement) => void
   defaultAgent: string
   mode?: string
   isMobile: boolean
@@ -1451,7 +1479,7 @@ interface SessionRowProps {
 const SessionRow = memo(function SessionRow({
   slot: s, showDivider, scope, navScope, holdContainer, isActive, connected, isOut, isPinned, isUnread, isRunning,
   recent, recentTintCount, subagentCount, subagentApprovalCount, digitBadge,
-  isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, rowAnimEnabled,
+  isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
   defaultAgent, mode, isMobile, colorMode, installedAgents, tagById, paletteColors, boost, boostFor,
   renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel,
   onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource,
@@ -1505,12 +1533,10 @@ const SessionRow = memo(function SessionRow({
     // ternary branches — never mounted simultaneously — so IDs can't collide.
     // Behavior stays keyed on the real scope.
     const layoutScope = scope === 'flat' ? 'list' : scope
-    // dnd-kit pickup, in the tree and in the flat lane. Flat view's own
-    // DndContext registers no folder or sortable targets, so the gesture there
-    // can only reach the chat pane: dragging a session into the open chat
-    // works, while manual reordering stays unavailable by construction.
-    // Board columns keep the separate native-HTML5 drag (their own scope).
+    // List and flat rows use dnd-kit. Board columns retain native HTML5 drag
+    // because a card drop there changes status-column membership.
     const dndRow = scope === 'list' || scope === 'flat'
+    const reorderContainer = scope === 'flat' ? 'flat' : (s.folder_id || 'root')
     const agentName = s.agent || defaultAgent || ''
     // A DIVERGENCE, not a status: the row is advertising `agentName` while a
     // different agent answers the session — usually an app agent that was
@@ -1859,12 +1885,22 @@ const SessionRow = memo(function SessionRow({
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(s.key) : undefined,
     }
     return (
-      <motion.div layout={rowAnimEnabled ? 'position' : false} layoutId={rowAnimEnabled ? `slot-${layoutScope}-${s.key}` : undefined}
+      <DndDroppable
+        id={`pinned-session:${scope}:${s.key}`}
+        data={{ type: 'pinned-session', key: s.key, container: reorderContainer }}
+        disabled={!dndRow || !pinnedReorderEnabled || !isPinned || isRenaming}
+      >
+        {({ setNodeRef: setPinnedDropRef, isOver: isPinnedDropOver }) => (
+      <motion.div ref={setPinnedDropRef} layout={rowAnimEnabled ? 'position' : false} layoutId={rowAnimEnabled ? `slot-${layoutScope}-${s.key}` : undefined}
         data-slot-key={s.key}
         initial={rowAnimEnabled ? { opacity: 0, x: -12 } : false}
         animate={{ opacity: 1, x: 0 }}
         transition={{ layout: { type: 'spring', stiffness: 500, damping: 35 }, opacity: { duration: 0.2 }, x: { duration: 0.2 } }}>
-        <DndDraggable id={`session:${s.key}`} data={{ type: 'session', key: s.key }} disabled={!dndRow || isRenaming}>
+        <DndDraggable
+          id={`session:${s.key}`}
+          data={{ type: 'session', key: s.key, pinned: isPinned, container: reorderContainer }}
+          disabled={!dndRow || isRenaming}
+        >
           {({ setNodeRef, listeners, isDragging }) => (
         <ContextMenu>
           <ContextMenuTrigger asChild>
@@ -1881,7 +1917,16 @@ const SessionRow = memo(function SessionRow({
           data-session-container={holdContainer}
           aria-current={isActive ? 'true' : undefined}
           aria-disabled={!connected}
+          aria-keyshortcuts={dndRow && pinnedReorderEnabled && isPinned ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
           onKeyDown={e => {
+            if (dndRow && pinnedReorderEnabled && isPinned && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
+              && (e.key === 'ArrowUp' || e.key === 'ArrowDown')
+              && (e.target as HTMLElement) === e.currentTarget) {
+              e.preventDefault()
+              e.stopPropagation()
+              onPinnedKeyboardReorder(s.key, reorderContainer, e.key === 'ArrowUp' ? -1 : 1, e.currentTarget)
+              return
+            }
             // ArrowUp/ArrowDown rove focus through the rows of THIS list (see
             // chat/sessionRowNav for why the rove is scope-bounded and clamped).
             // Focus-only, so walking the list doesn't load every session on the
@@ -1976,6 +2021,13 @@ const SessionRow = memo(function SessionRow({
             e.stopPropagation()
             onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', false)
           }}>
+          {isPinnedDropOver && activeDraggedKey !== null && activeDraggedKey !== s.key && (
+            <span
+              data-testid="pinned-session-insertion"
+              aria-hidden="true"
+              className={`absolute left-3 right-3 h-0.5 rounded-full bg-accent pointer-events-none z-20 ${activeDraggedPinnedIndex < pinnedOrderIndex ? '-bottom-[1px]' : '-top-[1px]'}`}
+            />
+          )}
           {/* Held-modifier digit badge: while the chat-jump modifier is down,
            *  the first nine sessions in shortcut order show the digit that
            *  jumps to them. Overlays the row's right edge; pointer-events-none
@@ -2285,6 +2337,8 @@ const SessionRow = memo(function SessionRow({
          *  The left inset is unchanged — it still starts at the content x. */}
         {showDivider && <div className="ml-[14px] mr-3 -mt-px border-b border-border" />}
       </motion.div>
+        )}
+      </DndDroppable>
     )
 })
 
@@ -2374,7 +2428,6 @@ export const SORT_LABEL_KEY: Record<SortKey, string> = {
   'name-asc': 'pages.chatSidebar.sort_name_asc',
   'name-desc': 'pages.chatSidebar.sort_name_desc',
 }
-const SORT_LS_KEY = 'mc-session-sort'
 /** Flat view ("explode chats out of folders") persistence key. */
 const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
 
@@ -2689,10 +2742,7 @@ function ChatSidebar({
     // the trigger is exactly right for keyboard users (a11y).
     if (!lastInputKeyboardRef.current) e.preventDefault()
   }, [])
-  const [sortKey, setSortKey] = useState<SortKey>(() => {
-    const saved = localStorage.getItem(SORT_LS_KEY)
-    return SORT_OPTIONS.some(o => o.value === saved) ? saved as SortKey : 'date-desc'
-  })
+  const [sortKey, setSortKey] = useState<SortKey>(readSessionSortKey)
   // Flat view: temporarily explode every chat out of its folder into one
   // recency-sorted list, for working temporally across many folders ("what's
   // the latest?"). Pure view projection — folder membership is untouched, and
@@ -3089,8 +3139,39 @@ function ChatSidebar({
     closeToTrigger: () => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') },
   })
 
-  // Pinned: derived from server-persisted slot.pinned
+  // Pinned membership is server-persisted; the order inside that section is a
+  // browser preference, matching the sidebar's existing sort/view preferences.
   const pinned = useMemo(() => new Set(slots.filter(s => s.pinned).map(s => s.key)), [slots])
+  const [storedPinnedOrder, setStoredPinnedOrder] = useState(readPinnedSessionOrder)
+  const naturalPinnedOrder = useMemo(
+    () => slots.filter(s => s.pinned).sort((a, b) => compareBySort(a, b, sortKey)).map(s => s.key),
+    [slots, sortKey],
+  )
+  const pinnedOrder = useMemo(
+    () => reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinnedOrder),
+    [storedPinnedOrder, naturalPinnedOrder],
+  )
+  const pinnedRank = useMemo(() => new Map(pinnedOrder.map((key, index) => [key, index])), [pinnedOrder])
+  useEffect(() => {
+    const refresh = () => setStoredPinnedOrder(readPinnedSessionOrder())
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key === PINNED_SESSION_ORDER_KEY) refresh()
+    }
+    window.addEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
+  const reorderPinned = useCallback((activeKey: string, overKey: string) => {
+    setStoredPinnedOrder(current => {
+      const reconciled = reconcilePinnedSessionOrder(current, naturalPinnedOrder)
+      const next = movePinnedSession(reconciled, activeKey, overKey)
+      persistPinnedSessionOrder(next)
+      return next
+    })
+  }, [naturalPinnedOrder])
 
   // ── Stale-session collapse ─────────────────────────────────────────────────
   // Sessions idle past the threshold collapse behind a per-container
@@ -3840,11 +3921,11 @@ function ChatSidebar({
       // ranking hint inside explicit search results.
       .sort((a, b) => searchRanked
         ? (searchRanked.get(a.key) ?? Infinity) - (searchRanked.get(b.key) ?? Infinity)
-        : comparePinnedThenSort(a, b, sortKey, pinned))
+        : comparePinnedThenSort(a, b, sortKey, pinned, pinnedRank))
     frozenSlotsRef.current = next
     return next
   },
-    [slots, filterDimensions, searchRanked, pinned, sortKey, dragFrozen]
+    [slots, filterDimensions, searchRanked, pinned, pinnedRank, sortKey, dragFrozen]
   )
 
   // Hold the row under the pointer in place. Under a last-activity sort,
@@ -4637,8 +4718,19 @@ function ChatSidebar({
     if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current.timer); dragExpandTimer.current = null }
     const { active, over } = event
     if (!over) return
-    const a = active.data.current as { type?: string; key?: string; nested?: boolean } | undefined
-    const o = over.data.current as { type?: string; folderId?: string | null } | undefined
+    const a = active.data.current as {
+      type?: string
+      key?: string
+      nested?: boolean
+      pinned?: boolean
+      container?: string
+    } | undefined
+    const o = over.data.current as {
+      type?: string
+      key?: string
+      folderId?: string | null
+      container?: string
+    } | undefined
     if (a?.type === 'folder') {
       if (a.nested) {
         // Nested subfolder drag = re-parent: into the folder-drop target, or
@@ -4660,6 +4752,12 @@ function ChatSidebar({
       return
     }
     if (a?.type === 'session' && a.key) {
+      if (!searchRanked && o?.type === 'pinned-session' && o.key
+        && a.pinned === true && a.container === o.container
+        && pinned.has(a.key) && pinned.has(o.key)) {
+        reorderPinned(a.key, o.key)
+        return
+      }
       // Drop targets, innermost-first via pointerWithinDeepest:
       //  chat-pane-ref → stage a LINK to this session in the open chat's composer
       //  folder-drop  → assign to that folder (folderId may be null for root lane)
@@ -4680,7 +4778,7 @@ function ChatSidebar({
       if (o?.type === 'folder-drop') moveByDrag(a.key, o.folderId ?? null)
       else if (o?.type === 'folder') moveByDrag(a.key, over.id as string)
     }
-  }, [reorderFolders, moveByDrag, moveFolderByDrag, slots, activeSlot, onDropSessionRef])
+  }, [reorderFolders, reorderPinned, searchRanked, pinned, moveByDrag, moveFolderByDrag, slots, activeSlot, onDropSessionRef])
   const handleSidebarDragCancel = useCallback(() => { setActiveDrag(null); setDragFrozen(false); if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current.timer); dragExpandTimer.current = null } }, [])
   // Auto-expand collapsed folders when a dragged item hovers over them for 500ms.
   const dragExpandTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)
@@ -5104,11 +5202,17 @@ function ChatSidebar({
               const isActive = activeSlot === s.key
               const nextIsActive = i < childSlots.length - 1 && activeSlot === childSlots[i + 1].key
               const showDivider = i < childSlots.length - 1 && !isActive && !nextIsActive
+                && !startsAutomaticSection(childSlots, i + 1)
               // `scope` stays per-folder so the Framer layoutId and the inline
               // rename target remain unique, but the arrow rove is scoped to the
               // COLUMN: a board column's foldered and ungrouped rows are one
               // visible list, so ArrowDown has to cross the folder boundary.
-              return renderSessionRow(s, 1, showDivider, `${folderLaneScope}:${folder.id}`, folderLaneScope, folderHoldContainer)
+              return (
+                <Fragment key={s.key}>
+                  {startsAutomaticSection(childSlots, i) && <PinnedSessionDivider />}
+                  {renderSessionRow(s, 1, showDivider, `${folderLaneScope}:${folder.id}`, folderLaneScope, folderHoldContainer)}
+                </Fragment>
+              )
             })}
           </div>
         </FolderBody>
@@ -5123,6 +5227,25 @@ function ChatSidebar({
   // collides (Framer paints one, hides the rest). Distinct scope = distinct id.
   // Paint-order stamp threaded through every row this render — see
   // SessionRowProps.orderStamp for why the memo boundary needs it.
+  const startsAutomaticSection = useCallback((list: readonly Slot[], index: number) => (
+    !searchRanked && index > 0 && pinned.has(list[index - 1].key) && !pinned.has(list[index].key)
+  ), [searchRanked, pinned])
+  const reorderPinnedByKeyboard = useCallback((
+    key: string,
+    container: string,
+    delta: -1 | 1,
+    row: HTMLElement,
+  ) => {
+    if (searchRanked) return
+    const rendered = new Set(sessionRowsInScope(row).map(el => el.dataset.sessionRow || ''))
+    const peers = pinnedOrder.filter(candidate => rendered.has(candidate) && (container === 'flat'
+      || (slotFolders[candidate] || 'root') === container))
+    const index = peers.indexOf(key)
+    const target = peers[index + delta]
+    if (index < 0 || !target) return
+    reorderPinned(key, target)
+  }, [searchRanked, pinnedOrder, slotFolders, reorderPinned])
+
   let sessionRowOrderStamp = 0
   const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope) => {
     const renamingHere = renamingSlot === s.key && renameScope === scope
@@ -5138,6 +5261,11 @@ function ChatSidebar({
         renameValue={renamingHere ? renameValue : ''}
         revealFlash={revealFlash?.key === s.key ? (revealFlash.fading ? 'fade' : 'flash') : null}
         dragInFlight={!!activeDrag}
+        activeDraggedKey={activeDrag?.type === 'session' ? activeDrag.id : null}
+        activeDraggedPinnedIndex={activeDrag?.type === 'session' ? (pinnedRank.get(activeDrag.id) ?? -1) : -1}
+        pinnedOrderIndex={pinnedRank.get(s.key) ?? -1}
+        pinnedReorderEnabled={!searchRanked}
+        onPinnedKeyboardReorder={reorderPinnedByKeyboard}
         // staticRows (the compositor drawer) folds into the one row-animation
         // gate: projection under a WAAPI-driven ancestor mis-attributes the
         // panel's motion to the rows, so the drawer disables row animation
@@ -5479,8 +5607,16 @@ function ChatSidebar({
       const isActive = activeSlot === s.key
       const nextIsActive = i < freshChildSlots.length - 1 && activeSlot === freshChildSlots[i + 1].key
       const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
+        && !startsAutomaticSection(freshChildSlots, i + 1)
+      if (startsAutomaticSection(freshChildSlots, i)) {
+        childNodes.push(<PinnedSessionDivider key={`pinned-divider-${folder.id}`} />)
+      }
       childNodes.push(renderSessionRow(s, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer))
     })
+    if (!searchRanked && staleChildSlots.length > 0 && freshChildSlots.length > 0
+      && pinned.has(freshChildSlots[freshChildSlots.length - 1].key)) {
+      childNodes.push(<PinnedSessionDivider key={`pinned-divider-stale-${folder.id}`} />)
+    }
     const staleSection = renderStaleSection(folder.id, staleChildSlots, depth + 1, folder.name)
     if (staleSection) childNodes.push(staleSection)
     // Hide folders with no matching children while the list is narrowed —
@@ -6237,7 +6373,7 @@ function ChatSidebar({
                 {SORT_OPTIONS.map(o => (
                   <DropdownMenuItem
                     key={o.value}
-                    onSelect={() => { setSortKey(o.value); safeSetItem(SORT_LS_KEY, o.value) }}
+                    onSelect={() => { setSortKey(o.value); safeSetItem(SESSION_SORT_STORAGE_KEY, o.value) }}
                   >
                     <span className="flex-1">{i18nT(SORT_LABEL_KEY[o.value])}</span>
                     {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
@@ -6595,8 +6731,10 @@ function ChatSidebar({
                   // No divider before a segment header — the header separates.
                   const nextSeg = next ? segOf(next) : seg
                   const showDivider = next != null && !isActive && !nextIsActive && nextSeg === seg
+                    && !startsAutomaticSection(flatSlots, i + 1)
                   return (
                     <Fragment key={s.key}>
+                      {startsAutomaticSection(flatSlots, i) && <PinnedSessionDivider />}
                       {showHeader && (
                         <div data-date-header data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
                       )}
@@ -6687,8 +6825,16 @@ function ChatSidebar({
                                     const nextIsActive = i < freshRoot.length - 1 && activeSlot === freshRoot[i + 1].key
                                     const isActive = activeSlot === s.key
                                     const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
-                                    return renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)
+                                      && !startsAutomaticSection(freshRoot, i + 1)
+                                    return (
+                                      <Fragment key={s.key}>
+                                        {startsAutomaticSection(freshRoot, i) && <PinnedSessionDivider />}
+                                        {renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)}
+                                      </Fragment>
+                                    )
                                   })}
+                                  {!searchRanked && staleRoot.length > 0 && freshRoot.length > 0
+                                    && pinned.has(freshRoot[freshRoot.length - 1].key) && <PinnedSessionDivider />}
                                   {renderStaleSection('root', staleRoot, 0)}
                                 </>
                               )
@@ -6962,7 +7108,13 @@ function ChatSidebar({
                             const isActive = activeSlot === s.key
                             const nextIsActive = i < ungrouped.length - 1 && activeSlot === ungrouped[i + 1].key
                             const showDivider = i < ungrouped.length - 1 && !isActive && !nextIsActive
-                            return renderSessionRow(s, 0, showDivider, colLaneScope, colLaneScope, colHoldContainer)
+                              && !startsAutomaticSection(ungrouped, i + 1)
+                            return (
+                              <Fragment key={s.key}>
+                                {startsAutomaticSection(ungrouped, i) && <PinnedSessionDivider />}
+                                {renderSessionRow(s, 0, showDivider, colLaneScope, colLaneScope, colHoldContainer)}
+                              </Fragment>
+                            )
                           })}
                           {!hasAny && <div className="text-muted text-[12px] text-center py-4">{i18nT('pages.chatSidebar.no_sessions')}</div>}
                         </>

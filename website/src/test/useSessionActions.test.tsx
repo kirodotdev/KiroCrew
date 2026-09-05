@@ -21,7 +21,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import type { ChatSlot } from '../types'
 
-const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn() }))
+const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn() }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -59,6 +59,7 @@ function renderActions() {
 beforeEach(() => {
   mocks.setSlotPin.mockResolvedValue({})
   mocks.forkChatSlot.mockResolvedValue({ ok: true, key: 'forked' })
+  mocks.chatSlots.mockResolvedValue([])
   cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
   vi.stubGlobal('confirm', vi.fn(() => true))
 })
@@ -82,6 +83,9 @@ describe('useSessionActions', () => {
 
   it('togglePin optimistically pins then rolls back when setSlotPin rejects', async () => {
     mocks.setSlotPin.mockRejectedValueOnce(new Error('boom'))
+    mocks.chatSlots.mockResolvedValue([
+      { key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '', pinned: false } as ChatSlot,
+    ])
     seed(false)
     const a = renderActions()
     act(() => a.current.togglePin(SLOT))
@@ -90,6 +94,9 @@ describe('useSessionActions', () => {
   })
 
   it('togglePin persists when setSlotPin succeeds', async () => {
+    mocks.chatSlots.mockResolvedValue([
+      { key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '', pinned: true } as ChatSlot,
+    ])
     seed(false)
     const a = renderActions()
     act(() => a.current.togglePin(SLOT))

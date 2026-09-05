@@ -12,7 +12,7 @@
  * with a bumped timestamp. That exercises the hold rather than the gesture.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -21,7 +21,10 @@ import { ThemeProvider } from '../hooks/useTheme'
 
 // Captured lifecycle props from the sidebar's DndContext. Stubbing the context
 // (children pass through) is what lets the real handlers run without a gesture.
-const dnd = vi.hoisted(() => ({ handlers: {} as Record<string, ((e: unknown) => void) | undefined> }))
+const dnd = vi.hoisted(() => ({
+  handlers: {} as Record<string, ((e: unknown) => void) | undefined>,
+  overId: null as string | null,
+}))
 
 vi.mock('@dnd-kit/core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@dnd-kit/core')>()
@@ -32,6 +35,10 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
       dnd.handlers.onDragEnd = props.onDragEnd
       return props.children as never
     },
+    useDroppable: (args: Parameters<typeof actual.useDroppable>[0]) => ({
+      ...actual.useDroppable(args),
+      isOver: dnd.overId === String(args.id),
+    }),
   }
 })
 
@@ -71,8 +78,8 @@ const TITLE_A = 'Alpha session'
 const TITLE_B = 'Bravo session'
 const TITLE_C = 'Charlie session'
 
-const slot = (key: string, title: string, lastTs: string): ChatSlot => ({
-  key, title, messages: 1, running: false, mode: '', created: '', last_ts: lastTs, pinned: false,
+const slot = (key: string, title: string, lastTs: string, pinned = false): ChatSlot => ({
+  key, title, messages: 1, running: false, mode: '', created: lastTs, last_ts: lastTs, pinned,
 } as ChatSlot)
 
 // date-desc: A (newest), B, C (oldest).
@@ -148,6 +155,7 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     localStorage.clear()
     localStorage.setItem('mc-session-stale-collapse-ms', '0')
     dnd.handlers = {}
+    dnd.overId = null
   })
 
   it('holds order while a drag is live and re-derives once it ends', () => {
@@ -176,12 +184,66 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
   })
 
   it('the fixture actually reorders under date-desc (guards fixture validity)', () => {
-    // If the bumped `last_ts` failed to change the sort, the mid-drag assertion
-    // above would pass vacuously.
     const order = (slots: ChatSlot[]) => [...slots]
       .sort((a, b) => new Date(b.last_ts!).getTime() - new Date(a.last_ts!).getTime())
       .map(s => s.key)
     expect(order(SLOTS_INITIAL)).toEqual(['chat-a', 'chat-b', 'chat-c'])
     expect(order(SLOTS_REORDERED)).toEqual(['chat-c', 'chat-a', 'chat-b'])
   })
+
+  it('reorders only pinned rows and keeps that order under Created: newest', () => {
+    localStorage.setItem('mc-session-sort', 'created-desc')
+    const pinnedSlots = [
+      slot('chat-a', TITLE_A, '2026-03-01T00:00:00Z', true),
+      slot('chat-b', TITLE_B, '2026-02-01T00:00:00Z', true),
+      slot('chat-c', TITLE_C, '2026-04-01T00:00:00Z'),
+    ]
+    renderSidebar(pinnedSlots)
+
+    expect(renderedOrder()).toEqual([TITLE_A, TITLE_B, TITLE_C])
+    expect(screen.getAllByTestId('pinned-session-divider')).toHaveLength(1)
+
+    act(() => {
+      dnd.handlers.onDragStart!({
+        active: { id: 'session:chat-a', data: { current: { type: 'session', key: 'chat-a', pinned: true, container: 'root' } } },
+      })
+      dnd.handlers.onDragEnd!({
+        active: { id: 'session:chat-a', data: { current: { type: 'session', key: 'chat-a', pinned: true, container: 'root' } } },
+        over: { id: 'pinned-session:list:chat-b', data: { current: { type: 'pinned-session', key: 'chat-b', container: 'root' } } },
+      })
+    })
+
+    expect(renderedOrder()).toEqual([TITLE_B, TITLE_A, TITLE_C])
+    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!)).toEqual(['chat-b', 'chat-a'])
+    expect(screen.getAllByTestId('pinned-session-divider')).toHaveLength(1)
+  })
+
+  it('shows the insertion line while a pinned row is over another pinned row', () => {
+    renderSidebar([
+      slot('chat-a', TITLE_A, '2026-03-01T00:00:00Z', true),
+      slot('chat-b', TITLE_B, '2026-02-01T00:00:00Z', true),
+      slot('chat-c', TITLE_C, '2026-01-01T00:00:00Z'),
+    ])
+    dnd.overId = 'pinned-session:list:chat-b'
+    act(() => {
+      dnd.handlers.onDragStart!({
+        active: { id: 'session:chat-a', data: { current: { type: 'session', key: 'chat-a', pinned: true, container: 'root' } } },
+      })
+    })
+    expect(screen.getByTestId('pinned-session-insertion')).toBeTruthy()
+  })
+
+  it('moves a focused pinned row with Alt+ArrowUp and leaves unpinned rows automatic', () => {
+    renderSidebar([
+      slot('chat-a', TITLE_A, '2026-03-01T00:00:00Z', true),
+      slot('chat-b', TITLE_B, '2026-02-01T00:00:00Z', true),
+      slot('chat-c', TITLE_C, '2026-04-01T00:00:00Z'),
+    ])
+    const row = screen.getByText(TITLE_B).closest('[data-session-row]') as HTMLElement
+    expect(row.getAttribute('aria-keyshortcuts')).toBe('Alt+ArrowUp Alt+ArrowDown')
+    fireEvent.keyDown(row, { key: 'ArrowUp', altKey: true })
+    expect(renderedOrder()).toEqual([TITLE_B, TITLE_A, TITLE_C])
+    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!)).toEqual(['chat-b', 'chat-a'])
+  })
+
 })
