@@ -1160,6 +1160,36 @@ export default [
     },
   },
 
+  // STORAGE FORMAT ONLY: the view-state record's own serialization. Every literal
+  // in this module is compared or written BY VALUE and none is ever rendered --
+  // the four outcome tags (`absent`, `restored`, `revision-mismatch`,
+  // `unreadable`) and two action tags (`write`, `remove`) are discriminants the
+  // caller switches on, the key is `kc:app:<appId>:view:<name>` built from the
+  // host-minted appId, and the flagged line is JSON SYNTAX:
+  // `{"revision":…,"state":…}`.
+  //
+  // That line cannot earn a narrower exemption, which is why this is file-scoped.
+  // It is RETURNED rather than passed, so no callee exemption reaches it; an
+  // inline disable cannot work either, because the two gates register the rule
+  // under different names (`i18next/…` here, `i18n-strict/…` in the strict
+  // config) and naming both makes each run fail on the one it does not know.
+  // Rewriting it to avoid the literal is worse on every branch: the state half
+  // arrives pre-serialized from `canonicalState` to guarantee a stable byte form,
+  // so nesting it through `JSON.stringify` would need a parse round-trip that
+  // defeats the canonicalisation the stored-record tests assert, and an array
+  // `join` would trade one flagged literal for four.
+  //
+  // Scoped to this one file, and verified copy-free: the module holds no
+  // sentence-shaped string except one developer diagnostic, which is already
+  // exempt through the call it is passed to. Copy added here later belongs in the
+  // catalog, not under this exemption.
+  {
+    files: ['src/app-sdk/viewState.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // PROTOCOL VALUES ONLY: the server's own action names, provider merge-state enums,
   // and the literals a user must TYPE to arm an irreversible action. Every string in
   // that module is compared by value against something outside the dashboard, so

@@ -23,7 +23,7 @@
  * react-query key. All AWS access runs through the gateway's audited CLI
  * chokepoint; this surface never talks to AWS from the browser.
  */
-import { Fragment, useRef, useState } from 'react'
+import { Fragment, useCallback, useRef, useState } from 'react'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Trans } from 'react-i18next'
@@ -43,6 +43,9 @@ import {
   WidgetThumb, ContentThumb, ImageThumb, WebAppThumb,
 } from '../../components/library/ArtifactThumbs'
 import { usePersistedString } from '../../hooks/usePersistedString'
+// Imported by path, not from the app-sdk barrel: that barrel is the surface published to
+// third-party apps, and this store is builtin-only.
+import { useAppViewState, isViewString, type ViewStateDecl } from '../../app-sdk/viewState'
 import { api } from '../../api/client'
 import type { Artifact } from '../../types'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
@@ -1450,10 +1453,48 @@ const KEY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]*$/
  *  name check has no `error`; the sentence is the whole story. */
 type Failure = { message: string; error?: unknown }
 
+/**
+ * What the drive restores when you come back to it.
+ *
+ * One field. The rest of "where I was" is already durable elsewhere and deliberately
+ * stays there: the pane is in the URL (`usePaneFromPath`), the grid/list choice is in
+ * `useViewMode`, and the selected account is in `awsControl.selectedAccount` — which is
+ * this record's SCOPE rather than one of its fields, so a prefix can never be restored
+ * into a bucket it was not taken in.
+ *
+ * The listing itself is not here and cannot be: `contents` is not a declared field, so
+ * `pickDeclared` drops it on write even if a caller passes it in. Server-owned data is
+ * refetched, per the design's three-tier ownership split.
+ *
+ * Module-level, so the hook sees one stable declaration rather than a new object per
+ * render.
+ */
+const DRIVE_VIEW: ViewStateDecl<{ path: string }> = {
+  // Names this SURFACE, not the app: the library and backup panes are separate consumers
+  // and get their own records, so neither can erase this one's folder.
+  name: 'drive',
+  revision: 1,
+  fields: { path: isViewString },
+  defaults: { path: '' },
+}
+
 export function DriveSectionView({ account, bucket }: { account: string; bucket: string }) {
   const qc = useQueryClient()
   const [mode, setMode] = useViewMode('drive', 'list')
-  const [path, setPath] = useState('')
+  // The current folder is the app's view state, restored on mount from the host's
+  // namespace. `path` is read from the store rather than held in local state so there is
+  // one source of truth for it, and it is available on the FIRST render — the infinite
+  // query below is keyed on it, so a restored folder is what gets fetched, with no
+  // wasted listing of the root and no skeleton flash on the way to the right place.
+  //
+  // Scoped to `account`, because a prefix only means anything inside the bucket it was
+  // taken in. The prop is always a resolved, non-empty account id by the time this
+  // renders: `AwsControlPage` returns the accounts pane while `!selected`, and
+  // `DrivePaneGate` yields children only once `drive?.exists`. Were it briefly `''`, the
+  // scope would never match and a restore would silently never happen.
+  const [view, setView] = useAppViewState(DRIVE_VIEW, { scope: account })
+  const path = view.path
+  const setPath = useCallback((next: string) => setView({ path: next }), [setView])
   const [share, setShare] = useState<{ key: string } | null>(null)
   const [uploadError, setUploadError] = useState<Failure | null>(null)
   const [downloadError, setDownloadError] = useState<Failure | null>(null)

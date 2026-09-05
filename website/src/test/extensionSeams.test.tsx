@@ -19,7 +19,7 @@ import { render } from '@testing-library/react'
 import ErrorBoundary from '../components/ErrorBoundary'
 import {
   registerBuiltinComponents,
-  getBuiltinComponent,
+  getBuiltinApp,
   hasBuiltinComponent,
 } from '../apps/builtinRegistry'
 import { registerBuiltinIcons, getBuiltinIcon } from '../apps/builtinIcons'
@@ -59,17 +59,19 @@ const Dummy = () => null
 describe('builtinRegistry — page seam', () => {
   it('registers a new route and resolves it', () => {
     const Comp = lazy(async () => ({ default: Dummy }))
-    registerBuiltinComponents({ '/seam-test-page': Comp })
+    registerBuiltinComponents({ '/seam-test-page': { component: Comp, appId: 'seam-test-page' } })
     expect(hasBuiltinComponent('/seam-test-page')).toBe(true)
-    expect(getBuiltinComponent('/seam-test-page')).toBe(Comp)
+    expect(getBuiltinApp('/seam-test-page')?.component).toBe(Comp)
   })
 
   it('throws on a duplicate route in dev/test; core wins', () => {
     const first = lazy(async () => ({ default: Dummy }))
     const second = lazy(async () => ({ default: Dummy }))
-    registerBuiltinComponents({ '/seam-dup': first })
-    expect(() => registerBuiltinComponents({ '/seam-dup': second })).toThrow(/already registered/)
-    expect(getBuiltinComponent('/seam-dup')).toBe(first)
+    registerBuiltinComponents({ '/seam-dup': { component: first, appId: 'seam-dup' } })
+    expect(() =>
+      registerBuiltinComponents({ '/seam-dup': { component: second, appId: 'seam-dup' } }),
+    ).toThrow(/already registered/)
+    expect(getBuiltinApp('/seam-dup')?.component).toBe(first)
   })
 })
 
@@ -477,15 +479,22 @@ describe('builtinRegistry — route-shape guard', () => {
     ['/', 'root only'],
   ])('throws on unresolvable route %s (%s)', route => {
     expect(() =>
-      registerBuiltinComponents({ [route]: lazy(async () => ({ default: Dummy })) }),
+      registerBuiltinComponents({
+        [route]: { component: lazy(async () => ({ default: Dummy })), appId: 'seam-shape' },
+      }),
     ).toThrow(/plain path segment/)
     expect(hasBuiltinComponent(route)).toBe(false)
   })
 
+  // The route charset and the appId charset are independent: a route may carry
+  // uppercase, `_` and `.` because it is a URL path segment, while the appId is a
+  // storage key held to `[a-z0-9-]`.
   it.each(['/seam-single', '/Reports', '/my_app', '/a.b', '/x~y-z'])(
     'accepts a single plain path segment route %s',
     route => {
-      registerBuiltinComponents({ [route]: lazy(async () => ({ default: Dummy })) })
+      registerBuiltinComponents({
+        [route]: { component: lazy(async () => ({ default: Dummy })), appId: 'seam-shape-ok' },
+      })
       expect(hasBuiltinComponent(route)).toBe(true)
     },
   )

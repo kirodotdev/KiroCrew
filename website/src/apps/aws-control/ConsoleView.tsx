@@ -12,6 +12,10 @@
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+// By path, not from the app-sdk barrel: that barrel is published to third-party
+// apps through the vendor stub, and a host-namespaced cache client is not part
+// of that contract.
+import { useAppQuery, useAppQueryKey } from '../../app-sdk/appQuery'
 import {
   ChevronDown, RefreshCw, Copy, Check, HardDrive, Star, Link2, ShieldCheck, Wallet, } from 'lucide-react'
 import { Btn, Badge, ContentSkeleton } from '../../components/ui'
@@ -285,13 +289,16 @@ export function SetupCard({ account, region }: { account: string; region: string
 export default function UsagePane({ account }: { account: AwsAccount }) {
   const id = account.account
   const qcTop = useQueryClient()
+  // Host-authored prefix for this app's namespace, for the cache APIs that take a
+  // key rather than being a query hook. Same resolver `useAppQuery` uses, so the
+  // two cannot drift.
+  const appKey = useAppQueryKey()
 
   const driveQ = useQuery({
     queryKey: ['aws-control', 'drive', id],
     queryFn: () => awsControlApi.drive(id),
   })
-  const costsQ = useQuery({
-    queryKey: ['aws-control', 'costs', id],
+  const costsQ = useAppQuery(['costs', id], {
     queryFn: () => awsControlApi.costs(id),
     // A dead bill read (CE not enabled, throttled) should settle to the
     // quiet em-dash in seconds, not skeleton through three backoffs.
@@ -334,8 +341,17 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
   // Both surfaces whose content a grant decides. The ask reads a cached refusal
   // and the meter reads a cached listing, so a grant change has to reach them
   // or the pane keeps rendering the previous answer.
+  //
+  // Deliberately MIXED, in both directions, because that is what proves the host's
+  // prefix is byte-identical to the one this app writes by hand:
+  //   - `costs` is queried through `useAppQuery` above and invalidated by the
+  //     hand-written literal below;
+  //   - `drive` is the reverse — queried by a hand-written literal above and
+  //     invalidated through the host's own key builder here.
+  // Either mismatch would break a grant's ability to refresh what it changed, so
+  // the pane exercises the agreement rather than asserting it in a comment.
   const refetchGated = () => {
-    qcTop.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })
+    qcTop.invalidateQueries({ queryKey: appKey(['drive', id]) })
     qcTop.invalidateQueries({ queryKey: ['aws-control', 'costs', id] })
   }
 

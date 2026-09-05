@@ -10,42 +10,30 @@
  * and the import map will resolve it to the host's vendored copy.
  */
 import {
-  createContext,
-  useContext,
   useEffect,
   useRef,
   useCallback,
   type ReactNode,
 } from 'react'
-import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
+// The identity layer this module composes with its own scoped-API layer. Kept in
+// a separate file so a surface that needs identity WITHOUT a sandbox — every
+// builtin page — can mount it on its own, and so it stays off this barrel (see
+// the note at the bottom of this file on what the barrel publishes).
+import { AppIdentityProvider, useAppIdentity, type AppOrigin } from './identity'
+// The scoped-API layer, kept in its own module so it is NOT published on this
+// barrel -- see the header of ./scopedApi for why.
+import { useCtx, AppScopedApiProvider, type AppApi, type AppInfo } from './scopedApi'
+// Re-exported as TYPES: the barrel<->vendor-stub parity gate counts value
+// exports, and a type vanishes at runtime, so an app author keeps these names
+// without the stub needing an entry it could not provide.
+export type { AppApi, AppInfo, AppPermissions } from './scopedApi'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface AppApi {
-  /** GET request scoped to declared permissions. */
-  get<T = unknown>(path: string, init?: RequestInit): Promise<T>
-  /** POST request scoped to declared permissions. */
-  post<T = unknown>(path: string, body?: unknown): Promise<T>
-  /** PUT request scoped to declared permissions. */
-  put<T = unknown>(path: string, body?: unknown): Promise<T>
-  /** PATCH request scoped to declared permissions. */
-  patch<T = unknown>(path: string, body?: unknown): Promise<T>
-  /** DELETE request scoped to declared permissions. */
-  del<T = unknown>(path: string): Promise<T>
-}
 
-export interface AppPermissions {
-  api: string[]
-  events: string[]
-}
 
-export interface AppInfo {
-  name: string
-  version: string
-  permissions: AppPermissions
-}
 
 export interface AppTheme {
   mode: 'dark' | 'light'
@@ -56,22 +44,6 @@ export interface AppTheme {
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
-
-interface AppSdkContextValue {
-  api: AppApi
-  info: AppInfo
-  subscribe: (event: string, cb: (data: unknown) => void) => () => void
-  navigate: (path: string) => void
-  notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
-}
-
-const AppSdkContext = createContext<AppSdkContextValue | null>(null)
-
-function useCtx(): AppSdkContextValue {
-  const ctx = useContext(AppSdkContext)
-  if (!ctx) throw new Error('useAppApi() must be used inside <AppApiProvider>')
-  return ctx
-}
 
 // ---------------------------------------------------------------------------
 // Hooks (public API for app authors)
@@ -384,73 +356,19 @@ export function useChatLauncher(): {
 // adding it to the top-level imports (apps get React from import map)
 import React from 'react'
 
-function createScopedApi(allowedPaths: string[], appName: string): AppApi {
-  const check = (path: string): string => {
-    // Reject absolute and protocol-relative URLs to prevent SSRF. Backslashes
-    // are rejected too: the URL parser treats `\` like `/`, so `/\evil.com` or
-    // `\\evil.com` would otherwise be parsed as a protocol-relative authority.
-    if (/^(?:https?:)?[/\\]{2}/i.test(path) || path.includes('\\')) {
-      throw new Error(`[app-sdk] Absolute URLs are not allowed: ${path}`)
-    }
-    // Normalize BEFORE the allowlist check so `..` traversal cannot escape the
-    // declared scope (e.g. `/api/apps/x/../../secret` → `/api/secret`).
-    const parsed = new URL(path, 'http://localhost')
-    const normalized = parsed.pathname
-    const allowed = allowedPaths.some(p => normalized === p || normalized.startsWith(p.endsWith('/') ? p : p + '/'))
-    if (!allowed) {
-      throw new Error(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
-    }
-    return normalized + parsed.search
-  }
-
-  const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-    const safePath = check(path)
-    const res = await fetch(safePath, init)
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText)
-      // A stale pre-owner session denial raises the dashboard's re-auth prompt
-      // (installed by api/client); in a document without it — the vendored
-      // iframe copy of this SDK — detection is a no-op and the throw below is
-      // unchanged either way.
-      noteStaleOwnerResponse(res.status, text)
-      throw new Error(`API ${res.status}: ${text}`)
-    }
-    // An empty-body response is not JSON — res.json() would throw a SyntaxError
-    // (e.g. a 204 No Content on DELETE, or a 200 with an empty body and no
-    // Content-Length header). Read the body as text and only parse when it is
-    // non-empty, so any empty body returns undefined regardless of status or
-    // whether a Content-Length: 0 header was sent.
-    if (res.status === 204 || res.status === 205) {
-      return undefined as T
-    }
-    const text = await res.text()
-    if (text.trim() === '') {
-      return undefined as T
-    }
-    return JSON.parse(text) as T
-  }
-
-  return {
-    get: (path, init) => jsonFetch(path, { ...init, method: 'GET' }),
-    post: (path, body) => jsonFetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: body != null ? JSON.stringify(body) : undefined,
-    }),
-    put: (path, body) => jsonFetch(path, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: body != null ? JSON.stringify(body) : undefined,
-    }),
-    patch: (path, body) => jsonFetch(path, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: body != null ? JSON.stringify(body) : undefined,
-    }),
-    del: (path) => jsonFetch(path, { method: 'DELETE' }),
-  }
-}
-
+/**
+ * Identity + scoped API in one, for a surface that has neither: an installed app
+ * mounted by `AppHost`.
+ *
+ * Prop contract unchanged, so every existing caller keeps working; `origin` is
+ * new and defaults to `'external'` because that is what an installed app is.
+ *
+ * It publishes identity only when there is NONE in context. A builtin page's
+ * identity is minted by the host and carries `origin: 'builtin'`; shadowing it
+ * with this provider's `'external'` default would silently revoke that page's
+ * host namespace — a capability disappearing with no error, which is the exact
+ * failure the identity layer exists to prevent.
+ */
 export function AppApiProvider({
   appName,
   appVersion = '0.0.0',
@@ -459,33 +377,33 @@ export function AppApiProvider({
   subscribeFn,
   navigateFn,
   notifyFn,
+  origin = 'external',
   children,
 }: {
   appName: string
   appVersion?: string
   allowedApiPaths: string[]
-  allowedEvents: string[]
-  subscribeFn: (event: string, cb: (data: unknown) => void) => () => void
   navigateFn: (path: string) => void
-  notifyFn: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
+  /** Optional since the scoped layer defaults them; see AppScopedApiProvider. */
+  allowedEvents?: string[]
+  subscribeFn?: (event: string, cb: (data: unknown) => void) => () => void
+  notifyFn?: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
+  origin?: AppOrigin
   children: ReactNode
 }) {
-  const apiKey = JSON.stringify(allowedApiPaths)
-  const eventsKey = JSON.stringify(allowedEvents)
-  const value = React.useMemo<AppSdkContextValue>(() => ({
-    api: createScopedApi(allowedApiPaths, appName),
-    info: {
-      name: appName,
-      version: appVersion,
-      permissions: { api: allowedApiPaths, events: allowedEvents },
-    },
-    subscribe: subscribeFn,
-    navigate: navigateFn,
-    notify: notifyFn,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [appName, appVersion, apiKey, eventsKey, subscribeFn, navigateFn, notifyFn])
-
-  return React.createElement(AppSdkContext.Provider, { value }, children)
+  const existing = useAppIdentity()
+  const scoped = React.createElement(AppScopedApiProvider, {
+    appName,
+    appVersion,
+    allowedApiPaths,
+    allowedEvents,
+    subscribeFn,
+    navigateFn,
+    notifyFn,
+    children,
+  })
+  if (existing) return scoped
+  return React.createElement(AppIdentityProvider, { appId: appName, origin, children: scoped })
 }
 
 export { useChatSession } from './useChatSession'

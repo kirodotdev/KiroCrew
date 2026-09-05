@@ -3,7 +3,7 @@
  *
  * A single component that:
  * 1. Reads the app manifest to get permissions
- * 2. Creates a permission-scoped API context via AppApiProvider
+ * 2. Creates the app's identity + a permission-scoped API context via AppApiProvider
  * 3. Dynamically imports the app's ESM bundle
  * 4. Renders it inside an ErrorBoundary + Suspense
  *
@@ -259,6 +259,9 @@ function AppHostInner({ app }: AppHostProps) {
 
   const navigateFn = useCallback((path: string) => navigate(path), [navigate])
 
+  // Kept explicit rather than relying on the SDK's default, which is byte-identical:
+  // `AppHostCoverage` asserts this bridge's behaviour at the surface that owns it,
+  // and moving the assertion elsewhere to delete three lines is a bad trade.
   const notifyFn = useCallback((message: string, opts?: { type?: 'info' | 'success' | 'error' }) => {
     // Dispatch to host notification system
     window.dispatchEvent(new CustomEvent('mc:notify', { detail: { message, ...opts } }))
@@ -269,6 +272,12 @@ function AppHostInner({ app }: AppHostProps) {
       <AppApiProvider
         appName={app.name}
         appVersion={app.manifest?.version || app.version}
+        // Provenance verbatim from `GET /api/apps`, which is the one claim an app
+        // cannot forge: `builtin` is assigned only by register_builtin_apps() and
+        // is refused on the self-registration path. Anything else is external, and
+        // `useTrustedAppId()` refuses it a host-owned state namespace — an app
+        // that self-registers under a builtin's NAME must not inherit its keys.
+        origin={app.origin === 'builtin' ? 'builtin' : 'external'}
         allowedApiPaths={allowedApi}
         allowedEvents={allowedEvents}
         subscribeFn={subscribeFn}

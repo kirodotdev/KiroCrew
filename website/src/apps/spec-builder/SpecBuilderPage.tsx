@@ -5,14 +5,14 @@
 // a collapsible specs rail, the native chat (ChatEmbed), and a docs card with
 // selection-to-comment review + phase-gated approvals.
 //
-// ChatEmbed depends on the app-sdk's useAppApi(), which requires an
-// <AppApiProvider>. Builtin pages are NOT wrapped by AppHost, so this page
-// mounts its own scoped provider (limited to /api/chat for the embed).
+// ChatEmbed depends on the app-sdk's useAppApi(), so this page needs the SDK's
+// scoped-API layer (limited to /api/chat for the embed). It needs no identity
+// layer: BuiltinAppRoute already published this page's app identity above it.
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
-import { AppApiProvider } from '../../app-sdk'
+import { AppScopedApiProvider } from '../../app-sdk/scopedApi'
 import { specApi, LS, type SpecSummary } from './api'
 import { Btn } from './components/shared'
 import Workspace from './components/Workspace'
@@ -128,15 +128,12 @@ function SpecBuilderInner() {
 export default function SpecBuilderPage() {
   const navigate = useNavigate()
   return (
-    <AppApiProvider
+    <AppScopedApiProvider
       appName="spec-builder"
       allowedApiPaths={CHAT_API_PATHS}
-      allowedEvents={[]}
-      subscribeFn={() => () => {}}
       navigateFn={(path) => navigate(path)}
-      notifyFn={(message, opts) => window.dispatchEvent(new CustomEvent('mc:notify', { detail: { message, ...opts } }))}
     >
       <SpecBuilderInner />
-    </AppApiProvider>
+    </AppScopedApiProvider>
   )
 }

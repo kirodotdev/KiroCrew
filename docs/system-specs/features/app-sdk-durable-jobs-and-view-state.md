@@ -2,18 +2,27 @@
 
 ## Current SDK boundary
 
-The App SDK does not provide a shared durable-job or URL-view-state contract.
-`AppContext` exposes `cron`, `events`, `storage`, and `spawn` when their
-permissions allow them; it has no job service (`src/kiro_crew/apps/context.py`,
-`AppContext` and `build_app_context`). The frontend barrel exports app API,
-event, metadata, navigation, and chat surfaces, but no `useAppJob` or
-`useAppViewState` hook (`website/src/app-sdk/index.ts`, `useAppApi`,
-`useAppEvents`, `useAppInfo`, `useNavigate`, and the barrel exports).
+The App SDK does not provide a shared durable-job contract, and does not provide a
+URL-view-state contract. `AppContext` exposes `cron`, `events`, `storage`, and
+`spawn` when their permissions allow them; it has no job service
+(`src/kiro_crew/apps/context.py`, `AppContext` and `build_app_context`). The
+frontend barrel exports app API, event, metadata, navigation, and chat surfaces,
+but no `useAppJob` or `useAppViewState` hook (`website/src/app-sdk/index.ts`,
+`useAppApi`, `useAppEvents`, `useAppInfo`, `useNavigate`, and the barrel exports).
 
-This boundary is load-bearing: an app that needs to report or recover
-long-running work must own its server route, persistence, lifecycle recovery,
-and frontend reattachment. A common SDK cannot be assumed to supply those
-semantics.
+There IS a host-owned view-state record for builtin pages, and it is deliberately
+not on that barrel: `useAppViewState` lives in `website/src/app-sdk/viewState.ts`
+and is imported by path. The barrel is the surface third-party apps resolve, held
+in agreement with `website/public/vendor/kirocrew-app-sdk.mjs`, so a name placed
+there is published to them; the store is builtin-only by construction because it
+reads its namespace from `useTrustedAppId()` (`website/src/app-sdk/identity.ts`,
+`useTrustedAppId`), which refuses a non-builtin origin. See "Persisted view state
+is a builtin-only record" below for what the record does and does not cover.
+
+This boundary remains load-bearing for jobs: an app that needs to report or
+recover long-running work must own its server route, persistence, lifecycle
+recovery, and frontend reattachment. A common SDK cannot be assumed to supply
+those semantics.
 
 `CronSDK` is a separate app-scoped scheduling surface (`src/kiro_crew/apps/cron_sdk.py`,
 `CronSDK`). It does not establish a job-run registry for app-initiated HTTP
@@ -131,7 +140,7 @@ write failed twice and a record minted by another gateway process both read
 record from real work between the reconciliation passes that would eventually
 resolve it.
 
-## View position is not an App SDK contract
+## URL-backed view position is not an App SDK contract
 
 Builtin apps are mounted by the single-segment `/:builtinApp` route, and
 `BuiltinAppRoute` resolves that parameter to one component
@@ -142,13 +151,69 @@ Apps can already read URL search parameters: `CodeReviewSagePage` calls
 `useSearchParams` to select an initial run (`website/src/apps/code-review-sage/CodeReviewSagePage.tsx`,
 `CodeReviewSagePage`). The App SDK does not namespace, serialize, or synchronize
 view keys for apps, so each app that needs URL-backed state must define that
-contract itself.
+contract itself. This is unchanged by the persisted record described below: a
+record restores a position on a fresh visit, which a URL cannot do, and a URL
+makes a position shareable, which a record cannot do.
 
-AWS Control keeps its selected account and drive in local component state
-(`website/src/apps/aws-control/AwsControlPage.tsx`, `AwsControlPage`). Those
-values are not encoded in its URL, so they cannot identify an account or drive
-in a shareable link. This local-state boundary is load-bearing: a URL can only
-restore coordinates that the application has made part of its URL contract.
+AWS Control keeps its selected account in local component state persisted under
+its own key (`website/src/apps/aws-control/AwsControlPage.tsx`, `AwsControlPage`,
+via `usePersistedString`). That value is not encoded in its URL, so it cannot
+identify an account in a shareable link. This local-state boundary is
+load-bearing for URLs: a URL can only restore coordinates that the application
+has made part of its URL contract.
+
+## Persisted view state is a builtin-only record
+
+The host owns a per-surface record that restores where a user was, because a
+builtin page is unmounted on navigation and its component state returns to
+defaults on the next visit (`website/src/apps/BuiltinAppRoute.tsx`,
+`BuiltinAppRoute`, under the catch-all route).
+
+`useAppViewState` (`website/src/app-sdk/viewState.ts`) takes a `ViewStateDecl`
+and returns the declared state plus a setter. Five properties define the
+contract:
+
+- **The namespace is the host's.** The key is
+  `kc:app:<appId>:view:<name>[:<scope>]`, with `appId` taken from identity
+  context through `useTrustedAppId()`, `name` naming the surface, and the
+  optional `scope` naming the subject the coordinates are relative to. An app
+  cannot name its own namespace: `appId` comes from the registry, `name` is
+  validated as a key segment, and `scope` is percent-encoded so a value cannot
+  forge a segment boundary.
+- **One record per surface, not per app.** The hook is consumed per component,
+  each with its own declaration, so a per-app key would let a second consumer's
+  write erase the first's position — and the first's read would then find its
+  field merely absent, fall back to its default, and report a successful restore.
+- **The app declares what persists.** Only fields in `ViewStateDecl.fields` are
+  written; anything else is dropped on write, so server-owned data cannot enter
+  the record even if a caller passes it in.
+- **One record per scope, addressed structurally.** The scope is part of the
+  key rather than a field inside the record, so a record cannot be read under the
+  wrong scope and each subject keeps its own position. A user working across two
+  accounts finds both folders where they left them.
+- **A record that cannot be read means mount with defaults.** An unrecognized
+  `revision`, a parse failure, or a declared field failing its guard all resolve
+  to the declaration's defaults and discard the stale record. A schema change can
+  never stop a page from mounting.
+- **The record is read synchronously on first render**, in a `useState`
+  initializer, so a coordinate is available to anything keyed off it — a query
+  key above all — on the first pass rather than one render later.
+
+Builtin-only by construction: `useTrustedAppId()` returns `null` for a host page
+and for an external app, and the hook then neither reads nor writes while still
+returning usable defaults.
+
+Growth is one small record per scope actually visited, which is the contract the
+key shape implies: `scope` names a subject the user chooses among, such as an
+account, not a per-item id.
+
+AWS Control is the first consumer. `DriveSectionView` persists the current
+folder `path`, scoped to the selected account
+(`website/src/apps/aws-control/DrivePage.tsx`, `DRIVE_VIEW` and
+`DriveSectionView`). The drive's listing is not persisted and cannot be: it is
+not a declared field. The grid/list view mode stays under its own
+`usePersistedString` key, because it is a display preference whose lifetime is
+deliberately not scoped to an account.
 
 ## Query-client scope
 

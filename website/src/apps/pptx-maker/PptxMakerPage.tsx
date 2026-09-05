@@ -3,8 +3,9 @@
  *
  * A BUILTIN dashboard page (rendered by BuiltinAppRoute inside the main React
  * tree), so it talks to its in-gateway routes with same-origin fetch and the
- * dashboard's session cookie — not the app-sdk hooks, which need
- * `<AppApiProvider>` and only wrap standalone installed apps via AppHost.
+ * dashboard's session cookie — not the app-sdk data hooks, which need the SDK's
+ * scoped-API layer that a builtin page mounts for itself (`AppScopedApiProvider`).
+ * App identity is published for every builtin page by BuiltinAppRoute.
  *
  * Three views behind one segmented control:
  * - **Decks** — the deck list beside the tabbed deliverable viewer. This is where
