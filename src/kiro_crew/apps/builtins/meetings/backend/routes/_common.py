@@ -127,6 +127,11 @@ class _ActiveMeeting:
         if self.session is session:
             self.accepting_dispatches = True
             self.buffering_session = None
+            # Monotonic: records that this meeting finished init and became
+            # usable at least once, so `abandoned` can distinguish a
+            # never-ready mid-init retirement from an idle-reaped-but-resumable
+            # established meeting.
+            session.became_ready = True
 
     def set(self, session: MeetingSession | None) -> None:
         """Install *session*, replacing any current one.

@@ -92,6 +92,11 @@ class FakeSessionManager:
         self.calls: list[tuple[str, str, str]] = []
         self.released: list[str] = []
         self.fail = fail
+        #: When None, every key reports as live (the default — the gateway's real
+        #: manager has a live session for each slot it created). Set to a concrete
+        #: set to model a sweep having retired some slots out from under a meeting,
+        #: which is what ``MeetingSession.abandoned`` reads.
+        self.live_keys: set[str] | None = None
 
     async def get_or_create(self, key: str, agent: str | None = None, **_kwargs):
         if self.fail:
@@ -100,6 +105,16 @@ class FakeSessionManager:
 
     def release(self, key: str) -> None:
         self.released.append(key)
+
+    def has_session(self, key: str) -> bool:
+        """Whether a live session exists for *key* (mirrors the real manager).
+
+        Defaults to True for every key so tests that do not care about slot
+        liveness are unchanged; assign ``live_keys`` to model a retirement.
+        """
+        if self.live_keys is None:
+            return True
+        return key in self.live_keys
 
     def prompts_for(self, agent_id: str) -> list[str]:
         """Every prompt sent to *agent_id*'s slot, in order."""

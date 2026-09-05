@@ -356,6 +356,15 @@ async def handle_dispatch_text(request: web.Request) -> web.Response:
     # live-session check, append, and fan-out in the lifecycle transaction so a
     # concurrent stop followed by deletion cannot remove the meeting while this
     # request is awaiting disk IO and then have the append recreate an orphan.
+    #
+    # NOTE: only `expired` (a real TTL lapse) tears the meeting down here, NOT
+    # `abandoned`. A meeting whose agent slots were reclaimed (identity sweep, or
+    # an ordinary idle/cleanup sweep on a merely-quiet-but-valid meeting) is
+    # recoverable on this path: broadcast -> flush -> dispatch_to_agent ->
+    # get_or_create recreates the slot session and the line lands. Ending on
+    # `abandoned` here would drop that utterance and kill a healthy meeting, so
+    # abandoned is released only by the start latch (where the meeting is being
+    # replaced anyway).
     expired_session: sess.MeetingSession | None = None
     async with DISPATCH_LOCK:
         session = ACTIVE.get_for_dispatch(meeting_id)

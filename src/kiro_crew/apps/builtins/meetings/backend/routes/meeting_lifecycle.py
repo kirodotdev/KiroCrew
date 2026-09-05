@@ -299,9 +299,23 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
     # install. Both the metadata IO and the drain below are awaits, so two starts
     # interleaving in that gap would BOTH pass the check and the second would replace
     # the first — whose transcript then fails to dispatch with a confusing 409.
+    #
+    # This lock is also what makes `existing.abandoned` race-free in the guard
+    # below. During a meeting's own init there is a window where it is installed
+    # but has no live slots yet and `became_ready` is still False — i.e. it would
+    # read `abandoned`. Because agent init (set -> suspend -> init_agents ->
+    # resume_dispatches) runs entirely INSIDE this same START_LOCK, a competing
+    # start cannot acquire the lock and observe that window: by the time it reads
+    # `existing.abandoned`, the initializing meeting has either finished init
+    # (`became_ready` True) or genuinely failed. Keep init inside this lock.
     async with START_LOCK:
         existing = ACTIVE.get()
-        if existing is not None and existing.meeting_id != meeting_id and not existing.expired:
+        if (
+            existing is not None
+            and existing.meeting_id != meeting_id
+            and not existing.expired
+            and not existing.abandoned
+        ):
             audit("meetings.start", meeting_id, outcome="denied", error="another meeting is active")
             return web.json_response(
                 {"error": "another meeting is already active", "code": "meeting_already_active"},
@@ -350,11 +364,11 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
         # A replacement of a DIFFERENT meeting is a teardown of that meeting, so its
         # metadata needs the same terminal status every other teardown writes.
         #
-        # Only an EXPIRED one can be here — the guard above 409s otherwise — and it
-        # is gone for good: its session was just dropped, and reopening it would show
-        # `active` with nothing installed, so its transcript dispatches would 409 into
-        # the void. Two meetings persisting as `active` at once also breaks the
-        # single-active-meeting invariant the list view reads.
+        # Only an EXPIRED or ABANDONED one can be here — the guard above 409s
+        # otherwise — and it is gone for good: its session was just dropped, and
+        # reopening it would show `active` with nothing installed, so its transcript
+        # dispatches would 409 into the void. Two meetings persisting as `active` at
+        # once also breaks the single-active-meeting invariant the list view reads.
         if outgoing is not None and outgoing.meeting_id != meeting_id:
             await asyncio.to_thread(sess.end_meeting_meta, outgoing.meeting_id, root)
 

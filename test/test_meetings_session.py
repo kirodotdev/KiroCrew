@@ -381,6 +381,66 @@ class TestAgentQueue:
         assert queue.queue == []
 
 
+class TestAbandoned:
+    """The abandoned property: retired mid-init AND never became dispatch-ready.
+
+    Regression for #5904: a session sweep can retire a meeting's agent sessions
+    while it is still initializing, leaving it holding the single-active-meeting
+    latch with no live slot. ``abandoned`` lets the start latch release only
+    that never-ready case -- an established meeting whose idle slots were reaped
+    (also all-gone from the registry) resumes on its next line and must not read
+    as abandoned.
+    """
+
+    def _session(self, root: Path, manager) -> sess.MeetingSession:
+        return sess.MeetingSession(
+            meeting_id="m",
+            config=store.read_config(root),
+            sessions=manager,
+            agents_enabled=["note-taker"],
+        )
+
+    def test_false_when_all_slots_are_live(self, root: Path):
+        manager = FakeSessionManager()  # live_keys=None -> everything live
+        assert self._session(root, manager).abandoned is False
+
+    def test_true_when_never_ready_and_no_slot_is_live(self, root: Path):
+        manager = FakeSessionManager()
+        manager.live_keys = set()  # the sweep retired every slot mid-init
+        session = self._session(root, manager)
+        # never became_ready (resume_dispatches never fired) -> retired mid-init
+        assert session.became_ready is False
+        assert session.abandoned is True
+
+    def test_false_when_established_meeting_has_slots_reaped(self, root: Path):
+        manager = FakeSessionManager()
+        manager.live_keys = set()  # idle sweep reaped every slot
+        session = self._session(root, manager)
+        session.became_ready = True  # it finished init and became usable
+        # An established-then-idle-reaped meeting resumes via get_or_create on
+        # its next line; it must NOT be treated as abandoned.
+        assert session.abandoned is False
+
+    def test_false_while_any_slot_survives(self, root: Path):
+        manager = FakeSessionManager()
+        # Only the task-extractor slot is still live; that is enough to not be
+        # abandoned -- this is not the retired-out-from-under case.
+        manager.live_keys = {sess.slot_key(k.TASK_EXTRACTOR_ID, "m")}
+        assert self._session(root, manager).abandoned is False
+
+    def test_false_without_a_session_manager(self, root: Path):
+        session = sess.MeetingSession(meeting_id="m", config=store.read_config(root))
+        # No manager to ask -> cannot be shown abandoned; expiry/teardown stay in charge.
+        assert session.abandoned is False
+
+    def test_false_with_no_installed_agent_slots(self, root: Path):
+        manager = FakeSessionManager()
+        manager.live_keys = set()
+        session = self._session(root, manager)
+        session.agents.clear()  # no slots to judge
+        assert session.abandoned is False
+
+
 class TestMeetingSession:
     def _session(self, root: Path, **kwargs) -> sess.MeetingSession:
         return sess.MeetingSession(
