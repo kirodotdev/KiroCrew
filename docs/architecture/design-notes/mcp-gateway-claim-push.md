@@ -71,8 +71,9 @@ Push (new): gateway rekey() ─────────────────�
    (`_StubConn.pid_start_ids`) and skips a connection on a DEFINITE token
    mismatch — both tokens known and unequal — auditing the skip as denied
    and reporting it in the ack (`skipped`). `None` on either side means
-   "identity unknown" (Windows, unreadable /proc, legacy frames) and counts
-   as a match, so platforms without a token keep the pre-guard behavior.
+   "identity unknown" (an unreadable /proc read, an unopenable process,
+   legacy frames) and counts as a match, so a token that cannot be read
+   keeps the pre-guard behavior.
 
 ## Trust model
 

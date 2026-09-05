@@ -1283,8 +1283,9 @@ a trust root on its own; publication therefore also writes a
   vs guarded forms and refuse on a PROVEN mismatch — the lenient reader
   included, since strict-then-lenient fallbacks (`peer_resolve`) would
   otherwise silently recover the stale attribution. An absent recorded
-  token (legacy file) or an unreadable live token (Windows, exited process)
-  is unknown, never a mismatch — those resolve as before. Same-uid only:
+  token (legacy file) or an unreadable live token (an exited process, or one
+  the caller may not introspect) is unknown, never a mismatch — those resolve
+  as before. Same-uid only:
   a robustness/misattribution guard, not a privilege boundary.
 - **Key**: a purpose-specific subkey derived from the SEL trust root via a
   domain-separation label (`HMAC(sel_hmac.key, "kirocrew.session_pid.sig.v1")`).

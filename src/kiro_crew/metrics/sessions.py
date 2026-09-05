@@ -506,8 +506,8 @@ def _owner_still_running(pid: object, start_id: object) -> bool:
     population this instrument exists to report.
 
     **Liveness comes from ``pid_exists``, identity only refines it.**
-    ``get_process_start_id`` returns None on Windows and on any process it may not
-    introspect, and its own contract says a None must NOT be read as a mismatch --
+    ``get_process_start_id`` returns None on any process it may not introspect,
+    and its own contract says a None must NOT be read as a mismatch --
     so using it as the liveness test would judge every owner dead on an entire
     platform and reap live sibling sessions there. It is used only to catch pid
     REUSE, and only when both sides of the comparison are actually available --
@@ -541,8 +541,8 @@ def _owner_still_running(pid: object, start_id: object) -> bool:
     except Exception:
         return True
     if not isinstance(start_id, str) or not start_id or not live_start_id:
-        # SOMETHING holds that pid and the identities cannot be compared (Windows,
-        # a pre-identity crumb, or a process we may not introspect). Fail closed.
+        # SOMETHING holds that pid and the identities cannot be compared (a
+        # pre-identity crumb, or a process we may not introspect). Fail closed.
         return True
     return live_start_id == start_id
 
