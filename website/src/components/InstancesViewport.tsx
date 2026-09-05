@@ -169,6 +169,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Read-only mirrors for the long-lived message listener, kept current without
   // re-subscribing (mirrors the warmRef / portToIdRef pattern already used here).
   const postModelToRef = useRef<(id: string) => void>(() => {})
+  // Distinct readiness ack, sent ONLY from the mc-embedded-ready handler (never
+  // from the input-driven broadcast). It is the pane's proof that THIS parent
+  // recorded its readiness, so the pane can stop re-announcing without mistaking
+  // an ordinary model broadcast for an ack — see EmbeddedHostBridge.
+  const postAckToRef = useRef<(id: string) => void>(() => {})
   const instancesRef = useRef<Array<{ id: string }>>([])
 
   // Whether `refreshToken` would actually mint for this id right now: no mint
@@ -376,6 +381,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         dispatch(setPaneReady(id))
         paneLog('ready', { id })
         postModelToRef.current(id)
+        // Distinct ack so the pane can stop re-announcing. Sent only here (after
+        // readiness is recorded), never from the broadcast, so a late announce
+        // can't revive readiness once this pane has been given up on.
+        postAckToRef.current(id)
       } else if (data.type === 'mc-drag-gaps') {
         // The embedded pane relays the control-free spans of its header so the
         // host can re-add `-webkit-app-region: drag` there (the blanket marks
@@ -664,6 +673,27 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     [warm, buildModelFor],
   )
   postModelToRef.current = postModelTo
+
+  // Acknowledge a pane's readiness announce, addressed to its exact loopback
+  // origin like the model post. A dedicated message (not a model) so the pane
+  // can distinguish "the parent recorded my readiness" from an ordinary model
+  // broadcast — the pane stops re-announcing only on this. A dropped ack (frame
+  // mid-navigation) is harmless: the pane's next re-announce re-triggers it.
+  const postAckTo = useCallback(
+    (id: string) => {
+      const el = iframeRefs.current.get(id)
+      const w = warm[id]
+      if (!el?.contentWindow || !w) return
+      const origin = `${window.location.protocol}//${window.location.hostname}:${w.port}`
+      try {
+        el.contentWindow.postMessage({ type: 'mc-embedded-ack', v: 1 }, origin)
+      } catch {
+        /* frame mid-navigation — the pane's next re-announce re-triggers this */
+      }
+    },
+    [warm],
+  )
+  postAckToRef.current = postAckTo
   instancesRef.current = instancesQuery.data?.instances ?? []
 
   // Broadcast the model to every warm pane whenever any input changes (active
