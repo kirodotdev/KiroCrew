@@ -415,6 +415,12 @@ async def _pod_provision(name: str) -> dict:
             cwd=repository._repo(),
             env=p_env,
             cleanup_paths=[p_cleanup] if p_cleanup else None,
+            # Provisioning builds .venv and the SPA dist INSIDE the worktree
+            # that `du -sm` measures, so a completed (or killed-partway) run
+            # materially changes disk use: drop the disk cache's freshness
+            # stamp at every terminal state so the next /disk poll
+            # re-aggregates instead of serving pre-provision totals.
+            on_finish=fleet_state._disk_invalidate,
         )
         fleet_state._PROVISION_INFLIGHT[name] = rid
     return {"ok": True, "run_id": rid}
@@ -1337,6 +1343,11 @@ async def _worktree_remove_locked(
             (verdict_oid or "").strip()[:12] if verdict_oid else "none",
         )
         fleet_state._fleet_forget(name)
+        # A removed checkout materially changes worktree disk use, and this is
+        # the chokepoint every removal path already routes through: drop the
+        # disk cache's freshness stamp so the next /disk poll re-aggregates
+        # instead of serving pre-removal totals for the rest of the TTL.
+        fleet_state._disk_invalidate()
         return {
             "ok": True,
             "removed": True,
@@ -1932,7 +1943,15 @@ async def _sync_start_locked() -> dict:
         steps_sha256,
     ]
     rid = await runtime._start_run(
-        runtime._SYNC_RUN_LABEL, cmd, env=runtime._build_env(), cleanup_paths=cleanups
+        runtime._SYNC_RUN_LABEL,
+        cmd,
+        env=runtime._build_env(),
+        cleanup_paths=cleanups,
+        # A dependency sync writes pip installs into the repo .venv and
+        # `npm ci` into website/node_modules — both inside trees `du -sm`
+        # measures — so it invalidates the disk cache the same way a
+        # provision run does.
+        on_finish=fleet_state._disk_invalidate,
     )
     _SYNC_RID = rid
     return {"ok": True, "run_id": rid}

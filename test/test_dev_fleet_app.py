@@ -6058,6 +6058,7 @@ async def test_sync_pip_uses_target_repo_venv(monkeypatch, tmp_path):
 
     async def fake_start_run(label, cmd, **kw):
         captured["cmd"] = cmd
+        captured["start_run_kw"] = kw
         return "rid-1"
 
     monkeypatch.setattr(runtime_mod, "_start_run", fake_start_run)
@@ -6067,6 +6068,9 @@ async def test_sync_pip_uses_target_repo_venv(monkeypatch, tmp_path):
     assert pip_argvs, captured.get("argvs")
     assert pip_argvs[0][0] == str(repo / ".venv" / "bin" / "python")
     assert pip_argvs[0][0] != _sys.executable
+    # A dependency sync writes into the measured repo (.venv, node_modules),
+    # so the run must carry the disk-cache invalidation hook (#8787).
+    assert captured["start_run_kw"].get("on_finish") is fleet_state_mod._disk_invalidate
 
 
 @pytest.mark.asyncio
@@ -8432,6 +8436,99 @@ async def test_removal_audit_log_emitted(caplog):
     assert "caller=handler" in msg
     assert "action=removed" in msg
     assert "pr_state=MERGED" in msg
+
+
+@pytest.mark.asyncio
+async def test_removal_invalidates_disk_cache():
+    """Successful removal drops the disk cache's freshness stamp (#8787).
+
+    The chokepoint that every removal path routes through (single-worktree
+    handler, prune workers, auto-prune reaper) must invalidate the /disk TTL
+    cache alongside evicting the fleet row, so the next poll re-aggregates
+    instead of serving pre-removal totals for the rest of the TTL.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    with (
+        patch.object(
+            repository_mod,
+            "_find_worktree",
+            new_callable=AsyncMock,
+            return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None),
+        ),
+        patch.object(live_mod, "_live_worktree_path", new_callable=AsyncMock, return_value=None),
+        patch.object(live_mod, "_own_checkout_path", return_value=None),
+        patch.object(repository_mod, "_real_dirty", new_callable=AsyncMock, return_value=False),
+        patch.object(
+            fleet_state_mod,
+            "_pr_status_cached",
+            new_callable=AsyncMock,
+            return_value={"state": "MERGED"},
+        ),
+        patch.object(repository_mod, "_own_commits_count", new_callable=AsyncMock, return_value=0),
+        patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value="aaa1111"),
+        patch.object(fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"),
+        patch.object(fleet_state_mod, "_head_contained_in_pr", new_callable=AsyncMock, return_value=True),
+        patch.object(runtime_mod, "_load_cfg", return_value=None),
+        patch.object(runtime_mod, "_POD_AVAILABLE", False),
+        patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")),
+        patch.object(repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"),
+        patch.object(fleet_state_mod, "_disk_invalidate") as invalidate,
+    ):
+        result = await mod._worktree_remove("feat-x", force=False)
+
+    assert result["ok"] is True
+    invalidate.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_start_run_invokes_on_finish_at_terminal_state():
+    """_start_run's on_finish fires once when the run finishes (#8787)."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    calls: list[int] = []
+    rid = await mod._start_run("finish-test", ["true"], on_finish=lambda: calls.append(1))
+    for _ in range(50):
+        async with mod._RUNS_LOCK:
+            if mod._RUNS[rid]["status"] != "running":
+                break
+        await asyncio.sleep(0.05)
+    # The callback runs in the worker's finally, after the status stamp.
+    for _ in range(50):
+        if calls:
+            break
+        await asyncio.sleep(0.05)
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_pod_provision_registers_disk_invalidation(monkeypatch):
+    """Provisioning builds .venv/dist inside the measured worktree, so the
+    provision run must carry the disk-cache invalidation hook (#8787)."""
+    import kiro_crew.apps.builtins.dev_fleet.worktree_ops as wt_ops
+
+    captured: dict = {}
+
+    async def fake_start_run(label, cmd, **kw):
+        captured.update(kw, label=label)
+        return "rid-1"
+
+    monkeypatch.setattr(wt_ops, "_pod_checkout_guard", AsyncMock(return_value=None))
+    monkeypatch.setattr(fleet_state_mod, "_PROVISION_INFLIGHT", {})
+    monkeypatch.setattr(runtime_mod, "_warm_build_path", AsyncMock())
+    monkeypatch.setattr(runtime_mod, "_start_run", fake_start_run)
+    monkeypatch.setattr(runtime_mod, "_find_cli", lambda: ["kirocrew"])
+    monkeypatch.setattr(repository_mod, "_repo", lambda: "/fake/repo")
+    monkeypatch.setattr(wt_ops, "_pod_env", lambda: {})
+    monkeypatch.setattr(
+        wt_ops,
+        "shielded_prepare_off_loop",
+        AsyncMock(return_value=(["kirocrew", "pod", "provision", "feat-x"], {}, None)),
+    )
+
+    result = await wt_ops._pod_provision("feat-x")
+    assert result == {"ok": True, "run_id": "rid-1"}
+    assert captured.get("on_finish") is fleet_state_mod._disk_invalidate
 
 
 @pytest.mark.asyncio
