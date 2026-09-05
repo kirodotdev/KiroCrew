@@ -1,7 +1,7 @@
 /**
- * Narrow-width measurement + screenshots for the three flex-1 input rows
- * (#3789): the shared Input, the SessionArchive filter row, and the ChatEmbed
- * composer.
+ * Narrow-width measurement + screenshots for the two flex-1 input rows
+ * (#3789): the shared Input and the SessionArchive filter row (the ChatEmbed
+ * composer moved onto the shared ChatInput and left this harness).
  *
  * Drives the ISOLATED capture entry (website/capture/flex-input-min-w-0.html),
  * which renders each row with its production class strings inside an

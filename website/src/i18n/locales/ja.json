@@ -116,10 +116,12 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "エージェントが処理中…",
+      "app_not_allowed_to_send": "このアプリにはチャットメッセージを送信する権限がありません。",
       "chat_message": "チャットメッセージ",
+      "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
+      "delivery_unconfirmed_option": "送信が確認できません — 会話履歴を確認し、見当たらなければ選択肢をもう一度選んでください。",
       "message": "メッセージ…",
-      "send": "送信",
-      "send_message": "メッセージを送信",
+      "send_failed_connection": "送信できませんでした — 接続を確認してから、もう一度お試しください。",
       "session_ready_type_a_message_to_start": "セッション準備完了。メッセージを入力して開始してください。",
       "streaming": "ストリーミング中"
     },
@@ -5435,6 +5437,7 @@
       "screenshot": "スクリーンショット",
       "select_project": "プロジェクトを選択",
       "send": "送信",
+      "sending": "送信中…",
       "send_options": "送信オプション",
       "show_in_chat": "チャットに表示",
       "show_pending_tool_call_in_chat": "チャットで保留中のツール呼び出しを表示",

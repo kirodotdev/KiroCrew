@@ -116,10 +116,12 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "代理正在工作…",
+      "app_not_allowed_to_send": "此应用无权发送聊天消息。",
       "chat_message": "聊天消息",
+      "delivery_unconfirmed": "尚未确认送达——你的文字已放回输入框；再次发送前请先查看对话记录。",
+      "delivery_unconfirmed_option": "尚未确认送达——请先查看对话记录，若未出现再重新选择该选项。",
       "message": "输入消息…",
-      "send": "发送",
-      "send_message": "发送消息",
+      "send_failed_connection": "发送失败——请检查网络连接后重试。",
       "session_ready_type_a_message_to_start": "会话已就绪。输入消息即可开始。",
       "streaming": "流式输出中"
     },
@@ -5435,6 +5437,7 @@
       "screenshot": "截图",
       "select_project": "选择项目",
       "send": "发送",
+      "sending": "发送中…",
       "send_options": "发送选项",
       "show_in_chat": "在聊天中显示",
       "show_pending_tool_call_in_chat": "在聊天中显示待处理的工具调用",

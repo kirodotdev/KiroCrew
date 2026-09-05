@@ -116,10 +116,12 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "에이전트가 작업 중…",
+      "app_not_allowed_to_send": "이 앱은 채팅 메시지를 보낼 수 없습니다.",
       "chat_message": "채팅 메시지",
+      "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
+      "delivery_unconfirmed_option": "전송이 확인되지 않았습니다 — 대화 기록을 확인한 뒤, 보이지 않으면 옵션을 다시 선택하세요.",
       "message": "메시지…",
-      "send": "보내기",
-      "send_message": "메시지 보내기",
+      "send_failed_connection": "보내지 못했습니다 — 연결 상태를 확인한 뒤 다시 시도하세요.",
       "session_ready_type_a_message_to_start": "세션이 준비되었습니다. 메시지를 입력해 시작하세요.",
       "streaming": "스트리밍 중"
     },
@@ -5435,6 +5437,7 @@
       "screenshot": "스크린샷",
       "select_project": "프로젝트 선택",
       "send": "전송",
+      "sending": "보내는 중…",
       "send_options": "전송 옵션",
       "show_in_chat": "채팅에 표시",
       "show_pending_tool_call_in_chat": "대기 중인 도구 호출을 채팅에 표시",

@@ -149,4 +149,35 @@ describe('sendTurn receipt contract', () => {
     expect(wire.slot).toBe('chat-9')
     expect(wire.meta).toEqual({ sendId: 's-1' })
   })
+
+  describe('wire seam', () => {
+    it('routes the POST through an injected wire instead of the dashboard client, with the deadline signal attached', async () => {
+      const wire = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true, mid: 'm-1' }))
+      const receipt = await sendTurn({ message: 'hi', slot: 'chat-2', meta: { k: 1 }, wire })
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(wire).toHaveBeenCalledTimes(1)
+      const [payload, signal] = wire.mock.calls[0]
+      expect(payload).toEqual({ message: 'hi', slot: 'chat-2', meta: { k: 1 } })
+      expect(signal).toBeInstanceOf(AbortSignal)
+      expect(receipt).toEqual({ status: 'dispatched', body: { ok: true, mid: 'm-1' } })
+    })
+
+    it("classifies an injected wire's resolved non-2xx as refused and its rejection as transport-error", async () => {
+      const refusing = vi.fn().mockResolvedValue(jsonResponse(403, { error: 'not permitted' }))
+      expect(await sendTurn({ message: 'hi', wire: refusing })).toMatchObject({ status: 'refused', reason: 'not permitted' })
+      const failing = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+      expect(await sendTurn({ message: 'hi', wire: failing })).toEqual({ status: 'transport-error', body: {} })
+    })
+
+    it('fires the deadline through the injected wire and reads an AbortError as response-late', async () => {
+      vi.useFakeTimers()
+      const wire = vi.fn().mockImplementation((_p: unknown, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        }))
+      const pending = sendTurn({ message: 'hi', wire })
+      await vi.advanceTimersByTimeAsync(SEND_ABORT_MS)
+      await expect(pending).resolves.toEqual({ status: 'response-late', body: {} })
+    })
+  })
 })
