@@ -75,7 +75,11 @@ def _translate(pattern: str) -> str:
             # Zero or more leading path segments.
             out.append("(?:[^/]+/)*")
             i += 3
-        elif pattern.startswith("**", i):
+        elif pattern.startswith("**", i) and (i == 0 or pattern[i - 1] == "/"):
+            # A ``**`` that forms a COMPLETE path segment (bounded by ``/`` or
+            # the pattern ends) crosses separators. The ``**/`` prefix is handled
+            # above; this branch is the segment-final form (``logs/**``, or a bare
+            # ``**``), which matches everything below that point.
             out.append(".*")
             i += 2
         elif pattern[i] == "*":

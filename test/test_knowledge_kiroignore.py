@@ -85,6 +85,24 @@ class TestKiroIgnoreSyntax:
         assert m.is_ignored("pkg/snap.md", is_dir=False) is True
         assert m.is_ignored("pkg/a/b/snap.md", is_dir=False) is True
 
+    def test_non_segment_double_star_does_not_cross_a_separator(self):
+        """``**`` crosses separators ONLY as a complete path segment. A ``**``
+        with a non-``/`` neighbour (``a**b``) is not segment-bounded, so git
+        treats it as a single ``*`` that stays within one path segment.
+
+        The discriminator is a pattern whose match depends on the ``**`` NOT
+        crossing ``/``: ``a**b`` matches ``axxb`` but must not match ``ax/xb``.
+        (``a**`` alone cannot show this through ``is_ignored`` -- its match
+        ``ax`` is an ancestor directory of ``ax/xb``, and ignoring a directory
+        ignores its whole subtree, so ``ax/xb`` is ignored regardless of how
+        ``**`` translates. ``a**b`` avoids that: no ancestor of ``ax/xb``
+        matches it, so the separator-crossing behaviour is what is tested.)"""
+        m = _rules("a**")
+        assert m.is_ignored("abc", is_dir=False) is True
+        m2 = _rules("a**b")
+        assert m2.is_ignored("axxb", is_dir=False) is True
+        assert m2.is_ignored("ax/xb", is_dir=False) is False
+
     def test_negation_the_last_matching_rule_wins(self):
         m = _rules("*.md", "!keep.md")
         assert m.is_ignored("note.md", is_dir=False) is True
