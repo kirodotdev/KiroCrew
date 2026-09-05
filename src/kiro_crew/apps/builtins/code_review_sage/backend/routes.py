@@ -41,7 +41,8 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import hooks, model_registry
-from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.apps import teardown
+from kiro_crew.apps.manager import app_lifecycle_lock, is_app_enabled
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -72,6 +73,10 @@ from sage_lib import (  # noqa: E402,E501
 )
 
 # In-memory run registry, most-recent first. Bounded so it can't grow unbounded.
+# The manifest name, which is also the key both lifecycle registries are keyed on
+# (the disable-hook registry and the per-app lifecycle lock). One spelling, so an
+# admission check and a teardown hook can never end up naming different apps.
+_APP_NAME = "code-review-sage"
 # Holds lightweight run descriptors the page polls; on-disk result records carry
 # per-change detail.
 _RUNS: list[dict[str, Any]] = []
@@ -240,6 +245,59 @@ def _is_live(run: dict) -> bool:
     One predicate so the two callers cannot drift apart again.
     """
     return str(run.get("status") or "") == "running" or bool(run.get("posting"))
+
+
+def _admission_closed() -> web.Response:
+    """The refusal both review entry points return when :func:`_admit` says no.
+
+    403 rather than 409: this is withdrawn authority, the same answer
+    ``_require_enabled`` gives the chat surface, and the code is deliberately
+    the one the frontend already knows.
+    """
+    return web.json_response(
+        {"code": "app_disabled", "error": "code-review-sage is disabled"},
+        status=403,
+    )
+
+
+async def _admit(run: dict) -> bool:
+    """The app's ONE admission boundary for a new review. True when registered.
+
+    ``_CANCELLED`` cannot speak for a run that does not exist yet.
+    ``_retire_pool_on_disable`` marks the runs that are live when it fires; a
+    review submitted after that scan was never in ``_RUNS`` to be marked, so it
+    carries an uncancelled id straight past the ``_RUN_LOCK`` recheck and into
+    ``get_pool()`` — review authority rebuilt after the operator withdrew it.
+    Closing that means refusing the request, not cancelling it afterwards.
+
+    The enabled read and the ``_RUNS`` insert are taken under ONE hold of
+    ``app_lifecycle_lock(_APP_NAME)`` — the same lock ``handle_disable_app``
+    holds across BOTH ``teardown_app_runtime`` (which fires the disable hook)
+    and ``disable_app`` (which writes the ``enabled`` flag). Serializing on it is
+    what makes the admission decision and the disable transition mutually
+    exclusive, in either order: a disable that gets there first has finished and
+    persisted ``enabled=False`` before this read happens, so the request is
+    refused; a review that gets there first is in ``_RUNS`` before the hook's
+    scan runs, so it is marked cancelled like any other live run.
+
+    Reading the flag first and then consulting a separate signal cannot close
+    this, however that signal is written. The read is off-loop, so a disable can
+    acquire the lock, tear the app down, write ``enabled=False`` and release,
+    entirely inside that one ``to_thread`` round-trip — after which a sample of
+    the lock finds it free and admits a run the operator has already revoked.
+    The interleaving has to be removed, not detected.
+
+    The blocking read stays in ``to_thread`` INSIDE the lock, which is the shape
+    ``notifications_push`` already uses for the same enablement-then-mutate pair.
+    Lock order is ``app_lifecycle_lock`` → ``_LOCK``, matching the outermost-lock
+    convention in ``apps/routes.py``; nothing takes them the other way round, and
+    the disable hook touches ``_RUNS`` without ``_LOCK`` at all.
+    """
+    async with app_lifecycle_lock(_APP_NAME):
+        if not await asyncio.to_thread(is_app_enabled, _APP_NAME):
+            return False
+        await _record(run)
+    return True
 
 
 async def _record(run: dict) -> None:
@@ -430,6 +488,29 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
     run_id = str(run.get("run_id") or "")
     try:
         async with _RUN_LOCK:
+            # Authority is re-checked HERE, after the wait, because the wait is
+            # where it can be withdrawn. A run accepted while the app was enabled
+            # can sit on this lock behind another run for as long as that run
+            # takes; if the operator disables the app in that window, resuming
+            # would call `get_pool()` below, which rebuilds the singleton
+            # `_retire_pool_on_disable` had just torn down -- standing a fresh
+            # runtime back up, and posting a review, after permission was
+            # withdrawn.
+            #
+            # `_CANCELLED` is the check and not `is_app_enabled`: the disable hook
+            # runs BEFORE `disable_app` writes the `enabled` flag (apps/teardown.py
+            # says so, and says a hook must not wait on that flag), and before the
+            # app's own third-party `onDisable` script, which can take real time.
+            # So for the whole window that matters the flag still reads enabled,
+            # while `_CANCELLED` is already correct.
+            if run_id in _CANCELLED:
+                run["summary"] = {
+                    "ok": True,
+                    "changes": 0,
+                    "note": "cancelled before this run started",
+                }
+                run["status"] = "cancelled"
+                return
             # Serialize the WHOLE run, not just the claim. Workers hand results back
             # through `data/results/<change_id>.json`, which is shared across runs
             # (`publish_to_shared` writes to `results_dir(root, None)`), so two live runs
@@ -687,7 +768,8 @@ async def _handle_review(request: web.Request) -> web.Response:
         "started_at": _now(),
         "progress": {},
     }
-    await _record(run)
+    if not await _admit(run):
+        return _admission_closed()
 
     task = asyncio.create_task(_run_review_bg(run, changes))
     _TASKS.add(task)
@@ -884,7 +966,8 @@ async def _handle_review_repo(request: web.Request) -> web.Response:
         "started_at": _now(),
         "progress": {},
     }
-    await _record(run)
+    if not await _admit(run):
+        return _admission_closed()
     task = asyncio.create_task(_run_review_bg(run, changes))
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
@@ -2460,11 +2543,52 @@ def register_routes(app: web.Application) -> None:
         except Exception:  # pragma: no cover - defensive
             logger.warning("failed to shut down review pool", exc_info=True)
 
+    async def _retire_pool_on_disable(_app: str) -> None:
+        """Retire the same workers when the OPERATOR switches the app off.
+
+        ``on_cleanup`` fires at gateway shutdown and nowhere else, so a disable
+        leaves the pool's worker sessions alive: they keep an agent runtime up and
+        keep running review turns the operator has already withdrawn permission
+        for. :func:`~kiro_crew.apps.teardown.notify_app_disabled` fires inside the
+        disable request, and before the ``enabled`` flag is written, so the pool is
+        retired at the click rather than at whatever the next sweep would be.
+
+        ``shutdown_pool`` is idempotent (a no-op when no pool has started) and
+        drops the singleton, so a later re-enable builds a fresh one.
+        """
+        # Mark first, tear down second, and mark SYNCHRONOUSLY: there is no
+        # await between here and the marks landing, so a run waiting on
+        # `_RUN_LOCK` cannot slip through in between. Retiring the pool alone
+        # is not enough -- `get_pool()` rebuilds it on the next call, so a
+        # queued run would simply create a new one and carry on.
+        #
+        # `_is_live` is the existing predicate for "this run still owns work",
+        # and it covers the posting phase too, which reports a terminal status
+        # while still writing to the pull request.
+        for _run in _RUNS:
+            if _is_live(_run):
+                _CANCELLED.add(str(_run.get("run_id") or ""))
+        try:
+            await review_pool.shutdown_pool()
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("failed to retire review pool on disable", exc_info=True)
+
     # register_app_routes runs before runner.setup() freezes the signal lists,
     # so this append is safe; guarded anyway so it can never break startup.
     try:
         app.on_cleanup.append(_shutdown_pool)
     except Exception:  # pragma: no cover - defensive
         logger.warning("could not register review-pool cleanup hook", exc_info=True)
+
+    # Same teardown, the other trigger. Feature-detected with ``getattr`` rather
+    # than called directly, so a core build whose teardown module predates this
+    # registry still loads — there the cleanup hook above is the only teardown
+    # there is, which is the pre-registry behaviour rather than a regression.
+    try:
+        register_disable = getattr(teardown, "register_app_disable_hook", None)
+        if register_disable is not None:
+            register_disable("code-review-sage", _retire_pool_on_disable)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("could not register the app-disable hook", exc_info=True)
 
     logger.info("code-review-sage backend routes registered (deterministic review kickoff)")

@@ -118,6 +118,12 @@ class _SageRoutesBase(unittest.IsolatedAsyncioTestCase):
         self._old_resolved = getattr(_paths, "_resolved_home", None)
         _paths._resolved_home = None
         self.mod = _load_routes_module()
+        # The review kickoff routes are deny-by-default on enablement, the same
+        # way the chat handlers' `_require_enabled` is, and this file's tmp home
+        # has no installed.json -- so every handler here would answer 403 on the
+        # enablement check rather than on the guard it is written to exercise.
+        # A freshly loaded module per test keeps this local.
+        self.mod.is_app_enabled = lambda name: True
         self.mod._RUNS = []
         self.mod._CANCELLED.clear()
         self.mod._INFLIGHT.clear()
