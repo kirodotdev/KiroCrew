@@ -526,6 +526,48 @@
         "page_label": "频道"
       }
     },
+    "chatStatusTags": {
+      "manifest": {
+        "description": "让你的 Chats 侧边栏保持真实。为每个会话标注其工作进展到哪个阶段（`planned`、`todo`、`implementation`、`review`、`done`）以及运行状况（`stuck`、`network`、`error`）——代理在每次阶段变更时通过随附的 self-tag-chat 技能为自己的聊天打标签；一次不消耗令牌的健康巡检会标记挂起和出错的会话；被网络中断终止的聊天在连接稳定后会被悄悄恢复；每小时运行一次的对账器会把已合并拉取请求所对应的聊天升级。",
+        "display_name": "聊天状态标签",
+        "highlight_1": "代理在每次 SDLC 阶段变更时为自己的聊天打标签——只需随附的 self-tag-chat 技能发起一次 bash 调用",
+        "highlight_2": "每分钟运行一次健康巡检，不消耗令牌：正在运行却无响应的会话得到 `stuck`；断开的连接得到 `network`；需要你处理的会话得到 `error`",
+        "highlight_3": "被网络中断终止的聊天会自动恢复——仅在连接稳定保持整整一分钟后，且按每次失败设有上限，因此不稳定的链路绝不会引发恢复风暴",
+        "highlight_4": "认证失败和未知错误绝不自动恢复；它们保留标签留给你处理",
+        "highlight_5": "每小时运行的对账器会在聊天持有一个开放的拉取请求时将其升级为 `review`，在它们全部合并后升级为 `done`——只升级，绝不降级",
+        "highlight_6": "运行状况标签会在其条件消除的那一刻自行清除",
+        "page_label": "聊天状态标签",
+        "use_case_1": "无需打开聊天，就能一眼看出哪些聊天在工作、哪些在等你处理，以及每一项 SDLC 工作所处的位置。",
+        "configuration_1": "启用应用后，标签词汇表会自行初始化。可选配置键：`stuck_min`（会话运行时静默多少分钟后被标记为 `stuck`，默认 30）；`probe_hosts`（自动恢复的连接闸门必须能到达哪些 `host:port` 字符串，默认为模型后端加一个控制端点）。每小时运行一次的对账器需要 gh CLI 已完成认证；否则它会保持沉默。"
+      },
+      "page": {
+        "title": "聊天状态标签",
+        "subtitle": "编辑每小时对账器运行时使用的提示词。",
+        "explanation": "对账器每小时读取一次此提示词，以决定它检查哪些审查系统以及如何升级聊天——例如，在聊天持有一个开放的拉取请求时将其标记为 `review`，在它们全部合并后标记为 `done`。编辑此提示词即可更改它检查的内容，例如调整其 GitHub 拉取请求行为。",
+        "prompt_label": "对账提示词",
+        "default_badge": "默认",
+        "default_badge_title": "这是应用随附的提示词——你尚未自定义它。",
+        "save": "保存",
+        "saving": "保存中…",
+        "reset": "重置为默认",
+        "reset_confirm": "再次点击以确认",
+        "reset_title": "将提示词替换为应用随附的那个。",
+        "unsaved_changes": "未保存的更改",
+        "disabled": "此应用已禁用。启用聊天状态标签以查看和编辑其对账提示词。",
+        "cron_ok": "每小时对账器已排定计划（{{schedule}}）。",
+        "cron_missing": "对账器的排定任务缺失——在修复之前提示词不会运行。",
+        "cron_disabled": "对账器的排定任务已暂停。",
+        "cron_repair": "修复计划",
+        "cron_repairing": "修复中…",
+        "automation_heading": "自动化",
+        "reconciler_label": "每小时对账器",
+        "reconciler_help": "每小时运行一次 LLM，以升级其拉取请求已发生变动的聊天。关闭它可避免每小时产生的模型成本。",
+        "auto_resume_label": "网络中断后自动恢复",
+        "auto_resume_help": "自动继续因连接中断而被终止的聊天。这会代表你消耗模型额度。",
+        "toggle_error": "无法更改该设置。",
+        "scheduler_unavailable": "调度器不可用，因此目前无法更改每小时对账器。"
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_other": "{{count}} 个待处理 PR",

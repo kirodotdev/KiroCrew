@@ -2071,6 +2071,103 @@ OPS_MISSION_CONTROL_API_SCHEMA = ToolSchema(
     custom_validator=_validate_omc_api,
 )
 
+# ── Tool Schema (Chat Status Tags app) ──
+#
+# ``chat_status_tags_api`` is the reconcile cron's ONLY credentialed path to
+# the gateway's chat API. Same trust model as ``ops_mission_control_api`` and
+# ``issue_radar_record_investigation``: the MCP server process holds the
+# internal secret; the agent never sees a credential, and the CLI mint
+# (``kirocrew token``) it would otherwise reach for is refused by the shipped
+# ``credential-exfil-kirocrew-token`` deny floor in ``security.py`` — so raw
+# HTTP and the token CLI both dead-end, and this tool is the whole story.
+#
+# The allowlist is the entire authorization surface, defined here next to the
+# schema that enforces it and imported by both the handler and the tests. It
+# is deliberately narrow: the reconcile cron reads the slot list (whose
+# per-slot ``source_links`` carry the PR/issue URLs it judges from) and the
+# tag vocabulary; it creates a missing status tag; and it writes ONE slot's
+# tag list. Nothing else — no route reads a chat's messages, and pointedly
+# NOT ``POST /api/chat``, which would let the reconciler inject chat turns /
+# send messages rather than only tag.
+#
+# One of the four calls is parameterised by a slot key. The gateway admits
+# them under the ``/api/chat`` prefix already, but the (method, path) allowlist
+# is exact-match, so a live key cannot appear in it. The template forms below
+# carry a literal ``{slot}`` placeholder that the caller supplies out-of-band
+# in the ``slot_key`` arg; the handler validates the key's shape and
+# interpolates it server-side. The placeholder is what the allowlist matches,
+# so a caller can never pass a fully-formed parameterised ``path`` and dodge
+# the key-shape check.
+#
+# Paths are app-base-relative (rooted at ``/api/chat``), exactly as the ops
+# tool's paths are rooted at ``/api/apps/ops-mission-control``: the handler
+# prepends the literal base, which is also what lets ``test_mcp_call_site_auth
+# _coverage`` resolve the call to the already-granted ``/api/chat`` family
+# statically.
+_CST_SLOT_TAGS_PATH = "/slots/{slot}/tags"
+
+# NOTE: there is deliberately NO ``GET /slots/{slot}`` (message-detail) call in
+# this surface. An app token is confined by ``_deny_cross_app_slot_access`` to
+# the slots it OWNS (App Kit §5.2), and the reconciler's whole job is to read
+# chats it never owns — so the detail route answers ``slot_not_found`` (404) for
+# every user chat and the reconciler could never read a message through it. The
+# slots LIST already publishes each slot's ``source_links`` (the PR/MR/issue
+# URLs extracted from its messages) plus its ``tags``, which is all the
+# reconciler needs, so it reads PR URLs from the list and never touches
+# message content. Keeping the detail route OUT of the allowlist is a strict
+# reach reduction: the app cannot read any chat's raw messages at all.
+CHAT_STATUS_TAGS_ALLOWED_CALLS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", "/slots"),
+        ("GET", "/tags"),
+        ("POST", "/tags"),
+        ("PUT", _CST_SLOT_TAGS_PATH),
+    }
+)
+_CST_API_METHODS = frozenset({"GET", "POST", "PUT"})
+_CST_API_PATHS = frozenset(p for _, p in CHAT_STATUS_TAGS_ALLOWED_CALLS)
+# The two paths whose ``{slot}`` template REQUIRES a slot_key to interpolate.
+_CST_PARAMETERISED_PATHS = frozenset(p for _, p in CHAT_STATUS_TAGS_ALLOWED_CALLS if "{slot}" in p)
+# A slot key is a value-position segment: alphanumerics plus ``-_:.`` (real
+# keys look like ``chat-5`` or ``app:chat-status-tags``). No ``/``, ``?``,
+# ``#``, ``%`` or whitespace, so an interpolated key can never traverse out of
+# its segment or rewrite the path it rides on.
+_CST_SLOT_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+# Query strings are value-position only — same constraint as the ops tool.
+_CST_QUERY_RE = re.compile(r"^[A-Za-z0-9_.=&%+,:-]*$")
+# Tag create is the only legitimate body; a few small fields. 8 KiB is ample.
+_CST_MAX_BODY = 8_192
+
+
+def _validate_cst_api(cleaned: dict[str, Any]) -> None:
+    method = cleaned.get("method")
+    path = cleaned.get("path")
+    if (method, path) not in CHAT_STATUS_TAGS_ALLOWED_CALLS:
+        raise ValidationError("path", f"{method} {path} is not part of the agent surface")
+    parameterised = path in _CST_PARAMETERISED_PATHS
+    slot_key = cleaned.get("slot_key")
+    if parameterised and not slot_key:
+        raise ValidationError("slot_key", f"{path} requires a slot_key to interpolate")
+    if slot_key and not parameterised:
+        raise ValidationError("slot_key", f"{path} takes no slot_key")
+    if cleaned.get("query") and method != "GET":
+        raise ValidationError("query", "query is only accepted on GET calls")
+    if cleaned.get("body_json") and method == "GET":
+        raise ValidationError("body_json", "GET calls take no body")
+
+
+CHAT_STATUS_TAGS_API_SCHEMA = ToolSchema(
+    tool_name="chat_status_tags_api",
+    fields=[
+        FieldSpec("method", str, required=True, allowed=_CST_API_METHODS),
+        FieldSpec("path", str, required=True, allowed=_CST_API_PATHS),
+        FieldSpec("slot_key", str, max_len=200, pattern=_CST_SLOT_KEY_RE, default=""),
+        FieldSpec("query", str, max_len=512, pattern=_CST_QUERY_RE, default=""),
+        FieldSpec("body_json", str, max_len=_CST_MAX_BODY, default=""),
+    ],
+    custom_validator=_validate_cst_api,
+)
+
 ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
     tool_name="issue_radar_record_investigation",
     fields=[
@@ -2928,6 +3025,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
+    "chat_status_tags_api": CHAT_STATUS_TAGS_API_SCHEMA,
     # Registered even though ``issue_radar_crew_read`` takes no arguments: an
     # unregistered tool's args pass through raw, and the empty-field schema is
     # also what makes an unknown arg an "Error:" string instead of a stdio-loop

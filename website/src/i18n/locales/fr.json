@@ -540,6 +540,48 @@
         "configuration_1": "Active l'app masquée avec kirocrew app enable channels, crée un canal depuis un modèle ou avec Custom, attribue les agents et leurs modes d'écoute, puis utilise les @mentions pour transmettre le travail."
       }
     },
+    "chatStatusTags": {
+      "manifest": {
+        "description": "Garde ta barre latérale de chats honnête. Étiquette chaque conversation selon l'état de son travail ('planned', 'todo', 'implementation', 'review', 'done') et sa santé ('stuck', 'network', 'error') : les agents étiquettent leur propre chat à chaque changement de phase via le skill fourni, un balayage de santé sans coût en tokens signale les chats bloqués et en erreur, les chats interrompus par une coupure réseau sont repris discrètement une fois la connexion stable, et un réconciliateur horaire promeut les chats dont les pull requests ont été fusionnées.",
+        "display_name": "Étiquettes de statut de chat",
+        "highlight_1": "Les agents étiquettent leur propre chat à chaque changement de phase du SDLC : un seul appel bash du skill fourni self-tag-chat",
+        "highlight_2": "Balayage de santé sans coût en tokens chaque minute : les chats en cours mais silencieux reçoivent 'stuck', les connexions coupées 'network', les chats qui ont besoin de toi 'error'",
+        "highlight_3": "Les chats interrompus par le réseau sont repris automatiquement, seulement après que la connexion tient une minute entière, plafonné par échec pour qu'un lien instable ne provoque jamais une avalanche de reprises",
+        "highlight_4": "Les échecs d'authentification et les erreurs inconnues ne sont jamais repris automatiquement ; ils restent étiquetés pour toi",
+        "highlight_5": "Le réconciliateur horaire promeut un chat en 'review' lorsqu'il possède une pull request ouverte et en 'done' lorsqu'elles sont toutes fusionnées : uniquement des promotions, jamais de rétrogradations",
+        "highlight_6": "Les étiquettes de santé s'effacent d'elles-mêmes dès que la condition disparaît",
+        "page_label": "Étiquettes de statut de chat",
+        "use_case_1": "Vois d'un coup d'œil quels chats travaillent, lesquels sont bloqués en attente de toi et où en est chaque partie du travail SDLC, sans les ouvrir.",
+        "configuration_1": "Active l'app et le vocabulaire d'étiquettes s'initialise tout seul. Clés de configuration optionnelles : stuck_min (minutes de silence avant qu'un chat en cours soit marqué bloqué, valeur par défaut 30) et probe_hosts (liste de chaînes host:port que la vérification de connectivité de la reprise automatique doit atteindre, par défaut le backend du modèle plus un point de contrôle). Le réconciliateur horaire a besoin que la CLI gh soit authentifiée ; sans elle, il reste silencieux."
+      },
+      "page": {
+        "title": "Étiquettes de statut de chat",
+        "subtitle": "Modifie le prompt que le réconciliateur horaire exécute.",
+        "explanation": "Une fois par heure, le réconciliateur lit ce prompt pour décider quels systèmes de revue il inspecte et comment il promeut un chat — par exemple, étiqueter un chat en 'review' lorsqu'il possède une pull request ouverte et en 'done' lorsqu'elles sont toutes fusionnées. Modifie le prompt pour changer ce qu'il vérifie, par exemple pour ajuster son comportement avec les pull requests GitHub.",
+        "prompt_label": "Prompt de réconciliation",
+        "default_badge": "Par défaut",
+        "default_badge_title": "C'est le prompt livré avec l'app — tu ne l'as pas personnalisé.",
+        "save": "Enregistrer",
+        "saving": "Enregistrement…",
+        "reset": "Réinitialiser par défaut",
+        "reset_confirm": "Clique de nouveau pour confirmer",
+        "reset_title": "Remplace le prompt par celui livré avec l'app.",
+        "unsaved_changes": "Modifications non enregistrées",
+        "disabled": "Cette app est désactivée. Active Étiquettes de statut de chat pour afficher et modifier son prompt de réconciliation.",
+        "cron_ok": "Le réconciliateur horaire est planifié ({{schedule}}).",
+        "cron_missing": "Le job planifié du réconciliateur est manquant — le prompt ne s'exécutera pas tant qu'il n'est pas réparé.",
+        "cron_disabled": "Le job planifié du réconciliateur est en pause.",
+        "cron_repair": "Réparer la planification",
+        "cron_repairing": "Réparation…",
+        "automation_heading": "Automatisation",
+        "reconciler_label": "Réconciliateur horaire",
+        "reconciler_help": "Exécute un LLM une fois par heure pour promouvoir les chats dont les pull requests ont évolué. Désactivez-le pour éviter le coût horaire du modèle.",
+        "auto_resume_label": "Reprise automatique après une coupure réseau",
+        "auto_resume_help": "Reprend automatiquement un chat interrompu par une coupure de connexion. Cela consomme des crédits de modèle en votre nom.",
+        "toggle_error": "Impossible de modifier ce paramètre.",
+        "scheduler_unavailable": "Le planificateur est indisponible, le réconciliateur horaire ne peut donc pas être modifié pour le moment."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_many": "{{count}} PR ouvertes",

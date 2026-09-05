@@ -540,6 +540,48 @@
         "configuration_1": "Ative o app oculto com kirocrew app enable channels, crie um canal a partir de um modelo ou com Custom, atribua agentes e modos de escuta e use @menções para repassar o trabalho."
       }
     },
+    "chatStatusTags": {
+      "manifest": {
+        "description": "Mantém a tua barra lateral de chats honesta. Etiqueta cada conversa com o estado do seu trabalho ('planned', 'todo', 'implementation', 'review', 'done') e como está a correr ('stuck', 'network', 'error'): os agentes etiquetam o próprio chat a cada mudança de fase através do skill incluído, uma varredura de estado sem custo de tokens sinaliza os chats presos e com erro, os chats interrompidos por uma queda de rede são retomados discretamente quando a ligação estabiliza, e um reconciliador de hora a hora promove os chats cujos pull requests foram integrados.",
+        "display_name": "Etiquetas de estado do chat",
+        "highlight_1": "Os agentes etiquetam o próprio chat a cada mudança de fase do SDLC: uma única chamada bash do skill incluído self-tag-chat",
+        "highlight_2": "Varredura de estado sem custo de tokens a cada minuto: os chats em execução mas silenciosos recebem 'stuck', as ligações caídas 'network', os chats que precisam de ti 'error'",
+        "highlight_3": "Os chats interrompidos pela rede são retomados automaticamente, apenas depois de a ligação aguentar um minuto completo, com limite por falha para que uma ligação instável nunca provoque uma avalanche de retomadas",
+        "highlight_4": "As falhas de autenticação e os erros desconhecidos nunca são retomados automaticamente; ficam etiquetados para ti",
+        "highlight_5": "O reconciliador de hora a hora promove um chat para 'review' quando este tem um pull request aberto e para 'done' quando todos são integrados: apenas promoções, nunca despromoções",
+        "highlight_6": "As etiquetas de estado apagam-se sozinhas assim que a condição deixa de se verificar",
+        "page_label": "Etiquetas de estado do chat",
+        "use_case_1": "Vê num relance que chats estão a trabalhar, quais estão bloqueados à tua espera e em que ponto está cada parte do trabalho de SDLC, sem os abrir.",
+        "configuration_1": "Ativa a app e o vocabulário de etiquetas inicializa-se sozinho. Chaves de configuração opcionais: stuck_min (minutos de silêncio antes de um chat em execução ser marcado como preso, predefinição 30) e probe_hosts (lista de cadeias host:port que a verificação de conectividade da retomada automática tem de alcançar, por predefinição o backend do modelo mais um endpoint de controlo). O reconciliador de hora a hora precisa que a CLI do gh esteja autenticada; sem ela, permanece silencioso."
+      },
+      "page": {
+        "title": "Etiquetas de estado do chat",
+        "subtitle": "Edita o prompt que o reconciliador de hora a hora executa.",
+        "explanation": "Uma vez por hora, o reconciliador lê este prompt para decidir que sistemas de revisão inspeciona e como promove um chat — por exemplo, etiquetando um chat como 'review' quando este tem um pull request aberto e como 'done' quando todos são integrados. Edita o prompt para mudar o que ele verifica, como ajustar o seu comportamento com pull requests do GitHub.",
+        "prompt_label": "Prompt de reconciliação",
+        "default_badge": "Padrão",
+        "default_badge_title": "Este é o prompt fornecido com a app — ainda não o personalizaste.",
+        "save": "Salvar",
+        "saving": "Salvando…",
+        "reset": "Repor a predefinição",
+        "reset_confirm": "Clica novamente para confirmar",
+        "reset_title": "Substituir o prompt pelo que é fornecido com a app.",
+        "unsaved_changes": "Alterações não salvas",
+        "disabled": "Esta app está desativada. Ativa as Etiquetas de estado do chat para ver e editar o seu prompt de reconciliação.",
+        "cron_ok": "O reconciliador de hora a hora está agendado ({{schedule}}).",
+        "cron_missing": "O trabalho agendado do reconciliador está ausente — o prompt não será executado até que seja reparado.",
+        "cron_disabled": "O trabalho agendado do reconciliador está em pausa.",
+        "cron_repair": "Reparar agendamento",
+        "cron_repairing": "Reparando…",
+        "automation_heading": "Automação",
+        "reconciler_label": "Reconciliador de hora em hora",
+        "reconciler_help": "Executa um LLM uma vez por hora para promover chats cujos pull requests avançaram. Desative para evitar o custo do modelo a cada hora.",
+        "auto_resume_label": "Retomada automática após quedas de rede",
+        "auto_resume_help": "Continua automaticamente um chat que foi interrompido por uma queda de conexão. Isso gasta créditos de modelo em seu nome.",
+        "toggle_error": "Não foi possível alterar essa configuração.",
+        "scheduler_unavailable": "O agendador está indisponível, portanto o reconciliador de hora em hora não pode ser alterado no momento."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_many": "{{count}} PRs abertos",

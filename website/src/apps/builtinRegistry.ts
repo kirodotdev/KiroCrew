@@ -46,6 +46,7 @@ export const BUILTIN_COMPONENT_REGISTRY: Record<string, LazyComponent> = {
   '/spec-builder': lazy(() => import('./spec-builder/SpecBuilderPage')),
   '/personal-shopper': lazy(() => import('./personal-shopper/PersonalShopperPage')),
   '/design-tweak': lazy(() => import('./design-tweak/DesignTweakPage')),
+  '/chat-status-tags': lazy(() => import('./chat-status-tags/ChatStatusTagsPage')),
 }
 
 /**

@@ -139,6 +139,21 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.channels.manifest.use_case_1'],
     configuration: ['apps.channels.manifest.configuration_1'],
   },
+  'chat-status-tags': {
+    displayName: 'apps.chatStatusTags.manifest.display_name',
+    description: 'apps.chatStatusTags.manifest.description',
+    pageLabel: 'apps.chatStatusTags.manifest.page_label',
+    highlights: [
+      'apps.chatStatusTags.manifest.highlight_1',
+      'apps.chatStatusTags.manifest.highlight_2',
+      'apps.chatStatusTags.manifest.highlight_3',
+      'apps.chatStatusTags.manifest.highlight_4',
+      'apps.chatStatusTags.manifest.highlight_5',
+      'apps.chatStatusTags.manifest.highlight_6',
+    ],
+    useCases: ['apps.chatStatusTags.manifest.use_case_1'],
+    configuration: ['apps.chatStatusTags.manifest.configuration_1'],
+  },
   'code-review-sage': {
     displayName: 'apps.codeReviewSage.manifest.display_name',
     description: 'apps.codeReviewSage.manifest.description',

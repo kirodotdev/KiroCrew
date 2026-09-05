@@ -533,6 +533,48 @@
         "page_label": "चैनल"
       }
     },
+    "chatStatusTags": {
+      "manifest": {
+        "description": "तुम्हारे Chats साइडबार को सही रखता है। हर बातचीत को टैग करता है कि उसका काम कहाँ खड़ा है ('planned', 'todo', 'implementation', 'review', 'done') और वह कैसा चल रहा है ('stuck', 'network', 'error') — बंडल की गई skill से एजेंट हर पड़ाव बदलने पर अपनी चैट खुद टैग करते हैं, एक zero-token health sweep अटकी हुई और त्रुटि वाली चैट को चिह्नित करता है, network drop से बंद हुई चैट कनेक्शन स्थिर होते ही चुपचाप फिर शुरू हो जाती हैं, और एक hourly reconciler उन चैट को आगे बढ़ाता है जिनके pull request merge हो गए।",
+        "display_name": "चैट स्टेटस टैग",
+        "highlight_1": "एजेंट हर SDLC पड़ाव बदलने पर अपनी चैट खुद टैग करते हैं — बंडल की गई self-tag-chat skill से एक bash कॉल",
+        "highlight_2": "हर मिनट zero-token health sweep: चल रही पर चुप चैट को 'stuck', टूटे कनेक्शन को 'network', तुम्हारी ज़रूरत वाली चैट को 'error' मिलता है",
+        "highlight_3": "Network से बंद हुई चैट अपने आप फिर शुरू होती हैं — केवल तब जब कनेक्शन पूरे एक मिनट स्थिर रहे, हर विफलता पर सीमित ताकि लड़खड़ाता लिंक कभी resume की बाढ़ न लाए",
+        "highlight_4": "Auth विफलताएँ और अज्ञात त्रुटियाँ कभी अपने आप resume नहीं होतीं; वे तुम्हारे लिए टैग की हुई रहती हैं",
+        "highlight_5": "Hourly reconciler किसी चैट को 'review' पर तब बढ़ाता है जब उसके पास एक खुला pull request हो और 'done' पर तब जब वे सब merge हो जाएँ — केवल आगे बढ़ाना, कभी पीछे नहीं",
+        "highlight_6": "शर्त हटते ही health टैग खुद-ब-खुद साफ़ हो जाते हैं",
+        "page_label": "चैट स्टेटस टैग",
+        "use_case_1": "एक नज़र में देखो कौन-सी चैट काम कर रही हैं, कौन-सी तुम पर अटकी हैं, और हर SDLC काम कहाँ खड़ा है — बिना उन्हें खोले।",
+        "configuration_1": "ऐप सक्षम करते ही टैग शब्दावली खुद बीज बो लेती है। वैकल्पिक config key: stuck_min (किसी चल रही चैट को stuck चिह्नित करने से पहले कितने मिनट की चुप्पी, डिफ़ॉल्ट 30) और probe_hosts (auto-resume कनेक्टिविटी गेट जिन host:port स्ट्रिंग तक पहुँच सके उनकी सूची, डिफ़ॉल्ट मॉडल backend और एक control endpoint)। Hourly reconciler को gh CLI का प्रमाणित होना ज़रूरी है; इसके बिना यह चुप रहता है।"
+      },
+      "page": {
+        "title": "चैट स्टेटस टैग",
+        "subtitle": "hourly reconciler जो prompt चलाता है उसे संपादित करो।",
+        "explanation": "हर घंटे में एक बार, reconciler इस prompt को पढ़कर तय करता है कि वह किन review सिस्टम की जाँच करे और किसी चैट को कैसे आगे बढ़ाए — उदाहरण के लिए, किसी चैट को 'review' टैग करना जब उसके पास एक खुला pull request हो और 'done' जब वे सब merge हो जाएँ। यह क्या जाँचता है उसे बदलने के लिए prompt संपादित करो, जैसे इसके GitHub pull-request व्यवहार में बदलाव करना।",
+        "prompt_label": "मिलान प्रॉम्प्ट",
+        "default_badge": "डिफ़ॉल्ट",
+        "default_badge_title": "यह ऐप के साथ आया prompt है — तुमने इसे अनुकूलित नहीं किया है।",
+        "save": "सहेजें",
+        "saving": "सहेजा जा रहा है…",
+        "reset": "डिफ़ॉल्ट पर रीसेट करें",
+        "reset_confirm": "पुष्टि के लिए फिर से क्लिक करें",
+        "reset_title": "prompt को ऐप के साथ आए prompt से बदलें।",
+        "unsaved_changes": "बिना सहेजे बदलाव",
+        "disabled": "यह ऐप अक्षम है। इसका reconcile prompt देखने और संपादित करने के लिए चैट स्टेटस टैग सक्षम करो।",
+        "cron_ok": "हर घंटे चलने वाला reconciler शेड्यूल किया गया है ({{schedule}})।",
+        "cron_missing": "reconciler का शेड्यूल किया गया जॉब गायब है — जब तक इसकी मरम्मत नहीं होती, prompt नहीं चलेगा।",
+        "cron_disabled": "reconciler का शेड्यूल किया गया जॉब रोका गया है।",
+        "cron_repair": "शेड्यूल की मरम्मत करें",
+        "cron_repairing": "मरम्मत हो रही है…",
+        "automation_heading": "स्वचालन",
+        "reconciler_label": "हर घंटे चलने वाला reconciler",
+        "reconciler_help": "जिन चैट के pull request आगे बढ़ गए हैं उन्हें बढ़ावा देने के लिए हर घंटे में एक बार एक LLM चलाता है। हर घंटे की मॉडल लागत से बचने के लिए बंद कर दें।",
+        "auto_resume_label": "नेटवर्क कटने के बाद अपने आप फिर शुरू करें",
+        "auto_resume_help": "कनेक्शन कटने से बंद हुई चैट को अपने आप जारी रखता है। यह तुम्हारी ओर से मॉडल क्रेडिट खर्च करता है।",
+        "toggle_error": "वह सेटिंग नहीं बदली जा सकी।",
+        "scheduler_unavailable": "शेड्यूलर उपलब्ध नहीं है, इसलिए हर घंटे चलने वाला reconciler अभी नहीं बदला जा सकता।"
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_one": "{{count}} open PR",

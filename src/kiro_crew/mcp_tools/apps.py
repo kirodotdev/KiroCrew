@@ -26,6 +26,7 @@ from kiro_crew.validation import (
     _ISSUE_RADAR_CREW_EVENT_KINDS,
     _ISSUE_RADAR_CREW_PHASES,
     _ISSUE_RADAR_CREW_SKIP_SCOPES,
+    CHAT_STATUS_TAGS_ALLOWED_CALLS,
     OPS_MISSION_CONTROL_ALLOWED_CALLS,
     sanitize_json_values,
 )
@@ -146,6 +147,81 @@ def schemas() -> list[dict[str, Any]]:
                             "JSON object for POST bodies, serialized as a string — "
                             "e.g. '{\"id\": \"INV-42\", \"status\": \"resolved\"}' for "
                             "/incident/transition"
+                        ),
+                    },
+                },
+                "required": ["method", "path"],
+            },
+        },
+        {
+            "name": "chat_status_tags_api",
+            "description": (
+                "Call the gateway's chat API with the gateway's own credential, "
+                "for the Chat Status Tags app's hourly reconcile cron. This is "
+                "the ONLY credentialed path to the chat API for tagging: raw "
+                "HTTP has no credential and is refused with 403, and "
+                "`kirocrew token` is refused outright by the shipped "
+                "credential-exfil deny policy — so neither works, and this tool "
+                "is the whole story. It can READ the chat slots (each slot's "
+                "`source_links` lists the pull-request/issue URLs found in its "
+                "messages, and its `tags` are its current tags) and the tag "
+                "vocabulary; CREATE a status tag; and WRITE a single slot's tag "
+                "list — and nothing else. It CANNOT read a chat's raw messages "
+                "and cannot send messages or inject chat turns. The one "
+                "slot-scoped write route is addressed by passing `slot_key` "
+                "(the slot's key, e.g. 'chat-5'), which is interpolated into "
+                "the path server-side; do not put the key in `path` yourself."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT"],
+                        "description": "HTTP method",
+                    },
+                    "path": {
+                        "type": "string",
+                        # Derived from the frozen allowlist so the advertised
+                        # schema cannot drift from what the handler admits. The
+                        # two ``{slot}`` templates take their key from the
+                        # separate ``slot_key`` arg, not from this string.
+                        "enum": sorted({p for _, p in CHAT_STATUS_TAGS_ALLOWED_CALLS}),
+                        "description": (
+                            "Chat API path, relative to /api/chat. GET /slots "
+                            "(slot list — each slot carries `source_links` with "
+                            "its pull-request/issue URLs and `tags` with its "
+                            "current tags), GET /tags (tag vocabulary), "
+                            "POST /tags (create a tag), PUT /slots/{slot}/tags "
+                            "(replace a slot's tags — pass slot_key). Nothing "
+                            "else is reachable — in particular there is no path "
+                            "that reads a chat's messages or sends a message."
+                        ),
+                    },
+                    "slot_key": {
+                        "type": "string",
+                        "description": (
+                            "The slot's key (e.g. 'chat-5'), REQUIRED for the "
+                            "'/slots/{slot}/tags' path and rejected for the "
+                            "others. Interpolated into the path server-side "
+                            "after its shape is validated."
+                        ),
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Optional query string without the leading '?', GET "
+                            "only. No allowlisted GET currently needs one."
+                        ),
+                    },
+                    "body_json": {
+                        "type": "string",
+                        "description": (
+                            "JSON object for POST/PUT bodies, serialized as a "
+                            'string — e.g. \'{"name": "review", "color": '
+                            '"blue", "status": true}\' for POST /tags, or '
+                            '\'{"tags": ["<tag-id>"]}\' for PUT '
+                            "/slots/{slot}/tags"
                         ),
                     },
                 },
@@ -442,6 +518,71 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     return _omc_text
 
 
+def chat_status_tags_api(name: str, args: dict[str, Any]) -> str:
+    _cst_method = args["method"]
+    _cst_path = args["path"]
+    if (_cst_method, _cst_path) not in CHAT_STATUS_TAGS_ALLOWED_CALLS:
+        return (
+            f"Error: {_cst_method} {_cst_path} is not part of the "
+            "chat-status-tags agent surface."
+        )
+    # Interpolate the slot key server-side. The allowlisted path carries a
+    # literal ``{slot}`` placeholder; validation already proved slot_key is
+    # present exactly when the template needs it and its shape excludes '/',
+    # '?', '#', '%' and whitespace, so it cannot traverse out of its segment
+    # or rewrite the path. A parameterised template with no key (or vice
+    # versa) was rejected before reaching here.
+    _cst_slot = args.get("slot_key") or ""
+    if "{slot}" in _cst_path:
+        if not _cst_slot:
+            return "Error: this path requires a slot_key."
+        _cst_resolved = _cst_path.replace("{slot}", _cst_slot)
+    else:
+        _cst_resolved = _cst_path
+    _cst_body: dict[str, Any] = {}
+    _cst_body_raw = args.get("body_json") or ""
+    if _cst_body_raw:
+        try:
+            _cst_parsed = json.loads(_cst_body_raw)
+        except ValueError:
+            return "Error: body_json is not valid JSON."
+        if not isinstance(_cst_parsed, dict):
+            return "Error: body_json must encode a JSON object."
+        # Redact on the way IN as well as out (mirrors ops_mission_control_api):
+        # a tag name/color is app-authored, but the body flows through the same
+        # persistence path, so scrub any smuggled credential BEFORE the write.
+        # sanitize_json_values first, so a ``\u200b``-split token materialises
+        # on decode before redaction runs over the decoded structure.
+        _cst_body = mcp_core._redact_json_strings(sanitize_json_values(_cst_parsed))
+    _cst_query = args.get("query") or ""
+    # Prepend the literal chat-API base (exactly as ops prepends its app base):
+    # the paths in the allowlist are base-relative, and the literal head is
+    # also what lets the auth-coverage scanner resolve this call to the
+    # already-granted ``/api/chat`` family.
+    _cst_url = "/api/chat" + _cst_resolved
+    if _cst_query:
+        _cst_url += "?" + _cst_query
+    if _cst_method == "GET":
+        _cst_resp = mcp_core._get(_cst_url)
+    elif _cst_method == "POST":
+        _cst_resp = mcp_core._post(_cst_url, _cst_body)
+    else:  # PUT — validated to be one of the allowlisted methods
+        _cst_resp = mcp_core._put(_cst_url, _cst_body)
+    # Redact on the way OUT and cap: slot detail carries the slot's recent
+    # message content, which is untrusted LLM / external text, so a credential
+    # or exfil URL quoted into a turn must not flow into this agent's context.
+    # Redact BEFORE truncating so the cap cannot slice a credential in half
+    # past the redaction pattern.
+    _cst_text = redact(json.dumps(_cst_resp, ensure_ascii=False, default=str))
+    _cst_cap = 60_000
+    if len(_cst_text) > _cst_cap:
+        _cst_text = (
+            _cst_text[:_cst_cap] + f"\n… truncated ({len(_cst_text)} chars total). Narrow the "
+            "call (e.g. a limit query on the slot detail) to see the rest."
+        )
+    return _cst_text
+
+
 def issue_radar_crew_read(name: str, args: dict[str, Any]) -> str:
     _crew_sk, _crew_err = _crew_session_key()
     if _crew_err:
@@ -608,6 +749,7 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "issue_radar_record_investigation": issue_radar_record_investigation,
     "ops_mission_control_api": ops_mission_control_api,
+    "chat_status_tags_api": chat_status_tags_api,
     "issue_radar_crew_read": issue_radar_crew_read,
     "issue_radar_crew_record": issue_radar_crew_record,
 }

@@ -410,6 +410,48 @@
         "configuration_1": "Enable the hidden app with kirocrew app enable channels, create a channel from a preset or Custom, assign agents and listen modes, then use @mentions to hand off work."
       }
     },
+    "chatStatusTags": {
+      "manifest": {
+        "description": "Keeps your Chats sidebar honest. Tags every conversation with where its work stands (planned, todo, implementation, review, done) and how it is doing (stuck, network, error) — agents tag their own chat at each phase change via the bundled skill, a zero-token health sweep flags hung and errored chats, chats killed by a network drop are quietly resumed once the connection holds, and an hourly reconciler promotes chats whose pull requests merged.",
+        "display_name": "Chat Status Tags",
+        "highlight_1": "Agents tag their own chat at each SDLC phase change — one bash call from the bundled self-tag-chat skill",
+        "highlight_2": "Zero-token health sweep every minute: running-but-silent chats get 'stuck', dropped connections get 'network', chats needing you get 'error'",
+        "highlight_3": "Network-killed chats are auto-resumed — only after the connection holds for a full minute, capped per failure so a flapping link never causes a resume storm",
+        "highlight_4": "Auth failures and unknown errors are never auto-resumed; they stay tagged for you",
+        "highlight_5": "Hourly reconciler promotes a chat to 'review' when it owns an open pull request and to 'done' when they all merge — promotions only, never downgrades",
+        "highlight_6": "Health tags clear themselves the moment the condition clears",
+        "page_label": "Chat Status Tags",
+        "use_case_1": "See at a glance which chats are working, which are blocked on you, and where every piece of SDLC work stands — without opening them.",
+        "configuration_1": "Enable the app and the tag vocabulary seeds itself. Optional config keys: stuck_min (minutes of silence before a running chat is flagged stuck, default 30) and probe_hosts (list of host:port strings the auto-resume connectivity gate must reach, default the model backend plus a control endpoint). The hourly reconciler needs the gh CLI to be authenticated; without it, it stays silent."
+      },
+      "page": {
+        "title": "Chat Status Tags",
+        "subtitle": "Edit the prompt the hourly reconciler runs.",
+        "explanation": "Once an hour, the reconciler reads this prompt to decide which review systems it inspects and how it promotes a chat — for example, tagging a chat 'review' when it owns an open pull request and 'done' when they all merge. Edit the prompt to change what it checks, such as tweaking its GitHub pull-request behavior.",
+        "prompt_label": "Reconcile prompt",
+        "default_badge": "Default",
+        "default_badge_title": "This is the prompt shipped with the app — you have not customized it.",
+        "save": "Save",
+        "saving": "Saving…",
+        "reset": "Reset to default",
+        "reset_confirm": "Click again to confirm",
+        "reset_title": "Replace the prompt with the one shipped with the app.",
+        "unsaved_changes": "Unsaved changes",
+        "disabled": "This app is disabled. Enable Chat Status Tags to view and edit its reconcile prompt.",
+        "cron_ok": "The hourly reconciler is scheduled ({{schedule}}).",
+        "cron_missing": "The reconciler's scheduled job is missing — the prompt will not run until it is repaired.",
+        "cron_disabled": "The reconciler's scheduled job is paused.",
+        "cron_repair": "Repair schedule",
+        "cron_repairing": "Repairing…",
+        "automation_heading": "Automation",
+        "reconciler_label": "Hourly reconciler",
+        "reconciler_help": "Runs an LLM once an hour to check each chat's review systems and promote it to 'review' or 'done'. Turn off to stop this recurring model spend.",
+        "auto_resume_label": "Auto-resume dropped chats",
+        "auto_resume_help": "Automatically continues a chat that was killed by a network drop, which spends model credits to pick the work back up. Turn off to never resume automatically.",
+        "toggle_error": "Couldn't save that change. Try again.",
+        "scheduler_unavailable": "The scheduler is unavailable right now, so the reconciler can't be changed. Try again shortly."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_one": "{{count}} open PR",

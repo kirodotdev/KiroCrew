@@ -533,6 +533,48 @@
         "configuration_1": "Aktiviere die ausgeblendete App mit kirocrew app enable channels, erstelle einen Kanal aus einer Vorlage oder mit Custom, weise Agenten und Zuhörmodi zu und übergib Arbeit per @-Erwähnung."
       }
     },
+    "chatStatusTags": {
+      "manifest": {
+        "description": "Hält deine Chats-Seitenleiste ehrlich. Markiert jede Unterhaltung damit, wo ihre Arbeit steht ('planned', 'todo', 'implementation', 'review', 'done') und wie es ihr geht ('stuck', 'network', 'error') — Agenten markieren ihren eigenen Chat bei jedem Phasenwechsel über den mitgelieferten Skill, ein Zustands-Sweep ohne Token-Kosten kennzeichnet hängende und fehlerhafte Chats, durch einen Netzwerkabbruch beendete Chats werden nach stabiler Verbindung stillschweigend fortgesetzt, und ein stündlicher Abgleich stuft Chats hoch, deren Pull Requests gemergt wurden.",
+        "display_name": "Chat-Status-Tags",
+        "highlight_1": "Agenten markieren ihren eigenen Chat bei jedem Wechsel der SDLC-Phase — ein einziger bash-Aufruf aus dem mitgelieferten Skill self-tag-chat",
+        "highlight_2": "Zustands-Sweep ohne Token-Kosten jede Minute: laufende, aber stille Chats erhalten 'stuck', abgebrochene Verbindungen 'network', Chats, die dich brauchen, 'error'",
+        "highlight_3": "Durch Netzwerkabbruch beendete Chats werden automatisch fortgesetzt — erst nachdem die Verbindung eine volle Minute hält, pro Ausfall begrenzt, damit eine instabile Leitung nie einen Fortsetzungssturm auslöst",
+        "highlight_4": "Authentifizierungsfehler und unbekannte Fehler werden nie automatisch fortgesetzt; sie bleiben für dich markiert",
+        "highlight_5": "Der stündliche Abgleich stuft einen Chat auf 'review' hoch, wenn er einen offenen Pull Request besitzt, und auf 'done', wenn alle gemergt sind — nur Hochstufungen, nie Herabstufungen",
+        "highlight_6": "Zustands-Tags entfernen sich selbst, sobald die Bedingung nicht mehr zutrifft",
+        "page_label": "Chat-Status-Tags",
+        "use_case_1": "Sieh auf einen Blick, welche Chats arbeiten, welche auf dich warten und wo jedes Stück SDLC-Arbeit steht — ohne sie zu öffnen.",
+        "configuration_1": "Aktiviere die App, und das Tag-Vokabular richtet sich selbst ein. Optionale Konfigurationsschlüssel: stuck_min (Minuten der Stille, bevor ein laufender Chat als hängend markiert wird, Standard 30) und probe_hosts (Liste von host:port-Angaben, die das Verbindungstor der automatischen Fortsetzung erreichen muss, Standard das Modell-Backend plus ein Kontrollendpunkt). Der stündliche Abgleich benötigt eine authentifizierte gh-CLI; ohne sie bleibt er stumm."
+      },
+      "page": {
+        "title": "Chat-Status-Tags",
+        "subtitle": "Bearbeite den Prompt, den der stündliche Abgleich ausführt.",
+        "explanation": "Einmal pro Stunde liest der Abgleich diesen Prompt, um zu entscheiden, welche Review-Systeme er prüft und wie er einen Chat hochstuft — zum Beispiel einen Chat auf 'review' markieren, wenn er einen offenen Pull Request besitzt, und auf 'done', wenn alle gemergt sind. Bearbeite den Prompt, um zu ändern, was er prüft, etwa um sein Verhalten bei GitHub-Pull-Requests anzupassen.",
+        "prompt_label": "Abgleich-Prompt",
+        "default_badge": "Standard",
+        "default_badge_title": "Dies ist der mit der App ausgelieferte Prompt — du hast ihn nicht angepasst.",
+        "save": "Speichern",
+        "saving": "Wird gespeichert…",
+        "reset": "Auf Standard zurücksetzen",
+        "reset_confirm": "Zum Bestätigen erneut klicken",
+        "reset_title": "Ersetze den Prompt durch den mit der App ausgelieferten.",
+        "unsaved_changes": "Nicht gespeicherte Änderungen",
+        "disabled": "Diese App ist deaktiviert. Aktiviere Chat-Status-Tags, um ihren Abgleich-Prompt anzuzeigen und zu bearbeiten.",
+        "cron_ok": "Der stündliche Abgleich ist geplant ({{schedule}}).",
+        "cron_missing": "Der geplante Job des Abgleichs fehlt — der Prompt wird nicht ausgeführt, bis er repariert ist.",
+        "cron_disabled": "Der geplante Job des Abgleichs ist pausiert.",
+        "cron_repair": "Zeitplan reparieren",
+        "cron_repairing": "Wird repariert…",
+        "automation_heading": "Automatisierung",
+        "reconciler_label": "Stündlicher Abgleich",
+        "reconciler_help": "Führt einmal pro Stunde ein LLM aus, um Chats hochzustufen, deren Pull Requests sich bewegt haben. Ausschalten, um die stündlichen Modellkosten zu vermeiden.",
+        "auto_resume_label": "Automatische Wiederaufnahme nach Verbindungsabbrüchen",
+        "auto_resume_help": "Setzt einen Chat, der durch einen Verbindungsabbruch beendet wurde, automatisch fort. Dabei werden in Ihrem Namen Modell-Credits verbraucht.",
+        "toggle_error": "Diese Einstellung konnte nicht geändert werden.",
+        "scheduler_unavailable": "Der Planer ist nicht verfügbar, daher kann der stündliche Abgleich derzeit nicht geändert werden."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_one": "{{count}} offener PR",
