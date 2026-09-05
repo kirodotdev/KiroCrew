@@ -128,6 +128,7 @@ from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
+    DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
@@ -609,6 +610,15 @@ async def _credential_tool_hint_for(reason: str, cause: str, subject: str = "") 
     return await resolve_credential_tool_hint()
 
 
+#: Upper bound on any in-band steer-notice write. The notice is best-effort,
+#: but the AWAIT must not be: every deny path runs reject_tool + a SEL audit
+#: write after :func:`_steer_policy_notice`, and unbounded, a backpressured ACP
+#: stdin could hold the await until the turn deadline cancelled the coroutine —
+#: skipping both. Sized to a pipe write with margin, far below the 60s approval
+#: reporting margin, and applied inside the helper so every caller inherits it.
+_STEER_NOTICE_BOUND_SECS = 5.0
+
+
 async def _steer_policy_notice(
     client: Any,
     title: str,
@@ -655,7 +665,15 @@ async def _steer_policy_notice(
     if not notice:
         return False
     try:
-        sent = await client.steer(notice)
+        # BOUNDED: every deny path runs reject_tool + a SEL audit write after
+        # this helper, and an unbounded await on a backpressured ACP stdin
+        # could ride until the turn deadline cancelled the coroutine — skipping
+        # both, so the UI would read rejected while the wire and the audit
+        # trail never heard about it. Bounding HERE makes every caller inherit
+        # the guard instead of each deny site re-discovering it.
+        # asyncio.TimeoutError is an Exception, so the handler below already
+        # treats expiry as the ordinary best-effort failure it is.
+        sent = await asyncio.wait_for(client.steer(notice), timeout=_STEER_NOTICE_BOUND_SECS)
     except Exception:
         logger.debug("policy-notice steer failed; falling back to recovery turn", exc_info=True)
         return False
@@ -674,7 +692,7 @@ async def _steer_policy_notice(
             # The cause rides the MARKER line, following the
             # HOOK_HALTED_RECOVERY_PREFIX precedent (`… #<depth>`): the card's
             # always-visible summary has to name the right cause. Rendering one
-            # "safety policy blocked the call" line for all three would tell the
+            # "safety policy blocked the call" line for every cause would tell the
             # person to go audit a security rule that does not exist — the same
             # cause-blind wording this change removes for the model, left in place
             # for the human.
@@ -8670,6 +8688,40 @@ async def _run_chat(
                         _approval_window,
                     )
                     _approval_card = format_approval_timeout_card(_approval_window)
+                    # The AGENT's channel, sent for attended and unattended slots
+                    # alike: the rejection below reaches the model as kiro-cli's
+                    # generic "User denied tool execution", so without this it
+                    # concludes the human actively refused a call nobody judged.
+                    # Steered HERE, before the reject goes on the wire in the
+                    # rejected branch below — the still-unanswered permission
+                    # request is what proves the turn is in flight, so the notice
+                    # is queued instead of dropped (same ordering as the policy
+                    # deny paths). Best-effort like every _steer_policy_notice
+                    # call: a harness without steer keeps today's behaviour.
+                    #
+                    # A THROWAWAY list, deliberately not _refusal_notices: this
+                    # path appends no _refusal_reasons entry (an expired prompt
+                    # is answered as an ordinary rejection, never by a recovery
+                    # continuation), and should_queue_refusal_recovery compares
+                    # the two lists by COUNT, not by pairing. Threading the turn
+                    # ledger here would let an unsettled timeout notice force a
+                    # duplicate recovery turn — or let a settled one mask a real
+                    # deny whose own steer failed, handing the model an
+                    # uncorrected "User denied tool execution".
+                    #
+                    # No slot/state either: the ⏱️ timeout card appended in the
+                    # finally below is already the human's explanation, so the
+                    # display row the policy paths add would paint the same
+                    # event twice.
+                    _timeout_notices: list[str] = []
+                    await _steer_policy_notice(
+                        client,
+                        _redact_display_text(event.title),
+                        f"the approval prompt expired after "
+                        f"{max(1, round(_approval_window))}s with no answer",
+                        _timeout_notices,
+                        cause=DENY_CAUSE_APPROVAL_TIMEOUT,
+                    )
                     if _unattended_wait:
                         # The card is for the human; this line is for the AGENT.
                         # A denial it cannot read makes it retry the same tool

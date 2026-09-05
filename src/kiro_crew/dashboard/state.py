@@ -2830,12 +2830,13 @@ def build_refusal_recovery_prompt(
 #: The notice's INVARIANT half — that this was not a user action, the generic
 #: string it is correcting, and the instruction to decide inside this turn — is
 #: identical for every cause; only the clause naming the cause and the guidance
-#: about what to do next differ. Kept as data rather than three near-copies of
+#: about what to do next differ. Kept as data rather than per-cause near-copies of
 #: the notice so the invariant half cannot drift between them, which is the half
 #: doing the actual work of overwriting the model's wrong conclusion.
 DENY_CAUSE_POLICY = "policy"
 DENY_CAUSE_INVALID_NAME = "invalid_name"
 DENY_CAUSE_HOOK_ERROR = "hook_error"
+DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
 
 #: cause → (clause completing "The tool call you just made …", what to do next).
 _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
@@ -2856,6 +2857,15 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "treat this as a host fault, not a verdict on the action: nothing judged the "
         "call itself. Retrying the identical call is reasonable once; if it faults "
         "again, say what happened rather than working around it silently.",
+    ),
+    DENY_CAUSE_APPROVAL_TIMEOUT: (
+        "was auto-declined because its approval prompt expired unanswered",
+        "nobody answered within the window, so the action itself was never judged — "
+        "do not abandon it or route around it on this evidence. State the "
+        "permission you need and why, then continue with what you can do without "
+        "it. Do not immediately reissue the same call: the person who did not "
+        "answer is still away, and re-prompting re-arms the same wait for the "
+        "same silence.",
     ),
 }
 
@@ -2887,8 +2897,9 @@ def build_refusal_steer_notice(
 
     *cause* selects the wording. The distinction is not cosmetic: a policy block
     is a verdict the model must route around, an invalid tool name is the model's
-    own malformed output and is the one case it can simply fix, and a hook fault
-    judged nothing at all. Telling the model "safety policy" for the latter two
+    own malformed output and is the one case it can simply fix, a hook fault
+    judged nothing at all, and an expired approval prompt means nobody answered.
+    Telling the model "safety policy" for the non-policy causes
     would send it looking for an allowed alternative to an action nobody refused.
     An unknown cause degrades to the policy wording rather than raising: a wrong
     noun is recoverable, and losing the notice would hand the model back
@@ -2901,9 +2912,10 @@ def build_refusal_steer_notice(
         return ""
     clause, guidance = _DENY_CAUSE_TEXT.get(cause, _DENY_CAUSE_TEXT[DENY_CAUSE_POLICY])
     what = f"{title}: {reason}" if reason else title
-    # Class-specific remediation, for the policy cause only. The other two causes
+    # Class-specific remediation, for the policy cause only. The other causes
     # judged nothing about the action — an invalid tool name is the model's own
-    # malformed output and a hook fault is a host fault — so naming a sanctioned
+    # malformed output, a hook fault is a host fault, and an expired approval
+    # prompt was simply never answered — so naming a sanctioned
     # alternative there would answer a question nobody asked and imply the action
     # itself had been refused.
     remediation = (
@@ -2912,8 +2924,8 @@ def build_refusal_steer_notice(
         else ""
     )
     tail = f"\n\nHow to do this properly: {remediation}" if remediation else ""
-    # "host notice", not "policy notice": the tag has to be true for all three
-    # causes, and only one of them IS a policy. Naming the ACTOR is also what the
+    # "host notice", not "policy notice": the tag has to be true for every
+    # cause, and only one of them IS a policy. Naming the ACTOR is also what the
     # notice exists to do — the model has just been told the user denied this, and
     # every sentence after this one is spent correcting that.
     return (
