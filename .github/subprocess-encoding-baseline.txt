@@ -46,7 +46,6 @@
 1 src/kiro_crew/deploy/engine.py
 1 src/kiro_crew/deploy/skills/artifact-deploy/scripts/attach_backend.py
 1 src/kiro_crew/deploy/skills/artifact-deploy/scripts/detach_backend.py
-1 src/kiro_crew/diagnostics.py
 1 src/kiro_crew/env.py
 1 src/kiro_crew/mcp_core.py
 1 src/kiro_crew/mcp_shared.py
