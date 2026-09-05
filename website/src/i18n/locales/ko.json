@@ -12435,7 +12435,16 @@
         "test": "테스트",
         "test_sound": "소리 테스트",
         "use_default": "기본값 사용",
-        "volume": "음량"
+        "volume": "음량",
+        "push_section": "푸시 알림",
+        "push_toggle_label": "이 기기로 알림 보내기",
+        "push_toggle_description": "앱이 닫혀 있어도 Web Push를 통해 OS 알림을 받습니다.",
+        "push_install_hint": "iOS에서는 푸시 알림을 켜려면 먼저 {{productName}}을(를) 홈 화면에 추가하세요.",
+        "push_unsupported": "이 브라우저는 Web Push 알림을 지원하지 않습니다.",
+        "push_error_blocked": "브라우저에서 알림이 차단되어 있습니다.",
+        "push_error_permission": "권한이 부여되지 않았습니다.",
+        "push_error_subscribe": "구독에 실패했습니다.",
+        "push_error_unsubscribe": "구독 취소에 실패했습니다."
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

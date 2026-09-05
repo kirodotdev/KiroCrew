@@ -12761,7 +12761,16 @@
         "test_sound": "Tester le son",
         "use_default": "Utiliser la valeur par défaut",
         "volume": "Volume",
-        "preset_pulse": "Pulsion"
+        "preset_pulse": "Pulsion",
+        "push_section": "Notifications push",
+        "push_toggle_label": "Envoyer les notifications à cet appareil",
+        "push_toggle_description": "Recevez les notifications du système même app fermée, via Web Push.",
+        "push_install_hint": "Sur iOS, ajoute {{productName}} à l’écran d’accueil pour activer les notifications push.",
+        "push_unsupported": "Ce navigateur ne prend pas en charge les notifications Web Push.",
+        "push_error_blocked": "Les notifications sont bloquées dans le navigateur.",
+        "push_error_permission": "Autorisation non accordée.",
+        "push_error_subscribe": "Échec de l’abonnement.",
+        "push_error_unsubscribe": "Échec de la désinscription."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

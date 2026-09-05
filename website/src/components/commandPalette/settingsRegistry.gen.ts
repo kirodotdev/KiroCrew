@@ -1461,6 +1461,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "When the agent proactively messages you outside a chat"
   },
   {
+    "id": "notifications.send-notifications-to-this-device",
+    "label": "Send notifications to this device",
+    "labelKey": "pages.settings.notificationsPanel.push_toggle_label",
+    "description": "Receive OS notifications even when the app is closed, via Web Push.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "notifications.sound-category-skills",
     "labelKey": "pages.settings.notificationsPanel.category_skills",
     "tab": "notifications",

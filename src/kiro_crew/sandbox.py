@@ -302,6 +302,14 @@ _CREW_SANDBOX_VISIBLE_LEAVES: tuple[str, ...] = (
     # ``mcp_cron`` builds a ``CronService(base_dir=config_dir())`` in-sandbox and both
     # reads and rewrites the job store through it.
     "crons.json",
+    # Web Push credential stores the notification fan-out reads and rewrites
+    # in-sandbox: ``vapid_keys`` mints and persists the VAPID keypair on first use,
+    # and ``push_store`` adds/removes browser subscriptions. Masking either turns a
+    # first-use key generation or a (un)subscribe into a write denial. Sealed against
+    # the tool gate through ``security._CREW_SECRET_LEAVES``; this is the matching
+    # OS-sandbox read-write exception.
+    "vapid_keys.json",
+    "push_subscriptions.json",
 )
 
 

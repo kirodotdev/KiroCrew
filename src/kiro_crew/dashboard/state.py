@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
+import aiohttp
 from aiohttp import web
 
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
@@ -78,9 +79,11 @@ from kiro_crew.notifications.bus import (
     normalize_note,
     payload_from_legacy,
 )
+from kiro_crew.notifications.push_store import PushSubscriptionStore
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
+from kiro_crew.notifications.web_push import PushResult, send_web_push
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import safety_override
@@ -113,7 +116,56 @@ _BUNDLE_ID_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
 _FOLDER_REPOSITORY = FolderRepository(lambda: logger)
 
 
-def _new_notification_coordinator() -> NotificationCoordinator:
+#: Push services reject an encrypted payload larger than 4 KB (4096 bytes)
+#: with 413, which the fan-out treats as a transient, non-gone failure it never
+#: retries — so an oversized note silently never reaches the closed device this
+#: feature exists for. The notification bus permits a 20,000-char body
+#: (``_MAX_BODY_LEN``), far past that ceiling once encrypted. Cap title/body
+#: well under 4 KB (leaving headroom for the JSON envelope, the ``data`` block,
+#: and aes128gcm framing) so the push is always small enough to be delivered.
+_PUSH_TITLE_MAX = 200
+_PUSH_BODY_MAX = 2000
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Cap *text* at *limit* characters, marking the cut with an ellipsis."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _web_push_payload(note: dict[str, Any]) -> dict[str, Any]:
+    """Build the declarative Web Push JSON for one delivered note.
+
+    Shape follows WebKit's Declarative Web Push (``web_push: 8030`` +
+    ``notification``): on iOS/Safari 18.4+ the payload renders natively with no
+    service-worker push handler, while Chromium/Firefox receive the identical
+    JSON in a classic ``push`` event and read the same ``notification`` object.
+    The ``navigate`` URL is a same-origin dashboard path (the deep link the note
+    already carries, defaulting to the dashboard root) so a click reopens the
+    right place; ``data`` echoes the note timestamp for click bookkeeping.
+
+    Title and body are truncated to keep the encrypted payload under the 4 KB
+    Web Push ceiling: an oversized push is rejected with 413 and never arrives.
+    """
+    title = _truncate(note.get("title") or "Kiro Crew", _PUSH_TITLE_MAX)
+    body = _truncate(note.get("body") or "", _PUSH_BODY_MAX)
+    navigate = note.get("url") or "/"
+    notification: dict[str, Any] = {
+        "title": title,
+        "body": body,
+        "navigate": navigate,
+        "data": {"ts": note.get("ts"), "channel": note.get("channel"), "url": navigate},
+    }
+    tag = note.get("group_key") or note.get("channel")
+    if tag:
+        notification["tag"] = tag
+    return {"web_push": 8030, "notification": notification}
+
+
+def _new_notification_coordinator(
+    web_push_fanout: Callable[[dict[str, Any]], None] | None = None,
+) -> NotificationCoordinator:
     """Build a coordinator whose providers resolve facade seams at call time."""
     return NotificationCoordinator(
         logger_provider=lambda: logger,
@@ -125,6 +177,7 @@ def _new_notification_coordinator() -> NotificationCoordinator:
         rewrite_all=lambda notes: _rewrite_notifications(notes),
         executor_provider=lambda: _notification_io_executor(),
         max_persisted=_MAX_PERSISTED_NOTIFICATIONS,
+        web_push_fanout=web_push_fanout,
     )
 
 
@@ -4965,7 +5018,12 @@ class DashboardState:
         self.unrestored_slot_keys: set[str] = set()
         self._notification_log: list[dict[str, Any]] = _load_notifications()
         self._unread_count: int = 0
-        self._notification_coordinator = _new_notification_coordinator()
+        self._notification_coordinator = _new_notification_coordinator(
+            web_push_fanout=lambda note: self._fan_out_web_push(note)
+        )
+        # Web Push subscription store (browser push endpoints). State-owned like
+        # the bus/limiter/settings so its lifecycle matches the gateway.
+        self.push_subscription_store = PushSubscriptionStore()
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         self.notification_bus = NotificationBus(sink=self._deliver_note)
@@ -6082,6 +6140,44 @@ class DashboardState:
             url=url,
             actions=actions,
         )
+
+    def _fan_out_web_push(self, note: dict[str, Any]) -> None:
+        """Schedule Web Push delivery of a note to every browser subscription.
+
+        Called from the delivery sink (synchronous). Web Push is network I/O, so
+        this only schedules an async task on the running loop and returns; with
+        no loop (a synchronous test delivery) it is a no-op, mirroring how the
+        sink's persist step degrades. Best-effort by contract: a failed push
+        must never affect the in-app notification that already landed.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._send_web_push_all(note))
+
+    async def _send_web_push_all(self, note: dict[str, Any]) -> None:
+        """Encrypt-and-POST a note to every stored subscription; prune dead ones."""
+        subscriptions = self.push_subscription_store.all()
+        if not subscriptions:
+            return
+        payload = _web_push_payload(note)
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                results = await asyncio.gather(
+                    *(send_web_push(session, sub, payload) for sub in subscriptions),
+                    return_exceptions=True,
+                )
+        except Exception:
+            logger.warning("Web push fan-out session failed", exc_info=True)
+            return
+        for sub, result in zip(subscriptions, results):
+            # A 404/410 is the push service's authoritative "this subscription
+            # is dead" (RFC 8030); drop it so the store does not accumulate
+            # tombstones and re-POST to it every notification.
+            if isinstance(result, PushResult) and result.gone:
+                self.push_subscription_store.remove(sub["endpoint"])
 
     def _deliver_note(self, note: dict[str, Any]) -> None:
         """Deliver one bus-validated note to memory, clients, and disk."""

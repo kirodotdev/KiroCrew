@@ -3129,6 +3129,12 @@ export const api = {
   notificationChannels: () => fetch('/api/notifications/channels').then(j),
   updateNotificationChannelSettings: (channel: string, settings: { muted?: boolean; priority?: string | null }) =>
     put('/api/notifications/channels/settings', { channel, ...settings }).then(j),
+  // Web Push (browser subscription lifecycle)
+  vapidPublicKey: () => fetch('/api/notifications/push/vapid-public-key').then(j) as Promise<{ publicKey: string }>,
+  subscribePush: (subscription: PushSubscriptionJSON) =>
+    post('/api/notifications/push/subscribe', subscription as unknown as object).then(j),
+  unsubscribePush: (endpoint: string) =>
+    post('/api/notifications/push/unsubscribe', { endpoint }).then(j),
   // Handoff
   handoffChannels: () => fetch('/api/handoff-channels').then(j) as Promise<Record<string, string> | null>,
   handoffSlot: (slot: string, channel?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/handoff', channel ? { channel } : undefined).then(j),

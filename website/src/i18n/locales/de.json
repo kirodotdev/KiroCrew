@@ -12592,7 +12592,16 @@
         "test_sound": "Ton testen",
         "use_default": "Standard verwenden",
         "volume": "Lautstärke",
-        "preset_pulse": "Puls"
+        "preset_pulse": "Puls",
+        "push_section": "Push-Benachrichtigungen",
+        "push_toggle_label": "Benachrichtigungen an dieses Gerät senden",
+        "push_toggle_description": "OS-Benachrichtigungen auch bei geschlossener App empfangen, per Web Push.",
+        "push_install_hint": "Füge {{productName}} auf iOS zuerst zum Home-Bildschirm hinzu, um Push zu aktivieren.",
+        "push_unsupported": "Dieser Browser unterstützt keine Web-Push-Benachrichtigungen.",
+        "push_error_blocked": "Benachrichtigungen sind im Browser blockiert.",
+        "push_error_permission": "Berechtigung nicht erteilt.",
+        "push_error_subscribe": "Abonnieren fehlgeschlagen.",
+        "push_error_unsubscribe": "Abbestellen fehlgeschlagen."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

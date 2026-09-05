@@ -12593,7 +12593,16 @@
         "test_sound": "শব্দ পরীক্ষা করুন",
         "use_default": "ডিফল্ট ব্যবহার করো",
         "volume": "ভলিউম",
-        "preset_pulse": "পালস"
+        "preset_pulse": "পালস",
+        "push_section": "পুশ বিজ্ঞপ্তি",
+        "push_toggle_label": "এই ডিভাইসে বিজ্ঞপ্তি পাঠান",
+        "push_toggle_description": "অ্যাপ বন্ধ থাকলেও ওয়েব পুশের মাধ্যমে OS বিজ্ঞপ্তি পান।",
+        "push_install_hint": "iOS-এ পুশ চালু করতে প্রথমে {{productName}} হোম স্ক্রিনে যোগ করুন।",
+        "push_unsupported": "এই ব্রাউজার ওয়েব পুশ বিজ্ঞপ্তি সমর্থন করে না।",
+        "push_error_blocked": "ব্রাউজারে বিজ্ঞপ্তি ব্লক করা আছে।",
+        "push_error_permission": "অনুমতি দেওয়া হয়নি।",
+        "push_error_subscribe": "সাবস্ক্রাইব ব্যর্থ হয়েছে।",
+        "push_error_unsubscribe": "আনসাবস্ক্রাইব ব্যর্থ হয়েছে।"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",
