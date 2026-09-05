@@ -377,6 +377,28 @@ jobs:
           model_provider = "amazon-bedrock"
           model = "openai.gpt-5.6-sol"
           model_reasoning_effort = "medium"
+
+          # Withhold the Bedrock credentials from the shell the MODEL can run,
+          # while leaving them available to the CLI process itself. This is the
+          # source-level half of #8671: the reviewer's own shell inherits the
+          # job's AWS credentials today, so a malicious fork can prompt it to
+          # print them, and no output filter can close that -- the model chooses
+          # the encoding, so shape matching and literal-value matching are both
+          # evadable. `shell_environment_policy` governs the environment handed
+          # to SPAWNED SUBPROCESSES, not the CLI's own, which is exactly the
+          # split required: Bedrock still authenticates, the shell tool sees no
+          # keys. Both `codex exec` calls in this lane read this one file.
+          [shell_environment_policy]
+          inherit = "core"
+          # Apply the built-in secret-name exclusions (names containing KEY,
+          # SECRET or TOKEN). Codex's default is to KEEP those, which is why the
+          # credentials reach the shell today.
+          ignore_default_excludes = false
+          # Explicit and case-insensitive, so the guard does not rest on the
+          # name heuristic alone.
+          filters = { "AWS_*" = "exclude", "AWS_SESSION_TOKEN" = "exclude", "AWS_SECRET_ACCESS_KEY" = "exclude", "AWS_ACCESS_KEY_ID" = "exclude" }
+          # The region is not a credential and the provider needs it.
+          set = { AWS_REGION = "us-east-1" }
           EOF
 
       # Mint short-lived, Bedrock-only creds immediately before the model call,

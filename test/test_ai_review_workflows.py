@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -5003,3 +5004,121 @@ class TestForkGptVerdictVisibility:
         # published via create -- not silently dropped.
         assert patch_log.read_text(encoding="utf-8") == ""
         assert created_log.read_text(encoding="utf-8") != ""
+
+
+# The three model calls in the fork lanes that run through claude-code-action.
+# None may grant a shell -- see TestModelShellDoesNotInheritCredentials.
+CLAUDE_MODEL_CALLS = (
+    ("fork-opus-review.yml", "Opus 4.8 discovery"),
+    ("fork-opus-review.yml", "Opus 4.8 validation"),
+    ("fork-gpt-review.yml", ADJ_MODEL),
+)
+
+
+class TestModelShellDoesNotInheritCredentials:
+    """The reviewer's shell must not see the credentials the lane publishes from.
+
+    Issue #8671. The fork GPT lane mints Bedrock credentials into the job
+    environment and then runs ``codex exec``, whose shell tool inherits that
+    environment wholesale. The model chooses its own output encoding, so no
+    egress filter downstream can close this: shape matching and literal-value
+    matching are both evadable by an attacker who controls the prompt via a
+    fork's diff. The fix is to withhold the values at the exec boundary, which
+    is why these assertions are about the environment and not about redaction.
+    """
+
+    CONFIG_STEP = "Configure the review CLI for Amazon Bedrock"
+    # Names the lane must keep out of the model's shell.
+    CREDENTIAL_NAMES = (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    )
+
+    def _policy(self) -> dict:
+        """Parse the config.toml the GPT lane writes, as the CLI will read it."""
+        script = _step_script(_workflow("fork-gpt-review.yml"), self.CONFIG_STEP)
+        start = script.index("<<'EOF'\n") + len("<<'EOF'\n")
+        body = script[start : script.index("\nEOF", start)]
+        config = tomllib.loads(body)
+        assert "shell_environment_policy" in config, (
+            "the GPT lane writes no shell_environment_policy, so the shell it "
+            "spawns for the model inherits the job's Bedrock credentials (#8671)"
+        )
+        return config["shell_environment_policy"]
+
+    def test_the_policy_excludes_every_credential_variable(self) -> None:
+        policy = self._policy()
+        filters = {k.upper(): v for k, v in (policy.get("filters") or {}).items()}
+        legacy = [p.upper() for p in (policy.get("exclude") or [])]
+        for name in self.CREDENTIAL_NAMES:
+            covered = (
+                filters.get(name) == "exclude"
+                or any(
+                    f.endswith("*") and name.startswith(f[:-1]) and v == "exclude"
+                    for f, v in filters.items()
+                )
+                or name in legacy
+            )
+            assert covered, f"{name} still reaches the model's shell (#8671)"
+
+    def test_the_builtin_secret_exclusions_are_applied(self) -> None:
+        """Codex KEEPS names containing KEY/SECRET/TOKEN unless told otherwise.
+
+        ``ignore_default_excludes`` defaults to true, which is precisely why the
+        credentials reach the shell today. Leaving it unset is the bug.
+        """
+        assert self._policy().get("ignore_default_excludes") is False
+
+    def test_inheritance_is_not_wholesale(self) -> None:
+        assert self._policy().get("inherit") in {"core", "none"}
+
+    def test_the_region_is_still_supplied(self) -> None:
+        """The region is not a credential and the Bedrock provider needs it."""
+        assert (self._policy().get("set") or {}).get("AWS_REGION")
+
+    def test_the_credential_minting_steps_are_untouched(self) -> None:
+        """The fix scopes the environment; it must not change how CI authenticates.
+
+        Three ``configure-aws-credentials`` steps mint the short-lived,
+        Bedrock-only credentials. Scoping the shell must leave all three, and
+        their least-privilege roles, exactly as they were.
+        """
+        for lane, expected in (("fork-gpt-review.yml", 3), ("fork-opus-review.yml", 2)):
+            doc = yaml.safe_load(_workflow(lane))
+            minted = [
+                step
+                for job in doc["jobs"].values()
+                for step in job["steps"]
+                if "configure-aws-credentials" in str(step.get("uses", ""))
+            ]
+            assert len(minted) == expected, f"{lane}: credential steps changed"
+            for step in minted:
+                assert step["with"]["role-to-assume"].startswith("${{ secrets.")
+                assert step["with"]["aws-region"]
+
+    def test_the_policy_is_written_before_every_exec_boundary(self) -> None:
+        """One config write must cover both model shells, not just the first."""
+        lane = _workflow("fork-gpt-review.yml")
+        wrote = lane.index(f"      - name: {self.CONFIG_STEP}")
+        boundaries = [m.start() for m in re.finditer(r"--sandbox read-only", lane)]
+        assert len(boundaries) == 2, "the GPT lane's shell count changed; re-audit #8671"
+        for at in boundaries:
+            assert wrote < at, "a model shell starts before the policy is written"
+
+    @pytest.mark.parametrize(("lane", "step_name"), CLAUDE_MODEL_CALLS)
+    def test_no_claude_lane_grants_the_model_a_shell(self, lane: str, step_name: str) -> None:
+        """The Opus publishing paths are out of reach only while Bash is absent.
+
+        #8671 scopes the environment of the ``codex exec`` shell. The Opus lane
+        needs no equivalent because its model has no shell at all -- so that
+        premise is asserted here rather than assumed. If anyone grants Bash to
+        one of these calls, this fails and the environment must be scoped there
+        too before the publishing paths can be called protected again.
+        """
+        args = str(_step(lane, step_name).get("with", {}).get("claude_args", ""))
+        assert "--allowedTools" in args, f"{lane}/{step_name}: tools unrestricted"
+        granted = re.search(r'--allowedTools\s+"([^"]+)"', args)
+        assert granted, f"{lane}/{step_name}: could not read the tool allowlist"
+        tools = {t.strip() for t in granted.group(1).split(",")}
+        assert tools <= {"Read", "Grep", "Glob"}, f"{lane}/{step_name}: {tools}"
