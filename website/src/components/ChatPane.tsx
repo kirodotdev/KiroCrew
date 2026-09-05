@@ -9,6 +9,10 @@ import ChatMessageList from '../app-sdk/ChatMessageList'
 import { useChatScrollFollow } from '../app-sdk/useChatScrollFollow'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
+import { createChatProfileRenderers, type SendOutcome } from '../pages/members/chatProfileRenderers'
+import { anyEscalationPending, useEscalationIndex, type EscalationIndexStates } from '../pages/members/useEscalationIndex'
+import { projectChatView } from '../pages/members/chatProjection'
+import WorkingIndicator from '../pages/members/WorkingIndicator'
 import ChatInput from './ChatInput'
 import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PendingQuestionCard from './PendingQuestionCard'
@@ -66,6 +70,7 @@ export default function ChatPane({
   agentLocked,
   frameless,
   followContentWidth,
+  displayProfile = 'transcript',
 }: {
   slotKey: string
   focused?: boolean
@@ -94,6 +99,13 @@ export default function ChatPane({
    *  long transcripts keep the same user-configured measure as the main
    *  chat. */
   followContentWidth?: boolean
+  /** How the transcript reads. `'transcript'` (default) draws every row the
+   *  way split-view panes do. `'chat'` (member DM threads) projects the
+   *  transcript into a conversation: tool steps fold behind each reply,
+   *  quiet monitor rounds collapse into one line, escalation cards can be
+   *  answered with a click, and a live "Working…" line stands in for the
+   *  hidden tool rows. See pages/members/chatProjection.ts. */
+  displayProfile?: 'transcript' | 'chat'
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -435,13 +447,28 @@ export default function ChatPane({
     }))
   }, [dispatch, slotKey])
 
-  const doSend = useCallback((optionText?: string) => {
+  /** Send the composer draft (or `optionText`).
+   *
+   *  Resolves `{ ok: true }` once the server ACCEPTED the message — started it
+   *  or queued it — and `{ ok: false }` when it never went out (refused,
+   *  transport error, nothing to send). Never rejects. A `queued` receipt adds
+   *  `queueId` (the entry's `queue_id`). The escalation card keys its
+   *  in-flight latch on this: `ok: false` unlocks the card so the person can
+   *  try again; a `queueId` holds it for as long as that entry is in the
+   *  queue stack (see `queuedIds` below); a bare `ok: true` keeps it locked
+   *  until the transcript confirms the reply. `unknown` / `response-late`
+   *  resolve `ok: true`: a 2xx (or no refusal) was seen, so a retry could
+   *  duplicate a turn already in flight. */
+  const doSend = useCallback((optionText?: string, extraMeta?: Record<string, unknown>): Promise<SendOutcome> => {
     // `optionText` mirrors ChatPage.send's first parameter: the follow-up
     // bar's direct-send gesture (double-click / split button) hands the option
     // label here so it bypasses the setInput race, superseding any composer
     // text exactly as ChatPage does with `optionText || inputRef.current`.
+    // `extraMeta` rides along in the message meta (wire AND optimistic bubble):
+    // an escalation card's reply carries `escalation_id` so the backend answers
+    // exactly that request rather than whichever one happens to be pending.
     const text = (optionText || input).trim()
-    if (!text && !pendingFiles.length) return
+    if (!text && !pendingFiles.length) return Promise.resolve<SendOutcome>({ ok: false })
     // Capture the stateless card pending at ENTRY (before any state updates
     // or yields): this send consumes the answer channel of the card the user
     // saw when they hit send. Retired only after the server confirms it
@@ -479,15 +506,30 @@ export default function ChatPane({
     // Optimistic user bubble: show immediately in the right position (mirrors the
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running) — the backend returns a "queued" message instead, avoiding a duplicate.
+    // Only the escalation id is picked out of `extraMeta`: a caller-supplied
+    // bag must never clobber the wire-critical keys (`files`, `dirs`, `sendId`).
+    const extra = extraMeta?.escalation_id ? { escalation_id: String(extraMeta.escalation_id) } : {}
     const meta = {
+      ...extra,
       ...(files.length ? { files } : {}),
       ...(dirPaths.length ? { dirs: dirPaths } : {}),
       sendId,
     }
     if (!busy && (text || files.length)) {
+      // `optimistic: true` marks the bubble as sent-but-unconfirmed: the store
+      // sets it too (appendSlotMessage) and confirmOptimisticSend / the echo
+      // reconcile clear it once the server accepts the send. It goes on the
+      // BUBBLE only — never on the wire `meta`, which the backend persists as
+      // the row's meta. Readers that simulate the transcript (the escalation
+      // answer rule) skip rows still carrying it, so a refused send cannot
+      // close a card the person must be able to retry.
+      // `human_reply: true` is the provenance the SERVER stamps on every row
+      // the authenticated composer sends; the bubble carries it too so that,
+      // once confirmed, it answers an escalation exactly like its stored twin.
+      // Not sent on the wire: the backend owns that stamp.
       dispatch(appendSlotMessage({
         slot: slotKey,
-        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
+        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...meta, optimistic: true, human_reply: true } },
       }))
     }
     // A failed send has to say so on the pane it was typed into. This path
@@ -511,12 +553,18 @@ export default function ChatPane({
     // `response-late` proves no refusal either; restoring either one here could
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
-    void sendTurn({ message: llm, slot: slotKey, meta }).then((receipt) => {
+    return sendTurn({ message: llm, slot: slotKey, meta }).then((receipt): SendOutcome => {
       if (receipt.status === 'refused' || receipt.status === 'transport-error') {
         reportFailedSend(receipt.reason)
-        return
+        return { ok: false }
       }
-      if (receipt.status === 'unknown' || receipt.status === 'response-late') return
+      if (receipt.status === 'unknown' || receipt.status === 'response-late') return { ok: true }
+      // The queue entry this send became, when the pane was busy. Handed back
+      // so the escalation card can follow the entry rather than a clock.
+      const queueId = receipt.status === 'queued' && typeof receipt.body.queue_id === 'string' && receipt.body.queue_id
+        ? receipt.body.queue_id
+        : undefined
+      const accepted: SendOutcome = queueId ? { ok: true, queueId } : { ok: true }
       // The receipt names the queue entry this send became: bind the
       // pre-send composer state to it so cancelling that card restores the
       // TYPED text and re-stages the files (issue #560). This matters MORE
@@ -527,8 +575,8 @@ export default function ChatPane({
       // consumed the draft, so there is no pre-send state to bind. An empty
       // wire text can never reach here (sendTurn classifies it `refused`),
       // and the guard requires the receipt's `queue_id`.
-      if (receipt.status === 'queued' && typeof receipt.body.queue_id === 'string' && receipt.body.queue_id && !optionText) {
-        queuedSendStash.set(receipt.body.queue_id, { raw: text, files, sent: llm })
+      if (queueId && !optionText) {
+        queuedSendStash.set(queueId, { raw: text, files, sent: llm })
       }
       // The response is the delivery receipt for this pane's optimistic bubble
       // because no `chat_message` echo is coming for a dashboard send. Only
@@ -541,11 +589,12 @@ export default function ChatPane({
           mid: typeof receipt.body.mid === 'string' ? receipt.body.mid : undefined,
         }))
       }
-      if (!cardAtSend && !askAtSend) return
+      if (!cardAtSend && !askAtSend) return accepted
       // Immediate dispatch only: a QUEUED acceptance is still cancellable —
       // the queued path retires at its queue_pop instead (removeQueuedMessage).
       if (receipt.status === 'dispatched' && cardAtSend) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
+      return accepted
     })
   }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
 
@@ -585,13 +634,71 @@ export default function ChatPane({
   const setToolDisclosureFor = useCallback((key: string, expanded: boolean) => {
     setToolDisclosure((prev) => ({ ...prev, [key]: expanded }))
   }, [])
+  const chatProfile = displayProfile === 'chat'
+  const memberName = paneSlot?.agent ?? ''
+  // The backend's escalation index for a member thread: the authority over each
+  // card's state (a simulation over the hydrated window cannot see an older
+  // pending escalation outside it). Refetched when the transcript gains a
+  // user/escalation row, when the slots push flips the slot's `needs_you`, and
+  // every 20 s while a visible card is still pending.
+  const escalationTick = useMemo(() => {
+    if (!chatProfile) return ''
+    let count = 0
+    let lastMid = ''
+    for (const m of allMessages) {
+      if (m.role !== 'user' && m.role !== 'escalation') continue
+      count++
+      const mid = m.meta?.mid
+      if (typeof mid === 'string' && mid) lastMid = mid
+    }
+    return count + ':' + lastMid
+  }, [chatProfile, allMessages])
+  const pollEscalationWhile = useCallback(
+    (states: EscalationIndexStates | null) => chatProfile && anyEscalationPending(allMessages, states, Date.now()),
+    [chatProfile, allMessages],
+  )
+  const { states: escalationStates, refresh: refreshEscalationIndex } = useEscalationIndex(
+    chatProfile ? slotKey : undefined,
+    { replyTick: escalationTick, slotsTick: paneSlot?.needs_you, pollWhile: pollEscalationWhile },
+  )
+  // doSend closes over the composer draft and so changes every keystroke; the
+  // renderer list must not (it would re-run ChatMessageList's turn grouping
+  // per character). The chip handler reads the latest through a ref instead.
+  const doSendRef = useRef(doSend); doSendRef.current = doSend
+  // The queue ids in this pane's stack, read the way useQueuedMessageActions
+  // reads them (`meta.queueId`). The escalation card holds a QUEUED reply's
+  // latch while its id is in here. Keyed on the memoized `queuedMessages`, so
+  // it changes when the queue does — not per keystroke.
+  const queuedIds = useMemo<ReadonlySet<string>>(
+    () => new Set(queuedMessages.map(m => m.meta?.queueId).filter((id): id is string => typeof id === 'string' && !!id)),
+    [queuedMessages],
+  )
   const renderers = useMemo(
-    () => createTranscriptRenderers({
-      slot: slotKey,
-      toolDisclosure,
-      onToolDisclosureChange: setToolDisclosureFor,
-    }),
-    [slotKey, toolDisclosure, setToolDisclosureFor],
+    () => {
+      const transcript = createTranscriptRenderers({
+        slot: slotKey,
+        toolDisclosure,
+        onToolDisclosureChange: setToolDisclosureFor,
+      })
+      if (!chatProfile) return transcript
+      // Host entries are searched in order; the transcript set claims no
+      // `assistant` id, so the chat profile's reply override wins, and its
+      // `assistant` id also evicts the SDK default (mergeRenderers).
+      return [...transcript, ...createChatProfileRenderers({
+        memberName,
+        onSend: (t, extra) => doSendRef.current(t, extra),
+        queuedIds,
+        escalationStates,
+        onEscalationRefresh: refreshEscalationIndex,
+      })]
+    },
+    [slotKey, toolDisclosure, setToolDisclosureFor, chatProfile, memberName, queuedIds, escalationStates, refreshEscalationIndex],
+  )
+  // The rows the list draws. The chat profile projects the transcript (see
+  // chatProjection.ts); the transcript profile draws it as stored.
+  const viewMessages = useMemo(
+    () => (chatProfile ? projectChatView(messages, { running }) : messages),
+    [chatProfile, messages, running],
   )
 
   const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus-visible:border-accent'
@@ -692,7 +799,8 @@ export default function ChatPane({
               {i18nT('components.chatPane.earlier_messages_open_session')}
             </button>
           )}
-          <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
+          <ChatMessageList messages={viewMessages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
+          {chatProfile && <WorkingIndicator slotKey={slotKey} />}
           {/* The same working indicator the full chat page shows (the ghost-pose
               carousel, theme-swappable via themeBranding): a running turn in a
               pane — a member DM, a split pane — was otherwise invisible between
@@ -700,8 +808,15 @@ export default function ChatPane({
               so it reads as "the reply is coming" exactly where the reply will
               land. Stop/regenerate chrome stays page-level: the pane derives
               the footer's inputs from its own per-slot stream state. */}
+          {/* The chat profile already draws WorkingIndicator above as its one
+              busy line, so the carousel stays off there: the footer only
+              surfaces for the stopping / compacting states, which have no
+              other home in a pane (ChatFooter returns null when `running` is
+              false, so those states must keep it alive). */}
           <ChatFooter
-            running={running || !!paneSlot?.running}
+            running={chatProfile
+              ? (streamState === 'stopping' || !!paneSlot?.stopping || streamState === 'compacting')
+              : (running || !!paneSlot?.running)}
             stopping={streamState === 'stopping' || !!paneSlot?.stopping}
             state={streamState}
             lastRole={messages[messages.length - 1]?.role ?? ''}

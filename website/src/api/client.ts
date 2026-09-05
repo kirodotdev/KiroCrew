@@ -2124,6 +2124,9 @@ export interface MemberRosterRow {
   slot_key: string
   /** O(1) liveness: the bound slot is mid-turn right now. */
   running: boolean
+  /** The bound slot has an unanswered escalation (cold-start value; the live
+   *  slot's `needs_you` wins once the slots push arrives). */
+  needs_you?: boolean
   /** Epoch seconds of the DM transcript's last write; 0 = never talked. */
   last_active_ts?: number
   last_message?: string
@@ -2131,6 +2134,42 @@ export interface MemberRosterRow {
   workspace?: string
   memory_store?: string
   model?: string
+  [extra: string]: unknown
+}
+
+/** Lifecycle of one escalation as the backend index records it. */
+export type MemberEscalationIndexState = 'pending' | 'answered' | 'defaulted' | 'expired' | 'retracted'
+
+/** One `escalation` entry of GET /api/members/{slug}/conversation — the
+ *  AUTHORITATIVE lifecycle record for a card. The transcript row is written
+ *  once and never edited; this index is what the backend consults, so a card
+ *  drawn over a truncated hydration window defers to it. Extra fields pass
+ *  through untyped so a new backend field is not a frontend break. */
+export interface MemberEscalationIndexEntry {
+  type: 'escalation' | string
+  id: string
+  session_key?: string
+  mid?: string
+  from_session?: string
+  state: MemberEscalationIndexState | string
+  /** ISO timestamps as the backend serialises them. */
+  created_ts?: string | null
+  deadline?: string | null
+  default_action?: string | null
+  goal?: string | null
+  options?: string[]
+  answered_ts?: string | null
+  [extra: string]: unknown
+}
+
+/** GET /api/members/{slug}/conversation — a member's per-conversation index. */
+export interface MemberConversationIndex {
+  conversation_id?: string
+  participants?: string[]
+  sessions?: string[]
+  entries: MemberEscalationIndexEntry[]
+  needs_you?: boolean
+  pending_escalations?: number
   [extra: string]: unknown
 }
 
@@ -2521,6 +2560,12 @@ export const api = {
       capped: boolean
       entries: MemberActivityEntry[]
     }>,
+  // The member's conversation index — the backend's own record of every
+  // escalation's lifecycle. The chat profile reads it so a card's state is
+  // decided by the authority, not by a simulation over the hydrated window.
+  // `signal` lets the hook abort on unmount / slot change.
+  memberConversation: (slug: string, signal?: AbortSignal) =>
+    get('/api/members/' + encodeURIComponent(slug) + '/conversation', undefined, signal).then(j) as Promise<MemberConversationIndex>,
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>

@@ -13803,6 +13803,38 @@
       "driving_idle": "নিষ্ক্রিয়",
       "driving_show_all": "সব দেখুন ({{count}})",
       "driving_show_less": "কম দেখুন"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "আপনার সিদ্ধান্ত প্রয়োজন",
+        "working": "কাজ চলছে: {{purpose}}",
+        "working_generic": "কাজ চলছে…",
+        "view_process_one": "প্রক্রিয়া দেখো ({{count}} ধাপ)",
+        "view_process_other": "প্রক্রিয়া দেখো ({{count}} ধাপ)",
+        "hide_process": "প্রক্রিয়া লুকান",
+        "silent_rounds_one": "{{count}} নিয়মিত পরীক্ষা, নতুন কিছু নেই",
+        "silent_rounds_other": "{{count}} নিয়মিত পরীক্ষা, নতুন কিছু নেই",
+        "show_rounds": "নিয়মিত পরীক্ষা দেখান",
+        "hide_rounds": "নিয়মিত পরীক্ষা লুকান",
+        "escalation_title": "{{member}} আপনার সিদ্ধান্ত চাইছে",
+        "escalation_title_generic": "আপনার সিদ্ধান্ত প্রয়োজন",
+        "escalation_from": "{{session}} থেকে",
+        "escalation_goal": "লক্ষ্য: {{goal}}",
+        "escalation_deadline": "{{time}}-এর মধ্যে সিদ্ধান্ত নিন · {{remaining}} বাকি",
+        "escalation_expired": "সময়সীমা শেষ — ডিফল্ট পদক্ষেপ প্রয়োগ হবে",
+        "escalation_expired_no_default": "সময়সীমা শেষ",
+        "escalation_default": "আপনি উত্তর না দিলে: {{action}}",
+        "escalation_answered": "উত্তর দেওয়া হয়েছে",
+        "escalation_pending": "আপনার উত্তরের অপেক্ষায়",
+        "escalation_retracted": "প্রত্যাহার করা হয়েছে",
+        "escalation_send": "উত্তর পাঠাও",
+        "escalation_type_instead": "নিচে লেখা বার্তাও তোমার উত্তর হিসেবে গণ্য হবে।",
+        "escalation_answer_in_thread": "Crew Members পেজে এই সদস্যের থ্রেড থেকে উত্তর দাও।",
+        "escalation_default_applied": "ডিফল্ট প্রয়োগ হয়েছে: {{action}}",
+        "escalation_send_failed": "উত্তর পাঠানো যায়নি — আবার চেষ্টা করুন।",
+        "escalation_sent": "উত্তর পাঠানো হয়েছে",
+        "escalation_title_from": "{{session}} তোমাকে চায়"
+      }
     }
   },
   "privacyDisclosure": {

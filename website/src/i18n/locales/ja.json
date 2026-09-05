@@ -13624,6 +13624,36 @@
       "driving_idle": "アイドル",
       "driving_show_all": "すべて表示（{{count}}）",
       "driving_show_less": "折りたたむ"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "あなたの判断が必要です",
+        "working": "作業中：{{purpose}}",
+        "working_generic": "作業中…",
+        "view_process_other": "プロセスを表示（{{count}} ステップ）",
+        "hide_process": "プロセスを非表示",
+        "silent_rounds_other": "{{count}} 回の定期チェック、新しい進展なし",
+        "show_rounds": "定期チェックを表示",
+        "hide_rounds": "定期チェックを非表示",
+        "escalation_title": "{{member}} があなたの判断を求めています",
+        "escalation_title_generic": "あなたの判断が必要です",
+        "escalation_from": "{{session}} から",
+        "escalation_goal": "目標：{{goal}}",
+        "escalation_deadline": "{{time}} までに決定 · 残り {{remaining}}",
+        "escalation_expired": "回答期限が終了 — デフォルトの対応を実行します",
+        "escalation_expired_no_default": "回答期限が終了",
+        "escalation_default": "回答がない場合：{{action}}",
+        "escalation_answered": "回答済み",
+        "escalation_pending": "あなたの返信を待っています",
+        "escalation_retracted": "取り下げ済み",
+        "escalation_send": "返信を送信",
+        "escalation_type_instead": "下にメッセージを入力しても回答として扱われます。",
+        "escalation_answer_in_thread": "Crew Members ページのこのメンバーのスレッドから回答してください。",
+        "escalation_default_applied": "デフォルトを適用：{{action}}",
+        "escalation_send_failed": "返信を送信できませんでした。もう一度お試しください。",
+        "escalation_sent": "返信を送信しました",
+        "escalation_title_from": "{{session}} があなたの判断を必要としています"
+      }
     }
   },
   "privacyDisclosure": {

@@ -13803,6 +13803,38 @@
       "driving_idle": "निष्क्रिय",
       "driving_show_all": "सभी दिखाएँ ({{count}})",
       "driving_show_less": "कम दिखाएँ"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "तुम्हारी ज़रूरत है",
+        "working": "कार्य जारी: {{purpose}}",
+        "working_generic": "कार्य जारी…",
+        "view_process_one": "प्रक्रिया देखो ({{count}} चरण)",
+        "view_process_other": "प्रक्रिया देखो ({{count}} चरण)",
+        "hide_process": "प्रक्रिया छिपाओ",
+        "silent_rounds_one": "{{count}} नियमित जाँच, कुछ नया नहीं",
+        "silent_rounds_other": "{{count}} नियमित जाँचें, कुछ नया नहीं",
+        "show_rounds": "नियमित जाँचें दिखाओ",
+        "hide_rounds": "नियमित जाँचें छिपाओ",
+        "escalation_title": "{{member}} को तुम्हारी ज़रूरत है",
+        "escalation_title_generic": "तुम्हारी ज़रूरत है",
+        "escalation_from": "{{session}} से",
+        "escalation_goal": "लक्ष्य: {{goal}}",
+        "escalation_deadline": "{{time}} तक फ़ैसला करो · {{remaining}} शेष",
+        "escalation_expired": "समय सीमा समाप्त — डिफ़ॉल्ट कार्रवाई लागू होगी",
+        "escalation_expired_no_default": "समय सीमा समाप्त",
+        "escalation_default": "अगर तुम जवाब नहीं देते: {{action}}",
+        "escalation_answered": "जवाब दे दिया",
+        "escalation_pending": "तुम्हारे जवाब की प्रतीक्षा है",
+        "escalation_retracted": "वापस लिया गया",
+        "escalation_send": "जवाब भेजो",
+        "escalation_type_instead": "नीचे लिखा संदेश भी तुम्हारे जवाब के रूप में गिना जाएगा।",
+        "escalation_answer_in_thread": "इसका जवाब Crew Members पेज पर इस सदस्य की थ्रेड से दो।",
+        "escalation_default_applied": "डिफ़ॉल्ट लागू: {{action}}",
+        "escalation_send_failed": "जवाब नहीं भेजा गया — फिर से कोशिश करें।",
+        "escalation_sent": "जवाब भेज दिया",
+        "escalation_title_from": "{{session}} को तुम्हारी ज़रूरत है"
+      }
     }
   },
   "privacyDisclosure": {

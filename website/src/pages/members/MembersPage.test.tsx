@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { markSlotUnread, sseSlots } from '../../store/dashboardSlice'
+import type { ChatSlot } from '../../types'
 
 /* ── api client mock ─────────────────────────────────────────────────────
  * The page reads exactly two endpoints; mocking them keeps every case
@@ -22,8 +23,8 @@ vi.mock('../../api/client', () => ({
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked, followContentWidth }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean }) => (
-    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'}>
+  default: ({ slotKey, agentLocked, followContentWidth, displayProfile }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; displayProfile?: string }) => (
+    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-display-profile={displayProfile ?? ''}>
       {slotKey}
     </div>
   ),
@@ -113,6 +114,10 @@ describe('MembersPage thread', () => {
     // transcript and composer halves itself; its default stays off for
     // split-view panes, which are already narrow).
     expect(pane).toHaveAttribute('data-follow-content-width', '1')
+    // A member DM reads as a conversation, not an engineering transcript:
+    // the pane is mounted in its chat profile (tool steps fold behind each
+    // reply, escalation chips answer with a click).
+    expect(pane).toHaveAttribute('data-display-profile', 'chat')
     // The pin is an invariant of every member thread, so the header does NOT
     // announce it — no chip, no term for a state that cannot be otherwise.
     expect(screen.queryByTestId('member-pin-chip')).toBeNull()
@@ -611,5 +616,40 @@ describe('MembersPage drawer — driving sessions', () => {
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('research'))
     await waitFor(() => expect(screen.getAllByTestId('member-driving-row')).toHaveLength(5))
     expect(screen.getByTestId('member-driving-toggle')).toHaveAttribute('aria-expanded', 'false')
+  })
+})
+
+describe('MembersPage needs-you badge', () => {
+  const memberSlot = (over: Partial<ChatSlot> = {}): ChatSlot => ({
+    key: 'member-oncall', mode: 'member', agent: 'oncall', messages: 3, running: false, ...over,
+  })
+
+  it('shows the badge when the live store slot carries needs_you: true, and not otherwise', async () => {
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'scout', slug: 'scout' }),
+    ])
+    await screen.findByText('scout')
+    expect(screen.queryByTestId('member-needs-you-badge')).toBeNull()
+    act(() => {
+      store.dispatch(sseSlots([memberSlot({ needs_you: true })]))
+    })
+    // Exactly one badge: the flagged member's, with the plain-language label.
+    const badges = screen.getAllByTestId('member-needs-you-badge')
+    expect(badges).toHaveLength(1)
+    expect(badges[0]).toHaveTextContent('Needs you')
+    act(() => {
+      store.dispatch(sseSlots([memberSlot({ needs_you: false })]))
+    })
+    expect(screen.queryByTestId('member-needs-you-badge')).toBeNull()
+  })
+
+  it('falls back to the roster row flag before the first slots push, and the live slot wins afterwards', async () => {
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall', needs_you: true })])
+    expect(await screen.findByTestId('member-needs-you-badge')).toBeInTheDocument()
+    act(() => {
+      store.dispatch(sseSlots([memberSlot({ needs_you: false })]))
+    })
+    expect(screen.queryByTestId('member-needs-you-badge')).toBeNull()
   })
 })

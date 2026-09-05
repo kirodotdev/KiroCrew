@@ -14159,6 +14159,42 @@
       "driving_idle": "Простой",
       "driving_show_all": "Показать все ({{count}})",
       "driving_show_less": "Свернуть"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "Требуется ваше решение",
+        "working": "В работе: {{purpose}}",
+        "working_generic": "В работе…",
+        "view_process_one": "Показать процесс ({{count}} шаг)",
+        "view_process_other": "Показать процесс ({{count}} шагов)",
+        "view_process_few": "Показать процесс ({{count}} шага)",
+        "view_process_many": "Показать процесс ({{count}} шагов)",
+        "hide_process": "Скрыть ход работы",
+        "silent_rounds_one": "{{count}} проверка без изменений",
+        "silent_rounds_other": "{{count}} проверок без изменений",
+        "silent_rounds_few": "{{count}} проверки без изменений",
+        "silent_rounds_many": "{{count}} проверок без изменений",
+        "show_rounds": "Показать проверки",
+        "hide_rounds": "Скрыть проверки",
+        "escalation_title": "{{member}} ждёт вашего решения",
+        "escalation_title_generic": "Требуется ваше решение",
+        "escalation_from": "из {{session}}",
+        "escalation_goal": "Цель: {{goal}}",
+        "escalation_deadline": "Решите до {{time}} · осталось {{remaining}}",
+        "escalation_expired": "Срок истёк — применяется действие по умолчанию",
+        "escalation_expired_no_default": "Срок истёк",
+        "escalation_default": "Если вы не ответите: {{action}}",
+        "escalation_answered": "Отвечено",
+        "escalation_pending": "Ожидается ваш ответ",
+        "escalation_retracted": "Отозвано",
+        "escalation_send": "Отправить ответ",
+        "escalation_type_instead": "Сообщение, введённое ниже, тоже считается вашим ответом.",
+        "escalation_answer_in_thread": "Ответьте в треде участника на странице Crew Members.",
+        "escalation_default_applied": "Применено действие по умолчанию: {{action}}",
+        "escalation_send_failed": "Ответ не отправлен — попробуйте ещё раз.",
+        "escalation_sent": "Ответ отправлен",
+        "escalation_title_from": "{{session}} ждёт вашего решения"
+      }
     }
   },
   "privacyDisclosure": {

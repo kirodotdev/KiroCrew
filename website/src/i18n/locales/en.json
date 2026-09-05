@@ -6802,6 +6802,38 @@
       "with_shared_gateway_pooled": "With shared gateway (pooled)",
       "without_gateway_per_session_copies": "Without gateway (per-session copies)"
     },
+    "members": {
+      "chat": {
+        "escalation_answered": "Answered",
+        "escalation_answer_in_thread": "Answer this from the member's thread on the Crew Members page.",
+        "escalation_deadline": "Decide by {{time}} · {{remaining}} left",
+        "escalation_default": "If you don’t answer: {{action}}",
+        "escalation_default_applied": "Default applied: {{action}}",
+        "escalation_expired": "Window closed — default applies",
+        "escalation_expired_no_default": "Window closed",
+        "escalation_from": "From {{session}}",
+        "escalation_goal": "Goal: {{goal}}",
+        "escalation_pending": "Awaiting your reply",
+        "escalation_retracted": "Withdrawn",
+        "escalation_send": "Send reply",
+        "escalation_send_failed": "Reply didn’t send — try again.",
+        "escalation_sent": "Reply sent",
+        "escalation_title": "{{member}} needs you",
+        "escalation_title_from": "{{session}} needs you",
+        "escalation_title_generic": "Needs you",
+        "escalation_type_instead": "Typing a message below also counts as your answer.",
+        "view_process_one": "View process ({{count}} step)",
+        "view_process_other": "View process ({{count}} steps)",
+        "hide_process": "Hide process",
+        "hide_rounds": "Hide check-ins",
+        "needs_you": "Needs you",
+        "silent_rounds_one": "{{count}} check-in with nothing new",
+        "silent_rounds_other": "{{count}} check-ins with nothing new",
+        "show_rounds": "Show check-ins",
+        "working": "Working: {{purpose}}",
+        "working_generic": "Working…"
+      }
+    },
     "membersPage": {
       "agent_template": "Agent template",
       "configuration": "Configuration",

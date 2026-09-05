@@ -13624,6 +13624,36 @@
       "driving_idle": "空闲",
       "driving_show_all": "查看全部（{{count}}）",
       "driving_show_less": "收起"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "需要你",
+        "working": "正在处理：{{purpose}}",
+        "working_generic": "正在处理…",
+        "view_process_other": "查看过程（{{count}} 步）",
+        "hide_process": "隐藏过程",
+        "silent_rounds_other": "{{count}} 次例行检查，无新进展",
+        "show_rounds": "显示例行检查",
+        "hide_rounds": "隐藏例行检查",
+        "escalation_title": "{{member}} 需要你",
+        "escalation_title_generic": "需要你",
+        "escalation_from": "来自 {{session}}",
+        "escalation_goal": "目标：{{goal}}",
+        "escalation_deadline": "请在 {{time}} 前决定 · 剩余 {{remaining}}",
+        "escalation_expired": "决策窗口已关闭 — 按默认操作执行",
+        "escalation_expired_no_default": "决策窗口已关闭",
+        "escalation_default": "如果你不回复：{{action}}",
+        "escalation_answered": "已回复",
+        "escalation_pending": "等待你的回复",
+        "escalation_retracted": "已撤回",
+        "escalation_send": "发送回复",
+        "escalation_type_instead": "在下方输入消息同样算作你的答复。",
+        "escalation_answer_in_thread": "请在 Crew Members 页面该成员的对话中回复。",
+        "escalation_default_applied": "已按默认执行：{{action}}",
+        "escalation_send_failed": "回复未发送，请重试。",
+        "escalation_sent": "回复已发送",
+        "escalation_title_from": "{{session}} 需要你"
+      }
     }
   },
   "privacyDisclosure": {

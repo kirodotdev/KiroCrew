@@ -30,6 +30,8 @@ import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import StopEventCard from '../pages/chat/StopEventCard'
+import EscalationCard from '../pages/members/EscalationCard'
+import { deriveEscalationState } from '../pages/members/escalationState'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -352,6 +354,21 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     id: 'notice',
     roles: ['notice'],
     render: (m, ctx) => ctx.row(<NoticeCard content={m.content} />),
+  },
+  {
+    // A crew member asking the person for a decision. Read-only here (no send
+    // handler): the Members chat profile supplies the live variant whose chips
+    // reply; every other host still shows the card instead of a raw row.
+    id: 'escalation',
+    roles: ['escalation'],
+    render: (m, ctx) => ctx.row(
+      <EscalationCard
+        message={m}
+        memberName=""
+        state={deriveEscalationState(m, ctx.messages, ctx.index, Date.now())}
+      />,
+      true,
+    ),
   },
   {
     // Grouped and lifecycle-only roles have no row of their own: a thinking or

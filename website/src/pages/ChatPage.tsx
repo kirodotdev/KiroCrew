@@ -356,6 +356,8 @@ import StopEventCard from './chat/StopEventCard'
 import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
 import RecoveryCard, { resolveInjectCard } from './chat/RecoveryCard'
 import NoticeCard from './chat/NoticeCard'
+import EscalationCard from './members/EscalationCard'
+import { deriveEscalationState } from './members/escalationState'
 import { ErrorCard } from './chat/ErrorCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
@@ -7732,6 +7734,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       />
     )
     if (m.role === 'notice') return <NoticeCard key={key} content={m.content} />
+    if (m.role === 'escalation') return <EscalationCard key={key} message={m} memberName="" state={deriveEscalationState(m, messagesRef.current, i, Date.now())} />
     if (m.role === 'permission') return null
     if (m.role === 'mcp_oauth') {
       const banner = renderMcpOAuthMessage(m, connectionsUiOn)

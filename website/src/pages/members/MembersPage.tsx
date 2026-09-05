@@ -344,6 +344,17 @@ export default function MembersPage() {
     },
     [slots, unreadSlots],
   )
+  // "Needs you": the member has an unanswered escalation. Live slot first
+  // (the slots push carries the flag as it changes), roster row as the
+  // cold-start fallback before the first slots push lands.
+  const isNeedsYou = useCallback(
+    (m: MemberRosterRow) => {
+      const key = slots[m.name] || m.slot_key
+      const live = key ? liveSlots.find((x) => x.key === key) : undefined
+      return live ? !!live.needs_you : !!m.needs_you
+    },
+    [slots, liveSlots],
+  )
 
   const openMember = useCallback(
     (m: MemberRosterRow) => {
@@ -514,6 +525,17 @@ export default function MembersPage() {
                     unread dot, with a real accessible name: nothing else on
                     the row says "unread". The left side is taken — presence
                     rides the avatar. */}
+                {isNeedsYou(m) && (
+                  <span
+                    data-testid="member-needs-you-badge"
+                    role="img"
+                    aria-label={t('pages.members.chat.needs_you')}
+                    className="text-[10px] px-1.5 py-0.5 rounded-full shrink-0"
+                    style={{ background: 'color-mix(in srgb, var(--warn) 18%, transparent)', color: 'var(--warn)' }}
+                  >
+                    {t('pages.members.chat.needs_you')}
+                  </span>
+                )}
                 {isUnread(m) && (
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
@@ -605,7 +627,7 @@ export default function MembersPage() {
                       (transcript and composer both). The DM column is the
                       page's widest region, and an uncapped line length is
                       unreadable on wide screens. */}
-                  <ChatPane slotKey={activeSlot} agentLocked frameless followContentWidth />
+                  <ChatPane slotKey={activeSlot} agentLocked frameless followContentWidth displayProfile="chat" />
                 </ErrorBoundary>
               </div>
             ) : (

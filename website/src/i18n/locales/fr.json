@@ -13981,6 +13981,40 @@
       "driving_idle": "Inactif",
       "driving_show_all": "Tout afficher ({{count}})",
       "driving_show_less": "Afficher moins"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "A besoin de vous",
+        "working": "En cours : {{purpose}}",
+        "working_generic": "En cours…",
+        "view_process_one": "Voir le déroulement ({{count}} étape)",
+        "view_process_other": "Voir le déroulement ({{count}} étapes)",
+        "view_process_many": "Voir le déroulement ({{count}} étapes)",
+        "hide_process": "Masquer le déroulement",
+        "silent_rounds_one": "{{count}} vérification sans nouveauté",
+        "silent_rounds_other": "{{count}} vérifications sans nouveauté",
+        "silent_rounds_many": "{{count}} vérifications sans nouveauté",
+        "show_rounds": "Afficher les vérifications",
+        "hide_rounds": "Masquer les vérifications",
+        "escalation_title": "{{member}} a besoin de vous",
+        "escalation_title_generic": "A besoin de vous",
+        "escalation_from": "depuis {{session}}",
+        "escalation_goal": "Objectif : {{goal}}",
+        "escalation_deadline": "Décidez avant {{time}} · {{remaining}} restant",
+        "escalation_expired": "Délai écoulé — l’action par défaut s’applique",
+        "escalation_expired_no_default": "Délai écoulé",
+        "escalation_default": "Sans réponse de votre part : {{action}}",
+        "escalation_answered": "Répondu",
+        "escalation_pending": "En attente de votre réponse",
+        "escalation_retracted": "Retirée",
+        "escalation_send": "Envoyer la réponse",
+        "escalation_type_instead": "Un message saisi ci-dessous compte aussi comme votre réponse.",
+        "escalation_answer_in_thread": "Répondez depuis le fil du membre sur la page Crew Members.",
+        "escalation_default_applied": "Action par défaut appliquée : {{action}}",
+        "escalation_send_failed": "La réponse n’a pas été envoyée — réessayez.",
+        "escalation_sent": "Réponse envoyée",
+        "escalation_title_from": "{{session}} a besoin de vous"
+      }
     }
   },
   "privacyDisclosure": {

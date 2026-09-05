@@ -79,13 +79,13 @@ function makeStore(slotState: string, messages: Msg[], slotRunning?: boolean) {
   })
 }
 
-function mount(slotState: string, messages: Msg[], slotRunning?: boolean) {
+function mount(slotState: string, messages: Msg[], slotRunning?: boolean, displayProfile: 'transcript' | 'chat' = 'transcript') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <Provider store={makeStore(slotState, messages, slotRunning)}>
       <QueryClientProvider client={qc}>
         <MemoryRouter>
-          <ChatPane slotKey={SLOT} />
+          <ChatPane slotKey={SLOT} displayProfile={displayProfile} />
         </MemoryRouter>
       </QueryClientProvider>
     </Provider>,
@@ -124,5 +124,22 @@ describe('ChatPane working indicator (ChatFooter wiring)', () => {
       { role: 'streaming', content: 'partial an', ts: '2026-09-01T00:00:01Z' },
     ])
     expect(queryByTestId('chat-footer')).toBeNull()
+  })
+
+  it('chat profile: one busy indicator — the working line, no loader carousel', () => {
+    // The member-thread profile draws WorkingIndicator as its busy signal; a
+    // second animated indicator (the ghost-pose carousel) underneath it read as
+    // two things loading. The footer stays available for stopping/compacting.
+    const { queryByTestId, queryAllByTestId } = mount('tool_running', [USER_MSG], true, 'chat')
+    expect(queryByTestId('member-working-indicator')).not.toBeNull()
+    expect(queryByTestId('loader-carousel')).toBeNull()
+    expect(queryByTestId('chat-footer')).toBeNull()
+    expect(queryAllByTestId(/member-working-indicator|loader-carousel/)).toHaveLength(1)
+  })
+
+  it('chat profile: the stopping state still shows in the footer', () => {
+    const { queryByTestId, getByTestId } = mount('stopping', [USER_MSG], true, 'chat')
+    expect(getByTestId('chat-footer')).toHaveTextContent(/stopping/i)
+    expect(queryByTestId('loader-carousel')).toBeNull()
   })
 })

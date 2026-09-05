@@ -13981,6 +13981,40 @@
       "driving_idle": "Inactivo",
       "driving_show_all": "Mostrar todas ({{count}})",
       "driving_show_less": "Mostrar menos"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "Te necesita",
+        "working": "Trabajando: {{purpose}}",
+        "working_generic": "Trabajando…",
+        "view_process_one": "Ver proceso ({{count}} paso)",
+        "view_process_other": "Ver proceso ({{count}} pasos)",
+        "view_process_many": "Ver proceso ({{count}} pasos)",
+        "hide_process": "Ocultar proceso",
+        "silent_rounds_one": "{{count}} comprobación sin novedades",
+        "silent_rounds_other": "{{count}} comprobaciones sin novedades",
+        "silent_rounds_many": "{{count}} comprobaciones sin novedades",
+        "show_rounds": "Mostrar comprobaciones",
+        "hide_rounds": "Ocultar comprobaciones",
+        "escalation_title": "{{member}} te necesita",
+        "escalation_title_generic": "Te necesita",
+        "escalation_from": "de {{session}}",
+        "escalation_goal": "Objetivo: {{goal}}",
+        "escalation_deadline": "Decide antes de las {{time}} · quedan {{remaining}}",
+        "escalation_expired": "Plazo cerrado — se aplica la acción predeterminada",
+        "escalation_expired_no_default": "Plazo cerrado",
+        "escalation_default": "Si no respondes: {{action}}",
+        "escalation_answered": "Respondido",
+        "escalation_pending": "Esperando tu respuesta",
+        "escalation_retracted": "Retirada",
+        "escalation_send": "Enviar respuesta",
+        "escalation_type_instead": "Escribir un mensaje abajo también cuenta como tu respuesta.",
+        "escalation_answer_in_thread": "Responde desde el hilo del miembro en la página Crew Members.",
+        "escalation_default_applied": "Acción por defecto aplicada: {{action}}",
+        "escalation_send_failed": "La respuesta no se envió; inténtalo de nuevo.",
+        "escalation_sent": "Respuesta enviada",
+        "escalation_title_from": "{{session}} te necesita"
+      }
     }
   },
   "privacyDisclosure": {

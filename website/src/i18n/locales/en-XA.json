@@ -10346,6 +10346,38 @@
       "with_shared_gateway_pooled": "[Ẁìţĥ şĥàŕèð ğàţèẁàý (þøøĺèð) ····················]",
       "without_gateway_per_session_copies": "[Ẁìţĥøùţ ğàţèẁàý (þèŕ-şèşşìøñ çøþìèş) ··················]"
     },
+    "members": {
+      "chat": {
+        "escalation_answered": "[Àñşẁèŕèð ············]",
+        "escalation_answer_in_thread": "[Àñşẁèŕ ţĥìş ƒŕøɱ ţĥè ɱèɱƀèŕ'ş ţĥŕèàð øñ ţĥè Çŕèẁ Ṁèɱƀèŕş þàğè. ······················]",
+        "escalation_deadline": "[Ðèçìðè ƀý {{time}} · {{remaining}} ĺèƒţ ················]",
+        "escalation_default": "[Ìƒ ýøù ðøñ’ţ àñşẁèŕ: {{action}} ···············]",
+        "escalation_default_applied": "[Ðèƒàùĺţ àþþĺìèð: {{action}} ···············]",
+        "escalation_expired": "[Ẁìñðøẁ çĺøşèð — ðèƒàùĺţ àþþĺìèş ················]",
+        "escalation_expired_no_default": "[Ẁìñðøẁ çĺøşèð ············]",
+        "escalation_from": "[Ƒŕøɱ {{session}} ········]",
+        "escalation_goal": "[Ğøàĺ: {{goal}} ·········]",
+        "escalation_pending": "[Àẁàìţìñğ ýøùŕ ŕèþĺý ·················]",
+        "escalation_retracted": "[Ẁìţĥðŕàẁñ ··············]",
+        "escalation_send": "[Şèñð ŕèþĺý ···············]",
+        "escalation_send_failed": "[Ŕèþĺý ðìðñ’ţ şèñð — ţŕý àğàìñ. ·····················]",
+        "escalation_sent": "[Ŕèþĺý şèñţ ···············]",
+        "escalation_title": "[{{member}} ñèèðş ýøù ···············]",
+        "escalation_title_from": "[{{session}} ñèèðş ýøù ···············]",
+        "escalation_title_generic": "[Ñèèðş ýøù ··············]",
+        "escalation_type_instead": "[Ţýþìñğ à ɱèşşàğè ƀèĺøẁ àĺşø çøùñţş àş ýøùŕ àñşẁèŕ. ·························]",
+        "view_process_one": "[Ṽìèẁ þŕøçèşş ({{count}} şţèþ) ··················]",
+        "view_process_other": "[Ṽìèẁ þŕøçèşş ({{count}} şţèþş) ···············]",
+        "hide_process": "[Ĥìðè þŕøçèşş ···········]",
+        "hide_rounds": "[Ĥìðè çĥèçķ-ìñş ·············]",
+        "needs_you": "[Ñèèðş ýøù ··············]",
+        "silent_rounds_one": "[{{count}} çĥèçķ-ìñ ẁìţĥ ñøţĥìñğ ñèẁ ··················]",
+        "silent_rounds_other": "[{{count}} çĥèçķ-ìñş ẁìţĥ ñøţĥìñğ ñèẁ ···················]",
+        "show_rounds": "[Şĥøẁ çĥèçķ-ìñş ·············]",
+        "working": "[Ẁøŕķìñğ: {{purpose}} ··············]",
+        "working_generic": "[Ẁøŕķìñğ… ············]"
+      }
+    },
     "membersPage": {
       "agent_template": "[Àğèñţ ţèɱþĺàţè ·············]",
       "configuration": "[Çøñƒìğùŕàţìøñ ············]",

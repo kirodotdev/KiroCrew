@@ -13624,6 +13624,36 @@
       "driving_idle": "유휴",
       "driving_show_all": "모두 보기({{count}})",
       "driving_show_less": "접기"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "결정이 필요합니다",
+        "working": "작업 중: {{purpose}}",
+        "working_generic": "작업 중…",
+        "view_process_other": "과정 보기({{count}}단계)",
+        "hide_process": "과정 숨기기",
+        "silent_rounds_other": "정기 확인 {{count}}회, 새로운 진행 없음",
+        "show_rounds": "정기 확인 보기",
+        "hide_rounds": "정기 확인 숨기기",
+        "escalation_title": "{{member}} 님이 결정을 요청합니다",
+        "escalation_title_generic": "결정이 필요합니다",
+        "escalation_from": "{{session}}에서",
+        "escalation_goal": "목표: {{goal}}",
+        "escalation_deadline": "{{time}}까지 결정 · {{remaining}} 남음",
+        "escalation_expired": "응답 기한 종료 — 기본 동작이 적용됩니다",
+        "escalation_expired_no_default": "응답 기한 종료",
+        "escalation_default": "응답하지 않으면: {{action}}",
+        "escalation_answered": "응답 완료",
+        "escalation_pending": "회신을 기다리고 있습니다",
+        "escalation_retracted": "철회됨",
+        "escalation_send": "답장 보내기",
+        "escalation_type_instead": "아래에 메시지를 입력해도 답변으로 처리됩니다.",
+        "escalation_answer_in_thread": "Crew Members 페이지의 해당 멤버 스레드에서 답해 주세요.",
+        "escalation_default_applied": "기본 동작 적용됨: {{action}}",
+        "escalation_send_failed": "답장을 보내지 못했습니다. 다시 시도하세요.",
+        "escalation_sent": "답장을 보냈습니다",
+        "escalation_title_from": "{{session}}에 당신의 판단이 필요합니다"
+      }
     }
   },
   "privacyDisclosure": {

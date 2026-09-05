@@ -13802,6 +13802,38 @@
       "driving_idle": "Inaktiv",
       "driving_show_all": "Alle anzeigen ({{count}})",
       "driving_show_less": "Weniger anzeigen"
+    },
+    "members": {
+      "chat": {
+        "needs_you": "Braucht dich",
+        "working": "Arbeitet: {{purpose}}",
+        "working_generic": "Arbeitet…",
+        "view_process_one": "Ablauf anzeigen ({{count}} Schritt)",
+        "view_process_other": "Ablauf anzeigen ({{count}} Schritte)",
+        "hide_process": "Ablauf ausblenden",
+        "silent_rounds_one": "{{count}} Routineprüfung ohne Neuigkeiten",
+        "silent_rounds_other": "{{count}} Routineprüfungen ohne Neuigkeiten",
+        "show_rounds": "Kontrollrunden anzeigen",
+        "hide_rounds": "Kontrollrunden ausblenden",
+        "escalation_title": "{{member}} braucht dich",
+        "escalation_title_generic": "Braucht dich",
+        "escalation_from": "aus {{session}}",
+        "escalation_goal": "Ziel: {{goal}}",
+        "escalation_deadline": "Entscheide bis {{time}} · noch {{remaining}}",
+        "escalation_expired": "Frist abgelaufen — Standardaktion wird ausgeführt",
+        "escalation_expired_no_default": "Frist abgelaufen",
+        "escalation_default": "Wenn du nicht antwortest: {{action}}",
+        "escalation_answered": "Beantwortet",
+        "escalation_pending": "Wartet auf deine Antwort",
+        "escalation_retracted": "Zurückgezogen",
+        "escalation_send": "Antwort senden",
+        "escalation_type_instead": "Auch eine unten eingegebene Nachricht zählt als deine Antwort.",
+        "escalation_answer_in_thread": "Beantworte dies im Thread des Mitglieds auf der Seite „Crew Members“.",
+        "escalation_default_applied": "Standard angewendet: {{action}}",
+        "escalation_send_failed": "Antwort wurde nicht gesendet – bitte erneut versuchen.",
+        "escalation_sent": "Antwort gesendet",
+        "escalation_title_from": "{{session}} braucht dich"
+      }
     }
   },
   "privacyDisclosure": {
