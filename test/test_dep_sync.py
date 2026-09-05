@@ -700,8 +700,11 @@ def test_sync_or_reinstall_prefers_the_reinstall_when_nothing_is_locked(tmp_path
     seen = {}
 
     def fake_run(argv, **kwargs):
-        seen["argv"] = argv
-        seen["timeout"] = kwargs.get("timeout")
+        # Record the pip install call specifically; the post-install import probe
+        # is a second subprocess.run and must not clobber what we assert on.
+        if argv[1:3] == ["-m", "pip"]:
+            seen["argv"] = argv
+            seen["timeout"] = kwargs.get("timeout")
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     with (
@@ -710,6 +713,10 @@ def test_sync_or_reinstall_prefers_the_reinstall_when_nothing_is_locked(tmp_path
         patch.object(dep_sync, "locked_console_scripts", return_value=[]),
         patch.object(dep_sync, "sync", side_effect=AssertionError("must not substitute")),
         patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+        # Post-install verification: the console script is present+executable and
+        # the package imports. Stubbed here so this test pins the "prefer the
+        # reinstall" contract, not the verification (which has its own tests).
+        patch.object(dep_sync.os, "access", return_value=True),
     ):
         rc = dep_sync.sync_or_reinstall(tmp_path, Path("/venv/bin/python"), timeout=42)
 
@@ -718,11 +725,228 @@ def test_sync_or_reinstall_prefers_the_reinstall_when_nothing_is_locked(tmp_path
     assert seen["timeout"] == 42
 
 
-def test_sync_or_reinstall_substitutes_when_a_script_is_locked(tmp_path):
-    """A locked script routes to the substitute, and the caller is told why.
+def test_sync_or_reinstall_fails_when_entry_point_missing_after_pip_ok(tmp_path):
+    """A full reinstall is not successful until its executable entry point exists.
 
-    The reinstall must not merely fail here: pip's uninstall is not atomic, so
-    reaching the locked script means the editable .pth is already gone.
+    This is the interrupted-venv-rebuild incident: the subprocess can report 0
+    while the ``kirocrew`` artifact is absent or unusable. Every full-reinstall
+    caller gets this postcondition; the locked dependency-only branch returns
+    before it because it deliberately cannot rewrite the running wrapper.
+    """
+    messages = []
+
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    with (
+        _origin_stub(),
+        _maps(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=[]),
+        patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+        patch.object(dep_sync.os, "access", return_value=False),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path,
+            Path("/venv/bin/python"),
+            lambda m, e: messages.append((m, e)),
+        )
+
+    assert rc == 1
+    joined = " ".join(m for m, _ in messages)
+    assert "console" in joined and "kirocrew" in joined
+
+
+def test_sync_or_reinstall_fails_when_package_unimportable_after_pip_ok(tmp_path):
+    """The isolated target-venv probe must reject an unimportable package."""
+    messages = []
+
+    with (
+        _origin_stub(),
+        _maps(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=[]),
+        patch.object(
+            dep_sync.subprocess,
+            "run",
+            return_value=SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+        ),
+        patch.object(
+            dep_sync,
+            "_probe_interpreter",
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="ModuleNotFoundError"),
+        ) as import_probe,
+        patch.object(dep_sync.os, "access", return_value=True),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path,
+            Path("/venv/bin/python"),
+            lambda m, e: messages.append((m, e)),
+        )
+
+    assert rc == 1
+    joined = " ".join(m for m, _ in messages)
+    assert "importable" in joined
+    # _probe_interpreter owns the -I, neutral-CWD, and PYTHONPATH isolation
+    # contract. Calling it here prevents a source checkout in the parent process
+    # from satisfying a postcondition about the target venv.
+    import_probe.assert_called_once_with(Path("/venv/bin/python"), "import kiro_crew", timeout=None)
+
+
+def test_sync_or_reinstall_fails_when_import_probe_times_out(tmp_path):
+    """The post-install import probe is bounded by the caller's timeout."""
+    messages = []
+
+    with (
+        _origin_stub(),
+        _maps(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=[]),
+        patch.object(
+            dep_sync.subprocess,
+            "run",
+            return_value=SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+        ),
+        patch.object(
+            dep_sync,
+            "_probe_interpreter",
+            side_effect=subprocess.TimeoutExpired(cmd=["python"], timeout=7),
+        ) as import_probe,
+        patch.object(dep_sync.os, "access", return_value=True),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path,
+            Path("/venv/bin/python"),
+            lambda m, e: messages.append((m, e)),
+            timeout=7,
+        )
+
+    assert rc == 1
+    assert any("import check timed out" in m for m, _ in messages)
+    import_probe.assert_called_once_with(Path("/venv/bin/python"), "import kiro_crew", timeout=7)
+
+
+def test_sync_or_reinstall_repairs_absent_package_in_verified_project_venv(tmp_path):
+    """The gateway can recover the exact half-built venv it owns.
+
+    An interrupted venv rebuild can leave a runnable ``<repo>/.venv`` before the
+    package or wrapper lands. The ordinary ownership guard must stay fail-closed;
+    only explicit repair intent plus the exact managed path and a runnable
+    interpreter admit this absent-origin state.
+    """
+    target_py = dep_sync.project_venv_python(tmp_path)
+
+    with (
+        patch.object(dep_sync, "installed_package_origin", return_value=None),
+        patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 0)) as version,
+        patch.object(dep_sync, "locked_console_scripts", return_value=[]),
+        patch.object(
+            dep_sync.subprocess,
+            "run",
+            return_value=SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+        ) as pip_run,
+        patch.object(
+            dep_sync,
+            "_probe_interpreter",
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ),
+        patch.object(dep_sync.os, "access", return_value=True),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path,
+            target_py,
+            timeout=42,
+            allow_missing_package_repair=True,
+        )
+
+    assert rc == 0
+    version.assert_called_once_with(target_py, timeout=42)
+    assert pip_run.call_args.args[0][1:3] == ["-m", "pip"]
+
+
+def test_sync_or_reinstall_still_refuses_absent_package_without_repair_intent(
+    tmp_path,
+):
+    """A location alone does not prove ownership for ordinary callers."""
+    with (
+        patch.object(dep_sync, "installed_package_origin", return_value=None),
+        patch.object(
+            dep_sync,
+            "locked_console_scripts",
+            side_effect=AssertionError("must refuse before lock probing"),
+        ),
+        patch.object(
+            dep_sync.subprocess,
+            "run",
+            side_effect=AssertionError("must not install"),
+        ),
+    ):
+        rc = dep_sync.sync_or_reinstall(tmp_path, dep_sync.project_venv_python(tmp_path))
+
+    assert rc == dep_sync.REFUSED
+
+
+def test_missing_package_repair_refuses_a_target_outside_project_venv(tmp_path):
+    """Repair intent cannot turn a configured foreign target into an owned venv."""
+    foreign_target = tmp_path / "other-venv" / "bin" / "python"
+
+    with (
+        patch.object(dep_sync, "installed_package_origin", return_value=None),
+        patch.object(
+            dep_sync,
+            "interpreter_version",
+            side_effect=AssertionError("foreign target must not be probed as owned"),
+        ),
+        patch.object(
+            dep_sync,
+            "locked_console_scripts",
+            side_effect=AssertionError("must refuse before lock probing"),
+        ),
+        patch.object(
+            dep_sync.subprocess,
+            "run",
+            side_effect=AssertionError("must not install"),
+        ),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path,
+            foreign_target,
+            allow_missing_package_repair=True,
+        )
+
+    assert rc == dep_sync.REFUSED
+
+
+def test_missing_package_repair_refuses_an_unrunnable_project_venv(tmp_path):
+    """An exact path is insufficient when the interpreter itself cannot run."""
+    target_py = dep_sync.project_venv_python(tmp_path)
+
+    with (
+        patch.object(dep_sync, "installed_package_origin", return_value=None),
+        patch.object(dep_sync, "interpreter_version", return_value=None),
+        patch.object(
+            dep_sync,
+            "locked_console_scripts",
+            side_effect=AssertionError("must refuse before lock probing"),
+        ),
+        patch.object(
+            dep_sync.subprocess,
+            "run",
+            side_effect=AssertionError("must not install"),
+        ),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path,
+            target_py,
+            allow_missing_package_repair=True,
+        )
+
+    assert rc == dep_sync.REFUSED
+
+
+def test_sync_or_reinstall_substitutes_when_a_script_is_locked(tmp_path):
+    """A locked wrapper uses dependency-only sync without reinstall postconditions.
+
+    pip cannot atomically replace a running Windows console script. This branch
+    deliberately leaves that wrapper alone, so neither the entry-point stat nor
+    the import probe from the full-reinstall success contract may run here.
     """
     messages = []
 
@@ -731,6 +955,7 @@ def test_sync_or_reinstall_substitutes_when_a_script_is_locked(tmp_path):
         _maps(),
         patch.object(dep_sync, "locked_console_scripts", return_value=[r"C:\v\kirocrew.exe"]),
         patch.object(dep_sync, "sync", return_value=0) as sync_mock,
+        patch.object(dep_sync.os, "access", side_effect=AssertionError("must not verify wrapper")),
         patch.object(dep_sync.subprocess, "run", side_effect=AssertionError("must not reinstall")),
     ):
         rc = dep_sync.sync_or_reinstall(
@@ -746,7 +971,7 @@ def test_sync_or_reinstall_guards_the_reinstall_branch_too(tmp_path):
     """The foreign-venv refusal covers the branch pip can still run.
 
     Guarding only the substitute would rebuild, inside this shared function, the
-    exact asymmetry it was written to remove: three of its four callers take the
+    exact asymmetry it was written to remove: four of its five callers take the
     checkout from configuration, so a venv serving a DIFFERENT checkout is
     reachable on all three, and `pip install -e <repo>` against it silently
     repoints that other checkout's editable install at this repo.
@@ -1111,3 +1336,23 @@ def test_module_imports_stdlib_only():
     # rather than breaking the module.
     third_party = roots - set(sys.stdlib_module_names) - {"tomli"}
     assert not third_party, f"dep_sync must import stdlib only; found {sorted(third_party)}"
+
+
+def test_console_script_path_is_platform_aware():
+    """The console-script path resolves to Scripts\\kirocrew.exe on Windows and
+    bin/kirocrew on POSIX -- not a hardcoded POSIX layout in a module that exists
+    for the Windows locked-script case.
+    """
+    posix_py = Path("/home/u/proj/.venv/bin/python")
+    win_py = Path(r"C:\proj\.venv\Scripts\python.exe")
+
+    with patch.object(dep_sync.sys, "platform", "linux"):
+        p = dep_sync.console_script_path(posix_py)
+        assert p.name == "kirocrew"
+        assert not p.name.endswith(".exe")
+        assert p == posix_py.with_name("kirocrew")
+
+    with patch.object(dep_sync.sys, "platform", "win32"):
+        w = dep_sync.console_script_path(win_py)
+        assert w.name == "kirocrew.exe"
+        assert w == win_py.with_name("kirocrew.exe")

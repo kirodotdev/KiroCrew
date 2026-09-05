@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -1065,6 +1066,112 @@ class TestBrazilInstallAndDeps:
                     GatewayOrchestrator, "_is_brazil_install", return_value=True
                 ):
                     asyncio.run(orch._check_missing_deps())  # should not raise, skips pip
+
+    # --- _check_console_script -------------------------------------------------
+
+    def test_check_console_script_skips_when_no_project_dir(self):
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": ""}, clear=False):
+            with patch("kiro_crew.slack.gateway.dep_sync.sync_or_reinstall") as reinstall:
+                asyncio.run(orch._check_console_script())
+        reinstall.assert_not_called()
+
+    def test_check_console_script_skips_brazil(self, tmp_path):
+        (tmp_path / ".install-method").write_text("brazil")
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch("kiro_crew.slack.gateway.dep_sync.sync_or_reinstall") as reinstall:
+                asyncio.run(orch._check_console_script())
+        reinstall.assert_not_called()
+
+    def test_check_console_script_skips_non_pip(self, tmp_path):
+        # No .install-method (or a non-pip one) means this is not a pip install.
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch.object(GatewayOrchestrator, "_is_brazil_install", return_value=False):
+                with patch("kiro_crew.slack.gateway.dep_sync.sync_or_reinstall") as reinstall:
+                    asyncio.run(orch._check_console_script())
+        reinstall.assert_not_called()
+
+    def test_check_console_script_skips_when_script_present_and_executable(self, tmp_path):
+        (tmp_path / ".install-method").write_text("pip")
+        if sys.platform == "win32":
+            venv_py = tmp_path / ".venv" / "Scripts" / "python.exe"
+        else:
+            venv_py = tmp_path / ".venv" / "bin" / "python"
+        script = gw.dep_sync.console_script_path(venv_py)
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch("kiro_crew.slack.gateway.dep_sync.sync_or_reinstall") as reinstall:
+                asyncio.run(orch._check_console_script())
+        reinstall.assert_not_called()
+
+    def test_check_console_script_reinstalls_when_missing(self, tmp_path):
+        (tmp_path / ".install-method").write_text("pip")
+        if sys.platform == "win32":
+            venv_py = tmp_path / ".venv" / "Scripts" / "python.exe"
+        else:
+            venv_py = tmp_path / ".venv" / "bin" / "python"
+        # The interpreter directory exists but the entry point is absent.
+        venv_py.parent.mkdir(parents=True)
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch(
+                "kiro_crew.slack.gateway.dep_sync.sync_or_reinstall", return_value=0
+            ) as reinstall:
+                asyncio.run(orch._check_console_script())
+        reinstall.assert_called_once()
+        assert reinstall.call_args.kwargs["allow_missing_package_repair"] is True
+        assert reinstall.call_args.args[1] == gw.dep_sync.project_venv_python(tmp_path)
+
+    def test_check_console_script_reinstalls_on_dangling_symlink(self, tmp_path):
+        (tmp_path / ".install-method").write_text("pip")
+        if sys.platform == "win32":
+            venv_py = tmp_path / ".venv" / "Scripts" / "python.exe"
+        else:
+            venv_py = tmp_path / ".venv" / "bin" / "python"
+        script = gw.dep_sync.console_script_path(venv_py)
+        script.parent.mkdir(parents=True)
+        # Dangling symlink: exists() is False, so the reinstall must fire.
+        script.symlink_to(tmp_path / "does-not-exist")
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch(
+                "kiro_crew.slack.gateway.dep_sync.sync_or_reinstall", return_value=0
+            ) as reinstall:
+                asyncio.run(orch._check_console_script())
+        reinstall.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_console_script_repair_task_is_tracked_without_blocking(self):
+        orch = _make_orchestrator()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _repair():
+            started.set()
+            await release.wait()
+
+        with patch.object(orch, "_check_console_script", side_effect=_repair):
+            task = orch._schedule_console_script_repair()
+            await asyncio.wait_for(started.wait(), timeout=1)
+            assert task in orch._background_tasks
+            assert not task.done()
+            release.set()
+            await task
+            await asyncio.sleep(0)
+
+        assert task not in orch._background_tasks
+
+    def test_console_script_repair_is_scheduled_only_after_http_bind(self):
+        """The potentially 300-second repair must never gate socket readiness."""
+        source = inspect.getsource(GatewayOrchestrator.run)
+        scheduled = source.index("self._schedule_console_script_repair()")
+        assert source.index("await self._init_dashboard()") < scheduled
+        assert source.index("await self._init_api_server()") < scheduled
 
 
 # ═══════════════════════════════════════════════════════════════════════════

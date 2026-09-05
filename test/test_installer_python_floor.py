@@ -333,13 +333,16 @@ def test_editable_reinstall_proceeds_when_the_venv_meets_the_floor(tmp_path):
         patch.object(dep_sync, "requires_python", return_value=">=3.12"),
         patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 3)),
         patch.object(dep_sync, "subprocess") as sp,
+        # Post-install verification (console script present + package imports)
+        # is stubbed green here; it has its own dedicated tests in test_dep_sync.
+        patch.object(dep_sync.os, "access", return_value=True),
     ):
         sp.run.return_value.returncode = 0
         rc = dep_sync.sync_or_reinstall(repo, Path("py"))
 
     assert rc == 0
     assert sp.run.called
-    argv = sp.run.call_args[0][0]
+    argv = sp.run.call_args_list[0][0][0]  # the pip install call, not the import probe
     assert argv[1:5] == ["-m", "pip", "install", "-e"]
 
 
@@ -378,6 +381,8 @@ def test_no_floor_declared_does_not_block_the_reinstall(tmp_path):
         patch.object(dep_sync, "locked_console_scripts", return_value=[]),
         patch.object(dep_sync, "requires_python", return_value=None),
         patch.object(dep_sync, "subprocess") as sp,
+        # Post-install verification stubbed green; covered in test_dep_sync.
+        patch.object(dep_sync.os, "access", return_value=True),
     ):
         sp.run.return_value.returncode = 0
         rc = dep_sync.sync_or_reinstall(repo, Path("py"))
@@ -468,3 +473,53 @@ def test_the_give_up_branch_names_the_provisioner_route(script, var):
     """Once the fallback can decline to run, the exit has to say how to enable it."""
     body = script.read_text(encoding="utf-8")
     assert "mise.jdx.dev/installing-mise.html" in body
+
+
+# ---------------------------------------------------------------------------
+# install.sh: the .install-method=pip record is gated on a verified entry point
+# ---------------------------------------------------------------------------
+
+
+def test_install_sh_verifies_the_console_script_before_recording_pip():
+    """A pip install that leaves no `kirocrew` entry point must not be recorded.
+
+    The interrupted-venv-rebuild incident: a killed `pip install -e` can leave a
+    venv with a working interpreter but no console script, yet the old install.sh
+    still wrote `.install-method=pip` and symlinked a dangling `kirocrew`. The
+    gateway then dies later with exit 127. install.sh must die before recording
+    the method unless BOTH the executable entry point and the `import kiro_crew`
+    check pass.
+    """
+    body = INSTALL_SH.read_text(encoding="utf-8")
+
+    entry_guard = '[ ! -x "$_venv/bin/kirocrew" ]'
+    import_guard = '"$_venv/bin/python" -c "import kiro_crew"'
+    record = 'echo "pip" > "$KIROCREW_APP_DIR/.install-method"'
+
+    assert entry_guard in body, "missing the entry-point executable guard"
+    assert import_guard in body, "missing the kiro_crew importable guard"
+    assert record in body, "the .install-method=pip record moved or was renamed"
+
+    # Both guards must run BEFORE the method is recorded, or the record is not
+    # actually gated. This is the property that breaks if either guard is
+    # reverted (mutation check).
+    assert body.index(entry_guard) < body.index(record)
+    assert body.index(import_guard) < body.index(record)
+
+    # And each guard must abort (die) rather than merely warn.
+    entry_stmt = body.split(entry_guard, 1)[1].split("fi", 1)[0]
+    assert "die " in entry_stmt, "the entry-point guard must die, not warn"
+    import_stmt = body.split(import_guard, 1)[1].split("fi", 1)[0]
+    assert "die " in import_stmt, "the import guard must die, not warn"
+
+
+def test_install_sh_entry_point_guard_is_not_embedded_in_the_ec2_template():
+    """The CFN UserData git-clones and runs install.sh; it must not duplicate it.
+
+    The bootstrap template has a hard 16KB UserData ceiling, and the guard belongs
+    in install.sh (which the template invokes), not copied into the template.
+    """
+    template = REPO / "src" / "kiro_crew" / "cloud" / "templates" / "kirocrew-ec2.yaml"
+    body = template.read_text(encoding="utf-8")
+    assert "Install incomplete: entry point" not in body
+    assert '-c "import kiro_crew"' not in body
