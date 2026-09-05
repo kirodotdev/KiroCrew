@@ -24,6 +24,7 @@ import {
   type ReactNode,
 } from 'react'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
+import { AcceptedBodyUnreadable } from '../api/apiError'
 import { AppApiError, AppApiPermissionError } from './apiError'
 
 // ---------------------------------------------------------------------------
@@ -430,11 +431,24 @@ function createScopedApi(allowedPaths: string[], appName: string): AppApi {
     if (res.status === 204 || res.status === 205) {
       return undefined as T
     }
-    const text = await res.text()
+    // Past this point the server has ACCEPTED the request; a body that cannot
+    // be read (stream cut) or parsed is a lost receipt, not a failed request.
+    // Tag it so a send path can tell it from a request that never left (which
+    // `fetch` also reports as a `TypeError`) and not offer a duplicate retry.
+    let text: string
+    try {
+      text = await res.text()
+    } catch (e) {
+      throw new AcceptedBodyUnreadable(e)
+    }
     if (text.trim() === '') {
       return undefined as T
     }
-    return JSON.parse(text) as T
+    try {
+      return JSON.parse(text) as T
+    } catch (e) {
+      throw new AcceptedBodyUnreadable(e)
+    }
   }
 
   return {

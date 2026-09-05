@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "The server accepted the request, but its reply could not be read.",
       "paste_token_url_or_raw_token": "Paste token URL or raw token…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
       "session_expired": "Session expired.",
@@ -73,10 +74,7 @@
     "chatEmbed": {
       "agent_is_working": "Agent is working...",
       "app_not_allowed_to_send": "This app isn't allowed to send chat messages.",
-      "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again.",
-      "delivery_unconfirmed_option": "Delivery not confirmed — check the transcript, then re-pick the option if it is missing.",
-      "message": "Message...",
-      "send_failed_connection": "Couldn't send — check your connection and try again."
+      "message": "Message..."
     }
   },
   "apps": {
@@ -3502,7 +3500,10 @@
       "upload_failed_error": "Upload failed: {{error}}",
       "worktree_creation_returned_no_path": "Worktree creation returned no path",
       "loading_earlier_messages": "Loading earlier messages…",
-      "send_failed_with_error": "Send failed: {{error}}"
+      "send_failed_with_error": "Send failed: {{error}}",
+      "delivery_unconfirmed_option": "Delivery not confirmed — check the transcript, then re-pick the option if it is missing.",
+      "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again.",
+      "send_failed_connection": "Couldn't send — check your connection and try again."
     },
     "chatSidebar": {
       "answered_by": "answered by {{agent}}",

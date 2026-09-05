@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "서버가 요청을 수락했지만 응답을 읽을 수 없었습니다.",
       "paste_token_url_or_raw_token": "토큰 URL 또는 토큰 원문을 붙여넣으세요…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "터널 엣지에서 요청 수가 제한되었습니다 (HTTP 429) — 짧은 시간에 요청이 너무 많습니다. 대시보드가 자동으로 재시도합니다. 계속되면 몇 초 기다린 후 새로고침하세요.",
       "session_expired": "세션이 만료되었습니다.",
@@ -118,10 +119,7 @@
       "agent_is_working": "에이전트가 작업 중…",
       "app_not_allowed_to_send": "이 앱은 채팅 메시지를 보낼 수 없습니다.",
       "chat_message": "채팅 메시지",
-      "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
-      "delivery_unconfirmed_option": "전송이 확인되지 않았습니다 — 대화 기록을 확인한 뒤, 보이지 않으면 옵션을 다시 선택하세요.",
       "message": "메시지…",
-      "send_failed_connection": "보내지 못했습니다 — 연결 상태를 확인한 뒤 다시 시도하세요.",
       "session_ready_type_a_message_to_start": "세션이 준비되었습니다. 메시지를 입력해 시작하세요.",
       "streaming": "스트리밍 중"
     },
@@ -9298,7 +9296,10 @@
       "what_can_i_do_for_you": "무엇을 도와드릴까요?",
       "worktree_creation_returned_no_path": "워크트리 생성 결과에 경로가 없습니다",
       "loading_earlier_messages": "이전 메시지를 불러오는 중…",
-      "send_failed_with_error": "전송 실패: {{error}}"
+      "send_failed_with_error": "전송 실패: {{error}}",
+      "delivery_unconfirmed_option": "전송이 확인되지 않았습니다 — 대화 기록을 확인한 뒤, 보이지 않으면 옵션을 다시 선택하세요.",
+      "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
+      "send_failed_connection": "보내지 못했습니다 — 연결 상태를 확인한 뒤 다시 시도하세요."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",

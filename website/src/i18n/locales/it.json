@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "Il server ha accettato la richiesta, ma la risposta non è stata leggibile.",
       "paste_token_url_or_raw_token": "Incolla l'URL del token o il token grezzo…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
       "session_expired": "Sessione scaduta.",
@@ -124,10 +125,7 @@
       "agent_is_working": "L'agente è al lavoro...",
       "app_not_allowed_to_send": "Questa app non è autorizzata a inviare messaggi di chat.",
       "chat_message": "Messaggio di chat",
-      "delivery_unconfirmed": "Consegna non confermata: il testo è tornato nel campo di scrittura; controlla la conversazione prima di inviarlo di nuovo.",
-      "delivery_unconfirmed_option": "Consegna non confermata: controlla la conversazione e, se manca, scegli di nuovo l'opzione.",
       "message": "Messaggio...",
-      "send_failed_connection": "Invio non riuscito: controlla la connessione e riprova.",
       "session_ready_type_a_message_to_start": "Sessione pronta. Digita un messaggio per iniziare.",
       "streaming": "streaming"
     },
@@ -9566,7 +9564,10 @@
       "what_can_i_do_for_you": "Cosa posso fare per te?",
       "worktree_creation_returned_no_path": "La creazione del worktree non ha restituito alcun percorso",
       "loading_earlier_messages": "Caricamento dei messaggi precedenti…",
-      "send_failed_with_error": "Invio non riuscito: {{error}}"
+      "send_failed_with_error": "Invio non riuscito: {{error}}",
+      "delivery_unconfirmed_option": "Consegna non confermata: controlla la conversazione e, se manca, scegli di nuovo l'opzione.",
+      "delivery_unconfirmed": "Consegna non confermata: il testo è tornato nel campo di scrittura; controlla la conversazione prima di inviarlo di nuovo.",
+      "send_failed_connection": "Invio non riuscito: controlla la connessione e riprova."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

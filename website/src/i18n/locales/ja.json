@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "サーバーはリクエストを受け付けましたが、応答を読み取れませんでした。",
       "paste_token_url_or_raw_token": "トークン URL またはトークンを貼り付け…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "トンネルエッジでレート制限されています (HTTP 429) — バーストでリクエストが多すぎます。ダッシュボードは自動的に再試行します。これが続く場合は、数秒待ってからリロードしてください。",
       "session_expired": "セッションの有効期限が切れました。",
@@ -118,10 +119,7 @@
       "agent_is_working": "エージェントが処理中…",
       "app_not_allowed_to_send": "このアプリにはチャットメッセージを送信する権限がありません。",
       "chat_message": "チャットメッセージ",
-      "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
-      "delivery_unconfirmed_option": "送信が確認できません — 会話履歴を確認し、見当たらなければ選択肢をもう一度選んでください。",
       "message": "メッセージ…",
-      "send_failed_connection": "送信できませんでした — 接続を確認してから、もう一度お試しください。",
       "session_ready_type_a_message_to_start": "セッション準備完了。メッセージを入力して開始してください。",
       "streaming": "ストリーミング中"
     },
@@ -9298,7 +9296,10 @@
       "what_can_i_do_for_you": "何をお手伝いしましょうか？",
       "worktree_creation_returned_no_path": "ワークツリーの作成結果にパスがありません",
       "loading_earlier_messages": "以前のメッセージを読み込み中…",
-      "send_failed_with_error": "送信に失敗しました: {{error}}"
+      "send_failed_with_error": "送信に失敗しました: {{error}}",
+      "delivery_unconfirmed_option": "送信が確認できません — 会話履歴を確認し、見当たらなければ選択肢をもう一度選んでください。",
+      "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
+      "send_failed_connection": "送信できませんでした — 接続を確認してから、もう一度お試しください。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "El servidor aceptó la solicitud, pero no se pudo leer la respuesta.",
       "paste_token_url_or_raw_token": "Pega la URL del token o el token sin procesar…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitación de peticiones en el borde del túnel (HTTP 429) — demasiadas solicitudes en una ráfaga. El panel lo reintenta automáticamente; si esto continúa, espera unos segundos y recarga la página.",
       "session_expired": "La sesión ha caducado.",
@@ -124,10 +125,7 @@
       "agent_is_working": "El agente está trabajando…",
       "app_not_allowed_to_send": "Esta aplicación no tiene permiso para enviar mensajes de chat.",
       "chat_message": "Mensaje de chat",
-      "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al cuadro de redacción; revisa la conversación antes de enviarlo de nuevo.",
-      "delivery_unconfirmed_option": "Entrega sin confirmar: revisa la conversación y vuelve a elegir la opción si no aparece.",
       "message": "Mensaje…",
-      "send_failed_connection": "No se pudo enviar: comprueba tu conexión y vuelve a intentarlo.",
       "session_ready_type_a_message_to_start": "Sesión lista. Escribe un mensaje para empezar.",
       "streaming": "en streaming"
     },
@@ -9566,7 +9564,10 @@
       "what_can_i_do_for_you": "¿Qué puedo hacer por ti?",
       "worktree_creation_returned_no_path": "La creación del worktree no devolvió ninguna ruta",
       "loading_earlier_messages": "Cargando mensajes anteriores…",
-      "send_failed_with_error": "Error al enviar: {{error}}"
+      "send_failed_with_error": "Error al enviar: {{error}}",
+      "delivery_unconfirmed_option": "Entrega sin confirmar: revisa la conversación y vuelve a elegir la opción si no aparece.",
+      "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al cuadro de redacción; revisa la conversación antes de enviarlo de nuevo.",
+      "send_failed_connection": "No se pudo enviar: comprueba tu conexión y vuelve a intentarlo."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",

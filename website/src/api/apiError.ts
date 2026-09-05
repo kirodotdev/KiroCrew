@@ -95,3 +95,25 @@ export async function toApiError(r: Response): Promise<ApiError> {
   const message = friendlyErrText(r.status, body) || `HTTP ${r.status}`
   return new ApiError(r.status, message, body, authRequired)
 }
+
+/**
+ * A 2xx whose body could not be read -- an interrupted stream (`TypeError`) or
+ * an unparseable body (`SyntaxError`). The server ACCEPTED the request; only
+ * the receipt is lost. A plain body read lets these surface as the raw error,
+ * where a caller cannot tell them from a request that never left (`fetch`
+ * rejects with a `TypeError` too), so an endpoint whose 2xx is an acceptance
+ * receipt (a chat turn) wraps post-2xx failures in this class: a caller that
+ * treated "accepted, unreadable" as "unsent" would offer a retry that runs the
+ * turn twice. Lives here, not in `client.ts`, so the app-sdk (its own fetch
+ * helper, same hazard) and the many tests that mock `client.ts` wholesale can
+ * share one identity for the `instanceof` check.
+ */
+export class AcceptedBodyUnreadable extends Error {
+  constructor(readonly reason: unknown) {
+    // A human sentence, not blank: every scoped-API method of every App Kit app
+    // reads through the tagging helper, and app code that surfaces
+    // `err.message` from a malformed 2xx must not render an empty string.
+    super(i18nT('api.client.accepted_body_unreadable') as string)
+    this.name = 'AcceptedBodyUnreadable'
+  }
+}

@@ -95,6 +95,35 @@ export interface SendWirePayload {
  */
 export type SendWire = (payload: SendWirePayload, signal: AbortSignal) => Promise<SendResponseLike>
 
+/**
+ * Run a wire's underlying request under the transport's deadline signal when
+ * the request itself cannot take a signal (a client helper, a two-call
+ * sequence). Resolves/rejects with `start()`'s outcome unless `signal` fires
+ * first, in which case it rejects with `onAbort()` and ignores the late
+ * settlement. One spelling of the abort race for every wire that needs it --
+ * the race is easy to get subtly wrong (a late settlement flipping an already
+ * delivered receipt), so it lives here rather than in each adapter.
+ */
+export function settleUnderSignal<T>(
+  signal: AbortSignal,
+  start: () => Promise<T>,
+  onAbort: () => unknown = () => new DOMException('aborted', 'AbortError'),
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) { reject(onAbort()); return }
+    let settled = false
+    const abort = () => { if (!settled) { settled = true; reject(onAbort()) } }
+    signal.addEventListener('abort', abort, { once: true })
+    const done = <V,>(fn: (v: V) => void) => (v: V) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', abort)
+      fn(v)
+    }
+    start().then(done(resolve), done(reject))
+  })
+}
+
 /** The dashboard client's wire: `POST /api/chat?ws=1` with the session key. */
 const dashboardSendWire: SendWire = (payload, signal) =>
   api.sendChat(payload.message, payload.slot, undefined, signal, payload.meta)

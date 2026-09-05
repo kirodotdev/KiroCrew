@@ -12,6 +12,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { sendTurn, SEND_ABORT_MS } from '../chat-core/transport/sendTurn'
 import { appApiSendWire } from '../app-sdk/appSendWire'
 import { AppApiError, AppApiPermissionError } from '../app-sdk/apiError'
+import { AcceptedBodyUnreadable } from '../api/apiError'
 import type { AppApi } from '../app-sdk/index'
 
 function apiWith(post: AppApi['post']): AppApi {
@@ -68,12 +69,21 @@ describe('appApiSendWire', () => {
   })
 
   it('classifies a 2xx whose body is not JSON as unknown -- the case the old embed swallowed as success', async () => {
-    // The scoped helper JSON.parses a text body and throws SyntaxError on a
-    // non-JSON one. The bare endpoint answers with an SSE stream, which is
-    // exactly this shape -- and the old `.catch(SyntaxError => undefined)`
-    // reported it as a successful send.
+    // The scoped helper tags a post-2xx parse failure `AcceptedBodyUnreadable`.
+    // The bare endpoint answers with an SSE stream, which is exactly this
+    // shape -- and the old `.catch(SyntaxError => undefined)` reported it as a
+    // successful send.
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const post = vi.fn().mockRejectedValue(new SyntaxError('Unexpected token d in JSON'))
+    const post = vi.fn().mockRejectedValue(new AcceptedBodyUnreadable(new SyntaxError('Unexpected token d in JSON')))
+    const receipt = await sendTurn({ message: 'hi', wire: appApiSendWire(apiWith(post)) })
+    expect(receipt.status).toBe('unknown')
+  })
+
+  it('classifies a 2xx whose body stream was cut as unknown, not transport-error', async () => {
+    // A body read cut mid-stream is a TypeError -- the same class fetch throws
+    // for a request that never left. Only the helper's phase tag tells them
+    // apart; a bare TypeError stays transport-error (next test).
+    const post = vi.fn().mockRejectedValue(new AcceptedBodyUnreadable(new TypeError('network error')))
     const receipt = await sendTurn({ message: 'hi', wire: appApiSendWire(apiWith(post)) })
     expect(receipt.status).toBe('unknown')
   })

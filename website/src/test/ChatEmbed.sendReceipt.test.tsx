@@ -28,6 +28,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppApiError, AppApiPermissionError } from '../app-sdk/apiError'
+import { AcceptedBodyUnreadable } from '../api/apiError'
 import { SEND_ABORT_MS } from '../chat-core/transport/sendTurn'
 
 const mockGet = vi.fn()
@@ -141,7 +142,7 @@ describe('ChatEmbed send receipt policy', () => {
   })
 
   it('an unreadable 2xx (the old swallowed-as-success shape) neither reports nor restores', async () => {
-    mockPost.mockRejectedValue(new SyntaxError('Unexpected token'))
+    mockPost.mockRejectedValue(new AcceptedBodyUnreadable(new SyntaxError('Unexpected token')))
     await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" />) })
     await typeAndSend('hello')
     await settle()
