@@ -804,23 +804,23 @@ export default function ChatPane({
             // text so it no longer matches, leave the text alone — the chip
             // still un-highlights for consistency).
             if (followUpPickedRef.current.has(o)) {
+              const pickedSuffix = Array.from(followUpPickedRef.current).join(', ')
               const next = new Set(followUpPickedRef.current); next.delete(o)
+              const remainingSuffix = Array.from(next).join(', ')
               followUpPickedRef.current = next
               setInput(prev => {
-                // Order matters: try leading ", o" first so "opt, opt" + remove
-                // last "opt" doesn't match "opt, " and splice the wrong one.
-                // lastIndexOf, not indexOf: the handler appends options at the
-                // END, so the last occurrence is the one it created — a draft
-                // merely containing ", o" as a substring (draft "Please, Google"
-                // + option "Go") must not be spliced mid-word.
-                const leading = ', ' + o
-                let idx = prev.lastIndexOf(leading)
-                if (idx >= 0) return prev.slice(0, idx) + prev.slice(idx + leading.length)
-                const trailing = o + ', '
-                idx = prev.indexOf(trailing)
-                if (idx >= 0) return prev.slice(0, idx) + prev.slice(idx + trailing.length)
-                if (prev === o) return ''
-                return prev  // user edited — leave text, still unmark below
+                // Same removal ChatPage does (#6092 review). The picked options
+                // are appended as ONE ordered suffix, so the only text this
+                // handler may take back is that whole structure, still intact at
+                // the end. A last-occurrence search for ", o" instead reaches
+                // into the draft once the user has deleted the appended tail by
+                // hand: draft "Discuss, Alpha home" + a still-lit "Alpha" chip
+                // loses the user's own ", Alpha".
+                if (prev === pickedSuffix) return remainingSuffix
+                const delimitedSuffix = ', ' + pickedSuffix
+                if (!prev.endsWith(delimitedSuffix)) return prev  // user edited — leave text, still unmark below
+                const draft = prev.slice(0, -delimitedSuffix.length)
+                return remainingSuffix ? draft + ', ' + remainingSuffix : draft
               })
               setFollowUpPicked(next)
             } else {
