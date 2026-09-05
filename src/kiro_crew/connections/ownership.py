@@ -320,6 +320,13 @@ async def remove_provider_entry(
     destructive caller would let a forgotten argument narrow the census back to
     the gap this parameter exists to close, silently and only for users who have
     a project-local spec.
+
+    One non-destructive act follows, after the lock: the warm pool is asked to
+    re-arm this provider's premint, because an invalidated grant is what makes it
+    warmable again and nothing else would ask. It is scheduled, never awaited --
+    see :func:`kiro_crew.connections.warm.rearm_invalidated_provider` -- and only
+    when NO owned artifact survived, because a half-removed pair reads as a
+    definitive absence and would have the pool initiate consent over residue.
     """
     from kiro_crew.connections.tool_aliases import normalized_endpoint
     from kiro_crew.dashboard.handlers.mcp import (
@@ -328,7 +335,7 @@ async def remove_provider_entry(
         _purge_server_config,
     )
     from kiro_crew.mcp_discovery import list_servers
-    from kiro_crew.mcp_grant import grant_key, revoke_local_grant
+    from kiro_crew.mcp_grant import grant_key, revoke_local_grant, surviving_grant_artifacts
 
     wanted = normalized_endpoint(mcp_url)
     wanted_key = grant_key(mcp_url)
@@ -547,6 +554,14 @@ async def remove_provider_entry(
             )
         removed: list[str] = []
         attempted: list[str] = []
+        # Whether any artifact this transaction OWNS is still on disk when it ends. The
+        # re-arm's gate: a partial unlink leaves an incomplete pair, and ``grant_presence``
+        # answers False on either artifact being definitively absent -- a DEFINITIVE absence,
+        # which is exactly what the warm scan initiates consent on. So the half-removed grant
+        # would start OAuth against a provider whose residue is still there. Derived from what
+        # each branch actually did rather than one sweep at the end: a branch that KEPT the
+        # grant knows it without a stat, and only an attempted pair is re-read.
+        residue = False
         if census_gap:
             # The gap is about the census as a whole -- an unreadable source or an
             # uncomparable URL could hide a sharer of ANY owned pair -- so every
@@ -559,6 +574,7 @@ async def remove_provider_entry(
                 ", ".join(unreadable) or "none",
                 ", ".join(unprovable) or "none",
             )
+            residue = bool(owned_urls)
         else:
             # Per owned KEY: ownership is slash-insensitive while the artifact pair
             # is not, so an owned trailing-slash variant holds its own pair, and a
@@ -575,6 +591,7 @@ async def remove_provider_entry(
                         owned_url,
                         ", ".join(sorted(key_sharers)),
                     )
+                    residue = True
                     continue
                 # Shielded for the same reason the purge is, and for one more: a
                 # cancellation that released the lock mid-unlink would reopen the
@@ -583,6 +600,14 @@ async def remove_provider_entry(
                 for label in await _offload_config_write(revoke_local_grant, owned_url):
                     if label not in removed:
                         removed.append(label)
+                # STILL INSIDE the lock, unlike the handler's own survivor read: this one
+                # decides whether to start an authorization, so it must not be able to
+                # disagree with the unlink it is judging. A survivor here is a failed
+                # unlink -- ``revoke_local_grant`` already logged it -- and the re-arm is
+                # withheld until a later full revoke, or the next activation's re-stat,
+                # sees a clean pair.
+                if await asyncio.to_thread(surviving_grant_artifacts, owned_url):
+                    residue = True
 
         # INSIDE the lock, and shielded. A post-lock rebuild snapshots the config
         # before another Disconnect's purge and can write last, resurrecting an
@@ -598,6 +623,22 @@ async def remove_provider_entry(
             await _offload_config_write(rebuild_agent_config)
         except Exception:  # noqa: BLE001 — the config write already landed
             logger.warning("agent config rebuild failed after disconnect", exc_info=True)
+
+    # OUTSIDE the lock and awaited by nobody. This provider is warmable again precisely
+    # because its stored grant is gone, and the pool only premints ahead of need -- so
+    # without this its next Authorize pays a full cold mint. Scheduling is all that happens
+    # here: an activation spawns a helper and negotiates OAuth, which must neither hold the
+    # config lock this transaction just released nor delay the caller's answer.
+    #
+    # ONLY on a grant that is completely gone. A kept grant is safe on its own -- both
+    # artifacts present reads as present, and the scan skips it -- but a PARTIAL unlink is
+    # not: one surviving artifact reads as a definitive absence, so the scan would warm a
+    # provider whose residue is still on disk and initiate consent it cannot honour. There is
+    # no rush to be wrong about it either, since the next activation re-stats the pair anyway.
+    if not residue:
+        from kiro_crew.connections.warm import rearm_invalidated_provider
+
+        rearm_invalidated_provider(slug)
 
     return DisconnectScope(
         entry_removed=bool(owned_scopes),

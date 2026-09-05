@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -276,6 +277,7 @@ def test_no_coroutine_in_the_warm_module_touches_the_filesystem_directly():
         "_create_warm_generation_dir",
         "_bind_warm_generation",
         "_recorded_runtime_is_dead",
+        "_spawn_left_no_process",
         "_release_runtime_generation",
         "_scavenge_warm_generation_dirs",
         "_unowned_plan_specs",
@@ -617,6 +619,50 @@ def test_a_provisional_marker_does_not_prove_the_runtime_dead(
 
     assert warm._release_runtime_generation(runtime) is False
     assert work_dir.is_dir(), "a provisional marker (pid 0) must keep the tree"
+
+
+def test_a_never_bound_provisional_generation_is_released(_private_warm_home: Path):
+    """A spawn that never produced a process leaves nothing that could read its tree.
+
+    ``_bind_warm_generation`` publishes the runtime identity only after ``spawn()`` returns,
+    so a spawn refused outright leaves the provisional ``runtime_pid: 0`` marker on a runtime
+    that never reached a PID. Both the abandon path's ``_recorded_runtime_is_dead`` and the
+    scavenger's ``_process_identity_live`` read that marker as UNPROVED and keep the tree, so
+    nothing ever released it and every failed spawn added another directory.
+
+    The sibling test above pins the case this must NOT widen into: the same provisional marker
+    on a runtime that DOES carry a PID still keeps its tree, because that child may be alive.
+    """
+
+    class _NeverSpawned:
+        pid = 0
+
+    work_dir = warm._create_warm_generation_dir()
+    runtime = _NeverSpawned()
+    setattr(runtime, warm._WARM_RUNTIME_DIR_ATTR, str(work_dir))
+
+    assert warm._release_runtime_generation(runtime) is True
+    assert not work_dir.exists(), "a spawn that never ran must not leave its tree behind"
+    assert not hasattr(runtime, warm._WARM_RUNTIME_DIR_ATTR)
+
+
+def test_a_bound_generation_is_untouched_until_its_identity_proves_dead(
+    _private_warm_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A BOUND marker keeps the identity proof: pid 0 is the only accepted stand-in."""
+
+    class _Process:
+        pid = 4242
+
+    monkeypatch.setattr(warm.platform_compat, "process_start_time", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(warm, "_process_identity_live", lambda pid, started: True)
+    work_dir = warm._create_warm_generation_dir()
+    runtime = _Process()
+    warm._bind_warm_generation(runtime, work_dir)
+
+    assert warm._spawn_left_no_process(runtime, work_dir) is False
+    assert warm._release_runtime_generation(runtime) is False
+    assert work_dir.is_dir(), "a live bound runtime's tree must survive"
 
 
 def test_startup_scavenging_deletes_only_proven_dead_owned_generations(
@@ -1881,6 +1927,302 @@ async def test_shutdown_cancels_an_inflight_rearm_and_disarms_recovery(
     assert warm._warm_mint._supervision_armed is False
     assert warm._warm_mint._rearms_remaining == 0
     assert warm._warm_mint.start_rearm(8) is None
+
+
+# ── an invalidated grant re-arms that provider's premint ──
+
+
+@contextlib.asynccontextmanager
+async def _rearm_registry():
+    """The in-flight re-arm registry, cleared on entry and SETTLED on exit.
+
+    An ``async with`` helper rather than an ``@pytest_asyncio.fixture``, by this repo's
+    convention: the pinned pytest-asyncio does not collect async generator fixtures, and the
+    teardown here has to await.
+
+    Awaiting is the point. Cancelling each task and then clearing the registry synchronously
+    drops the only reference to a task that has not yet observed its own cancellation, so the
+    loop closes on it, its ``finally`` never runs, and the leak is the exact one
+    :func:`~kiro_crew.connections.warm._settle_invalidation_rearms` exists to close -- a test
+    harness must not reproduce the defect its subject fixes.
+
+    Delegated to that production function rather than re-implementing cancel-then-gather here,
+    so the idiom lives in exactly one place. It is not circular: the function's own behaviour
+    is pinned independently by ``test_shutdown_settles_an_inflight_invalidation_rearm``, so the
+    fixture is not the only thing claiming it works. ``finally``, so a failing test still
+    settles.
+    """
+    warm._invalidation_rearms.clear()
+    try:
+        yield warm._invalidation_rearms
+    finally:
+        await warm._settle_invalidation_rearms()
+
+
+def _recording_warm(warmed: list[tuple[list[str], bool]]):
+    async def _warm_mint_all(
+        providers: list[Provider] | None = None, *, arm_supervision: bool = True
+    ) -> list[str]:
+        slugs = [str(item["slug"]) for item in providers or []]
+        warmed.append((slugs, arm_supervision))
+        return slugs
+
+    return _warm_mint_all
+
+
+@pytest.mark.asyncio
+async def test_invalidation_rearms_only_the_invalidated_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Provider-scoped, not a whole-pool warm: the other candidates are left alone."""
+    warmed: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(
+        warm, "mintable_providers", lambda: [_provider("linear"), _provider("vercel")]
+    )
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+
+    assert await warm._rearm_invalidated_provider("vercel") == ["vercel"]
+
+    assert warmed == [(["vercel"], False)]
+
+
+@pytest.mark.asyncio
+async def test_the_invalidation_call_does_not_block_on_minting(monkeypatch: pytest.MonkeyPatch):
+    """The scheduler hands back before the activation it scheduled has even begun.
+
+    A Disconnect calls this inside its own request, and an activation spawns a helper process
+    and negotiates OAuth. Pinned on the task's own state rather than on wall-clock timing:
+    ``create_task`` cannot run its coroutine until the caller yields, so an unstarted task at
+    the moment the call returns is the property itself.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocked_rearm(slug: str) -> list[str]:
+        started.set()
+        await release.wait()
+        return [slug]
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _blocked_rearm)
+
+    async with _rearm_registry() as registry:
+        warm.rearm_invalidated_provider("linear")
+
+        assert not started.is_set(), "the caller returned before the re-arm ran at all"
+        task = registry["linear"]
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert not task.done()
+        release.set()
+
+        assert await asyncio.wait_for(task, timeout=5) == ["linear"]
+        assert "linear" not in registry
+
+
+@pytest.mark.asyncio
+async def test_repeated_invalidation_does_not_stack_duplicate_premints(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two more Disconnects while one re-arm is in flight add no second activation."""
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def _blocked_rearm(slug: str) -> list[str]:
+        calls.append(slug)
+        await release.wait()
+        return []
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _blocked_rearm)
+
+    async with _rearm_registry() as registry:
+        warm.rearm_invalidated_provider("linear")
+        first = registry["linear"]
+        warm.rearm_invalidated_provider("linear")
+        warm.rearm_invalidated_provider("linear")
+
+        assert registry["linear"] is first
+        release.set()
+        await asyncio.wait_for(first, timeout=5)
+
+        assert calls == ["linear"]
+        assert "linear" not in registry
+
+
+@pytest.mark.asyncio
+async def test_a_provider_without_arming_preconditions_is_not_rearmed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordinary candidate scan is the authority, so its vetoes all apply here.
+
+    Every reason not to warm reaches this function as the same fact -- the scan did not return
+    the provider -- whether it is a disabled entry, no usable auth configuration (no DCR and no
+    pre-registered client id), a configured entry asking for something other than the registry,
+    a grant still PRESENT because the revoke was refused, or a grant cache that could not be
+    read at all. Re-arming any of them would only queue a mint that fails cold.
+    """
+    warmed: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(warm, "mintable_providers", lambda: [_provider("linear")])
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+
+    assert await warm._rearm_invalidated_provider("github") == []
+
+    assert warmed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["minting", "waiting"])
+async def test_a_live_row_is_not_displaced_by_an_invalidation_rearm(
+    monkeypatch: pytest.MonkeyPatch, state: str
+):
+    """A card mid-consent keeps its URL: re-arming would replace one it may be redeeming."""
+    warmed: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(warm, "mintable_providers", lambda: [_provider("linear")])
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+    _mints["linear"] = {"state": state, "shared": True, "token": "tok"}
+
+    assert await warm._rearm_invalidated_provider("linear") == []
+
+    assert warmed == []
+    assert _mints["linear"]["token"] == "tok"
+
+
+@pytest.mark.asyncio
+async def test_the_invalidation_rearm_audits_the_grant_scan_it_acts_on(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """It acts on a credential-store observation, so it owes the same SEL record as premint."""
+    from kiro_crew import hooks
+
+    assert warm._GRANT_PRESENCE_READ_ID in hooks._AUDIT_ONLY_READ_IDS
+    events: list[tuple[Any, ...]] = []
+
+    def _audit(read_id: str, outcome: str) -> bool:
+        events.append(("audit", read_id, outcome))
+        return True
+
+    async def _record_warm(
+        providers: list[Provider] | None = None, *, arm_supervision: bool = True
+    ) -> list[str]:
+        events.append(("warm", [str(item["slug"]) for item in providers or []], arm_supervision))
+        return ["linear"]
+
+    monkeypatch.setattr(hooks, "emit_internal_read_audit", _audit)
+    monkeypatch.setattr(warm, "mintable_providers", lambda: [_provider("linear")])
+    monkeypatch.setattr(warm, "warm_mint_all", _record_warm)
+
+    assert await warm._rearm_invalidated_provider("linear") == ["linear"]
+
+    assert events == [
+        ("audit", "connections_premint.oauth_grant_presence", "success"),
+        ("warm", ["linear"], False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_invalidation_rearm_reaches_a_real_activation(
+    monkeypatch: pytest.MonkeyPatch, _stub_activation: None
+):
+    """End to end through the real ``warm_mint_all``: the card ends up holding a URL."""
+    provider = _provider("linear")
+    monkeypatch.setattr(warm, "warm_spec_providers", lambda: [provider])
+    monkeypatch.setattr(warm, "grant_present", lambda url: False)
+    monkeypatch.setattr(
+        warm,
+        "_warm_activate",
+        _returns(
+            _result(
+                [provider],
+                [{"serverName": "linear", "oauthUrl": "https://linear.example/consent"}],
+                generation=9,
+                activation=4,
+            )
+        ),
+    )
+
+    assert await warm._rearm_invalidated_provider("linear") == ["linear"]
+
+    assert _mints["linear"]["state"] == "waiting"
+    assert _mints["linear"]["generation"] == 9
+    assert warm._warm_mint._supervision_armed is False
+
+
+def test_the_scheduler_is_a_noop_without_a_running_loop():
+    """A synchronous caller off the loop has nothing to schedule onto; the next scan covers it.
+
+    Deliberately not wrapped in ``_rearm_registry``: that helper is async and this test must
+    run with NO event loop, which is the property under test. Nothing needs settling either --
+    the assertion is that no task was ever created.
+    """
+    warm._invalidation_rearms.clear()
+
+    warm.rearm_invalidated_provider("linear")
+
+    assert warm._invalidation_rearms == {}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_settles_an_inflight_invalidation_rearm(monkeypatch: pytest.MonkeyPatch):
+    """A Disconnect moments before teardown must not leave its re-arm unsettled at loop close.
+
+    Nothing awaits these tasks in the ordinary course, so teardown is the only place that can
+    settle them. An unsettled one is reported as ``Task was destroyed but it is pending`` and
+    its activation is abandoned part-way through minting.
+    """
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _blocked_rearm(slug: str) -> list[str]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return []
+
+    async def _kill(runtime: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _blocked_rearm)
+    monkeypatch.setattr(warm, "_kill_quietly", _kill)
+    monkeypatch.setattr(warm, "_remove_warm_mint_specs", lambda: None)
+    monkeypatch.setattr(warm._warm_mint, "_runtime", _Runtime(False))
+    async with _rearm_registry() as registry:
+        warm.rearm_invalidated_provider("linear")
+        task = registry["linear"]
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        await asyncio.wait_for(warm.shutdown_warm_mint(), timeout=5)
+
+        assert cancelled.is_set(), "teardown did not cancel the in-flight re-arm"
+        assert task.cancelled()
+        assert registry == {}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_leaves_a_completed_rearms_bookkeeping_alone(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Settlement only touches tasks still in flight; a finished re-arm keeps its result."""
+
+    async def _quick_rearm(slug: str) -> list[str]:
+        return [slug]
+
+    async def _kill(runtime: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _quick_rearm)
+    monkeypatch.setattr(warm, "_kill_quietly", _kill)
+    monkeypatch.setattr(warm, "_remove_warm_mint_specs", lambda: None)
+    monkeypatch.setattr(warm._warm_mint, "_runtime", _Runtime(False))
+    async with _rearm_registry() as registry:
+        warm.rearm_invalidated_provider("linear")
+        task = registry["linear"]
+        assert await asyncio.wait_for(task, timeout=5) == ["linear"]
+
+        await asyncio.wait_for(warm.shutdown_warm_mint(), timeout=5)
+
+        assert not task.cancelled()
+        assert task.result() == ["linear"]
 
 
 @pytest.mark.asyncio
