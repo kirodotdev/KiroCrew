@@ -10297,7 +10297,8 @@
       "session_color": "Sitzungsfarbe",
       "session_color_hint": "Von diesem Agenten gestartete Sitzungen verwenden diese Farbe, sofern die Sitzung keine eigene Farbe hat. Eine Änderung färbt diese Sitzungen neu ein. Leer lassen für keine Agentenfarbe.",
       "session_color_hex": "Hex-Wert der Sitzungsfarbe",
-      "session_color_clear": "Entfernen"
+      "session_color_clear": "Entfernen",
+      "editor_options_load_failed": "Die Workspace-, Vorlagen- und Erinnerungsspeicher-Optionen des Crew-Editors konnten nicht geladen werden."
     },
     "knowledge": {
       "detailView": {
@@ -10583,7 +10584,8 @@
       "tail_off": "Tail: aus",
       "tail_on": "Tail: ein",
       "wrap_off": "Umbruch: aus",
-      "wrap_on": "Umbruch: ein"
+      "wrap_on": "Umbruch: ein",
+      "level_change_failed": "Protokollebene konnte nicht geändert werden"
     },
     "mcpGatewayCard": {
       "active_sessions": "Aktive Sitzungen",
@@ -10709,7 +10711,6 @@
       "cleanup_complete": "Aufräumen abgeschlossen",
       "cleanup_failed": "Aufräumen fehlgeschlagen",
       "coming_soon_this_app_is_not_yet_available_in_app": "Bald verfügbar — diese App ist noch nicht in Apps verfügbar. Schauen Sie nach dem nächsten Update wieder vorbei.",
-      "dismiss_error": "Fehler schließen",
       "failed_to_load_app_info": "App-Informationen konnten nicht geladen werden",
       "has_moved_to_a_standalone_app": "ist in eine eigenständige App umgezogen",
       "install_from_apps": "Aus Apps installieren",
@@ -11433,7 +11434,8 @@
       "phased": "Phasenweise",
       "task_is_waiting_for_your_decision": "Aufgabe {{index}} „{{title}}“ wartet auf Ihre Entscheidung",
       "tasks": "Aufgaben",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "Die DAG-Ansicht erscheint, sobald der Plan bereit ist"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "Die DAG-Ansicht erscheint, sobald der Plan bereit ist",
+      "failed_to_update_task": "Aufgabe konnte nicht aktualisiert werden"
     },
     "projectsPage": {
       "agent": "Agent:",
@@ -11490,7 +11492,8 @@
       "workspace": "Workspace:",
       "workspace_folder": "Workspace-Ordner",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML-Dateien sollten über den Tab „Aus YAML“ hochgeladen werden.",
-      "yaml_workflows_bypass_the_llm_decomposer": "YAML-Workflows umgehen den LLM-Zerleger —"
+      "yaml_workflows_bypass_the_llm_decomposer": "YAML-Workflows umgehen den LLM-Zerleger —",
+      "action_failed": "Aktion fehlgeschlagen"
     },
     "remoteArtifactDetailPage": {
       "back": "Zurück",

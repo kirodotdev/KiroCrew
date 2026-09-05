@@ -10150,7 +10150,8 @@
       "session_color": "セッションの色",
       "session_color_hint": "このエージェントが開始したセッションは、セッション自身の色がない限りこの色を使用します。変更するとそれらのセッションが再着色されます。エージェントの色を設定しない場合は空欄にしてください。",
       "session_color_hex": "セッションの色の16進値",
-      "session_color_clear": "クリア"
+      "session_color_clear": "クリア",
+      "editor_options_load_failed": "クルーエディターのワークスペース、テンプレート、メモリストアの選択肢を読み込めませんでした。"
     },
     "knowledge": {
       "detailView": {
@@ -10430,7 +10431,8 @@
       "tail_off": "テール: オフ",
       "tail_on": "テール: オン",
       "wrap_off": "折り返し: オフ",
-      "wrap_on": "折り返し: オン"
+      "wrap_on": "折り返し: オン",
+      "level_change_failed": "ログレベルの変更に失敗しました"
     },
     "mcpGatewayCard": {
       "active_sessions": "アクティブセッション",
@@ -10554,7 +10556,6 @@
       "cleanup_complete": "クリーンアップ完了",
       "cleanup_failed": "クリーンアップ失敗",
       "coming_soon_this_app_is_not_yet_available_in_app": "近日公開予定 — このアプリはまだアプリで利用できません。次回の更新後にご確認ください。",
-      "dismiss_error": "エラーを閉じる",
       "failed_to_load_app_info": "アプリ情報の読み込みに失敗しました",
       "has_moved_to_a_standalone_app": "スタンドアロンアプリに移行しました",
       "install_from_apps": "アプリからインストール",
@@ -11274,7 +11275,8 @@
       "phased": "段階的",
       "task_is_waiting_for_your_decision": "タスク {{index}} 「{{title}}」があなたの決定を待機中",
       "tasks": "タスク",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "プランが準備完了するとDAGビューが表示されます"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "プランが準備完了するとDAGビューが表示されます",
+      "failed_to_update_task": "タスクの更新に失敗しました"
     },
     "projectsPage": {
       "agent": "エージェント:",
@@ -11331,7 +11333,8 @@
       "workspace": "ワークスペース：",
       "workspace_folder": "ワークスペースフォルダー",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML ファイルは「From YAML」タブ経由でアップロードしてください。",
-      "yaml_workflows_bypass_the_llm_decomposer": "YAML ワークフローはLLMデコンポーザーをバイパスします —"
+      "yaml_workflows_bypass_the_llm_decomposer": "YAML ワークフローはLLMデコンポーザーをバイパスします —",
+      "action_failed": "アクション失敗"
     },
     "remoteArtifactDetailPage": {
       "back": "戻る",

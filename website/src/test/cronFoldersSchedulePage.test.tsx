@@ -28,6 +28,9 @@ vi.mock('../api/client', () => ({
     cronToChat: vi.fn().mockResolvedValue({}),
     kirocrewAgents: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
     syncKirocrewAgents: vi.fn().mockResolvedValue({}),
+    // The page now SAYS when the default-agent read fails; an unmocked
+    // `api.defaultAgent` would surface that notice in every case here.
+    defaultAgent: vi.fn().mockResolvedValue({ default_agent: '' }),
     cronFolders: vi.fn().mockResolvedValue([]),
     createCronFolder: vi.fn().mockResolvedValue({ id: 'new-folder', name: 'Test', order: 1 }),
     updateCronFolder: vi.fn().mockResolvedValue({}),
@@ -306,8 +309,10 @@ describe('SchedulePage cron folders', () => {
     // Jobs should render despite folders failure
     await waitFor(() => expect(screen.getByText('Resilient Job')).toBeInTheDocument())
     expect(screen.getByText('Also Visible')).toBeInTheDocument()
-    // No page-level error shown
-    expect(screen.queryByText('Folders API down')).not.toBeInTheDocument()
+    // The failure is SAID, not swallowed: a folder-level notice sits above the
+    // still-rendered list (targeted by testId — the page can show more than
+    // one notice) instead of the page-level load error replacing the jobs.
+    expect(await screen.findByTestId('schedule-folders-error')).toHaveTextContent('Folders API down')
   })
 
   it('auto-expands target folder when moving a job into a collapsed folder (#3)', async () => {
@@ -571,11 +576,12 @@ describe('SchedulePage cron folders', () => {
       fireEvent.click(targetItem!)
     })
 
-    // Error should render near the toolbar
+    // Error should render near the toolbar, through the shared ErrorNotice
+    // (role="alert"; the message no longer sits on a text-danger span of its own).
     await waitFor(() => {
-      const errorEl = screen.getByText(/could not be moved/)
-      expect(errorEl).toBeInTheDocument()
-      expect(errorEl.className).toContain('text-danger')
+      const errorEl = screen.getByTestId('schedule-batch-move-error')
+      expect(errorEl).toHaveAttribute('role', 'alert')
+      expect(errorEl).toHaveTextContent(/could not be moved/)
     })
   })
 })

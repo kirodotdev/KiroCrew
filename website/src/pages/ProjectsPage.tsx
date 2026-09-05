@@ -20,7 +20,14 @@ import {
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
+import ErrorNotice from '../components/ErrorNotice'
 type Mode = 'compose' | 'spec' | 'yaml'
+
+/** Human text for a caught failure: the `ApiError` / `Error` message, else the value itself. */
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+/** The `{ ok, error }` envelope the task-runner endpoints answer with. */
+type ActionResult = { ok?: boolean; error?: string } | null | undefined
 
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
 // `whenNarrow` because this page implements the whole mobile drill-down
@@ -47,7 +54,11 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
         <Btn onClick={onPlan} disabled={!text.trim() || disabled}>{disabled ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} {i18nT('pages.projectsPage.plan')}</Btn>
       </div>
       {isPlanning && <PlanningBanner onCancel={onCancel} />}
-      {planError && <div className="rounded-lg border border-danger/50 bg-danger/10 px-4 py-2.5 mt-2 text-danger text-[13px]">{planError}</div>}
+      {/* No hand-off: the `workspaceDir` override field above this panel is
+          unsaved local state (the `text` draft itself is mirrored to
+          sessionStorage by the parent, so it is not what the hand-off would
+          lose). */}
+      <ErrorNotice message={planError} className="mt-2" testId="projects-plan-error" />
     </div>
   )
 }
@@ -108,6 +119,14 @@ export default function ProjectsPage() {
   const [composeAutoApprove, setComposeAutoApprove] = useState(false)
   const [refineStatus, setRefineStatus] = useState<string>('idle')
   const [refineError, setRefineError] = useState('')
+  // The runs poll's last failure. Cleared by the next successful poll, so a
+  // gateway blip reads as a blip and a dead gateway keeps the notice up.
+  const [loadError, setLoadError] = useState('')
+  // The last header / rail action that failed (execute, pause, cancel, delete,
+  // rename, retry, schedule, hand-off to chat). Every one of these used to
+  // drop its rejection or its `{ ok: false }` body on the floor, so a refused
+  // action was indistinguishable from a slow one.
+  const [actionError, setActionError] = useState('')
   const mountedRef = useRef(true)
   const loadingRef = useRef(false)
   const appliedRef = useRef<string | null>(null)
@@ -161,6 +180,7 @@ export default function ProjectsPage() {
     loadingRef.current = true
     try {
       const d = await api.taskRunnerStatus()
+      setLoadError('')
       setData(d)
       // Surface the backend's default workspace folder as a PLACEHOLDER only —
       // never as the field's value — so an untouched field stays empty ("no
@@ -174,7 +194,25 @@ export default function ProjectsPage() {
         if (found) { setSelectedRun(found); return }
       }
       setSelectedRun(prev => prev ? d.runs?.find((r: ProjectRun) => r.task_id === prev.task_id) || null : null)
+    } catch (e) {
+      // Kept out of `finally`'s way on purpose: this poll fires every 3s, and an
+      // uncaught rejection here used to leave the rail silently stale/empty.
+      setLoadError(errText(e))
     } finally { loadingRef.current = false }
+  }, [])
+
+  /**
+   * Run one header / rail action. A rejected request AND a resolved
+   * `{ ok: false }` envelope both land in `actionError`; `onOk` (usually the
+   * reload) runs only when the action actually took.
+   */
+  const runAction = useCallback(async (request: () => Promise<ActionResult>, onOk?: () => void) => {
+    setActionError('')
+    try {
+      const r = await request()
+      if (r && r.ok === false) { setActionError(r.error || i18nT('pages.projectsPage.action_failed')); return }
+      onOk?.()
+    } catch (e) { setActionError(errText(e)) }
   }, [])
 
   useEffect(() => {
@@ -246,8 +284,8 @@ export default function ProjectsPage() {
       : false
     // Workspace is fixed at plan time (planTask baked it into work_dir), so
     // execute never re-sends it.
-    api.executePlan(selectedRun.task_id, agent, composeAutoApproveIntent).then(r => { if (r.ok) load() })
-  }, [selectedRun, agent, load])
+    void runAction(() => api.executePlan(selectedRun.task_id, agent, composeAutoApproveIntent), load)
+  }, [selectedRun, agent, load, runAction])
   // Sync the per-run auto-approve toggle from the selected run (default false).
   // Reflect only a LIVE trust grant (not stale persisted intent), so resuming a
   // paused/planned run — whose grant was torn down — shows unchecked and requires an
@@ -356,7 +394,7 @@ export default function ProjectsPage() {
       const r = await api.refineStatus()
       setRefined(r.text || ''); setRefineStatus(r.status || 'idle'); setRefineError(r.error || '')
       if (r.input && !userInput) setUserInput(r.input)
-    } catch { setRefineStatus('idle') }
+    } catch (e) { setRefineStatus('idle'); setRefineError(errText(e)) }
     finally { pollingRef.current = false }
   }, [userInput])
 
@@ -366,7 +404,12 @@ export default function ProjectsPage() {
   const refine = async () => {
     if (!userInput.trim() || refineStatus === 'running') return
     setRefineStatus('running'); setRefined(''); setRefineError('')
-    await api.refineTaskInput(userInput)
+    // Progress arrives through `pollRefine`; only the kick-off can fail HERE, and
+    // a failed kick-off must drop `running`, or the row shows "Refining…" forever.
+    try {
+      const r: ActionResult = await api.refineTaskInput(userInput)
+      if (r && r.ok === false) { setRefineStatus('idle'); setRefineError(r.error || i18nT('pages.projectsPage.action_failed')) }
+    } catch (e) { setRefineStatus('idle'); setRefineError(errText(e)) }
   }
 
   const isRefining = refineStatus === 'running'
@@ -423,7 +466,7 @@ export default function ProjectsPage() {
             <div className="w-10 h-1 bg-bg-elevated rounded-full overflow-hidden shrink-0">
               <div className={`h-full rounded-full ${r.status === 'failed' ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
             </div>
-            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none" onClick={e => { e.stopPropagation(); (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)).then(load) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
+            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
           </div>
         )
       })}
@@ -506,11 +549,20 @@ export default function ProjectsPage() {
             </>}
           </div>
           {isPlanning && <PlanningBanner onCancel={cancelPlan} />}
-          {planError && <div className="rounded-lg border border-danger/50 bg-danger/10 px-4 py-2.5 mt-2 text-danger text-[13px]">{planError}</div>}
+          {/* No hand-off: the `workspaceDir` override field and any edits to the
+              `refined` textarea are unsaved local state (`userInput` is mirrored
+              to sessionStorage, so it is not what the hand-off would lose). */}
+          <ErrorNotice message={planError} className="mt-2" testId="projects-plan-error" />
+          {/* Rendered outside the refined-spec block below so a refine that
+              failed to START (kick-off rejected, status poll down) is reported
+              too — those leave `refined` empty, and the old in-block row never
+              mounted for them. */}
+          {/* No hand-off: the `refined` textarea edits and the `workspaceDir`
+              override are unsaved local state. */}
+          <ErrorNotice variant="inline" title={i18nT('pages.projectsPage.error')} message={refineError} className="mt-1" testId="projects-refine-error" />
           {(refined || isRefining) && (
             <div>
               <textarea aria-label={i18nT('pages.projectsPage.refined_spec')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-none transition-colors focus-ring resize-y min-h-[120px]" rows={8} value={refined} onChange={e => setRefined(e.target.value)} readOnly={isRefining} />
-              {refineError && <div className="text-danger mt-1 text-[13px]">{i18nT('pages.projectsPage.error')} {refineError}</div>}
               {!isRefining && refined && (
                 <div className="flex flex-col sm:flex-row gap-2 mt-2">
                   <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(refined, 'spec')} disabled={anyPlanning}><ClipboardList className="lucide-inline" /> {i18nT('pages.projectsPage.plan_from_spec')}</button>
@@ -549,6 +601,13 @@ export default function ProjectsPage() {
             <button onClick={() => selectRun(null)} className="w-full px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> {i18nT('pages.projectsPage.new_task')}</button>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
+            {/* No hand-off: the hand-off unmounts the whole page, and the pane
+                beside this rail holds unsaved state — the `workspaceDir`
+                override and `refined` edits in compose, task-edit drafts
+                (`pendingEdits`) in the run detail. The compose drafts that ARE
+                mirrored to sessionStorage (userInput/specText/yamlText) are
+                not the blocker. */}
+            <ErrorNotice message={loadError} className="mb-2" testId="projects-runs-error" />
             {runs.length > 0
               ? projectList
               : <div className="text-[12px] text-muted px-1">{i18nT('pages.projectsPage.no_runs_yet')}</div>}
@@ -573,11 +632,15 @@ export default function ProjectsPage() {
       )}
 
       <main className={`flex-1 min-w-0 min-h-0 flex-col ${mobileRailOpen ? 'hidden' : 'flex'}`}>
+        {/* No hand-off: below this sit the `workspaceDir` override / `refined`
+            edits (compose) or the run's task-edit drafts (`pendingEdits` in the
+            detail pane) — unsaved local state the hand-off would unmount. */}
+        <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="projects-action-error" />
         {selectedRun ? (
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
               {editingName ? (
-                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} {...ime.bindComposition({ onBlur: () => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { api.renameTaskRun(selectedRun.task_id, v).then(load).catch(() => {}) }; setEditingName(false) } })} onKeyDown={e => {
+                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} {...ime.bindComposition({ onBlur: () => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { void runAction(() => api.renameTaskRun(selectedRun.task_id, v), load) }; setEditingName(false) } })} onKeyDown={e => {
                   if (e.key === 'Enter') {
                     // Early-return BEFORE the blur: a committing IME Enter must not commit.
                     if (ime.isComposing(e)) return
@@ -610,13 +673,20 @@ export default function ProjectsPage() {
                   <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
                   {i18nT('pages.projectsPage.auto_approve_tool_calls')}
                 </label>
-                <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent, autoApprove); if (r.ok) load() }}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.execute')}</button>
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={async () => { const res = await api.planContext(selectedRun.task_id); if (res.ok && res.context) { dispatch(setPendingInput("Let's optimize this plan:\n\n" + res.context)); navigate('/chat?autoSend=1&newSession=1') } }}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.deleteTaskRun(selectedRun.task_id); setSelectedRun(null); load() }}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
+                <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={() => runAction(() => api.executePlan(selectedRun.task_id, agent, autoApprove), load)}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.execute')}</button>
+                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={() => runAction(async () => {
+                  const res = await api.planContext(selectedRun.task_id)
+                  // A body without the context is a failed hand-off, not a
+                  // different kind of success — there is nothing to open chat with.
+                  if (!res.ok || !res.context) return { ok: false, error: res.error }
+                  dispatch(setPendingInput("Let's optimize this plan:\n\n" + res.context)); navigate('/chat?autoSend=1&newSession=1')
+                  return res
+                })}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
+                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.deleteTaskRun(selectedRun.task_id), () => { setSelectedRun(null); load() })}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
               </>}
-              {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelPlan(); setSelectedRun(null) }}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
-              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warn hover:border-warn transition-all" onClick={async () => { await api.pauseTaskRun(selectedRun.task_id); load() }}><Pause className="lucide-inline" /> {i18nT('pages.projectsPage.pause')}</button>}
-              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelTaskRunner(selectedRun.task_id); load() }}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
+              {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.cancelPlan(), () => setSelectedRun(null))}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
+              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warn hover:border-warn transition-all" onClick={() => runAction(() => api.pauseTaskRun(selectedRun.task_id), load)}><Pause className="lucide-inline" /> {i18nT('pages.projectsPage.pause')}</button>}
+              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.cancelTaskRunner(selectedRun.task_id), load)}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {!selectedRun.running && selectedRun.status !== 'planned' && selectedRun.status !== 'planning' && <>
                 {selectedRun.status === 'paused' && (
                   <>
@@ -624,27 +694,33 @@ export default function ProjectsPage() {
                       <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
                       {i18nT('pages.projectsPage.auto_approve_tool_calls')}
                     </label>
-                    <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent, autoApprove); if (r.ok) load() }}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.resume')}</button>
+                    <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={() => runAction(() => api.executePlan(selectedRun.task_id, agent, autoApprove), load)}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.resume')}</button>
                   </>
                 )}
                 {(selectedRun.status === 'completed' || selectedRun.status === 'cancelled') && (
-                  <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => {
+                  <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={() => runAction(async () => {
                     const res = await api.taskRunToChat(selectedRun.task_id)
-                    if (res.slot) { dispatch(switchSlot(res.slot)); navigate('/chat') }
-                  }}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
+                    // No slot means the run was NOT moved — the user clicked and
+                    // nothing happened, which is a failure, not a quiet no-op.
+                    if (!res.slot) return { ok: false, error: res.error }
+                    dispatch(switchSlot(res.slot)); navigate('/chat')
+                    return res
+                  })}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
                 )}
-                {selectedRun.status !== 'paused' && <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => { await api.retryTaskRun(selectedRun.task_id, 1); load() }}><RotateCcw className="lucide-inline" /> {i18nT('pages.projectsPage.restart')}</button>}
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={async () => {
+                {selectedRun.status !== 'paused' && <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={() => runAction(() => api.retryTaskRun(selectedRun.task_id, 1), load)}><RotateCcw className="lucide-inline" /> {i18nT('pages.projectsPage.restart')}</button>}
+                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={() => {
                   const name = selectedRun.name || selectedRun.spec_name || selectedRun.task_id
                   const spec = selectedRun.spec_content || selectedRun.original_input || ''
                   if (!spec) { alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule')); return }
-                  await api.createCron({ name: `Project: ${name}`, message: `run __inline__:${spec}`, every: 86400 })
-                  alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job'))
+                  void runAction(
+                    () => api.createCron({ name: `Project: ${name}`, message: `run __inline__:${spec}`, every: 86400 }),
+                    () => alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job')),
+                  )
                 }}><Clock className="lucide-inline" /> {i18nT('pages.projectsPage.schedule')}</button>
               </>}
             </div>
             <div className="flex-1 min-h-0 min-w-0 flex">
-              <ProjectDetailPage run={selectedRun} onRetry={async (idx) => { await api.retryTaskRun(selectedRun.task_id, idx); load() }} onRefresh={load} />
+              <ProjectDetailPage run={selectedRun} onRetry={(idx) => runAction(() => api.retryTaskRun(selectedRun.task_id, idx), load)} onRefresh={load} />
             </div>
           </>
         ) : (

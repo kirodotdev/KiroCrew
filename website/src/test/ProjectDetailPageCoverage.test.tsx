@@ -412,6 +412,8 @@ describe('ProjectDetailPage approval toggles', () => {
     await openPanel(mockRun())
     fireEvent.click(screen.getByRole('button', { name: 'toggle-force-on' }))
     await waitFor(() => expect(toggleResults).toEqual([false]), { timeout: 5_000 })
+    // The panel only reverts its checkbox; the reason is this page's to show.
+    await waitFor(() => expect(screen.getByTestId('project-detail-action-error')).toBeInTheDocument(), { timeout: 5_000 })
   })
 
   it('reports failure when the request itself fails', async () => {
@@ -419,6 +421,7 @@ describe('ProjectDetailPage approval toggles', () => {
     await openPanel(mockRun())
     fireEvent.click(screen.getByRole('button', { name: 'toggle-force-on' }))
     await waitFor(() => expect(toggleResults).toEqual([false]), { timeout: 5_000 })
+    await waitFor(() => expect(screen.getByTestId('project-detail-action-error')).toHaveTextContent('patch refused'), { timeout: 5_000 })
   })
 
   it('withholds the toggle for a run whose plan can no longer change', async () => {
@@ -570,6 +573,8 @@ describe('ProjectDetailPage idea tab and export', () => {
     fireEvent.click(screen.getByRole('button', { name: /Export YAML/ }))
     await waitFor(() => expect(err).toHaveBeenCalled(), { timeout: 5_000 })
     await waitFor(() => expect(screen.getByRole('button', { name: /Export YAML/ })).toBeEnabled(), { timeout: 5_000 })
+    // The console line is for debugging; the user gets the reason in-page.
+    expect(screen.getByTestId('project-detail-export-error')).toHaveTextContent('no plan')
     err.mockRestore()
   })
 })

@@ -10150,7 +10150,8 @@
       "session_color": "세션 색상",
       "session_color_hint": "이 에이전트가 시작한 세션은 세션 자체 색상이 없으면 이 색상을 사용합니다. 변경하면 해당 세션이 다시 착색됩니다. 에이전트 색상을 사용하지 않으려면 비워 두세요.",
       "session_color_hex": "세션 색상 16진수 값",
-      "session_color_clear": "지우기"
+      "session_color_clear": "지우기",
+      "editor_options_load_failed": "크루 편집기의 워크스페이스, 템플릿, 메모리 저장소 옵션을 불러올 수 없습니다."
     },
     "knowledge": {
       "detailView": {
@@ -10430,7 +10431,8 @@
       "tail_off": "테일: 끔",
       "tail_on": "테일: 켬",
       "wrap_off": "줄 바꿈: 끔",
-      "wrap_on": "줄 바꿈: 켬"
+      "wrap_on": "줄 바꿈: 켬",
+      "level_change_failed": "로그 레벨을 변경하지 못했습니다"
     },
     "mcpGatewayCard": {
       "active_sessions": "활성 세션",
@@ -10554,7 +10556,6 @@
       "cleanup_complete": "정리 완료",
       "cleanup_failed": "정리 실패",
       "coming_soon_this_app_is_not_yet_available_in_app": "출시 예정 — 이 앱은 아직 앱에서 사용할 수 없습니다. 다음 업데이트 후에 다시 확인하세요.",
-      "dismiss_error": "오류 닫기",
       "failed_to_load_app_info": "앱 정보를 불러오지 못했습니다",
       "has_moved_to_a_standalone_app": "독립 실행형 앱으로 이전되었습니다",
       "install_from_apps": "앱에서 설치",
@@ -11274,7 +11275,8 @@
       "phased": "단계별",
       "task_is_waiting_for_your_decision": "작업 {{index}} ‘{{title}}’이(가) 결정을 기다리고 있습니다",
       "tasks": "작업",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "플랜이 준비되면 DAG 보기가 표시됩니다"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "플랜이 준비되면 DAG 보기가 표시됩니다",
+      "failed_to_update_task": "작업을 업데이트하지 못했습니다"
     },
     "projectsPage": {
       "agent": "에이전트:",
@@ -11331,7 +11333,8 @@
       "workspace": "워크스페이스:",
       "workspace_folder": "워크스페이스 폴더",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML 파일은 ‘YAML에서’ 탭으로 업로드하세요.",
-      "yaml_workflows_bypass_the_llm_decomposer": "YAML 워크플로는 LLM 분해기를 거치지 않습니다 —"
+      "yaml_workflows_bypass_the_llm_decomposer": "YAML 워크플로는 LLM 분해기를 거치지 않습니다 —",
+      "action_failed": "작업 실패"
     },
     "remoteArtifactDetailPage": {
       "back": "뒤로",

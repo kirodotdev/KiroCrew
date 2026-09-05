@@ -75,6 +75,14 @@ const SCHEDULE_COLUMNS = 10
  * the i18n codemod to convert on a future run.
  */
 export const BULK_DELETE_TOKEN = 'delete'
+
+/**
+ * Message for a React Query `error` — the same shape every catch block on
+ * this page already uses (`e instanceof Error ? e.message : 'Failed'`), so a
+ * query failure reads like an action failure.
+ */
+const queryErrorMessage = (e: unknown) =>
+  e instanceof Error && e.message ? e.message : i18nT('pages.schedulePage.failed')
 /**
  * Collapsed-by-default message cell. Shows a 1-line preview with a chevron;
  * click to toggle a <pre> block that preserves whitespace/indentation.
@@ -198,11 +206,9 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
           </Btn>
         </div>
       )}
-      {error && (
-        <div className="px-3 py-1 mb-1.5">
-          <span className="text-danger text-[12px]">{error}</span>
-        </div>
-      )}
+      {/* askAgent on: the rename Input commits on submit and the folder is
+          already persisted, so the hand-off has no draft to lose. */}
+      <ErrorNotice variant="inline" className="px-3 py-1 mb-1.5" message={error} askAgent testId="schedule-empty-folder-error" />
     </div>
   )
 }
@@ -228,7 +234,7 @@ export default function SchedulePage() {
   // The default agent comes from the shared, WS-invalidated + focus-refetched
   // query rather than useAgents' one-shot value, so the agent-column label's
   // freshness matches the agents rail's — one source of truth (issue #6495).
-  const { data: defaultAgentData } = useQuery(defaultAgentQuery)
+  const { data: defaultAgentData, isError: defaultAgentFailed, error: defaultAgentError } = useQuery(defaultAgentQuery)
   const defaultAgent = defaultAgentData ?? ''
   const [cronFilter, setCronFilter] = useState('')
   const [selected, setSelected] = useState<CronJob | null>(null)
@@ -282,10 +288,12 @@ export default function SchedulePage() {
 
   // ── Cron Folders ──
   // Folder definitions come through React Query (standard data-fetch path).
-  // Failure degrades gracefully: no page-level error, prior data is kept on a
-  // failed refetch, and `[]` renders the folderless layout.
+  // Failure degrades gracefully: jobs still render, prior data is kept on a
+  // failed refetch, and `[]` renders the folderless layout — but the failure
+  // itself is SAID (page-level notice below), not swallowed: a flat list with
+  // no folders is otherwise indistinguishable from a folder fetch that broke.
   const queryClient = useQueryClient()
-  const { data: cronFolders = [] } = useQuery({
+  const { data: cronFolders = [], isError: foldersFailed, error: foldersError } = useQuery({
     queryKey: ['cronFolders'],
     queryFn: async () => ((await api.cronFolders()) as CronFolder[]) || [],
   })
@@ -546,6 +554,29 @@ export default function SchedulePage() {
           }
         />
         <div className={`flex-1 overflow-y-auto px-3 sm:px-6 min-h-0 ${showEmptyState ? 'pb-2' : 'pb-8'}`}>
+          {/* Read failures that used to be silent on the list page: a failed
+              agent roster was only forwarded into the job dialog, and a failed
+              folder or default-agent fetch fell back to a flat list / the
+              literal 'default' with nothing to say why. All three are
+              load/list reads and the dialog with the only draft on this page
+              is closed while they show, so askAgent is on. The roster notice
+              hides while the dialog is open: the agent picker inside it
+              renders the same failure with the same Retry, and two copies of
+              one report would be noise. */}
+          {rosterError && !detailDialogOpen && (
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <ErrorNotice className="flex-1 min-w-0" message={i18nT('components.agentSelector.roster_load_failed')} askAgent testId="schedule-roster-error" />
+              <Btn onClick={recoverRoster} disabled={rosterReloading} aria-busy={rosterReloading}>
+                {rosterReloading ? i18nT('components.agentSelector.retrying') : i18nT('components.agentSelector.retry')}
+              </Btn>
+            </div>
+          )}
+          {foldersFailed && (
+            <ErrorNotice className="mb-3" message={queryErrorMessage(foldersError)} askAgent testId="schedule-folders-error" />
+          )}
+          {defaultAgentFailed && (
+            <ErrorNotice className="mb-3" message={queryErrorMessage(defaultAgentError)} askAgent testId="schedule-default-agent-error" />
+          )}
           {loadError ? (
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <ErrorNotice message={loadError} askAgent className="mb-3" />
@@ -688,10 +719,10 @@ export default function SchedulePage() {
                 view switcher next to it says which of the three views is on —
                 a "Jobs" heading between them would restate both. */}
             <Card className="p-3 mb-0 overflow-x-auto">
+            {/* askAgent on: the jobs a batch move touches are already persisted,
+                and the failed ids stay selected across the hand-off's return. */}
             {actionError?.id === 'batch-move' && (
-              <div className="px-3 py-1.5 mb-2 rounded-md bg-danger/5 border border-danger/20">
-                <span className="text-danger text-[12px]">{actionError.msg}</span>
-              </div>
+              <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-move-error" />
             )}
             {/* `table-fixed`: the column widths below are a CONTRACT, not a
                 hint. With auto layout a single long cell (an agent name, a cron
@@ -817,7 +848,9 @@ export default function SchedulePage() {
                     {group.folder && actionError?.id === `folder-${folderId}` && (
                       <TableRow key={`fe-${folderId}`} className="border-danger/20 hover:bg-transparent">
                         <TableCell colSpan={SCHEDULE_COLUMNS} className="px-4 py-1.5">
-                          <span className="text-danger text-[12px]">{actionError.msg}</span>
+                          {/* askAgent on: a rename commits on submit and a delete
+                              has no inputs, so the folder holds no draft. */}
+                          <ErrorNotice variant="inline" message={actionError.msg} askAgent testId="schedule-folder-error" />
                         </TableCell>
                       </TableRow>
                     )}
@@ -945,7 +978,9 @@ export default function SchedulePage() {
                       onNewFolder={handleNewFolder}
                     />
                   </div>
-                  {actionError?.id === j.id && <div className="mt-1 text-danger text-[12px]">{actionError.msg}</div>}
+                  {/* askAgent on: row actions (pause, strict, move, run, delete)
+                      act on a persisted job; the row holds no draft. */}
+                  {actionError?.id === j.id && <ErrorNotice variant="inline" className="mt-1 whitespace-normal" message={actionError.msg} askAgent testId="schedule-job-action-error" />}
                 </TableCell>
               </TableRow>
                     ))}</Fragment>
@@ -1012,7 +1047,8 @@ export default function SchedulePage() {
               placeholder={i18nT('pages.schedulePage.cronFolders.new_folder_name')}
               className="w-full"
             />
-            {folderModalError && <p className="text-danger text-[12px] mt-3">{folderModalError}</p>}
+            {/* No hand-off: folderModalName input is unsaved */}
+            <ErrorNotice className="mt-3" message={folderModalError} testId="schedule-folder-create-error" />
           </DialogBody>
           <DialogFooter>
             <Btn onClick={() => { setFolderModal(prev => { prev?.resolve?.(undefined); return null }) }}>{i18nT('pages.schedulePage.cancel')}</Btn>
@@ -1074,7 +1110,10 @@ export default function SchedulePage() {
               placeholder={BULK_DELETE_TOKEN}
               className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm text-text outline-none focus-visible:border-accent"
             />
-            {batchError && <p className="text-danger text-[12px] mt-2">{batchError}</p>}
+            {/* askAgent on: the only input here is the typed confirm token,
+                which is a safety gesture, not a draft worth protecting — the
+                jobs it guards are already persisted. */}
+            <ErrorNotice className="mt-2" message={batchError} askAgent testId="schedule-batch-delete-error" />
           </DialogBody>
           <DialogFooter>
             <Btn onClick={() => setBatchConfirm(false)} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
@@ -1132,9 +1171,13 @@ function ScriptSourcePanel({ jobId }: { jobId: string }) {
       </Clickable>
       {open && isPending && <Skeleton className="h-16 rounded-xl" />}
       {open && isError && (
-        <div className="text-danger text-[13px]">
-          {error instanceof Error && error.message ? error.message : i18nT('pages.schedulePage.script_source_failed')}
-        </div>
+        <>
+          {/* No hand-off: rendered inside the job dialog next to JobForm's unsaved edits */}
+          <ErrorNotice
+            message={error instanceof Error && error.message ? error.message : i18nT('pages.schedulePage.script_source_failed')}
+            testId="schedule-script-source-error"
+          />
+        </>
       )}
       {open && data && (
         <>
@@ -1259,11 +1302,15 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
           {source.isError && (
             <ErrorNotice message={i18nT('pages.schedulePage.secrets_pending_source_failed')} askAgent />
           )}
+          {/* Truncated / unreviewable are verdicts on a fetch that SUCCEEDED —
+              the source arrived, it just cannot be approved as shown. That is
+              status, not an error, so it reads as part of this warn note
+              rather than dressed as a failure. */}
           {source.data && source.data.truncated && (
-            <ErrorNotice message={i18nT('pages.schedulePage.secrets_pending_source_truncated')} askAgent />
+            <div className="text-[12px] font-medium" data-testid="schedule-secrets-source-truncated">{i18nT('pages.schedulePage.secrets_pending_source_truncated')}</div>
           )}
           {source.data && !source.data.truncated && !source.data.reviewable && (
-            <ErrorNotice message={i18nT('pages.schedulePage.secrets_pending_source_unreviewable')} askAgent />
+            <div className="text-[12px] font-medium" data-testid="schedule-secrets-source-unreviewable">{i18nT('pages.schedulePage.secrets_pending_source_unreviewable')}</div>
           )}
           {source.data && <CodeBlock code={source.data.source} lang="python" complete />}
           <div className="flex gap-2">
@@ -1422,13 +1469,30 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
               </div>
             )}
             <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} rosterFailure={rosterFailure} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
-            {panelError && <div className="text-danger text-[13px]">{panelError}</div>}
+            {/* No hand-off: JobForm draft */}
+            <ErrorNotice message={panelError} testId="schedule-job-panel-error" />
             {job?.script && <ScriptSourcePanel jobId={job.id} />}
             {job && job.script && <JobSecretsPanel job={job} onSaved={onSaved} />}
-            {job?.script && (job.last_result || job.last_error) && (
+            {/* The run's persisted `last_error` is an error by origin (the job
+                FAILED), so it takes the shared surface with the 'Last Error'
+                label as its title. `whitespace-pre-wrap` on the notice body
+                keeps the log's line structure; `font-mono` keeps it reading as
+                output rather than prose. */}
+            {job?.script && job.last_error && (
+              <>
+                {/* No hand-off: JobForm draft */}
+                <ErrorNotice
+                  title={i18nT('pages.schedulePage.last_error')}
+                  message={job.last_error}
+                  className="max-h-[200px] overflow-y-auto font-mono"
+                  testId="schedule-job-last-error"
+                />
+              </>
+            )}
+            {job?.script && !job.last_error && job.last_result && (
               <div className="flex flex-col gap-1.5">
-                <div className="text-[12px] text-muted font-medium">{job.last_error ? i18nT('pages.schedulePage.last_error') : i18nT('pages.schedulePage.last_output')}</div>
-                <pre className={`text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 max-h-[200px] overflow-y-auto ${job.last_error ? 'bg-danger/5 border-danger/20 text-danger' : 'bg-bg-elevated border-border text-text'}`}>{job.last_error || job.last_result}</pre>
+                <div className="text-[12px] text-muted font-medium">{i18nT('pages.schedulePage.last_output')}</div>
+                <pre className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 max-h-[200px] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
               </div>
             )}
             {job?.last_run_ts && (
@@ -1486,7 +1550,11 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             </DialogHeader>
             <DialogBody>
               <DialogDescription>{i18nT('pages.schedulePage.this_will_permanently_remove_the_scheduled_job_t')}</DialogDescription>
-              {deleteError && <p className="text-danger text-[12px] mt-2">{deleteError}</p>}
+              {/* askAgent on: a delete has no inputs of its own, and the JobForm
+                  edits beneath this confirm belong to a job the user has just
+                  chosen to remove — a draft for a job they are deleting is not
+                  one the hand-off needs to protect. */}
+              <ErrorNotice className="mt-2" message={deleteError} askAgent testId="schedule-job-delete-error" />
             </DialogBody>
             <DialogFooter>
               <Btn onClick={() => setConfirmDelete(false)} disabled={deleting}>{i18nT('pages.schedulePage.cancel')}</Btn>

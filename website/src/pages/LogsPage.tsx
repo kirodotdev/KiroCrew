@@ -1,12 +1,19 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { WsContext } from '../App'
 import { PageHeader } from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 import { LAYOUT } from '../components/layout'
 
 import { i18nT } from '../i18n/t'
 const LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'] as const
+
+/** The thrown value's own sentence — the api client rejects with an `ApiError`,
+ *  so this is the backend's message; anything else is stringified rather than
+ *  swallowed. */
+const errMsg = (e: unknown): string => (e instanceof Error && e.message ? e.message : String(e))
 const levelColor = (lvl: string) => lvl === 'ERROR' ? 'text-danger' : lvl === 'WARNING' ? 'text-warn' : lvl === 'DEBUG' ? 'text-muted' : 'text-text'
 const levelBg = (lvl: string, active: boolean) => {
   if (!active) return 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
@@ -19,7 +26,9 @@ const levelBg = (lvl: string, active: boolean) => {
 /** Reusable log viewer — used in LogsPage and ActivityViewer */
 export function LogViewer({ compact }: { compact?: boolean }) {
   const [lines, setLines] = useState<{ level: string; msg: string }[]>([])
-  const [currentLevel, setCurrentLevel] = useState('INFO')
+  // The level the user picked here, once the backend accepted it. Until then
+  // the selector shows the backend's current level (INFO while that is loading).
+  const [chosenLevel, setChosenLevel] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [matchesOnly, setMatchesOnly] = useState(false)
   const [autoFollow, setAutoFollow] = useState(true)
@@ -29,7 +38,13 @@ export function LogViewer({ compact }: { compact?: boolean }) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const { subscribeLogs } = useContext(WsContext)
 
-  useEffect(() => { api.logLevel().then(d => setCurrentLevel(d.level)) }, [])
+  // useQuery rather than a bare `.then()`: a rejected read used to be an
+  // unhandled rejection with the selector silently stuck on the default.
+  const levelQuery = useQuery<{ level: string }>({
+    queryKey: ['logs', 'level'],
+    queryFn: () => api.logLevel(),
+  })
+  const currentLevel = chosenLevel ?? levelQuery.data?.level ?? 'INFO'
 
   const onLog = useCallback((data: { level: string; msg: string }) => {
     setLines(prev => { const next = [...prev, data]; return next.length > LAYOUT.LOG_LINE_CAP ? next.slice(-LAYOUT.LOG_LINE_CAP) : next })
@@ -40,7 +55,17 @@ export function LogViewer({ compact }: { compact?: boolean }) {
     return () => subscribeLogs(null)
   }, [subscribeLogs, onLog])
 
-  const changeLevel = async (level: string) => { const r = await api.setLogLevel(level); if (r.ok) setCurrentLevel(level) }
+  // A refused change keeps the old level selected AND says so — the `if (r.ok)`
+  // it replaces dropped both the `{ ok: false }` body and a rejected request.
+  const levelMutation = useMutation({
+    mutationFn: async (level: string) => {
+      const r = await api.setLogLevel(level)
+      if (!r?.ok) throw new Error(r?.error || i18nT('pages.logsPage.level_change_failed'))
+      return level
+    },
+    onSuccess: (level) => setChosenLevel(level),
+  })
+  const changeLevel = (level: string) => levelMutation.mutate(level)
 
   const { filtered, matchCount } = useMemo(() => {
     const levelIdx = LEVELS.indexOf(currentLevel as typeof LEVELS[number])
@@ -108,6 +133,9 @@ export function LogViewer({ compact }: { compact?: boolean }) {
         {LEVELS.map(l => (
           <button key={l} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{l.charAt(0) + l.slice(1).toLowerCase()}</button>
         ))}
+        {/* A log panel holds no draft, so both failures offer the hand-off. */}
+        <ErrorNotice message={levelQuery.isError ? errMsg(levelQuery.error) : ''} variant="inline" askAgent testId="logs-level-error" />
+        <ErrorNotice message={levelMutation.isError ? errMsg(levelMutation.error) : ''} variant="inline" askAgent onDismiss={() => levelMutation.reset()} testId="logs-level-change-error" />
       </div>
       {/* `flex-wrap` for the same reason the level row above it carries one: the
           three trailing toggles are `whitespace-nowrap` and the filter field is
