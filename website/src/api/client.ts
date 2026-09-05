@@ -3151,6 +3151,12 @@ export const api = {
   spawn: (task: string) => post('/api/spawn', { task }).then(j),
   spawnStatus: (id: string, opts?: { signal?: AbortSignal }) => fetch('/api/spawn/' + encodeURIComponent(id), opts).then(j),
   spawnDelete: (id: string) => del('/api/spawn/' + encodeURIComponent(id)).then(j),
+  /** Stop the slot's whole wave server-side: cancels its running subagents AND
+   *  drops its not-yet-started queue entries, which the per-id delete loop
+   *  cannot reach (queued runs have no client-visible ids, only a count).
+   *  Approval-parked runs are left on their card. */
+  spawnStopAll: (slot: string): Promise<{ ok: boolean; cancelled: number; unqueued: number }> =>
+    post('/api/spawn/stop-all', { slot }).then(j),
   spawnRetry: (id: string) => post('/api/spawn/' + encodeURIComponent(id) + '/retry', {}).then(j),
   spawnClear: () => del('/api/spawn').then(j),
   approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),

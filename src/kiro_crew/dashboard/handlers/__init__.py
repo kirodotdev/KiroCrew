@@ -304,6 +304,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_spawn_retry,
     api_spawn_status,
     api_spawn_steer,
+    api_spawn_stop_all,
     api_teams_activity,
     api_teams_config_get,
     api_teams_config_save,

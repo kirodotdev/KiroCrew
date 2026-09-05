@@ -9,6 +9,7 @@ import notificationsReducer from '../store/notificationsSlice'
 vi.mock('../api/client', () => ({
   api: {
     spawnDelete: vi.fn().mockResolvedValue({}),
+    spawnStopAll: vi.fn().mockResolvedValue({ ok: true, cancelled: 0, unqueued: 0 }),
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),
   },
 }))
@@ -52,13 +53,15 @@ describe('SubagentProgressBar — in-chat stop controls', () => {
     expect(api.spawnDelete).toHaveBeenCalledWith('a1')
   })
 
-  it('"Stop all" cancels every running agent but never a pending one', () => {
+  it('"Stop all" makes one server-side stop-all call (never per-id, never a pending one)', () => {
     renderBar(makeStore(['a1', 'a2'], 'p1'))
     fireEvent.click(screen.getByLabelText('Stop all running subagents'))
-    expect(api.spawnDelete).toHaveBeenCalledTimes(2)
-    expect(api.spawnDelete).toHaveBeenCalledWith('a1')
-    expect(api.spawnDelete).toHaveBeenCalledWith('a2')
-    expect(api.spawnDelete).not.toHaveBeenCalledWith('p1')
+    // Server-side session stop: one call with the slot; the per-id loop is
+    // only the fallback path and pending (approval-parked) agents are always
+    // resolved through the approval card, which the backend also enforces.
+    expect(api.spawnStopAll).toHaveBeenCalledTimes(1)
+    expect(api.spawnStopAll).toHaveBeenCalledWith(SLOT)
+    expect(api.spawnDelete).not.toHaveBeenCalled()
   })
 
   it('labels the header stop control "Stop" (not "Stop all") when exactly one agent is stoppable', () => {
@@ -76,12 +79,12 @@ describe('SubagentProgressBar — in-chat stop controls', () => {
     // Exactly two rows, both managed; no native task rows.
     const rows = screen.getAllByTestId('subagent-row')
     expect(rows).toHaveLength(2)
-    // "Stop all" acts on the 2 managed agents, never the native ones.
+    // "Stop all" is one server-side session stop — the backend scopes it to
+    // the session's managed agents; native:* cards are not managed spawns.
     fireEvent.click(screen.getByLabelText('Stop all running subagents'))
-    expect(api.spawnDelete).toHaveBeenCalledTimes(2)
-    expect(api.spawnDelete).toHaveBeenCalledWith('a1')
-    expect(api.spawnDelete).toHaveBeenCalledWith('a2')
-    expect(api.spawnDelete).not.toHaveBeenCalledWith('native:sess-x')
+    expect(api.spawnStopAll).toHaveBeenCalledTimes(1)
+    expect(api.spawnStopAll).toHaveBeenCalledWith(SLOT)
+    expect(api.spawnDelete).not.toHaveBeenCalled()
   })
 
   it('renders no stop controls when every active agent is pending (stoppableCount === 0)', () => {
@@ -338,6 +341,7 @@ describe('SubagentProgressBar — collapse toggle', () => {
     renderBar(makeStore(['a1', 'a2']))
     fireEvent.click(screen.getByLabelText('Collapse subagent list'))
     fireEvent.click(screen.getByLabelText('Stop all running subagents'))
-    expect(api.spawnDelete).toHaveBeenCalledTimes(2)
+    expect(api.spawnStopAll).toHaveBeenCalledTimes(1)
+    expect(api.spawnStopAll).toHaveBeenCalledWith(SLOT)
   })
 })

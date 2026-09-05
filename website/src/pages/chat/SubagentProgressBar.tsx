@@ -4,6 +4,7 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnApproval } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
+import ErrorNotice from '../../components/ErrorNotice'
 import type { SubagentActivity } from '../../types'
 
 import { i18nT } from '../../i18n/t'
@@ -155,9 +156,12 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const hasActive = running > 0 || queued > 0 || awaiting > 0
   const visibleList = activeList.slice(0, CHIP_MAX_ROWS)
   const hiddenCount = activeList.length - visibleList.length
-  // Only running/tool agents are cancellable via spawnDelete; pending agents
-  // (awaiting approval) are resolved through the approval reject path instead.
-  const stoppableCount = useMemo(() => activeList.filter(a => a.status === 'running' || a.status === 'tool').length, [activeList])
+  // Running/tool agents plus the queued (not-yet-started) count: the server-
+  // side stop-all unqueues those too, so a queued-only wave must still show
+  // the control — without it the only window to stop a big wave before it
+  // starts draining had no button. Pending (approval-parked) agents stay
+  // excluded: they are resolved through the approval card's reject path.
+  const stoppableCount = useMemo(() => activeList.filter(a => a.status === 'running' || a.status === 'tool').length + queued, [activeList, queued])
   // Cancel a running subagent. A failed spawnDelete is swallowed with only a
   // debug breadcrumb. The 30s reconcile loop below is the safety net that
   // drops any agent the backend actually stopped.
@@ -165,9 +169,32 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     // eslint-disable-next-line no-console -- names which subagent refused to stop; the 30s reconcile loop hides the failure from the UI, so this is the only place a cancel that never landed is visible
     api.spawnDelete(id).catch(() => console.warn(`spawnDelete failed for subagent ${id}; reconcile loop will resync`))
   }, [])
+  // Set when a stop-all request was rejected: rendered through ErrorNotice
+  // below the header, because on a queued-only wave the per-id fallback has
+  // nothing to send and a console breadcrumb alone leaves the user with a
+  // button that silently did nothing (the #8270 symptom on the error path).
+  const [stopError, setStopError] = useState<string | null>(null)
   const stopAll = useCallback(() => {
-    activeListRef.current.forEach(a => { if (a.status === 'running' || a.status === 'tool') stopAgent(a.id) })
-  }, [stopAgent])
+    // One server-side call stops the whole wave: running agents are cancelled
+    // AND queued (not-yet-started) entries are dropped before they drain —
+    // the per-id loop below cannot reach those, because queued runs exist
+    // client-side only as an aggregate count. Fallback to the per-id loop if
+    // the request fails; the 30s reconcile loop remains the safety net.
+    // The stoppable ids are SNAPSHOTTED at click time: the rejection callback
+    // runs later, and reading activeListRef then would target whatever slot
+    // the user has switched to in between — cancelling a different session's
+    // work.
+    const snapshot = activeListRef.current
+      .filter(a => a.status === 'running' || a.status === 'tool')
+      .map(a => a.id)
+    const perIdFallback = () => snapshot.forEach(id => stopAgent(id))
+    setStopError(null) // a retry press starts clean
+    if (!slot) { perIdFallback(); return }
+    api.spawnStopAll(slot).catch(() => {
+      setStopError(i18nT('pages.chat.subagentProgressBar.stop_all_failed_queued_may_still_start'))
+      perIdFallback()
+    })
+  }, [slot, stopAgent])
   const [retrying, setRetrying] = useState(false)
   // Collapse the agent list to the one-line header. Default expanded; the
   // choice is remembered across sessions via localStorage so a user who
@@ -260,16 +287,37 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               </button>
             )}
             {stoppableCount > 0 && (
+              /* Three-way aria-label: any queued member selects the
+                 status-neutral "Stop all subagents" — on a queued-only wave
+                 "running" would announce to a screen reader exactly the scope
+                 this fix widened past. Visible copy mirrors the same split. */
               <button
                 className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
                 onClick={stopAll}
-                aria-label={stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all_running_subagents') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
+                aria-label={queued > 0 ? i18nT('pages.chat.subagentProgressBar.stop_all_subagents') : stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all_running_subagents') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
               >
-                <X size={11} /> {stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
+                {/* `|| queued > 0`: with exactly one stoppable member that is
+                    QUEUED, the singular copy would read "Stop running
+                    subagent" about a member that is not running — the plural
+                    form covers the whole wave. */}
+                <X size={11} /> {stoppableCount > 1 || queued > 0 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
               </button>
             )}
           </span>
         </div>
+        {stopError && (
+          <div className="px-3 pb-1.5">
+            {/* No hand-off: the agent hand-off navigates the chat surface, and the
+                composer directly below this chip may hold an unsent draft — the
+                stop can simply be pressed again right here instead. */}
+            <ErrorNotice
+              message={stopError}
+              variant="inline"
+              onDismiss={() => setStopError(null)}
+              testId="subagent-stopall-error"
+            />
+          </div>
+        )}
         <div className={`px-3 pb-2 space-y-0.5${collapsed ? ' hidden' : ''}`}>
           {visibleList.map((a, i) => {
             const isLast = i === visibleList.length - 1 && hiddenCount === 0

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         _RECOVERY_SLOT_WAIT_SECS,
         _REPORT_DRAIN_TIMEOUT,
         _RESET_TIMEOUT,
+        _UNQUEUE_ANNOUNCE_LOCK_HOLD_SECS,
         Stats,
         SubagentInfo,
         asyncio,
@@ -205,6 +206,18 @@ class CancellationCoordinator(ManagerComponent):
         is what makes a cancel take effect before the work exists. Also re-emits the
         parent's queued depth, or the chip keeps counting an agent that will never
         run.
+
+        NEVER SILENT: every dropped entry is also announced as a synthetic neutral
+        user-stop through the single completion consumer. A queued member was
+        already counted as submitted (top of ``spawn``), so silently dropping it
+        leaves the wave's count-driven accounting pending forever — no member
+        completion ever re-evaluates the batch, the digest never fires,
+        ``finalize_batch`` never prunes, and the parent waits for a completion
+        event that will never arrive. Same shape as
+        ``waves.record_lost_submission_impl``, except the member here IS already
+        submitted, so nothing is re-counted — only announced. A non-batch queued
+        spawn is announced too: its caller holds a printed id and no synchronous
+        error, so the stop is otherwise invisible to it.
         """
         keep = [p for p in self._manager._queue if str(p.get("_preassigned_id") or "") != agent_id]
         if len(keep) == len(self._manager._queue):
@@ -220,6 +233,103 @@ class CancellationCoordinator(ManagerComponent):
                 )
             except Exception:
                 logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
+            if self._manager._on_done is None:
+                continue
+            batch_id = str(p.get("batch_id", "") or "")
+            stop_info = SubagentInfo(
+                id=str(p.get("_preassigned_id") or ""),
+                task=str(p.get("task", "") or ""),
+                agent=str(p.get("agent", "") or ""),
+                parent_session_key=str(p.get("parent_session_key", "") or ""),
+                done=True,
+                user_stopped=True,
+                result="(cancelled before start)",
+                batch_id=batch_id,
+                batch_total=max(0, int(p.get("batch_total", 0) or 0)),
+            )
+            # The entry leaves ``_queue`` NOW but the announce runs on a
+            # scheduled task — in between, neither ``_agents`` nor ``_queue``
+            # shows this member, so ``batch_members_pending`` would read a
+            # queued-only multi-member stop as "nothing outstanding" the
+            # moment the FIRST sibling's announce lands, finalizing the wave
+            # early and then once more per remaining announce. The pending
+            # count bridges that window; each announce decrements it before
+            # invoking the consumer, whose last-member fallback must no
+            # longer see this member as outstanding.
+            if batch_id:
+                self._manager._batch_unqueued_pending[batch_id] = (
+                    self._manager._batch_unqueued_pending.get(batch_id, 0) + 1
+                )
+
+            async def _announce_stopped(
+                info: SubagentInfo = stop_info, bid: str = batch_id
+            ) -> None:
+                if not bid:
+                    # Non-batch: no wave accounting to protect, no serialization
+                    # needed — and _on_done for a single completion performs a
+                    # real injection that must not block sibling announces.
+                    await self._manager._safe_announce(info)
+                    return
+                # PER-BATCH lock (created lazily — the manager may be built
+                # with no running loop; pruned by finalize_batch): one wave's
+                # slow delivery must never block another wave's announces.
+                lock = self._manager._unqueue_announce_locks.get(bid)
+                if lock is None:
+                    lock = asyncio.Lock()
+                    self._manager._unqueue_announce_locks[bid] = lock
+                announce: asyncio.Task | None = None  # type: ignore[type-arg]
+                try:
+                    async with lock:
+                        # Decrement THIS member inside the lock, then start the
+                        # announce and hold the lock only long enough for the
+                        # consumer's ACCOUNTING prefix (done count + finalize
+                        # decision) to run: while that prefix runs for member
+                        # i, sibling j's decrement cannot have landed, so the
+                        # last-member fallback still counts j as outstanding.
+                        # Delivery's long tail (up to _ON_DONE_TIMEOUT) runs
+                        # OUTSIDE the lock — holding it that long would wedge
+                        # every later announce of this wave behind one stuck
+                        # injection.
+                        n = self._manager._batch_unqueued_pending.get(bid, 0)
+                        if n <= 1:
+                            self._manager._batch_unqueued_pending.pop(bid, None)
+                        else:
+                            self._manager._batch_unqueued_pending[bid] = n - 1
+                        announce = asyncio.ensure_future(self._manager._safe_announce(info))
+                        await asyncio.wait({announce}, timeout=_UNQUEUE_ANNOUNCE_LOCK_HOLD_SECS)
+                    # Lock released — finish the delivery here so this task (the
+                    # one registered in _tasks) spans it and cancel_all's
+                    # containment still reaches a pending delivery.
+                    await announce
+                except asyncio.CancelledError:
+                    if announce is not None and not announce.done():
+                        announce.cancel()
+                    raise
+
+            try:
+                # Registered in _tasks so cancel_all() reaches a pending announce
+                # during shutdown — same containment as the "lost-" announces.
+                # Popped on completion (identity-guarded, like the recovery
+                # key): repeated queued-wave stops must not accrete one dead
+                # entry per member until shutdown.
+                task_key = f"unqueued-{stop_info.id}"
+                announce_task = asyncio.ensure_future(_announce_stopped())
+                self._manager._tasks[task_key] = announce_task
+
+                def _prune_announce(t: object, key: str = task_key) -> None:
+                    if self._manager._tasks.get(key) is t:
+                        self._manager._tasks.pop(key, None)
+
+                announce_task.add_done_callback(_prune_announce)
+            except RuntimeError:
+                # No running loop (sync/test context) — the announce will never
+                # run, so the pending count must not wedge the wave open.
+                if batch_id:
+                    n = self._manager._batch_unqueued_pending.get(batch_id, 0)
+                    if n <= 1:
+                        self._manager._batch_unqueued_pending.pop(batch_id, None)
+                    else:
+                        self._manager._batch_unqueued_pending[batch_id] = n - 1
         return True
 
     async def cancel_impl(self, agent_id: str) -> bool:
@@ -258,6 +368,83 @@ class CancellationCoordinator(ManagerComponent):
             agent_id, info, time.time() - info.started, reason="user_stop"
         )
         return True
+
+    async def cancel_session_impl(self, parent_session_key: str) -> dict:
+        """Stop one parent session's whole wave: cancel its live runs and drop
+        its not-yet-started queue entries. Returns
+        ``{"cancelled": [ids...], "unqueued": [ids...]}``.
+
+        Backs the chip's "Stop all": a per-id cancel loop can only reach runs
+        that are registered in ``_agents``, but a wave's members waiting behind
+        the stagger / concurrency gate exist ONLY as ``_queue`` entries (the
+        client sees just an aggregate count, no ids), so the queued remainder
+        used to start and continue the batch after the user asked to stop it.
+
+        Three deliberate exclusions:
+
+        * **Approval-parked runs stay untouched.** A run parked on its spawn
+          prompt (``_awaiting_approval`` with ``_exec_started`` still unset —
+          the same pair ``terminal.py`` and the handlers'
+          ``_awaiting_spawn_approval`` read) never executed anything and is
+          blocked on the USER: the approval card is where they decide it, and
+          cancelling underneath would resolve a question they are being asked.
+        * **Other sessions' work is out of scope** — both in ``_agents`` and in
+          the queue — so one chat's stop can never reach a sibling chat's wave.
+        * **``_shutting_down`` is never set**: that is ``cancel_all_impl``'s
+          shutdown path and would disable cancel-recovery manager-wide.
+
+        The queue is drained FIRST: cancelling a running agent frees its slot
+        and the freed slot's ``_drain_queue`` would otherwise admit a queued
+        member of the very wave being stopped. Each drop routes through
+        ``_unqueue`` so the depth re-emit AND the synthetic stopped-completion
+        announce (see its docstring) stay on one path.
+
+        Point-in-time semantics, stated plainly: a spawn submission still in
+        flight when this runs (e.g. an ``api_spawn`` awaiting its pre-spawn
+        warm step), or an entry ``_drain_queue`` has popped but not yet
+        registered in ``_agents``, is invisible to both branches and can start
+        afterwards. The stop covers the work that exists when it executes;
+        the chip stays mounted for anything that lands later, so the user can
+        stop again — the same property every existing cancel path
+        (per-id and ``cancel_all``) has.
+        """
+        unqueued: list[str] = []
+        queued_ids = [
+            str(p.get("_preassigned_id") or "")
+            for p in self._manager._queue
+            if str(p.get("parent_session_key", "")) == parent_session_key
+        ]
+        for queued_id in queued_ids:
+            if self._manager._unqueue(queued_id):
+                unqueued.append(queued_id)
+        # Snapshot the eligible ids, then initiate EVERY cancellation before
+        # awaiting any completion. ``cancel_impl`` awaits ``_force_reap``,
+        # whose session teardown yields (bounded by ``_RESET_TIMEOUT``, longer
+        # on the SIGKILL path) — a sequential loop would leave agent N running
+        # (and mutating files) for up to N-1 teardown windows after the user
+        # pressed Stop all. Concurrent reaps of DISTINCT agents are the normal
+        # shape here: ``cancel_all_impl`` gathers its cancellations the same
+        # way, and each ``_force_reap`` touches only its own agent's record
+        # and session.
+        eligible: list[str] = []
+        for agent_id, info in list(self._manager._agents.items()):
+            if info.done or info.parent_session_key != parent_session_key:
+                continue
+            if info._awaiting_approval and info._exec_started is None:
+                continue
+            eligible.append(agent_id)
+        cancelled: list[str] = []
+        if eligible:
+            results = await asyncio.gather(
+                *(self.cancel_impl(agent_id) for agent_id in eligible),
+                return_exceptions=True,
+            )
+            for agent_id, result in zip(eligible, results):
+                if isinstance(result, BaseException):
+                    logger.warning("cancel_session: cancel of %s failed: %r", agent_id, result)
+                elif result:
+                    cancelled.append(agent_id)
+        return {"cancelled": cancelled, "unqueued": unqueued}
 
     async def cancel_all_impl(self) -> None:
         """Cancel all running subagents and wait for cleanup."""

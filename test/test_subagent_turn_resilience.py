@@ -1007,6 +1007,12 @@ def test_no_raw_cancel_outside_chokepoint():
         # trigger a respawn (it only ever DISPATCHES via continue_conversation,
         # which cancel_all pre-empts by cancelling watchers first).
         "followup_watcher.cancel()",
+        # Synthetic stopped-completion announces for unqueued members
+        # (cancellation.py::_unqueue_impl) — delivery tasks, not managed runs:
+        # the member never started, so no terminal marker applies and
+        # cancelling one (the outer "unqueued-" task being cancelled at
+        # shutdown) cannot trigger a respawn — the queue entry is already gone.
+        "announce.cancel()",
     )
     chokepoint_src = inspect.getsource(subagent_mod.SubagentManager._cancel_task_intentionally)
     assert "task.cancel()" in chokepoint_src

@@ -479,6 +479,15 @@ _REPORT_DRAIN_TIMEOUT = (
 _STATE_DRAIN_TIMEOUT = 5.0
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
+# Max seconds an unqueue's synthetic stopped-completion announce may HOLD its
+# per-batch serialization lock. The lock only needs to cover the consumer's
+# accounting prefix (done count + finalize decision, reached within the first
+# awaits) — delivery/injection can run to _ON_DONE_TIMEOUT and must do so
+# OUTSIDE the lock, or one wedged delivery would block every later announce of
+# that wave's stop. Generous vs the milliseconds the prefix takes; on expiry
+# the lock is released and the announce simply continues unserialized (worst
+# case: one wave's digest can double-fire — strictly better than a wedge).
+_UNQUEUE_ANNOUNCE_LOCK_HOLD_SECS = 30.0
 
 # Continuation prompt sent when a transient backend error interrupted a turn
 # AFTER output had already streamed. Mirrors the main path's post-token
@@ -1658,6 +1667,25 @@ class SubagentManager:
         # submissions and no progress is force-reconciled). Pruned by
         # finalize_batch alongside _batch_submitted.
         self._batch_progress_ts: dict[str, float] = {}
+        # Members removed from the queue whose synthetic stopped-completion
+        # announce has not RUN yet: batch_id -> count. An unqueue drops the
+        # entry synchronously but announces on a scheduled task, so between
+        # the two neither `_agents` nor `_queue` shows the member — without
+        # this count `batch_members_pending()` would read a queued-only
+        # multi-member stop as "nothing outstanding" the moment the FIRST
+        # announce lands, finalizing the wave early and once per remaining
+        # announce. Each announce holds its batch's `_unqueue_announce_locks`
+        # entry, decrements its own member, then invokes the consumer — so
+        # while member i's accounting prefix runs, sibling j's decrement
+        # cannot have landed yet and the consumer's last-member fallback
+        # still counts j as outstanding. Pruned by finalize_batch.
+        self._batch_unqueued_pending: dict[str, int] = {}
+        # Serializes the synthetic stopped-completion announces PER BATCH
+        # (decrement + _on_done as one critical section per member), so one
+        # wave's slow delivery can never block another wave's announces.
+        # Locks are created lazily inside the announce task (the manager can
+        # be constructed without a running loop) and pruned by finalize_batch.
+        self._unqueue_announce_locks: dict[str, asyncio.Lock] = {}
         self._reaper_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Cache global approval_mode at init to avoid disk I/O on every
         # parentless spawn (cron, webhooks).
@@ -2364,6 +2392,9 @@ class SubagentManager:
 
     async def cancel(self, agent_id: str) -> bool:
         return await self._cancellation.cancel_impl(agent_id)
+
+    async def cancel_session(self, parent_session_key: str) -> dict:
+        return await self._cancellation.cancel_session_impl(parent_session_key)
 
     async def cancel_all(self) -> None:
         return await self._cancellation.cancel_all_impl()

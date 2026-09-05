@@ -756,8 +756,24 @@ class TestApiSpawnDelete:
         assert _payload(_run(mod.api_spawn_delete, req))["ok"] is True
 
     def test_404_when_managed_agent_is_unknown(self) -> None:
-        req = _Req(_state(subagents=_mgr()), None, match_info={"agent_id": "a1"})
+        # cancel() is consulted before the 404: an id absent from _agents can
+        # still be a QUEUED run (no registration until it starts), and
+        # cancel() falls through to unqueueing it. False means neither path
+        # knows the id.
+        mgr = _mgr(cancel=AsyncMock(return_value=False))
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         assert _run(mod.api_spawn_delete, req).status == 404
+        mgr.cancel.assert_awaited_once_with("a1")
+
+    def test_cancels_a_queued_run_not_registered_in_agents(self) -> None:
+        # Queued runs live only in _queue under their _preassigned_id; the
+        # per-id DELETE must reach them through cancel()'s unqueue fall-through
+        # instead of answering 404 while the work later runs anyway.
+        mgr = _mgr(cancel=AsyncMock(return_value=True))
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "queued1"})
+        resp = _run(mod.api_spawn_delete, req)
+        assert _payload(resp) == {"ok": True, "cancelled": True}
+        mgr.cancel.assert_awaited_once_with("queued1")
 
     def test_cancels_a_running_agent(self) -> None:
         mgr = _mgr(_agents={"a1": _info()}, cancel=AsyncMock(return_value=True))
@@ -770,6 +786,115 @@ class TestApiSpawnDelete:
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         assert _payload(_run(mod.api_spawn_delete, req))["cancelled"] is False
         assert mgr._agents == {} and mgr._tasks == {}
+
+
+class TestApiSpawnStopAll:
+    def test_503_without_manager(self) -> None:
+        assert _run(mod.api_spawn_stop_all, _Req(_state(), {"slot": "chat-1"})).status == 503
+
+    def test_400_on_invalid_json(self) -> None:
+        req = _Req(_state(subagents=_mgr()), _BAD_JSON)
+        assert _run(mod.api_spawn_stop_all, req).status == 400
+
+    def test_400_when_slot_is_missing(self) -> None:
+        req = _Req(_state(subagents=_mgr()), {})
+        assert _run(mod.api_spawn_stop_all, req).status == 400
+
+    def test_404_for_an_unknown_slot(self) -> None:
+        state = _state(subagents=_mgr())
+        state.get_slot.return_value = None
+        assert _run(mod.api_spawn_stop_all, _Req(state, {"slot": "gone"})).status == 404
+
+    def test_stops_the_slots_session_and_reports_counts(self) -> None:
+        mgr = _mgr(
+            cancel_session=AsyncMock(return_value={"cancelled": ["r1"], "unqueued": ["q1", "q2"]})
+        )
+        state = _state(subagents=mgr)
+        # A plain dashboard slot: children register under dashboard:<key>.
+        state.get_slot.return_value = SimpleNamespace(key="chat-1", linked_session_key="")
+        resp = _run(mod.api_spawn_stop_all, _Req(state, {"slot": "chat-1"}))
+        assert _payload(resp) == {"ok": True, "cancelled": 1, "unqueued": 2}
+        mgr.cancel_session.assert_awaited_once_with("dashboard:chat-1")
+
+    def test_a_channel_born_slot_resolves_to_its_channel_session(self) -> None:
+        # effective_session_key, never f"dashboard:{slot.key}": a channel-born
+        # slot's children register under the channel key, and the dashboard-
+        # prefixed form would silently match nothing.
+        mgr = _mgr(cancel_session=AsyncMock(return_value={"cancelled": [], "unqueued": []}))
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(
+            key="chat-9", linked_session_key="slack:171.42", _app=""
+        )
+        resp = _run(mod.api_spawn_stop_all, _Req(state, {"slot": "chat-9"}))
+        assert _payload(resp) == {"ok": True, "cancelled": 0, "unqueued": 0}
+        mgr.cancel_session.assert_awaited_once_with("slack:171.42")
+
+    def test_a_running_turns_identity_outranks_a_mid_turn_rebind(self) -> None:
+        # Same idiom as chat_handlers._cancel_target: a running turn owns a
+        # stable key while linked_session_key is mutable underneath it (a
+        # cron injection can rebind a live slot mid-turn). Stop-all must hit
+        # the wave the user is looking at, not wherever the slot routes the
+        # NEXT turn.
+        mgr = _mgr(cancel_session=AsyncMock(return_value={"cancelled": ["r1"], "unqueued": []}))
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(
+            key="chat-1",
+            linked_session_key="slack:rebound.42",
+            _app="",
+            _active_turn_session_key="dashboard:chat-1",
+        )
+        resp = _run(mod.api_spawn_stop_all, _Req(state, {"slot": "chat-1"}))
+        assert _payload(resp) == {"ok": True, "cancelled": 1, "unqueued": 0}
+        mgr.cancel_session.assert_awaited_once_with("dashboard:chat-1")
+
+    def test_an_app_cannot_stop_a_foreign_slots_wave(self) -> None:
+        # App callers are refused outright: 404 (anti-enumeration, same shape
+        # as rewind/fork) and NO cancellation is performed.
+        mgr = _mgr(cancel_session=AsyncMock())
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(
+            key="chat-1", linked_session_key="", _app="other-app"
+        )
+        req = _Req(state, {"slot": "chat-1"}, extra={"app": "attacker-app"})
+        resp = _run(mod.api_spawn_stop_all, req)
+        assert resp.status == 404
+        mgr.cancel_session.assert_not_awaited()
+
+    def test_an_app_cannot_stop_an_unscoped_slots_wave(self) -> None:
+        mgr = _mgr(cancel_session=AsyncMock())
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(key="chat-1", linked_session_key="", _app="")
+        req = _Req(state, {"slot": "chat-1"}, extra={"app": "some-app"})
+        assert _run(mod.api_spawn_stop_all, req).status == 404
+        mgr.cancel_session.assert_not_awaited()
+
+    def test_an_app_cannot_stop_through_a_channel_linked_slot(self) -> None:
+        # An app-owned slot carrying a channel link addresses a foreign
+        # channel conversation via effective_session_key — refused the same
+        # 404 way, and nothing is cancelled.
+        mgr = _mgr(cancel_session=AsyncMock())
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(
+            key="chat-1", linked_session_key="slack:171.42", _app="my-app"
+        )
+        req = _Req(state, {"slot": "chat-1"}, extra={"app": "my-app"})
+        assert _run(mod.api_spawn_stop_all, req).status == 404
+        mgr.cancel_session.assert_not_awaited()
+
+    def test_even_the_owning_app_is_refused(self) -> None:
+        # Deny-by-default: ownership lives on the RECREATABLE slot while the
+        # cancellation targets the DURABLE dashboard:<key> session — after a
+        # close + same-key recreate, "own slot" would still reach the prior
+        # owner's surviving wave. So app callers are refused outright; the
+        # chip (no request app) is the only caller.
+        mgr = _mgr(cancel_session=AsyncMock())
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(
+            key="chat-1", linked_session_key="", _app="my-app"
+        )
+        req = _Req(state, {"slot": "chat-1"}, extra={"app": "my-app"})
+        assert _run(mod.api_spawn_stop_all, req).status == 404
+        mgr.cancel_session.assert_not_awaited()
 
 
 class TestApiSpawnClear:

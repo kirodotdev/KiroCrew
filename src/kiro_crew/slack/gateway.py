@@ -7151,13 +7151,26 @@ class GatewayOrchestrator:
                             )
                     else:
                         tracker.record_success(task_key)
-                    # Track spawn rounds — count each completed batch as a round
-                    pending = (
-                        self.subagent_mgr.running_agents_for(parent_key)
-                        if self.subagent_mgr
-                        else []
-                    )
-                    if not pending and not _flush_only:
+                    # Track spawn rounds — count each completed batch as a round.
+                    # `has_pending_work_for` (running + queued), plus the batch's
+                    # own pending set when this member carries batch identity —
+                    # a session-scoped stop unqueues N members whose synthetic
+                    # completions arrive with no RUNNING agents left, and a
+                    # running-only probe would record one round PER member,
+                    # falsely burning MAX_STAGE_ROUNDS / escalation budget. The
+                    # per-batch announce lock serializes those completions, so
+                    # only the FINAL one sees nothing outstanding and records
+                    # the round.
+                    _still_pending = False
+                    if self.subagent_mgr:
+                        _still_pending = self.subagent_mgr.has_pending_work_for(parent_key)
+                        if not _still_pending:
+                            # Same type guard as the batch-accounting block
+                            # below (test doubles carry truthy mocks).
+                            _round_bid = getattr(info, "batch_id", "")
+                            if isinstance(_round_bid, str) and _round_bid:
+                                _still_pending = self.subagent_mgr.batch_members_pending(_round_bid)
+                    if not _still_pending and not _flush_only:
                         # All agents done → one round completed
                         stage = tracker.current_stage
                         if tracker.record_round(stage):

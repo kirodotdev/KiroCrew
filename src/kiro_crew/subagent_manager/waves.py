@@ -29,16 +29,19 @@ class WaveDigestCoordinator(ManagerComponent):
     def batch_members_pending_impl(self, batch_id: str) -> bool:
         """True while ANY member of *batch_id* is still outstanding — running
         (registered, not done), queued behind the stagger gate (not yet
-        registered), OR not yet submitted (sibling POSTs still in flight —
-        a fast-failing first member must not finalize the
-        wave and emit a partial digest before the rest of the batch even
-        arrives). The wave digest must also not be held hostage by unrelated
-        agents under the same parent."""
+        registered), unqueued with its stopped-completion announce not yet
+        delivered (see ``_batch_unqueued_pending``), OR not yet submitted
+        (sibling POSTs still in flight — a fast-failing first member must not
+        finalize the wave and emit a partial digest before the rest of the
+        batch even arrives). The wave digest must also not be held hostage by
+        unrelated agents under the same parent."""
         if not batch_id:
             return False
         _bs = self._manager._batch_submitted.get(batch_id)
         if _bs is not None and _bs[1] > 0 and _bs[0] < _bs[1]:
             return True  # submissions still in flight
+        if self._manager._batch_unqueued_pending.get(batch_id, 0) > 0:
+            return True  # unqueued members whose synthetic announce has not run
         if any(a.batch_id == batch_id and not a.done for a in self._manager._agents.values()):
             return True
         return any(p.get("batch_id") == batch_id for p in self._manager._queue)
@@ -54,6 +57,8 @@ class WaveDigestCoordinator(ManagerComponent):
         self._manager._seen_batches.discard(batch_id)
         self._manager._batch_submitted.pop(batch_id, None)
         self._manager._batch_progress_ts.pop(batch_id, None)
+        self._manager._batch_unqueued_pending.pop(batch_id, None)
+        self._manager._unqueue_announce_locks.pop(batch_id, None)
 
     def record_lost_submission_impl(
         self,
@@ -105,9 +110,19 @@ class WaveDigestCoordinator(ManagerComponent):
         )
         if self._manager._on_done:
             try:
-                self._manager._tasks[f"lost-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
-                )
+                # Same registration-and-self-prune contract as the "unqueued-"
+                # announces in cancellation.py: reachable by cancel_all during
+                # shutdown, popped on completion (identity-guarded) so repeated
+                # lost-member reconciliations do not accrete dead entries.
+                lost_key = f"lost-{info.id}"
+                lost_task = asyncio.ensure_future(self._manager._safe_announce(info))
+                self._manager._tasks[lost_key] = lost_task
+
+                def _prune_lost(t: object, key: str = lost_key) -> None:
+                    if self._manager._tasks.get(key) is t:
+                        self._manager._tasks.pop(key, None)
+
+                lost_task.add_done_callback(_prune_lost)
             except RuntimeError:
                 pass  # no running loop (sync/test context)
 

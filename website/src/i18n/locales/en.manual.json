@@ -3287,7 +3287,9 @@
         "open_in_subagents_sidebar": "Open {{label}} in subagents sidebar",
         "retry_failed_count": "Retry failed ({{count}})",
         "stop_all": "Stop all",
+        "stop_all_failed_queued_may_still_start": "Stop all failed — queued subagents may still start. Press Stop all again.",
         "stop_all_running_subagents": "Stop all running subagents",
+        "stop_all_subagents": "Stop all subagents",
         "stop_running_subagent": "Stop running subagent",
         "stop_subagent": "Stop subagent {{name}}"
       },

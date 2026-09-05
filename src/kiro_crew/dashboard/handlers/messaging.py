@@ -47,6 +47,7 @@ from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     _remove_queued_by_id,
     dashboard_slot_key,
+    effective_session_key,
     mint_options_token,
     remember_slack_options,
     slack_options_owner_key,
@@ -875,14 +876,114 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             )
             return web.json_response({"ok": True, "cancelled": True})
         return web.json_response({"error": "not found"}, status=404)
-    if not state.subagents or agent_id not in state.subagents._agents:
-        return web.json_response({"error": "not found"}, status=404)
+    if not state.subagents:
+        return web.json_response({"error": "not found", "code": "agent_not_found"}, status=404)
+    if agent_id not in state.subagents._agents:
+        # A run still WAITING behind the stagger / concurrency gate is never
+        # registered in ``_agents`` — it exists only as a ``_queue`` entry
+        # under its ``_preassigned_id`` — so this used to 404 and the queued
+        # run later started anyway. ``cancel()`` already falls through to
+        # unqueueing for exactly that state; only when neither path knows the
+        # id is it genuinely not found.
+        if await state.subagents.cancel(agent_id):
+            return web.json_response({"ok": True, "cancelled": True})
+        return web.json_response({"error": "not found", "code": "agent_not_found"}, status=404)
     cancelled = await state.subagents.cancel(agent_id)
     if not cancelled:
         # Already done — just remove from list
         state.subagents._agents.pop(agent_id, None)
         state.subagents._tasks.pop(agent_id, None)
     return web.json_response({"ok": True, "cancelled": cancelled})
+
+
+async def api_spawn_stop_all(request: web.Request) -> web.Response:
+    """POST /api/spawn/stop-all — stop one chat's whole subagent wave.
+
+    Body: ``{"slot": "<slot name>"}``. Cancels every running subagent whose
+    parent is the slot's session AND drops its not-yet-started queue entries,
+    which a per-id DELETE loop cannot reach (queued runs exist client-side only
+    as an aggregate count, with no ids). Runs parked on a spawn-approval card
+    are left alone — the card is where the user decides them. Returns
+    ``{ok, cancelled: n, unqueued: n}``.
+
+    The slot must name a session this gateway owns: it is resolved through
+    ``state.get_slot`` + ``effective_session_key`` — the same resolution the
+    other spawn surfaces use — never trusted as a raw session key, so the
+    request can only ever address a live chat slot's own children.
+    """
+    state: DashboardState = request.app["state"]
+    if not state.subagents:
+        return web.json_response(
+            {"error": "subagents not available", "code": "subagents_unavailable"},
+            status=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        # A JSON array/string/number parses fine but has no .get — reject it
+        # as the same malformed-body class instead of crashing to a 500.
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    slot_name = str(body.get("slot", "") or "")
+    if not slot_name:
+        return web.json_response({"error": "slot is required", "code": "slot_required"}, status=400)
+    slot = state.get_slot(slot_name)
+    if slot is None:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # App callers are refused OUTRIGHT — deny-by-default, not ownership-
+    # matched. Ownership lives on the REUSABLE slot (``slot._app`` is set
+    # fresh on every recreate) while ``cancel_session`` addresses the DURABLE
+    # ``dashboard:<slot.key>`` session, which still carries a prior owner's
+    # running and queued children after a close + same-key recreate
+    # (``close_slot`` never tears the wave down). An ownership check against
+    # the slot therefore authorizes App B to cancel App A's surviving work.
+    # There is no legitimate app caller to preserve: stop-all backs the
+    # dashboard chip, a human control. Same 404-not-403 anti-enumeration
+    # shape as rewind/fork (CWE-204); true reason logged via SEL.
+    request_app = request.get("app", "")
+    if request_app:
+        _sel().log_api_access(
+            caller=request_app,
+            operation="subagent.stop_all",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot_name}",
+            error="stop-all is a human dashboard control; app callers are refused "
+            "(slot ownership is recreate-fresh, the session's wave is durable)",
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # Prefer the RUNNING turn's own identity, falling back to the routing —
+    # the same idiom as ``chat_handlers._cancel_target`` and for its reason:
+    # a running turn owns a stable key (``_run_chat`` captures it for the
+    # whole turn) while ``linked_session_key`` is mutable underneath it (a
+    # cron injection can rebind a live slot mid-turn), so re-deriving the key
+    # here would cancel wherever the slot routes the NEXT turn instead of the
+    # wave the user is looking at. The fallback covers the no-turn-in-flight
+    # case and a slot restored from disk (the field is runtime-only), and is
+    # ``effective_session_key``, never ``f"dashboard:{slot.key}"``: a
+    # channel-born slot's children register under the channel key, and the
+    # dashboard-prefixed form would silently match nothing.
+    session_key = getattr(slot, "_active_turn_session_key", "") or effective_session_key(slot)
+    result = await state.subagents.cancel_session(session_key)
+    cancelled = len(result.get("cancelled", []))
+    unqueued = len(result.get("unqueued", []))
+    # User-initiated cancellation is an auditable action (parity with the
+    # native-cancel path above and the managed per-id cancel). The row carries
+    # the RESOLVED session key — the identity the action was performed against
+    # — so a channel-born slot's audit row joins to the session it touched;
+    # the slot name rides in metadata.
+    try:
+        _sel().log_tool_invocation(
+            session_key=session_key,
+            source="subagent",
+            tool_name="stop_all_subagents",
+            outcome="cancelled_by_user",
+            metadata={"slot": slot_name, "cancelled": cancelled, "unqueued": unqueued},
+        )
+    except Exception:
+        logger.debug("SEL audit failed for stop-all on slot %s", slot_name, exc_info=True)
+    return web.json_response({"ok": True, "cancelled": cancelled, "unqueued": unqueued})
 
 
 async def api_spawn_clear(request: web.Request) -> web.Response:
