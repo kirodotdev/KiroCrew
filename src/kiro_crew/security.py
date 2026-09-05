@@ -4633,6 +4633,13 @@ def _substitution_depth_delta(token: str) -> int:
 
     Used so a separator INSIDE ``$( … )`` is not mistaken for the end of the argv
     being scanned -- ``<name> $(true; echo <verb>)`` is one command, not two.
+
+    KNOWN LIMIT: this counts characters on tokens ``normalize_shell_command``
+    has already stripped the quotes from, so a QUOTED paren or backtick is
+    indistinguishable from a real one here and a window bounded by this delta
+    under-runs on decoyed input.  The bare-``kill`` window recovers by
+    re-deriving its bodies from the raw text, where the quotes still exist
+    (:func:`_bare_kill_raw_bodies`, #8633).
     """
     return token.count("$(") + token.count("`") // 2 - token.count(")")
 
@@ -5461,6 +5468,349 @@ def _is_mint_verb(token: str) -> bool:
     return _normalize_operand(token) == "token"
 
 
+def _static_substitution_output(body: str) -> str:
+    """The word a command substitution STATICALLY expands to, else a marker.
+
+    ``$(echo kill)`` and ``$(printf kill)`` put the verb in COMMAND position
+    through their output; the undecoyed spelling is already detected by the
+    token walk (``kill)`` strips to a ``kill`` basename), so only the decoyed
+    combination slipped -- the raw window had no anchor for it (server-side
+    GPT review round 6, bash-measured).  Resolution is deliberately narrow:
+    ``echo``/``printf`` with a literal first operand, flags and format words
+    skipped.  Anything dynamic returns ``"\x00"``, a word no program name
+    matches, so an unresolvable generator can only under-anchor (miss goes to
+    the remainder ledger), never conjure one.
+    """
+    tokens = body.split()
+    if tokens and _program_basename(tokens[0]) in {"echo", "printf"}:
+        for arg in tokens[1:]:
+            operand = _normalize_operand(arg)
+            if operand.startswith("-") or "%" in operand:
+                continue
+            return operand
+    return "\x00"
+
+
+# An assignment word (``k=kill``): bash only honours these BEFORE the first
+# non-assignment word of a command, and their value is visible to LATER
+# commands only (expansion happens before the assignment takes effect).
+_RAW_ASSIGNMENT_RE = re.compile(r"([a-z_][a-z0-9_]*)=(.*)\Z")
+
+
+def _kill_prefix_keeps_anchor(words: "list[tuple[str, bool]]", word: "list[str]") -> bool:
+    """True when a glued substitution must NOT cost the word its kill anchor.
+
+    ``kill$(B)`` runs the program ``kill`` whenever B expands to NOTHING at
+    runtime -- ``$(:)``, ``$(true)``, any silent command -- which no static
+    scan can decide, so the anchor decision fails toward detection: a FIRST
+    word whose pre-glue prefix is exactly ``kill`` keeps its anchor (server-
+    side GPT review round 3, bash-measured: ``kill$(:) $(pgrep -f <name>)``
+    kills).  Only the first word, because the program position is what makes
+    the prefix a program: ``echo kill$(printf x) $(pgrep -f <name>)`` hands
+    every ``kill...`` word to echo as data, and eating the anchor there is
+    what keeps that spelling allowed.  The glued word's OWN body sits at the
+    anchor's index, inside the forward bound, so ``kill$(pgrep -f <name>)``
+    -- whose program is ``kill<pids>``, not ``kill`` -- still attributes
+    nothing from its glue.
+    """
+    return not words and _program_basename("".join(word)) == "kill"
+
+
+def _bare_kill_raw_bodies(source: str) -> "list[str]":
+    """Substitution bodies inside a bare ``kill``'s own argv, read from the RAW text.
+
+    The token walk in :func:`_is_self_kill` bounds the same window with
+    :func:`_substitution_depth_delta`, which counts parens on tokens
+    ``normalize_shell_command`` has already stripped the quotes from -- so by the
+    time the counter runs, a QUOTED close-paren is indistinguishable from a real
+    closer and it ends the window early: ``kill $(printf ')' ; pgrep -f
+    kirocrew)`` scored the quoted paren as depth -1, cut the argv at the ``;``,
+    and dropped the ``pgrep`` clause that names the target -- while bash, whose
+    substitution scan is quote-aware, runs that ``pgrep`` (measured).
+
+    The raw text still HAS the quotes, so the window is re-derived here from the
+    same quote-aware machinery the extractor uses (:func:`_iter_shell_chars`
+    for the walk, :func:`_matching_close_paren` for each span): a separator
+    splits a segment only OUTSIDE quotes and OUTSIDE any substitution span, and
+    a body is attributed only when it sits AFTER a top-level word that resolves
+    to ``kill`` in the SAME segment.  Both bounds carry weight: the segment
+    bound keeps ``kill 123; echo $(cat /tmp/kirocrew)`` allowed (the
+    substitution belongs to the ``echo``), and the forward bound keeps
+    ``LOG=$(ls /tmp/kirocrew.log) kill 4242`` allowed (the substitution
+    precedes the kill, so it is an environment word's value, not the kill's
+    operand) -- the exact false positive the token walk's own scoping replaced.
+
+    Three quoting rules are load-bearing, each bash-measured (pre-push review):
+
+    * A substitution body is parsed in its OWN NEUTRAL quote context, because
+      that is how bash reads ``$( )`` -- a ``$(`` inside double quotes closes at
+      an interior ``)`` even though the outer quote is still open.  The walk
+      then RESUMES with the outer quote state it carried into the opener, so
+      ``echo "$(date)" ; kill $(...)`` keeps its ``;`` as a real separator and
+      the kill segment is still scanned.
+    * A backtick closer is found through an escape-skipping scan: within
+      backticks a backslash escapes ``\\``` and the escaped backtick is DATA,
+      so taking it as the closer would truncate the body before the clause
+      that names the target.
+    * ``&>`` / ``&>>`` (and the trailing ``2>&1`` form) are redirects of the
+      SAME simple command, not separators -- splitting there discarded the
+      ``kill`` word before its substitution was attributed.
+
+    A word GLUED to a substitution (``kill$(x)``, ``LOG=$(x)``) is never the
+    bare ``kill`` this scan attributes to: bash joins the expansion into the
+    word, so the program it runs is not the literal word prefix.  Glued words
+    are flagged and excluded from the kill match, which keeps
+    ``echo kill$(printf kirocrew)`` -- where ``kill...`` is an argument of
+    ``echo`` -- out of the deny set.
+
+    Words collect what the shell PASSES, not what the operator typed: a quote
+    character that is quote SYNTAX (an opener or closer -- the state machine's
+    own transitions say which) is dropped, while a quote character that is DATA
+    (inside the other quote type, or escaped) is kept.  Without that,
+    ``k''ill`` reached the comparison spelled with its splice and the kill was
+    missed (server-side GPT review, bash-measured: the spliced spelling runs
+    ``kill``).  A syntax quote still OPENS a word -- ``''#`` is the word ``#``,
+    not a comment -- which the ``open_word`` flag carries.
+
+    An UNPROVEN span (parens that never balance) takes the whole remainder as
+    the body and ends the walk.  That cannot under-detect: bash cannot execute
+    past an unterminated substitution either (the whole line is a syntax
+    error), so there is no later command to lose -- while the remainder still
+    reaches the name search attributed to the CURRENT segment, which is what
+    keeps the decoyed-and-unbalanced spelling detected.
+
+    A top-level ``#`` starting a word begins a comment, which ends at the next
+    newline; the skip lands ON that newline so the segment boundary it carries
+    is still honoured.
+
+    This pass is a UNION with the token walk, never a replacement: the tokens
+    carry resolutions the raw text does not (``p=$(pgrep -f kirocrew); kill $p``
+    resolves ``$p`` at tokenization) and the raw text carries the quoting the
+    tokens lost.  Keeping both is what guarantees no previously-detected
+    spelling is dropped.
+    """
+    bodies: list[str] = []
+    words: list[tuple[str, bool]] = []  # (word, glued-to-a-substitution)
+    tagged: list[tuple[int, str]] = []  # (index of the word the body belongs to, body)
+    word: list[str] = []
+    glued = False
+    open_word = False  # a word has begun, even if only as quote syntax (``''``)
+
+    def end_word() -> None:
+        nonlocal glued, open_word
+        if word:
+            words.append(("".join(word), glued))
+            word.clear()
+        glued = False
+        open_word = False
+
+    aliases: dict[str, str] = {}
+
+    def resolves_to_kill(w: str) -> bool:
+        # The literal spelling, or a variable an EARLIER command assigned the
+        # verb to: ``k=kill; $k $(...)`` reaches this walk spelled ``$k``,
+        # while the token walk sees it resolved -- so the decoyed alias
+        # spelling slipped both union halves (server-side GPT review round 5,
+        # bash-measured).  Both ``$k`` and ``${k}`` count; the value check
+        # goes through the same basename read as the literal.
+        if _program_basename(w) == "kill":
+            return True
+        if not w.startswith("$"):
+            return False
+        name = w[1:]
+        if name.startswith("{") and name.endswith("}"):
+            name = name[1:-1]
+        return _program_basename(aliases.get(name, "")) == "kill"
+
+    def end_segment() -> None:
+        end_word()
+        # Anchor selection BEFORE recording this segment's assignments: bash
+        # expands ``$k`` before the same command's ``k=...`` takes effect, so
+        # ``k=kill $k ...`` must not see its own assignment.
+        kill_at = next(
+            (k for k, (w, g) in enumerate(words) if not g and resolves_to_kill(w)),
+            None,
+        )
+        if kill_at is not None:
+            bodies.extend(body for idx, body in tagged if idx > kill_at)
+        # Only the assignment PREFIX is real: a ``k=kill`` in argument
+        # position (``echo k=kill``) assigns nothing, and recording it would
+        # let a later ``$k`` conjure a kill anchor out of printed text.
+        for w, _g in words:
+            assignment = _RAW_ASSIGNMENT_RE.match(w)
+            if assignment is None:
+                break
+            aliases[assignment.group(1)] = assignment.group(2)
+        words.clear()
+        tagged.clear()
+
+    def record_body(body: str) -> None:
+        # A body glued onto an open word belongs to THAT word's index; a body
+        # starting a word of its own sits at the next index.  Either way the
+        # forward bound above compares against the kill word's index.
+        tagged.append((len(words), body))
+
+    i = 0
+    n = len(source)
+    state = 0
+    ansi = False
+    while i < n:
+        jumped = False
+        for step in _iter_shell_chars(source[i:], state, ansi):
+            off = i + step.offset
+            ch = step.char
+            escaped = len(step.text) == 2
+            in_single = step.state == 1 and not (ch == "'" and step.active)
+            if not escaped and not in_single and ch == "$" and source.startswith("$(", off):
+                # bash parses the body in a fresh context, so the span is
+                # proven from the slice at NEUTRAL state -- and the walk
+                # resumes with the OUTER state carried across the jump.
+                rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                body = source[off + 2 : off + 1 + rel] if proven else source[off + 2 :]
+                # An EMPTY substitution expands to NOTHING, so the word
+                # CONTINUES across it -- ``kill$()`` runs ``kill`` (the same
+                # glue-evasion ``_EMPTY_SUBST_RE`` undoes for the token walk;
+                # server-side GPT review, bash-measured).  Marking it glued
+                # instead handed the evasion a free pass: the glued word was
+                # excluded from the kill match and the segment lost its anchor.
+                if proven and not body.strip():
+                    # The word is OPEN even when the expansion vanishes: a
+                    # ``#`` right after ``$()`` is a word to bash (comments
+                    # are lexed before expansion), not a comment.
+                    open_word = True
+                    i = off + 2 + rel
+                    state, ansi = step.state, step.ansi
+                    jumped = True
+                    break
+                fresh_word = not word and not open_word
+                if not fresh_word and not _kill_prefix_keeps_anchor(words, word):
+                    glued = True
+                record_body(body)
+                if fresh_word:
+                    # A word that IS a substitution stands where its OUTPUT
+                    # stands: ``$(echo kill) $(pgrep -f <name>)`` runs kill.
+                    # The synthetic word keeps positions honest too -- later
+                    # bodies in the segment no longer share this one's index.
+                    words.append((_static_substitution_output(body), False))
+                end_word()
+                if not proven:
+                    i = n
+                    jumped = True
+                    break
+                i = off + 2 + rel
+                state, ansi = step.state, step.ansi
+                jumped = True
+                break
+            if not escaped and not in_single and ch == "`":
+                closer = _backtick_closer(source, off + 1)
+                body = source[off + 1 : closer if closer != -1 else n]
+                # Empty backticks: same word-continuity rule as ``$()``.
+                if closer != -1 and not body.strip():
+                    open_word = True
+                    i = closer + 1
+                    state, ansi = step.state, step.ansi
+                    jumped = True
+                    break
+                fresh_word = not word and not open_word
+                if not fresh_word and not _kill_prefix_keeps_anchor(words, word):
+                    glued = True
+                record_body(body)
+                if fresh_word:
+                    words.append((_static_substitution_output(body), False))
+                end_word()
+                if closer == -1:
+                    i = n
+                    jumped = True
+                    break
+                i = closer + 1
+                state, ansi = step.state, step.ansi
+                jumped = True
+                break
+            if step.active:
+                if ch in "<>" and source.startswith("(", off + 1):
+                    rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                    fresh_word = not word and not open_word
+                    if not fresh_word and not _kill_prefix_keeps_anchor(words, word):
+                        glued = True
+                    record_body(source[off + 2 : off + 1 + rel] if proven else source[off + 2 :])
+                    if fresh_word:
+                        # A process substitution expands to a /dev/fd PATH,
+                        # never to its own stdout -- no static output here.
+                        words.append(("\x00", False))
+                    end_word()
+                    if not proven:
+                        i = n
+                        jumped = True
+                        break
+                    i = off + 2 + rel
+                    state, ansi = step.state, step.ansi
+                    jumped = True
+                    break
+                if ch in "&|" and (
+                    (word and word[-1] in "<>") or (ch == "&" and not word and source.startswith(">", off + 1))
+                ):
+                    # The full redirect grammar audited against the separator
+                    # set (this class produced three review rounds one spelling
+                    # at a time -- ``2>&1``, ``&>``, ``>|``): a ``&`` or ``|``
+                    # riding a trailing ``<``/``>`` is a descriptor duplication
+                    # or the noclobber override, and a leading ``&>``/``&>>``
+                    # redirects both streams -- all redirects of THIS command,
+                    # never separators of it.  ``;`` and newline appear in no
+                    # redirect spelling, which closes the enumeration.
+                    word.append(ch)
+                    continue
+                if ch in ";|&\n":
+                    end_segment()
+                    continue
+                if ch == "#" and not word and not open_word:
+                    newline = source.find("\n", off)
+                    i = n if newline == -1 else newline
+                    state, ansi = 0, False
+                    jumped = True
+                    break
+                if ch in "()" or ch.isspace():
+                    end_word()
+                    continue
+            if not escaped and ch in "'\"" and (step.active or step.state == 0):
+                # Quote SYNTAX: an opener (active) or a closer (back at state
+                # 0).  bash does not pass these on, so the word must not carry
+                # them -- ``k''ill`` is the word ``kill``.  A quote that is
+                # DATA (inside the other quote type, or escaped) falls through
+                # and stays in the word.
+                open_word = True
+                continue
+            word.append(ch)
+            open_word = True
+        if not jumped:
+            break
+    end_segment()
+    return bodies
+
+
+def _backtick_closer(source: str, start: int) -> int:
+    """Index of the backtick that CLOSES a substitution opened before *start*.
+
+    Within backticks bash strips a backslash before ``$``, ``\\``` and ``\\\\``,
+    so an escaped backtick is data and must not be taken as the closer --
+    ``str.find`` did, and it truncated ``kill `printf '\\`' ; pgrep -f <name>```
+    one clause short of the target's name (found in pre-push review, bash-
+    measured: the inner command past the escaped backtick runs).  Quotes do NOT
+    protect a backtick from closing, so this scan honours backslashes only.
+
+    -1 when no unescaped closer exists before the text ends.
+    """
+    j = start
+    n = len(source)
+    while j < n:
+        if source[j] == "\\":
+            j += 2
+            continue
+        if source[j] == "`":
+            return j
+        j += 1
+    return -1
+
+
 def _is_self_kill(text_lower: str) -> bool:
     """True if *text_lower* terminates a KiroCrew process.
 
@@ -5519,7 +5869,7 @@ def _is_self_kill(text_lower: str) -> bool:
     # the ``/`` and misses the path-qualified form), while the substitution BODY is
     # taken from the whole string: segment splitting cuts on ``$(`` and ``)``,
     # which would separate the verb from its own substitution.
-    for frame in _self_token_frames(text_lower):
+    for source, frame in _shell_payload_walk(text_lower):
         for i, token in enumerate(frame):
             if _program_basename(token) != "kill":
                 continue
@@ -5554,6 +5904,16 @@ def _is_self_kill(text_lower: str) -> bool:
                     _resolve_param_defaults(body)
                 ):
                     return True
+        # The window above is bounded by ``_substitution_depth_delta`` on
+        # DE-QUOTED tokens, so a quoted close-paren reads as a real closer and
+        # closes the window early, dropping the clause that names the target
+        # (``kill $(printf ')' ; pgrep -f kirocrew)``).  Re-derive the same
+        # window from the RAW text, where the quotes still exist (#8633).
+        for body in _bare_kill_raw_bodies(source):
+            if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
+                _resolve_param_defaults(body)
+            ):
+                return True
     return False
 
 
