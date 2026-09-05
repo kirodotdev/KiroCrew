@@ -123,6 +123,22 @@ def _payload(response: web.StreamResponse) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
+def _denial(audit: mock.Mock, error: str) -> str:
+    """The operation a patched ``_audit`` recorded ``denied`` with ``error``.
+
+    Asserted BEFORE any field is read: a regression that stops auditing leaves
+    nothing to match, and returning early with an assertion reports the event
+    that went missing instead of an IndexError on an empty list.
+    """
+    calls = [
+        call
+        for call in audit.call_args_list
+        if call.args[2:3] == ("denied",) and call.kwargs.get("error") == error
+    ]
+    assert calls, f"no denial audited with error={error!r}"
+    return calls[0].args[0]
+
+
 def _identity(ok: bool, account: str = "", arn: str = "", detail: str = "") -> aws_consent.Identity:
     return aws_consent.Identity(ok=ok, account=account, arn=arn, detail=detail)
 
@@ -2435,6 +2451,7 @@ class TestBootstrapReauthorizes:
             mock.patch.object(routes_mod, "_consent", AsyncMock(return_value=None)),
             mock.patch.object(routes_mod, "_drive_bucket", AsyncMock(return_value="")),
             mock.patch.object(routes_mod.storage_mod, "create_drive") as create,
+            mock.patch.object(routes_mod, "_audit") as audit,
         ):
             resp = asyncio.run(
                 handlers[("POST", "/drive/{account}/bootstrap")](  # type: ignore[operator]
@@ -2444,6 +2461,117 @@ class TestBootstrapReauthorizes:
         assert resp.status == 409
         assert _payload(resp)["code"] == "account_mismatch"
         create.assert_not_called()
+        # The refusal is also a permission DECISION, so it reaches SEL from the
+        # point of decision: `_mutating` records that a response left with a 4xx,
+        # which does not say WHY the confirmed bucket was never created.
+        assert _denial(audit, "account_mismatch") == "drive_bootstrap"
+
+    def test_the_app_disabled_mid_create_refuses_and_creates_nothing(self):
+        # `_guarded` checks the app BEFORE the lock, and the wait for the lock is
+        # unbounded -- so a queued confirm can outlive the app being switched off
+        # and still reach the BILLABLE `create_drive`. Guard 1 of the module
+        # promises a disabled app answers 403 `app_disabled` to everyone; the
+        # recheck inside the lock is what makes the billable path keep it.
+        handlers = _registered()
+        target = (ACCOUNT, "prof-a", "us-west-2")
+        # Enabled at the door, switched off by the time the lock is held.
+        enabled_results = [True, False]
+
+        def _enabled(_name):
+            return enabled_results.pop(0) if enabled_results else False
+
+        with (
+            mock.patch.object(routes_mod, "is_app_enabled", side_effect=_enabled),
+            mock.patch.object(routes_mod, "is_owner_dashboard_request", return_value=True),
+            mock.patch.object(routes_mod, "_account_target", AsyncMock(return_value=target)),
+            mock.patch.object(routes_mod, "_consent", AsyncMock(return_value=None)),
+            mock.patch.object(routes_mod, "_drive_bucket", AsyncMock(return_value="")),
+            # A real bucket name, so a missing gate fails on the 403 contract
+            # below rather than on an unserializable mock in the 200 body.
+            mock.patch.object(
+                routes_mod.storage_mod, "create_drive", return_value="kirocrew-drive-abc123def456"
+            ) as create,
+            mock.patch.object(routes_mod, "_audit") as audit,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/bootstrap")](  # type: ignore[operator]
+                    self._confirm_request()
+                )
+            )
+        assert resp.status == 403
+        assert _payload(resp)["code"] == "app_disabled"
+        # The decisive assertion: no bucket was made, so nothing was billed.
+        create.assert_not_called()
+        assert _denial(audit, "app_disabled") == "drive_bootstrap"
+
+    def test_an_account_that_stops_resolving_mid_create_is_audited(self):
+        # The other shape the in-lock re-probe returns: not a different triple
+        # but a refusal response, because the profile no longer resolves to the
+        # requested account at all.
+        handlers = _registered()
+        # The code here is deliberately NOT `account_unavailable`: `_resolve_target`
+        # answers with three different codes, so a test whose fixture happens to use
+        # the one the audit hard-coded would pass against the bug. `account_mismatch`
+        # is the case an incident review most needs to see correctly.
+        unavailable = routes_mod._conflict("profile no longer resolves", "account_mismatch")
+        targets = [(ACCOUNT, "prof-a", "us-west-2"), unavailable]
+
+        async def _target(_request_obj):
+            return targets.pop(0)
+
+        with (
+            mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+            mock.patch.object(routes_mod, "is_owner_dashboard_request", return_value=True),
+            mock.patch.object(routes_mod, "_account_target", side_effect=_target),
+            mock.patch.object(routes_mod, "_consent", AsyncMock(return_value=None)),
+            mock.patch.object(routes_mod, "_drive_bucket", AsyncMock(return_value="")),
+            mock.patch.object(routes_mod.storage_mod, "create_drive") as create,
+            mock.patch.object(routes_mod, "_audit") as audit,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/bootstrap")](  # type: ignore[operator]
+                    self._confirm_request()
+                )
+            )
+        assert resp is unavailable
+        create.assert_not_called()
+        assert _denial(audit, "account_mismatch") == "drive_bootstrap"
+
+    def test_the_app_disabled_during_the_consent_read_still_creates_nothing(self):
+        # A gate at the TOP of the lock is already stale by the time `create_drive`
+        # runs: the identity re-probe and the consent read are both awaits after it.
+        # Switching the app off DURING the last of those awaits is the case only a
+        # gate placed immediately before the billable call can catch.
+        handlers = _registered()
+        enabled = {"value": True}
+
+        async def _consent_and_disable(*_a, **_k):
+            enabled["value"] = False  # owner switches the app off mid-read
+            return None
+
+        with (
+            mock.patch.object(
+                routes_mod, "is_app_enabled", side_effect=lambda *_a, **_k: enabled["value"]
+            ),
+            mock.patch.object(routes_mod, "is_owner_dashboard_request", return_value=True),
+            mock.patch.object(
+                routes_mod,
+                "_account_target",
+                AsyncMock(return_value=(ACCOUNT, "prof-a", "us-west-2")),
+            ),
+            mock.patch.object(routes_mod, "_consent", side_effect=_consent_and_disable),
+            mock.patch.object(routes_mod, "_drive_bucket", AsyncMock(return_value="")),
+            mock.patch.object(routes_mod.storage_mod, "create_drive") as create,
+            mock.patch.object(routes_mod, "_audit") as audit,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/bootstrap")](  # type: ignore[operator]
+                    self._confirm_request()
+                )
+            )
+        assert resp.status == 403
+        create.assert_not_called()
+        assert _denial(audit, "app_disabled") == "drive_bootstrap"
 
     def test_consent_withdrawn_mid_create_refuses_and_creates_nothing(self):
         handlers = _registered()

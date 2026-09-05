@@ -388,6 +388,22 @@ def _aws_failed(exc: AWSError) -> web.Response:
     return web.json_response({"error": _safe_error(exc), "code": "aws_call_failed"}, status=502)
 
 
+def _response_code(response: web.Response) -> str:
+    """The machine-readable ``code`` a denial response carries, for the audit trail.
+
+    Never hard-code the reason next to a helper that can answer with more than one.
+    ``_resolve_target`` returns THREE - ``invalid_account``, ``account_unavailable``
+    and ``account_mismatch`` - so auditing a fixed string makes an incident review
+    read "no working connection" for what was in fact a live-identity mismatch, which
+    is the case an operator most needs to see. Falls back to ``unknown`` rather than
+    raising: an audit line is best-effort and must not be able to fail a response.
+    """
+    try:
+        return str(json.loads(response.text or "{}").get("code", "")) or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def _audit_sync(operation: str, resources: str, outcome: str, *, error: str = "") -> None:
     """Best-effort SEL audit for mutations; never blocks the response.
 
@@ -794,10 +810,17 @@ async def _handle_drive_bootstrap(request: web.Request) -> web.Response:
         # owner never confirmed. `_account_target` re-probes the live identity,
         # so requiring it to still resolve the SAME triple is what closes it;
         # consent is re-read for the same reason it is re-read before an upload.
+        #
+        # Each denial audits at the POINT OF DECISION, like the helper's arms
+        # do: `_mutating` records the outcome of whatever response leaves here,
+        # but only a `denied` record naming the reason tells an incident review
+        # why a bucket the owner confirmed was never created.
         recheck = await _account_target(request)
         if isinstance(recheck, web.Response):
+            await _audit("drive_bootstrap", request.path, "denied", error=_response_code(recheck))
             return recheck
         if recheck != (account, profile, region):
+            await _audit("drive_bootstrap", request.path, "denied", error="account_mismatch")
             return _conflict(
                 "this connection changed while the drive was being created; " "nothing was created",
                 "account_mismatch",
@@ -805,10 +828,42 @@ async def _handle_drive_bootstrap(request: web.Request) -> web.Response:
         denied = await _consent(aws_consent.SERVICE_S3, profile, region)
         if denied:
             return denied
+
+        # The app gate is the LAST thing before the billable call, deliberately.
+        # `_guarded` already refused a disabled app before the lock, so this one
+        # exists only for the app being switched off DURING the critical section --
+        # and every await above it (the unbounded lock wait, the tag-discovery
+        # round trip, the live identity re-probe, the consent read) is a point at
+        # which that can happen. A gate placed at the top of the lock is stale by
+        # the time `create_drive` runs, which is the whole failure it was added to
+        # prevent: a bucket billed for a surface the owner has already switched off.
+        #
+        # Read and create share ONE thread hop, so there is no await BETWEEN them
+        # at which the loop could run anything. `create_drive` returns the bucket
+        # name, so `None` is an unambiguous "refused, nothing created".
+        #
+        # A re-check, NOT a lock. `app_lifecycle_lock` is an in-process asyncio
+        # lock covering only the HTTP disable path, while `kirocrew app disable`
+        # runs in a SEPARATE process calling `disable_app` directly
+        # (`cli_commands.py` imports it), so no in-process lock serializes the
+        # writer this would have to wait on. Closing the cross-process window
+        # needs a cross-process lock this repo does not have; a re-check is the
+        # form the repo already accepts here (see
+        # `pptx_maker/backend/provision.py`, and the 9 `_reauthorize_in_lock` call
+        # sites, which all keep the same window).
+        #
         # `create_drive` re-checks the bucket's owner against this account once
         # it exists: its own CLI child resolves the profile independently, so
         # matching triples here cannot promise where the bucket lands.
-        bucket = await asyncio.to_thread(storage_mod.create_drive, profile, region, account)
+        def _create_drive_if_still_enabled() -> str | None:
+            if not is_app_enabled(APP_NAME):
+                return None
+            return storage_mod.create_drive(profile, region, account)
+
+        bucket = await asyncio.to_thread(_create_drive_if_still_enabled)
+        if bucket is None:
+            await _audit("drive_bootstrap", request.path, "denied", error="app_disabled")
+            return _forbidden("aws-control is disabled", "app_disabled")
     return web.json_response({"created": True, "bucket": bucket})
 
 
