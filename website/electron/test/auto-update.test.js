@@ -1396,6 +1396,166 @@ test("readExternallyManaged: chmod 0400 on an OWNED marker does not buy trust", 
   });
 });
 
+// --- Baked marker: shipped inside the app's own code ------------------------
+//
+// A marker that lives in app.asar next to main.js has the application's own
+// provenance: nothing can rewrite it without also being able to rewrite the
+// code that reads it. So it is trusted WITHOUT the ownership probe, on every
+// platform, and it outranks a loose marker dropped beside the app afterwards.
+// These tests pin all three properties, plus the degenerate shapes.
+
+function bakedFixture(t, body) {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kc-baked-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codeDir = path.join(root, "app-code");
+  const resources = path.join(root, "resources");
+  fs.mkdirSync(codeDir);
+  fs.mkdirSync(resources);
+  const baked = path.join(codeDir, "EXTERNALLY-MANAGED");
+  if (body !== undefined) fs.writeFileSync(baked, body);
+  return { root, codeDir, resources, baked };
+}
+
+test("baked marker: trusted as code -- the ownership probe is never consulted", (t) => {
+  // The user-owned, writable file that canRewriteMarker would refuse: exactly
+  // the shape a Toolbox / Homebrew / ~/Applications install has for EVERY file
+  // in the app, main.js included. Baked, it is honored anyway.
+  const { baked, resources } = bakedFixture(t, JSON.stringify({
+    managedBy: "Builder Toolbox",
+    updateCommand: "/opt/toolbox/bin/toolbox update kirocrew",
+    checkCommand: "/opt/toolbox/bin/kirocrew-update-check",
+  }));
+  let probed = 0;
+  assert.deepStrictEqual(readExternallyManaged({
+    env: {},
+    resourcesPath: resources,
+    bakedMarkerPath: baked, isPackaged: true,
+    probeMarkerRewritable: () => { probed += 1; return true; },
+  }), {
+    managedBy: "Builder Toolbox",
+    updateCommand: "/opt/toolbox/bin/toolbox update kirocrew",
+    checkCommand: "/opt/toolbox/bin/kirocrew-update-check",
+  });
+  assert.strictEqual(probed, 0, "a baked marker is not subject to the loose-marker provenance probe");
+});
+
+test("baked marker: read on a PACKAGED build only -- a dev checkout's source dir is not an archive", (t) => {
+  // In a dev checkout `__dirname` is writable source, not app.asar, so a file
+  // there has none of the provenance the baked trust rests on -- and the managed
+  // lane arms its launch timer before the dev-disable gate, so a planted file
+  // would be shelled. Unpackaged: the baked path is not read at all, and the
+  // loose marker keeps its own gated contract.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { baked, resources } = bakedFixture(t, JSON.stringify({
+    managedBy: "planted", updateCommand: "/usr/bin/planted-update",
+  }));
+  assert.strictEqual(readExternallyManaged({
+    env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: false,
+  }), null, "unpackaged: no baked read, no loose marker -> not managed");
+  fs.writeFileSync(path.join(resources, "EXTERNALLY-MANAGED"), JSON.stringify({ managedBy: "loose" }));
+  assert.deepStrictEqual(readExternallyManaged({
+    env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: false,
+    probeMarkerRewritable: () => false,
+  }), { managedBy: "loose", updateCommand: "", checkCommand: "" }, "unpackaged: the loose path is what is read");
+});
+
+test("baked marker: honored with the REAL probe on a user-owned tree (the Windows/Toolbox shape)", (t) => {
+  // No injected probe: canRewriteMarker itself runs, and on this host the
+  // fixture is ours (or we are root, or on Windows) -- every arm of that probe
+  // answers "rewritable". The baked path must not ask it. This is the property
+  // that brings the commands back on Windows, where the probe is fail-closed by
+  // declaration.
+  const { baked, resources } = bakedFixture(t, JSON.stringify({
+    managedBy: "pkgtool", updateCommand: "/usr/bin/pkgtool update",
+  }));
+  assert.strictEqual(canRewriteMarker(baked), true, "precondition: the probe WOULD refuse this file");
+  assert.deepStrictEqual(readExternallyManaged({
+    env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true,
+  }), { managedBy: "pkgtool", updateCommand: "/usr/bin/pkgtool update", checkCommand: "" });
+});
+
+test("baked marker: outranks a loose marker when both exist", (t) => {
+  // A build-time declaration by the edition beats a file dropped later --
+  // including a trusted-looking loose one. The loose body must not leak into
+  // any field.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { baked, resources } = bakedFixture(t, JSON.stringify({
+    managedBy: "edition", updateCommand: "/usr/bin/edition-update",
+  }));
+  fs.writeFileSync(path.join(resources, "EXTERNALLY-MANAGED"), JSON.stringify({
+    managedBy: "loose", updateCommand: "/usr/bin/loose-update", checkCommand: "/usr/bin/loose-check",
+  }));
+  assert.deepStrictEqual(readExternallyManaged({
+    env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true,
+    probeMarkerRewritable: () => false, // even a loose marker that WOULD pass
+  }), { managedBy: "edition", updateCommand: "/usr/bin/edition-update", checkCommand: "" });
+});
+
+test("baked marker: absent -> the loose marker keeps its gated behavior", (t) => {
+  // The default build ships no baked marker, so the pre-existing contract must
+  // be untouched: a loose marker is read, and its metadata still depends on the
+  // provenance probe.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { baked, resources } = bakedFixture(t /* no body: file absent */);
+  assert.strictEqual(readExternallyManaged({
+    env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true,
+  }), null, "neither marker present: not managed");
+  fs.writeFileSync(path.join(resources, "EXTERNALLY-MANAGED"), JSON.stringify({
+    managedBy: "loose", updateCommand: "/usr/bin/loose-update",
+  }));
+  assert.deepStrictEqual(readExternallyManaged({
+    env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true, probeMarkerRewritable: () => true,
+  }), { managedBy: "", updateCommand: "", checkCommand: "" }, "rewritable loose marker: bare");
+  assert.deepStrictEqual(readExternallyManaged({
+    env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true, probeMarkerRewritable: () => false,
+  }), { managedBy: "loose", updateCommand: "/usr/bin/loose-update", checkCommand: "" }, "trusted loose marker: metadata");
+});
+
+test("baked marker: degenerate bodies still mean managed, with nothing to run", (t) => {
+  // Same fail-safe as the loose shape: a baked marker that is empty, unparsable,
+  // over-cap or not a regular file leaves the updater OFF and yields no command.
+  // A build that mis-writes its marker must not fall back to self-updating.
+  const fs = require("node:fs");
+  const bare = { managedBy: "", updateCommand: "", checkCommand: "" };
+  for (const body of ["", "not json", "[1,2]", "x".repeat(8193)]) {
+    const { baked, resources } = bakedFixture(t, body);
+    assert.deepStrictEqual(readExternallyManaged({
+      env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true,
+    }), bare, `body ${JSON.stringify(body.slice(0, 12))}`);
+  }
+  const { baked, resources } = bakedFixture(t);
+  fs.mkdirSync(baked); // a directory at the marker's name
+  assert.deepStrictEqual(readExternallyManaged({
+    env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true,
+  }), bare, "directory at the baked path");
+});
+
+test("baked marker: the dev/test env seam still wins, and stays a LOOSE read", (t) => {
+  // KIROCREW_EXTERNALLY_MANAGED (unpackaged only) names the file the harness
+  // wants exercised; a baked marker must not pre-empt it, and the env-named
+  // file keeps the provenance probe -- the seam exercises the loose path.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { baked, resources, root } = bakedFixture(t, JSON.stringify({ managedBy: "baked" }));
+  const envMarker = path.join(root, "env-marker");
+  fs.writeFileSync(envMarker, JSON.stringify({ managedBy: "env", updateCommand: "/usr/bin/x" }));
+  let probedPath = "";
+  assert.deepStrictEqual(readExternallyManaged({
+    env: { KIROCREW_EXTERNALLY_MANAGED: envMarker },
+    isPackaged: false,
+    resourcesPath: resources,
+    bakedMarkerPath: baked,
+    probeMarkerRewritable: (p) => { probedPath = p; return false; },
+  }), { managedBy: "env", updateCommand: "/usr/bin/x", checkCommand: "" });
+  assert.strictEqual(probedPath, envMarker);
+});
+
 test("canRewriteMarker: a marker we do NOT own and cannot chmod is trusted", (t) => {
   // The positive half: without this the gate could refuse everything and still
   // pass every negative test. Asserted against a real foreign-owned path (the
@@ -1608,6 +1768,29 @@ test("managed command env is CONSTRUCTED: nothing the shell reads as code is inh
   // The rest of the hardened environment is unchanged.
   assert.ok(env.PATH && !env.PATH.includes(require("node:os").homedir()),
     "PATH stays the narrowed system one");
+  // SET, not merely withheld: HOME is excluded so Python cannot find a planted
+  // user-site, but on Windows that directory derives from APPDATA, which IS
+  // passed through. Telling the interpreter directly closes both spellings.
+  assert.strictEqual(env.PYTHONNOUSERSITE, "1",
+    "a Python updater must never import a user-site sitecustomize, on any platform");
+  // The SHELL is pinned, not discovered from the environment. On POSIX Node
+  // resolves /bin/sh by path, so `true` is already pinned; on Windows the
+  // system cmd.exe is named by path, because `shell: true` there reads the
+  // user-level ComSpec -- the same injection class the env construction closes.
+  const shellOpt = optsList[0].shell;
+  if (process.platform === "win32") {
+    assert.match(String(shellOpt), /\\System32\\cmd\.exe$/i, "win32 shell must be the system cmd.exe by path");
+  } else {
+    assert.strictEqual(shellOpt, true);
+  }
+  assert.ok(!("COMSPEC" in env) && !("ComSpec" in env),
+    "the app's COMSPEC is not inherited (cmd.exe sets the child's own to the pinned shell)");
+  // Derived, not inherited: the launching executable's absolute path, from
+  // process.execPath (kernel command line), never from process.env.
+  assert.strictEqual(env.KIROCREW_MANAGED_ARGV0, process.execPath);
+  const src = require("node:fs").readFileSync(require.resolve("../auto-update"), "utf8");
+  assert.match(src, /shell: managedShell\(\)/, "spawn must take its shell from managedShell()");
+  assert.match(src, /System32\\\\cmd\.exe`/, "managedShell() must pin the system cmd.exe on win32");
   assert.strictEqual(optsList[0].cwd, "/");
 });
 

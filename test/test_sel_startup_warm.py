@@ -194,3 +194,72 @@ def test_writer_unavailable_fallback_never_writes_on_the_event_loop(tmp_path, mo
     finally:
         sel_mod.SecurityEventLog._instance = prior_instance
         sel_mod.SecurityEventLog._initialized = False
+
+
+def test_sel_is_warm_tracks_the_singleton_state(monkeypatch):
+    """The gate ``_audit_denied`` asks before choosing enqueue-vs-hop: false
+    with no instance, false with an instance whose init never completed (a
+    failed warm), true once initialized."""
+    prior_instance = sel_mod.SecurityEventLog._instance
+    try:
+        sel_mod.SecurityEventLog._instance = None
+        assert sel_mod.sel_is_warm() is False
+
+        inst = object.__new__(sel_mod.SecurityEventLog)
+        inst._initialized = False
+        sel_mod.SecurityEventLog._instance = inst
+        assert sel_mod.sel_is_warm() is False, "an allocated-but-uninitialized instance is not warm"
+
+        inst._initialized = True
+        assert sel_mod.sel_is_warm() is True
+    finally:
+        sel_mod.SecurityEventLog._instance = prior_instance
+
+
+def test_audit_denied_hops_off_the_loop_only_when_the_warm_failed(monkeypatch):
+    """The deny path is reached by every refused request. With a warmed
+    singleton it must stay a direct enqueue (#8608: no per-call hop). With a
+    FAILED warm the next ``sel()`` runs ``_init_locked`` -- blocking file I/O --
+    on the caller's thread, and the caller here is the event loop: that case
+    must take the hop. Both branches are driven through the real helper with
+    ``sel()`` and ``asyncio.to_thread`` replaced by recorders."""
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import server as server_mod
+
+    calls: list[str] = []
+
+    class _Log:
+        def log_api_access(self, **kw):
+            calls.append(f"write:{threading.get_ident() == loop_ident}")
+
+    async def _fake_to_thread(fn, *a, **kw):
+        calls.append("hop")
+        return fn(*a, **kw)
+
+    monkeypatch.setattr(server_mod, "sel", lambda: _Log())
+    monkeypatch.setattr(server_mod.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(server_mod, "mark_audit_claimed", lambda request: None)
+    request = SimpleNamespace(method="POST", path="/api/x")
+    loop_ident = threading.get_ident()
+
+    # Warm succeeded: enqueue inline, no hop.
+    monkeypatch.setattr(server_mod, "sel_is_warm", lambda: True)
+    asyncio.run(server_mod._audit_denied("caller", request, "denied"))
+    assert calls == ["write:True"], calls
+
+    # Warm failed: hop, then write inside the hop.
+    calls.clear()
+    monkeypatch.setattr(server_mod, "sel_is_warm", lambda: False)
+    asyncio.run(server_mod._audit_denied("caller", request, "denied"))
+    assert calls == ["hop", "write:True"], calls  # recorder runs inline; the ORDER is the property
+
+    # Best-effort on both paths: a raising write is swallowed, never a 500.
+    class _Boom:
+        def log_api_access(self, **kw):
+            raise RuntimeError("trust root too short")
+
+    monkeypatch.setattr(server_mod, "sel", lambda: _Boom())
+    for warm in (True, False):
+        monkeypatch.setattr(server_mod, "sel_is_warm", lambda warm=warm: warm)
+        asyncio.run(server_mod._audit_denied("caller", request, "denied"))  # must not raise

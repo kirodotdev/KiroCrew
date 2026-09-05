@@ -25,8 +25,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.platform_compat import file_lock, restrict_to_owner
 
@@ -332,6 +330,13 @@ class SecretVault:
         return b"v1" + self._SCOPE.encode() + b"\x00" + name.encode()
 
     def _encrypt_entry(self, name: str, plaintext: bytes) -> dict[str, str]:
+        # Imported HERE, not at module top. `kiro_crew.secrets` is reached from
+        # the tool-approval hook's import chain (hooks.on_tool_call ->
+        # slack.gateway -> autonudge -> irq -> cron_script -> secrets), so a
+        # top-level import made every tool approval depend on the `cryptography`
+        # native wheel loading. Only touching a vault entry needs AES-GCM.
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         key = self._get_or_create_key()
         aesgcm = AESGCM(key)
         nonce = os.urandom(12)
@@ -339,6 +344,8 @@ class SecretVault:
         return {"nonce": nonce.hex(), "ct": ct.hex()}
 
     def _decrypt_entry(self, name: str, entry: dict[str, str], key: bytes) -> bytes:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # see _encrypt_entry
+
         aesgcm = AESGCM(key)
         # A corrupt / hand-edited store can make ``entry`` any shape (a string,
         # a list, a dict missing ``nonce``/``ct``, or one whose values are not
