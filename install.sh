@@ -509,6 +509,12 @@ if wait $!; then
         die "Package installed but dependencies missing (aiohttp not importable).
      Try manually: $_venv/bin/pip install -e $KIROCREW_APP_DIR"
     fi
+    if [ ! -x "$_venv/bin/kirocrew" ]; then
+        die "Install incomplete: entry point $_venv/bin/kirocrew missing or not executable."
+    fi
+    if ! "$_venv/bin/python" -c "import kiro_crew" 2>/dev/null; then
+        die "Install incomplete: kiro_crew not importable."
+    fi
 else
     if [ -s "$_pip_log" ]; then
         echo ""

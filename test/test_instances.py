@@ -3445,6 +3445,36 @@ class TestTokenMintGeneric:
         # token builder emits identical strings via the generic builders it delegates to
         assert 'exec "$b" token --ttl 20h;' in build_remote_token_command("", ttl="20h")
 
+    def test_build_candidate_command_emits_per_candidate_diagnostics(self):
+        """When no candidate is executable, the snippet must explain WHY per path.
+
+        The exit-127 incident gave the operator only "binary not found"; the real
+        state (a dangling symlink into an interrupted venv rebuild, an entry point
+        that never got written) was invisible. The failure branch now diagnoses
+        each candidate to stderr before exiting 127.
+        """
+        from kiro_crew.instances.token_mint import build_candidate_command
+
+        cmd = build_candidate_command("token")
+
+        # Diagnosis header, symlink handling, and the distinct .venv Python probe.
+        assert 'echo "candidate diagnosis:" >&2;' in cmd
+        assert "DANGLING symlink" in cmd
+        assert "readlink -f" in cmd
+        assert "*/.venv/bin/*)" in cmd
+        assert "$__v/bin/python present" in cmd
+        assert "entry-point present" not in cmd
+        assert "entry-point MISSING" not in cmd
+        assert "symlink -> $__t (executable)" not in cmd
+        assert "present, executable" not in cmd
+
+        # Ordering (mutation check): the diagnosis runs AFTER the not-found echo
+        # and BEFORE `exit 127`, i.e. only on the failure path.
+        not_found = cmd.index("kirocrew binary not found")
+        diagnosis = cmd.index("candidate diagnosis:")
+        exit_127 = cmd.index("exit 127")
+        assert not_found < diagnosis < exit_127
+
     def test_run_remote_kirocrew(self, monkeypatch):
         from kiro_crew.instances import token_mint as tm
 

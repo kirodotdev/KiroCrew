@@ -2437,6 +2437,83 @@ class GatewayOrchestrator:
             dep_err, _ = redact_credentials(dep_err)
             logger.error("Dep repair failed: %s", dep_err[:500])
 
+    async def _check_console_script(self) -> None:
+        """Repair a venv whose ``kirocrew`` console script went missing.
+
+        ``_check_missing_deps`` catches a git-reset-without-pip-install that left
+        an import missing, but not the failure mode where an interrupted venv
+        rebuild (e.g. a Python-version bump that reran ``python -m venv`` + a
+        killed ``pip install -e``) leaves a venv with a working interpreter but
+        no ``kirocrew`` entry point — the gateway then dies later with an
+        exit-127 "binary not found". This closes that gap at startup: if the
+        recorded pip install has no executable console script, run the same
+        in-place editable reinstall ``dep_sync`` uses, which is the one operation
+        that rewrites the entry point.
+
+        Scoped to pip installs of a real project dir: a Brazil install owns its
+        own entry point, and an empty ``KIROCREW_PROJECT_DIR`` means there is no
+        checkout to reinstall from.
+        """
+        proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+        if not proj or self._is_brazil_install(proj):
+            return
+        method_file = Path(proj) / ".install-method"
+        if not (method_file.is_file() and method_file.read_text().strip() == "pip"):
+            return
+        # The venv interpreter under the project, platform-aware (Scripts on
+        # Windows, bin on POSIX), shared with dep_sync's ownership exception.
+        venv_py = dep_sync.project_venv_python(Path(proj))
+        script = dep_sync.console_script_path(venv_py)
+        if script.exists() and os.access(script, os.X_OK):
+            return
+
+        logger.warning(
+            "kirocrew console script missing/not executable at %s — reinstalling", script
+        )
+        print("👻 Repairing kirocrew install (console script missing)…")
+        # pip output can echo an authenticated index URL; redact before logging.
+        lines: list[str] = []
+        rc = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            functools.partial(
+                dep_sync.sync_or_reinstall,
+                Path(proj),
+                venv_py,
+                lambda msg, _err: lines.append(msg),
+                timeout=self._DEP_INSTALL_TIMEOUT_SECS,
+                allow_missing_package_repair=True,
+            ),
+        )
+        if rc != 0:
+            detail = "\n".join(lines)
+            detail, _ = redact_exfiltration_urls(detail)
+            detail, _ = redact_credentials(detail)
+            print("❌ kirocrew reinstall failed — run manually: kirocrew update")
+            logger.error("Console-script reinstall failed: %s", detail[:500])
+        else:
+            print("✅ kirocrew console script restored")
+
+    def _schedule_console_script_repair(self) -> asyncio.Task[None]:
+        """Run the console-script repair after the HTTP socket has bound.
+
+        The healthy path is a few filesystem probes, but repair can spend the
+        full pip timeout in an executor. Keep a strong reference so the task is
+        observable and cannot be garbage-collected while the repair is running.
+        """
+
+        async def _repair() -> None:
+            try:
+                await self._check_console_script()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Console-script check failed", exc_info=True)
+
+        task = asyncio.create_task(_repair())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     # ------------------------------------------------------------------
     # Service initialisation
     # ------------------------------------------------------------------
@@ -10828,6 +10905,12 @@ class GatewayOrchestrator:
             self._init_crew()
         else:
             await self._init_api_server()
+
+        # The dashboard/API socket is bound now. A missing wrapper can take the
+        # full pip timeout to repair, so track that work without delaying READY.
+        # The task itself catches and logs failures; startup remains available.
+        self._schedule_console_script_repair()
+
         # Record this gateway's own kirocrew launcher, keyed by the port it
         # serves, so a remote token-mint execs THIS install's venv instead of
         # a stale ~/.local/bin/kirocrew that may point at an uninstalled
