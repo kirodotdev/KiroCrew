@@ -262,6 +262,13 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  "not yet scheduled" placeholder is popover-only, so an armed-but-unscheduled
    *  loop keeps the plain "Goal active (cycle N)" title. */
   const titleCountdown = loop?.active && (loop.next_due_ts || 0) > 0 ? countdownText : ''
+  /** Cycle readout for the chip, tooltip and popover header: "3/24" when a
+   *  finite cap is armed, and a bare "3" when max_cycles is 0, which means
+   *  infinite -- a loop with no backstop has no denominator to count toward.
+   *  Interpolated as the {{cycle}} VALUE of the existing strings, so no
+   *  catalogue text changes. Unlike the countdown this is safe in aria-label:
+   *  it changes once per cycle, not once per second. */
+  const cycleText = loop?.max_cycles && loop.max_cycles > 0 ? `${loop.cycle_count}/${loop.max_cycles}` : String(loop?.cycle_count ?? 0)
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
@@ -274,15 +281,15 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 : 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
-          title={loop?.active ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count })}${titleCountdown ? ` · ${titleCountdown}` : ''}` : i18nT('components.autoNudgePopover.set_a_goal')}
+          title={loop?.active ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })}${titleCountdown ? ` · ${titleCountdown}` : ''}` : i18nT('components.autoNudgePopover.set_a_goal')}
           // The countdown stays OUT of aria-label (review finding): a
           // per-second label change re-announces the button to screen readers.
-          aria-label={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count })) : i18nT('components.autoNudgePopover.set_a_goal')}
+          aria-label={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })) : i18nT('components.autoNudgePopover.set_a_goal')}
           onMouseEnter={refreshNow}
           onFocus={refreshNow}
         >
           <Goal size={16} className="shrink-0" />
-          {loop?.active && loop.cycle_count > 0 ? loop.cycle_count : null}
+          {loop?.active && loop.cycle_count > 0 ? cycleText : null}
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="start" className="w-[420px] p-4 text-[12px]">
@@ -290,7 +297,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           <div className="flex items-center gap-2 font-medium text-text">
             <Goal size={14} className={loop?.active ? 'text-accent' : 'text-muted'} />
             {i18nT('components.autoNudgePopover.set_a_goal')}
-            {loop?.active && <span className="text-muted text-[11px]">{i18nT('components.autoNudgePopover.cycle')} {loop.cycle_count}</span>}
+            {loop?.active && <span className="text-muted text-[11px]">{i18nT('components.autoNudgePopover.cycle')} {cycleText}</span>}
           </div>
           <button aria-label={i18nT('components.autoNudgePopover.close')} onClick={() => onOpenChange(false)} className="text-muted hover:text-text bg-transparent border-none cursor-pointer">
             <X size={14} />
