@@ -2081,7 +2081,9 @@ async def api_send_message(request: web.Request) -> web.Response:
         )
 
     # Validate format first, then redact (#2)
-    if target_channel and not CHANNEL_ID_RE.match(target_channel):
+    if target_channel and (
+        len(target_channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(target_channel)
+    ):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     if target_user and not USER_ID_RE.match(target_user):
         return web.json_response({"error": "invalid user ID format"}, status=400)
