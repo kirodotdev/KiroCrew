@@ -4,6 +4,7 @@ import { readSource } from './readSource'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ThemeProvider } from '../hooks/useTheme'
 import { OverflowMenu, breadcrumbSegments } from '../components/MarkdownPanel'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
@@ -14,6 +15,10 @@ vi.mock('../api/client', () => ({
     artifact: vi.fn(),
     createArtifact: vi.fn(),
     revealPath: vi.fn(),
+    // The contributed-row seam subscribes to `['apps']` without fetching, and
+    // dispatches an activation through `invokeFileMenuItem`.
+    listApps: vi.fn(),
+    invokeFileMenuItem: vi.fn().mockResolvedValue({}),
   },
   // revealOrOpen branches its failure wording on `err instanceof ApiError`, so
   // the mock must export a real class — a bare object would make `instanceof`
@@ -40,9 +45,15 @@ vi.mock('../hooks/useBranding', () => ({
 
 const writeText = vi.fn()
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+// ThemeProvider mirrors the shipped tree (`main.tsx` mounts it above the whole
+// app): a contributed row's icon renders through `AppIcon`, which reads
+// `useTheme()` to pick its light/dark asset, so the harness needs the same
+// context the real mount sites already sit inside.
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <MemoryRouter>
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>{children}</ThemeProvider>
+    </QueryClientProvider>
   </MemoryRouter>
 )
 
@@ -459,5 +470,81 @@ describe('MarkdownPanel line-reveal effect', () => {
   it('reads the host callback through a ref instead of depending on it', () => {
     expect(effect).toContain('onRevealConsumedRef.current?.()')
     expect(effect).not.toMatch(/\bonRevealConsumed\?\.\(\)/)
+  })
+})
+
+describe('OverflowMenu — app-contributed rows (contributes.fileMenuItems)', () => {
+  const DECL = {
+    id: 'send',
+    label: 'Send to store',
+    icon: 'Package',
+    endpoint: '/api/apps/doc-store/send',
+    surfaces: ['file-overflow'],
+  }
+  const seedApps = (decls: unknown = [DECL], over: Record<string, unknown> = {}) =>
+    queryClient.setQueryData(['apps'], [
+      { name: 'doc-store', enabled: true, manifest: { contributes: { fileMenuItems: decls } } , ...over },
+    ])
+
+  const openWith = (filePath = '/tmp/hello.txt') => {
+    render(<OverflowMenu filePath={filePath} content={'line one\n'} />, { wrapper })
+    fireEvent.click(screen.getAllByRole('button')[0])
+  }
+
+  it('adds no row and no separator when no app contributes — the stock build is inert', () => {
+    openWith()
+    expect(screen.queryByRole('menuitem', { name: 'Send to store' })).not.toBeInTheDocument()
+  })
+
+  it('renders a contributed row and POSTs the PATH only, never the file content', () => {
+    seedApps()
+    openWith('/tmp/notes.md')
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Send to store' }))
+    expect(api.invokeFileMenuItem).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'send', app: 'doc-store' }),
+      { surface: 'file-overflow', path: '/tmp/notes.md', kind: 'file' },
+    )
+    // The content prop is in scope at the call site; it must not be shipped.
+    expect(vi.mocked(api.invokeFileMenuItem).mock.calls[0][1]).not.toHaveProperty('content')
+  })
+
+  it('renders contributed rows LAST, after the core view/location groups', () => {
+    seedApps()
+    openWith()
+    const labels = screen.getAllByRole('menuitem').map(el => el.textContent?.trim())
+    expect(labels.at(-1)).toBe('Send to store')
+    // Specifically: below Copy path / Download rather than spliced above them.
+    expect(labels.indexOf('Send to store')).toBeGreaterThan(
+      labels.findIndex(l => l === i18nT('components.markdownPanel.copy_path')),
+    )
+  })
+
+  it('is keyboard-navigable like every other row', () => {
+    seedApps()
+    openWith()
+    // `data-option` is what useListboxKeyboard treats as navigable; without it the
+    // row renders but arrows skip straight past it.
+    const row = screen.getByRole('menuitem', { name: 'Send to store' })
+    expect(row).toHaveAttribute('data-option')
+  })
+
+  it('honours the when predicate, so a markdown-only row is absent on a .txt file', () => {
+    seedApps([{ ...DECL, when: { extensions: ['md'] } }])
+    openWith('/tmp/hello.txt')
+    expect(screen.queryByRole('menuitem', { name: 'Send to store' })).not.toBeInTheDocument()
+  })
+
+  it('renders more than one contributed row', () => {
+    seedApps([DECL, { ...DECL, id: 'archive', label: 'Archive' }])
+    openWith()
+    expect(screen.getByRole('menuitem', { name: 'Send to store' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Archive' })).toBeInTheDocument()
+  })
+
+  it('contributes nothing from a disabled app', () => {
+    seedApps([DECL], { enabled: false })
+    openWith()
+    expect(screen.queryByRole('menuitem', { name: 'Send to store' })).not.toBeInTheDocument()
   })
 })

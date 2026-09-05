@@ -8,6 +8,7 @@ import { useBranding } from '../../hooks/useBranding'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
+import { useFileMenuItems, visibleFileMenuItems, FolderRowActions } from '../../apps/fileMenuContributions'
 import { PierreWorkspaceTree } from '../../pierre/tree'
 import { useTreeState } from './FileBrowserRail'
 
@@ -172,6 +173,9 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
     const id = setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(id)
   }, [query])
+
+  // App-contributed 'folder-row' actions, rendered per row (hover-revealed).
+  const folderItems = useFileMenuItems('folder-row')
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['browse-files', cwd],
@@ -447,6 +451,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
                 label={d.name}
                 title={d.path}
                 onActivate={() => navigate(d.path)}
+                actions={<FolderRowActions items={visibleFileMenuItems(folderItems, { path: d.path, kind: 'dir' })} node={{ path: d.path, kind: 'dir' }} />}
               />
             ))}
             {files.map(f => {
@@ -458,6 +463,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
                   label={f.name}
                   title={f.path}
                   onActivate={() => onFileOpen?.(f.path)}
+                  actions={<FolderRowActions items={visibleFileMenuItems(folderItems, { path: f.path, kind: 'file' })} node={{ path: f.path, kind: 'file' }} />}
                 />
               )
             })}
@@ -474,12 +480,14 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
  *  `sub` carries a search hit's subfolder. It is right-aligned and truncates from
  *  the START, because the tail of a path is what distinguishes two same-named
  *  files while the head is the part they share. */
-function Row({ icon, label, sub, title, onActivate }: {
+function Row({ icon, label, sub, title, onActivate, actions }: {
   icon: React.ReactNode
   label: string
   sub?: string
   title: string
   onActivate: () => void
+  /** App-contributed row actions (folder-row surface), right-aligned. */
+  actions?: React.ReactNode
 }) {
   return (
     <div
@@ -500,6 +508,7 @@ function Row({ icon, label, sub, title, onActivate }: {
           {sub}
         </span>
       )}
+      {actions}
     </div>
   )
 }

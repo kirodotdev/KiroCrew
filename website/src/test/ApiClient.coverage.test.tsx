@@ -1434,6 +1434,18 @@ describe('every api method issues one well-formed /api request', () => {
   const methods = Object.entries(api as unknown as Record<string, AnyFn>)
     .filter(([name, fn]) => typeof fn === 'function' && !HAND_TESTED.has(name))
 
+  // Methods whose URL comes out of an ARGUMENT'S FIELD rather than a positional
+  // string. The generic `'sw-1'` args below would make such a method build its
+  // URL from `undefined` — a harness artifact, not a defect in the method — so
+  // each one names the minimal shape its URL is read from.
+  const ARGS: Record<string, unknown[]> = {
+    // `invokeFileMenuItem(item, ctx)`: the URL is `item.endpoint`.
+    invokeFileMenuItem: [
+      { id: 'send', app: 'doc-store', endpoint: '/api/apps/doc-store/send' },
+      { surface: 'file-overflow', path: '/tmp/a.txt', kind: 'file' },
+    ],
+  }
+
   it('covers the whole surface (guards against the table silently shrinking)', () => {
     expect(methods.length).toBeGreaterThan(300)
   })
@@ -1443,7 +1455,7 @@ describe('every api method issues one well-formed /api request', () => {
     // Generic positional arguments. Every method is a thin URL/body builder, so
     // what this asserts is the construction itself: a forgotten argument or a
     // botched template literal shows up as `undefined` inside the path.
-    await Promise.resolve(fn('sw-1', 'sw-2', 'sw-3', 'sw-4'))
+    await Promise.resolve(fn(...(ARGS[name] ?? ['sw-1', 'sw-2', 'sw-3', 'sw-4'])))
 
     expect(fetchMock, `${name} issued no request`).toHaveBeenCalledTimes(1)
     const { url, init } = call()

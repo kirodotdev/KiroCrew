@@ -16,6 +16,10 @@ already calls. `src/extensions.ts` names exactly these fourteen in its header.
 `src/test/extensionSeams.test.tsx` exercises each one except the source-provider
 seam, which has its own suite in `src/test/sourceProviderSeam.test.ts`.
 
+File/tree/folder menu rows are **not** a composition-root seam: an installed app
+declares them in its manifest under `contributes.fileMenuItems[]` and core
+POSTs the file context to the app's endpoint — see the App Kit publishing guide.
+
 | Seam | Module | Registrar to reader |
 |------|--------|---------------------|
 | Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinComponent()` |
