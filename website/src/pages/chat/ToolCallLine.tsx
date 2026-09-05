@@ -5,7 +5,7 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../../i18n/LanguageProvider'
-import { DERIVE_LABEL_THRESHOLD_CHARS, deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
+import { DERIVE_LABEL_THRESHOLD_CHARS, commandFromToolInput, deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
@@ -255,7 +255,11 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       // Treat the message as having an entry when persisted I/O is available,
       // so the empty-state copy only shows for truly bare historical messages.
       hasEntry: !!(metaInput || metaOutput),
-      isShell: false,
+      // Persisted rows carry the ACP tool kind (see _tool_meta in
+      // chat_runner.py); 'execute' is the shell marker, mirroring the live
+      // branch above, so the command re-label works on restored sessions too.
+      // Rows written before the field existed read '' and stay non-shell.
+      isShell: ((message.meta?.kind as string | undefined) || '') === 'execute',
       // Persisted ACP tool kind (see _tool_meta in chat_runner.py). Rows
       // written before the field existed read '' and never promote a card.
       toolKind: (message.meta?.kind as string | undefined) || '',
@@ -682,11 +686,34 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // labels pass through untouched, and raw mode always shows the exact command.
   const pillLabelText = useMemo(() => {
     if (!simplified) return displayLabel
+    // A shell pill showing the RAW label (no purpose, or purpose suppressed by
+    // the language guard) gets re-labeled from the command itself: kiro-cli's
+    // auto-title for a purpose-less bash call is a digest of argument
+    // fragments ("--title, --text, …"), not the command, so the title is
+    // unreadable precisely when the fallback fires. A short single-line
+    // command shows verbatim; anything longer derives the binary digest.
+    // Framed as "Run {{cmd}}" through the catalog so the fallback reads in
+    // the same verb-led register as agent-authored purposes, in the UI
+    // language ("Read the full ticket …" beside "Run ledger.py ticket-log").
+    if (isShell && toolLabel === label) {
+      const cmd = commandFromToolInput(input)
+      if (cmd && cmd !== label) {
+        const shown = cmd.length <= DERIVE_LABEL_THRESHOLD_CHARS && !cmd.includes('\n')
+          ? cmd
+          : deriveShellSummary(cmd, { bareCommand: true }) ?? cmd
+        return i18nT('pages.chat.toolCallLine.run_command', { cmd: shown })
+      }
+    }
     if (displayLabel.length <= DERIVE_LABEL_THRESHOLD_CHARS && !displayLabel.includes('\n')) {
       return displayLabel
     }
     return deriveShellSummary(displayLabel, { bareCommand: isShell }) ?? displayLabel
-  }, [displayLabel, simplified, isShell])
+  // uiLang is a REAL dependency the linter cannot see: the run_command frame
+  // resolves through i18nT at call time, so without it a language switch
+  // would leave the pill in the previous language until an unrelated dep
+  // changed. Same disable precedent as ActivityViewer / AssistantMessage.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayLabel, simplified, isShell, toolLabel, label, input, uiLang])
   // Hover reveals the verbatim command whenever the pill shows a substitute.
   const pillLabelTitle = pillLabelText === displayLabel ? undefined : displayLabel
   // Both running and pending-approval pills shimmer — the highlight color

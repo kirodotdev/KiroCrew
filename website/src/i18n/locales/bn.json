@@ -9159,6 +9159,7 @@
         "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}",
         "open_in_side_panel": "{{path}} সাইড প্যানেলে খোলো",
         "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে",
+        "run_command": "{{cmd}} চালান",
         "wait_end_now": "অপেক্ষা শেষ করো",
         "wait_ending": "শেষ করা হচ্ছে…",
         "wait_remaining": "{{time}} বাকি",

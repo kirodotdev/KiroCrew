@@ -9290,6 +9290,7 @@
         "aria_show_details": "Mostrar los detalles de la herramienta: {{label}}",
         "open_in_side_panel": "Abrir {{path}} en el panel lateral",
         "opened_in_the_side_panel": "Abierto en el panel lateral",
+        "run_command": "Ejecutar {{cmd}}",
         "wait_end_now": "Terminar la espera",
         "wait_ending": "Terminando…",
         "wait_remaining": "Tiempo restante: {{time}}",

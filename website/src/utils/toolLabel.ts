@@ -128,6 +128,29 @@ const HEREDOC_RE = /<<[-~]?\s*['"]?[A-Za-z_]/
  *  whole command (``cd /tmp`` should still read ``cd``). */
 const BOOKKEEPING = new Set(['export', 'cd', 'set', 'source', 'exec', 'unset'])
 
+/** Wrappers that run ANOTHER command: the head worth naming comes after them
+ *  (``sudo make install`` names ``make``). */
+const WRAPPERS = new Set(['sudo', 'env', 'time', 'nice', 'nohup', 'command'])
+
+/** Interpreters whose first non-flag argument is the program actually being
+ *  run: the script name is the readable part (``python3 ledger.py ticket-log``
+ *  should read ``ledger.py ticket-log``, not ``python3``). Versioned forms
+ *  (``python3.12``) match by prefix. */
+const INTERPRETERS = ['python', 'node', 'bash', 'sh', 'zsh', 'ruby', 'perl', 'npx', 'uv']
+
+/** ``$VAR`` / ``${VAR}`` — a binary hidden behind a shell variable
+ *  (``PY=/…/python3; $PY script.py``). The variable name tells the reader
+ *  nothing; what follows it does. */
+const VARREF_RE = /^\$\{?[A-Za-z_]\w*\}?$/
+
+/** A bare subcommand word (``status`` in ``git status``, ``ticket-log`` in
+ *  ``ledger.py ticket-log``): lowercase, no path, flag, or glob shape. */
+const SUBCOMMAND_RE = /^[a-z][a-z0-9-]*$/
+
+function isInterpreter(name: string): boolean {
+  return INTERPRETERS.some(p => name === p || (name.startsWith(p) && /^[\d.]*$/.test(name.slice(p.length))))
+}
+
 /** Blank out quoted spans (keeping length) so operators inside quotes do not
  *  split segments — ``grep -E 'foo|bar'`` is one command, not two. Display-only
  *  port of the backend's ``_split_command_segments`` quote masking; escapes are
@@ -171,6 +194,7 @@ export function deriveShellSummary(
   const cmd = prefix ? label.slice(prefix[0].length) : label
   if (cmd.startsWith('@')) return null
   let names: string[] = []
+  const seen = new Set<string>()
   let target = ''
   // Parse every line until a heredoc opens: a multi-line script's real work is
   // often not on line 1 (``export PATH=…`` first, ``docker-compose`` second),
@@ -185,20 +209,62 @@ export function deriveShellSummary(
       const tokens = seg.trim().split(/\s+/).filter(Boolean)
       let i = 0
       while (i < tokens.length && ENV_ASSIGN_RE.test(tokens[i])) i++
+      // Step over run-another-command heads — wrappers (``sudo``), variable
+      // references (``$PY``), and interpreters (``python3``) — so the name
+      // that survives is the program the user would recognize. An interpreter
+      // running inline code (``python3 -c …``) keeps the interpreter name:
+      // there is no script to show.
+      while (i < tokens.length) {
+        const t = tokens[i]
+        const base = t.split('/').pop() || t
+        if (WRAPPERS.has(base) || VARREF_RE.test(t)) { i++; continue }
+        if (isInterpreter(base) && tokens[i + 1] && !tokens[i + 1].startsWith('-')) { i++; continue }
+        break
+      }
       const head = tokens[i]
       if (!head) continue
       const base = head.split('/').pop() || head
-      if (/^[\w.@+-]+$/.test(base) && !names.includes(base)) names.push(base)
+      if (!/^[\w.@+-]+$/.test(base) || seen.has(base)) continue
+      seen.add(base)
+      // Attach one subcommand word to the first MEANINGFUL name so tool-style
+      // commands read whole (``ledger.py ticket-log``, ``git rebase``) even
+      // when a bookkeeping ``cd`` segment precedes them — later segments stay
+      // head-only to keep multi-command summaries short.
+      const isFirstMeaningful = !names.some(n => !BOOKKEEPING.has(n.split(' ')[0]))
+      const sub = isFirstMeaningful && tokens[i + 1] && SUBCOMMAND_RE.test(tokens[i + 1]) && !BOOKKEEPING.has(base)
+        ? ` ${tokens[i + 1]}`
+        : ''
+      names.push(`${base}${sub}`)
     }
     if (HEREDOC_RE.test(rawLine)) break
   }
   if (names.length > 1) {
-    const meaningful = names.filter(n => !BOOKKEEPING.has(n))
+    const meaningful = names.filter(n => !BOOKKEEPING.has(n.split(' ')[0]))
     if (meaningful.length > 0) names = meaningful
   }
   if (names.length === 0) return null
   const shown = names.length > 4 ? `${names.slice(0, 4).join(', ')} …` : names.join(', ')
   return `${prefix ? prefix[0] : ''}${shown}${target ? ` → ${target}` : ''}`
+}
+
+/** The ``command`` string out of a tool call's raw-input JSON, or null.
+ *
+ *  The stored/streamed ``input`` for a shell call is the raw params object
+ *  serialized as JSON. kiro-cli's TITLE for these calls is not the command —
+ *  when no purpose was supplied it is a digest of argument fragments — so a
+ *  caller that wants to label the pill from ground truth reads the command
+ *  from here instead. */
+export function commandFromToolInput(input: string): string | null {
+  if (!input) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(input)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const cmd = (parsed as Record<string, unknown>).command
+  return typeof cmd === 'string' && cmd.trim() ? cmd : null
 }
 
 /**

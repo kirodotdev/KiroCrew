@@ -9159,6 +9159,7 @@
         "aria_show_details": "टूल के लिए विवरण दिखाएँ: {{label}}",
         "open_in_side_panel": "{{path}} को साइड पैनल में खोलें",
         "opened_in_the_side_panel": "साइड पैनल में खोला गया",
+        "run_command": "{{cmd}} चलाएँ",
         "wait_end_now": "प्रतीक्षा खत्म करो",
         "wait_ending": "खत्म किया जा रहा है…",
         "wait_remaining": "{{time}} शेष",
