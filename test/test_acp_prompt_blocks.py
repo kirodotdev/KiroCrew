@@ -50,8 +50,9 @@ class TestBuildPromptBlocks:
         blocks = build_prompt_blocks(f"look at {p} please")
 
         assert [b["type"] for b in blocks] == ["text", "image"]
-        # Text block leads, so the caller can pass this straight to session/prompt.
-        assert blocks[0]["text"] == f"look at [image: {p.name}] please"
+        # Keep the source path in text as a fail-open fallback. If a downstream
+        # renderer drops the image block, a tool-capable agent can still read it.
+        assert blocks[0]["text"] == f"look at {p} please"
         assert blocks[1]["mimeType"] == "image/png"
         # The wire carries the BYTES, not the path.
         assert base64.b64decode(blocks[1]["data"]) == _PNG
@@ -94,14 +95,14 @@ class TestBuildPromptBlocks:
         blocks = build_prompt_blocks(f"{a} and {b}")
 
         assert [x["type"] for x in blocks] == ["text", "image", "image"]
-        assert blocks[0]["text"] == "[image: a.png] and [image: b.png]"
+        assert blocks[0]["text"] == f"{a} and {b}"
 
     def test_same_path_twice_is_encoded_once(self, tmp_path):
         p = _png(tmp_path)
         blocks = build_prompt_blocks(f"{p} then {p} again")
-        # One image block, and both textual occurrences are rewritten.
+        # One image block, while both textual path occurrences remain usable.
         assert [x["type"] for x in blocks] == ["text", "image"]
-        assert str(p) not in blocks[0]["text"]
+        assert blocks[0]["text"].count(str(p)) == 2
 
     @pytest.mark.parametrize("suffix,mime", sorted(IMAGE_MEDIA_TYPES.items()))
     def test_every_supported_suffix_maps_to_its_mime(self, tmp_path, suffix, mime):
