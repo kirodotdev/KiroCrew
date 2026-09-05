@@ -156,6 +156,32 @@ class TestAgentSyncPrune:
         cfg.save.assert_not_called()
 
 
+class TestSyncRefusesCredentialShapedNames:
+    """The SECOND way a name reaches `cfg.agents`, which the create route cannot see.
+
+    A discovered spec's name is package-controlled, not typed by the owner, so
+    "the owner is reading a string the owner wrote" does not hold for it: a package
+    could land a credential-shaped name that then reaches the roster. Refused at
+    this source too (#8454).
+    """
+
+    PROBE = "AKIAIOSFODNN7EXAMPLE"
+
+    @pytest.mark.asyncio
+    async def test_a_credential_shaped_discovered_name_is_not_synced(self):
+        cfg = _make_config({})
+        body = await _run_sync(cfg, [_make_aim_agent(self.PROBE)])
+        assert self.PROBE not in cfg.agents, "a credential-shaped package name was stored"
+        assert self.PROBE not in json.dumps(body), "the name was echoed into the response"
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_discovered_name_still_syncs(self):
+        """The direction that proves the refusal is narrow, not a blanket."""
+        cfg = _make_config({})
+        await _run_sync(cfg, [_make_aim_agent("oncall-triage")])
+        assert "oncall-triage" in cfg.agents
+
+
 class TestAgentSyncFsCheckIsOffloaded:
     """The per-agent on-disk existence check (a stat + a namespaced glob) runs in
     a loop over discovered agents; on a populated agents directory it must be
