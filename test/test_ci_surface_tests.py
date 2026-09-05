@@ -337,6 +337,7 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_sandbox_argv.py",
         "test_sandbox_cc_mode.py",
         "test_sandbox_hardlink_scan.py",
+        "test_sandbox_md_notebook_carveout.py",
         "test_sandbox_nested_tier.py",
         "test_pid_lifecycle.py",
         "test_pid_sweep_helpers.py",

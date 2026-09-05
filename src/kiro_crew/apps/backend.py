@@ -27,6 +27,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import (
     app_execution_denied,
+    is_builtin_app,
     shipped_builtin_app_root,
     shipped_builtin_module_path,
 )
@@ -37,9 +38,11 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.sandbox import (
+    MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
     cgroup_scope_argv,
+    md_notebook_backend_state_paths,
     popen_limited,
     run_limited,
     wrap_argv,
@@ -682,6 +685,13 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         logger.warning("Refusing to spawn third-party app %s backend: %s", app_name, denied)
         return None
 
+    # Whether this spawn executes the SHIPPED md-notebook backend: provenance on
+    # the executed path, computed once and reused by the isolated-startup branch
+    # and the state-file carve-out below so the two can never disagree.
+    _shipped_md_notebook = app_name == MD_NOTEBOOK_APP_NAME and is_builtin_app(
+        app_name=app_name, app_root=execution_path
+    )
+
     if is_module_entry:
         entry = None  # sentinel; no file path for module-style entries
     else:
@@ -1030,15 +1040,49 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                     logger.warning("Failed to install npm deps for app %s: %s", app_name, exc)
 
     # --- Module-style Python builtin (e.g. kiro_crew.apps.builtins.<name>) ---
-    # Module-style entries have no file path — invoke via `python -m <module>`.
-    # Run under the gateway's own python interpreter (sys.executable) so the
-    # module path resolves against the gateway's installed packages, with
-    # cwd at the KiroCrew source root so relative imports inside the module
-    # work without venv setup.
+    # Module-style entries have no file path — the module is run under the
+    # gateway's own interpreter (sys.executable) so it resolves against the
+    # gateway's installed packages, with cwd at the kiro_crew source root so
+    # relative imports inside the module work without venv setup.
+    #
+    # The md-notebook spawn ALONE starts isolated (``-I``): a bare ``python -m``
+    # runs the interpreter's startup hooks — ``sitecustomize``/``usercustomize``
+    # /user-site ``.pth`` — and the default user site is an agent-writable,
+    # gateway-independent injection path a FRESH interpreter honours even
+    # though the running gateway never re-imports it. For md-notebook that
+    # startup code would run inside the one namespace where the PAT is
+    # unmasked, so hooks must not ride along. Scoped to the spawn that carries
+    # the carve-out (same provenance flag), not to every module builtin: the
+    # other four have no unmasked secret in their namespace, and rewriting
+    # their import environment here would be a rider on a fix scoped to one.
+    #
+    # ``-I`` also drops cwd-on-sys.path, the user site's PACKAGES, and
+    # ``PYTHONPATH`` (it implies ``-E``), so the import universe the module
+    # needs is restated EXPLICITLY: ``runpy`` (the machinery behind ``-m``)
+    # runs the module after inserting the root kiro_crew ITSELF was imported
+    # from — backend.py lives in that same package, so its own tree root IS
+    # that root. Correct across a venv install (site-packages, harmless
+    # duplicate), a --user install (the user-site dir re-admitted as a plain
+    # path entry WITHOUT its hooks — a plain sys.path insert never imports
+    # usercustomize and never processes ``.pth``), and a source tree (the repo
+    # ``src`` root). ``repr`` keeps both injected strings inert literals.
     elif entry is None:
         python_bin = sys.executable
-        cmd = [python_bin, "-m", entry_point]
-        cwd = str(Path(__file__).resolve().parent.parent.parent)
+        _import_root = str(Path(__file__).resolve().parent.parent.parent)
+        cwd = _import_root
+        if _shipped_md_notebook:
+            cmd = [
+                python_bin,
+                "-I",
+                "-c",
+                (
+                    "import runpy, sys; "
+                    f"sys.path.insert(0, {_import_root!r}); "
+                    f"runpy.run_module({entry_point!r}, run_name='__main__', alter_sys=True)"
+                ),
+            ]
+        else:
+            cmd = [python_bin, "-m", entry_point]
 
     # --- Exec (shell-launcher) backend ---
     # Explicit `backend.type: "exec"` (exec the entry point file as-is — also
@@ -1136,8 +1180,34 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     _visible: tuple[str, ...] = ()
     if _platform_extra.get(POLICY_CACHE_ONLY_ENV):
         _visible = (str(policy_cache_dir()),)
+    # md-notebook's own state files (vaults.json / pat / settings.json) are
+    # bind-masked in every sandbox tier so the AGENT's subprocesses cannot read the
+    # GitHub token or rewrite the vault list — but this backend is the one process
+    # that OWNS them, and spawned under the same sandbox it inherits the mask over
+    # its own state store, so every attach/clone fails with EPERM (#8762). Carve
+    # exactly those state paths — the three files plus the staging directory their
+    # writers publish through — back out for exactly this spawn.
+    #
+    # PROVENANCE-GATED on the EXECUTED PATH: ``is_builtin_app`` binds the
+    # carve-out to code resolving inside the immutable shipped package. A
+    # third-party app that names itself "md-notebook" with a FILE entry point
+    # executes from the mutable installed tree, fails the check, and keeps the
+    # mask; one that names the shipped MODULE as its entry point does get the
+    # carve-out — but then the code running in the namespace IS the shipped
+    # backend, byte for byte, which is the same trust decision the
+    # ``app_execution_denied`` gate above already keys off this identical path.
+    # Unlike the read-only policy-cache exposure above this restores read AND
+    # write, because the backend is the sole legitimate writer of all three
+    # files (atomic temp+rename in the same directory); the agent-side
+    # file-tool gate (``security.is_sensitive_path``) still fences these paths
+    # from tool calls, so the agent's own reach is unchanged.
+    if _shipped_md_notebook:
+        _visible = _visible + md_notebook_backend_state_paths()
     sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
-    if _visible and list(sandboxed_cmd) == list(cmd):
+    # Keyed to cache-only mode itself, NOT to ``_visible`` being non-empty: the
+    # md-notebook carve-out above also populates ``_visible``, and this warning's
+    # premise ("centrally governed host") only holds when the cache flag set it.
+    if _platform_extra.get(POLICY_CACHE_ONLY_ENV) and list(sandboxed_cmd) == list(cmd):
         # The wrap was a no-op, so this host has no OS confinement at all: no sandbox backend,
         # or agent.sandbox='off' with the sandbox_allow_no_isolation opt-in. Said once,
         # because the combination is worth naming — a centrally governed host running app code

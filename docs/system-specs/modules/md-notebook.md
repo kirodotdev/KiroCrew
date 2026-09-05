@@ -32,13 +32,101 @@ appears in the Apps library ready to be switched on rather than enabling itself.
 
 ## State Layout
 
-Rooted at `MD_NOTEBOOK_HOME`, defaulting to `~/.kiro/crew/workspace/md-notebook/`:
+Rooted at `<crew-home>/workspace/md-notebook/`, i.e. `~/.kiro/crew/workspace/md-notebook/`
+by default. **`MD_NOTEBOOK_HOME` moves the clone data only.** The four state entries below
+resolve through `_crew_data_home()`, which ignores that variable deliberately: each one is
+an authorization surface (the credential, the push target, the `autoSync` bit), and letting
+an operator — or a prompt-injected agent — repoint the variable would relocate them out
+from behind `is_sensitive_path()`'s floor. Only `vaults/<id>/` follows `MD_NOTEBOOK_HOME`,
+because it is bulk per-instance content.
 
 | Path | Contents |
 | --- | --- |
-| `vaults.json` | Vault descriptors. No secrets, but `localPath` is what sync runs git against, so it is in `_SENSITIVE_HOME_DIRS`. Written via a temp file + `os.replace`. |
-| `pat` | GitHub token, chmod 0600, never echoed back to the UI (only a boolean is). Also listed in `_SENSITIVE_HOME_DIRS`, so agent file tools cannot read it through the shared gate — 0600 alone does not isolate another process running as the same user. |
+| `vaults.json` | Vault descriptors. No secrets, but `localPath` is what sync runs git against, so it is in `_SENSITIVE_HOME_DIRS`. Written through `_write_state_staged_sync` (stage in `.staging`, then rename), retrying the Windows rename window. |
+| `pat` | GitHub token, chmod 0600, never echoed back to the UI (only a boolean is). Also listed in `_SENSITIVE_HOME_DIRS`, so agent file tools cannot read it through the shared gate — 0600 alone does not isolate another process running as the same user. Clearing it writes an EMPTY file rather than unlinking (see below). |
+| `settings.json` | Sync preferences, including `autoSync` — the bit that authorizes the background loop's unattended `git push`. In `_SENSITIVE_HOME_DIRS` for that reason, so an agent cannot flip it through a file tool. Staged and fsynced like the PAT. |
+| `.staging` | Write-staging directory for the three entries above. Holds their bytes mid-write, so it is classified as a whole DIRECTORY in `_SENSITIVE_HOME_DIRS` (the `whatsapp` shape) rather than by leaf name. |
 | `vaults/<id>/` | Vaults this app cloned itself. Attached vaults stay where the user has them. |
+
+### Staged state writes
+
+All three state files are published by `_write_state_staged_sync`: stage a `mkstemp` temp
+inside `.staging`, write, optionally fsync, then `replace_with_retry` onto the target. The
+temp does NOT live beside the target, which is the point — a sibling temp carries the real
+PAT bytes under a name no per-leaf protection covers, and a SIGKILL between write and
+rename leaves that orphan readable indefinitely. Staging in a directory that is itself
+covered keeps both the write window and any crash orphan protected, and the rename stays
+atomic because `.staging` sits on the same filesystem as its targets.
+
+The temp is 0600 from `mkstemp` on POSIX and gets an owner-only DACL from
+`restrict_to_owner` on Windows, both BEFORE any payload byte; a failure there warns rather
+than losing the credential. Because the staging directory is not the target's parent, the
+writer calls `atomic_write.refuse_linked_parent` explicitly on both chains it walks, before
+any `mkdir` — `mkdir` follows a symlink planted at an intermediate component and would build
+the tree under the link's target, dropping the secret outside the fence while the caller
+sees success (the #4381 guard, which `atomic_write` applies automatically and this
+out-of-band stager must not shed).
+
+**Note saves are deliberately excluded.** `_atomic_write_text_sync` still stages beside the
+note inside the vault: a vault can be on a different filesystem, where a rename out of
+`.staging` would not be atomic, and a note holds no secret.
+
+### Sandbox: the backend sees its own state
+
+`sandbox._CREW_HIDDEN_LEAVES` bind-masks all four state entries in every sandbox tier, so
+subprocesses the AGENT spawns cannot read the GitHub token or rewrite the vault list at OS
+level. But the Notes backend is itself spawned under that same sandbox (`apps/backend.py`
+wraps every app backend through `wrap_argv`), and it OWNS those files — masked from it,
+every attach and clone fails with EPERM (#8762).
+
+So exactly one spawn carves them back out. `sandbox.md_notebook_backend_state_paths()`
+resolves the masked entries to absolute paths and `apps/backend.py` passes them as
+`extra_visible_dirs`, gated on `is_builtin_app(app_name=..., app_root=execution_path)` —
+provenance on the EXECUTED path, the same predicate `app_execution_denied` already keys off.
+A third-party app naming itself `md-notebook` executes from the mutable installed tree,
+fails the check, and keeps the mask. Three properties are worth stating because each is easy
+to undo:
+
+* **Read AND write**, unlike the policy-cache carve-out, which is re-sealed read-only. The
+  backend is the sole legitimate writer, and the rename target has to be writable.
+* **The agent-side gate is untouched.** These paths stay in `_SENSITIVE_HOME_DIRS`, so
+  `security.is_sensitive_path` keeps fencing them from agent file tools. The carve-out moves
+  the OS mask for one process; it does not widen the agent's reach.
+* **Absent leaves are materialized first.** `_materialize_md_notebook_mask_targets()` runs
+  on the Linux spawn path because `mount(2)` cannot mask a path that does not exist and the
+  launcher's hiding loop skips absent targets — so before this fix the mask over these files
+  was vacuous on a fresh install, and the carve-out is what first makes the backend able to
+  create them. A namespace spawned before the first attach would otherwise read the PAT
+  saved after it. Each leaf is created holding its reader's absent-equivalent (`""`, `[]`,
+  `{}`), never truncating an existing file. It fails closed, like the ceiling materializer.
+  For the same reason, clearing the PAT REPLACES the file with empty content instead of
+  unlinking it: removing the inode would delete the mask's mount target.
+* **A symlink at a state leaf is refused outright**, resolving or dangling — unlike the
+  governance ceiling, which deliberately tolerates a resolving link. The requirement is
+  inverted because `mount(2)` resolves its target: masking a resolving `pat` link covers the
+  REFERENT while the lexical name stays a replaceable link in a writable parent, so the
+  agent swaps it after launch and a later PAT write publishes to an unmasked name inside the
+  live namespace. `atomic_write` tolerates a leaf link for the opposite reason — `os.replace`
+  does not follow the final component. Both chains the materializer walks also go through
+  `refuse_linked_parent` before any `mkdir`.
+* **An existing leaf must be a REGULAR file**, not merely present. The launcher hides files
+  by binding over an `isfile` target and directories by binding an empty one over an `isdir`
+  target, so a FIFO, socket, or device node matches neither loop and receives no mask —
+  while `os.path.exists` reads True, so an existence check alone would accept it and skip
+  materialization. The backend's rename would then publish the real token over that special
+  file inside an already-running namespace. A non-regular leaf refuses the spawn; the
+  staging path gets the same outcome from `os.makedirs`, which rejects a non-directory.
+
+The deprecated `~/.kirocrew` spelling stays masked and is NOT carved — no resolver returns
+it, so unmasking would expose a stale legacy credential copy for no functional gain. A
+spelling sitting beneath an independently masked directory (a `KIROCREW_HOME` placed under
+a credential tree) is REFUSED with a logged reason rather than carved, because
+`extra_visible_dirs` cancels any masked entry that CONTAINS a visible path and would take
+that whole foreign mask down. The backend keeps its EPERM on such a host, which is the
+pre-existing behavior and strictly safer than unmasking a credential tree.
+
+macOS needs no materialization step: Seatbelt denies are path rules that hold for names
+that do not exist yet.
 
 A vault descriptor carries `id`, `name`, `repo`, `localPath`, `branch`, `readOnly`, an
 optional `subfolder` scope, plus `knowledge` and `knowledgeSourceId`. The `external` field

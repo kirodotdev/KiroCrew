@@ -1755,6 +1755,118 @@ class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
         assert seen.get("visible") == ()
 
 
+class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
+    """#8762: ``workspace/md-notebook/{pat,vaults.json,settings.json}`` are
+    bind-masked in every sandbox tier so the AGENT's subprocesses cannot read
+    the GitHub token or rewrite the vault list — but the md-notebook backend is
+    itself spawned under that sandbox and OWNS those files, so it inherited the
+    mask over its own state store and every attach/clone failed with EPERM.
+
+    The spawn site carves the three leaves back out for exactly ONE spawn: the
+    shipped builtin, provenance-checked against the immutable package. A
+    third-party app that merely wears the name keeps the mask.
+    """
+
+    @staticmethod
+    def _spy(bmod, monkeypatch):
+        seen: dict = {}
+
+        def _spy_wrap(argv, **kwargs):
+            seen["visible"] = kwargs.get("extra_visible_dirs")
+            seen["argv"] = list(argv)
+            return (list(argv), None)
+
+        monkeypatch.setattr(bmod, "wrap_argv", _spy_wrap)
+        monkeypatch.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("stop"))
+        )
+        return seen
+
+    def test_the_shipped_builtin_spawn_carves_its_state_files_back_out(
+        self, app_env, monkeypatch
+    ):
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import register_builtin_apps
+        from kiro_crew.sandbox import md_notebook_backend_state_paths
+
+        register_builtin_apps()
+        seen = self._spy(bmod, monkeypatch)
+
+        bmod.start_app_backend("md-notebook")
+
+        assert seen.get("visible"), "the spawn passed no visible dirs at all"
+        for path in md_notebook_backend_state_paths():
+            assert path in seen["visible"], (
+                "md-notebook's own state stays masked from the one spawn that "
+                f"owns it, so attach/clone still EPERMs (missing {path!r}, "
+                f"saw {seen['visible']!r})"
+            )
+        # Startup isolation rides with the carve-out: a bare `python -m` runs
+        # sitecustomize/usercustomize, and the default user site is an
+        # agent-writable injection path that would execute inside the one
+        # namespace where the PAT is unmasked (server-side GPT review, round 6).
+        argv = seen["argv"]
+        assert "-I" in argv, f"module builtin spawned without isolated startup: {argv!r}"
+        assert "-m" not in argv and any(
+            "runpy" in a and "kiro_crew.apps.builtins.md_notebook" in a for a in argv
+        ), f"the module must run via runpy with an explicit import root: {argv!r}"
+
+    def test_other_module_builtins_keep_the_bare_module_launch(self, app_env, monkeypatch):
+        """The isolated-startup rewrite is scoped to the spawn that carries the
+        carve-out: the other module builtins have no unmasked secret in their
+        namespace, and rewriting their import environment would be a rider on a
+        fix scoped to one (First Principles review)."""
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import register_builtin_apps
+
+        register_builtin_apps()
+        seen = self._spy(bmod, monkeypatch)
+
+        bmod.start_app_backend("file-explorer")
+
+        argv = seen["argv"]
+        assert "-I" not in argv and "-m" in argv, (
+            f"a non-md-notebook module builtin changed launch shape: {argv!r}"
+        )
+        assert seen.get("visible") == (), (
+            "a non-md-notebook builtin received the state carve-out"
+        )
+
+    def test_a_third_party_app_wearing_the_name_keeps_the_mask(
+        self, app_env, tmp_path, monkeypatch
+    ):
+        """The carve-out is bought with provenance, never with a name: an app
+        NAMED md-notebook that executes from the mutable installed tree (here
+        via the blanket third-party toggle the fixture enables) must not see
+        the GitHub token."""
+        import kiro_crew.apps.backend as bmod
+
+        seen = self._spy(bmod, monkeypatch)
+
+        src = tmp_path / "source" / "md-notebook"
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "md-notebook",
+                    "version": "9.9.9",
+                    "displayName": "Impostor",
+                    "description": "wears the builtin's name",
+                    "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+                }
+            )
+        )
+        (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+        install_app(src)
+
+        bmod.start_app_backend("md-notebook")
+
+        assert seen.get("visible") == (), (
+            "a third-party app bought the md-notebook state carve-out with its "
+            f"name alone (saw {seen.get('visible')!r})"
+        )
+
+
 # =============================================================================
 # Post-startup liveness watch (#5726)
 # =============================================================================

@@ -649,6 +649,21 @@ def _link_trust_anchor(parent: Path) -> tuple[Path, tuple[str, ...]] | None:
     return None
 
 
+def refuse_linked_parent(path: Path | str) -> None:
+    """Public form of the #4381 planted-link refusal, for out-of-band stagers.
+
+    ``atomic_write(restrict_to_owner=True)`` applies this automatically, and
+    that chokepoint is where the guard normally lives. A secret writer that
+    must stage its temp OUTSIDE the target's parent (md-notebook's masked
+    ``.staging`` directory) cannot route through ``atomic_write`` itself, so it
+    calls this on the same paths its ``mkdir``/``mkstemp``/``replace`` will
+    walk — BEFORE the mkdirs, which follow a planted link and would build the
+    tree under its target. Raises ``OSError`` on refusal, like the private
+    form.
+    """
+    _refuse_linked_parent(Path(path))
+
+
 def _refuse_linked_parent(path: Path) -> None:
     """Refuse to write a secret whose parent chain passes through a link.
 
