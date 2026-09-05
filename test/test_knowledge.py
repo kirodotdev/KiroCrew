@@ -2492,6 +2492,32 @@ class TestChunkMarkdown:
         chunks = chunker.chunk_markdown(text)
         assert len(chunks) > 1
 
+    def test_merged_sections_line_end_stays_within_the_file(self):
+        # Three small heading sections that all merge into a single chunk. The
+        # merge joins section bodies with a synthetic "\n" the source never had,
+        # so counting newlines in the reconstructed body reported a line_end that
+        # ran (merged_sections - 1) lines past the end of the file -- a citation
+        # pointing past EOF. line_end must track the last real SOURCE line.
+        text = (
+            "## Alpha\n"      # line 1
+            "body a\n"        # line 2
+            "## Bravo\n"      # line 3
+            "body b\n"        # line 4
+            "## Charlie\n"    # line 5
+            "body c\n"        # line 6
+        )
+        total_lines = text.count("\n")  # 6 source lines
+        chunker = HeadingAwareChunker(target_size=500)
+        chunks = chunker.chunk_markdown(text)
+        # Small sections collapse into one chunk.
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert chunk["line_start"] == 1
+        # The body's last real content line is line 6; before the fix this was
+        # reported as 8 (6 + 2 injected newlines), citing two lines past EOF.
+        assert chunk["line_end"] == 6
+        assert chunk["line_end"] <= total_lines
+
 
 # ---------------------------------------------------------------------------
 # 13. FileReader -- .docx content_type metadata
