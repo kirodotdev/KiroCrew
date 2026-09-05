@@ -2,6 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { jsonEqual } from '../utils/structuralEqual'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { sanitizeLlmOutput, isUnsafeKey } from '../utils/sanitize'
 import type { StatusData, ChatSlot, TodoList, McpSessionReport } from '../types'
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
@@ -85,10 +86,32 @@ const initialState: DashboardState = {
 
 export const fetchSlots = createAsyncThunk('dashboard/fetchSlots', () => api.chatSlots())
 
-export const changeApprovalMode = createAsyncThunk(
+/** Switch the approval mode, carrying a policy refusal back to the caller.
+ *
+ *  The gateway answers 403 `mode_disabled_by_policy` when the `approval_modes`
+ *  scope forbids the mode. A plain `throw` would reach the reducer as
+ *  `action.error.message` only, dropping the machine-readable code with it, so
+ *  the caller could not tell a policy refusal from a network failure — and the
+ *  picker would have nothing to show but silence. `rejectWithValue` keeps the
+ *  code, which is what makes the refusal reportable next to the control. */
+export const changeApprovalMode = createAsyncThunk<
+  string,
+  { mode: string; slot?: string },
+  { rejectValue: { code: string; message: string } }
+>(
   'dashboard/changeApprovalMode',
-  async ({ mode, slot }: { mode: string; slot?: string }) => {
-    await api.chatMode(mode, slot)
+  async ({ mode, slot }, { rejectWithValue }) => {
+    try {
+      await api.chatMode(mode, slot)
+    } catch (e) {
+      const body = e instanceof ApiError ? e.body : ''
+      let code = ''
+      try { code = JSON.parse(body || '{}')?.code ?? '' } catch { /* not JSON */ }
+      return rejectWithValue({
+        code,
+        message: e instanceof Error ? e.message : String(e),
+      })
+    }
     return mode
   },
 )

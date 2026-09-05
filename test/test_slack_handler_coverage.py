@@ -177,6 +177,46 @@ class TestYoloCommand:
         assert "ON" in _texts(slack)
 
     @pytest.mark.asyncio
+    async def test_off_revokes_while_the_policy_verdict_is_unknown(
+        self, slack, sessions, owner, monkeypatch
+    ):
+        """An explicit off must not be gated on the POLICY-FILTERED liveness.
+
+        ``!yolo`` computes ``yolo_active = is_yolo_mode()``, which policy can veto.
+        While the governance verdict is momentarily unknown that reads False, so the
+        off branch reported "already off" and never called ``disable_yolo()`` -- and
+        the retained grant then resumed once the refresh settled, silently undoing
+        the operator's revocation. ``disable_yolo`` itself was corrected to read
+        ``has_grant``; this covers its CALLER, which was still gating it out.
+
+        Driven through ``_slash`` on purpose: an earlier attempt re-implemented the
+        gate inside the test and therefore exercised no handler code, passing even
+        with the fix reverted.
+        """
+        import time as _time
+
+        from kiro_crew import safety_override as so
+
+        await _slash("!yolo on", slack, sessions)
+        assert h.is_yolo_mode() is True
+        slack.actions.clear()
+
+        # Force the verdict undated: fresh by the clock, stamped with a generation
+        # nothing will match. On a running loop the refresh cannot settle inline.
+        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: True)
+        monkeypatch.setattr(so, "_yolo_policy_cache", (_time.monotonic(), True, -999))
+        assert h.is_yolo_mode() is False, "the filtered reading is what misled the branch"
+        assert so.safety_override().has_grant() is True, "the grant is still standing"
+
+        await _slash("!yolo off", slack, sessions)
+
+        assert "disabled" in _texts(slack), "the off must be reported as an off"
+        with so.safety_override()._lock:
+            assert (
+                so.safety_override()._active is False
+            ), "the grant must be torn down even while the verdict is unknown"
+
+    @pytest.mark.asyncio
     async def test_off_when_active_and_when_already_off(self, slack, sessions, owner):
         await _slash("!yolo on", slack, sessions)
         slack.actions.clear()

@@ -27,12 +27,18 @@ import kiro_crew
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import (
+    DashboardState,
+)
 from kiro_crew.embeddings import get_shared_embedder, model_file_present
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform import current_context
-from kiro_crew.safety_override import safety_override, until_shutdown_permitted
+from kiro_crew.safety_override import (
+    resolve_disabled_approval_modes_blocking,
+    safety_override,
+    until_shutdown_permitted,
+)
 from kiro_crew.stats import Stats
 
 logger = logging.getLogger(__name__)
@@ -131,10 +137,10 @@ def _get_telemetry_salt() -> bytes:
         return _IN_MEMORY_SALT
 
 
-def _yolo_duration_fields() -> tuple[str, bool]:
-    """``(configured_duration, until_shutdown_permitted)`` for the Settings card.
+def _yolo_duration_fields() -> tuple[str, bool, list[str]]:
+    """``(configured_duration, until_shutdown_permitted, disabled_approval_modes)``.
 
-    BOTH values touch the filesystem — the config read and the governance profile
+    ALL values touch the filesystem — the config read and the governance profile
     resolution (``iterdir``/``stat`` over the profiles dir) — so this runs in a
     worker thread, never on the event loop. ``/api/status`` is polled
     continuously; doing this inline stalls the whole gateway on a slow home.
@@ -149,7 +155,13 @@ def _yolo_duration_fields() -> tuple[str, bool]:
     except Exception:
         logger.debug("could not resolve until_shutdown permission", exc_info=True)
         permitted = True
-    return label, permitted
+    # ONE shared resolver with ``status_snapshot`` AND with the per-tool-call
+    # enforcement predicate, so the HTTP, SSE and WS status frames cannot report a
+    # list the enforcement path disagrees with. This call also primes that shared
+    # cache from inside this worker thread, which is why the event-loop reader can
+    # stay filesystem-free.
+    disabled_modes = resolve_disabled_approval_modes_blocking()
+    return label, permitted, disabled_modes
 
 
 async def api_status(request: web.Request) -> web.Response:
@@ -184,7 +196,9 @@ async def api_status(request: web.Request) -> web.Response:
             owner_hash = "unknown"
     so_status = safety_override().status()
     # Off-loop: both values hit the filesystem (see _yolo_duration_fields).
-    yolo_duration, until_shutdown_ok = await asyncio.to_thread(_yolo_duration_fields)
+    yolo_duration, until_shutdown_ok, disabled_approval_modes = await asyncio.to_thread(
+        _yolo_duration_fields
+    )
     data.update(
         {
             "uptime_secs": int(uptime),
@@ -207,6 +221,10 @@ async def api_status(request: web.Request) -> web.Response:
             # no-timed-expiry option — the Settings card lock-badges it when not.
             "yolo_duration": yolo_duration,
             "yolo_until_shutdown_permitted": until_shutdown_ok,
+            # Auto-approve modes forbidden by the ``approval_modes`` policy
+            # scope (subset of trust_reads/trust/yolo); the chat-footer approval
+            # picker hides each listed mode. Empty = all modes selectable.
+            "disabled_approval_modes": disabled_approval_modes,
             "owner_id_hash": owner_hash,
             "os_type": static_info.get("os", ""),
             "arch": static_info.get("arch", ""),

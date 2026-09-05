@@ -50,7 +50,7 @@ from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import safety_override, yolo_policy_verdict
 from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
@@ -430,9 +430,29 @@ async def _handle_yolo(
         if so.is_active():
             await respond(f"🟢 YOLO mode is already *ON* ({describe_grant_lifetime()}).")
             return
-        result = so.activate("slack")
+        # Off-loop: activate() writes a SEL event and consults the
+        # ``approval_modes`` policy, so running it inline stalls the whole gateway
+        # on a slow home. The sibling slash path in handler.py already offloads it.
+        result = await asyncio.to_thread(so.activate, "slack")
         if not result.active:
-            await respond("❌ Failed to activate YOLO mode (audit system unavailable).")
+            # Arming can be REFUSED by policy, not just fail on audit. Reporting an
+            # audit fault for a policy denial sends the owner to the wrong place --
+            # and so does reporting a policy denial for a policy that could not be
+            # READ, which a two-way split on ``yolo_policy_permits`` could not tell
+            # apart (it fails closed on both). The three-state verdict can, and the
+            # three causes have three different places to look: the org's policy, the
+            # profiles dir, the audit system. Same table as the slash path in
+            # ``handler.py``, which must not drift from this one.
+            _verdict = await asyncio.to_thread(yolo_policy_verdict)
+            if _verdict == "denied":
+                await respond("🔒 YOLO mode is disabled by your organization's policy.")
+            elif _verdict == "unknown":
+                await respond(
+                    "❌ Failed to activate YOLO mode "
+                    "(the governance policy could not be read)."
+                )
+            else:
+                await respond("❌ Failed to activate YOLO mode (audit system unavailable).")
             return
         sel().log_api_access(
             caller=caller_id,

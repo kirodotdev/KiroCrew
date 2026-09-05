@@ -24,6 +24,7 @@ All state changes are logged to the Security Event Log (SEL).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -40,6 +41,7 @@ from typing import Optional
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.platform.context import governance_generation
 from kiro_crew.sel import sel as _get_sel
 
 logger = logging.getLogger(__name__)
@@ -335,8 +337,37 @@ class SafetyOverride:
         """
         return self._commit_activation(source, ttl=0, permanent=True)
 
+    def _log_policy_refusal(self, source: str, *, scope: str) -> None:
+        """Audit an arming refused by an ``approval_modes`` deny of ``yolo``.
+
+        Non-critical by design: an SEL write failure must never turn a refusal
+        into a grant, so ``_log_sel`` swallows and warns here. It is the mirror
+        of the fail-closed audit on the GRANT path — a grant without a trace is
+        refused, while a refusal without a trace is still a refusal.
+        """
+        self._log_sel(
+            caller="safety_override",
+            operation="safety_override:activate",
+            outcome="denied",
+            resources=f"source:{source}, scope:{scope or 'session'}, "
+            "reason:approval_modes_policy_denies_yolo",
+        )
+
     def _commit_activation(self, source: str, *, ttl: int, permanent: bool) -> ActivationResult:
         """Shared activation commit: audit fail-closed, then install the grant."""
+        # Policy gate: an ``approval_modes`` deny of ``yolo`` disables YOLO
+        # entirely, so arming is refused here BEFORE any commit — this covers the
+        # session-wide ad-hoc and declared grants that both funnel through here,
+        # regardless of config or the runtime toggle. Fail-closed. The refusal is
+        # audited so a blocked escalation attempt leaves a trace in the security
+        # event log, not only a log line.
+        # Authoritative read, not the cached one: arming is a rare, deliberate act
+        # whose answer must not be up to a TTL out of date, and this path already
+        # does filesystem I/O (the fail-closed SEL audit below), so one governance
+        # read costs nothing new. Its async callers offload the whole call.
+        if not _resolve_yolo_policy_blocking():
+            self._log_policy_refusal(source, scope="")
+            return ActivationResult(active=False, ttl=0, source=source, activated_at_iso="")
         now_mono = time.monotonic()
         now_wall = datetime.now(tz=timezone.utc)
         activated_at_iso = now_wall.isoformat()
@@ -611,6 +642,14 @@ class SafetyOverride:
         now_mono = time.monotonic()
         activated_at_iso = datetime.now(tz=timezone.utc).isoformat()
 
+        # Policy gate: an ``approval_modes`` deny of ``yolo`` disables
+        # auto-approve entirely, including narrow scoped grants. Fail-closed,
+        # before commit, and audited like the session-wide arm above.
+        # Authoritative, for the same reason as the session-wide arm above.
+        if not _resolve_yolo_policy_blocking():
+            self._log_policy_refusal(source, scope=scope)
+            return ActivationResult(active=False, ttl=0, source=source, activated_at_iso="")
+
         # Fail-closed audit before commit — no grant without a trace.
         try:
             self._log_sel(
@@ -646,6 +685,22 @@ class SafetyOverride:
         SEL-logged per call — it extends an already-audited grant within its
         audited ceiling, and per-tool-call logging would flood the SEL.
         """
+        # A grant policy no longer permits must not have its expiry slid forward:
+        # renewal is what keeps an active run's grant alive indefinitely inside the
+        # 24h ceiling, so sliding it after a deny would extend the very authority
+        # the deny withdrew. The grant is REVOKED rather than left to lapse, for the
+        # reason spelled out on ``is_active``. Reported as not-renewed, the same
+        # shape as an absent grant or a reached ceiling, so no caller needs a branch.
+        verdict = yolo_policy_verdict()
+        if verdict != _YOLO_PERMITTED:
+            # Same three-state split as ``is_scope_active`` above: only a definite
+            # deny withdraws the grant. On UNKNOWN the slide is refused -- which is
+            # the safe direction, since a renewal extends authority -- but the grant
+            # is left intact for the refresh to settle.
+            if verdict == _YOLO_DENIED:
+                self.deactivate_scope(scope)
+            return RenewResult(renewed=False, ttl=0, source=source, reason="not_active")
+
         if ttl is None:
             ttl = self._adhoc_ttl
         ttl = min(ttl, self._MAX_TTL)
@@ -668,6 +723,26 @@ class SafetyOverride:
 
         Expires the grant and logs a SEL event when its TTL has lapsed.
         """
+        # Policy first, exactly as in ``is_active()``, and it REVOKES rather than
+        # masks -- see the reasoning there. Gating only at arming left the scoped
+        # grant honoured until its own TTL, and this is the consult point
+        # ``task_executor`` reads before EVERY approval, which is what made the gap
+        # reachable for up to 24h. Reading the verdict costs no filesystem access
+        # (see ``yolo_policy_verdict``), which is what makes it safe here.
+        #
+        # Three-state, for the same reason as ``is_active`` and with a sharper
+        # consequence here. This runs before EVERY approval in an unattended run, and
+        # ``deactivate_scope`` pops the entry permanently while ``task_executor`` then
+        # clears ``run.auto_approve`` -- nothing re-arms it. So collapsing UNKNOWN
+        # onto revocation meant a mid-session ``policy_distribution.apply_ceiling``
+        # that STILL PERMITS yolo would stall a legitimately granted unattended run
+        # for its whole remainder, on nothing but the off-loop refresh window.
+        verdict = yolo_policy_verdict()
+        if verdict != _YOLO_PERMITTED:
+            if verdict == _YOLO_DENIED:
+                self.deactivate_scope(scope)
+            return False
+
         now_mono = time.monotonic()
         with self._lock:
             entry = self._scoped.get(scope)
@@ -717,6 +792,75 @@ class SafetyOverride:
         Triggers expiry bookkeeping (callback + SEL log) when the TTL lapses.
         A DECLARED grant has no deadline, so it never reaches that path.
         """
+        # Policy first, and it outranks BOTH the deadline and a declared grant.
+        # Gating only at arming left a live grant honoured until its own TTL, so an
+        # admin who denied ``yolo`` mid-session kept auto-approving every tool for
+        # up to 24h -- the control announced a state it was not enforcing. Checked
+        # here rather than at each of the ~8 call sites because this predicate IS
+        # the consult point every transport passes to ``TurnDriver``.
+        #
+        # REVOKE, do not merely mask. An earlier revision left ``_active`` set and
+        # only reported False, so relaxing the policy would restore the grant with
+        # nothing to re-arm. That is wrong, because this same predicate is what every
+        # "is there a grant to clear?" caller reads: Slack's ``!yolo off`` does
+        # `if is_yolo_mode(): disable_yolo()`, so inside a denial window it reported
+        # "already off" and cleared NOTHING -- and a later policy relaxation then
+        # resurrected auto-approve the operator had explicitly revoked. Tearing the
+        # grant down makes both readings agree, and costs only that a policy which
+        # denies then relaxes needs a fresh arm, which is the honest outcome anyway.
+        #
+        # Clearing ``_active`` is NOT the whole revocation. A dashboard grant also
+        # writes ``approval_policy="auto"`` onto the slots, and a spawned subagent
+        # reads that policy rather than this flag -- so dropping only the flag left
+        # spawn admission and every child tool auto-approved against a policy that
+        # denies it. The TTL-lapse path below already solves this by firing
+        # ``_on_expired``, whose handler resets those policies and clears the shared
+        # trust mapping; a policy revocation owes the same cleanup, so it fires the
+        # same callback rather than growing a second, divergent teardown.
+        #
+        # Gated on there actually being a grant, which makes both the teardown and
+        # the callback fire EXACTLY ONCE: this runs per tool call, and re-firing a
+        # handler that broadcasts and rewrites slot policies on every call would be
+        # its own defect. Reading the verdict itself costs no filesystem access (see
+        # ``yolo_policy_verdict``).
+        #
+        # ONLY a definite DENIED revokes. ``yolo_policy_verdict`` also answers
+        # UNKNOWN -- "current policy could not be read" -- and that must stop
+        # auto-approval WITHOUT tearing the grant down, because the teardown is
+        # permanent and the unknown window opens on every ceiling install, including
+        # ones that still permit YOLO. Treating unknown as a denial would delete
+        # live grants on unrelated policy refreshes; treating it as a permit is the
+        # bypass this whole predicate exists to prevent. Neither, so: no approval,
+        # no revocation, and the scheduled refresh settles it within one round trip.
+        #
+        # The grant test is ``self._active`` ALONE. It used to be
+        # ``self._active or self._expires_at > 0.0``, which double-fired: the
+        # natural-expiry branch below clears ``_active`` but deliberately leaves
+        # ``_expires_at`` set (``deactivate`` reads that nonzero deadline to tell
+        # "lapsed" from "never armed", so it can still SEL-record an explicit off
+        # after a lapse). A later deny then saw the stale deadline, called
+        # ``deactivate`` again and fired a SECOND expiry teardown for an
+        # already-expired grant -- a duplicate "Safety override expired" DM to the
+        # owner and a redundant ``yolo_expired`` broadcast. ``_active`` alone still
+        # covers every grant that is actually being honoured, live or declared.
+        verdict = yolo_policy_verdict()
+        if verdict != _YOLO_PERMITTED:
+            if verdict == _YOLO_DENIED:
+                with self._lock:
+                    had_grant = self._active
+                if had_grant:
+                    self.deactivate("policy")
+                    cb = self._on_expired
+                    if cb is not None:
+                        try:
+                            cb("policy")
+                        except Exception:
+                            logger.warning(
+                                "on_expired callback raised after a policy revocation",
+                                exc_info=True,
+                            )
+            return False
+
         now_mono = time.monotonic()
 
         with self._lock:
@@ -756,6 +900,25 @@ class SafetyOverride:
                 logger.warning("on_expired callback raised", exc_info=True)
 
         return False
+
+    def has_grant(self) -> bool:
+        """Whether a grant EXISTS, ignoring policy entirely.
+
+        Deliberately not ``is_active``. That predicate answers "may a tool be
+        auto-approved right now", which policy can veto -- and an explicit off is a
+        different question: "is there something to tear down". Reading the
+        policy-filtered answer for it inverted the control. During the UNKNOWN window
+        ``is_active`` reports False, so Slack's ``if is_yolo_mode(): disable_yolo()``
+        skipped the teardown, reported "already off", and left the grant standing --
+        which then RESUMED once the refresh settled. The operator had revoked
+        auto-approve and it came back.
+
+        This is the same class as the mask-vs-revoke defect on ``is_active``: the two
+        readings of one flag must not disagree. The fix is to let an explicit
+        revocation see the grant regardless of what policy currently says about it.
+        """
+        with self._lock:
+            return self._active
 
     def remaining_secs(self) -> int:
         """Return seconds remaining; 0 if inactive, -1 if it never expires."""
@@ -1259,15 +1422,310 @@ def safety_override() -> SafetyOverride:
 
 
 def reset_singleton() -> None:
-    """Reset the singleton.  Intended for use in tests only."""
+    """Reset the singleton.  Intended for use in tests only.
+
+    Drops the cached ``approval_modes`` verdict too. The cache is module state with
+    a time-based TTL, so without this a test that ran under a permissive policy
+    leaks its verdict into the next test for the length of the TTL -- the grant
+    would be honoured against a policy that denies it, for reasons that have
+    nothing to do with the code under test.
+    """
     global _singleton
     with _singleton_lock:
         _singleton = None
+    reset_yolo_policy_cache()
 
 
 _PERMANENT_MEMBER = "permanent"
 _UNTIL_SHUTDOWN_MEMBER = "until_shutdown"
 _GOVERNANCE_SCOPE = "yolo_duration"
+_APPROVAL_MODES_SCOPE = "approval_modes"
+_YOLO_MODE = "yolo"
+
+
+# ── ``approval_modes`` verdict for YOLO: cached, and never resolved on the loop ──
+#
+# Resolving the scope walks the governance profiles dir (``iterdir`` + per-file
+# ``stat``). Two call shapes make a per-call read unacceptable:
+#
+# * ``is_active()`` is the auto-approve predicate every transport passes to
+#   ``TurnDriver`` (``auto_approve_session=lambda: safety_override().is_active()``),
+#   so it runs per TOOL CALL.
+# * arming reaches this module from the event loop through synchronous callers
+#   (``taskrunner._grant_run_trust``, the Slack slash handlers).
+#
+# So there are two forms, and which one a caller wants follows from its frequency:
+#
+# * ``yolo_policy_permits()`` -- pure memory, for the per-tool-call predicate. Hands
+#   a stale value back while a refresh runs on a worker thread. Staleness is bounded
+#   by the TTL *within one ceiling*; across a ceiling CHANGE the TTL says nothing, so
+#   the entry carries the governance generation it was resolved under and a newly
+#   installed ceiling EXPIRES it at once rather than letting a permit primed under
+#   the previous policy live out the remaining TTL.
+# * ``_resolve_yolo_policy_blocking()`` -- authoritative, for ARMING. A deliberate,
+#   rare act should not be decided by a value up to a TTL old, and arming already
+#   does filesystem I/O for its fail-closed audit. Its async callers offload it.
+_YOLO_POLICY_TTL = 5.0
+#: Serialises the resolve-and-stamp sequence in ``_resolve_yolo_policy_blocking``.
+#:
+#: That sequence is a read-modify-write across a filesystem read -- sample the
+#: generation, resolve, sample it again, store -- and it runs from MORE THAN ONE
+#: thread: arming offloads it via ``asyncio.to_thread``, and the off-loop refresh
+#: scheduled by ``yolo_policy_verdict`` runs it in another worker. Interleaved, one
+#: caller's post-read sample can straddle the other's store, so a stamp is written
+#: for a generation the resolve did not actually observe -- and the next reader then
+#: either serves a verdict resolved under a different ceiling, or (with the entry
+#: left un-stamped) reads UNKNOWN and fails closed on a grant that was just armed
+#: successfully. Under parallel load that surfaced as a yolo arm being honoured in
+#: one run and refused in the next.
+#:
+#: Held ACROSS the governance read, deliberately. Serialising concurrent resolves is
+#: the point: the second caller waits and then finds a fresh entry, rather than
+#: duplicating the same filesystem walk and racing to store it. Never taken on the
+#: event loop -- every caller of this function is already off-loop or a sync CLI/test
+#: path.
+_yolo_policy_lock = threading.Lock()
+#: The three verdict states. See ``yolo_policy_verdict`` for why UNKNOWN is a state
+#: of its own rather than folded into either boolean.
+_YOLO_PERMITTED = "permitted"
+_YOLO_DENIED = "denied"
+_YOLO_UNKNOWN = "unknown"
+#: ``(resolved_at_monotonic, permitted, governance_generation)``. The generation is
+#: what makes a policy CHANGE invalidate the entry immediately instead of at the end
+#: of the TTL: the TTL only bounds staleness while the same ceiling stays installed.
+#:
+#: ``resolved_at`` is MONOTONIC, not wall clock. ``time.time()`` can move backwards
+#: -- an NTP step, a VM restore, an operator correcting the clock -- and a backwards
+#: jump makes ``now - resolved_at`` negative, so the entry reads as fresh and the TTL
+#: never elapses again. On a safety predicate that is a permit with no expiry at all,
+#: for a reason that has nothing to do with policy.
+_yolo_policy_cache: tuple[float, bool, int] = (0.0, True, -1)
+#: The in-flight refresh, as ``(loop, task)`` -- deliberately NOT a bare boolean.
+#:
+#: A boolean could not be un-stuck. It was set before the task was created and
+#: cleared in that task's ``finally``, so a loop torn down while the refresh was
+#: still pending left it ``True`` with nothing alive to clear it: every later call
+#: took the early return, and the verdict cache then never refreshed again for the
+#: whole life of the process. That is a stuck-open cache on a SAFETY predicate --
+#: a policy tightening would stop landing at all. A test suite hits it immediately
+#: (a fresh loop per test); the gateway hits it on any loop replacement.
+#:
+#: Recording the LOOP is what makes staleness decidable: a task still pending on a
+#: loop that is gone, or on a different loop than this caller's, is not an
+#: in-flight refresh *for this caller* and must not suppress a fresh one. Holding
+#: the task STRONGLY is the other half -- asyncio keeps only a weak reference to a
+#: bare ``create_task`` result, so a fire-and-forget task can be collected
+#: mid-flight, which is the "Task was destroyed but it is pending!" noise this also
+#: removes.
+_yolo_policy_refresh: tuple[asyncio.AbstractEventLoop, asyncio.Task[None]] | None = None
+
+
+def _governance_generation() -> int:
+    """Current governance generation, or ``-1`` when it cannot be read.
+
+    ``-1`` never equals a stored generation, so an unreadable counter makes every
+    read treat the cache as belonging to a different ceiling -- it resolves rather
+    than trusting a value it cannot date.
+    """
+    try:
+        return int(governance_generation())
+    except Exception:
+        logger.debug("governance generation unavailable", exc_info=True)
+        return -1
+
+
+def _resolve_yolo_policy_blocking() -> bool:
+    """Resolve the YOLO verdict and store it. MUST run off the event loop.
+
+    Reads the generation BEFORE resolving, so a ceiling installed while this was
+    resolving leaves the entry stamped with the older generation -- which the reader
+    then treats as stale rather than as a fresh answer for the new policy.
+    """
+    global _yolo_policy_cache
+    with _yolo_policy_lock:
+        return _resolve_yolo_policy_locked()
+
+
+def _resolve_yolo_policy_locked() -> bool:
+    """The body of the resolve. Caller MUST hold ``_yolo_policy_lock``."""
+    global _yolo_policy_cache
+    # The generation is read on BOTH sides and the answer is stamped only when it
+    # did not move across the resolve. Either one-sided reading is wrong, and each
+    # fails in its own direction:
+    #
+    # * stamp the PRE-read generation and the first governance read in a process
+    #   mis-stamps itself. That read is what installs the lazy default context, so
+    #   it bumps the counter as a side effect; the answer then claimed a ceiling
+    #   that was already superseded, every later read saw a mismatch, and the
+    #   verdict was pinned at UNKNOWN for the life of the process -- fail-closed,
+    #   but permanently, which breaks auto-approve outright.
+    # * stamp the POST-read generation and the mirror error appears: a ceiling
+    #   installed DURING the read would claim an answer taken under the old one,
+    #   which is the stale-permit class this whole verdict exists to close.
+    #
+    # Three attempts because the lazy-install bump happens at most once per
+    # process, so a stable pair is reached immediately after it.
+    for _ in range(3):
+        before = _governance_generation()
+        try:
+            permitted = bool(approval_mode_permitted(_YOLO_MODE))
+        except Exception:
+            logger.debug("could not resolve approval_modes for yolo", exc_info=True)
+            # Fail CLOSED, and deliberately do not restamp. Returning the previous
+            # verdict here used to hand a stale ``True`` to the two authoritative
+            # callers -- arming, and the status field -- so a governance read that
+            # kept failing let a grant be armed against a policy nobody could read.
+            # Leaving the entry un-restamped is also what keeps
+            # ``yolo_policy_verdict`` on UNKNOWN rather than letting the old
+            # generation masquerade as current.
+            return False
+        if _governance_generation() == before:
+            _yolo_policy_cache = (time.monotonic(), permitted, before)
+            return permitted
+    logger.debug("governance generation kept moving across the yolo resolve")
+    return False
+
+
+def _schedule_yolo_policy_refresh() -> None:
+    """Refresh off-loop, at most one refresh in flight PER LOOP."""
+    global _yolo_policy_refresh
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop: nothing to protect, so resolve inline. This is also what
+        # keeps a cold cache from handing the permissive default to the first caller
+        # in a sync context (CLI, tests).
+        _resolve_yolo_policy_blocking()
+        return
+    pending = _yolo_policy_refresh
+    if pending is not None and pending[0] is loop and not pending[1].done():
+        # A refresh for THIS loop is genuinely still running. Any other shape --
+        # a finished task, or one belonging to a loop that has since been replaced
+        # -- says nothing about this loop, so it must NOT suppress a fresh refresh.
+        return
+
+    async def _refresh() -> None:
+        global _yolo_policy_refresh
+        # Identity captured HERE, not in the ``finally``. The finally can run while
+        # the loop is tearing this task down (``GeneratorExit``), and
+        # ``asyncio.current_task()`` needs a RUNNING loop -- so asking there raised
+        # RuntimeError from inside an exception handler, which surfaces as an
+        # UNRAISABLE exception nothing can catch. On entry a running loop is
+        # guaranteed, and the identity is all the finally actually needs.
+        me = asyncio.current_task()
+        try:
+            await asyncio.to_thread(_resolve_yolo_policy_blocking)
+        except Exception:
+            logger.debug("yolo policy refresh failed", exc_info=True)
+        finally:
+            # Retract ONLY our own record. Clearing unconditionally would let a
+            # finishing task erase a newer one and permit two concurrent refreshes.
+            if _yolo_policy_refresh is not None and _yolo_policy_refresh[1] is me:
+                _yolo_policy_refresh = None
+
+    # create_task first, then store: this runs ON the loop thread, so the task
+    # cannot start before the record exists for its ``finally`` to match against.
+    _yolo_policy_refresh = (loop, loop.create_task(_refresh()))
+
+
+def yolo_policy_verdict() -> str:
+    """``permitted`` / ``denied`` / ``unknown``. Pure memory; safe on the loop.
+
+    THREE states, not two, and that is the whole point of this function.
+
+    Four consecutive review rounds on this span all reported the same shape: a
+    permit being honoured that no current resolve backed. Each was patched at its
+    own site -- gate at arming, then key the cache to the governance generation,
+    then move the resolve off the loop -- and the next round found another way in,
+    because a boolean cannot express the state that actually causes it. "I have
+    not been able to read current policy" is not "policy allows this", and it is
+    not "policy forbids this" either. Collapsing it onto either one is what kept
+    reopening the hole:
+
+    * collapse UNKNOWN onto PERMITTED and a stale ``True`` auto-approves every
+      tool -- the finding, in three different disguises. The last one needed no
+      exotic timing at all: ``_resolve_yolo_policy_blocking`` returns without
+      restamping when the resolve raises, so a persistently failing resolve served
+      the old permit indefinitely.
+    * collapse UNKNOWN onto DENIED and ``is_active`` revokes -- permanently, by
+      design -- on a window that opens on EVERY ceiling install, including ones
+      that still permit YOLO. That destroys live grants on unrelated refreshes.
+
+    So UNKNOWN is returned as itself and each caller collapses it in the direction
+    that is safe for what IT decides: approval fails closed (see
+    ``yolo_policy_permits``), revocation does not fire (see ``is_active``).
+
+    UNKNOWN is exactly "the entry was not resolved under the ceiling now
+    installed", which is decidable from memory because
+    ``_resolve_yolo_policy_blocking`` stamps the generation ONLY on a successful
+    resolve. Detecting it therefore costs no filesystem access, and the refresh it
+    schedules stays on a worker thread.
+    """
+    ts, cached, generation = _yolo_policy_cache
+    if generation != _governance_generation():
+        _schedule_yolo_policy_refresh()
+        # Re-read: with no running loop the schedule resolves INLINE, which can
+        # settle the verdict on this very call. With a loop it did not, and the
+        # honest answer is that current policy is not yet known.
+        ts, cached, generation = _yolo_policy_cache
+        if generation != _governance_generation():
+            return _YOLO_UNKNOWN
+    if time.monotonic() - ts >= _YOLO_POLICY_TTL:
+        _schedule_yolo_policy_refresh()
+        ts, cached, generation = _yolo_policy_cache
+    return _YOLO_PERMITTED if cached else _YOLO_DENIED
+
+
+def yolo_policy_permits() -> bool:
+    """Whether policy PERMITS YOLO. Fails closed on UNKNOWN.
+
+    The approval direction: a tool must not be auto-approved on a verdict that no
+    current resolve backs. This is the predicate every transport hands to
+    ``TurnDriver``, so it is deliberately the strict reading -- but see
+    ``is_active``, which must NOT read a failure to resolve as a revocation.
+    """
+    return yolo_policy_verdict() == _YOLO_PERMITTED
+
+
+def reset_yolo_policy_cache() -> None:
+    """Drop the cached verdict. For tests and for an explicit policy reload."""
+    global _yolo_policy_cache, _yolo_policy_refresh
+    _yolo_policy_cache = (0.0, True, -1)
+    _yolo_policy_refresh = None
+
+
+# ── The status field, derived from the SAME verdict the enforcement path reads ──
+#
+# ``approval_modes`` governs exactly one mode today: ``yolo``. ``normal`` is the
+# interactive floor, and ``trust`` / ``trust_reads`` are non-deniable because their
+# live consumption predicates are not gated -- a policy naming any of the three is
+# refused at parse time (see the ``SCOPE_CATALOG`` entry).
+#
+# These two helpers exist so the dashboard's status field and the per-tool-call
+# enforcement predicate cannot disagree. ``dashboard/state.py`` used to keep its own
+# TTL cache of the same question, which had already drifted: this one is
+# generation-aware, so a tightening lands at once, while a TTL-only copy could report
+# YOLO selectable for up to a TTL after enforcement stopped honouring it. One
+# mechanism cannot drift from itself.
+
+
+def cached_disabled_approval_modes() -> list[str]:
+    """Modes the policy forbids, from memory. Safe on the event loop.
+
+    Backs ``status_snapshot``, which is emitted on the 5s WS push, so it must never
+    touch the filesystem. Presentation only -- enforcement is ``api_chat_mode``, the
+    slot-approve gate, and arming in this module.
+    """
+    return [] if yolo_policy_permits() else [_YOLO_MODE]
+
+
+def resolve_disabled_approval_modes_blocking() -> list[str]:
+    """Authoritative form. Touches the filesystem, so callers MUST be off-loop.
+
+    Also primes the shared cache, which is what lets the reader above stay
+    filesystem-free.
+    """
+    return [] if _resolve_yolo_policy_blocking() else [_YOLO_MODE]
 
 
 def _duration_member_permitted(member: str) -> bool:
@@ -1313,6 +1771,63 @@ def declared_grant_permitted() -> bool:
 def until_shutdown_permitted() -> bool:
     """True when policy allows the ad-hoc ``until_shutdown`` duration."""
     return _duration_member_permitted(_UNTIL_SHUTDOWN_MEMBER)
+
+
+def _non_deniable_approval_modes() -> tuple[str, ...]:
+    """Modes the ``approval_modes`` scope may never forbid, read from the catalog.
+
+    Read rather than hardcoded so this function and the parse-time refusal cannot
+    drift apart: the catalog entry is the single declaration of what is deniable.
+    Falls back to the interactive floor alone if the governance layer is missing,
+    which is the safe direction -- it only ever makes this check consult policy for
+    MORE modes, never fewer.
+    """
+    try:
+        from kiro_crew.platform.governance import SCOPE_CATALOG
+
+        spec = SCOPE_CATALOG.get(_APPROVAL_MODES_SCOPE)
+        return tuple(getattr(spec, "always_permitted", ()) or ("normal",))
+    except Exception:
+        logger.debug("catalog unavailable; assuming only 'normal' is non-deniable")
+        return ("normal",)
+
+
+def approval_mode_permitted(mode: str) -> bool:
+    """True when policy allows the dashboard approval *mode* to be selected.
+
+    Backed by the ``approval_modes`` deny-list scope, e.g.
+    ``{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}``.
+
+    A **non-deniable** mode short-circuits to True without consulting governance at
+    all. That is what makes "non-deniable" mean the same thing at runtime as it does
+    at parse time: the parse-time refusal stops an admin from WRITING such a deny,
+    and this stops a governance-evaluation error from producing one anyway. Without
+    it the ``fail_closed=True`` below could deny ``trust`` on a resolve error --
+    refusing a mode whose enforcement this scope does not even implement, which
+    surfaced as an unrelated trust grant silently failing.
+
+    Everything else is evaluated against the HOST profile with ``fail_closed=True``,
+    so a governance-evaluation error denies the riskier auto-approve mode rather than
+    silently granting it. With no policy configured the scope is ungoverned and
+    permits every mode, so a solo operator's picker is unchanged.
+    """
+    if mode in _non_deniable_approval_modes():
+        return True
+    try:
+        from kiro_crew.platform.governance_profiles import (
+            HOST_SESSION_KEY,
+            governance_permits,
+        )
+    except Exception:
+        logger.debug("governance layer unavailable; permitting mode %s", mode, exc_info=True)
+        return True
+    decision = governance_permits(
+        _APPROVAL_MODES_SCOPE,
+        mode,
+        session_key=HOST_SESSION_KEY,
+        fail_closed=True,
+    )
+    return bool(getattr(decision, "permitted", False))
 
 
 def resolve_configured_duration() -> tuple[int, bool]:

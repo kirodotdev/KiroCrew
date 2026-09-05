@@ -3923,6 +3923,7 @@
       "cancel": "Cancel",
       "don_t_show_again": "Don't show again",
       "enable": "Enable",
+      "mode_disabled_by_policy": "Disabled by your organization's security policy",
       "yolo_mode_is_an_app_wide_setting": "YOLO mode is an app-wide setting"
     },
     "appstore": {

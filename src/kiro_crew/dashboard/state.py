@@ -83,7 +83,7 @@ from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -5575,6 +5575,10 @@ class DashboardState:
         branch, commit = self._build_info
         return {
             "uptime": _fmt_duration(uptime),
+            # Auto-approve modes forbidden by the ``approval_modes`` policy
+            # scope. In the shared snapshot so HTTP/SSE/WS frames all agree —
+            # the picker hides these and the value must survive a WS push.
+            "disabled_approval_modes": cached_disabled_approval_modes(),
             "start_time": self.start_time,
             "sessions": self.sessions.count,
             "messages": self.messages_received,

@@ -1069,6 +1069,12 @@ class ScopeSpec:
     capability_default: bool = False  # see the CAPABILITY-DEFAULT CONTRACT note below
     # for CapabilityGate: scope-name -> matcher for its inner ScopedRulesets
     scope_matchers: Mapping[str, str] = field(default_factory=dict)
+    # Identifiers this scope may never forbid, checked at PARSE time so a policy
+    # that removes the floor is refused instead of booting into a state with no
+    # usable option. Data rather than a scope-name branch in the parser: the
+    # loader's contract is that registering a scope needs no loader edit, and a
+    # second scope with a floor should be a catalog entry, not another `if`.
+    always_permitted: tuple[str, ...] = ()
 
 
 # ── CAPABILITY-DEFAULT CONTRACT (read before touching any capability_default) ──
@@ -1111,6 +1117,28 @@ class ScopeSpec:
 # fails closed — the asymmetry is documented on ``_parse_controls``.)
 SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "tools": ScopeSpec(RULESET, matcher="identifier"),
+    # Dashboard tool-approval modes. Today this scope governs exactly ONE mode:
+    # ``yolo`` (auto-approve every tool everywhere), e.g.
+    # ``{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}``. An absent scope
+    # permits every mode (unchanged behavior).
+    #
+    # ``always_permitted`` carries the three modes this scope may not forbid, for two
+    # DIFFERENT reasons, both enforced at parse time so a policy author is told
+    # rather than left with a control that silently does not hold:
+    #
+    # * ``normal`` is the interactive floor. Denying it would leave no selectable
+    #   mode and brick tool approval, and the trust-root ``security_policy.json`` is
+    #   the one file the dashboard may not rewrite to repair itself.
+    # * ``trust`` and ``trust_reads`` are NOT YET GOVERNED. Their grants are honoured
+    #   by consumption predicates this scope does not reach — the in-memory trusted
+    #   set, and the session ``approval_policy`` a spawned subagent inherits — so
+    #   accepting a deny for them would advertise enforcement that does not exist.
+    #   Governing those read paths is tracked separately.
+    "approval_modes": ScopeSpec(
+        RULESET,
+        matcher="identifier",
+        always_permitted=("normal", "trust", "trust_reads"),
+    ),
     "mcp": ScopeSpec(RULESET, matcher="mcp"),
     "apps": ScopeSpec(RULESET, matcher="identifier"),
     "commands": ScopeSpec(RULESET, matcher="command"),
@@ -2155,7 +2183,30 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
             return OrdinalControl(scale=spec.ordinal_scale, value=raw)
         raise PlatformCompositionError(f"scope {scope!r} must be an object")
     if spec.kind == RULESET:
-        return ScopedRuleset.from_dict(raw, matcher=spec.matcher)
+        ruleset = ScopedRuleset.from_dict(raw, matcher=spec.matcher)
+        for floor in spec.always_permitted:
+            # An ``always_permitted`` identifier is one this scope may not forbid.
+            # Two reasons qualify, and the catalog entry says which applies: the
+            # scope cannot FUNCTION without it (``approval_modes``' ``normal``, the
+            # interactive floor -- denying it would brick tool approval), or its
+            # enforcement is NOT IMPLEMENTED yet, so accepting a deny would
+            # advertise a control that does not hold. Either way, refuse at parse
+            # time rather than boot into a state the policy misdescribes -- and
+            # refuse HERE because the trust-root ``security_policy.json`` is the one
+            # file the dashboard may not rewrite to repair itself.
+            #
+            # An ALLOW-list that merely omits the floor denies it just as
+            # effectively, which is why this asks the resolved ruleset rather than
+            # inspecting the deny list.
+            if not ruleset.permits(floor).permitted:
+                raise PlatformCompositionError(
+                    f"scope {scope!r} must not forbid {floor!r} - it is not deniable "
+                    f"in this scope, either because the scope cannot function "
+                    f"without it or because its enforcement is not implemented yet; "
+                    f"a deny is refused rather than accepted and left unenforced. "
+                    f"Omit it from 'deny', or include it in 'allow'"
+                )
+        return ruleset
     if spec.kind == ORDINAL:
         # Accept {"value": ...} / {"min_level": ...} / {"mode": ...}; a bare
         # string value is handled above.

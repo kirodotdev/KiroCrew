@@ -5158,6 +5158,7 @@
       "yolo_expiration_timed": "{{duration}} 후 자동으로 꺼지고 다시 물어봅니다.",
       "yolo_expiration_until_shutdown": "{{productName}}이(가) 재시작될 때까지 켜져 있습니다 — 시간 만료가 없습니다.",
       "yolo_label": "YOLO",
+      "mode_disabled_by_policy": "조직의 보안 정책에 의해 비활성화되었습니다",
       "yolo_mode_is_an_app_wide_setting": "YOLO 모드는 앱 전체 설정입니다",
       "yolo_tooltip": "모든 채팅에서 {{productName}}은(는) 먼저 묻지 않고 작업합니다"
     },
