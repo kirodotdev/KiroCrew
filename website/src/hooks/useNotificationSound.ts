@@ -54,9 +54,18 @@ export function loadSoundSettings(): SoundSettings {
   }
 }
 
-export function saveSoundSettings(s: SoundSettings): void {
-  safeSetItem(STORAGE_KEY, JSON.stringify(s))
-  window.dispatchEvent(new CustomEvent(MC_SOUND_SETTINGS_CHANGED_EVENT))
+export function saveSoundSettings(s: SoundSettings): boolean {
+  // Persist first; only announce the change if it actually landed. A quota-
+  // dropped write must NOT fire the settings-changed event, or every mounted
+  // useNotificationSound would reload from localStorage and read the OLD value,
+  // making the running session diverge from what the user just chose. Callers
+  // (NotificationsPanel) branch on the return to update local state only on
+  // success, so a failed save leaves the UI showing the persisted truth.
+  const persisted = safeSetItem(STORAGE_KEY, JSON.stringify(s))
+  if (persisted) {
+    window.dispatchEvent(new CustomEvent(MC_SOUND_SETTINGS_CHANGED_EVENT))
+  }
+  return persisted
 }
 
 let ctxSingleton: AudioContext | null = null
@@ -213,9 +222,17 @@ export function presetForKind(kind: string | undefined, settings: SoundSettings)
   const cat = kind && VALID_CATEGORIES.has(kind) ? (kind as SoundCategory) : undefined
   const specific = cat ? settings.perCategory[cat] : undefined
   if (specific) return specific
-  // Built-in category default (not persisted — survives "Use default" reset)
+  // A global 'all' = 'none' is an explicit "silence everything" and must win
+  // over a built-in category default. Otherwise setting all=none would still
+  // let approval chime its built-in 'pulse', which reads as the setting being
+  // ignored. An explicit per-category override (handled above) still wins over
+  // this — only the UNSET category falls through to the global silence.
+  const fallback = settings.perCategory.all ?? 'chime'
+  if (fallback === 'none') return 'none'
+  // Built-in category default (not persisted — survives "Use default" reset).
+  // Reached only when the global fallback is audible.
   if (cat && BUILTIN_CATEGORY_DEFAULTS[cat]) return BUILTIN_CATEGORY_DEFAULTS[cat]!
-  return settings.perCategory.all ?? 'chime'
+  return fallback
 }
 
 /** Installs a window listener that plays sounds on notification SSE events. */
@@ -224,19 +241,40 @@ export function useNotificationSound(): void {
     let current = loadSoundSettings()
     let lastPlayedAt = 0
     const onSettingsChanged = () => { current = loadSoundSettings() }
+    // Cross-tab sync: a settings write in ANOTHER tab fires a DOM `storage`
+    // event here (the same-window MC_SOUND_SETTINGS_CHANGED_EVENT never crosses
+    // tabs). Filter by key and storageArea so an unrelated key or a
+    // sessionStorage write in a same-origin iframe does not force a reload.
+    // Reload from localStorage rather than parsing e.newValue so we reuse
+    // loadSoundSettings' validation/clamping (and correctly adopt DEFAULTS on a
+    // cross-tab key removal, where e.newValue is null).
+    const onStorage = (e: StorageEvent) => {
+      try {
+        if (e.storageArea && e.storageArea !== localStorage) return
+      } catch {
+        /* locked-down storage: fall through to the key filter alone */
+      }
+      if (e.key !== null && e.key !== STORAGE_KEY) return
+      current = loadSoundSettings()
+    }
     const onNotification = (e: Event) => {
       const now = performance.now()
       if (now - lastPlayedAt < 300) return
       const kind = (e as CustomEvent<McNotificationDetail>).detail?.kind
+      // Primary switch: enabled=false yields 'none' from presetForKind, so
+      // WebAudio never plays. Kept as the single gate rather than a second
+      // check here.
       const preset = presetForKind(kind, current)
       if (preset === 'none' || current.volume <= 0) return
       lastPlayedAt = now
       playPreset(preset, current.volume)
     }
     window.addEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, onSettingsChanged)
+    window.addEventListener('storage', onStorage)
     window.addEventListener(MC_NOTIFICATION_EVENT, onNotification as EventListener)
     return () => {
       window.removeEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, onSettingsChanged)
+      window.removeEventListener('storage', onStorage)
       window.removeEventListener(MC_NOTIFICATION_EVENT, onNotification as EventListener)
     }
   }, [])
