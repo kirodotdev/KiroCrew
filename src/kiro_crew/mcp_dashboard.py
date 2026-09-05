@@ -321,21 +321,69 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "The message lands in the target's transcript tagged as sent by "
                 "your session, so the person reading it can tell it from their own "
                 "typing. Use session_read_message afterwards to watch what the "
-                "target did with it."
+                "target did with it.\n\n"
+                'target="user" addresses the HUMAN who owns you, as a peer: the '
+                "message lands in your Crew Members DM thread as an escalation card "
+                "and you keep working — it never blocks. Use it when you hit a wall "
+                "(a permission you lack, something only a person can reach, a "
+                "one-way door). Write the message for a reader with zero context: one "
+                "line of background, what you tried, and the concrete action you need "
+                "from them. When you can proceed on a sensible default, state it: pass "
+                'deadline (e.g. "30m", "2h", or ISO-8601) and default_action — '
+                '"unless you stop me by then, I do X" — and carry on when the window '
+                "closes. Offer up to 6 short options when the answer is a choice; a "
+                "click sends the option text back to you as the human's reply. "
+                "Escalation is NOT approval: anything the person must actively grant "
+                "(metric or objective definitions, budgets, your own continuation) "
+                "does not go through here."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Session key from list_sessions, or its exact title.",
+                        "description": (
+                            "Session key from list_sessions, or its exact title — or the "
+                            'literal "user" to escalate to the human who owns you.'
+                        ),
                     },
                     "message": {
                         "type": "string",
                         "description": (
                             "The message to deliver. It becomes the target's next "
                             "user-role turn, so write it as you would type into "
-                            "that session's composer."
+                            'that session\'s composer. For target="user": markdown '
+                            "body of the escalation (background / tried / needed)."
+                        ),
+                    },
+                    "deadline": {
+                        "type": "string",
+                        "description": (
+                            'target="user" only. Veto window: a duration ("30m", "2h", '
+                            '"1d") or ISO-8601 time, 1 minute to 7 days out. Pair it '
+                            "with default_action."
+                        ),
+                    },
+                    "default_action": {
+                        "type": "string",
+                        "description": (
+                            'target="user" only. What you will do if the window closes '
+                            "unanswered (max 500 chars)."
+                        ),
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            'target="user" only. Up to 6 short choices (max 120 chars '
+                            "each); a click sends the chosen text back as the reply."
+                        ),
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": (
+                            'target="user" only. The goal or thread this belongs to; '
+                            "escalations on one goal fold together in the DM thread."
                         ),
                     },
                 },
@@ -1007,14 +1055,37 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "session_send":
         args = validate_tool_args(args, SESSION_SEND_SCHEMA)
+        payload: dict[str, Any] = {"target": args["target"], "message": args["message"]}
+        for key in ("deadline", "default_action", "options", "goal"):
+            if args.get(key):
+                payload[key] = args[key]
         resp = _post(
             "/api/session-control/send",
-            {"target": args["target"], "message": args["message"]},
+            payload,
             session_key=caller_key,
         )
         if resp.get("error"):
             return f"Error: could not send to that session: {resp['error']}"
         target = resp.get("target", args["target"])
+        if resp.get("escalation_id"):
+            window = (
+                f" The veto window closes at {resp['deadline']}; carry on with your "
+                "default action if nothing comes back by then."
+                if resp.get("deadline")
+                else ""
+            )
+            if resp.get("reply_in_caller_thread", True):
+                where = "Their reply, if any, arrives here as an ordinary user message."
+            else:
+                where = (
+                    f"Their reply, if any, lands in `{target}` — the member that owns you — "
+                    "and reaches you only if that member relays it; do not wait on it."
+                )
+            return (
+                f"\U0001f4e8 Escalated to the human in `{target}` "
+                f"(id {resp['escalation_id']}). This does not block: keep working."
+                f"{window} {where}"
+            )
         if resp.get("started"):
             return (
                 f"\U0001f4e8 Delivered to `{target}` — it started a turn on your message. "

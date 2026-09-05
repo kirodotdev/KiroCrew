@@ -53,3 +53,4 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members", handlers.api_members)
     app.router.add_post("/api/members/{slug}/thread", handlers.api_member_thread)
     app.router.add_get("/api/members/{slug}/activity", handlers.api_member_activity)
+    app.router.add_get("/api/members/{slug}/conversation", handlers.api_member_conversation)

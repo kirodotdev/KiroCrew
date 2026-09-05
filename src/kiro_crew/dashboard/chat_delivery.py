@@ -231,6 +231,8 @@ async def steer_into_running_turn(
     message: str,
     *,
     send_id: str | None = None,
+    escalation_id: str | None = None,
+    human_reply: bool = False,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -313,6 +315,15 @@ async def steer_into_running_turn(
     # requeued entry's meta byte-identical to its pre-#6751 shape.
     if send_id:
         slot._steer_send_ids[message] = send_id
+    if escalation_id:
+        # Same shape as the two maps above: a steer the turn's teardown requeues
+        # must not lose which escalation record its reply names.
+        slot._steer_escalation_ids[message] = escalation_id
+    if human_reply:
+        # And the VALIDATED provenance rides the same bookkeeping: the requeue
+        # must restore exactly what the handler established, never promote an
+        # internal caller's steer to a human reply.
+        slot._steer_human_reply.add(message)
     slot._pending_steers.append(message)
     try:
         steered = await client.steer(message)
@@ -336,6 +347,8 @@ async def steer_into_running_turn(
         # every intermediate transition, including a merged row.
         slot._steer_delivery_ids.pop(message, None)
         slot._steer_send_ids.pop(message, None)
+        slot._steer_escalation_ids.pop(message, None)
+        slot._steer_human_reply.discard(message)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
@@ -355,6 +368,8 @@ async def steer_into_running_turn(
             slot._pending_steers.remove(message)
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
+            slot._steer_escalation_ids.pop(message, None)
+            slot._steer_human_reply.discard(message)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -432,6 +447,8 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
+    slot._steer_escalation_ids.pop(message, None)
+    slot._steer_human_reply.discard(message)
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -500,6 +517,12 @@ async def steer_into_running_turn(
         # transcript page is what mergePreservedThinking reads to resolve an
         # optimistic bubble by id (accepted steer vs raced new turn, #6075).
         meta["sendId"] = send_id
+    if escalation_id:
+        # Same reason as the queue path: a chip reply steered into a running
+        # member turn must still name the escalation record it answers.
+        meta["escalation_id"] = escalation_id
+    if human_reply:
+        meta["human_reply"] = True
     # Store the sanitized form — raw content must never reach an external
     # surface — so the steer survives a page reload via the dirty-flush cycle.
     _row = slot.append("user", sanitized, "msg msg-u", ts=ts, meta=meta)
@@ -534,18 +557,33 @@ def queue_for_next_turn(
     message: str,
     *,
     directive_user_origin: bool = False,
+    escalation_id: str | None = None,
+    human_reply: bool = False,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
+
+    ``escalation_id`` rides the queue entry's ``meta`` (the drain merges entry
+    meta onto the user row it appends) so an option-chip reply to a crew
+    member's escalation still names the record it answers when the member was
+    mid-turn — the common case, since a member that just escalated is working.
+    ``human_reply`` rides the same way: the authenticated composer sets it, and
+    it is what lets the drained row answer an escalation at all (an automated
+    prompt's row never carries it).
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import containment_meta
 
+    meta = containment_meta(state, slot)
+    if escalation_id:
+        meta = {**meta, "escalation_id": escalation_id}
+    if human_reply:
+        meta = {**meta, "human_reply": True}
     qid = slot.queue_append(
         message,
-        meta=containment_meta(state, slot),
+        meta=meta,
         directive_user_origin=directive_user_origin,
     )
     state.broadcast_ws(

@@ -196,6 +196,13 @@ async def api_session_control_send(request: web.Request) -> web.Response:
             caller_session_key=_read_session_key(request),
             target=_target(body),
             message=message,
+            # Escalation-only fields (``target="user"``); ignored for a session
+            # target. Validated inside ``escalate_to_user`` — this handler is
+            # internal-secret gated, so the shape check lives with the semantics.
+            deadline=body.get("deadline"),
+            default_action=body.get("default_action"),
+            options=body.get("options"),
+            goal=body.get("goal"),
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)

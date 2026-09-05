@@ -40,6 +40,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard import remote_mirror
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
+from kiro_crew.crew_conversation import ESCALATION_ID_RE as _ESCALATION_ID_RE
 from kiro_crew.dashboard.chat_delivery import (
     STEER_REQUEUED,
     STEER_STEERED,
@@ -203,6 +204,29 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
         )
 
 
+def _human_reply_provenance(request: Any) -> bool:
+    """Whether a composer send may carry ``meta.human_reply`` — the provenance
+    the escalation answer rule keys on. Two positive signals are required:
+    the auth layer's ``is_dashboard_user`` (a validated dashboard credential —
+    ``token_auth`` sets it ``True`` there and ``False`` for app tokens and
+    derived internal callers) AND the owner identity
+    (``is_owner_dashboard_request``): a crew member's DM thread is the OWNER's
+    conversation, and a non-owner dashboard user (an allowed Slack user holding
+    a ``!dashboard`` token) may be able to post into it but is not the human
+    the escalation was raised to. Absence, ``None`` or a falsy ``app`` claim is
+    NOT trust (CWE-269): an internal-secret caller posting into a member thread
+    is automation, and its row must not clear the human's escalation."""
+    if request.get("is_dashboard_user") is not True:
+        return False
+    # circular import: source_providers imports from this module's package.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    try:
+        return bool(is_owner_dashboard_request(request))
+    except Exception:  # noqa: BLE001 - no owner identity resolvable -> not the owner
+        return False
+
+
 async def api_chat(request: web.Request) -> web.StreamResponse:
     """POST /api/chat — send message to a slot, stream response via SSE."""
     state: DashboardState = request.app["state"]
@@ -217,6 +241,27 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     user_meta = body.get("meta")  # knowledge/files/pastes metadata from frontend
     if not isinstance(user_meta, dict):
         user_meta = None
+    # An option-chip reply to a crew member's escalation names the record it
+    # answers. Validated to the id grammar the index mints, so a client cannot
+    # smuggle arbitrary text into a queue entry's meta through this key; carried
+    # through the busy paths (steer / queue) because the drained user row is
+    # what the answer rule reads.
+    escalation_id = user_meta.get("escalation_id") if user_meta else None
+    if not (isinstance(escalation_id, str) and _ESCALATION_ID_RE.fullmatch(escalation_id)):
+        escalation_id = None
+    # Provenance the escalation answer rule keys on. Only the POSITIVE
+    # dashboard-user signal the auth layer sets (``is_dashboard_user`` — a
+    # validated dashboard credential, not an app token and not the internal
+    # secret) earns the stamp: a falsy ``app`` claim is not trust (CWE-269),
+    # and an internal caller posting into a member thread is automation, not
+    # the human. An unstamped user row (heartbeat, cron, peer, internal
+    # caller) can never answer an escalation. Stamped server-side, never
+    # trusted from the client: a client-supplied value is overwritten.
+    human_reply = _human_reply_provenance(request)
+    if human_reply:
+        user_meta = {**(user_meta or {}), "human_reply": True}
+    elif user_meta and "human_reply" in user_meta:
+        user_meta = {k: v for k, v in user_meta.items() if k != "human_reply"} or None
     theme_consent = body.get("theme_consent") is True
     # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
@@ -568,6 +613,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 slot,
                 message,
                 send_id=user_meta.get("sendId") if user_meta else None,
+                escalation_id=escalation_id,
+                human_reply=human_reply,
             )
             if outcome == STEER_STEERED:
                 return web.json_response({"ok": True, "steered": True})
@@ -623,6 +670,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             slot,
             message,
             directive_user_origin=not bool(request_app),
+            escalation_id=escalation_id,
+            human_reply=human_reply,
         )
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
@@ -676,7 +725,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
         qid = slot.queue_append(
             message,
-            meta=containment_meta(state, slot),
+            meta={
+                **containment_meta(state, slot),
+                **({"escalation_id": escalation_id} if escalation_id else {}),
+                **({"human_reply": True} if human_reply else {}),
+            },
             directive_user_origin=not bool(request_app),
         )
         _c, _ = redact_exfiltration_urls(message)
@@ -3527,6 +3580,10 @@ async def stop_slot_turn(
             # kill discards the text, so there is no requeued entry left to carry
             # the client's send id onto.
             slot._steer_send_ids.pop(_discarded, None)
+            slot._steer_escalation_ids.pop(_discarded, None)
+            # And its human-reply provenance: a later same-text automated steer
+            # must not inherit it and be requeued as the human's answer.
+            slot._steer_human_reply.discard(_discarded)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
