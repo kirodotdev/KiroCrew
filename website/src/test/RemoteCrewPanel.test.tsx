@@ -621,8 +621,11 @@ describe('RemoteCrewPanel', () => {
      *  "Ask the agent" link next to `status.error` (StatusBadge renders it through
      *  ErrorNotice), so the note's button must be picked by its container — the
      *  row's link would send the bare message without the ladder. */
+    // The diagnosis note is the shared ErrorNotice (role="alert") since #8749;
+    // this helper still looked for the role="status" box #8729 was written
+    // against, so `closest` returned null and every hand-off case failed.
     const noteAgentButton = () =>
-      within(screen.getByText(/c1: Remote dashboard down/i).closest('[role="status"]') as HTMLElement)
+      within(screen.getByTestId('remote-crew-diagnosis'))
         .getByRole('button', { name: /agent/i })
 
     it('hands the diagnosis to the agent with the ladder code and probe chain', async () => {
