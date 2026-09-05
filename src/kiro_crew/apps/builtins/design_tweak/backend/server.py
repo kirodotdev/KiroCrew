@@ -265,6 +265,10 @@ _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _LSOF_TIMEOUT = 4
 _PROBE_TIMEOUT = 1.5
 _START_TIMEOUT = 45
+_DEV_LOG_TAIL_CHARS = 800
+# UTF-8 uses at most four bytes per character, so this preserves the character
+# contract without letting a noisy child choose the diagnostic read size.
+_DEV_LOG_TAIL_BYTES = _DEV_LOG_TAIL_CHARS * 4
 _STOP_GRACE = 3
 _RELAY_TIMEOUT = 30
 _WS_IDLE = 3600
@@ -654,6 +658,19 @@ class _DevProxyHandler(dev_preview.DevProxyHandlerBase):
     timeout = _CLIENT_READ_TIMEOUT
 
 
+def _read_dev_log_tail(log: Path) -> str:
+    """Return the bounded diagnostic tail of a failed dev-server launch."""
+
+    try:
+        with log.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - _DEV_LOG_TAIL_BYTES))
+            raw = handle.read(_DEV_LOG_TAIL_BYTES)
+    except OSError:
+        return ""
+    return raw.decode("utf-8", errors="replace")[-_DEV_LOG_TAIL_CHARS:]
+
+
 def _start_dev_proc(project_id: str, root: Path) -> dict:
     """Start an owned project dev server and discover the port it selected."""
 
@@ -734,11 +751,7 @@ def _start_dev_proc(project_id: str, root: Path) -> dict:
     deadline = time.time() + _START_TIMEOUT
     while time.time() < deadline:
         if proc.poll() is not None:
-            tail = ""
-            try:
-                tail = log.read_text("utf-8", errors="replace")[-800:]
-            except OSError:
-                pass
+            tail = _read_dev_log_tail(log)
             _DEV_PROCS.pop(project_id, None)
             return {
                 "ok": False,
