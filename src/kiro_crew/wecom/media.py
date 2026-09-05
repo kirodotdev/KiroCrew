@@ -33,8 +33,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import aiohttp
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from kiro_crew import link_unfurl
 
@@ -115,6 +113,17 @@ def decrypt_media(ciphertext: bytes, key: bytes) -> bytes:
     # that the URL is single-use and lives ~5 minutes, and that the key is per
     # object rather than shared.
     # nosemgrep: python.cryptography.security.mode-without-authentication.crypto-mode-without-authentication  # noqa: E501
+    # Imported HERE, not at module top. This module is reached from the
+    # tool-approval hook: hooks.on_tool_call -> slack.gateway._is_read_only_tool
+    # -> channels -> wecom.gateway -> wecom.client -> wecom.attachments -> here.
+    # A top-level import made every tool approval on the platform depend on the
+    # `cryptography` native wheel loading -- and on a host where that wheel is
+    # platform-mismatched (an AL2 x86_64 build on an Apple-silicon Mac) the hook
+    # raised ImportError before it could answer. Only decrypting a WeCom media
+    # file needs AES; only that path pays for it.
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
     decryptor = Cipher(algorithms.AES(key), modes.CBC(key[:_IV_BYTES])).decryptor()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
     try:
@@ -252,7 +261,9 @@ async def download_media(
         # The URL lives ~5 minutes; a transport failure is reported, never retried
         # into a window that has already closed.
         raise WeComMediaError(f"media download failed: {type(exc).__name__}") from exc
-    return decrypt_media(b"".join(chunks), key)
+    # Off the loop: AES-CBC over a multi-megabyte body is CPU-bound, and the
+    # first call also pays the lazy ``cryptography`` native-module import.
+    return await asyncio.to_thread(decrypt_media, b"".join(chunks), key)
 
 
 def media_items(body: dict[str, Any]) -> list[dict[str, Any]]:

@@ -3384,6 +3384,22 @@ async def warm_sel_singleton() -> None:
         )
 
 
+def sel_is_warm() -> bool:
+    """Is the singleton constructed, so that ``sel()`` is a plain attribute read?
+
+    The complement to :func:`warm_sel_singleton`'s best-effort contract. A
+    failed warm leaves ``_instance`` allocated but ``_initialized`` False, and
+    the next ``sel()`` retries ``_init_locked`` -- blocking file I/O -- on the
+    caller's thread. A call site that must never block the event loop (a
+    middleware deny path is the one every request can hit) asks this first and
+    takes a thread hop ONLY when the answer is no; on the healthy path (the
+    warm succeeded, which is every normal start) it keeps the direct enqueue
+    that #8608 established. Cheap and lock-free: two attribute reads.
+    """
+    inst = SecurityEventLog._instance
+    return inst is not None and bool(getattr(inst, "_initialized", False))
+
+
 def _trust_root_key_loads(path: Path) -> bool:
     """True when *path* is a regular file currently holding a usable key.
 

@@ -474,9 +474,21 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     from kiro_crew.dashboard import server as server_mod
 
     helper = inspect.getsource(server_mod._audit_denied)
-    assert "asyncio.to_thread" not in helper, (
-        "_audit_denied re-grew a per-call thread hop; SEL is warmed at startup "
-        "(sel.warm_sel_singleton), so log_api_access is a non-blocking enqueue"
+    # The healthy path is a direct enqueue: no unconditional hop. The hop that
+    # remains is GATED on the warm having failed (sel_is_warm() false), which is
+    # the one case where sel() would run blocking file I/O on the loop.
+    assert "if sel_is_warm():" in helper, (
+        "_audit_denied must gate on sel_is_warm(): direct enqueue when the startup "
+        "warm succeeded, a thread hop only when it did not"
+    )
+    warm_branch, _, cold_branch = helper.partition("if sel_is_warm():")
+    assert "asyncio.to_thread" not in warm_branch, (
+        "_audit_denied re-grew an unconditional per-call thread hop; SEL is warmed "
+        "at startup (sel.warm_sel_singleton), so log_api_access is a non-blocking enqueue"
+    )
+    assert "await asyncio.to_thread(_write)" in cold_branch, (
+        "a FAILED startup warm leaves sel() to construct on the caller's thread; "
+        "that must not be the event loop"
     )
     assert "except Exception" in helper, "_audit_denied is no longer best-effort"
 

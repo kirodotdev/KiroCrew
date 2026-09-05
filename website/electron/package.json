@@ -218,7 +218,8 @@
       "icon.png",
       "icon-nightly.png",
       "trayTemplate.png",
-      "trayTemplate@2x.png"
+      "trayTemplate@2x.png",
+      "EXTERNALLY-MANAGED"
     ],
     "extraResources": [
       {
