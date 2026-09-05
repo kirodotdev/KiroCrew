@@ -214,6 +214,7 @@ import {
 } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, openPanelView, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
+import { usePanelTabDescriptors } from '../hooks/panelTabRegistry'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
@@ -2984,7 +2985,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // here is racy because `useVoiceInput` flips its returned `recording` to the
   // batch value on the same render that `streamEnabled` goes false.)
 
-  const tabsCtl = usePanelTabs(activeSlot)
+  // Resolved here, inside the query provider, and handed to the strip model:
+  // `usePanelTabs` stays provider-free so every other consumer of it does not
+  // inherit a `QueryClientProvider` requirement.
+  const panelTabDescriptors = usePanelTabDescriptors()
+  const tabsCtl = usePanelTabs(activeSlot, panelTabDescriptors)
   // An MCP App tab hosts a null-origin iframe with no storage: unmounting it
   // reloads the app and destroys whatever the user has drawn (see
   // docs/dashboard-iframe-hosts.md). The whole SidePanel subtree is normally

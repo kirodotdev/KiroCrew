@@ -46,6 +46,14 @@ export interface AppHostProps {
       }
     }
   }
+  /** Bundle to mount, relative to the app root, overriding `manifest.ui.entry`.
+   *  A side-panel tab (`contributes.panelTabs[].entry`) mounts its own entry
+   *  through this host rather than the app's default page bundle. */
+  entry?: string
+  /** Whether this host is the visible surface. A body-owning host (a side-panel
+   *  tab) stays mounted while hidden, so it is handed `active` to pause polling
+   *  or release global keys; defaults to visible for the routed-page case. */
+  active?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +204,7 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
 // AppHost
 // ---------------------------------------------------------------------------
 
-function AppHostInner({ app }: AppHostProps) {
+function AppHostInner({ app, entry: entryOverride, active = true }: AppHostProps) {
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
 
@@ -217,7 +225,7 @@ function AppHostInner({ app }: AppHostProps) {
     return () => window.removeEventListener('mc:app-reload', handler)
   }, [app.name])
 
-  const entry = app.manifest?.ui?.entry
+  const entry = entryOverride || app.manifest?.ui?.entry
   const permissions = app.manifest?.permissions || {}
   const allowedApi = permissions.api || []
   const allowedEvents = permissions.events || []
@@ -271,6 +279,7 @@ function AppHostInner({ app }: AppHostProps) {
         appVersion={app.manifest?.version || app.version}
         allowedApiPaths={allowedApi}
         allowedEvents={allowedEvents}
+        active={active}
         subscribeFn={subscribeFn}
         navigateFn={navigateFn}
         notifyFn={notifyFn}
@@ -283,13 +292,14 @@ function AppHostInner({ app }: AppHostProps) {
   )
 }
 
-export default function AppHost({ app }: AppHostProps) {
+export default function AppHost({ app, entry, active }: AppHostProps) {
   // Guard: not installed
   if (!app) return <AppNotFound name="unknown" />
   // Guard: disabled
   if (app.enabled === false) return <AppDisabled app={app} />
-  // Guard: no UI bundle
-  if (!app.manifest?.ui?.entry) return <AppNoUI app={app} />
+  // Guard: no UI bundle. An explicit `entry` (a panel-tab body) is its own
+  // bundle, so it does not require the app to also declare a routed `ui.entry`.
+  if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />
 
-  return <AppHostInner app={app} />
+  return <AppHostInner app={app} entry={entry} active={active} />
 }

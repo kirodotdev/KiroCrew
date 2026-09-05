@@ -45,6 +45,11 @@ export interface AppInfo {
   name: string
   version: string
   permissions: AppPermissions
+  /** Whether the app's host surface is currently visible. A routed page is
+   *  always the visible surface (`true`); a body-owning side-panel tab stays
+   *  mounted while hidden and reads this to pause polling or release global
+   *  keys. Absent on hosts that predate the flag — treat `undefined` as `true`. */
+  active?: boolean
 }
 
 export interface AppTheme {
@@ -456,6 +461,7 @@ export function AppApiProvider({
   appVersion = '0.0.0',
   allowedApiPaths,
   allowedEvents,
+  active = true,
   subscribeFn,
   navigateFn,
   notifyFn,
@@ -465,6 +471,7 @@ export function AppApiProvider({
   appVersion?: string
   allowedApiPaths: string[]
   allowedEvents: string[]
+  active?: boolean
   subscribeFn: (event: string, cb: (data: unknown) => void) => () => void
   navigateFn: (path: string) => void
   notifyFn: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
@@ -478,12 +485,13 @@ export function AppApiProvider({
       name: appName,
       version: appVersion,
       permissions: { api: allowedApiPaths, events: allowedEvents },
+      active,
     },
     subscribe: subscribeFn,
     navigate: navigateFn,
     notify: notifyFn,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [appName, appVersion, apiKey, eventsKey, subscribeFn, navigateFn, notifyFn])
+  }), [appName, appVersion, apiKey, eventsKey, active, subscribeFn, navigateFn, notifyFn])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

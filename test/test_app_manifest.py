@@ -1720,3 +1720,143 @@ class TestContributedCommands:
         # Without autoSend the same command is fine.
         cmd.pop("autoSend")
         assert AppManifest.from_dict(self._manifest(cmd)).validate() == []
+# ---------------------------------------------------------------------------
+# contributes.panelTabs — declarative side-panel tab contribution
+# ---------------------------------------------------------------------------
+
+
+def _panel_tab(**overrides) -> dict:
+    tab = {
+        "id": "browser",
+        "title": "Pippin",
+        "menuLabel": "Pippin",
+        "menuDescription": "Browse and sync Pippin docs",
+        "icon": "BookOpen",
+        "entry": "ui/panel.mjs",
+    }
+    tab.update(overrides)
+    return tab
+
+
+class TestContributesPanelTabs:
+    def test_parsed_into_typed_config(self):
+        m = AppManifest.from_dict(_valid_manifest(contributes={"panelTabs": [_panel_tab()]}))
+        assert m.validate() == []
+        assert len(m.contributes.panelTabs) == 1
+        tab = m.contributes.panelTabs[0]
+        assert tab.id == "browser"
+        assert tab.title == "Pippin"
+        assert tab.menuLabel == "Pippin"
+        assert tab.menuDescription == "Browse and sync Pippin docs"
+        assert tab.entry == "ui/panel.mjs"
+
+    def test_roundtrips_through_to_dict(self):
+        m = AppManifest.from_dict(_valid_manifest(contributes={"panelTabs": [_panel_tab()]}))
+        assert AppManifest.from_dict(m.to_dict()).contributes == m.contributes
+
+    def test_absent_contributes_is_empty_not_error(self):
+        m = AppManifest.from_dict(_valid_manifest())
+        assert m.contributes.panelTabs == []
+        assert "contributes" not in m.to_dict()
+
+    def test_non_list_paneltabs_parses_empty_but_is_reported(self):
+        # A hand-edited manifest can carry contributes.panelTabs: null. The parser
+        # reads untrusted input, so it must degrade rather than raise -- but it must
+        # not degrade SILENTLY: coercing to [] is indistinguishable from a
+        # deliberately empty list, so the declaration would validate clean and then
+        # vanish from to_dict with the author seeing neither an error nor a tab.
+        m = AppManifest.from_dict(_valid_manifest(contributes={"panelTabs": None}))
+        assert m.contributes.panelTabs == []
+        assert m.contributes.bad_panel_tabs is True
+        assert any("contributes.panelTabs must be an array" in e for e in m.validate())
+
+    def test_non_object_paneltab_entries_are_counted_and_reported(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"panelTabs": [_panel_tab(), "nope", 7]})
+        )
+        assert len(m.contributes.panelTabs) == 1
+        assert m.contributes.dropped_panel_tabs == 2
+        assert any("2 entries" in e for e in m.validate())
+
+    def test_non_object_contributes_block_is_reported(self):
+        m = AppManifest.from_dict(_valid_manifest(contributes="nope"))
+        assert m.contributes.bad_block is True
+        assert any("contributes must be an object" in e for e in m.validate())
+
+    def test_commands_survive_alongside_paneltabs(self):
+        # The two contribution kinds share one `contributes` block; serializing one
+        # must not drop the other.
+        contributes = {
+            "panelTabs": [_panel_tab()],
+            "commands": [{"id": "do-thing", "title": "Do thing", "prompt": "Do it."}],
+        }
+        m = AppManifest.from_dict(_valid_manifest(contributes=contributes))
+        assert m.validate() == []
+        assert len(m.contributes.panelTabs) == 1
+        assert len(m.contributes.commands) == 1
+        round_tripped = AppManifest.from_dict(m.to_dict()).contributes
+        assert len(round_tripped.panelTabs) == 1
+        assert len(round_tripped.commands) == 1
+
+    def test_missing_id_is_error(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"panelTabs": [_panel_tab(id="")]})
+        )
+        assert any("entry missing id" in e for e in m.validate())
+
+    def test_over_long_menu_description_is_capped_like_the_labels(self):
+        # The launcher card renders `menuDescription`, so it is capped alongside
+        # `title`/`menuLabel` rather than being the one field that can blow out
+        # that surface's layout.
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"panelTabs": [_panel_tab(menuDescription="x" * 121)]})
+        )
+        assert any("menuDescription exceeds 120" in e for e in m.validate())
+
+    def test_menu_description_at_the_cap_is_accepted(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"panelTabs": [_panel_tab(menuDescription="x" * 120)]})
+        )
+        assert not any("menuDescription exceeds" in e for e in m.validate())
+
+    def test_non_slug_id_is_error(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"panelTabs": [_panel_tab(id="Not A Slug")]})
+        )
+        assert any("storage-safe slug" in e for e in m.validate())
+
+    def test_trailing_newline_id_cannot_slip_through(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"panelTabs": [_panel_tab(id="browser\n")]})
+        )
+        assert any("storage-safe slug" in e for e in m.validate())
+
+    def test_duplicate_id_is_error(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"panelTabs": [_panel_tab(), _panel_tab()]})
+        )
+        assert any("duplicate id" in e for e in m.validate())
+
+    def test_missing_title_menulabel_entry_each_error(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                contributes={"panelTabs": [_panel_tab(title="", menuLabel="", entry="")]}
+            )
+        )
+        errs = m.validate()
+        assert any("missing title" in e for e in errs)
+        assert any("missing menuLabel" in e for e in errs)
+        assert any("missing entry" in e for e in errs)
+
+    def test_entry_path_traversal_rejected(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"panelTabs": [_panel_tab(entry="../../etc/passwd")]})
+        )
+        assert any("path traversal" in e for e in m.validate())
+
+    def test_too_many_tabs_rejected(self):
+        from kiro_crew.apps.manifest import _MAX_PANEL_TABS_PER_APP
+
+        tabs = [_panel_tab(id=f"t{i}") for i in range(_MAX_PANEL_TABS_PER_APP + 1)]
+        m = AppManifest.from_dict(_valid_manifest(contributes={"panelTabs": tabs}))
+        assert any("exceeds the limit of" in e for e in m.validate())
