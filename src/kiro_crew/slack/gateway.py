@@ -4910,10 +4910,37 @@ class GatewayOrchestrator:
                 return result_text
             except Exception as exc:
                 # Attempt one retry for ACP process death before any dedup / alert.
+                #
+                # The TYPE carries the meaning: AcpProcessDied is raised at every site
+                # that discovers a dead child, so it decides this branch. A message
+                # test cannot, because the most common death is discovered as a broken
+                # pipe on the next write and reads "ACP process pipe broken: <cause>",
+                # matching neither substring below.
+                #
+                # `resubmit_safe` decides whether resubmitting is allowed: a death
+                # discovered with a turn IN FLIGHT may follow a tool that already
+                # completed its side effects, so re-running the prompt can repeat a
+                # mutation. The ACP layer states that per death rather than exporting
+                # its class hierarchy, so this branch reads one attribute and adds no
+                # ACP import (scripts/check_agent_sdk_boundary.py refuses a new one).
+                #
+                # The substring arm stays because five sites spell process death as a
+                # plain AcpError, not AcpProcessDied: "ACP process not running" for a
+                # missing stdin, and "ACP process exited (code=...)". It is restricted
+                # to those plain errors, because "Process exited during prompt" is an
+                # AcpProcessDied that CONTAINS "process exited" -- left unrestricted,
+                # the wording would out-vote that death's own resubmit_safe=False and
+                # retry it anyway.
                 exc_msg = str(exc).lower()
                 if (
-                    isinstance(exc, AcpError)
-                    and ("not running" in exc_msg or "process exited" in exc_msg)
+                    (
+                        exc.resubmit_safe
+                        if isinstance(exc, AcpProcessDied)
+                        else (
+                            isinstance(exc, AcpError)
+                            and ("not running" in exc_msg or "process exited" in exc_msg)
+                        )
+                    )
                     and not getattr(job, "_acp_retried", False)
                     and self.sessions is not None
                 ):

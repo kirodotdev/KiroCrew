@@ -1341,7 +1341,41 @@ class AcpPermissionNeeded(AcpError):  # noqa: N818
 
 
 class AcpProcessDied(AcpError):  # noqa: N818
-    """kiro-cli process exited unexpectedly."""
+    """kiro-cli process exited unexpectedly.
+
+    ``resubmit_safe`` answers the one question a caller that wants to RE-RUN the
+    turn has to ask, and answers it at the raise site rather than making that
+    caller reason about the death taxonomy. Mirrors :attr:`AcpError.transient`:
+    the layer that raises knows the classification, so it states it instead of
+    exporting a class hierarchy for consumers to re-derive. Application code
+    outside the agent-SDK boundary can then read one attribute without importing a
+    second ACP symbol -- which ``scripts/check_agent_sdk_boundary.py`` refuses.
+
+    THE INVARIANT is about WHEN the death was discovered, not about which
+    subsystem noticed:
+
+    * ``True`` -- discovered with NO turn in flight, so nothing the turn asked for
+      can have run. Only a transport write that never reached the child, and the
+      pre-conversation liveness check, qualify: no tool was ever dispatched.
+    * ``False`` (the default) -- a turn may have been in flight. A tool may
+      already have completed its side effects, so resubmitting the prompt can
+      repeat a mutation.
+
+    The default REFUSES, so a site that never considered the question fails
+    closed. Defaulting to ``True`` and having each in-flight site opt out is only
+    correct while the set of in-flight sites is completely enumerated, and that
+    set is not locally checkable: most raise sites here can be reached with a turn
+    live, and some only through indirection --
+    ``session_provider._translate_dead`` builds one for any runtime-touching
+    handle call. Charging the few safe sites an explicit kwarg buys a correctness
+    that does not depend on such an enumeration being exhaustive.
+    """
+
+    resubmit_safe: bool = False
+
+    def __init__(self, *args: object, resubmit_safe: bool = False, **kw: object) -> None:
+        super().__init__(*args, **kw)  # type: ignore[arg-type]
+        self.resubmit_safe = resubmit_safe
 
 
 class AcpAuthRequired(AcpError):  # noqa: N818
@@ -5071,7 +5105,9 @@ class AcpClient:
             self._process.stdin.write(data.encode())
             await self._process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
-            raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
+            # The write never reached a running child, so no tool was dispatched:
+            # this is the one shape of death a caller may safely resubmit.
+            raise AcpProcessDied(f"ACP process pipe broken: {exc}", resubmit_safe=True) from exc
         self._last_activity = time.monotonic()
         return req_id
 
@@ -5085,7 +5121,9 @@ class AcpClient:
             self._process.stdin.write(data.encode())
             await self._process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
-            raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
+            # The write never reached a running child, so no tool was dispatched:
+            # this is the one shape of death a caller may safely resubmit.
+            raise AcpProcessDied(f"ACP process pipe broken: {exc}", resubmit_safe=True) from exc
         self._last_activity = time.monotonic()
 
     async def _send_error(self, request_id: str | int, code: int, message: str) -> None:
@@ -5104,7 +5142,9 @@ class AcpClient:
             self._process.stdin.write(data.encode())
             await self._process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
-            raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
+            # The write never reached a running child, so no tool was dispatched:
+            # this is the one shape of death a caller may safely resubmit.
+            raise AcpProcessDied(f"ACP process pipe broken: {exc}", resubmit_safe=True) from exc
         self._last_activity = time.monotonic()
 
     async def _read_message(self, timeout: float = _READ_TIMEOUT) -> JsonRpcMessage | None:

@@ -551,7 +551,6 @@ test/test_credential_scrub_sync.py
 test/test_crew_chat.py
 test/test_crew_http.py
 test/test_cron.py
-test/test_cron_acp_retry.py
 test/test_cron_approval_mode.py
 test/test_cron_arbiter_items.py
 test/test_cron_autopause_persist.py
