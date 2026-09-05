@@ -67,7 +67,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
-from kiro_crew.session_directive import refuse_if_markerless
+from kiro_crew.session_directive import clear_vouch, refuse_if_markerless
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.validation import (
     MCP_CORE_SCHEMAS,
@@ -1863,6 +1863,11 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     # handler, so a schema rejection never reaches code that could tag itself
     # (#8635). Without the tag the consumer reads a decline as a LOST directive
     # marker and fires a WARNING meant for a transport regression.
+    #
+    # Clear the vouch FIRST: the gate honours a marker only if this dispatch
+    # produced it, so a directive emitted by the PREVIOUS call must not be able
+    # to authorize marker-shaped bytes in this one.
+    clear_vouch()
     return refuse_if_markerless(
         name,
         call_tool_with_logging(

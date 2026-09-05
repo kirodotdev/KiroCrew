@@ -1046,6 +1046,26 @@ marker the cut removed — the same re-injection the MCP App render marker alrea
 gets at that seam, for the same reason: a control token that decides how a frame is
 interpreted must not be a casualty of a length cut applied to the frame's prose.
 
+A marker is honoured at that gate ONLY if the emitter vouched for it on the same
+dispatch: `_emit_directive` is the one producer of a real marker, so it records a
+digest of what it built, `_call_tool` clears that record before every dispatch, and
+`refuse_if_markerless` defangs any marker nobody vouched for. "Does this look like a
+directive?" is not a safe question — a rejection echoing a model-chosen argument
+name can imitate one, which is how a rejected call came to apply the very arguments
+validation had refused. Every place `mcp_shared` builds an `"Error: …"` result also
+passes the interpolated text through `session_directive.neutralize_markers`, kept as
+defense in depth because those strings reach the audit row and the four other
+servers' outputs, where no vouch gate runs. That defanging is applied only where the
+caller KNOWS the string is not a directive: doing it centrally over every tool
+result would defang the real marker too.
+
+`_emit_directive` classifies its OWN output the same way — by the marker's presence,
+not by content. Testing `is_refusal(out)` there matched any payload that merely
+CONTAINED the refusal token, so a stop whose reason quoted that token was filed as a
+refusal, skipped both the publish and the vouch, and had its genuine marker defanged
+downstream: the stop was lost. A gate against imitable content cannot itself be
+built on imitable content.
+
 **A directive tool's result either carries the marker, or it is a tagged
 refusal — nothing in between.** The consumer cannot otherwise tell a decline from
 a marker destroyed in transport: both decode to "no directive", but only the
