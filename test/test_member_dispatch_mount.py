@@ -69,6 +69,29 @@ class TestMemberDispatchSessionServer:
         assert entry is not None
         assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in entry["env"]
 
+    def test_env_carries_the_gateway_home_override(self, monkeypatch):
+        """On an install with ``KIROCREW_HOME`` set (a pod, a second profile) the
+        server must resolve THIS gateway from that home. Without the override it
+        would present the member's identity to the default home's gateway, where
+        the member slot does not exist, and every verb would be refused as
+        ``caller_unidentified``. Same helper the managed Crew servers use, so the
+        two cannot drift."""
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {"KIROCREW_HOME": "/pods/x"})
+        entry = member_dispatch_session_server(MEMBER_KEY)
+        assert entry is not None
+        assert {"name": "KIROCREW_HOME", "value": "/pods/x"} in entry["env"]
+        assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in entry["env"]
+
+    def test_default_install_carries_only_the_session_key(self, monkeypatch):
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {})
+        entry = member_dispatch_session_server(MEMBER_KEY)
+        assert entry is not None
+        assert entry["env"] == [{"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY}]
+
     def test_unresolvable_command_degrades_to_none(self, monkeypatch):
         import kiro_crew.agent as agent_mod
 

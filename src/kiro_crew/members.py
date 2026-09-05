@@ -168,7 +168,7 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     """
     # circular import: agent's module graph is heavy and imports config, which
     # sits below this module for the thread-endpoint path.
-    from kiro_crew.agent import _kirocrew_mcp_invocation
+    from kiro_crew.agent import _kirocrew_mcp_invocation, _managed_mcp_env
 
     try:
         command, args = _kirocrew_mcp_invocation("mcp-dashboard")
@@ -177,11 +177,19 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
         return None
     if not command:
         return None
+    # The identity key, plus the SAME home override every managed Crew server
+    # carries (``_managed_mcp_env``): the server resolves the gateway to call
+    # from its data home, so on an install with ``KIROCREW_HOME`` set (a pod, a
+    # second profile) an entry without it would authenticate as this member to
+    # the DEFAULT home's gateway — where the member slot does not exist and every
+    # verb is refused as ``caller_unidentified``. Empty on a default install.
+    env = [{"name": k, "value": v} for k, v in _managed_mcp_env().items()]
+    env.append({"name": "KIROCREW_SESSION_KEY", "value": session_key})
     return {
         "name": MEMBER_DISPATCH_SERVER,
         "command": command,
         "args": list(args),
-        "env": [{"name": "KIROCREW_SESSION_KEY", "value": session_key}],
+        "env": env,
         "type": "stdio",
     }
 
