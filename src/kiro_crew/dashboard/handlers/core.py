@@ -2336,6 +2336,20 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 cfg.agent.completion_keep_chars,
             )
 
+    # The consolidator snapshots this setting at gateway startup. Keep the
+    # running instance in sync so disabling approval immediately auto-publishes
+    # subsequent prose-only skills instead of continuing to stage them until the
+    # gateway restarts. Script-bearing candidates remain gated by the independent
+    # scripts check in HistoryConsolidator.
+    if path_key == "skills.approval_required":
+        state = request.app["state"]
+        if state.consolidator is not None:
+            state.consolidator._approval_required = cfg.skills.approval_required
+            logger.info(
+                "skills.approval_required hot-reloaded: %s",
+                cfg.skills.approval_required,
+            )
+
     # The metrics recorder is built once per process and memoized, so a config
     # write alone would leave the Telemetry panel reporting "on" while every
     # metric call site stayed a no-op. Dropping the cached recorder makes the next

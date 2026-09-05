@@ -131,6 +131,25 @@ class TestRoleModels:
 # ── General ──────────────────────────────────────────────────────────────
 
 
+class TestSkillApprovalPatch:
+    @pytest.mark.parametrize(("before", "after"), [(True, False), (False, True)])
+    @pytest.mark.asyncio
+    async def test_hot_reloads_running_consolidator(
+        self, tmp_config, before: bool, after: bool
+    ) -> None:
+        consolidator = SimpleNamespace(_approval_required=before)
+        app = _make_app()
+        app["state"] = SimpleNamespace(consolidator=consolidator)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "skills.approval_required", after)
+            assert resp.status == 200
+
+        persisted = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert persisted["skills"]["approval_required"] is after
+        assert consolidator._approval_required is after
+
+
 # ── Terminal default shell (dashboard.terminal.shell) ─────────────────────
 
 
