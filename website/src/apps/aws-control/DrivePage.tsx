@@ -23,13 +23,13 @@
  * react-query key. All AWS access runs through the gateway's audited CLI
  * chokepoint; this surface never talks to AWS from the browser.
  */
-import { Fragment, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import {
   ChevronDown, RefreshCw, Library, Archive, Share2,
-  Download, Trash2, Upload, FolderClosed, FolderPlus, FileText, X,
+  Download, Trash2, Upload, FolderClosed, FolderPlus, FolderInput, FileText, X,
   MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus, AlertTriangle,
 } from 'lucide-react'
 import { Btn, Badge, Toggle, Input, ContentSkeleton, IconButton } from '../../components/ui'
@@ -37,7 +37,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
 import SegmentedControl from '../../components/SegmentedControl'
-import { LibraryTableHead } from '../../components/library/LibraryTable'
+import { LibraryTableHead, PINNED_SURFACE } from '../../components/library/LibraryTable'
 import type { LibraryColumn } from '../../components/library/LibraryTable'
 import {
   WidgetThumb, ContentThumb, ImageThumb, WebAppThumb,
@@ -180,6 +180,13 @@ function useViewMode(section: keyof typeof VIEW_MODE_STORAGE_KEY, fallback: View
  * column, which is the same reason the gallery passes it. Each section owns its
  * own `layoutId` -- the indicator is a framer shared-layout animation, and two
  * live controls sharing one id fight over it.
+ *
+ * `iconOnly`, where the gallery shows labels: this toggle shares a pane header
+ * with two more actions (New folder, Upload) that the gallery's toolbar does
+ * not carry, and the header sits in a pane the rail has already narrowed. Two
+ * labelled segments plus two labelled buttons wrap to a second toolbar row at
+ * ordinary desktop widths; the glyphs are the same ones the gallery draws, so
+ * the control is recognised from there rather than re-learned.
  */
 function ViewModeToggle({ section, mode, onChange }: {
   section: keyof typeof VIEW_MODE_STORAGE_KEY
@@ -1164,8 +1171,11 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
             cards below carry a Remove control, so any claim about removal being
             unavailable would be disproved by a button in the same dialog on
             every open, and a banner a button contradicts costs the reader their
-            trust in both. */}
-        <p className="border-b border-border px-4 py-2 text-[12px] leading-snug text-muted" data-testid="library-add-oneway">
+            trust in both.
+
+            Body tone, not muted: this is the dialog's only cost disclosure, and
+            it was the most de-emphasised line in it. */}
+        <p className="border-b border-border px-4 py-2 text-[12px] leading-snug text-text" data-testid="library-add-oneway">
           {i18nT('apps.awsControl.console.library_add_oneway')}
         </p>
 
@@ -1247,7 +1257,16 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
               </Btn>
             </div>
           )}
-          {libQ.data && shown.length === 0 && (
+          {/* Two different "nothing": an EMPTY library (the first-run path,
+              nothing was searched) and a search or chip that matched nothing.
+              "No artifacts match." told a reader with zero artifacts that a
+              search they never ran had failed. */}
+          {libQ.data && artifacts.length === 0 && (
+            <p className="py-6 text-center text-[13px] text-muted" data-testid="library-add-empty">
+              {i18nT('apps.awsControl.console.library_add_empty')}
+            </p>
+          )}
+          {libQ.data && artifacts.length > 0 && shown.length === 0 && (
             <p className="py-6 text-center text-[13px] text-muted" data-testid="library-add-none">
               {i18nT('apps.awsControl.console.library_add_none')}
             </p>
@@ -1457,13 +1476,76 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   const [share, setShare] = useState<{ key: string } | null>(null)
   const [uploadError, setUploadError] = useState<Failure | null>(null)
   const [downloadError, setDownloadError] = useState<Failure | null>(null)
-  const [crumbMenu, setCrumbMenu] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [confirmFolder, setConfirmFolder] = useState<string | null>(null)
   const [newFolder, setNewFolder] = useState('')
   /** Folder-name input is a disclosure: visible only after "New folder". */
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [folderError, setFolderError] = useState('')
+  /** The "New folder" button the disclosure replaces. When the disclosure
+   *  closes it unmounts the input and both buttons, and focus falls to `<body>`
+   *  unless it is handed somewhere — so it goes back to the control that opened
+   *  it, which is where the reader was. The effect runs on the close EDGE
+   *  only: on the first render nothing was open, and a reader who never used
+   *  the keyboard must not have their focus yanked to a toolbar button. */
+  const folderToggleRef = useRef<HTMLButtonElement>(null)
+  const wasCreatingFolder = useRef(false)
+  useEffect(() => {
+    if (wasCreatingFolder.current && !creatingFolder) {
+      folderToggleRef.current?.focus({ preventScroll: true })
+    }
+    wasCreatingFolder.current = creatingFolder
+  }, [creatingFolder])
+  /** The file a "Move to folder…" picker is open for, or null. */
+  const [moveTarget, setMoveTarget] = useState<string | null>(null)
+  /** Who opened the row menu that is closing, and whether one of its items
+   *  opened a dialog. Two Radix behaviours meet here. Item select is
+   *  dispatched with `flushSync`, so a dialog set from `onSelect` mounts in a
+   *  commit where the menu is STILL trapping focus — the dialog focuses itself
+   *  and the trap yanks focus straight back into a menu that then unmounts,
+   *  stranding it on `body`. So the open is deferred one macrotask, past the
+   *  menu's own close commit. Then Radix restores focus to the trigger one
+   *  macrotask after the content unmounts — by which time the dialog owns
+   *  focus — so when an item opened a dialog that restore is suppressed, and
+   *  the dialog hands focus back to the opener itself on close. */
+  const menuOpenerRef = useRef<HTMLElement | null>(null)
+  const menuOpenedDialogRef = useRef(false)
+  /** Recorded from the trigger's OWN pointer/keyboard event, not from
+   *  `document.activeElement` at open time: Safari does not focus a button on
+   *  pointer click, so the active element there would still be whatever had
+   *  focus before, and the dialog would hand focus back to the wrong place. */
+  const rememberMenuOpener = (e: React.SyntheticEvent<HTMLElement>) => {
+    menuOpenerRef.current = e.currentTarget
+  }
+  const skipRestoreIfDialog = (e: Event) => {
+    if (!menuOpenedDialogRef.current) return
+    e.preventDefault()
+    menuOpenedDialogRef.current = false
+  }
+  const openShare = (key: string) => {
+    menuOpenedDialogRef.current = true
+    setTimeout(() => setShare({ key }), 0)
+  }
+  const openMove = (key: string) => {
+    menuOpenedDialogRef.current = true
+    moveDialogOpenRef.current = true
+    // A refusal from an earlier drag belongs to that drag, not to the picker
+    // that is about to open for a different file.
+    setMoveError(null)
+    setTimeout(() => setMoveTarget(key), 0)
+  }
+  const returnFocusToOpener = () => menuOpenerRef.current?.focus({ preventScroll: true })
+  /** Whether the Move picker is on screen, readable from a mutation callback
+   *  that may fire after the reader has already dismissed it. */
+  const moveDialogOpenRef = useRef(false)
+  /** The one way the Move picker closes — Escape, X, backdrop, or a landed
+   *  move. Never refused: a move still in flight keeps running without it. */
+  const closeMoveDialog = () => {
+    moveDialogOpenRef.current = false
+    setMoveTarget(null)
+    setMoveError(null)
+    returnFocusToOpener()
+  }
   /** The ONE way out of the folder disclosure (Escape, Cancel, blur-on-empty),
    *  carrying the whole close invariant: (1) it refuses while a create is in
    *  flight — collapsing mid-request would erase the very name being created,
@@ -1490,7 +1572,12 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
      fact - the response carries it, while a figure shown BEFORE consent would
      cost a second full recursive listing of the prefix. So the page reports
      what was removed rather than pretending to predict it. */
-  const [deletedCount, setDeletedCount] = useState<number | null>(null)
+  const [deleted, setDeleted] = useState<{ count: number; inPath: string } | null>(null)
+  /** The "Deleted N files" line belongs to the folder it happened in; it is
+   *  derived from the CURRENT path so every way of leaving that folder —
+   *  opening a child, a breadcrumb, the ancestor menu — retires it without
+   *  each navigation site having to remember to. */
+  const deletedCount = deleted && deleted.inPath === path ? deleted.count : null
   const fileRef = useRef<HTMLInputElement>(null)
   /* The pinned Actions cell paints its seam only when the table actually
      overflows, so the edge is measured rather than assumed. */
@@ -1549,7 +1636,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   })
   const folderDeleteMut = useMutation({
     mutationFn: (folder: string) => awsControlApi.driveFolderDelete(account, 'drive', folder),
-    onSuccess: (res) => { setDeletedCount(res.objects); invalidate() },
+    onSuccess: (res) => { setDeleted({ count: res.objects, inPath: path }); invalidate() },
   })
 
   const onCreateFolder = () => {
@@ -1600,22 +1687,41 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
    *  flight. Drives the highlight only — the drop handlers re-derive their own
    *  target so a missed dragleave cannot misroute a drop. */
   const [dropTarget, setDropTarget] = useState<string | null>(null)
-  const [moveError, setMoveError] = useState<Failure | null>(null)
+  /** The most recent refused move, tagged with the file it was about so the
+   *  picker for a DIFFERENT file never wears another drag's refusal. */
+  const [moveError, setMoveError] = useState<(Failure & { key: string }) | null>(null)
 
+  /** Every source key with a move still in flight. A Set rather than "the
+   *  last call's variables": two drags in quick succession run two copies at
+   *  once, and reading `moveMut.variables` would un-dim the first row the
+   *  moment the second started while its copy is still running. Keys enter
+   *  on mutate and leave on settle, success or failure alike. */
+  const [movingKeys, setMovingKeys] = useState<ReadonlySet<string>>(() => new Set())
   const moveMut = useMutation({
     mutationFn: ({ fromKey, toKey }: { fromKey: string; toKey: string }) =>
       awsControlApi.driveMove(account, 'drive', fromKey, toKey),
+    onMutate: ({ fromKey }) => {
+      setMovingKeys((prev) => new Set(prev).add(fromKey))
+    },
+    onSettled: (_data, _error, { fromKey }) => {
+      setMovingKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(fromKey)
+        return next
+      })
+    },
     onSuccess: () => {
       setMoveError(null)
       qc.invalidateQueries({ queryKey: ['aws-control', 'drive-list', account] })
       qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
     },
-    onError: (e: unknown) => {
+    onError: (e: unknown, { fromKey }) => {
       // Two refusals worth their own sentences: share_active (the source has
       // a live share link — moving would 404 it) and destination_exists (the
       // destination folder already holds this name; never overwritten).
       const err = e instanceof AwsControlError ? e : null
       setMoveError({
+        key: fromKey,
         message: i18nT(
           err?.message === 'share_active'
             ? 'apps.awsControl.console.move_shared'
@@ -1761,7 +1867,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
           </>
         ) : (
           <>
-            <Btn onClick={() => setCreatingFolder(true)} data-testid="drive-folder-toggle">
+            <Btn ref={folderToggleRef} onClick={() => setCreatingFolder(true)} data-testid="drive-folder-toggle">
               <FolderPlus size={13} />
               {i18nT('apps.awsControl.console.folder_new')}
             </Btn>
@@ -1792,7 +1898,17 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         className="mb-2"
         testId="drive-upload-error"
       />
-      <AwsErrorNotice askAgent={handOff} error={moveError?.error} message={moveError?.message} className="mb-2" testId="drive-move-error" />
+      {/* The picker reports a refusal of ITS file itself; the strip carries
+          every other one (no picker open, or a drag of a different file
+          refused while a picker is up), so no sentence is shown twice and none
+          is lost. */}
+      <AwsErrorNotice
+        askAgent={handOff}
+        error={moveError && moveError.key !== moveTarget ? moveError.error : undefined}
+        message={moveError && moveError.key !== moveTarget ? moveError.message : null}
+        className="mb-2"
+        testId="drive-move-error"
+      />
       <AwsErrorNotice message={folderError} askAgent={false} className="mb-2" testId="drive-folder-error" />
       {/* Also no hand-off: a failed create leaves the typed name in the still-open
           input, and the hand-off navigates away from it. */}
@@ -1805,7 +1921,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       />
       {deletedCount !== null && (
         <p className="mb-2 text-[12px] text-muted" data-testid="drive-folder-deleted">
-          {i18nT('apps.awsControl.console.folder_deleted', { objects: deletedCount })}
+          {i18nT('apps.awsControl.console.folder_deleted', { count: deletedCount })}
         </p>
       )}
       <AwsErrorNotice askAgent={handOff} error={downloadError?.error} message={downloadError?.message} className="mb-2" testId="drive-download-error" />
@@ -1821,30 +1937,33 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
           {i18nT('apps.awsControl.console.section_files')}
         </button>
         {crumbs.length > 1 && (
-          <span className="relative flex items-center gap-1">
+          <span className="flex items-center gap-1">
             {' / '}
-            <IconButton
-              aria-label={i18nT('apps.awsControl.console.parent_folders')}
-              onClick={() => setCrumbMenu((v) => !v)}
-              data-testid="drive-crumb-more"
-            >
-              <MoreHorizontal size={14} />
-            </IconButton>
-            {crumbMenu && (
-              <div className="absolute left-0 top-full z-10 mt-1 flex flex-col gap-1 rounded-md border border-border bg-card p-1 shadow-md" data-testid="drive-crumb-menu">
+            {/* The same `ui/dropdown-menu` the row menus use, for the same
+                reason: it dismisses on Escape and on an outside click and
+                returns focus to its trigger. A hand-rolled `absolute` popover
+                here did none of that, so this one menu behaved unlike the
+                menus a few rows below it. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <IconButton
+                  aria-label={i18nT('apps.awsControl.console.parent_folders')}
+                  data-testid="drive-crumb-more"
+                >
+                  <MoreHorizontal size={14} />
+                </IconButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" data-testid="drive-crumb-menu">
                 {crumbs.slice(0, -1).map((c, i) => (
-                  <Btn
+                  <DropdownMenuItem
                     key={i}
-                    onClick={() => {
-                      setCrumbMenu(false)
-                      setPath(crumbs.slice(0, i + 1).join('/'))
-                    }}
+                    onSelect={() => setPath(crumbs.slice(0, i + 1).join('/'))}
                   >
-                    {c}
-                  </Btn>
+                    <FolderClosed size={13} />{c}
+                  </DropdownMenuItem>
                 ))}
-              </div>
-            )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </span>
         )}
         <span data-testid="drive-crumb-current">{' / '}{crumbs[crumbs.length - 1]}</span>
@@ -1897,7 +2016,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         <div className="-mr-3" data-testid="drive-grid">
           <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
             {folders.map((name) => {
-              const open = () => { setPath(name); setDeletedCount(null) }
+              const open = () => setPath(name)
               return (
               <div
                 key={`gf-${name}`}
@@ -1972,7 +2091,8 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    The folder tile beside it keeps its hover because it IS
                    clickable. */
                 {...dragProps(f.key)}
-                className="mb-3 mr-3 flex flex-col items-start gap-2 rounded-lg border border-border bg-card p-3"
+                className={`mb-3 mr-3 flex flex-col items-start gap-2 rounded-lg border border-border bg-card p-3 ${movingKeys.has(f.key) ? 'opacity-50' : ''}`}
+                aria-busy={movingKeys.has(f.key) || undefined}
                 data-testid="drive-grid-file"
               >
                 <div className="flex w-full items-start justify-between gap-2">
@@ -1991,11 +2111,13 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                         className="cursor-pointer rounded border-none bg-transparent p-1 text-muted transition-colors hover:text-text"
                         aria-label={i18nT('apps.awsControl.console.file_actions')}
                         data-testid="drive-grid-more"
+                        onPointerDown={rememberMenuOpener}
+                        onKeyDown={rememberMenuOpener}
                       >
                         <MoreHorizontal size={14} />
                       </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
+                    <DropdownMenuContent align="end" onCloseAutoFocus={skipRestoreIfDialog}>
                       {/* `onSelect` is dispatched synchronously from the item's
                           own click handler, so the window.open inside
                           `download` still runs within the user gesture and is
@@ -2003,8 +2125,11 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                       <DropdownMenuItem onSelect={() => download(f.key)} data-testid="drive-grid-download">
                         <Download size={13} />{i18nT('apps.awsControl.console.download')}
                       </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setShare({ key: f.key })} data-testid="drive-grid-share">
+                      <DropdownMenuItem onSelect={() => openShare(f.key)} data-testid="drive-grid-share">
                         <Share2 size={13} />{i18nT('apps.awsControl.console.share')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => openMove(f.key)} data-testid="drive-grid-move">
+                        <FolderInput size={13} />{i18nT('apps.awsControl.console.move_to')}
                       </DropdownMenuItem>
                       <DropdownMenuItem onSelect={() => setConfirmDelete(f.key)} data-testid="drive-grid-delete">
                         <Trash2 size={13} />{i18nT('apps.awsControl.console.delete')}
@@ -2055,6 +2180,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
               edgeRight={edges.right}
               columns={DRIVE_COLUMNS}
               actionsLabelKey="apps.awsControl.console.col_actions"
+              surface="bg"
             />
             <tbody>
               {folders.map((name) => (
@@ -2067,7 +2193,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    still reachable and operable from the keyboard. */
                 <Fragment key={`f-${name}`}>
                 <tr
-                  onClick={() => { setPath(name); setDeletedCount(null) }}
+                  onClick={() => setPath(name)}
                   {...dropProps(name)}
                   className={`cursor-pointer border-b border-border last:border-0 hover:bg-bg-hover ${dropTarget === name ? 'bg-bg-hover ring-1 ring-inset ring-accent' : ''}`}
                   data-testid="drive-folder"
@@ -2085,7 +2211,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                   <td className="px-2.5 py-2 text-muted">{i18nT('apps.awsControl.console.kind_folder')}</td>
                   <td className="px-2.5 py-2 text-muted">-</td>
                   <td className="px-2.5 py-2 text-muted">-</td>
-                  <td className="sticky right-0 bg-card px-2.5 py-2">
+                  <td className={`sticky right-0 ${PINNED_SURFACE.bg.fill} px-2.5 py-2`}>
                     {/* The seam is spelled exactly as the shared rows spell it:
                         a 1px child div plus a `right-full` gradient, both gated
                         on the measured overflow. Not `border-l` (under
@@ -2093,9 +2219,11 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                         layout slot and stays behind the scrolling columns), and
                         not a box-shadow either - a third spelling of the same
                         seam is how the two drift apart, which is the whole
-                        reason the head is shared rather than copied. */}
+                        reason the head is shared rather than copied. The fill
+                        and the gradient paint the PAGE surface: this table has
+                        no card fill, so a `bg-card` pin here is a stripe. */}
                     {edges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
-                    {edges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />}
+                    {edges.right && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l ${PINNED_SURFACE.bg.seam} to-transparent`} />}
                     {/* One overflow trigger, and the menu comes from
                         `ui/dropdown-menu`, which portals its content to the body
                         - a hand-rolled `absolute` menu is CLIPPED here, because
@@ -2183,7 +2311,16 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    key belongs on the fragment - on the inner <tr> React has
                    nothing to reconcile the pair by. */
                 <Fragment key={`o-${f.key}`}>
-                  <tr {...dragProps(f.key)} className="border-b border-border last:border-0 hover:bg-bg-hover" data-testid="drive-file">
+                  <tr
+                    {...dragProps(f.key)}
+                    /* Dimmed while ITS move is in flight: a server-side copy of a
+                       large object leaves the row otherwise inert until the
+                       listing refetches, and a reader re-drags or assumes the
+                       drop missed. */
+                    className={`border-b border-border last:border-0 hover:bg-bg-hover ${movingKeys.has(f.key) ? 'opacity-50' : ''}`}
+                    aria-busy={movingKeys.has(f.key) || undefined}
+                    data-testid="drive-file"
+                  >
                     <td className="px-2.5 py-2">
                       <div className="flex min-w-0 items-center gap-2">
                         <FileText size={14} className="shrink-0 text-muted" />
@@ -2193,21 +2330,16 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                     <td className="px-2.5 py-2 text-muted">{objectKind(f.key)}</td>
                     <td className="px-2.5 py-2 text-muted">{fmtBytes(f.size)}</td>
                     <td className="px-2.5 py-2 text-muted">{fmtRelative(f.modified)}</td>
-                    <td className="sticky right-0 bg-card px-2.5 py-2">
-                    {/* The seam is spelled exactly as the shared rows spell it:
-                        a 1px child div plus a `right-full` gradient, both gated
-                        on the measured overflow. Not `border-l` (under
-                        `border-collapse: collapse` a border paints at the cell's
-                        layout slot and stays behind the scrolling columns), and
-                        not a box-shadow either - a third spelling of the same
-                        seam is how the two drift apart, which is the whole
-                        reason the head is shared rather than copied. */}
+                    <td className={`sticky right-0 ${PINNED_SURFACE.bg.fill} px-2.5 py-2`}>
+                    {/* Same seam, same page-surface fill as the folder row above. */}
                     {edges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
-                    {edges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />}
+                    {edges.right && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l ${PINNED_SURFACE.bg.seam} to-transparent`} />}
                       {/* ONE overflow, holding every per-item action. Download
                           used to sit beside it as a bare button while Share and
                           Delete were inside, which is the same split the grid
-                          card above just lost. */}
+                          card above just lost. Move lives here too, so a
+                          keyboard or touch reader has a path to it that is not
+                          a pointer drag. */}
                       <div className="flex items-center justify-end gap-1">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -2216,16 +2348,21 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                               className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
                               aria-label={i18nT('apps.awsControl.console.file_actions')}
                               data-testid="drive-more"
+                              onPointerDown={rememberMenuOpener}
+                              onKeyDown={rememberMenuOpener}
                             >
                               <MoreHorizontal size={14} />
                             </button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
+                          <DropdownMenuContent align="end" onCloseAutoFocus={skipRestoreIfDialog}>
                             <DropdownMenuItem onSelect={() => download(f.key)} data-testid="drive-download">
                               <Download size={13} />{i18nT('apps.awsControl.console.download')}
                             </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => setShare({ key: f.key })} data-testid="drive-share">
+                            <DropdownMenuItem onSelect={() => openShare(f.key)} data-testid="drive-share">
                               <Share2 size={13} />{i18nT('apps.awsControl.console.share')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => openMove(f.key)} data-testid="drive-move">
+                              <FolderInput size={13} />{i18nT('apps.awsControl.console.move_to')}
                             </DropdownMenuItem>
                             <DropdownMenuItem onSelect={() => setConfirmDelete(f.key)} data-testid="drive-delete">
                               <Trash2 size={13} />{i18nT('apps.awsControl.console.delete')}
@@ -2289,9 +2426,153 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       <CliDrawer bucket={bucket} prefix="drive/" />
 
       {share && (
-        <ShareDialog account={account} section="drive" fileKey={share.key} onClose={() => setShare(null)} />
+        <ShareDialog
+          account={account}
+          section="drive"
+          fileKey={share.key}
+          onClose={() => { setShare(null); returnFocusToOpener() }}
+        />
+      )}
+
+      {/* The keyboard / touch path to a move. Drag is a convention a pointer
+          user may discover; this is the one every reader can reach from the
+          row's own menu. Destinations are the folders this listing already
+          knows -- the parent, the top level, and the sub-folders on screen --
+          which is the same set a drop could have landed on. The dialog closes
+          on success; a refused move keeps it open with the same sentence the
+          drop path reports, so the reader can pick another folder. Dismissing
+          it MID-MOVE is allowed: the move keeps going, the source row stays
+          dimmed until it lands, and the page strip reports a refusal once the
+          picker is gone — so a slow or hung copy never traps the reader. */}
+      {moveTarget && (
+        <MoveDialog
+          fileKey={moveTarget}
+          currentPath={path}
+          folders={folders}
+          pending={movingKeys.has(moveTarget)}
+          error={moveError && moveError.key === moveTarget ? moveError : null}
+          askAgent={handOff}
+          onMove={(folder) => {
+            const base = moveTarget.split('/').pop() ?? moveTarget
+            setMoveError(null)
+            moveMut.mutate(
+              { fromKey: moveTarget, toKey: folder ? `${folder}/${base}` : base },
+              // The reader may have dismissed the picker while this was in
+              // flight; only a picker that is still open hands focus back.
+              { onSuccess: () => { if (moveDialogOpenRef.current) closeMoveDialog() } },
+            )
+          }}
+          onClose={closeMoveDialog}
+        />
       )}
     </section>
+  )
+}
+
+/* ── Move dialog ─────────────────────────────────────────────────────────── */
+
+/**
+ * A folder picker for one file. Small on purpose: the destinations a reader
+ * can see from the current folder, one button each, no tree walk. Modal
+ * keyboard behaviour (focus in, Tab ring, Escape, focus restore) comes from the
+ * shared hook, exactly as the picker dialog above.
+ */
+function MoveDialog({ fileKey, currentPath, folders, pending, error, askAgent, onMove, onClose }: {
+  fileKey: string
+  /** The folder the file lives in ('' = top level). */
+  currentPath: string
+  /** Full paths of the sub-folders in the current listing. */
+  folders: string[]
+  pending: boolean
+  /** The refused move, reported inside the picker so the reader can pick again. */
+  error: Failure | null
+  /** The picker holds no draft of its own, so the hand-off is the page's call. */
+  askAgent: boolean
+  onMove: (folder: string) => void
+  onClose: () => void
+}) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  // `restoreFocus: false`: at mount the previously focused element is a menu
+  // item that unmounted in the same commit, so the hook would capture `body`.
+  // The caller knows who opened the menu and focuses them on close.
+  useDialogFocusTrap(panelRef, onClose, { restoreFocus: false })
+  const backdropDown = useRef(false)
+  const name = fileKey.split('/').pop() ?? fileKey
+  const crumbs = currentPath.split('/').filter(Boolean)
+  const parent = crumbs.length > 1 ? crumbs.slice(0, -1).join('/') : null
+  // Up-links first (the way a file manager orders them), then the sub-folders
+  // in listing order. Top level appears only when the file is not already
+  // there; the parent only when it is not the top level (which the first
+  // entry already covers).
+  const options: Array<{ folder: string; label: string; testId: string }> = []
+  if (currentPath) options.push({ folder: '', label: i18nT('apps.awsControl.console.move_root'), testId: 'move-root' })
+  if (parent) options.push({ folder: parent, label: i18nT('apps.awsControl.console.move_up', { name: crumbs[crumbs.length - 2] }), testId: 'move-up' })
+  for (const f of folders) options.push({ folder: f, label: f.split('/').pop() ?? f, testId: 'move-folder' })
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="presentation"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
+      onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) onClose(); backdropDown.current = false }}
+    >
+      <div
+        ref={panelRef}
+        className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="aws-move-title"
+        aria-busy={pending || undefined}
+        data-testid="move-dialog"
+      >
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 id="aws-move-title" className="min-w-0 truncate text-sm font-semibold text-text-strong">
+            {i18nT('apps.awsControl.console.move_title', { name })}
+          </h3>
+          <button
+            onClick={onClose}
+            className="cursor-pointer border-none bg-transparent p-0 text-muted hover:text-text"
+            aria-label={i18nT('apps.awsControl.console.close')}
+            data-testid="move-close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {options.length === 0 ? (
+          <p className="text-[13px] text-muted" data-testid="move-no-folders">
+            {i18nT('apps.awsControl.console.move_no_folders')}
+          </p>
+        ) : (
+          <div className="flex max-h-72 flex-col gap-1 overflow-y-auto" data-testid="move-options">
+            {options.map((o) => (
+              <button
+                key={o.testId + o.folder}
+                onClick={() => onMove(o.folder)}
+                disabled={pending}
+                className="flex w-full items-center gap-2 rounded-md border-none bg-transparent px-2.5 py-2 text-left text-[13px] text-text cursor-pointer hover:bg-bg-hover focus-ring disabled:opacity-50"
+                data-testid={o.testId}
+                data-folder={o.folder}
+              >
+                <FolderClosed size={14} className="shrink-0 text-muted" aria-hidden="true" />
+                <span className="min-w-0 truncate">{o.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {pending && (
+          <p className="mt-2 text-[12px] text-muted" data-testid="move-pending">
+            {i18nT('apps.awsControl.console.move_moving')}
+          </p>
+        )}
+        <AwsErrorNotice
+          error={error?.error}
+          message={error?.message}
+          askAgent={askAgent}
+          className="mt-2"
+          testId="move-error"
+        />
+      </div>
+    </div>
   )
 }
 
@@ -2313,12 +2594,39 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
   })
   const url = shareMut.data?.url
 
+  /* Modal keyboard behaviour from the shared hook, as every dialog in this
+     file: focus moves in on open, Tab cycles inside, Escape closes. Escape is
+     refused while the link is being minted -- closing then would discard a
+     share that is about to exist with no way to see its URL. Focus RETURN is
+     the opener's job (`restoreFocus: false`): this dialog is opened from a
+     Radix menu item that unmounts in the same commit, so the element focused
+     at mount is `body`, and the drive section knows the real opener. */
+  const panelRef = useRef<HTMLDivElement>(null)
+  const backdropDown = useRef(false)
+  const close = () => { if (!shareMut.isPending) onClose() }
+  useDialogFocusTrap(panelRef, close, { restoreFocus: false })
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" data-testid="share-dialog" role="dialog" aria-modal="true">
-      <div className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg">
+    // Scrim and panel are two elements: the scrim owns click-to-dismiss (a
+    // press that starts AND ends on it), the panel is the dialog. Same shape
+    // as the picker dialog above.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="presentation"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
+      onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) close(); backdropDown.current = false }}
+    >
+      <div
+        ref={panelRef}
+        className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="aws-share-title"
+        data-testid="share-dialog"
+      >
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-text-strong">{i18nT('apps.awsControl.console.share_title')}</h3>
-          <button onClick={onClose} className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0" aria-label={i18nT('apps.awsControl.console.close')} data-testid="share-close"><X size={16} /></button>
+          <h3 id="aws-share-title" className="text-sm font-semibold text-text-strong">{i18nT('apps.awsControl.console.share_title')}</h3>
+          <button onClick={close} disabled={shareMut.isPending} className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 disabled:opacity-50" aria-label={i18nT('apps.awsControl.console.close')} data-testid="share-close"><X size={16} /></button>
         </div>
 
         {!url ? (

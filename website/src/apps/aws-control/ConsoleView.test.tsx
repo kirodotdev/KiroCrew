@@ -150,6 +150,10 @@ describe('UsagePane', () => {
       expect(within(stats).getByTitle(i18nT('apps.awsControl.console.costs_consent_missing'))).toHaveTextContent('—'),
     )
     expect(within(stats).queryByTestId('console-cost-value')).toBeNull()
+    // WHY there is no figure is on the row itself, not only behind a hover.
+    expect(within(stats).getByTestId('console-cost-reason')).toHaveTextContent(
+      i18nT('apps.awsControl.console.costs_consent_missing'),
+    )
 
     // granted === false → the Cost Explorer ask mounts, and fetches ce status.
     expect(await screen.findByTestId('costs-consent-gate')).toBeTruthy()
@@ -171,6 +175,9 @@ describe('UsagePane', () => {
       { timeout: 4000 },
     )
     expect(within(stats).queryByTestId('console-cost-value')).toBeNull()
+    // A failed read is an error surface: the notice below says it once, so
+    // the inline reason slot stays empty rather than doubling the sentence.
+    expect(within(stats).queryByTestId('console-cost-reason')).toBeNull()
     // No consent ask fires — this is a failure, not a missing gate.
     expect(screen.queryByTestId('costs-consent-gate')).toBeNull()
     // The em dash stays quiet, but the failure itself is said — with the
@@ -318,6 +325,16 @@ describe('UsagePane', () => {
 })
 
 describe('ConnectionsSection', () => {
+  it('names the account its keys belong to in the header', async () => {
+    // The section sits under a list of several accounts; a bare heading read as
+    // a global list, so the header scopes itself to the one account it shows.
+    renderWithProviders(<ConnectionsSection account={ACCOUNT} />)
+    const conns = await screen.findByTestId('connections-section')
+    expect(conns).toHaveTextContent(
+      i18nT('apps.awsControl.console.keys_for_account', { name: ACCOUNT.name }),
+    )
+  })
+
   it('renders one row per key with its kind, region and health — no Reconnect on a healthy key', async () => {
     renderWithProviders(<ConnectionsSection account={ACCOUNT} askAgent />)
 

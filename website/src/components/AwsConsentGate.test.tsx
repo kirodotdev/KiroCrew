@@ -139,6 +139,33 @@ describe('AwsConsentGate', () => {
     expect(screen.queryByRole('button', { name: /confirm and enable/i })).toBeNull()
   })
 
+  it('the compact receipt keeps the credential source in the row', async () => {
+    // The row is the only receipt on the usage pane; without the source the
+    // sole way to learn which profile bills a service was to withdraw the grant
+    // and re-read the full ask — a destructive act to answer an audit question.
+    vi.mocked(api.awsConsent).mockResolvedValue(
+      status({
+        granted: true,
+        reason: '',
+        credentialSource: 'profile prod-readonly',
+        grant: {
+          account: '111122223333',
+          region: 'us-east-1',
+          profile: 'prod-readonly',
+          granted_at: '2026-08-21T00:00:00+00:00',
+        },
+      }),
+    )
+    renderWithProviders(<AwsConsentGate service="polly" compact />)
+
+    const source = await screen.findByTestId('aws-consent-source')
+    expect(source).toHaveTextContent('profile prod-readonly')
+    expect(screen.getByTestId('aws-consent-polly')).toHaveTextContent('111122223333')
+    // Still a row, not the full card: no confirm button, withdraw present.
+    expect(screen.queryByRole('button', { name: /confirm and enable/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /withdraw confirmation/i })).toBeTruthy()
+  })
+
   it('explains an automatic withdrawal after the account changed', async () => {
     vi.mocked(api.awsConsent).mockResolvedValue(status({ revokedOnAccountChange: true }))
     renderWithProviders(<AwsConsentGate service="polly" />)
