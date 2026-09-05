@@ -50,6 +50,7 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     refresh_materialized_agents,
     resolve_agent_bindings,
+    resolve_effective_model,
 )
 from kiro_crew.connections import get_visible_providers
 from kiro_crew.constants import strip_control_comments
@@ -919,6 +920,59 @@ def _backfill_canonical_model(client: Any, provider: str) -> str:
     if not is_claude_code(provider) and _is_bedrock_profile_id(prov_model):
         return ""
     return model_registry.canonicalize_for_provider(prov_model, provider)
+
+
+def _default_session_model(
+    cfg: "KiroCrewConfig | None", slot: "_ChatSlot", agent_model: str
+) -> str:
+    """The model a slot that pins nothing STARTS a session on, or ``""``.
+
+    Resolved through :func:`resolve_effective_model` — the one resolver the
+    dashboard's model chip already reads (``/api/agents/resolved-model``) — so
+    the model an auto-created slot runs on is the model the chip says it will.
+    Before this the chat-send path only consulted the crew's own pin
+    (``bindings.model``) and left everything below it to ``get_or_create``,
+    which resolves from the session manager's config SNAPSHOT — refreshed only
+    by the settings handlers that call ``refresh_defaults`` — while this turn and
+    the chip both read a fresh load. A global ``agent.model`` written any other
+    way (``kirocrew config set``, a hand edit) was therefore shown by the chip
+    but not run by the first turn of a fresh slot until the gateway restarted.
+
+    The value is deliberately a LOCAL for the ``get_or_create`` call and is
+    NEVER written to ``slot.model``. That field is persisted slot state and is
+    re-sent as a ``set_model`` override on every resume, so an empty value means
+    "inherit": the slot follows a later change to ``agent.model`` or to the
+    agent's pin, the chip renders the inherited value live, and the explicit
+    slot-create endpoint stores ``""`` when nothing is picked. Persisting the
+    resolved default here would silently turn every inheriting slot into a
+    permanent pin on its first message, and would route an inherited default
+    the account cannot run through the "isn't offered right now" pin flow.
+
+    Returns ``""`` when the slot or crew already pins a model (nothing to
+    resolve), when the config could not be loaded, or when every tier defers
+    to the backend — ``get_or_create`` then resolves as before.
+
+    Blocking: ``resolve_effective_model`` reaches ``_resolve_named_agent_model``
+    (a glob + per-file read of the installed agent JSON) and
+    ``_resolve_agent_model`` (another file read), so callers run this through
+    ``asyncio.to_thread`` and never inline on the event loop. That makes the
+    ``except`` below load-bearing beyond logging: ``resolve_agent_bindings``
+    inside the resolver can raise ``StopIteration`` on a malformed config, and a
+    ``StopIteration`` cannot be delivered through a Future (3.12+ substitutes a
+    ``RuntimeError``; older interpreters leave the future PENDING and the await
+    hangs), so awaiting the thread would fail with the wrong error, or not
+    return at all, instead of surfacing the resolver's. ``StopIteration`` is an
+    ``Exception`` subclass, so it is converted to ``""`` HERE, in the worker,
+    before it can reach the Future boundary. Keep the clause at ``Exception``
+    or wider; narrowing it re-opens that hole.
+    """
+    if slot.model or agent_model or cfg is None:
+        return ""
+    try:
+        return resolve_effective_model(cfg, slot.agent or None)
+    except Exception:  # noqa: BLE001 — includes StopIteration; see docstring
+        logger.warning("Failed to resolve the default model for slot %s", slot.key, exc_info=True)
+        return ""
 
 
 def _pinned_model_verdict(client: Any, model: str, provider: str) -> bool | None:
@@ -4134,9 +4188,14 @@ async def _eager_spawn(
             # would be discarded by passing "" here.
             crew_alias = slot.agent or ""
             agent_model = ""
+            # Same default-model resolve as the real turn — the two MUST agree,
+            # or the first message would silently reuse a pre-warmed session
+            # running a different model than the chip promised.
+            loaded_cfg: KiroCrewConfig | None = None
             resolved_ok = False
             try:
                 cfg = KiroCrewConfig.load()
+                loaded_cfg = cfg
                 bindings = resolve_agent_bindings(cfg, slot.agent or None)
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
@@ -4193,6 +4252,12 @@ async def _eager_spawn(
                     slot.key,
                 )
                 return
+            # Off the loop: the resolve globs and reads agent JSON (see
+            # _default_session_model). It converts every resolver error,
+            # StopIteration included, to "" inside the worker.
+            default_model = await asyncio.to_thread(
+                _default_session_model, loaded_cfg, slot, agent_model
+            )
             _t0 = time.monotonic()
             try:
                 # speculative=True keeps the one-shot first-turn flag armed for
@@ -4210,7 +4275,7 @@ async def _eager_spawn(
                     # cross-namespace name match. "" is authoritative: no
                     # alias applied, so no override applies.
                     crew_agent=crew_alias,
-                    model=slot.model or agent_model or None,
+                    model=slot.model or agent_model or default_model or None,
                     cwd=slot.project or None,
                     speculative=True,
                     speculative_resume=allow_resume,
@@ -6417,9 +6482,12 @@ async def _run_chat(
         memory_store: str | None = None
         # The KiroCrew agent's own default model ("" = inherit). Ranks below the
         # slot's explicit pick and above the bound kiro agent's pin / the global
-        # agent.model fallback, both of which get_or_create resolves when this
-        # and slot.model are empty.
+        # agent.model fallback.
         agent_model = ""
+        # Bound only when the config loaded: `cfg` itself is unbound on a load
+        # failure (see `provider_name`), and the default-model resolve below
+        # needs the loaded object.
+        loaded_cfg: KiroCrewConfig | None = None
         # Read the provider into a local alongside the other bindings. Both model
         # branches below need it, and `cfg` is only bound inside the try — a
         # malformed config raises, the except swallows it, and touching
@@ -6440,6 +6508,7 @@ async def _run_chat(
         _app_agent_unresolved = False
         try:
             cfg = KiroCrewConfig.load()
+            loaded_cfg = cfg
             provider_name = cfg.agent.provider
             # Warm the project agent index OFF the loop, then resolve inline. Only
             # the warm is offloaded: resolve_agent_bindings can raise StopIteration
@@ -6519,6 +6588,14 @@ async def _run_chat(
             "activity_event", {"slot": slot.key, "kind": "status", "text": "Creating session…"}
         )
         slot.model = _normalize_model(slot.model or "") or ""
+        # The model a slot that pins nothing STARTS on, kept OUT of `slot.model`
+        # — see _default_session_model for why persisting it would change what an
+        # empty slot.model means. Off the loop: the resolve globs and reads agent
+        # JSON; the helper converts every resolver error, StopIteration included,
+        # to "" inside the worker, so nothing un-deliverable reaches the Future.
+        default_model = await asyncio.to_thread(
+            _default_session_model, loaded_cfg, slot, agent_model
+        )
         # Consume a deferred project-change reset queued while idle, before
         # get_or_create or we'd reuse the stale session for one turn. Safe here:
         # no session lock is held yet, so reset() can't self-kill.
@@ -6536,7 +6613,7 @@ async def _run_chat(
             # must agree or an eager session and its real first turn would
             # carry different watchdog windows.
             crew_agent=crew_alias,
-            model=slot.model or agent_model or None,
+            model=slot.model or agent_model or default_model or None,
             cwd=slot.project or None,
             reasoning_effort_override=slot.reasoning_effort or None,
         )
