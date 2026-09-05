@@ -18,6 +18,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { interceptSlashCommand } from '../pages/chat/ChatInput'
+import { AcceptedBodyUnreadable } from '../api/apiError'
 
 const SLOT = 'test-slot-1'
 
@@ -87,6 +88,13 @@ describe('/side slash command interception', () => {
     mockSideOpen.mockRejectedValueOnce(new Error('boom'))
     const result = await interceptSlashCommand('/side', SLOT, store.dispatch)
     expect(result).toEqual({ intercepted: true, failed: true })
+  })
+
+  it('does NOT report failed when sideTurn answered 2xx but the body was unreadable (turn accepted)', async () => {
+    // Restoring the composer here would invite a retry that runs the turn twice.
+    mockSideTurn.mockRejectedValueOnce(new AcceptedBodyUnreadable(new TypeError('network error')))
+    const result = await interceptSlashCommand('/side my question', SLOT, store.dispatch)
+    expect(result).toEqual({ intercepted: true })
   })
 
   it('reports failed when sideTurn rejects (e.g. 409 turn in flight)', async () => {

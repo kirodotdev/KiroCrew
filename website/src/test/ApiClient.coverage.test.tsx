@@ -24,6 +24,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   api,
+  AcceptedBodyUnreadable,
   ApiError,
   friendlyErrText,
   checkSessionExpired,
@@ -1456,5 +1457,32 @@ describe('every api method issues one well-formed /api request', () => {
     if (init?.body !== undefined) {
       expect(['POST', 'PUT', 'PATCH', 'DELETE']).toContain(init.method)
     }
+  })
+})
+
+describe('api.sideTurn keeps the response phases distinguishable', () => {
+  // `/side/turn` 2xx is an acceptance receipt: the turn is already running. A
+  // body-read failure after it must not look like a request that never left
+  // (both are `TypeError`s), or the caller would offer a retry that runs the
+  // turn twice.
+  it('a 2xx whose body read fails rejects with AcceptedBodyUnreadable carrying the cause', async () => {
+    const cause = new TypeError('network error')
+    fetchMock.mockResolvedValueOnce({
+      ...okJson(),
+      json: async () => { throw cause },
+    } as unknown as Response)
+    await expect(api.sideTurn('s1', 'q')).rejects.toSatisfy(
+      (e: unknown) => e instanceof AcceptedBodyUnreadable && e.reason === cause,
+    )
+  })
+
+  it('a request that never left rejects with the raw TypeError', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await expect(api.sideTurn('s1', 'q')).rejects.toBeInstanceOf(TypeError)
+  })
+
+  it('a non-2xx still rejects with ApiError (auth handling and friendly text unchanged)', async () => {
+    fetchMock.mockResolvedValueOnce(res(409, { error: 'side turn already in flight' }))
+    await expect(api.sideTurn('s1', 'q')).rejects.toBeInstanceOf(ApiError)
   })
 })

@@ -1,5 +1,6 @@
 import { openActivityToTab } from '../../store/chatSlice'
 import { api } from '../../api/client'
+import { AcceptedBodyUnreadable } from '../../api/apiError'
 import type { AppDispatch } from '../../store'
 
 /** `failed` marks a command that was recognized but could not run (no slot,
@@ -59,6 +60,10 @@ export async function interceptSlashCommand(
   if (message) {
     let failed = false
     await api.sideTurn(slot, message).catch((e: unknown) => {
+      // A 2xx whose body could not be read: the server ACCEPTED the turn and
+      // only the receipt is lost. Restoring the composer here would invite a
+      // retry that runs the turn twice.
+      if (e instanceof AcceptedBodyUnreadable) return
       // Failure surfaces through `failed` so the caller can restore the
       // composer (e.g. 409: a side turn is already in flight, or 400: the
       // expanded question exceeds the byte limit). The warn stays as the

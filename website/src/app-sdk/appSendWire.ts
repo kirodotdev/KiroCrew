@@ -16,10 +16,12 @@
  * - 2xx with a JSON body      -> resolved `{ ok: true }` whose `json()` yields
  *                                the body (`dispatched` / `queued` / a
  *                                readable refusal, by the shared rule).
- * - 2xx with a non-JSON body  -> resolved `{ ok: true }` whose `json()`
- *                                rejects, i.e. `unknown`. The helper surfaces
- *                                this as a `SyntaxError`; the old embed send
- *                                swallowed that very error as success.
+ * - 2xx, body unreadable      -> resolved `{ ok: true }` whose `json()`
+ *   (stream cut or non-JSON)     rejects, i.e. `unknown`. The helper tags a
+ *                                post-2xx failure `AcceptedBodyUnreadable`, so
+ *                                it is never mistaken for a request that never
+ *                                left (also a `TypeError`); the old embed send
+ *                                swallowed the non-JSON case as success.
  * - non-2xx                   -> resolved `{ ok: false }` carrying the body
  *                                text, i.e. a `refused` receipt that keeps the
  *                                server's own reason.
@@ -46,57 +48,39 @@
  */
 import type { AppApi } from './index'
 import { AppApiError, AppApiPermissionError } from './apiError'
-import type { SendWire } from '../chat-core/transport/sendTurn'
+import { AcceptedBodyUnreadable } from '../api/apiError'
+import { settleUnderSignal, type SendWire } from '../chat-core/transport/sendTurn'
 import type { SendResponseLike } from '../utils/sendDelivery'
 import { i18nT } from '../i18n/t'
 
 const APP_SEND_PATH = '/api/chat?ws=1'
 
-function abortError(): DOMException {
-  return new DOMException('The send deadline fired before a receipt arrived.', 'AbortError')
-}
-
 /** `agent` is the agent the generic endpoint binds when it has to CREATE the
  *  slot. Part of the wire, not of the transport contract: only this surface
  *  sends it. */
 export function appApiSendWire(api: AppApi, agent?: string): SendWire {
-  return (payload, signal) => new Promise<SendResponseLike>((resolve, reject) => {
-    if (signal.aborted) { reject(abortError()); return }
-    let settled = false
-    const onAbort = () => { if (!settled) { settled = true; reject(abortError()) } }
-    signal.addEventListener('abort', onAbort, { once: true })
-    const done = <T,>(fn: (v: T) => void) => (v: T) => {
-      if (settled) return
-      settled = true
-      signal.removeEventListener('abort', onAbort)
-      fn(v)
-    }
+  return (payload, signal) => settleUnderSignal<SendResponseLike>(signal, () =>
     api.post<unknown>(APP_SEND_PATH, {
       message: payload.message,
       slot: payload.slot,
       agent: agent || '',
       ...(payload.meta ? { meta: payload.meta } : {}),
     }).then(
-      done((parsed: unknown) => resolve({ ok: true, json: () => Promise.resolve(parsed) })),
-      done((err: unknown) => {
+      (parsed: unknown): SendResponseLike => ({ ok: true, json: () => Promise.resolve(parsed) }),
+      (err: unknown): SendResponseLike => {
         if (err instanceof AppApiError) {
           const text = err.bodyText
-          resolve({ ok: false, json: () => Promise.resolve().then(() => JSON.parse(text) as unknown) })
-          return
+          return { ok: false, json: () => Promise.resolve().then(() => JSON.parse(text) as unknown) }
         }
-        if (err instanceof SyntaxError) {
-          resolve({ ok: true, json: () => Promise.reject(err) })
-          return
-        }
+        // 2xx received, body lost or unparseable: accepted, receipt unreadable.
+        if (err instanceof AcceptedBodyUnreadable) return { ok: true, json: () => Promise.reject(err.reason) }
         if (err instanceof AppApiPermissionError) {
           // eslint-disable-next-line no-console -- developer detail for the app author; the row carries the human sentence
           console.warn(err.message)
           const error = i18nT('appSdk.chatEmbed.app_not_allowed_to_send') as string
-          resolve({ ok: false, json: () => Promise.resolve({ error }) })
-          return
+          return { ok: false, json: () => Promise.resolve({ error }) }
         }
-        reject(err)
-      }),
-    )
-  })
+        throw err
+      },
+    ))
 }

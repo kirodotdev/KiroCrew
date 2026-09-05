@@ -304,7 +304,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
           role: 'error',
           content: (reason
             ? i18nT('pages.chatPage.send_failed_with_error', { error: reason })
-            : i18nT('appSdk.chatEmbed.send_failed_connection')) as string,
+            : i18nT('pages.chatPage.send_failed_connection')) as string,
           seenCount,
           sendId,
         })
@@ -314,7 +314,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         const undo = override ? undefined : restoreIntoComposer(draftText)
         setSendTail({
           role: 'notice',
-          content: i18nT(override ? 'appSdk.chatEmbed.delivery_unconfirmed_option' : 'appSdk.chatEmbed.delivery_unconfirmed') as string,
+          content: i18nT(override ? 'pages.chatPage.delivery_unconfirmed_option' : 'pages.chatPage.delivery_unconfirmed') as string,
           seenCount,
           sendId,
           undo,

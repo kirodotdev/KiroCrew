@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "Der Server hat die Anfrage angenommen, aber die Antwort konnte nicht gelesen werden.",
       "paste_token_url_or_raw_token": "Token-URL oder Roh-Token einfügen…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
       "session_expired": "Sitzung abgelaufen.",
@@ -121,10 +122,7 @@
       "agent_is_working": "Agent arbeitet...",
       "app_not_allowed_to_send": "Diese App darf keine Chatnachrichten senden.",
       "chat_message": "Chat-Nachricht",
-      "delivery_unconfirmed": "Zustellung nicht bestätigt — dein Text steht wieder im Eingabefeld; prüfe den Verlauf, bevor du erneut sendest.",
-      "delivery_unconfirmed_option": "Zustellung nicht bestätigt — prüfe den Verlauf und wähle die Option erneut, falls sie fehlt.",
       "message": "Nachricht...",
-      "send_failed_connection": "Senden fehlgeschlagen — prüfe deine Verbindung und versuche es erneut.",
       "session_ready_type_a_message_to_start": "Sitzung bereit. Geben Sie eine Nachricht ein, um zu beginnen.",
       "streaming": "Streaming"
     },
@@ -9432,7 +9430,10 @@
       "what_can_i_do_for_you": "Was kann ich für Sie tun?",
       "worktree_creation_returned_no_path": "Die Worktree-Erstellung hat keinen Pfad zurückgegeben",
       "loading_earlier_messages": "Frühere Nachrichten werden geladen…",
-      "send_failed_with_error": "Senden fehlgeschlagen: {{error}}"
+      "send_failed_with_error": "Senden fehlgeschlagen: {{error}}",
+      "delivery_unconfirmed_option": "Zustellung nicht bestätigt — prüfe den Verlauf und wähle die Option erneut, falls sie fehlt.",
+      "delivery_unconfirmed": "Zustellung nicht bestätigt — dein Text steht wieder im Eingabefeld; prüfe den Verlauf, bevor du erneut sendest.",
+      "send_failed_connection": "Senden fehlgeschlagen — prüfe deine Verbindung und versuche es erneut."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

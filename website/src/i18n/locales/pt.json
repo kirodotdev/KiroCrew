@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "O servidor aceitou a solicitação, mas a resposta não pôde ser lida.",
       "paste_token_url_or_raw_token": "Cole a URL do token ou o token bruto…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limite de taxa aplicado pela borda do túnel (HTTP 429) — muitas solicitações em rajada. O painel repete a tentativa automaticamente; se isso persistir, aguarde alguns segundos e recarregue.",
       "session_expired": "Sessão expirada.",
@@ -124,10 +125,7 @@
       "agent_is_working": "O agente está trabalhando...",
       "app_not_allowed_to_send": "Este aplicativo não tem permissão para enviar mensagens de chat.",
       "chat_message": "Mensagem do chat",
-      "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
-      "delivery_unconfirmed_option": "Entrega não confirmada — verifique a conversa e, se estiver faltando, escolha a opção novamente.",
       "message": "Mensagem...",
-      "send_failed_connection": "Não foi possível enviar — verifique sua conexão e tente novamente.",
       "session_ready_type_a_message_to_start": "Sessão pronta. Digite uma mensagem para começar.",
       "streaming": "em streaming"
     },
@@ -9566,7 +9564,10 @@
       "what_can_i_do_for_you": "O que posso fazer por você?",
       "worktree_creation_returned_no_path": "A criação da worktree não retornou nenhum caminho",
       "loading_earlier_messages": "Carregando mensagens anteriores…",
-      "send_failed_with_error": "Falha ao enviar: {{error}}"
+      "send_failed_with_error": "Falha ao enviar: {{error}}",
+      "delivery_unconfirmed_option": "Entrega não confirmada — verifique a conversa e, se estiver faltando, escolha a opção novamente.",
+      "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
+      "send_failed_connection": "Não foi possível enviar — verifique sua conexão e tente novamente."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

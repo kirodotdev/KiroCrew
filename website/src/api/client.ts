@@ -20,7 +20,7 @@ import type {
   WorkflowRunSummary,
 } from '../types'
 import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
-import { ApiError, friendlyErrText } from './apiError'
+import { ApiError, friendlyErrText, AcceptedBodyUnreadable } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
   STALE_OWNER_SESSION_CODE,
@@ -1454,7 +1454,7 @@ export { STALE_OWNER_SESSION_CODE }
  * every existing consumer, and every test that mocks `../api/client`, is
  * unchanged by the move.
  */
-export { ApiError, friendlyErrText }
+export { ApiError, friendlyErrText, AcceptedBodyUnreadable }
 
 /**
  * Whether *e* is a failure the user can only clear by signing back in.
@@ -1508,14 +1508,33 @@ const apiFailure = (r: Response, errText: string): ApiError => {
   return new ApiError(r.status, message, errText, authRequired || staleOwnerSession)
 }
 
-const j = async (r: Response) => {
+/** The response-phase half every JSON reader shares: session-expiry hook,
+ *  auth-banner recovery, and a non-2xx turned into an `ApiError`. Returns the
+ *  response for the caller to read the body its own way. */
+const acceptOrThrow = async (r: Response): Promise<Response> => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
   if (!r.ok) {
     const errText = await r.text()
     throw apiFailure(r, errText)
   }
-  return r.json()
+  return r
+}
+
+const j = async (r: Response) => (await acceptOrThrow(r)).json()
+
+/**
+ * `j()` for acceptance-receipt endpoints: the same `acceptOrThrow` for a
+ * non-2xx, but a body-read failure AFTER a 2xx is wrapped in
+ * `AcceptedBodyUnreadable` so the two phases stay distinguishable.
+ */
+const jAccepted = async (r: Response) => {
+  const accepted = await acceptOrThrow(r)
+  try {
+    return await accepted.json()
+  } catch (e) {
+    throw new AcceptedBodyUnreadable(e)
+  }
 }
 
 /**
@@ -1523,14 +1542,9 @@ const j = async (r: Response) => {
  * returns null on 204 (No Content). Used by tips endpoints.
  */
 const jNullable = async (r: Response) => {
-  checkSessionExpired(r)
-  if (r.ok) removeAuthBanner()
-  if (r.status === 204) return null
-  if (!r.ok) {
-    const errText = await r.text()
-    throw apiFailure(r, errText)
-  }
-  return r.json()
+  const accepted = await acceptOrThrow(r)
+  if (accepted.status === 204) return null
+  return accepted.json()
 }
 // X-Session-Key ensures the server-side ephemeral gate always runs.
 // Without it, browser requests would skip the `if sk:` check — a fail-open
@@ -3021,7 +3035,7 @@ export const api = {
   resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),
   forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
   sideOpen: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/open', {}).then(j) as Promise<{ ok: boolean; open: boolean; messages: number; last_run_id: string; created_at: string }>,
-  sideTurn: (slot: string, question: string, opts?: { steer?: boolean }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/turn', { question, ...(opts?.steer ? { steer: true } : {}) }).then(j) as Promise<{ ok: boolean; run_id?: string; messages?: number; steered?: boolean; pending?: boolean; queued?: boolean; demoted?: boolean; queue_id?: string; still_queued?: boolean; depth?: number; steer_id?: string }>,
+  sideTurn: (slot: string, question: string, opts?: { steer?: boolean }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/turn', { question, ...(opts?.steer ? { steer: true } : {}) }).then(jAccepted) as Promise<{ ok: boolean; run_id?: string; messages?: number; steered?: boolean; pending?: boolean; queued?: boolean; demoted?: boolean; queue_id?: string; still_queued?: boolean; depth?: number; steer_id?: string }>,
   sideQueueCancel: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/side/queue/' + encodeURIComponent(queueId), { client: TAB_ID }).then(j) as Promise<{ ok: boolean; content: string; depth: number }>,
   sideQueueEdit: (slot: string, queueId: string, content: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/side/queue/' + encodeURIComponent(queueId), { content }).then(j) as Promise<{ ok: boolean; depth: number }>,
   sideClose: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/close', {}).then(j) as Promise<{ ok: boolean; was_open: boolean }>,

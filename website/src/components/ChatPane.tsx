@@ -34,7 +34,7 @@ import { CONTENT_WIDTH } from '../pages/chat/ChatSettings'
 import { useChatConfig } from '../hooks/useChatConfig'
 import { tryQuickSend } from '../lib/quickSend'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
-import { sendTurn, mintSendId } from '../chat-core/transport/sendTurn'
+import { sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -419,12 +419,17 @@ export default function ChatPane({
    *  Component-scoped so BOTH failure sites in this pane speak: the composer's
    *  own send, and the question-card fallback, whose answer is destroyed
    *  outright by a swallowed failure because the card is already gone. */
-  const reportSendFailure = useCallback((reason?: string) => {
+  const reportSendFailure = useCallback((reason?: string, status?: SendReceiptStatus) => {
     dispatch(appendSlotMessage({
       slot: slotKey,
       message: {
         role: 'error',
-        content: reason || (i18nT('pages.chatPage.send_failed') as string),
+        // A reason-less transport failure states its cause (the shared core
+        // copy ChatEmbed and SideChat use) instead of a bare "Send failed";
+        // any other reason-less outcome keeps the generic line.
+        content: reason || (i18nT(status === 'transport-error'
+          ? 'pages.chatPage.send_failed_connection'
+          : 'pages.chatPage.send_failed') as string),
         cls: '',
       },
     }))
@@ -490,8 +495,8 @@ export default function ChatPane({
     // fetch was swallowed by `.catch(() => undefined)`, so an undelivered
     // message stayed on screen looking sent. `ChatPage` has always appended an
     // error row and handed the text back; the pane now does the same.
-    const reportFailedSend = (reason?: string) => {
-      reportSendFailure(reason)
+    const reportFailedSend = (reason?: string, status?: SendReceiptStatus) => {
+      reportSendFailure(reason, status)
       // Only a composer send has anything to hand back: an option send never
       // consumed the draft (see the `!optionText` gate above), so restoring the
       // option label here would CLOBBER the preserved draft with text the user
@@ -508,7 +513,7 @@ export default function ChatPane({
     // included, so the optimistic composer row stays pending.
     void sendTurn({ message: llm, slot: slotKey, meta }).then((receipt) => {
       if (receipt.status === 'refused' || receipt.status === 'transport-error') {
-        reportFailedSend(receipt.reason)
+        reportFailedSend(receipt.reason, receipt.status)
         return
       }
       if (receipt.status === 'unknown' || receipt.status === 'response-late') return
@@ -742,10 +747,10 @@ export default function ChatPane({
              landed, and handing it back would invite a second answer to a
              question already gone. */
           onFallbackSend={(text) => {
-            const fail = (reason?: string) => { reportSendFailure(reason); restoreIntoComposer(text) }
+            const fail = (reason?: string, status?: SendReceiptStatus) => { reportSendFailure(reason, status); restoreIntoComposer(text) }
             void sendTurn({ message: text, slot: slotKey }).then((receipt) => {
               if (receipt.status === 'refused' || receipt.status === 'transport-error' || receipt.status === 'response-late') {
-                fail(receipt.reason)
+                fail(receipt.reason, receipt.status)
               }
             })
           }}
