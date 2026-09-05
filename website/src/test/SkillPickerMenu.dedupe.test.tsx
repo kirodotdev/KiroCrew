@@ -29,10 +29,20 @@ function Harness({ client, query = '', open = true, onSelect = vi.fn(), onClose 
   )
 }
 
-/** What the bounded client does to a wedged gateway: reject with TimeoutError. */
-const timesOut = () => () =>
-  new Promise((_resolve, reject) =>
-    setTimeout(() => reject(new DOMException('deadline exceeded', 'TimeoutError')), 5))
+/** What the bounded client does to a wedged gateway: reject with TimeoutError —
+ *  but on the TEST's clock, not a wall-clock timer. A timer-based deadline
+ *  raced the menu's mount: once it fired first the prefetch was already
+ *  settled, nothing was in flight to dedupe onto, and staleTime 0 (see
+ *  skillsCacheStaleTime(undefined)) made the menu fetch again, so the
+ *  one-call assertion failed on a slow runner rather than on a real
+ *  regression. `expire()` fires the same rejection at a chosen point. */
+function wedgedGateway() {
+  let expire = () => {}
+  const impl = () => new Promise((_resolve, reject) => {
+    expire = () => reject(new DOMException('deadline exceeded', 'TimeoutError'))
+  })
+  return { impl, expire: () => expire() }
+}
 
 beforeEach(() => { vi.clearAllMocks() })
 afterEach(() => { vi.restoreAllMocks() })
@@ -50,17 +60,26 @@ describe('SkillPickerMenu — deduping onto ChatInput\'s in-flight prefetch', ()
   it('reuses the in-flight promise — ONE fetch — and still settles, releasing Enter', async () => {
     // Dedupe on the shared key means the menu never runs its own queryFn, which
     // is why the deadline is bound in the client: the winner fetches for both.
-    mockApi.skills.mockImplementation(timesOut())
+    const gateway = wedgedGateway()
+    mockApi.skills.mockImplementation(gateway.impl)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
     void startPrefetch(qc)
     await waitFor(() => expect(mockApi.skills).toHaveBeenCalled())
     const onSelect = vi.fn()
     render(<Harness client={qc} query="grill" onSelect={onSelect} />)
+    // Mounted and subscribed to the SAME key while the prefetch is still in
+    // flight — the only window in which dedupe is even the question. Asserting
+    // it here is what makes the one-call count below a claim about dedupe
+    // instead of a claim about which of two timers won.
+    expect(await screen.findByText(/Loading skills…/)).toBeInTheDocument()
+    expect(mockApi.skills).toHaveBeenCalledTimes(1)
+    // Now let the shared deadline expire: one rejection settles both readers.
+    gateway.expire()
     await waitFor(() => expect(screen.queryByText(/Loading skills…/)).not.toBeInTheDocument())
     await waitFor(() => expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true))
     expect(onSelect).not.toHaveBeenCalled()
-    // One call, not two: proof the dedupe happened rather than two independent
-    // fetches that would each have been bounded anyway.
+    // Still one call after settling: the menu rode the prefetch's promise
+    // rather than running its own bounded fetch alongside it.
     expect(mockApi.skills).toHaveBeenCalledTimes(1)
   })
 
