@@ -518,7 +518,6 @@ test/test_chat_turn_timeout_consistency.py
 test/test_chat_voice.py
 test/test_ci_surface_tests.py
 test/test_cli_desktop.py
-test/test_cli_doctor.py
 test/test_cli_lazy_imports.py
 test/test_cli_logging.py
 test/test_close_guard_parity.py

@@ -171,12 +171,26 @@ class TestPodSessionBus:
     """
 
     @staticmethod
-    def _linux(monkeypatch, tmp_path: Path, *, bus: bool) -> Path:
+    def _linux(monkeypatch, tmp_path: Path, *, bus: bool, template: bool = True) -> Path:
         monkeypatch.setattr(cli_doctor.sys, "platform", "linux")
         monkeypatch.setattr(cli_doctor.shutil, "which", lambda n: f"/usr/bin/{n}")
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
         monkeypatch.setenv("USER", "tester")
+        # Pin the per-user manager probe. Without this the outcome depends on
+        # whether the RUNNER ships user@.service, which would make every test
+        # below environment-dependent: a container without the template would
+        # take the not-applicable branch and never reach the case under test.
+        # Patched on the runtime module because the doctor imports the name
+        # locally at call time, which keeps the pod package out of the CLI's
+        # import graph for every other command.
+        from kiro_crew.pod import runtime as _rt
+
+        monkeypatch.setattr(
+            _rt,
+            "user_manager_unit",
+            lambda uid=None: "/usr/lib/systemd/system/user@.service" if template else None,
+        )
         sock = tmp_path / "bus"
         if bus:
             sock.touch()
@@ -262,6 +276,56 @@ class TestPodSessionBus:
         out = capsys.readouterr().out
         assert "not applicable" in out and "systemctl" in out
         assert issues == []
+
+    def test_no_per_user_manager_is_not_applicable_not_a_dead_end_fix(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        """An EL7 host can never run a pod, so enable-linger must not be offered.
+
+        systemd is present and the platform is Linux, so the two gates above both
+        pass and the old code fell through to `❌ ... Fix: loginctl enable-linger`.
+        On a host with no `user@.service` that fix cannot work: linger only tells
+        logind to instantiate a template that is not installed, so the reader sets
+        a flag, nothing starts, and the report still says the setup is broken.
+        """
+        self._linux(monkeypatch, tmp_path, bus=False, template=False)
+        issues: list[str] = ["pre-existing"]
+
+        cli_doctor._doctor_pod_session_bus(issues)
+
+        out = capsys.readouterr().out
+        assert "not applicable" in out
+        assert "dev-backend.sh" in out
+        # The dead-end remedy must NOT be recommended on this host.
+        assert "Fix: loginctl enable-linger" not in out
+        # Advisory like every other branch: it reports a limit, it never blocks.
+        assert issues == ["pre-existing"]
+
+    def test_a_live_socket_does_not_make_a_manager_less_host_look_supported(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        """The socket alone is a false positive, so the doctor outranks it.
+
+        Observed on Amazon Linux 2: `has_session_bus()` returns True because a stray
+        session `dbus-daemon` created `/run/user/<uid>/bus`, while no per-user manager
+        exists at all. Testing the socket first would print `✅ session bus` on a host
+        where `kirocrew pod` provably cannot work, which is the misdirection this
+        change exists to remove.
+
+        This is intentionally stricter than `require_systemd()`, which passes on a live
+        socket. The doctor only prints, so a false ⏹ costs a sentence; refusing in the
+        runtime gate on a probe that cannot enumerate every unit location would break a
+        working host.
+        """
+        self._linux(monkeypatch, tmp_path, bus=True, template=False)
+
+        cli_doctor._doctor_pod_session_bus([])
+
+        out = capsys.readouterr().out
+        assert "not applicable" in out
+        assert "dev-backend.sh" in out
+        assert "✅" not in out
+        assert "Fix: loginctl enable-linger" not in out
 
 
 class TestLingerProbe:
@@ -413,9 +477,7 @@ class TestOomKillerProbe:
     def test_absent_systemctl_is_unknown(self, monkeypatch) -> None:
         # Resolution goes through the trusted-bin pin (fixed system dirs), so a
         # PATH-planted shim can never be executed; a miss degrades to unknown.
-        monkeypatch.setattr(
-            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: None
-        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_system_bin", lambda _n: None)
         assert cli_doctor._detect_userspace_oom_killer() is None
 
 
@@ -479,9 +541,7 @@ class TestMemoryPressure:
         assert "⚠️" not in out
         assert issues == ["pre-existing"]
 
-    def test_no_swap_unknown_killer_is_informational_not_warning(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_no_swap_unknown_killer_is_informational_not_warning(self, monkeypatch, capsys) -> None:
         # Inconclusive detection (no systemctl / probe failure) must not warn —
         # a container or non-systemd host may run a killer doctor cannot see.
         issues = self._arrange(monkeypatch, swap_kib=0, killer=None)
@@ -581,9 +641,7 @@ class TestDoctorKas:
         assert "does not offer engine v3" in out
         assert any("does not support the KAS engine" in i for i in issues)
 
-    def test_help_without_the_flag_is_a_failure_not_unknown(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_help_without_the_flag_is_a_failure_not_unknown(self, monkeypatch, capsys) -> None:
         """A kiro-cli predating engine selection must FAIL the check.
 
         Reporting it as "unknown" would let a configuration that cannot work
@@ -603,9 +661,7 @@ class TestDoctorKas:
         assert "engine support unknown" not in out
         assert any("too old to select the KAS engine" in i for i in issues)
 
-    def test_unreadable_help_is_reported_unknown_not_failed(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_unreadable_help_is_reported_unknown_not_failed(self, monkeypatch, capsys) -> None:
         """Only a FAILED probe is unknown; a diagnostic must not invent a verdict.
 
         ``None`` now means the subprocess did not run, which is the one case
@@ -620,9 +676,7 @@ class TestDoctorKas:
         assert "engine support unknown" in out
         assert issues == []
 
-    def test_probe_returns_help_text_even_without_the_flag(
-        self, monkeypatch
-    ) -> None:
+    def test_probe_returns_help_text_even_without_the_flag(self, monkeypatch) -> None:
         """The probe must not swallow ran-but-lacks-the-flag into None.
 
         Pins the split directly: the previous implementation returned None for
@@ -971,11 +1025,7 @@ class TestSourceCheckout:
 
         def fake_run(argv, *a, **k):
             errors = k.get("errors")
-            stdout = (
-                raw.decode("utf-8", errors=errors)
-                if errors
-                else raw.decode("utf-8")
-            )
+            stdout = raw.decode("utf-8", errors=errors) if errors else raw.decode("utf-8")
             return _sp.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
         monkeypatch.setattr(
@@ -985,9 +1035,7 @@ class TestSourceCheckout:
         line = cli_doctor._git_line(tmp_path, "rev-parse", "--abbrev-ref", "HEAD")
         assert line == "exp\ufffdrimental"
 
-    def test_git_line_pins_git_and_returns_none_when_untrusted(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_git_line_pins_git_and_returns_none_when_untrusted(self, monkeypatch, tmp_path) -> None:
         """git resolves via trusted_git_bin; a miss means no subprocess at all.
 
         Doctor runs with operator privileges, so a ``git`` shim planted in an
@@ -1016,9 +1064,7 @@ class TestSourceCheckout:
         assert calls == []
 
         # Hit: the resolved absolute path is argv[0], never the bare "git".
-        monkeypatch.setattr(
-            cli_doctor.platform_compat, "trusted_git_bin", lambda: "/usr/bin/git"
-        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_git_bin", lambda: "/usr/bin/git")
         assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") == "main"
         assert calls and calls[0][0] == "/usr/bin/git"
 
@@ -1165,9 +1211,7 @@ class TestCliInstallerResidue:
     def test_uncapped_size_is_not_marked_as_a_floor(self, monkeypatch, capsys) -> None:
         # Below the cap the scan saw everything, so the figure is exact and must
         # NOT be hedged -- otherwise every host reads as approximate.
-        monkeypatch.setattr(
-            cli_doctor, "_scan_cli_installer_residue", lambda _d: (4, 4 * 1048576)
-        )
+        monkeypatch.setattr(cli_doctor, "_scan_cli_installer_residue", lambda _d: (4, 4 * 1048576))
         issues: list[str] = []
         cli_doctor._doctor_cli_installer_residue(issues)
         out = capsys.readouterr().out
@@ -1204,9 +1248,9 @@ class TestEffectiveModelSection:
 
         agents_dir = kiro_agents_dir()
         # Fail loudly rather than write into a real home if the override lapses.
-        assert self._tmp in agents_dir.parents or agents_dir.is_relative_to(self._tmp), (
-            f"KIRO_HOME isolation failed: {agents_dir} is outside {self._tmp}"
-        )
+        assert self._tmp in agents_dir.parents or agents_dir.is_relative_to(
+            self._tmp
+        ), f"KIRO_HOME isolation failed: {agents_dir} is outside {self._tmp}"
         agents_dir.mkdir(parents=True, exist_ok=True)
         return agents_dir
 
@@ -1604,9 +1648,7 @@ class TestWhatsAppSection:
 
     @staticmethod
     def _extra(monkeypatch, present: bool) -> None:
-        monkeypatch.setattr(
-            "kiro_crew.whatsapp.client.neonize_available", lambda: present
-        )
+        monkeypatch.setattr("kiro_crew.whatsapp.client.neonize_available", lambda: present)
 
     @staticmethod
     def _pair(home: Path) -> Path:
@@ -1698,9 +1740,7 @@ class TestWhatsAppSection:
 
         assert str(default_db_path(home)) in capsys.readouterr().out
 
-    def test_the_check_never_imports_neonize(
-        self, home: Path, monkeypatch, capsys
-    ) -> None:
+    def test_the_check_never_imports_neonize(self, home: Path, monkeypatch, capsys) -> None:
         """The whole point of the ``find_spec`` probe: importing neonize loads a
         ~19 MB ctypes CDLL plus protobuf descriptors, and a health check must not
         pay that (or construct a client as a side effect of asking a question).
@@ -2197,9 +2237,7 @@ class TestCronHealth:
         # loadability puts it in the auto-paused bucket, so doctor advises
         # `cron resume` for a job that does not exist and the unloadable-store
         # report never fires. The store is the fault; the phantom job is not.
-        (tmp_path / "crons.json").write_text(
-            '{"jobs": [{"auto_paused": true}]}', encoding="utf-8"
-        )
+        (tmp_path / "crons.json").write_text('{"jobs": [{"auto_paused": true}]}', encoding="utf-8")
 
         issues = self._run(monkeypatch, tmp_path)
 

@@ -1619,9 +1619,16 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
     KiroCrew to point at — every pod verb then fails with "Failed to connect to
     bus: No medium found". Diagnosing that belongs here.
 
-    Three outcomes: socket present → pass; absent → ❌ with the remediation;
-    present but ``Linger=no`` → warn, because pods work now and will die on
-    logout.
+    Four outcomes: no per-user manager unit → ⏹ not applicable, because the
+    remediation below cannot work; socket absent with a unit present → ❌ with the
+    remediation; socket present → pass; socket present but ``Linger=no`` → warn,
+    because pods work now and will die on logout.
+
+    The manager unit is tested BEFORE the socket, which makes this deliberately
+    stricter than :func:`~kiro_crew.pod.runtime.require_systemd`. See the comment
+    at that branch: the socket alone is a false positive for "pods can run", and
+    the doctor can afford the stricter predicate precisely because it only
+    reports.
 
     Advisory only (never appended to ``issues``, like the embedding-model URL
     probe): a host with no per-user systemd instance — a container, a CI runner,
@@ -1646,13 +1653,41 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         print("  session bus: ⏹ not applicable (no `systemctl` on PATH)")
         return
 
-    # Local import: keeps the pod package out of the CLI's import graph for
-    # every other command (circular-safe — pod.runtime imports no CLI module).
-    from kiro_crew.pod.runtime import has_session_bus, session_bus_socket
+    # Local import, deliberately: `cli.py` imports this module at module scope, so
+    # hoisting these names would load the whole pod package (`runtime` pulls in
+    # `launchd`, `provision`, `unit`, `config`) on EVERY `kirocrew` command and in
+    # the MCP stdio servers, which hold their imports resident. Measured: 0 pod
+    # modules before, 6 after. `test_cli_lazy_imports.py` does not list pod, so
+    # nothing would have caught the widening.
+    from kiro_crew.pod.runtime import has_session_bus, session_bus_socket, user_manager_unit
 
     uid = getattr(os, "getuid", lambda: -1)()
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
     sock = session_bus_socket()
+    if user_manager_unit(uid) is None:
+        # No per-user manager unit, so this host can never run a pod and the
+        # enable-linger advice below would be a dead end. Same ⏹ treatment as the
+        # two platform gates above: a limit to report, not a problem to fix.
+        #
+        # Probed BEFORE the bus on purpose, and this is deliberately stricter than
+        # require_systemd(), which passes as soon as a bus exists. The socket is a
+        # false positive for "pods can run": a stray session dbus-daemon creates it
+        # on a host with no manager at all (observed on Amazon Linux 2, where this
+        # branch is the only one that tells the truth). The doctor can afford the
+        # stricter predicate because it only PRINTS -- it is advisory and blocks
+        # nothing. require_systemd() gates real execution, so it stays permissive:
+        # refusing there on a probe that cannot enumerate every possible unit
+        # location would break a working host, which is worse than letting systemd
+        # report its own error.
+        print(
+            "  session bus: ⏹ not applicable (no systemd per-user manager on this "
+            "host — pods are unavailable)"
+        )
+        print("               Enterprise Linux 7 derivatives (RHEL 7, CentOS 7,")
+        print("               Amazon Linux 2) ship systemd without `user@.service`,")
+        print("               so `loginctl enable-linger` cannot help. Use")
+        print("               `./dev-backend.sh` to run a worktree gateway here.")
+        return
     if not has_session_bus():
         print(f"  session bus: ❌ none for uid {uid} (looked for {sock})")
         print("               Pods are systemd --user units, so `kirocrew pod` is")

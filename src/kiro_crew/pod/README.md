@@ -311,8 +311,15 @@ so pods used to fail with a bare `Failed to connect to bus: No medium found`.
 
 `runtime._systemctl_env()` backfills both when the socket
 (`$XDG_RUNTIME_DIR/bus`, else `/run/user/<uid>/bus`) actually exists; an
-explicitly-set value always wins. When the socket is genuinely absent — no login
-session and `Linger=no` — `require_systemd()` refuses with the fix
-(`loginctl enable-linger <user>`) instead of letting systemctl emit a message
-that names neither cause nor remedy. `kirocrew doctor` reports the same three
-states (present / absent / present-but-no-linger).
+explicitly-set value always wins. When the socket is genuinely absent the refusal
+depends on whether this host can have a per-user manager at all. With a manager
+unit installed — the template `user@.service`, or a hand-installed
+`user@<uid>.service` — the cause is a missing login session and `Linger=no`, so
+`require_systemd()` names the fix (`loginctl enable-linger <user>`). With no
+manager unit anywhere on systemd's load path, that remedy cannot work: there is
+no unit for linger to start, which is the case on Enterprise Linux 7 derivatives
+(RHEL 7, CentOS 7, Amazon Linux 2). `require_systemd()` then names the platform
+limit and points at `./dev-backend.sh` instead. `kirocrew doctor` reports the same
+four states (present / absent / present-but-no-linger / no per-user manager), and
+checks for the manager unit BEFORE the socket, because a stray session
+`dbus-daemon` can create the socket on a host that has no manager behind it.

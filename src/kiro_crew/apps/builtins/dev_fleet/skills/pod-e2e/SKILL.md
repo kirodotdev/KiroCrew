@@ -122,8 +122,9 @@ green). Flags:
    chromium) loads `/?token=` headless, asserts the SPA rendered (screenshots
    `fe-smoke.png`), then exec's the optional `PLAYWRIGHT_SPEC` with a live authed
    `page` in scope.
-   - If the Playwright interpreter is not executable, the FE phase **skips
-     gracefully** (no failure, just a warning).
+   - If the Playwright interpreter is not executable, the FE phase **fails** — it
+     does not skip. A run that captured zero screenshots must never report a green
+     summary. `--api-only` is the one clean skip.
    - `--video` requires `ffmpeg` for mp4 transcoding; if absent, the `.webm` is
      kept but no `.mp4` is produced.
    - **Bounded, always.** The whole phase runs under `timeout`
