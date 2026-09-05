@@ -624,6 +624,30 @@ interface ChatInputProps {
    */
   typedCommandMenus?: boolean
   /**
+   * Fail-closed capability flag for the app-sdk embed: every capability that
+   * defaults ON below (`typedCommandMenus`, `slotApprovalChrome`,
+   * `promptOptimizer`) is forced OFF, and a capability added later must
+   * consult this flag before it defaults on (a source-shape test forbids any
+   * other `= true` default in the props destructure). An explicit
+   * per-capability prop still wins over the flag.
+   *
+   * WHY, stated once here: this composer talks to the DASHBOARD client, while
+   * an app embed may only reach the API through its permission-scoped app
+   * wire. Every capability that fires a dashboard call (approvals behind
+   * `slotApprovalChrome`, the auto-compact popover behind the context chip,
+   * the skills prefetch behind `typedCommandMenus`) therefore opens API
+   * traffic the host app's manifest never declared. Before granting any
+   * capability prop to an embedded mount, answer "which traffic does this
+   * prop open?" -- and gate a new dashboard call behind a capability prop
+   * that respects this flag. */
+  embedded?: boolean
+  /**
+   * A send is in flight. The Send button shows a spinner and refuses a second
+   * fire, WITHOUT `disabled`'s side effects (the "Stopping..." placeholder,
+   * the greyed field): the user keeps typing and the text stays visible; only
+   * the button acknowledges that the click already went out. */
+  sending?: boolean
+  /**
    * The slot's approval chrome (tool-approval bar, spawn-approval banner).
    * Defaults on. These are store-driven for the composer's slot, so a second
    * composer on the SAME slot (the side panel) must opt out or the main
@@ -922,12 +946,21 @@ function ChatInput({
   knowledgeChip,
   autoFocusKey,
   inputAriaLabel,
-  typedCommandMenus = true,
-  slotApprovalChrome = true,
-  promptOptimizer = true,
+  embedded = false,
+  sending = false,
+  typedCommandMenus: typedCommandMenusProp,
+  slotApprovalChrome: slotApprovalChromeProp,
+  promptOptimizer: promptOptimizerProp,
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
+  // Capability defaults: ON for a first-class composer, OFF for an embed.
+  // Resolve here, once, so every gate below reads one boolean and a future
+  // capability has exactly one place to add its default.
+  const capabilityDefault = !embedded
+  const typedCommandMenus = typedCommandMenusProp ?? capabilityDefault
+  const slotApprovalChrome = slotApprovalChromeProp ?? capabilityDefault
+  const promptOptimizer = promptOptimizerProp ?? capabilityDefault
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const disabled = disabledProp
   const dispatch = useAppDispatch()
@@ -1380,8 +1413,19 @@ function ChatInput({
   // split button to Queue. Everywhere else the composer falls back to onSend
   // (normal send, or server-side queue while busy).
   const steerActive = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer && busySendMode === 'steer'
+  // A submit while `sending` (Enter mid-flight; the button itself ignores
+  // clicks then) is accepted by the host as a no-op -- so acknowledge it here:
+  // a short scale pulse on the spinner and one polite announcement, instead of
+  // a keypress that visibly did nothing.
+  const [sendingNudge, setSendingNudge] = useState(0)
+  useEffect(() => {
+    if (!sendingNudge) return
+    const t = setTimeout(() => setSendingNudge(0), 300)
+    return () => clearTimeout(t)
+  }, [sendingNudge])
   const fireComposer = useCallback(() => {
     if (disabled) return
+    if (sending) { setSendingNudge(n => n + 1); return }
     // A batch dictation is still transcribing: block the send so the pending
     // transcript isn't left behind. Otherwise Enter/Send fires the current draft
     // BEFORE the transcript lands, orphaning the dictation into the emptied
@@ -1391,7 +1435,7 @@ function ChatInput({
     if (voiceTranscribing) return
     if (steerActive && onSteer) onSteer()
     else onSend()
-  }, [disabled, voiceTranscribing, steerActive, onSteer, onSend])
+  }, [disabled, sending, voiceTranscribing, steerActive, onSteer, onSend])
   const sendFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
     if (!disabled) onFollowUpSend?.(text, sourceKeyAtClick)
   }, [disabled, onFollowUpSend])
@@ -3468,7 +3512,10 @@ function ChatInput({
           {...ime.bindComposition<HTMLTextAreaElement>({
             // The paste-hover preview dismisses on blur; the guard's latch reset rides
             // in the binding itself, so these handlers only carry what is local here.
-            onFocus: prefetchSkills,
+            // The skills prefetch warms the $-picker; a host that turned the typed
+            // menus off has no picker to warm, and an app-embedded composer must not
+            // fire ambient /api/skills traffic its permission manifest never declared.
+            onFocus: typedCommandMenus ? prefetchSkills : undefined,
             onBlur: () => { if (hoverRef.current) hoverRef.current.handleMouseLeave() },
           })}
           onPaste={handlePaste}
@@ -3883,13 +3930,24 @@ function ChatInput({
                 </button>
               ) : (
               <button
-                className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
-                aria-label={i18nT('components.chatInput.send')}
+                className={`primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-all ${sending ? 'cursor-default' : 'cursor-pointer hover:bg-accent-hover'} ${sendingNudge ? 'scale-125' : ''}`}
+                onClick={sending ? undefined : fireComposer}
+                // Not `disabled` while sending: the host clears the draft the
+                // moment it fires, so the empty-value clause would dim the very
+                // spinner that acknowledges the click. The onClick guard above
+                // already refuses a second fire.
+                disabled={!sending && ((!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected)}
+                aria-label={sending ? i18nT('components.chatInput.sending') : i18nT('components.chatInput.send')}
+                aria-busy={sending || undefined}
                 {...offlineProps(connected, 'send', 'Send')}
               >
-                <ArrowUp size={18} />
+                {sending ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
+                {/* Re-announces "Sending…" on each mid-flight submit; the
+                    aria-label alone is static and says nothing when Enter is
+                    pressed again. Keyed so repeated presses re-fire the region. */}
+                {sendingNudge > 0 && (
+                  <span key={sendingNudge} className="sr-only" role="status">{i18nT('components.chatInput.sending')}</span>
+                )}
               </button>
               )}
             </>)}

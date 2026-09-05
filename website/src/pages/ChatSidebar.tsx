@@ -84,6 +84,7 @@ import {
   isWithinRecentWindow,
 } from './recentWindow'
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
+import { useChatConfig } from '../hooks/useChatConfig'
 import { focusSiblingSessionRow, sessionRowsInScope, SESSION_ROW_SELECTOR } from './chat/sessionRowNav'
 import { heldSeat, type HoverPin } from './chat/hoverHold'
 import { focusComposer } from './chat/composerFocus'
@@ -3400,12 +3401,9 @@ function ChatSidebar({
   )
   // Sidebar column layout (flat list; empty = legacy single-lane UX)
   const { data: rawColumns = [] } = useQuery<TagColumn[]>({ queryKey: ['tag-columns'], queryFn: () => api.tagColumns() })
-  const [tagColumnsEnabled, setTagColumnsEnabled] = useState(() => loadChatConfig().tagColumnsEnabled)
-  useEffect(() => {
-    const onChange = () => setTagColumnsEnabled(loadChatConfig().tagColumnsEnabled)
-    window.addEventListener('mc-config-changed', onChange)
-    return () => window.removeEventListener('mc-config-changed', onChange)
-  }, [])
+  // Live setting via the shared hook (also reloads on window focus, so a change
+  // made in another tab lands here without the settings page's event).
+  const tagColumnsEnabled = useChatConfig().tagColumnsEnabled
   // When feature is disabled, treat it as zero columns → sidebar falls back to legacy layout.
   // Derive the effective column list inside the memo so its identity only changes
   // when the stable inputs (rawColumns / tagColumnsEnabled) change, not every render.

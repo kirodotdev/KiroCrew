@@ -52,12 +52,16 @@ import ChatEmbed from '../app-sdk/ChatEmbed'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { api } from '../api/client'
 import type { ChatMessage } from '../types'
+import { Provider } from 'react-redux'
+import { createTestStore } from './helpers'
 
 let queryClient: QueryClient
 
+// ChatEmbed now mounts the real ChatInput, which reads slot state from Redux.
 function renderWithProviders(ui: React.ReactElement) {
   return render(
-    React.createElement(QueryClientProvider, { client: queryClient }, ui)
+    React.createElement(Provider, { store: createTestStore() },
+      React.createElement(QueryClientProvider, { client: queryClient }, ui)),
   )
 }
 
@@ -71,7 +75,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
   // Default: return empty slot data
   mockGet.mockResolvedValue({ messages: [], running: false, title: '' })
-  mockPost.mockResolvedValue({})
+  mockPost.mockResolvedValue({ ok: true })
   queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -93,11 +97,11 @@ describe('ChatEmbed', () => {
       expect(screen.getByLabelText('Chat message')).toBeInTheDocument()
     })
 
-    it('renders send button with aria-label', async () => {
+    it('renders the real composer send button', async () => {
       await act(async () => {
         renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       })
-      expect(screen.getByLabelText('Send message')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
     })
 
     it('shows custom placeholder', async () => {
@@ -146,7 +150,7 @@ describe('ChatEmbed', () => {
       await act(async () => {
         renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       })
-      expect(screen.getByLabelText('Send message')).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     })
 
     it('send button is enabled when input has text', async () => {
@@ -157,7 +161,7 @@ describe('ChatEmbed', () => {
       await act(async () => {
         fireEvent.change(input, { target: { value: 'hello' } })
       })
-      expect(screen.getByLabelText('Send message')).not.toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled()
     })
 
     it('clears input after send', async () => {
@@ -173,44 +177,77 @@ describe('ChatEmbed', () => {
       expect(input.value).toBe('test message')
 
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('Send message'))
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
       })
 
       // Input should be cleared immediately
       expect(input.value).toBe('')
     })
 
-    it('disables input while sending', async () => {
-      // Make post hang so sending stays true
-      let resolvePost: () => void = () => {}
-      mockPost.mockReturnValue(new Promise<void>(r => { resolvePost = r }))
+    it('a second submit while a send is in flight does not fire a second POST', async () => {
+      // The composer is the real ChatInput and is deliberately NOT disabled
+      // while a send is pending (its placeholder chain would announce
+      // "Stopping..."); `send()` guards re-entry instead.
+      let resolvePost: (v: unknown) => void = () => {}
+      mockPost.mockReturnValue(new Promise(r => { resolvePost = r }))
 
       await act(async () => {
         renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       })
-      const input = screen.getByLabelText('Chat message') as HTMLInputElement
-
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
       await act(async () => {
         fireEvent.change(input, { target: { value: 'hello' } })
       })
-
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('Send message'))
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
       })
-
-      // While sending, input is disabled
-      expect(input).toBeDisabled()
-
-      // Resolve the hanging promise
-      await act(async () => {
-        resolvePost()
-      })
-      // Advance timers so React Query processes the mutation settlement
-      await act(async () => {
-        vi.advanceTimersByTime(100)
-      })
-
+      expect(mockPost).toHaveBeenCalledTimes(1)
       expect(input).not.toBeDisabled()
+
+      // The button acknowledges the in-flight send: spinner, "Sending…" label,
+      // aria-busy -- and a click on it does nothing, with the field still live.
+      const pending = screen.getByRole('button', { name: 'Sending…' })
+      expect(pending).toHaveAttribute('aria-busy', 'true')
+      // The draft has just been cleared; the button must NOT fall into the
+      // empty-value disabled state, or the spinner renders dimmed.
+      expect(pending).not.toBeDisabled()
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'again' } })
+      })
+      await act(async () => {
+        fireEvent.click(pending)
+      })
+      expect(mockPost).toHaveBeenCalledTimes(1)
+
+      await act(async () => { resolvePost({ ok: true }) })
+      await act(async () => { vi.advanceTimersByTime(100) })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+      })
+      expect(mockPost).toHaveBeenCalledTimes(2)
+    })
+
+    it("honours the user's send-key setting from chat settings (Ctrl/Cmd+Enter mode)", async () => {
+      localStorage.setItem('mc-chat-config', JSON.stringify({ sendOnEnter: 'ctrl-enter' }))
+      try {
+        await act(async () => {
+          renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+        })
+        const input = screen.getByLabelText('Chat message')
+        await act(async () => {
+          fireEvent.change(input, { target: { value: 'hello' } })
+        })
+        await act(async () => {
+          fireEvent.keyDown(input, { key: 'Enter' })
+        })
+        expect(mockPost).not.toHaveBeenCalled()
+        await act(async () => {
+          fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true })
+        })
+        expect(mockPost).toHaveBeenCalledTimes(1)
+      } finally {
+        localStorage.removeItem('mc-chat-config')
+      }
     })
 
     it('sends message with correct params via API', async () => {
@@ -223,13 +260,17 @@ describe('ChatEmbed', () => {
       })
 
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('Send message'))
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
       })
 
-      expect(mockPost).toHaveBeenCalledWith('/api/chat', {
+      // `?ws=1` selects the JSON receipt the shared transport reads; the scoped
+      // path check ignores the query, so the app's `/api/chat` grant still covers it.
+      expect(mockPost).toHaveBeenCalledWith('/api/chat?ws=1', {
         message: 'hello world',
         slot: 'slot-1',
         agent: 'test-agent',
+        // Client-minted correlation id, same convention as ChatPage/ChatPane.
+        meta: { sendId: expect.stringMatching(/^s-/) },
       })
     })
 
@@ -243,7 +284,7 @@ describe('ChatEmbed', () => {
       })
 
       // Button should be disabled for whitespace-only input
-      expect(screen.getByLabelText('Send message')).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     })
 
     it('sends on Enter key press (not Shift+Enter)', async () => {
@@ -260,7 +301,7 @@ describe('ChatEmbed', () => {
         fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
       })
 
-      expect(mockPost).toHaveBeenCalledWith('/api/chat', expect.objectContaining({
+      expect(mockPost).toHaveBeenCalledWith('/api/chat?ws=1', expect.objectContaining({
         message: 'hello',
       }))
     })
@@ -297,11 +338,11 @@ describe('ChatEmbed', () => {
         fireEvent.change(screen.getByLabelText('Chat message'), { target: { value: 'hi' } })
       })
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('Send message'))
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
       })
 
       expect(onSend).toHaveBeenCalledWith('hi')
-      expect(mockPost).not.toHaveBeenCalledWith('/api/chat', expect.anything())
+      expect(mockPost).not.toHaveBeenCalledWith('/api/chat?ws=1', expect.anything())
     })
 
     it('still posts to /api/chat when no onSend is supplied', async () => {
@@ -312,11 +353,11 @@ describe('ChatEmbed', () => {
         fireEvent.change(screen.getByLabelText('Chat message'), { target: { value: 'hi' } })
       })
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('Send message'))
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
       })
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/api/chat',
+        '/api/chat?ws=1',
         expect.objectContaining({ message: 'hi', slot: 'slot-1' }),
       )
     })
@@ -442,7 +483,7 @@ describe('ChatEmbed', () => {
 
       // Should not throw
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('Send message'))
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
       })
 
       // Advance timers so React Query processes the rejected promise chain
@@ -472,8 +513,8 @@ describe('ChatEmbed follow-up options', () => {
     await act(async () => {
       vi.advanceTimersByTime(100)
     })
-    expect(screen.getByText('Run tests')).toBeInTheDocument()
-    expect(screen.getByText('Skip')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run tests' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument()
   })
 
   it('renders no follow-up bar when the last turn carries no options', async () => {
@@ -541,12 +582,12 @@ describe('ChatEmbed follow-up options', () => {
     // Chip clicks are debounced 220ms (so a double-click can still fire the
     // distinct "send now" gesture) whenever onSend is supplied, as it is here.
     await act(async () => {
-      fireEvent.click(screen.getByText('Run tests'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run tests' }))
       vi.advanceTimersByTime(250)
     })
 
     expect(input.value).toBe('Run tests')
-    expect(mockPost).not.toHaveBeenCalledWith('/api/chat', expect.anything())
+    expect(mockPost).not.toHaveBeenCalledWith('/api/chat?ws=1', expect.anything())
   })
 
   it('picking an option twice removes it from the draft again', async () => {
@@ -566,13 +607,13 @@ describe('ChatEmbed follow-up options', () => {
     // Chip clicks are debounced 220ms (so a double-click can still fire the
     // distinct "send now" gesture) whenever onSend is supplied, as it is here.
     await act(async () => {
-      fireEvent.click(screen.getByText('Run tests'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run tests' }))
       vi.advanceTimersByTime(250)
     })
     expect(input.value).toBe('Run tests')
 
     await act(async () => {
-      fireEvent.click(screen.getByText('Run tests'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run tests' }))
       vi.advanceTimersByTime(250)
     })
     expect(input.value).toBe('')

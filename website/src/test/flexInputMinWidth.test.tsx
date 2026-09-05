@@ -1,4 +1,4 @@
-// Regression tests for issue #3789: three flex-1 inputs without min-w-0.
+// Regression tests for issue #3789: two flex-1 inputs without min-w-0.
 //
 // A flex item's default `min-width: auto` resolves to the input's intrinsic
 // width (~20ch), so under space pressure the input refuses to shrink and the
@@ -8,7 +8,7 @@
 // layout, so these tests pin the class contract; the real narrow-width
 // measurement lives in scripts/capture-flex-input-min-w-0.mjs (real browser).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import React from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -26,7 +26,6 @@ vi.mock('../app-sdk/ChatMessageList', () => ({
   default: () => <div data-testid="chat-message-list" />,
 }))
 
-import ChatEmbed from '../app-sdk/ChatEmbed'
 
 function renderWithClient(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -77,11 +76,4 @@ describe('flex-1 inputs shrink instead of clipping trailing controls (#3789)', (
     expect(input.className).toContain('min-w-0')
   })
 
-  it('ChatEmbed composer input carries min-w-0 so the send button is never clipped', async () => {
-    renderWithClient(<ChatEmbed slotKey="slot-1" />)
-    await waitFor(() => expect(screen.getByLabelText('Chat message')).toBeInTheDocument())
-    const input = screen.getByLabelText('Chat message')
-    expect(input.className).toContain('flex-1')
-    expect(input.className).toContain('min-w-0')
-  })
 })

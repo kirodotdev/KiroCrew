@@ -119,10 +119,12 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "एजेंट काम कर रहा है...",
+      "app_not_allowed_to_send": "इस ऐप को चैट संदेश भेजने की अनुमति नहीं है।",
       "chat_message": "चैट संदेश",
+      "delivery_unconfirmed": "डिलीवरी की पुष्टि नहीं हुई — तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है; दोबारा भेजने से पहले बातचीत देखो।",
+      "delivery_unconfirmed_option": "डिलीवरी की पुष्टि नहीं हुई — बातचीत देखो और अगर संदेश न हो तो विकल्प फिर से चुनो।",
       "message": "संदेश...",
-      "send": "भेजें",
-      "send_message": "संदेश भेजें",
+      "send_failed_connection": "भेजा नहीं जा सका — अपना कनेक्शन जांचो और फिर से कोशिश करो।",
       "session_ready_type_a_message_to_start": "सत्र तैयार है। शुरू करने के लिए संदेश टाइप करें।",
       "streaming": "स्ट्रीमिंग"
     },
@@ -5524,6 +5526,7 @@
       "screenshot": "स्क्रीनशॉट",
       "select_project": "प्रोजेक्ट चुनें",
       "send": "भेजें",
+      "sending": "भेजा जा रहा है…",
       "send_options": "भेजने के विकल्प",
       "show_in_chat": "चैट में दिखाएँ",
       "show_pending_tool_call_in_chat": "लंबित टूल कॉल चैट में दिखाएँ",

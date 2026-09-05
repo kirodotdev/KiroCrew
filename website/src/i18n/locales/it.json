@@ -122,10 +122,12 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "L'agente è al lavoro...",
+      "app_not_allowed_to_send": "Questa app non è autorizzata a inviare messaggi di chat.",
       "chat_message": "Messaggio di chat",
+      "delivery_unconfirmed": "Consegna non confermata: il testo è tornato nel campo di scrittura; controlla la conversazione prima di inviarlo di nuovo.",
+      "delivery_unconfirmed_option": "Consegna non confermata: controlla la conversazione e, se manca, scegli di nuovo l'opzione.",
       "message": "Messaggio...",
-      "send": "Invia",
-      "send_message": "Invia il messaggio",
+      "send_failed_connection": "Invio non riuscito: controlla la connessione e riprova.",
       "session_ready_type_a_message_to_start": "Sessione pronta. Digita un messaggio per iniziare.",
       "streaming": "streaming"
     },
@@ -5613,6 +5615,7 @@
       "screenshot": "Screenshot",
       "select_project": "Seleziona il progetto",
       "send": "Invia",
+      "sending": "Invio in corso…",
       "send_options": "Opzioni di invio",
       "show_in_chat": "Mostra nella chat",
       "show_pending_tool_call_in_chat": "Mostra nella chat la chiamata allo strumento in attesa",

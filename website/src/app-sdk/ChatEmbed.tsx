@@ -2,21 +2,45 @@
  * ChatEmbed — embeddable chat widget using KiroCrew's native rendering.
  *
  * Uses ChatMessageList (shared with ChatPage) for message rendering.
- * Manages its own state via useAppApi() + React Query. No Redux dependency.
+ * Transcript and send state live in useAppApi() + React Query; the composer
+ * subtree (ChatInput) reads slot state from Redux, so a host mounts this under
+ * the dashboard store as every in-tree app already does.
  *
  * State management: polling via useQuery refetchInterval.
  * Poll faster during streaming (1s), slower when idle (5s).
+ *
+ * Sending goes through the chat-core transport (`sendTurn`) over the app-sdk
+ * wire, so the receipt contract is the shared one and the host app's
+ * `allowedApiPaths` grant for `/api/chat` still gates the POST.
+ *
+ * The composer is the REAL native ChatInput (the same one ChatPage, ChatPane
+ * and SideChat render), mounted inside a SlotProvider for the embedded slot
+ * with its FAIL-CLOSED `embedded` flag: every capability that defaults on
+ * for a first-class composer (typed command menus, prompt optimizer,
+ * slot-approval chrome) is forced off, and the opt-in chrome (upload, voice,
+ * agent/model/project) is simply not passed. A capability added to ChatInput
+ * later must consult the flag before it defaults on, so nothing lights up
+ * inside an app embed by convention.
+ *
+ * Why the flag exists, and the question to ask before granting any capability
+ * prop here, is stated ONCE on `ChatInputProps.embedded` -- read it there.
+ * `ChatEmbed.noDashboardClient.test.tsx` pins the invariant it protects.
  */
-import { useRef, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { useRef, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { ArrowUp, Loader2 } from 'lucide-react'
 import ChatMessageList from './ChatMessageList'
 import { useChatScrollFollow } from './useChatScrollFollow'
 import { JumpToBottomButton } from './ChatScrollChrome'
 import FollowUpBar from '../components/FollowUpBar'
+import ChatInput from '../components/ChatInput'
+import { SlotProvider } from '../providers/SlotContext'
+import { useChatConfig } from '../hooks/useChatConfig'
 import { deriveFollowUpOptions } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
 import { useAppApi } from './index'
+import { appApiSendWire } from './appSendWire'
+import { sendTurn, mintSendId } from '../chat-core/transport/sendTurn'
+import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import type { ChatMessage } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -65,6 +89,22 @@ export interface ChatEmbedProps {
  *  render, so `deriveFollowUpOptions` below would re-run (and hand FollowUpBar a new
  *  options array) on every render of an embed whose poll has not answered yet. */
 const EMPTY_MESSAGES: ChatMessage[] = []
+
+/** What the last send left behind on the transcript's tail. `seenCount` is the
+ *  transcript length when the send STARTED and `sendId` the client-minted id
+ *  stamped on the wire (`meta.sendId`, the same convention ChatPage and
+ *  ChatPane use), so proof of delivery can be recognised as THIS message's own
+ *  user row appearing past that point -- by identity, never by text, which a
+ *  manual resend or a duplicate injection could share; `undo` is the composer
+ *  before/after an unconfirmed restore, so that proof can take the text back
+ *  out. */
+interface SendTail {
+  role: 'error' | 'notice'
+  content: string
+  seenCount: number
+  sendId: string
+  undo?: { before: string; after: string }
+}
 
 /** Minimal shape of the chat-slot payload consumed by this embed. */
 interface ChatSlotData {
@@ -136,14 +176,59 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file —
    *  see useComposerDraft's own docs. Picking a follow-up option edits the draft
    *  (matching every other surface) instead of sending immediately. */
-  const { draft, setDraft, picked, toggleOption, composition, submitOnEnter } =
+  const { draft, setDraft, picked, toggleOption } =
     useComposerDraft({ followUpOptions })
+
+  /** What the last send left behind on the transcript's tail, if anything:
+   *  an `error` row for a send that never went out (the same role ChatPage and
+   *  ChatPane append into their slot), or a `notice` row for one whose
+   *  delivery could not be confirmed. This embed owns no store, and the slot
+   *  detail it polls has no record of a message the server never took, so the
+   *  row lives here. Cleared when the next send starts. */
+  const [sendTail, setSendTail] = useState<SendTail | null>(null)
+  const shownMessages = useMemo<ChatMessage[]>(
+    () => sendTail == null ? messages : [...messages, { role: sendTail.role, content: sendTail.content, cls: '' }],
+    [messages, sendTail],
+  )
+  /** Latest rendered transcript length and draft, for the async send path to
+   *  read at settle time instead of a value closed over at render. */
+  const messageCountRef = useRef(0)
+  messageCountRef.current = messages.length
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  // An "unconfirmed" notice answers the question "did it go out?". Proof is a
+  // USER row whose `meta.sendId` is THIS send's id, appended past the length
+  // the transcript had WHEN THE SEND STARTED (not when the deadline fired --
+  // by then the poll may already have shown it). Identity, not text: a user
+  // row with the same words could be a manual resend or a duplicate
+  // injection, and retiring on it would withdraw the wrong send's text. Only
+  // that proof retires the notice and takes back the text it handed back --
+  // and only if the composer still holds exactly what the restore produced;
+  // anything typed or edited since stays. Transcript growth from anything
+  // else (a prior turn still streaming, a cron or sub-agent injecting into
+  // the slot, an older backend that drops meta) is NOT proof: the send may
+  // still be undelivered, so the notice and the restored text both stay --
+  // withdrawing the text on unproven delivery would re-create the silent loss
+  // this surface is being fixed for. An `error` tail is never retired here:
+  // nothing arriving later makes a refused send less refused.
+  useEffect(() => {
+    if (sendTail?.role !== 'notice' || messages.length <= sendTail.seenCount) return
+    const landed = messages.slice(sendTail.seenCount).some(m => m.role === 'user' && m.meta?.sendId === sendTail.sendId)
+    if (!landed) return
+    setSendTail(null)
+    const undo = sendTail.undo
+    if (undo) setDraft(prev => (prev === undo.after ? undo.before : prev))
+  }, [messages, sendTail, setDraft])
 
   // startAtBottom follow is owned by useChatScrollFollow (attached below).
   // Non-startAtBottom embeds keep the message-arrival smooth scroll: it fires
   // on NEW MESSAGES only (not on content growth) and deliberately scrolls
-  // regardless of position — a top-anchored embed announcing each reply.
+  // regardless of position — a top-anchored embed announcing each reply. The
+  // send-tail row (a failed or unconfirmed send, below) counts as a new
+  // message here: it is the one row that must never land below the fold
+  // unannounced, or a failed send looks sent again.
   const msgHash = messages.length + ':' + (messages[messages.length - 1]?.content?.length || 0)
+    + ':' + (sendTail ? sendTail.role + sendTail.content.length : '')
   useEffect(() => {
     if (startAtBottom) return
     if (msgHash === lastHashRef.current) return
@@ -151,15 +236,101 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [msgHash, startAtBottom])
 
+  /** Hand an undelivered message back to the composer. The user may have typed
+   *  more since the send cleared it; `mergeRecoveredDraft` owns the rule for
+   *  keeping both, for every recovery site in the app -- its paragraph-break
+   *  join renders as such because the composer is ChatInput's textarea, the
+   *  same field every other recovery site writes into. Returns the composer
+   *  value before and after, so an "unconfirmed" restore can be undone later
+   *  if delivery is proven and the user has not touched it since. */
+  const restoreIntoComposer = useCallback((text: string): { before: string; after: string } => {
+    const before = draftRef.current
+    const after = mergeRecoveredDraft(before, text)
+    setDraft(after)
+    return { before, after }
+  }, [setDraft])
+
+  const wire = useMemo(() => appApiSendWire(api, agent), [api, agent])
+
+  /** The user's chat settings (send key), the same live setting the main
+   *  composer reads; local settings only, no fetch. */
+  const chatConfig = useChatConfig()
+
+  // Receipt semantics live in the chat-core transport: `sendTurn` owns the
+  // abort deadline and the shared classification, reached here through the
+  // app-sdk wire so the host app's `allowedApiPaths` grant still gates the
+  // POST. This embed only decides how to REACT per status:
+  // - `refused` / `transport-error`: nothing was sent. Say so on the
+  //   transcript and hand the text back. The old path reported neither -- it
+  //   swallowed the SSE stream's parse error as success and never consumed
+  //   `sendMutation.isError`, so a failed send looked sent and the text was
+  //   gone.
+  // - `response-late`: the deadline fired with no receipt either way. ChatPane
+  //   leaves this alone because its optimistic bubble is still on screen; this
+  //   embed keeps no bubble and the composer has already cleared, so the
+  //   user's text has NO visible copy left -- the case the transport contract
+  //   names as the one a caller may recover. Hand the text back and say the
+  //   delivery is unconfirmed (a notice, not a failure: the turn may well be
+  //   running, and the poll will show it if so).
+  // - `unknown`: a 2xx was received -- the server has the message and only
+  //   the receipt was mangled. Restoring would invite a duplicate; do nothing.
+  // - `dispatched` / `queued`: the server has the message. The poll below
+  //   renders it -- this embed keeps no optimistic bubble to confirm.
+  // A host-supplied `onSend` keeps its own endpoint and its rejection proves
+  // nothing about delivery (a host may have posted and lost the answer), so
+  // it is treated like `response-late`: unconfirmed, text handed back, never
+  // reported as a failure.
+  //
+  // Only a composer submit has anything to hand back: an option send never
+  // consumed the draft, so restoring the option label would CLOBBER a draft
+  // the user can re-click the chip for any time (the same gate ChatPane and
+  // ChatPage keep). The unconfirmed notice says so in its own words for a
+  // chip send -- "re-pick the option" -- instead of claiming a restore that
+  // did not happen.
   const sendMutation = useMutation({
-    mutationFn: (msg: string) => {
-      if (onSend) return Promise.resolve(onSend(msg))
-      return api.post('/api/chat', { message: msg, slot: slotKey, agent: agent || '' })
-        .catch((err) => {
-          // POST /api/chat returns SSE — JSON parse fails, expected.
-          if (err instanceof SyntaxError) return
-          throw err
+    // `msg` is the trimmed wire text; `draftText` is what the composer held,
+    // whitespace and all -- a recovery must give back what the user typed, not
+    // what the wire carried.
+    mutationFn: async ({ msg, draftText, override, seenCount, sendId }: { msg: string; draftText: string; override: boolean; seenCount: number; sendId: string }) => {
+      const fail = (reason?: string) => {
+        // FRAMED, not bare: a raw backend reason ("slot agent mismatch") reads
+        // as the agent erroring mid-work, not as "your request never went
+        // out" -- and this surface has no optimistic bubble to anchor it.
+        // Same core-owned framing key App.tsx's feedback send uses. Without a
+        // reason the only remaining cause is the transport itself (the wire
+        // names every server-side refusal), so that row states the cause too
+        // instead of a bare "Send failed".
+        setSendTail({
+          role: 'error',
+          content: (reason
+            ? i18nT('pages.chatPage.send_failed_with_error', { error: reason })
+            : i18nT('appSdk.chatEmbed.send_failed_connection')) as string,
+          seenCount,
+          sendId,
         })
+        if (!override) restoreIntoComposer(draftText)
+      }
+      const unconfirmed = () => {
+        const undo = override ? undefined : restoreIntoComposer(draftText)
+        setSendTail({
+          role: 'notice',
+          content: i18nT(override ? 'appSdk.chatEmbed.delivery_unconfirmed_option' : 'appSdk.chatEmbed.delivery_unconfirmed') as string,
+          seenCount,
+          sendId,
+          undo,
+        })
+      }
+      if (onSend) {
+        try {
+          await onSend(msg)
+        } catch {
+          unconfirmed()
+        }
+        return
+      }
+      const receipt = await sendTurn({ message: msg, slot: slotKey, meta: { sendId }, wire })
+      if (receipt.status === 'refused' || receipt.status === 'transport-error') fail(receipt.reason)
+      if (receipt.status === 'response-late') unconfirmed()
     },
     onSettled: () => { void refetch() },
   })
@@ -173,10 +344,14 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
    *  text — an override send carries its own text, so clearing the draft here would
    *  throw away a draft the user has not sent yet. */
   const send = useCallback((override?: string) => {
-    const msg = (override ?? draft).trim()
+    const draftText = override ?? draft
+    const msg = draftText.trim()
     if (!msg || sendMutation.isPending) return
+    setSendTail(null)
     if (override == null) setDraft('')
-    sendMutation.mutate(msg)
+    // Transcript length NOW and a fresh id: together the yardstick for "did the
+    // poll show THIS send".
+    sendMutation.mutate({ msg, draftText, override: override != null, seenCount: messageCountRef.current, sendId: mintSendId() })
   }, [draft, setDraft, sendMutation])
 
   // Resolve a pending tool approval from inside the embed.
@@ -259,7 +434,11 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         {/* canTrust: this embed's approve routes through the slot approve
             endpoint (above), which records standing trust — the one mount
             allowed to offer the tier (#5434). */}
-        <ChatMessageList messages={messages} running={running} onApprove={approve} onApproveBatch={approveBatch} canTrust />
+        <ChatMessageList messages={shownMessages} running={running} onApprove={approve} onApproveBatch={approveBatch} canTrust />
+        {/* The send-tail row is announced visually by the new-message scroll;
+            a screen-reader user would otherwise only notice the button
+            re-enabling. A polite live region carries the same text. */}
+        <div role="status" aria-live="polite" className="sr-only">{sendTail?.content ?? ''}</div>
         <div ref={endRef} />
         </div>
       </div>
@@ -283,27 +462,30 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         </div>
       )}
 
-      <div className={`flex items-center gap-2 px-3 py-2 shrink-0 ${frameless ? '' : 'border-t border-border bg-bg-accent'}`}>
-        <input
-          type="text"
-          {...composition}
-          aria-label={i18nT('appSdk.chatEmbed.chat_message')}
-          className="flex-1 min-w-0 px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-none focus-visible:border-accent transition-colors"
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => submitOnEnter(e, () => send())}
-          placeholder={running ? i18nT('appSdk.chatEmbed.agent_is_working') : (placeholder || i18nT('appSdk.chatEmbed.message'))}
-          disabled={sendMutation.isPending}
-        />
-        <button
-          className="p-2 rounded-md bg-accent text-accent-fg disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-80 transition-opacity"
-          onClick={() => send()}
-          disabled={sendMutation.isPending || !draft.trim()}
-          title={i18nT('appSdk.chatEmbed.send')}
-          aria-label={i18nT('appSdk.chatEmbed.send_message')}
-        >
-          {sendMutation.isPending ? <Loader2 size={16} className="animate-spin" /> : <ArrowUp size={16} />}
-        </button>
+      {/* The real composer under the fail-closed `embedded` flag (see the
+          file header). No onStop/onSteer: this embed must not stop or steer
+          the slot's turn, so while the agent runs the plain Send stays and a
+          send simply queues server-side (the same `queued` receipt as before
+          the swap). `sending`, not `disabled`, while a POST is in flight:
+          the button acknowledges the click with a spinner and refuses a
+          second fire, while the field stays live (ChatInput's `disabled`
+          would announce "Stopping..."). The user's send-key setting is the
+          same one the main composer honours -- read from local settings,
+          not fetched, so the no-dashboard-client invariant holds. */}
+      <div className={`shrink-0 ${frameless ? '' : 'border-t border-border bg-bg-accent'}`}>
+        <SlotProvider slotId={slotKey}>
+          <ChatInput
+            embedded
+            value={draft}
+            onChange={setDraft}
+            onSend={() => send()}
+            sending={sendMutation.isPending}
+            sendOnEnter={chatConfig.sendOnEnter}
+            isRunning={running}
+            placeholder={running ? i18nT('appSdk.chatEmbed.agent_is_working') : (placeholder || i18nT('appSdk.chatEmbed.message'))}
+            inputAriaLabel={i18nT('appSdk.chatEmbed.chat_message')}
+          />
+        </SlotProvider>
       </div>
     </div>
   )
