@@ -1279,7 +1279,9 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="local-destructive-rm-rf-home",
-        pattern="rm -rf ~.*",
+        # Also covers the $HOME / ${HOME} spellings (quoted or not — double
+        # quotes still expand), which the shell resolves to the same path (#8387).
+        pattern="rm -rf \"?(?:~|\\$HOME|\\$\\{HOME\\}).*",
         category="local-destructive",
         description=(
             "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which "
@@ -1790,6 +1792,8 @@ _LEGACY_RULE_ID_BY_PATTERN: dict[str, str] = {
         "self-protection-cloud"
     ),
     ".*kiro.?crew gateway restart.*": "self-protection-gateway-restart",
+    # Pre-$HOME widening home spelling (#8387): persisted pins keep resolving.
+    "rm -rf ~.*": "local-destructive-rm-rf-home",
 }
 
 

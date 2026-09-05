@@ -613,7 +613,7 @@
   },
   {
     "id": "local-destructive-rm-rf-home",
-    "pattern": "rm -rf ~.*",
+    "pattern": "rm -rf \"?(?:~|\\$HOME|\\$\\{HOME\\}).*",
     "category": "local-destructive",
     "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config."
   },
