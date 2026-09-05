@@ -2709,6 +2709,55 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 cfg_proj = ""
             slot.project = cfg_proj or default_project_dir(workspace)
         _sync_dashboard_slots(state)
+        # Persist INSIDE the suspension, ahead of the coalesced broadcast, the
+        # same ordering `session_control.py`'s create span uses ("the whole
+        # allocation-to-persist span runs under `suspend_slots_push`", so "a
+        # slot whose birth write fails is never broadcast at all"). Two paths
+        # mint a slot through this context manager and only this one had the
+        # durable write outside it, which is what made the difference below
+        # reachable:
+        #
+        # `suspend_slots_push`'s `__exit__` flushes the owed push, and on the
+        # coalescing window's LEADING edge that flush broadcasts synchronously
+        # (`state.push_slots_update`). An exception there — a non-serializable
+        # value reaching `json.dumps` is the evidenced shape (#6522, #6532) —
+        # escapes `__exit__`, so with the write out here it skipped a metadata
+        # mutation the request had already acknowledged: this `force=True` save
+        # is the ONLY durable record of a recreate's folder filing or pinned
+        # title (see `_save_slot_to_history`'s message-less merge), and the slot
+        # itself survives in memory, so nothing later reconciles the two. Every
+        # client repairs a dropped FRAME on its next read; none of them repairs
+        # a write that never happened.
+        #
+        # The cost this ordering accepts, named by the comment it replaces: the
+        # suspension is process-wide, so other clients' slot updates coalesce
+        # (they defer — no caller blocks) until this off-loop write completes,
+        # and a contended history lock takes the patient acquire. Accepted for
+        # the same reason the twin accepts it, which awaits a cross-process
+        # metadata write inside its own suspension; this span already suspends
+        # on the workspace-conflict probe above, so it was never await-free.
+        #
+        # A pinned title must persist too (not just a folder move): without the
+        # write, a restart rehydrates the previous title with a refreshable
+        # "auto" origin and the background refresh may rewrite the pin.
+        if folder_id or title or remote_slot_key:
+            # The create/recreate request has been authorized against this
+            # transcript.  Do not let a rebind while the off-loop write waits on
+            # the history lock redirect its newly supplied metadata to another
+            # session.
+            #
+            # No slot retraction on failure, unlike the twin: there the write is
+            # the newborn's only record, so an unpersisted slot would vanish on
+            # restart and retracting is the lesser evil. Here the slot already
+            # has a metadata line and `best_effort` (default) logs the failure
+            # and marks the slot dirty so the periodic flush retries it, which
+            # is the retry the metadata mutation routes rely on.
+            await save_slot_off_loop(
+                state,
+                slot,
+                force=True,
+                expected_history_key=slot_history_key(slot),
+            )
         # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
         # returns an existing named slot without pushing — and this handler is
         # now the only thing that files a slot (the client sends no follow-up
@@ -2718,27 +2767,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # placement. Inside the suspension this only marks a push owed, so the
         # new-slot path still emits exactly ONE coalesced frame.
         state.push_slots_update()
-    # Persist OUTSIDE the suspension. save_slot_off_loop deliberately takes the
-    # patient cross-process history lock, which another holder (a workflow or
-    # cron appending to the same session) can hold for a while — and the
-    # suspension is process-wide, so awaiting it inside would stall every
-    # client's slot updates behind one session's file lock. The in-memory slot
-    # is the source of truth and was already broadcast at block exit; a failed
-    # write re-arms the periodic flush (best_effort).
-    # A pinned title must persist too (not just a folder move): without the
-    # write, a restart rehydrates the previous title with a refreshable "auto"
-    # origin and the background refresh may rewrite the pin.
-    if folder_id or title or remote_slot_key:
-        # The create/recreate request has been authorized against this
-        # transcript.  Do not let a rebind while the off-loop write waits on
-        # the history lock redirect its newly supplied metadata to another
-        # session.
-        await save_slot_off_loop(
-            state,
-            slot,
-            force=True,
-            expected_history_key=slot_history_key(slot),
-        )
     # Speculative session creation: overlap the ACP handshake with the user's
     # think-time before their first message. No-op unless session.eager_spawn.
     #
