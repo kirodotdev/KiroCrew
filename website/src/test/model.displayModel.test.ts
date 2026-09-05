@@ -17,8 +17,11 @@ describe('displayModel', () => {
     expect(displayModel('claude-sonnet-5', list)).toBe('claude-sonnet-5')
   })
 
-  it('falls back to auto for a pin the list no longer offers', () => {
-    expect(displayModel('claude-opus-5', list)).toBe('auto')
+  it('shows the pin when the list no longer offers it (fail open, no inference)', () => {
+    // #7575 removed the picker-membership inference: an absent row is not
+    // evidence the account lost the model (deprecation, curation and dedup
+    // all narrow the list), so unknown fails open to the pin.
+    expect(displayModel('claude-opus-5', list)).toBe('claude-opus-5')
   })
 
   it('returns the list spelling so the row actually highlights', () => {
@@ -37,9 +40,9 @@ describe('displayModel', () => {
     // `claude-opus-4-8` is the advertised 200K model (`opus-4.8`) while the
     // list's `claude-opus-4.8` is the 1M model (`opus-4.8-1m`). The old
     // dot->dash string fold equated them; routing through the registry keeps
-    // the two context-window variants distinct, so a 200K pin against a
-    // 1M-only list reads as withheld.
-    expect(displayModel('claude-opus-4-8', list)).toBe('auto')
+    // the two context-window variants distinct. Unknown still fails open to
+    // the pin (#7575) rather than relabelling it `auto`.
+    expect(displayModel('claude-opus-4-8', list)).toBe('claude-opus-4-8')
   })
 
   it('keeps the pin when the list is marked degraded', () => {
@@ -56,10 +59,10 @@ describe('displayModel', () => {
   })
 
   it('does not treat list length as the degraded signal', () => {
-    // A live backend advertising only auto genuinely offers only auto, so a pin
-    // absent from it IS withheld. Length is not evidence either way — that is
-    // what the degraded flag is for.
-    expect(displayModel('claude-opus-5', [{ name: 'auto' }])).toBe('auto')
+    // Length is not evidence either way — and since #7575 there is no
+    // membership inference at all: unknown fails open to the pin whether
+    // the list holds only auto or is marked degraded.
+    expect(displayModel('claude-opus-5', [{ name: 'auto' }])).toBe('claude-opus-5')
     expect(displayModel('claude-opus-5', [{ name: 'auto' }], true)).toBe('claude-opus-5')
   })
 
@@ -111,11 +114,12 @@ describe('displayModel with the backend verdict', () => {
     )
   })
 
-  it('falls back to membership when there is no verdict yet', () => {
+  it('fails open to the pin when there is no verdict yet', () => {
     // Unknown is the absence of an answer, not a denial: a slot that has never
-    // spawned a session carries null, and behaviour must be exactly as before.
+    // spawned a session carries null, and #7575 removes the membership
+    // inference — so an absent row no longer relabels the pin as `auto`.
     for (const unknown of [null, undefined]) {
-      expect(displayModel('claude-opus-5', list, false, unknown)).toBe('auto')
+      expect(displayModel('claude-opus-5', list, false, unknown)).toBe('claude-opus-5')
       expect(displayModel('claude-sonnet-5', list, false, unknown)).toBe('claude-sonnet-5')
       expect(displayModel('claude-opus-5', list, true, unknown)).toBe('claude-opus-5')
     }

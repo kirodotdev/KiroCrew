@@ -5,20 +5,21 @@
  *  visibly after a plan downgrade, where the slot stays pinned to a premium
  *  model the account can no longer run. The backend withholds such a model at
  *  spawn and runs the session on its own default, so displaying the pin would
- *  name a model no turn will use. The slots payload carries the backend's own
- *  verdict for that case (`model_withheld`), so the answer is read rather than
- *  cross-referenced out of the two lists; list membership is only the fallback
- *  for a slot that has no verdict yet.
+ *  name a model no turn will use. The slots payload carries the backend's
+ *  effective model id (`effective_model`) — the normalized wire id the next
+ *  turn will actually send — so the answer is read rather than inferred from
+ *  picker-list membership; the legacy boolean (`model_withheld`) is kept for
+ *  backward compat. Unknown (null) fails open and shows the pin.
  */
 
 import { canonicalKey } from '../providers/modelRegistry'
 
 /** Canonical key for comparing model ids across spelling variants.
  *
- *  Mirrors `_normalize_model_key` in `dashboard/handlers/agents.py`: both route
- *  a model id through the shared canonical registry (`model_registry.json`) so
- *  "same model?" has ONE definition across the dashboard (picker, slot display,
- *  and the #5306 subagent downgrade flag).
+ *  Kept for the unknown fallback and for `pinIsWithheld`; the effective-model
+ *  path no longer needs it because the backend hands over an already-resolved
+ *  wire id (deprecated aliases resolved, withheld mapped to `auto`), removing
+ *  the mirrored `_normalize_model_key` predicate (#7575).
  *
  *  Resolution order:
  *  1. `auto`/`default`/unset -> the `auto` sentinel (both mean "let the backend
@@ -48,59 +49,58 @@ export function normalizeModelKey(name: string): string {
 
 /** The model id to DISPLAY for a slot pinned to `pinned`.
  *
- *  `withheld` is the backend's OWN verdict for this pin, carried in the slots
- *  payload (`model_withheld`), and it wins whenever it exists: it was computed
- *  at spawn against the live session's advertised list — the same list the
- *  withhold itself is applied from — so it answers "will a turn use this pin?"
- *  directly. `true` -> `auto`, `false` -> the pin. Inferring the answer from
- *  picker-list membership instead made every filter applied to `/api/models` an
- *  entitlement signal: deprecated ids are dropped there BEFORE the entitlement
- *  narrowing, so a deprecated-but-runnable pin had no row to match and read as
- *  `auto` (#1819).
+ *  `effective` is the slot's effective model id (`effective_model` from the
+ *  slots payload) — the normalized wire id the next turn will actually send —
+ *  or the legacy boolean (`model_withheld`) for backward compat. It wins
+ *  whenever it is known: it was computed at spawn against the live session's
+ *  advertised list (or, for a deprecated alias, resolved even before the first
+ *  turn), so it answers "will a turn use this pin?" directly. A string
+ *  `"auto"` means withheld, any other string is the runnable wire id (for a
+ *  deprecated pin, its replacement, so the chip names the replacement rather
+ *  than `auto` or the deprecated spelling). `true`/`false` are the legacy
+ *  boolean encoding.
  *
- *  `null`/`undefined` is the third state — no verdict yet (no session has
- *  advertised a comparable list for this pin) — and it must fail open, so it
- *  falls back to the list-membership heuristic below. Unknown is not denied.
- *
- *  Without a verdict: returns `'auto'` when the pin is absent from `models`,
- *  since the picker's list is narrowed to what the live session says the account
- *  can run.
- *
- *  `degraded` is the authority on whether the list can be trusted, and it must
- *  come from `modelsDegraded(providerId)` — NOT from the list's shape. A cached
- *  multi-row list served while `/api/models` is failing looks perfectly healthy
- *  by length while being arbitrarily stale, so length alone would relabel a pin
- *  the account has (re)gained access to. When `degraded` is true the pin is
- *  returned untouched: entitlement unknown is not entitlement denied. It gates
- *  the heuristic only — a verdict does not come from that list, so a stale list
- *  says nothing about it.
+ *  `null`/`undefined` is the third state — no verdict yet — and it must fail
+ *  open: return the pin itself. The previous membership heuristic (absent from
+ *  `models` => `auto`, gated by `modelsDegraded`) is removed; every
+ *  `/api/models` filter (deprecation, curation) would otherwise become an
+ *  entitlement signal (#7575). `degraded` is kept as a param for backward
+ *  compat but no longer gates the display.
  *
  *  This is a DISPLAY decision only. Never feed the result into a write — a
  *  lossy label must not become persisted state (see ChatPage's pin-to-agent
- *  row, which writes the slot's real model).
+ *  row, which writes the slot's real model, and the firewall note in
+ *  `DashboardState.effective_model`).
  */
 export function displayModel(
   pinned: string,
   models: { name: string }[],
   degraded = false,
-  withheld: boolean | null | undefined = null,
+  effective?: string | boolean | null | undefined,
 ): string {
   const key = normalizeModelKey(pinned)
   if (!key || key === 'auto') return 'auto'
-  if (withheld === true) return 'auto'
-  // Return the LIST's spelling of the match, not the caller's. Matching is
-  // normalized (dotted vs dashed, case) but `ModelDropdownList` highlights on
-  // exact `activeModel === m.name`, so handing back the raw pin would show a
-  // model in the chip that checks no row — e.g. a config pin `claude-opus-4.8`
-  // against an advertised `claude-opus-4-8`.
+  // New path: backend-supplied effective wire id.
+  if (typeof effective === 'string') {
+    const effKey = normalizeModelKey(effective)
+    if (!effKey || effKey === 'auto') return 'auto'
+    const match = models.find(m => normalizeModelKey(m.name) === effKey)
+    return match ? match.name : effective
+  }
+  // Legacy boolean path.
+  if (effective === true) return 'auto'
+  if (effective === false) {
+    const match = models.find(m => normalizeModelKey(m.name) === key)
+    return match ? match.name : pinned
+  }
+  // Unknown (null/undefined): fail open, show the pin. No membership
+  // inference — absence from `models` is not evidence of withholding (it
+  // conflated every unrelated picker filter with entitlement). Still return
+  // the list's spelling when the pin matches a row, so the dropdown row
+  // highlights; only the `auto` fallback for absent rows is gone.
+  void degraded
   const match = models.find(m => normalizeModelKey(m.name) === key)
-  // Verdict says runnable: show it even when the list omits the row. There is no
-  // row to highlight in that case, which is inherent — a filtered-out model
-  // cannot be a picker row — and naming the user's actual pin beats naming
-  // `auto`, which no turn will run either.
-  if (withheld === false) return match ? match.name : pinned
-  if (degraded || models.length === 0) return pinned
-  return match ? match.name : 'auto'
+  return match ? match.name : pinned
 }
 
 /** True when a real model is pinned but display fell back to `auto` — i.e. the

@@ -216,6 +216,12 @@ class SlotProjection:
             # curation) narrows, which silently turned those filters into
             # entitlement signals (#1819). DISPLAY only; never a write source.
             "model_withheld": slot.model_withheld,
+            # Normalized wire id the next turn will actually send, or null when
+            # entitlement is still unknown. Lets the chip name a deprecated pin's
+            # replacement rather than `auto` even before the first turn, and lets
+            # the frontend drop its mirror of `_normalize_model_key` (#7575).
+            # DISPLAY only, firewalled from writes; pin is KEPT when withheld.
+            "effective_model": slot.effective_model,
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
             "surface": slot.mode,

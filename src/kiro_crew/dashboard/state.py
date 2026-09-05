@@ -4583,6 +4583,39 @@ class _ChatSlot:
         self._model_withheld_for = self.model or ""
 
     @property
+    def effective_model(self) -> str | None:
+        """Normalized wire id the next turn will actually send, or None when unknown.
+
+        Tri-state: ``"auto"`` when the live session withholds the pin,
+        the normalized pin (deprecated aliases resolved) when runnable,
+        ``None`` when entitlement is not yet known. The third state
+        must fail open (see ``displayModel``); unknown is not denied.
+
+        For a deprecated pin the replacement is known even before the
+        first turn, so it is returned even when the verdict is unknown --
+        fixing the pre-first-turn mislabel where such a pin read as
+        ``auto`` because ``api_models`` drops deprecated ids before the
+        entitlement narrowing.
+
+        DISPLAY only, firewalled from writes: the pin-to-agent row
+        writes ``slot.model`` itself, never this field, and the pin is
+        deliberately KEPT when withheld (inert, self-heals on re-upgrade).
+        """
+        if not self.model or self.model == "auto":
+            return "auto"
+        # Late import to avoid cycle: chat_utils is leaf, state is hub.
+        from kiro_crew.dashboard.chat_utils import _normalize_model
+
+        normalized = _normalize_model(self.model)
+        if self._model_withheld_for == self.model:
+            return "auto" if self._model_withheld else normalized
+        # No verdict yet: deprecated mapping is session-independent,
+        # so a deprecated pin already knows its replacement.
+        if normalized != self.model:
+            return normalized
+        return None
+
+    @property
     def is_restricted(self) -> bool:
         """True when memory writes (consolidation, lessons) are blocked."""
         return self.memory_mode != "persistent"

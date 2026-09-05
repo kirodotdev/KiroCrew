@@ -243,18 +243,17 @@ export default function ChatPane({
   const agentDD = useFilteredDropdown(installedAgents)
   const availableModels = useAvailableModels()
   const modelDD = useFilteredDropdown(availableModels)
-  // See ChatPage: display what will actually run, not a pin the account lost
-  // access to. The slot's own `model_withheld` verdict answers that when the
-  // backend has one; the degraded flag gates only the list-membership fallback —
-  // a cached list served while /api/models fails is stale and cannot disprove
-  // entitlement — and is subscribed to, since it can flip while the served list
-  // stays identical.
+  // Display what will actually run. The slot's `effective_model` (normalized
+  // wire id, or "auto" when withheld) wins when known; unknown fails open to
+  // the pin. The legacy `model_withheld` boolean is kept as fallback. The
+  // degraded flag is retained for subscription but no longer gates display.
   const _modelsDegraded = useModelsDegraded(provider.id)
   const shownModel = displayModel(
     paneSlot?.model || '',
     availableModels,
     _modelsDegraded,
-    paneSlot?.model_withheld,
+    (paneSlot as unknown as { effective_model?: string | null })?.effective_model ??
+      paneSlot?.model_withheld,
   )
 
   // One-time hydrate of this slot's message history via React Query + the api
