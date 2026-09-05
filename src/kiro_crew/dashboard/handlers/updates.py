@@ -26,6 +26,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
+from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.executors import subprocess_executor
@@ -1197,19 +1198,31 @@ async def api_update_auto(request: web.Request) -> web.Response:
         return data
 
     # `update_config_locked` holds the advisory lock across the READ and the write, so no
-    # other process can land between them -- the whole point, since the in-process
-    # `_get_config_lock()` this endpoint used to rely on does not serialize against the CLI
-    # or a second gateway.
+    # other process can land between them -- that is what stopped the CLI and a second
+    # gateway interleaving here.
     #
-    # Offloaded because that lock is blocking: called inline from this coroutine it would
-    # stall every session and the liveness heartbeat while contended, which is what the
-    # repo's `no-blocking-call-on-event-loop` rule forbids.
+    # But the flock is only ONE of the two generations that guard config.json. The legacy
+    # dashboard writers -- the agents endpoint, core.py's theme/settings PUT, security.py,
+    # messaging.py, mcp.py, computer_use.py -- do a read-modify-write of this same file
+    # while holding ONLY the loop-side `_get_config_lock()`, which the sidecar flock does
+    # not exclude. So a theme save landing between this endpoint's read and its write
+    # commits from a snapshot taken before it, and silently reverts the auto-update flag
+    # the user just toggled -- or this write reverts their theme. Nothing errors and the
+    # response still reports success, because it is built from `enabled` rather than from
+    # a re-read of what actually landed.
+    #
+    # `run_config_write` is the one entry point that holds BOTH: it takes the loop-side
+    # lock on the event loop and then runs the blocking writer in a worker, so the flock
+    # wait still never stalls the loop -- the property the bare `to_thread` was there for,
+    # unchanged. Nothing here holds a config lock already, so this introduces no nesting;
+    # the handler is a flat coroutine and `run_config_write` is its only lock acquisition.
     #
     # The read still fails CLOSED (`on_corrupt` defaults to "fail"): treating an unreadable
     # config as {} would write back a single-key file and wipe every other setting the user
-    # has (see read_config_for_update).
+    # has (see read_config_for_update). `run_config_write` propagates the writer's
+    # exceptions unchanged, so that contract is untouched.
     try:
-        await asyncio.to_thread(update_config_locked, config_path(), mutate=_set_auto_update)
+        await run_config_write(update_config_locked, config_path(), mutate=_set_auto_update)
     except ConfigReadError:
         logger.exception("Refusing to toggle auto-update: config is unreadable")
         return web.json_response(
