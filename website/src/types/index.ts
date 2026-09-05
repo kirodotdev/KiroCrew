@@ -1,3 +1,22 @@
+import type { ReviewFixMetadata } from './reviewFix'
+
+export type {
+  ReviewFixActionRequest,
+  ReviewFixAuditEvent,
+  ReviewFixCreateInput,
+  ReviewFixFindingSnapshot,
+  ReviewFixGit,
+  ReviewFixGroup,
+  ReviewFixGroupState,
+  ReviewFixMetadata,
+  ReviewFixModel,
+  ReviewFixState,
+  ReviewFixTarget,
+  ReviewFixTargetMode,
+  ReviewFixTaskResponse,
+  ReviewFixValidation,
+} from './reviewFix'
+
 export interface StatusData {
   uptime: string
   start_time?: number
@@ -1261,6 +1280,11 @@ export interface ProjectRun {
    * Reflects the last chosen value; deny-lists and force_approval gates still block. */
   auto_approve?: boolean
   auto_approve_remaining_secs?: number
+  /** Present only for Code Review Sage tasks; generic runs leave it absent. */
+  review_fix?: ReviewFixMetadata | null
+  /** Whether this run uses the dedicated review-fix executor. */
+  execution_mode?: string
+  commit_policy?: string
 }
 export interface TaskRunnerStatus {
   running: boolean; available: boolean; runs: ProjectRun[]

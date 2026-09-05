@@ -36,6 +36,12 @@ import type {
   RunReport,
   UserReposResponse,
 } from './lib/types'
+import {
+  REVIEW_MODEL_AUTO,
+  type ReviewLinksInput,
+  type ReviewRepoStart,
+  type ReviewStartInput,
+} from './lib/types'
 
 /** A repo the picker is currently showing PRs for. */
 export interface ActiveRepo {
@@ -49,6 +55,11 @@ export function repoUrl(r: ActiveRepo): string {
 
 export function repoSlug(r: ActiveRepo): string {
   return `${r.owner}/${r.repo}`
+}
+
+function concreteReviewModel(model?: string | null): string | undefined {
+  const selected = model?.trim()
+  return selected && selected !== REVIEW_MODEL_AUTO ? selected : undefined
 }
 
 export interface SageContextValue {
@@ -107,13 +118,20 @@ export interface SageContextValue {
   postError: Error | null
 
   // --- Starting a review ---
-  startReview: UseMutationResult<{ run_id: string; changes: string[] }, Error, string[]>
-  startReviewLinks: UseMutationResult<{ run_id: string; changes: string[] }, Error, string>
-  startRepoReview: UseMutationResult<
-    { run_id?: string; repo: string; changes: string[]; skipped: number; status: string; message?: string },
-    Error,
-    { repo: string; force: boolean }
-  >
+  /** The model used by new reviews; it is intentionally provider-scoped UI state,
+   * not the global Sage Settings model. */
+  reviewModel: string
+  setReviewModel: (model: string) => void
+  startReview: UseMutationResult<{
+    run_id: string; changes: string[]; model?: string | null
+  }, Error, ReviewStartInput>
+  startReviewLinks: UseMutationResult<{
+    run_id: string; changes: string[]; model?: string | null
+  }, Error, ReviewLinksInput>
+  startRepoReview: UseMutationResult<{
+    run_id?: string; repo: string; changes: string[]; skipped: number; status: string
+    message?: string; model?: string | null
+  }, Error, ReviewRepoStart>
 
   // --- Repo + PR discovery ---
   pinnedRepos: PinnedRepo[]
@@ -202,6 +220,15 @@ export function SageProvider({ children, initialRunId }: {
     restored.activeRepo ?? null)
   const [selectedPr, setSelectedPr] = useState<PrRef | null>(
     initialRunId ? null : restored.selectedPr ?? null)
+  // Keep this above the detail/list split: both surfaces use the same selection,
+  // and changing PRs or runs must not silently reset a deliberate model choice.
+  const [reviewModel, setReviewModelState] = useState(REVIEW_MODEL_AUTO)
+  const reviewModelRef = useRef(REVIEW_MODEL_AUTO)
+  const setReviewModel = useCallback((model: string) => {
+    const next = model.trim() || REVIEW_MODEL_AUTO
+    reviewModelRef.current = next
+    setReviewModelState(next)
+  }, [])
   const [discoveryEnabled, setDiscoveryEnabled] = useState(false)
   const prsRef = useRef<RepoPr[]>([])
 
@@ -409,16 +436,34 @@ export function SageProvider({ children, initialRunId }: {
   }, [invalidateRuns])
 
   const startReview = useMutation({
-    mutationFn: (changes: string[]) => sageApi.review(changes),
+    mutationFn: (input: ReviewStartInput) => {
+      const changes = Array.isArray(input) ? input : input.changes
+      const model = concreteReviewModel(Array.isArray(input)
+        ? reviewModelRef.current
+        : input.model)
+      return model ? sageApi.review(changes, model) : sageApi.review(changes)
+    },
     onSuccess: (d) => onStarted(d.run_id),
   })
   const startReviewLinks = useMutation({
-    mutationFn: (links: string) => sageApi.reviewLinks(links),
+    mutationFn: (input: ReviewLinksInput) => {
+      const links = typeof input === 'string' ? input : input.links
+      const model = concreteReviewModel(typeof input === 'string'
+        ? reviewModelRef.current
+        : input.model)
+      return model ? sageApi.reviewLinks(links, model) : sageApi.reviewLinks(links)
+    },
     onSuccess: (d) => onStarted(d.run_id),
   })
   const startRepoReview = useMutation({
-    mutationFn: ({ repo, force }: { repo: string; force: boolean }) =>
-      sageApi.reviewRepo(repo, force),
+    mutationFn: (input: ReviewRepoStart) => {
+      const model = concreteReviewModel(input.model === undefined
+        ? reviewModelRef.current
+        : input.model)
+      return model
+        ? sageApi.reviewRepo(input.repo, input.force, model)
+        : sageApi.reviewRepo(input.repo, input.force)
+    },
     // A repo review can legitimately start nothing (every PR already reviewed);
     // that comes back as status "noop" with no run_id, so don't navigate.
     onSuccess: (d) => onStarted(d.run_id),
@@ -596,6 +641,8 @@ export function SageProvider({ children, initialRunId }: {
       : undefined,
     postError: (postMut.error as Error) ?? (postGroupsMut.error as Error) ?? null,
 
+    reviewModel,
+    setReviewModel,
     startReview,
     startReviewLinks,
     startRepoReview,

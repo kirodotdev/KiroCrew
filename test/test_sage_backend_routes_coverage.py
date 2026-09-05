@@ -92,9 +92,11 @@ class _FakePool:
     def __init__(self):
         self.began = 0
         self.ended = 0
+        self.batch_models: list[str | None] = []
 
-    async def begin_batch(self):
+    async def begin_batch(self, model=None):
         self.began += 1
+        self.batch_models.append(model)
 
     async def end_batch(self):
         self.ended += 1
@@ -230,8 +232,9 @@ class TestRunPayloadCarriesReasonToken(_SageRoutesBase):
         run: dict = {"run_id": "r1", "changes": ["https://x/pull/1"],
                      "change_ids": ["c1"], "status": "running"}
 
+        # begin_batch carries the run's pinned model, as ReviewPool.begin_batch does.
         class _Pool:
-            async def begin_batch(self):
+            async def begin_batch(self, model=None):
                 return None
 
             async def end_batch(self):
@@ -1049,7 +1052,10 @@ class TestPostCommentsBg(_SageRoutesBase):
         with stack:
             await self.mod._post_comments_bg("P1", run)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0]["dispatch"], "DISPATCH-SENTINEL")
+        # The poster receives the routes-level dispatch WRAPPER (model-bound),
+        # not the raw pool dispatch; the wrapper's behavior is pinned by the
+        # round-3 model-binding tests below.
+        self.assertTrue(callable(calls[0]["dispatch"]))
         self.assertFalse(run["posting"])
         self.assertEqual(run["posted_comments"], 3)
         self.assertIsNone(run["post_error"])
@@ -1136,6 +1142,182 @@ class TestPostCommentsBg(_SageRoutesBase):
             await self.mod._post_comments_bg("P1", run)
         rec = run["summary"]["per_change"][0]
         self.assertEqual(rec.get("posted_keys"), ["k1"])
+
+    # ── round-3: the poster must carry the run's pinned model ──
+
+    def _model_stack(self, dispatch_models: list):
+        """Like _stack, but the poster records the model its dispatch names.
+
+        make_sync_dispatch is stubbed with a factory whose returned dispatch
+        appends every ``model`` it is called with, and post_recorded is driven
+        for real (only its dispatch call is intercepted) so a
+        post_kwargs["model"] regression would resurface as a TypeError.
+        """
+
+        def _post(change_id, link, *, dispatch, run_id="", keys=None, confirm=None):
+            # Call the wrapper the way the real poster turn does (positional
+            # task + timeout, no model of its own).
+            dispatch("POST-TASK", 5)
+            return {"post_ok": True, "posted_keys": []}
+
+        def _factory(loop, pool, default_timeout=None):
+            def dispatch(task, timeout=default_timeout or 30,
+                         on_activity=None, keep_session_key=None, model=None):
+                dispatch_models.append(model)
+                return {"ok": True, "output": "", "error": ""}
+
+            return dispatch
+
+        stack = contextlib.ExitStack()
+        stack.enter_context(unittest.mock.patch.object(
+            self.mod.review_pool, "get_pool", return_value=self.pool))
+        stack.enter_context(unittest.mock.patch.object(
+            self.mod.review_pool, "make_sync_dispatch", side_effect=_factory))
+        stack.enter_context(unittest.mock.patch.object(
+            self.mod.review_driver, "post_recorded", side_effect=_post))
+        stack.enter_context(unittest.mock.patch.object(
+            self.mod, "_pending_comment_count", return_value=0))
+        stack.enter_context(unittest.mock.patch.object(self.mod, "_record_reviewed"))
+        return stack
+
+    async def test_an_explicit_model_run_posts_and_binds_the_pinned_model(self):
+        # Regression: post_recorded has NO model parameter, so the old
+        # post_kwargs["model"] raised TypeError on every explicit-model post;
+        # and a plain make_sync_dispatch would acquire(None) against a batch
+        # pinned to m1 and fail closed. Both are covered by this happy path.
+        run = self._run(model="m1")
+        dispatch_models: list = []
+        with self._model_stack(dispatch_models):
+            await self.mod._post_comments_bg("P1", run)
+        self.assertFalse(run["posting"])
+        self.assertIsNone(run["post_error"])
+        self.assertEqual(self.pool.batch_models, ["m1"])
+        # The dispatch the poster used bound the run's pinned model.
+        self.assertEqual(dispatch_models, ["m1", "m1"])  # one per change
+
+    async def test_a_task_level_model_beats_the_run_pinned_model(self):
+        run = self._run(model="m1")
+        # The driver hands a task-named model straight through dispatch().
+
+        def _post(change_id, link, *, dispatch, run_id="", keys=None, confirm=None):
+            dispatch("POST-TASK", 5, model="task-model")
+            return {"post_ok": True, "posted_keys": []}
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(
+                self.mod.review_pool, "get_pool", return_value=self.pool))
+            stack.enter_context(unittest.mock.patch.object(
+                self.mod.review_driver, "post_recorded", side_effect=_post))
+            stack.enter_context(unittest.mock.patch.object(
+                self.mod, "_pending_comment_count", return_value=0))
+            stack.enter_context(unittest.mock.patch.object(self.mod, "_record_reviewed"))
+
+            real_dispatches: list = []
+
+            def _factory(loop, pool, default_timeout=None):
+                def dispatch(task, timeout=default_timeout or 30,
+                             on_activity=None, keep_session_key=None, model=None):
+                    real_dispatches.append(model)
+                    return {"ok": True, "output": "", "error": ""}
+                return dispatch
+
+            with unittest.mock.patch.object(
+                    self.mod.review_pool, "make_sync_dispatch",
+                    side_effect=_factory):
+                await self.mod._post_comments_bg("P1", run)
+
+        self.assertEqual(real_dispatches, ["task-model", "task-model"])
+
+    async def test_a_no_model_run_passes_model_none_through(self):
+        run = self._run()
+        dispatch_models: list = []
+        with self._model_stack(dispatch_models):
+            await self.mod._post_comments_bg("P1", run)
+        self.assertFalse(run["posting"])
+        self.assertIsNone(run["post_error"])
+        self.assertEqual(self.pool.batch_models, [None])
+        self.assertEqual(dispatch_models, [None, None])  # one per change
+
+    async def test_post_recorded_has_no_model_parameter(self):
+        # Regression pin on the signature itself: the TypeError the old caller
+        # hit must stay loud if the parameter is (re)added accidentally rather
+        # than plumbed.
+        import inspect
+
+        self.assertNotIn(
+            "model", inspect.signature(self.mod.review_driver.post_recorded).parameters)
+
+
+# ── the review run itself must carry the run's pinned model ──
+
+class TestRunReviewBgModelBinding(_SageRoutesBase):
+    """``run_review`` takes no model parameter, so the pin travels through the
+    dispatch the driver is handed. Same contract the poster path pins above:
+    a bare ``make_sync_dispatch`` acquires None against a batch pinned to m1,
+    so an explicit-model review used to die on its first dispatched task."""
+
+    def setUp(self):
+        super().setUp()
+        self.pool = _FakePool()
+
+    def _model_stack(self, dispatch_models: list):
+        """Stub the pool, the preflight, and the driver; record the model each
+        dispatched review task carried."""
+
+        def _run_review(changes, *, dispatch=None, progress=None, run_id="",
+                        cancelled=None, preflight=None, concurrency=1):
+            dispatch("REVIEW-TASK", 5)
+            return {"ok": True, "changes": len(changes), "cancelled": 0,
+                    "result_records": len(changes), "deep_reviewed": len(changes)}
+
+        def _factory(loop, pool, default_timeout=None):
+            def dispatch(task, timeout=default_timeout or 30,
+                         on_activity=None, keep_session_key=None, model=None):
+                dispatch_models.append(model)
+                return {"ok": True, "output": "", "error": ""}
+
+            return dispatch
+
+        stack = contextlib.ExitStack()
+        stack.enter_context(unittest.mock.patch.object(
+            self.mod.review_pool, "get_pool", return_value=self.pool))
+        stack.enter_context(unittest.mock.patch.object(
+            self.mod.review_pool, "runtime_preflight", return_value=""))
+        stack.enter_context(unittest.mock.patch.object(
+            self.mod.review_pool, "make_sync_dispatch", side_effect=_factory))
+        stack.enter_context(unittest.mock.patch.object(
+            self.mod.review_driver, "run_review", side_effect=_run_review))
+        stack.enter_context(unittest.mock.patch.object(self.mod, "_record_reviewed"))
+        return stack
+
+    def _run(self, **kw):
+        run = {
+            "run_id": "R1",
+            "status": "running",
+            "changes": ["https://github.com/acme/repo/pull/1"],
+        }
+        run.update(kw)
+        self.mod._RUNS = [run]
+        return run
+
+    async def test_an_explicit_model_run_binds_the_pinned_model(self):
+        run = self._run(model="m1")
+        dispatch_models: list = []
+        with self._model_stack(dispatch_models):
+            await self.mod._run_review_bg(run, list(run["changes"]))
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(self.pool.batch_models, ["m1"])
+        # The dispatch the driver used bound the run's pinned model.
+        self.assertEqual(dispatch_models, ["m1"])
+
+    async def test_a_no_model_run_passes_model_none_through(self):
+        run = self._run()
+        dispatch_models: list = []
+        with self._model_stack(dispatch_models):
+            await self.mod._run_review_bg(run, list(run["changes"]))
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(self.pool.batch_models, [None])
+        self.assertEqual(dispatch_models, [None])
 
 
 # ── remaining request-guard branches on the neighbouring handlers ──

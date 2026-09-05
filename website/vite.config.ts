@@ -723,6 +723,9 @@ export default defineConfig({
         'src/test/**',
         'src/**/*.test.{ts,tsx}',
         'src/**/*.d.ts',
+        // Pure type declarations: no runtime statements exist to cover, so
+        // measuring them yields a phantom 0% row that trips the per-file floor.
+        'src/types/reviewFix.ts',
         'src/vite-env.d.ts',
       ],
     },

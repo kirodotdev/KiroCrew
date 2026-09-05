@@ -6,7 +6,7 @@
 // report, that a live run polls, that the report renders inline rather than
 // linking away, and that starting a review opens its new thread.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1178,9 +1178,14 @@ describe('posting a chosen subset', () => {
   it('clears a selection without sending', async () => {
     await openFindings()
     await userEvent.click(screen.getByRole('checkbox', { name: /Select security in src\/jar\.py/ }))
-    await userEvent.click(screen.getByRole('button', { name: /Clear/ }))
+    // The clear affordance lives behind the row's overflow menu once anything
+    // is ticked (the two visible slots go to the primary actions).
+    fireEvent.pointerDown(screen.getByRole('button', { name: /More actions/i }), {
+      pointerId: 1, button: 0, ctrlKey: false, isPrimary: true,
+    })
+    await userEvent.click(await screen.findByText('Clear comment selection'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Draft \d+ comments/ })).toBeTruthy())
     expect(mockApi.postComments).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: /Draft \d+ comments/ })).toBeTruthy()
   })
 
   it('untickes on a second click', async () => {

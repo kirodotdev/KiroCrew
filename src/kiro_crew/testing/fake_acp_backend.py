@@ -19,6 +19,10 @@ Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
   for pre-approved tools. The emitted ``rawInput`` carries the reserved purpose
   argument under its camelCase spelling (see ``_TOOL_PURPOSE``), so the pill's
   concise-label path is covered by the harness.
+* ``[[REVIEW_FIX_EDIT:<relative-path>|<base64-bytes>]]`` -> write the decoded
+  bytes below the process cwd and emit a completed or failed edit tool event.
+  This is a deterministic Review Fix-only test protocol; absolute paths and
+  traversal are rejected.
 * ``[[PERMISSION]]`` in the prompt -> the ``[[TOOL]]`` sequence PLUS a
   server->client ``session/request_permission`` (to surface the approval
   modal). This is **fire-and-forget**: the fake does not gate its own
@@ -62,11 +66,14 @@ offline gateway exercises the same first-run readiness gate as production.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import queue
 import sys
 import threading
 import time
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
 PROTOCOL_VERSION = "2025-08-22"
@@ -79,6 +86,8 @@ FAKE_IDENTITY = "fake-e2e-user"
 
 # Prompt sentinels. Absent by default so a plain prompt stays text-only.
 TOOL_TRIGGER = "[[TOOL]]"
+REVIEW_FIX_EDIT_PREFIX = "[[REVIEW_FIX_EDIT:"
+REVIEW_FIX_EDIT_SUFFIX = "]]"
 PERMISSION_TRIGGER = "[[PERMISSION]]"
 # Permission that actually GATES: the fake waits for the host's answer and
 # reflects it in the tool_call_update status. Distinct from PERMISSION_TRIGGER,
@@ -122,6 +131,7 @@ ERROR_MESSAGE = "fake ACP backend: injected failure"
 
 _SESSION_ID = "fake-1"
 _TOOL_CALL_ID = "fake-tool-1"
+_REVIEW_FIX_EDIT_TOOL_CALL_ID = "fake-review-fix-edit-1"
 # The agent-authored purpose line, carried as a reserved tool argument. kiro-cli
 # echoes it back in ``rawInput`` under EITHER spelling; the fake emits the
 # camelCase one so the harness exercises the shape the dashboard's concise tool
@@ -242,6 +252,102 @@ def _prompt_text(params: dict[str, Any]) -> str:
         if isinstance(b, dict) and b.get("type") == "text"
     ]
     return "".join(parts)
+
+
+def _review_fix_edit_payload(text: str) -> tuple[str, bytes] | None:
+    """Decode one Review Fix edit marker without accepting host paths.
+
+    The fake process is already cwd'd into the candidate worktree. The marker
+    carries only a relative path and bytes, never a command, so a fixture cannot
+    turn the fake backend into an arbitrary subprocess launcher.
+    """
+    start = text.find(REVIEW_FIX_EDIT_PREFIX)
+    if start < 0:
+        return None
+    payload_start = start + len(REVIEW_FIX_EDIT_PREFIX)
+    end = text.find(REVIEW_FIX_EDIT_SUFFIX, payload_start)
+    if end < 0:
+        raise ValueError("Review Fix edit marker is not closed")
+
+    payload = text[payload_start:end]
+    target_text, separator, encoded = payload.partition("|")
+    target = Path(target_text)
+    windows_target = PureWindowsPath(target_text)
+    if (
+        not separator
+        or not target_text
+        or "\x00" in target_text
+        or target.is_absolute()
+        or windows_target.is_absolute()
+        or bool(windows_target.drive)
+        or ".." in target.parts
+        or ".." in windows_target.parts
+        or target == Path(".")
+    ):
+        raise ValueError("Review Fix edit path must be a non-empty relative path")
+
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Review Fix edit content is not valid base64") from exc
+    return target_text, content
+
+
+def _write_review_fix_edit(target_text: str, content: bytes) -> None:
+    """Write decoded content only when the resolved target stays under cwd."""
+    root = Path.cwd().resolve()
+    target = (root / Path(target_text)).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Review Fix edit target escapes the candidate worktree") from exc
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+
+
+def _emit_review_fix_edit(session_id: str, text: str) -> None:
+    """Apply a Review Fix marker and expose the operation as an agent tool event."""
+    if REVIEW_FIX_EDIT_PREFIX not in text:
+        return
+
+    target_text = "invalid"
+    payload: tuple[str, bytes] | None = None
+    status = "completed"
+    try:
+        payload = _review_fix_edit_payload(text)
+        if payload is None:
+            raise ValueError("Review Fix edit marker is missing")
+        target_text = payload[0]
+    except ValueError:
+        status = "failed"
+
+    _update(
+        session_id,
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": _REVIEW_FIX_EDIT_TOOL_CALL_ID,
+            "title": "review fix edit",
+            "kind": "edit",
+            "status": "pending",
+            "rawInput": {
+                "path": target_text,
+                "__toolUsePurpose": "Apply deterministic Review Fix edit",
+            },
+        },
+    )
+    if status == "completed" and payload is not None:
+        try:
+            _write_review_fix_edit(*payload)
+        except (OSError, ValueError):
+            status = "failed"
+    _update(
+        session_id,
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": _REVIEW_FIX_EDIT_TOOL_CALL_ID,
+            "status": status,
+        },
+    )
 
 
 def _permission_status(session_id: str) -> str:
@@ -393,6 +499,7 @@ def _handle(msg: dict[str, Any]) -> None:
         params = msg.get("params") or {}
         session_id = str(params.get("sessionId", _SESSION_ID))
         text = _prompt_text(params)
+        _emit_review_fix_edit(session_id, text)
         if ERROR_TRIGGER in text:
             # A JSON-RPC error instead of a result: the turn fails, not stops.
             _error(req_id)

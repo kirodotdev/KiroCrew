@@ -13,14 +13,16 @@
 // safeHttpUrl, and code `snippet`s render verbatim in a <pre> (never markdown).
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import {
-  ChevronRight, ClipboardCheck, ExternalLink, Loader2, MessageSquarePlus, Share2, ShieldCheck,
+  ChevronRight, ClipboardCheck, ExternalLink, Loader2, MessageSquarePlus, MoreHorizontal, Share2, ShieldCheck, Wrench,
 } from 'lucide-react'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../../components/ui/dropdown-menu'
+import { Btn } from '../../../components/ui'
 import { safeHttpUrl } from '../../../lib/safeUrl'
 import FindingCard from './FindingCard'
 import ShipSummaryCard, { SHIP_KEY } from './ShipSummaryCard'
 import BandChips from './BandChips'
-import type { Band, ReportRow, RunReport } from '../lib/types'
+import type { Band, ReportRow, ReviewFixFindingSnapshot, RunReport } from '../lib/types'
 
 import { fmtDateTime } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
@@ -51,6 +53,29 @@ function Pill({ children }: { children: React.ReactNode }) {
       {children}
     </span>
   )
+}
+
+function numberOrNull(value: number | string | undefined): number | null {
+  if (value === undefined || value === '') return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function fixSnapshot(row: ReportRow, finding: NonNullable<ReportRow['findings']>[number], index: number): ReviewFixFindingSnapshot {
+  const body = [finding.observation, finding.consequence]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n\n')
+  return {
+    key: `${row.change_id}:finding:${index}`,
+    title: finding.headline || finding.dimension || row.title,
+    severity: finding.severity || row.band,
+    body,
+    file_path: finding.file || '',
+    line: numberOrNull(finding.line),
+    end_line: numberOrNull(finding.end_line),
+    fingerprint: finding.fingerprint || '',
+    suggested_fix: finding.suggestion || '',
+  }
 }
 
 /** Derive the `#<number>` label for a PR/MR from its URL, falling back to the
@@ -157,6 +182,7 @@ function DesignChain({ row }: { row: ReportRow }) {
  * band rationale) over a collapsible detail area (design chain + findings). */
 function ReportRowCard({
   row, postedKeys, isPosting, onPostFinding, selected, onToggleKey,
+  fixSelected, onToggleFix, onFix,
 }: {
   row: ReportRow
   postedKeys?: string[]
@@ -167,6 +193,9 @@ function ReportRowCard({
   /** Keys ticked for a batched post, for THIS row's change. */
   selected?: Set<string>
   onToggleKey?: (changeId: string, key: string) => void
+  fixSelected?: Set<string>
+  onToggleFix?: (snapshot: ReviewFixFindingSnapshot) => void
+  onFix?: (snapshot: ReviewFixFindingSnapshot) => void
 }) {
   const [open, setOpen] = useState(false)
   const findings = row.findings ?? []
@@ -271,7 +300,9 @@ function ReportRowCard({
             // the report rows are generated from that same list, so the index is a
             // durable handle for one comment.
             const key = `finding:${i}`
+            const snapshot = fixSnapshot(row, f, i)
             const sent = postedKeys?.includes(key) ?? false
+            const fixable = row.band !== 'green'
             return (
               <FindingCard
                 key={i}
@@ -281,6 +312,10 @@ function ReportRowCard({
                 selectable={Boolean(onToggleKey)}
                 selected={selected?.has(key) ?? false}
                 onToggle={onToggleKey ? () => onToggleKey(row.change_id, key) : undefined}
+                fixSelectable={fixable && Boolean(onToggleFix || onFix)}
+                fixSelected={fixSelected?.has(snapshot.key) ?? false}
+                onToggleFix={onToggleFix ? () => onToggleFix(snapshot) : undefined}
+                onFix={onFix ? () => onFix(snapshot) : undefined}
                 label={f.file
                   ? i18nT('apps.codeReviewSage.components.reportView.finding_dimension_in_file',
                           { dimension: f.dimension, file: f.file })
@@ -299,7 +334,7 @@ function ReportRowCard({
 
 export default function ReportView({
   report, onArchive, archiving = false, archiveError = null, actions = null,
-  postedKeys, isPosting, onPostFinding, onPostSelection,
+  postedKeys, isPosting, onPostFinding, onPostSelection, onStartFix,
 }: {
   report: RunReport
   onArchive?: () => void
@@ -320,6 +355,8 @@ export default function ReportView({
    *  the comments never landed — which is the whole failure this await exists to
    *  prevent. Typed `Promise<void>` so that mistake cannot type-check. */
   onPostSelection?: (groups: { changeId: string; keys: string[] }[]) => Promise<void>
+  /** Open the setup flow for immutable red/yellow finding snapshots. */
+  onStartFix?: (findings: ReviewFixFindingSnapshot[]) => void
   /** Run-level actions (posting to the pull request) shown beside Share — the
    *  report is where you decide whether the findings are worth sending. */
   actions?: ReactNode
@@ -329,6 +366,12 @@ export default function ReportView({
   // on the pull request rather than one per comment, which is the difference the
   // author actually notices.
   const [selected, setSelected] = useState<Map<string, Set<string>>>(new Map())
+  // Fix selection is a separate map so a repair request can never accidentally
+  // become a GitHub draft, and vice versa.
+  const [fixSelected, setFixSelected] = useState<Map<string, ReviewFixFindingSnapshot>>(new Map())
+  // The header's overflow menu: it only exists while a selection is ticked (see
+  // `selectionActive` below).
+  const [overflowOpen, setOverflowOpen] = useState(false)
 
   const toggleKey = useCallback((changeId: string, key: string) => {
     setSelected((cur) => {
@@ -346,6 +389,23 @@ export default function ReportView({
     () => [...selected.values()].reduce((n, s) => n + s.size, 0),
     [selected],
   )
+
+  const toggleFix = useCallback((snapshot: ReviewFixFindingSnapshot) => {
+    setFixSelected((current) => {
+      const next = new Map(current)
+      if (next.has(snapshot.key)) next.delete(snapshot.key)
+      else next.set(snapshot.key, snapshot)
+      return next
+    })
+  }, [])
+
+  const fixSelectedCount = fixSelected.size
+
+  // A ticked selection turns the header into an action row, and the two primary
+  // buttons already fill it — so the clears and the share affordance collapse
+  // into one overflow menu while anything is ticked. Two buttons plus a kebab
+  // is the cap this row can carry without degrading into a label scan.
+  const selectionActive = selectedCount > 0 || fixSelectedCount > 0
 
   // Sort defensively (red → yellow → green, then by descending score) even
   // though the backend already emits them in this order, and narrow to the
@@ -373,18 +433,17 @@ export default function ReportView({
           {generatedLabel && <span> {i18nT('apps.codeReviewSage.components.reportView.generated')} {generatedLabel}</span>}
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-        {/* While comments are ticked, the selection IS the action: showing "post
-            all" beside "post 3 selected" invites sending more than was chosen. */}
-        {selectedCount > 0 && onPostSelection ? (
-          <span className="inline-flex items-center gap-2">
+          {/* Posting and fixing are separate decisions. Either control may be
+              visible at once, but neither selection can trigger the other. The
+              two of them together are all the row can carry, so everything
+              secondary (the clears, and Share when a selection hides it) moves
+              into the overflow menu below. */}
+          {selectedCount > 0 && onPostSelection && (
             <button
               type="button"
               onClick={() => {
                 // Clear only once the post resolves. The grouped post is a
-                // single request, but it can still be refused (a re-review of
-                // one of these changes may be in flight), and a selection wiped
-                // ahead of the result left the user with an error and no ticks
-                // to retry from.
+                // single request, but it can still be refused.
                 Promise.resolve(onPostSelection([...selected.entries()].map(
                   ([changeId, keys]) => ({ changeId, keys: [...keys] }))))
                   .then(() => setSelected(new Map()))
@@ -393,41 +452,96 @@ export default function ReportView({
               className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent-subtle px-2.5 py-1 text-[12.5px] font-medium text-accent hover:bg-accent/20 cursor-pointer"
             >
               <MessageSquarePlus size={13} aria-hidden="true" />
-              {/* One key with its own plural forms, not three fragments: a locale that
-                  puts the count elsewhere in the sentence cannot reorder concatenation. */}
               {i18nT('apps.codeReviewSage.components.reportView.draft_selected', { count: selectedCount })}
             </button>
+          )}
+          {/* `max-two-buttons-per-row` counts the overflow trigger as a button,
+              so when both selections are active (comment + fix + trigger = 3)
+              the fix action drops into the overflow menu; a single selection
+              keeps its dedicated button for discoverability. */}
+          {selectedCount === 0 && fixSelectedCount > 0 && onStartFix && (
             <button
               type="button"
-              onClick={() => setSelected(new Map())}
-              className="rounded-md bg-transparent px-1.5 py-1 text-[12.5px] text-muted hover:text-text cursor-pointer"
+              onClick={() => {
+                onStartFix([...fixSelected.values()])
+                setFixSelected(new Map())
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent-subtle px-2.5 py-1 text-[12.5px] font-medium text-accent hover:bg-accent/20 cursor-pointer"
             >
-              {i18nT('apps.codeReviewSage.components.reportView.clear')}
+              <Wrench size={13} aria-hidden="true" />
+              {i18nT('apps.codeReviewSage.components.reportView.fix_selected', { count: fixSelectedCount })}
             </button>
-          </span>
-        ) : actions}
-        {report.report_slug ? (
-          <a
-            href={`/artifacts/${report.report_slug}`}
-            className="inline-flex items-center gap-1.5 text-[12.5px] text-accent hover:underline"
-          >
-            <ExternalLink size={13} aria-hidden="true" /> {i18nT('apps.codeReviewSage.components.reportView.open_shared_copy')}
-          </a>
-        ) : onArchive ? (
-          <button
-            type="button"
-            onClick={onArchive}
-            disabled={archiving}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[12.5px] text-text hover:text-accent hover:border-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
-          >
-            {archiving
-              ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
-              : <Share2 size={13} aria-hidden="true" />}
-            {archiving
-              ? i18nT('apps.codeReviewSage.components.reportView.sharing')
-              : i18nT('apps.codeReviewSage.components.reportView.share')}
-          </button>
-        ) : null}
+          )}
+          {selectionActive && (
+            <DropdownMenu open={overflowOpen} onOpenChange={setOverflowOpen}>
+              <DropdownMenuTrigger asChild>
+                <Btn
+                  type="button"
+                  className="!px-1.5"
+                  aria-label={i18nT('apps.codeReviewSage.components.reportView.more_actions')}
+                  title={i18nT('apps.codeReviewSage.components.reportView.more_actions')}
+                >
+                  <MoreHorizontal size={14} className="lucide-inline" aria-hidden="true" />
+                </Btn>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[190px]">
+                {fixSelectedCount > 0 && onStartFix && (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      onStartFix([...fixSelected.values()])
+                      setFixSelected(new Map())
+                    }}
+                  >
+                    <Wrench size={13} aria-hidden="true" />
+                    {i18nT('apps.codeReviewSage.components.reportView.fix_selected', { count: fixSelectedCount })}
+                  </DropdownMenuItem>
+                )}
+                {selectedCount > 0 && (
+                  <DropdownMenuItem onSelect={() => setSelected(new Map())}>
+                    {i18nT('apps.codeReviewSage.components.reportView.clear_comment_selection')}
+                  </DropdownMenuItem>
+                )}
+                {fixSelectedCount > 0 && (
+                  <DropdownMenuItem onSelect={() => setFixSelected(new Map())}>
+                    {i18nT('apps.codeReviewSage.components.reportView.clear_fix_selection')}
+                  </DropdownMenuItem>
+                )}
+                {!report.report_slug && onArchive && (
+                  <DropdownMenuItem disabled={archiving} onSelect={onArchive}>
+                    {archiving
+                      ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                      : <Share2 size={13} aria-hidden="true" />}
+                    {archiving
+                      ? i18nT('apps.codeReviewSage.components.reportView.sharing')
+                      : i18nT('apps.codeReviewSage.components.reportView.share')}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          {selectedCount === 0 && fixSelectedCount === 0 && actions}
+          {report.report_slug ? (
+            <a
+              href={`/artifacts/${report.report_slug}`}
+              className="inline-flex items-center gap-1.5 text-[12.5px] text-accent hover:underline"
+            >
+              <ExternalLink size={13} aria-hidden="true" /> {i18nT('apps.codeReviewSage.components.reportView.open_shared_copy')}
+            </a>
+          ) : !selectionActive && onArchive ? (
+            <button
+              type="button"
+              onClick={onArchive}
+              disabled={archiving}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[12.5px] text-text hover:text-accent hover:border-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
+            >
+              {archiving
+                ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                : <Share2 size={13} aria-hidden="true" />}
+              {archiving
+                ? i18nT('apps.codeReviewSage.components.reportView.sharing')
+                : i18nT('apps.codeReviewSage.components.reportView.share')}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -457,6 +571,9 @@ export default function ReportView({
               onPostFinding={onPostFinding}
               selected={selected.get(row.change_id)}
               onToggleKey={onPostSelection ? toggleKey : undefined}
+              fixSelected={new Set([...fixSelected.keys()].filter(key => key.startsWith(`${row.change_id}:`)))}
+              onToggleFix={onStartFix ? toggleFix : undefined}
+              onFix={onStartFix ? (snapshot) => onStartFix([snapshot]) : undefined}
             />
           ))}
         </div>

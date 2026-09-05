@@ -1,8 +1,8 @@
 {
   "name": "code-review-sage",
-  "version": "0.9.3",
+  "version": "1.0.0",
   "displayName": "Code Review Sage",
-  "description": "Deep-reviews GitHub pull requests and tells you which changes actually deserve your attention. Every changed file is reviewed in its own isolated agent session, weighted by how much blast radius it carries, and rolled up into a prioritized Focus Report. Findings are staged as a draft GitHub review that stays unpublished until you submit it, and the reviewer keeps learning your repository's real standards from shipped fixes and past review comments.",
+  "description": "Reviews local working-tree changes with structured inline findings, human guidance, and bounded agent-assisted fixes. GitHub pull-request review remains an optional secondary surface.",
   "author": "kirocrew",
   "tags": [
     "code-review",
@@ -15,7 +15,7 @@
     "One isolated agent session per change, so findings never bleed between files",
     "Reviews are read in the app — nothing is posted to your pull request unless you ask",
     "Learns per-repository from shipped fixes, review comments, and design discussions",
-    "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host"
+    "Reviews local working-tree changes before a pull request exists"
   ],
   "defaultEnabled": false,
   "skills": [
@@ -29,9 +29,6 @@
     ],
     "network": true,
     "storage": true
-  },
-  "dependencies": {
-    "commands": ["gh"]
   },
   "ui": {
     "pages": [
@@ -48,10 +45,10 @@
   "heroImageDetail": "/app-assets/code-review-sage/hero-detail-light.svg",
   "heroImageDetailDark": "/app-assets/code-review-sage/hero-detail-dark.svg",
   "useCases": [
-    "Review one or many GitHub pull requests by risk, inspect focused findings, and stage only the comments worth publishing."
+    "Review local working-tree changes before a pull request exists, or inspect GitHub pull requests by risk and stage selected findings."
   ],
   "configuration": [
-    "Install and authenticate the gh CLI on the gateway host, add a repository, then choose the review model, reasoning effort, and concurrency in Settings."
+    "Choose a Git worktree for local review, or authenticate the gh CLI for GitHub review, then select the review model, reasoning effort, and concurrency in Settings."
   ],
   "screenshots": [
     "/app-assets/code-review-sage/screenshot-main.png"

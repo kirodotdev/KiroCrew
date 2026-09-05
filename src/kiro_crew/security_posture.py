@@ -1171,6 +1171,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "through this pass.",
     ),
     (
+        "Review Fix action errors",
+        "apps/builtins/code_review_sage/backend/fix_tasks.py",
+        "Error bodies returned by the Code Review Sage review-fix endpoints "
+        "(create, confirm, validate, apply, discard, review-again). A failed "
+        "action's message is exception text — git stderr, plan/validation "
+        "refusals, agent-subprocess failures — so it can quote a "
+        "credential-bearing remote URL or an exfiltration-shaped link from the "
+        "reviewed repository. `_safe_error` runs both scanners over it before "
+        "the JSON reaches the dashboard, and the same scrubbed string lands in "
+        "the endpoint's audit record.",
+    ),
+    (
         "Auto Triage Pipeline dashboard strings",
         "apps/builtins/issue_radar/backend/pipeline_fold.py",
         "Every string this read-only fold hands to its routes -- issue titles, "
@@ -1536,6 +1548,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "sync_bridge.py",
         "suggestions.py",
         "tips.py",
+        # Review-fix internals, same class as task_executor/taskrunner below:
+        # `review_fix.py` scrubs the agent's patch output at the moment it is
+        # written to the task artifact, and `review_fix_git.py` scrubs git's
+        # stderr before it becomes a ReviewFixGitError. Both are persistence and
+        # log hygiene on the way INTO task state — the surfaces a user actually
+        # reads are registered sinks downstream.
+        "review_fix.py",
+        "review_fix_git.py",
         "task_executor.py",
         "taskrunner.py",
         "transcribe.py",
@@ -1648,12 +1668,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/sage_lib/store.py",
         "apps/builtins/code_review_sage/sage_lib/discovery.py",
         # `followup` scrubs every turn of a review's stored question history at
-        # its read boundary: the reviewer can repeat a credential it read in the
-        # diff, a tool title carries the arguments it was called with, and it can
-        # write that file itself. `backend/routes` scrubs the reviewed pull
-        # request's title before it becomes a chat session's name. Same
-        # classification as their siblings — the app's own surface, rendered by
-        # this app's panel, not a core egress path.
+        # its read boundary; the reviewed title is scrubbed by the route before it
+        # becomes a chat session name.
         "apps/builtins/code_review_sage/sage_lib/followup.py",
         "apps/builtins/code_review_sage/backend/routes.py",
         # Dev Fleet's redactor wrapper and the cohesive owners that apply it to
@@ -1665,6 +1681,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/dev_fleet/repository.py",
         "apps/builtins/dev_fleet/live.py",
         "apps/builtins/dev_fleet/worktree_ops.py",
+        # Local-review input and findings stay inside the app's own persisted
+        # session/UI surface.
+        "apps/builtins/code_review_sage/sage_lib/local_review.py",
         "apps/builtins/issue_radar/backend/routes.py",
         "apps/builtins/meetings/backend/domain/session.py",
         # Live translation redacts the MODEL's answer before writing it to the

@@ -34,7 +34,6 @@ src/kiro_crew/apps/builtins/auto_research/handlers.py
 src/kiro_crew/apps/builtins/auto_research/subquestion_queue.py
 src/kiro_crew/apps/builtins/auto_research/workflow_template.py
 src/kiro_crew/apps/builtins/code_review_sage/__init__.py
-src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/adapters.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/blast_radius.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/discovery.py
@@ -44,12 +43,10 @@ src/kiro_crew/apps/builtins/code_review_sage/sage_lib/pipeline.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/report.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/results.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_driver.py
-src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_pool.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/store.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_activity_progress.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_adapters.py
-src/kiro_crew/apps/builtins/code_review_sage/tests/test_backend_routes.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_blast_radius.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_consolidate.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_discovery.py
@@ -68,7 +65,6 @@ src/kiro_crew/apps/builtins/code_review_sage/tests/test_repo_review.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_report.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_review_driver.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_review_guidance.py
-src/kiro_crew/apps/builtins/code_review_sage/tests/test_review_pool.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_run_endpoints.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_run_scoping.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_store_selfheal.py

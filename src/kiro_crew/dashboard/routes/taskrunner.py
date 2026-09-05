@@ -12,6 +12,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import chat, handlers
+from kiro_crew.dashboard.handlers import review_fix
 
 
 def register(app: web.Application) -> None:
@@ -34,6 +35,11 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/taskrunner/{task_id}/plan.yaml", handlers.api_taskrunner_export_yaml)
     app.router.add_put("/api/taskrunner/{task_id}/plan", handlers.api_taskrunner_update_plan)
     app.router.add_post("/api/taskrunner/{task_id}/execute", handlers.api_taskrunner_execute_plan)
+    app.router.add_get("/api/taskrunner/{task_id}/review-fix", review_fix.api_taskrunner_review_fix)
+    app.router.add_post(
+        "/api/taskrunner/{task_id}/review-fix/actions",
+        review_fix.api_taskrunner_review_fix_actions,
+    )
     app.router.add_post("/api/reveal", handlers.api_reveal_path)
     app.router.add_get("/api/file-read", handlers.api_file_read)
     app.router.add_get("/api/file-download", handlers.api_file_download)

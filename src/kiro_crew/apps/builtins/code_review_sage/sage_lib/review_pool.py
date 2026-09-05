@@ -29,6 +29,7 @@ The executor is async; the (synchronous, threaded) review driver bridges to it
 via ``asyncio.run_coroutine_threadsafe`` on the gateway event loop, and brackets
 each run with ``begin_batch()`` / ``end_batch()``. See ``backend/routes.py``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +38,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 # The app root holds ``sage_lib/``; put it on sys.path so ``from sage_lib import store``
 # resolves on import (mirrors the sys.path setup in sibling ``review_driver.py``).
@@ -55,8 +56,29 @@ try:
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TOOL_STALL,
     )
+
+    # Model-selection vocabulary comes through the SDK facade, not the ACP
+    # package: `kiro_crew.agent_sdk` re-exports the shared entitlement names so
+    # sage_lib never imports `kiro_crew.acp.client` directly (see
+    # scripts/check_agent_sdk_boundary.py -- this file's remaining ACP edges
+    # are baselined and must not grow).
+    from kiro_crew.agent_sdk import (
+        AcpModelUnavailable,
+        advertised_model_ids,
+        model_is_unusable,
+    )
 except ImportError:  # pragma: no cover - standalone / test fallback
     AcpRuntime = None  # type: ignore[assignment,misc]
+
+    class AcpModelUnavailable(RuntimeError):  # type: ignore[no-redef]
+        """Fallback error for standalone execution without Kiro Crew imports."""
+
+    def advertised_model_ids(entries: object) -> list[str]:
+        return []
+
+    def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
+        return False
+
     EVENT_TEXT_CHUNK = "text_chunk"  # type: ignore[assignment]
     EVENT_TOOL_CALL = "tool_call"  # type: ignore[assignment]
     EVENT_PERMISSION_REQUEST = "permission_request"  # type: ignore[assignment]
@@ -106,12 +128,16 @@ def runtime_preflight() -> str:
     otherwise stall the whole loop.
     """
     if AcpRuntime is None:
-        return ("the reviewer cannot run: the ACP runtime "
-                "(kiro_crew.acp.runtime) is not importable in this install")
+        return (
+            "the reviewer cannot run: the ACP runtime "
+            "(kiro_crew.acp.runtime) is not importable in this install"
+        )
     if resolve_kiro_cli is not None and resolve_kiro_cli() is None:
-        return ("the reviewer cannot run: no kiro-cli executable was found on "
-                "this host (the reviewer session is driven by kiro-cli — "
-                "install it or add it to PATH)")
+        return (
+            "the reviewer cannot run: no kiro-cli executable was found on "
+            "this host (the reviewer session is driven by kiro-cli — "
+            "install it or add it to PATH)"
+        )
     return ""
 
 
@@ -126,17 +152,85 @@ def _is_abnormal_stop(reason: str) -> bool:
     r = (reason or "").strip().lower()
     if not r:
         return False
-    if r in (str(STOP_REASON_TOOL_STALL).lower(),
-             str(STOP_REASON_STALE_RECOVER).lower(), "timeout"):
+    if r in (
+        str(STOP_REASON_TOOL_STALL).lower(),
+        str(STOP_REASON_STALE_RECOVER).lower(),
+        "timeout",
+    ):
         return True
     return r.startswith("error")
 
 
+def _policy_deny_reason(ev: object, *, session_key: str = "", agent: str = "") -> "str | None":
+    """Evaluate an auto-approve candidate through the FULL PreToolUse gate.
+
+    Routes the request through ``HookManager.on_tool_call`` — the same chokepoint
+    the dashboard/Slack paths use — so the always-on sensitive-path/exfil floor,
+    the configured denied-command regexes, AND the governance ceiling ∩
+    active-profile all apply. The ceiling is what denies an arg-derived scope
+    (``filesystem.write``/``network.egress``, resolved from ``tool_kind`` +
+    ``raw_params``): checking only the deny regexes let an admin-denied write
+    reach ``approve_tool`` in the real checkout.
+
+    Identity (``session_key``/``agent``/``app``) opts the call into per-surface
+    governance; on a standalone host with no policy the layer is a fast no-op.
+    Fail-CLOSED on an unavailable/broken hook layer, and inside the gate itself:
+    a shell request whose command could not be recovered is denied by
+    ``on_tool_call`` (``is_shell`` comes from the EVENT, never derived from the
+    command), and an unreadable request never reaches ``approve_tool``.
+
+    The security imports are lazy (mirroring mcp_cron) — hooks/security.py are
+    large modules and the review lanes that never enable the gate should not
+    pay for them.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.hooks import TOOL_DENY, HookManager, hooks_config_from_config_dict
+
+    is_shell = bool(getattr(ev, "is_shell", False))
+    raw_params = getattr(ev, "raw_tool_params", None)
+    command = ""
+    if is_shell and isinstance(raw_params, dict):
+        nested = raw_params.get("bash")
+        candidates = [raw_params, nested if isinstance(nested, dict) else {}]
+        for source in candidates:
+            value = source.get("command")
+            if isinstance(value, str) and value.strip():
+                command = value
+                break
+    tool_kind = getattr(ev, "tool_kind", "") or ""
+    title = (getattr(ev, "title", "") or tool_kind or "").strip()
+    try:
+        cfg = KiroCrewConfig.load()
+        manager = HookManager(hooks_config_from_config_dict(getattr(cfg, "hooks", {}) or {}))
+        result = manager.on_tool_call(
+            title,
+            session_key=session_key,
+            agent=agent,
+            app="code-review-sage",
+            tool_kind=tool_kind,
+            raw_params=raw_params if isinstance(raw_params, dict) else None,
+            command=command or None,
+            is_shell=is_shell,
+            mcp_server_name=getattr(ev, "mcp_server_name", "") or "",
+            mcp_tool_name=getattr(ev, "tool_name", "") or "",
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken gate must DENY, not authorize
+        logger.warning(
+            "review-fix governance hook unavailable; denying (fail-closed)", exc_info=True
+        )
+        return f"governance hook unavailable: {exc}"
+    if getattr(result, "action", "") == TOOL_DENY:
+        return (getattr(result, "reason", "") or "denied by governance policy").strip()
+    return None
+
+
 # ── Tunables (resource limits live here for easy future updates) ──
-MAX_CONCURRENT = 5        # default max reviews running at once (config: review.max_concurrent)
+MAX_CONCURRENT = 5  # default max reviews running at once (config: review.max_concurrent)
 MAX_CONCURRENT_CEIL = 30  # hard ceiling — "review all" can raise concurrency up to here
-MAX_STARTING = 2          # (legacy) retained for back-compat stats; single runtime has no cold-start throttle
-DEFAULT_TASK_TIMEOUT = 5400.0   # 90 min per review turn. The single-pass review
+MAX_STARTING = (
+    2  # (legacy) retained for back-compat stats; single runtime has no cold-start throttle
+)
+DEFAULT_TASK_TIMEOUT = 5400.0  # 90 min per review turn. The single-pass review
 #   is ONE heavier turn (design + all code dimensions) that replaces up to 5 old
 #   turns, so the old 30-min cap force-killed legitimately-working large-PR reviews
 #   (stop_reason='timeout'). 90 min gives real headroom while staying well under the
@@ -144,7 +238,7 @@ DEFAULT_TASK_TIMEOUT = 5400.0   # 90 min per review turn. The single-pass review
 REVIEW_AGENT = "code-review-sage-reviewer"  # dedicated lean reviewer agent (shell-
 #   enabled so it can run the `gh` CLI to fetch/post GitHub PR reviews). The per-task
 #   prompt loads the `sage-review` skill on top of it.
-_FALLBACK_AGENT = "kirocrew"     # default agent when the reviewer agent isn't installed
+_FALLBACK_AGENT = "kirocrew"  # default agent when the reviewer agent isn't installed
 
 # Reasoning/thinking effort for the review workers. Empty string = "no explicit
 # override; inherit the model/provider default" (the config default), rather than
@@ -247,8 +341,7 @@ def _reviewer_model(agent: str) -> str:
     if kiro_agents_dir is None:  # pragma: no cover - standalone fallback
         return _DEFAULT_REVIEW_MODEL
     try:
-        cfg = json.loads(
-            (kiro_agents_dir() / f"{agent}.json").read_text(encoding="utf-8"))
+        cfg = json.loads((kiro_agents_dir() / f"{agent}.json").read_text(encoding="utf-8"))
         model = cfg.get("model")
         if isinstance(model, str) and model:
             return model
@@ -263,9 +356,12 @@ def reviewer_info() -> dict:
     thinking effort level (user-configured) applied to both review phases."""
     agent = _resolve_review_agent()
     settings = _get_review_settings()
-    return {"agent": agent, "model": _reviewer_model(agent),
-            "effort": settings.get("effort", _DEFAULT_EFFORT),
-            "model_source": "config" if settings.get("model") else "agent-default"}
+    return {
+        "agent": agent,
+        "model": _reviewer_model(agent),
+        "effort": settings.get("effort", _DEFAULT_EFFORT),
+        "model_source": "config" if settings.get("model") else "agent-default",
+    }
 
 
 def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT) -> None:
@@ -333,17 +429,18 @@ class _BatchRuntimeHolder:
         self._agent = agent
         self._work_dir = work_dir
         self._runtime: Optional["AcpRuntime"] = None
+        self._runtime_model: str | None = None
         self._batches = 0
         self._lock = asyncio.Lock()
 
-    async def begin_batch(self) -> None:
+    async def begin_batch(self, model: str | None = None) -> None:
         async with self._lock:
             # Ensure the runtime FIRST, then count the batch. If the spawn raises
             # (unimportable AcpRuntime / transient kiro-cli launch failure), we must
             # NOT leave _batches incremented — otherwise it can never drain back to
             # 0 and the shared subprocess would never be killed (RSS leak that
             # defeats the batch-scoped lifecycle).
-            await self._ensure_runtime_locked()
+            await self._ensure_runtime_locked(model=model)
             self._batches += 1
 
     async def end_batch(self) -> None:
@@ -352,49 +449,79 @@ class _BatchRuntimeHolder:
             rt = None
             if self._batches == 0:
                 rt, self._runtime = self._runtime, None
-        if rt is not None:          # kill outside the lock (SIGTERM->SIGKILL can block)
+                self._runtime_model = None
+        if rt is not None:  # kill outside the lock (SIGTERM->SIGKILL can block)
             await self._kill(rt)
 
-    async def acquire(self) -> "AcpRuntime":
+    async def acquire(self, model: str | None = None) -> "AcpRuntime":
         """Return the live shared runtime, spawning/self-healing if needed."""
         async with self._lock:
-            return await self._ensure_runtime_locked()
+            return await self._ensure_runtime_locked(model=model)
 
     async def force_shutdown(self) -> None:
         """Tear the runtime down regardless of batch count (app disable / standalone)."""
         async with self._lock:
             self._batches = 0
             rt, self._runtime = self._runtime, None
+            self._runtime_model = None
         if rt is not None:
             await self._kill(rt)
 
-    async def _ensure_runtime_locked(self) -> "AcpRuntime":
+    async def _ensure_runtime_locked(self, model: str | None = None) -> "AcpRuntime":
+        selected_model = model or None
         rt = self._runtime
         if rt is not None and rt.is_alive():
+            # A live runtime hands its model to every batch that shares it, two
+            # ways: a pinned batch calls session-level `set_model`, while an
+            # Auto batch inherits whatever default the runtime was spawned
+            # with. So ANY model disagreement — pinned-vs-pinned or
+            # Auto-vs-pinned — would run a review under the wrong model (and
+            # with the wrong effort overlay, which is written per spawn).
+            # Fail closed with the busy error instead of silently swapping the
+            # model; only an exact match reuses, and None == None is Auto on
+            # Auto.
+            if selected_model != self._runtime_model:
+                raise RuntimeError(
+                    "review pool is busy with model "
+                    f"{self._runtime_model!r}; retry after the batch drains"
+                )
             return rt
-        if rt is not None:                          # reap a dead one first
+        if rt is not None:  # reap a dead one first
             await self._kill(rt)
         if AcpRuntime is None:
             raise RuntimeError("AcpRuntime unavailable (kiro_crew.acp.runtime not importable)")
         # Effort overlay is read by kiro-cli at each session/new, so it must be on
-        # disk before spawn. Keyed on the resolved model (config override -> agent
-        # default). Best-effort — a bad overlay never blocks the review.
+        # disk before spawn. An explicit per-review model owns this overlay key;
+        # Auto keeps the existing agent/config-resolved key.
+        overlay_model = selected_model or _reviewer_model(self._agent)
         if self._work_dir:
             try:
                 _write_effort_overlay(
-                    self._work_dir, _reviewer_model(self._agent),
-                    _get_review_settings().get("effort", _DEFAULT_EFFORT))
+                    self._work_dir,
+                    overlay_model,
+                    _get_review_settings().get("effort", _DEFAULT_EFFORT),
+                )
             except Exception:
                 logger.debug("could not write review effort overlay", exc_info=True)
         # work_dir + sandbox_mode="auto" mirror the old AcpClient worker: the
         # OS sandbox scrubs credential paths/env for this LLM-directed subprocess
         # (GitHub fetch/post run via the `gh` CLI's own auth; the worker only
         # writes data/results and runs `python3 sage_lib/pipeline.py`).
-        rt = AcpRuntime(agent=self._agent, work_dir=self._work_dir, sandbox_mode="auto")
+        rt = AcpRuntime(
+            agent=self._agent,
+            work_dir=self._work_dir,
+            sandbox_mode="auto",
+            model=selected_model,
+        )
         await rt.spawn()
         self._runtime = rt
-        logger.info("code-review-sage runtime spawned (agent=%s, cwd=%s)",
-                    self._agent, self._work_dir)
+        self._runtime_model = selected_model
+        logger.info(
+            "code-review-sage runtime spawned (agent=%s, model=%s, cwd=%s)",
+            self._agent,
+            selected_model or "auto",
+            self._work_dir,
+        )
         return rt
 
     async def _kill(self, rt: "AcpRuntime") -> None:
@@ -444,9 +571,16 @@ class ReviewPool:
         # accepted-and-ignored for back-compat with older callers/tests:
         max_starting: Optional[int] = None,
         worker_factory: Optional[object] = None,
+        # Run the PreToolUse deny gate on every auto-approved permission
+        # request. Off by default (the review lanes predate it and run inside
+        # their own work dirs); callers that drive a REAL checkout — the
+        # guided Review Fix pool — must opt in so a policy-denied command is
+        # rejected instead of silently approved.
+        permission_policy_gate: bool = False,
     ) -> None:
         self._agent = _resolve_review_agent(agent or REVIEW_AGENT)
         self._work_dir = work_dir if work_dir is not None else _review_work_dir()
+        self._permission_policy_gate = bool(permission_policy_gate)
         # Auto mode = no explicit max_workers -> the semaphore tracks the live
         # review.max_concurrent config (resized per batch). An explicit value
         # (tests / standalone) is honored verbatim and never resized.
@@ -457,7 +591,7 @@ class ReviewPool:
         self._holder = _BatchRuntimeHolder(self._agent, self._work_dir)
         self._closed = False
 
-    async def begin_batch(self) -> None:
+    async def begin_batch(self, model: str | None = None) -> None:
         """Open a review batch — lazily spawns the shared runtime (0->1 runs)."""
         if self._closed:
             raise RuntimeError("ReviewPool is shut down")
@@ -470,15 +604,20 @@ class ReviewPool:
             if eff != self._max:
                 self._max = eff
                 self._sema = asyncio.Semaphore(eff)
-        await self._holder.begin_batch()
+        await self._holder.begin_batch(model=model)
 
     async def end_batch(self) -> None:
         """Close a review batch — kills the runtime once the last batch drains."""
         await self._holder.end_batch()
 
-    async def send(self, task: str, timeout: float = DEFAULT_TASK_TIMEOUT,
-                   on_activity: Callable[[str, int], None] | None = None,
-                   keep_session_key: str | None = None) -> str:
+    async def send(
+        self,
+        task: str,
+        timeout: float = DEFAULT_TASK_TIMEOUT,
+        on_activity: Callable[[str, int], None] | None = None,
+        keep_session_key: str | None = None,
+        model: str | None = None,
+    ) -> str:
         """Run one review task on its own session of the shared runtime and return
         the final assistant text. Auto-approves every tool permission (the reviewer
         runs the `gh` CLI + shell) and emits a per-tool SEL audit.
@@ -492,15 +631,29 @@ class ReviewPool:
         not a review failure: the review result is returned unchanged and the only
         loss is the ability to ask about it later.
         """
+        model = None if not model or model == "auto" else model
         if self._closed:
             raise RuntimeError("ReviewPool is shut down")
         async with self._sema:
-            runtime = await self._holder.acquire()
+            if model is None:
+                runtime = await self._holder.acquire()
+            else:
+                runtime = await self._holder.acquire(model=model)
             handle = None
             try:
-                # agent=None -> inherit the runtime's agent (spawned with --agent);
-                # cwd=app root so relative prompt paths + the effort overlay resolve.
+                # Explicit picks are checked against this session's live ACP
+                # entitlement before any prompt is sent. A missing advertised set
+                # means entitlement is unknown and the shared predicate allows the
+                # wire request; a known set rejects before set_model can substitute.
                 handle = await runtime.create_session(cwd=self._work_dir, agent=None)
+                if model:
+                    advertised = advertised_model_ids(getattr(handle, "available_models", []))
+                    if model_is_unusable(model, advertised):
+                        raise AcpModelUnavailable(model, advertised)
+                    set_model = getattr(handle, "set_model", None)
+                    if not callable(set_model):
+                        raise RuntimeError("review session cannot apply an explicit model override")
+                    await set_model(model)
                 gen = handle.prompt(task, timeout=timeout)
                 parts: list[str] = []
                 stop_reason = ""
@@ -515,11 +668,9 @@ class ReviewPool:
                             steps += 1
                             if on_activity is not None:
                                 try:
-                                    on_activity(
-                                        str(getattr(ev, "title", "") or ""), steps)
+                                    on_activity(str(getattr(ev, "title", "") or ""), steps)
                                 except Exception:
-                                    logger.debug("activity callback failed",
-                                                 exc_info=True)
+                                    logger.debug("activity callback failed", exc_info=True)
                         elif kind == EVENT_PERMISSION_REQUEST:
                             # Auto-approve (the reviewer needs `gh` + shell) AND record
                             # the permission DECISION in the security ledger, tagged with
@@ -527,14 +678,37 @@ class ReviewPool:
                             # requires every permission decision to emit an SEL event, and
                             # the EVENT_TOOL_CALL audit carries no decision/request id.
                             req_id = getattr(ev, "request_id", "")
+                            deny_reason = (
+                                _policy_deny_reason(ev, agent=self._agent)
+                                if self._permission_policy_gate
+                                else None
+                            )
+                            if deny_reason is not None:
+                                # PreToolUse policy gate: a denied command is
+                                # rejected (never silently approved), and the
+                                # denial still lands in the SEL ledger.
+                                logger.info(
+                                    "review-fix policy gate denied permission " "request %s: %s",
+                                    req_id,
+                                    deny_reason,
+                                )
+                                try:
+                                    await handle.reject_tool(req_id)
+                                except Exception:
+                                    logger.debug("tool reject failed", exc_info=True)
+                                else:
+                                    await self._audit_tool(
+                                        handle, ev, request_id=req_id, outcome="denied"
+                                    )
+                                continue
                             try:
                                 await handle.approve_tool(req_id)
                             except Exception:
                                 logger.debug("tool approve failed", exc_info=True)
                             else:
                                 await self._audit_tool(
-                                    handle, ev, request_id=req_id,
-                                    outcome="auto_approved")
+                                    handle, ev, request_id=req_id, outcome="auto_approved"
+                                )
                         elif kind == EVENT_COMPLETE:
                             stop_reason = getattr(ev, "stop_reason", "") or ""
                             break
@@ -552,7 +726,8 @@ class ReviewPool:
                 # the PR reviewed or posts on partial output.
                 if _is_abnormal_stop(stop_reason):
                     raise RuntimeError(
-                        f"review turn ended abnormally (stop_reason={stop_reason!r})")
+                        f"review turn ended abnormally (stop_reason={stop_reason!r})"
+                    )
                 # Keep the transcript AFTER the health gate above: a session whose
                 # turn died has no findings to be asked about, and recording it
                 # would leave a file nothing will ever load.
@@ -583,15 +758,19 @@ class ReviewPool:
         try:
             handle.keep_transcript = True  # type: ignore[attr-defined]
             followup.write_descriptor(
-                run_id, change_id, sid=sid, agent=self._agent,
-                cwd=self._work_dir or "")
+                run_id, change_id, sid=sid, agent=self._agent, cwd=self._work_dir or ""
+            )
         except Exception:
-            logger.debug("could not keep the review session resumable",
-                         exc_info=True)
+            logger.debug("could not keep the review session resumable", exc_info=True)
 
-    async def _audit_tool(self, handle: object, ev: object, *,
-                          request_id: object = None,
-                          outcome: str = "auto_approved") -> None:
+    async def _audit_tool(
+        self,
+        handle: object,
+        ev: object,
+        *,
+        request_id: object = None,
+        outcome: str = "auto_approved",
+    ) -> None:
         """Emit a per-tool SEL audit (the runtime layer has no ``audit_source``,
         so without this the reviewer's tool calls would never reach the security log
         — parity with ``AcpClient._maybe_audit_tool_call``). Best-effort + bounded:
@@ -635,9 +814,13 @@ class ReviewPool:
         h = self._holder.stats()
         active = h["active_sessions"]
         return {
-            "workers": active, "idle": 0, "busy": active,
-            "max": self._max, "starting_max": MAX_STARTING,
-            "runtime_alive": h["runtime_alive"], "active_sessions": active,
+            "workers": active,
+            "idle": 0,
+            "busy": active,
+            "max": self._max,
+            "starting_max": MAX_STARTING,
+            "runtime_alive": h["runtime_alive"],
+            "active_sessions": active,
             "batches": h["batches"],
         }
 
@@ -674,9 +857,16 @@ def pool_stats() -> dict:
         # No pool yet (before the first review) — report the static default cap.
         # Avoid effective_max_concurrent() here: it reads config.json, and this
         # runs synchronously on the gateway event loop from the /runs handler.
-        return {"workers": 0, "idle": 0, "busy": 0,
-                "max": MAX_CONCURRENT, "starting_max": MAX_STARTING,
-                "runtime_alive": False, "active_sessions": 0, "batches": 0}
+        return {
+            "workers": 0,
+            "idle": 0,
+            "busy": 0,
+            "max": MAX_CONCURRENT,
+            "starting_max": MAX_STARTING,
+            "runtime_alive": False,
+            "active_sessions": 0,
+            "batches": 0,
+        }
     return _POOL.stats()
 
 
@@ -699,16 +889,27 @@ def make_sync_dispatch(
     Never raises — failures come back in the ``error`` field so the driver's phase
     switch can react deterministically."""
 
-    def dispatch(task: str, timeout: float = default_timeout,
-                 on_activity: Callable[[str, int], None] | None = None,
-                 keep_session_key: str | None = None) -> dict:
+    def dispatch(
+        task: str,
+        timeout: float = default_timeout,
+        on_activity: Callable[[str, int], None] | None = None,
+        keep_session_key: str | None = None,
+        model: str | None = None,
+    ) -> dict:
         try:
             # The callback fires on the gateway loop's thread while the driver's
             # worker thread blocks here; the progress writer it feeds is lock-
             # guarded and copy-on-write, so that crossing is safe.
             fut = asyncio.run_coroutine_threadsafe(
-                pool.send(task, timeout=timeout, on_activity=on_activity,
-                          keep_session_key=keep_session_key), loop)
+                pool.send(
+                    task,
+                    timeout=timeout,
+                    on_activity=on_activity,
+                    keep_session_key=keep_session_key,
+                    model=model,
+                ),
+                loop,
+            )
             # Give the bridge a little headroom past the task timeout so the
             # pool's own timeout fires first with a cleaner error.
             out = fut.result(timeout=timeout + 60)

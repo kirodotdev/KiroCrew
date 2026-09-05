@@ -45,7 +45,7 @@ agent loads only the one it needs.
 |---|---|
 | [subagent.md](subagent.md) | Spawning background workers, result delivery, and orphan recovery. |
 | [task.md](task.md) | Task models and state. |
-| [taskrunner.md](taskrunner.md) | The execution engine that runs a task spec to completion. |
+| [taskrunner.md](taskrunner.md) | The execution engine that runs a task spec to completion, plus the governed review-fix lifecycle for Code Review Sage findings. |
 | [workflows.md](workflows.md) | The dynamic-workflow engine: the frozen `ctx` contract, the event stream, and budgets. |
 | [workflow-gates.md](workflow-gates.md) | The named conformance gates the workflow engine asserts, and the test pinning each. |
 | [autopilot.md](autopilot.md) | Plan-driven orchestration and its lifecycle. |

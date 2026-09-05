@@ -46,10 +46,11 @@ export const CHUNK_BUDGETS = {
   // closed-PR prune group and the expanded Disconnect guidance are the largest
   // recent catalog increments included in this measurement; Dev Fleet's
   // per-pod system readout then adds its own strings across the same 12
-  // catalogs on top of that baseline. The Drive gallery's keys across 13
-  // catalogs ride inside the headroom that measurement already left, so this
-  // branch does not move the ceiling.
-  all: 10490 * KB, // measured 9985 KB before the pod-system catalog keys (~5% headroom)
+  // catalogs on top of that baseline. The Code Review Sage guided Review
+  // Fix surface (~130 keys) also ships translated in all 12 catalogs, and
+  // the catalogs are eager by design (see `src/i18n/index.ts`'s
+  // lazy-loading seam), so the growth lands here in full.
+  all: 10570 * KB, // measured 10066 KB with the Sage Review Fix strings on main's 9985 KB (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
