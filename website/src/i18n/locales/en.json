@@ -1073,6 +1073,19 @@
         "loading": "loading..."
       }
     },
+    "guide": {
+      "manifest": {
+        "display_name": "Kiro Crew Guide",
+        "description": "A searchable troubleshooting and how-to knowledge base for Kiro Crew: find a fix by symptom or keyword, and let any agent query the same entries over MCP instead of guessing.",
+        "page_label": "Guide",
+        "highlight_1": "Search a curated troubleshooting and how-to knowledge base by symptom or keyword",
+        "highlight_2": "Every entry lays out the exact commands to run and what to expect at each step",
+        "highlight_3": "Agents look up the same fixes over MCP (guide_search / guide_get) instead of guessing",
+        "highlight_4": "Internal editions add their own entries without changing what ships publicly",
+        "use_case_1": "Look up the fix for a Kiro Crew problem by symptom or keyword, in the dashboard or from an agent over MCP.",
+        "configuration_1": "Enable the app from the App Store; the public guide entries ship with it, and internal editions add their own via a data overlay."
+      }
+    },
     "issueRadar": {
       "components": {
         "agentSessionButton": {

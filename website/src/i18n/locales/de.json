@@ -131,6 +131,51 @@
     }
   },
   "apps": {
+    "guide": {
+      "title": "{{productName}} Guide",
+      "searchPlaceholder": "Nach Symptom, Fehler oder Stichwort suchen…",
+      "loading": "Wird geladen…",
+      "noResults": "Keine passenden Einträge",
+      "errorLoading": "Der Guide konnte nicht geladen werden",
+      "selectPrompt": "Wähle einen Eintrag, um die vollständige Lösung zu sehen",
+      "symptomLabel": "Symptom",
+      "stepsLabel": "Schritte",
+      "crewPromptLabel": "Deine Crew fragen",
+      "ifStuckLabel": "Wenn du nicht weiterkommst",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "sendToChat": "An Chat senden",
+      "expectLabel": "Erwartetes Ergebnis",
+      "sourcesLabel": "Quellen",
+      "filterPlatform": "Plattform",
+      "filterTopic": "Thema",
+      "filterClear": "Filter zurücksetzen",
+      "trustConfirmed": "Bestätigt",
+      "trustKnownBug": "Bekannter Fehler",
+      "trustUnverified": "Unbestätigt",
+      "communityBadge": "Community",
+      "retry": "Erneut versuchen",
+      "detailError": "Dieser Eintrag konnte nicht geladen werden",
+      "platform": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux",
+        "cloudDesktop": "Cloud-Desktop",
+        "docker": "Docker",
+        "phone": "Telefon"
+      },
+      "manifest": {
+        "display_name": "Kiro Crew Guide",
+        "description": "Eine durchsuchbare Wissensdatenbank für Fehlerbehebung und Anleitungen zu Kiro Crew: Finde eine Lösung nach Symptom oder Stichwort, und jeder Agent kann dieselben Einträge über MCP abfragen, statt zu raten.",
+        "page_label": "Guide",
+        "highlight_1": "Durchsuche eine kuratierte Wissensdatenbank für Fehlerbehebung und Anleitungen nach Symptom oder Stichwort",
+        "highlight_2": "Jeder Eintrag nennt die genauen Befehle und das erwartete Ergebnis jedes Schritts",
+        "highlight_3": "Agenten schlagen dieselben Lösungen über MCP (guide_search / guide_get) nach, statt zu raten",
+        "highlight_4": "Interne Editionen ergänzen eigene Einträge, ohne das öffentlich Ausgelieferte zu ändern",
+        "use_case_1": "Schlage die Lösung für ein Kiro-Crew-Problem nach Symptom oder Stichwort nach – im Dashboard oder von einem Agenten über MCP.",
+        "configuration_1": "Aktiviere die App im App Store; die öffentlichen Einträge werden mitgeliefert, und interne Editionen ergänzen eigene über ein Daten-Overlay."
+      }
+    },
     "agentWorlds": {
       "manifest": {
         "description": "Verwandelt deine laufenden Agenten in Figuren einer animierten Pixel-Art-Szene, sodass ein Blick genügt, um zu sehen, wie ausgelastet Kiro Crew ist. Jeder aktive Agent erscheint als Sprite, das reagiert, wenn Arbeit beginnt und endet, über Themenszenen hinweg, vom klassischen Büro bis zum Zauberturm oder Unterwasserlabor. Kopple es in ein eigenes Fenster aus, um es beim Arbeiten auf einem zweiten Bildschirm zu behalten.",

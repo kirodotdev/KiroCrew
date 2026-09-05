@@ -1,0 +1,59 @@
+{
+  "name": "guide",
+  "version": "0.1.0",
+  "displayName": "Kiro Crew Guide",
+  "description": "A searchable troubleshooting and how-to knowledge base for Kiro Crew: find a fix by symptom or keyword, and let any agent query the same entries over MCP instead of guessing.",
+  "author": "kirocrew",
+  "tags": [
+    "guide",
+    "help",
+    "troubleshooting",
+    "documentation",
+    "knowledge-base"
+  ],
+  "highlights": [
+    "Search a curated troubleshooting and how-to knowledge base by symptom or keyword",
+    "Every entry lays out the exact commands to run and what to expect at each step",
+    "Agents look up the same fixes over MCP (guide_search / guide_get) instead of guessing",
+    "Internal editions add their own entries without changing what ships publicly"
+  ],
+  "defaultEnabled": false,
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "mcpServers": {
+    "guide": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "kiro_crew.apps.builtins.guide.backend.mcp_server"
+      ],
+      "autoApprove": [
+        "guide_search",
+        "guide_get"
+      ]
+    }
+  },
+  "permissions": {
+    "api": [
+      "/api/apps/guide",
+      "/api/apps/guide/*"
+    ],
+    "storage": true
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/guide",
+        "label": "Guide",
+        "icon": "LifeBuoy"
+      }
+    ]
+  },
+  "useCases": [
+    "Look up the fix for a Kiro Crew problem by symptom or keyword, in the dashboard or from an agent over MCP."
+  ],
+  "configuration": [
+    "Enable the app from the App Store; the public guide entries ship with it, and internal editions add their own via a data overlay."
+  ]
+}

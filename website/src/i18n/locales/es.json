@@ -134,6 +134,51 @@
     }
   },
   "apps": {
+    "guide": {
+      "title": "Guía de {{productName}}",
+      "searchPlaceholder": "Buscar por síntoma, error o palabra clave…",
+      "loading": "Cargando…",
+      "noResults": "No hay entradas coincidentes",
+      "errorLoading": "No se pudo cargar la guía",
+      "selectPrompt": "Selecciona una entrada para ver la solución completa",
+      "symptomLabel": "Síntoma",
+      "stepsLabel": "Pasos",
+      "crewPromptLabel": "Pedírselo a tu equipo",
+      "ifStuckLabel": "Si sigues atascado",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "sendToChat": "Enviar al chat",
+      "expectLabel": "Resultado esperado",
+      "sourcesLabel": "Fuentes",
+      "filterPlatform": "Plataforma",
+      "filterTopic": "Tema",
+      "filterClear": "Borrar filtros",
+      "trustConfirmed": "Confirmado",
+      "trustKnownBug": "Error conocido",
+      "trustUnverified": "Sin verificar",
+      "communityBadge": "Comunidad",
+      "retry": "Reintentar",
+      "detailError": "No se pudo cargar esta entrada",
+      "platform": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux",
+        "cloudDesktop": "Escritorio en la nube",
+        "docker": "Docker",
+        "phone": "Teléfono"
+      },
+      "manifest": {
+        "display_name": "Guía de Kiro Crew",
+        "description": "Una base de conocimiento de resolución de problemas y tutoriales con búsqueda para Kiro Crew: encuentra una solución por síntoma o palabra clave, y cualquier agente puede consultar las mismas entradas mediante MCP en lugar de adivinar.",
+        "page_label": "Guía",
+        "highlight_1": "Busca una base de conocimiento de resolución de problemas y tutoriales por síntoma o palabra clave",
+        "highlight_2": "Cada entrada indica los comandos exactos a ejecutar y el resultado esperado en cada paso",
+        "highlight_3": "Los agentes consultan las mismas soluciones mediante MCP (guide_search / guide_get) en lugar de adivinar",
+        "highlight_4": "Las ediciones internas añaden sus propias entradas sin cambiar lo que se publica públicamente",
+        "use_case_1": "Busca la solución a un problema de Kiro Crew por síntoma o palabra clave, en el panel o desde un agente mediante MCP.",
+        "configuration_1": "Activa la aplicación desde la App Store; las entradas públicas se incluyen con ella, y las ediciones internas añaden las suyas mediante una capa de datos."
+      }
+    },
     "agentWorlds": {
       "manifest": {
         "description": "Convierte tus agentes en ejecución en personajes de una escena animada de pixel art, así un vistazo te dice qué tan ocupado está Kiro Crew. Cada agente activo aparece como un sprite que reacciona cuando el trabajo empieza y termina, en escenas temáticas que van de una oficina clásica a una torre del mago o un laboratorio submarino. Ábrelo en su propia ventana para mantenerlo en una segunda pantalla mientras trabajas.",

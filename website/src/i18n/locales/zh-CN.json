@@ -128,6 +128,51 @@
     }
   },
   "apps": {
+    "guide": {
+      "title": "{{productName}} 指南",
+      "searchPlaceholder": "按现象、报错或关键词搜索…",
+      "loading": "加载中…",
+      "noResults": "没有匹配的条目",
+      "errorLoading": "无法加载指南",
+      "selectPrompt": "选择一个条目以查看完整修法",
+      "symptomLabel": "现象",
+      "stepsLabel": "步骤",
+      "crewPromptLabel": "交给你的团队",
+      "ifStuckLabel": "还是卡住了？",
+      "copy": "复制",
+      "copied": "已复制",
+      "sendToChat": "发送到对话",
+      "expectLabel": "预期结果",
+      "sourcesLabel": "来源",
+      "filterPlatform": "平台",
+      "filterTopic": "主题",
+      "filterClear": "清除筛选",
+      "trustConfirmed": "已确认",
+      "trustKnownBug": "已知问题",
+      "trustUnverified": "未验证",
+      "communityBadge": "社区",
+      "retry": "重试",
+      "detailError": "无法加载该条目",
+      "platform": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux",
+        "cloudDesktop": "云桌面",
+        "docker": "Docker",
+        "phone": "手机"
+      },
+      "manifest": {
+        "display_name": "Kiro Crew 指南",
+        "description": "面向 Kiro Crew 的可搜索排障与教程知识库：按现象或关键词找到修法，任何 agent 也能通过 MCP 查询同一批条目，而不必猜测。",
+        "page_label": "指南",
+        "highlight_1": "按现象或关键词搜索精选的排障与教程知识库",
+        "highlight_2": "每条都给出要运行的确切命令以及每步的预期结果",
+        "highlight_3": "agent 通过 MCP（guide_search / guide_get）查同一批修法，而不是猜测",
+        "highlight_4": "内部版可叠加自己的条目，不改变公开发布的内容",
+        "use_case_1": "按现象或关键词查找 Kiro Crew 问题的修法，可在面板中或由 agent 通过 MCP 查询。",
+        "configuration_1": "在 App Store 中启用该应用；公开条目随应用发布，内部版通过数据 overlay 叠加自己的条目。"
+      }
+    },
     "agentWorlds": {
       "manifest": {
         "use_case_1": "在 crew 工作时，通过第二块屏幕上的概览视图实时查看代理、定时任务和子代理。",

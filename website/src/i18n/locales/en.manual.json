@@ -94,6 +94,40 @@
         "typed": "Typed"
       }
     },
+    "guide": {
+      "title": "{{productName}} Guide",
+      "searchPlaceholder": "Search by symptom, error, or keyword…",
+      "loading": "Loading…",
+      "noResults": "No matching entries",
+      "errorLoading": "Could not load the guide",
+      "selectPrompt": "Select an entry to see the full fix",
+      "symptomLabel": "Symptom",
+      "stepsLabel": "Steps",
+      "crewPromptLabel": "Ask your crew",
+      "ifStuckLabel": "If you're still stuck",
+      "copy": "Copy",
+      "copied": "Copied",
+      "sendToChat": "Send to chat",
+      "expectLabel": "What to expect",
+      "sourcesLabel": "Sources",
+      "filterPlatform": "Platform",
+      "filterTopic": "Topic",
+      "filterClear": "Clear filters",
+      "trustConfirmed": "Confirmed",
+      "trustKnownBug": "Known bug",
+      "trustUnverified": "Unverified",
+      "communityBadge": "Community",
+      "retry": "Retry",
+      "detailError": "Could not load this entry",
+      "platform": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux",
+        "cloudDesktop": "Cloud desktop",
+        "docker": "Docker",
+        "phone": "Phone"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "collapse": "Collapse",

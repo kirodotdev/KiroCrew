@@ -128,6 +128,51 @@
     }
   },
   "apps": {
+    "guide": {
+      "title": "{{productName}} 가이드",
+      "searchPlaceholder": "증상, 오류 또는 키워드로 검색…",
+      "loading": "불러오는 중…",
+      "noResults": "일치하는 항목이 없습니다",
+      "errorLoading": "가이드를 불러올 수 없습니다",
+      "selectPrompt": "항목을 선택하면 전체 해결 방법이 표시됩니다",
+      "symptomLabel": "증상",
+      "stepsLabel": "단계",
+      "crewPromptLabel": "크루에게 요청",
+      "ifStuckLabel": "그래도 해결되지 않으면",
+      "copy": "복사",
+      "copied": "복사됨",
+      "sendToChat": "채팅으로 보내기",
+      "expectLabel": "예상 결과",
+      "sourcesLabel": "출처",
+      "filterPlatform": "플랫폼",
+      "filterTopic": "주제",
+      "filterClear": "필터 지우기",
+      "trustConfirmed": "확인됨",
+      "trustKnownBug": "알려진 버그",
+      "trustUnverified": "미검증",
+      "communityBadge": "커뮤니티",
+      "retry": "다시 시도",
+      "detailError": "이 항목을 불러올 수 없습니다",
+      "platform": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux",
+        "cloudDesktop": "클라우드 데스크톱",
+        "docker": "Docker",
+        "phone": "휴대폰"
+      },
+      "manifest": {
+        "display_name": "Kiro Crew 가이드",
+        "description": "Kiro Crew를 위한 검색 가능한 문제 해결 및 방법 안내 지식 베이스입니다. 증상이나 키워드로 해결책을 찾고, 에이전트도 MCP를 통해 같은 항목을 조회할 수 있습니다.",
+        "page_label": "가이드",
+        "highlight_1": "엄선된 문제 해결 및 방법 안내 지식 베이스를 증상이나 키워드로 검색",
+        "highlight_2": "각 항목에 실행할 정확한 명령과 각 단계의 예상 결과를 제공",
+        "highlight_3": "에이전트가 MCP(guide_search / guide_get)로 같은 해결책을 조회하며 추측하지 않음",
+        "highlight_4": "내부 에디션은 공개 배포 내용을 바꾸지 않고 자체 항목을 추가",
+        "use_case_1": "증상이나 키워드로 Kiro Crew 문제의 해결책을 대시보드에서 또는 에이전트가 MCP를 통해 조회합니다.",
+        "configuration_1": "App Store에서 앱을 활성화하세요. 공개 항목은 앱과 함께 제공되며, 내부 에디션은 데이터 overlay로 자체 항목을 추가합니다."
+      }
+    },
     "agentWorlds": {
       "manifest": {
         "use_case_1": "크루가 작업하는 동안 실행 중인 에이전트, cron, 서브에이전트를 세컨드 스크린에서 한눈에 확인합니다.",

@@ -128,6 +128,51 @@
     }
   },
   "apps": {
+    "guide": {
+      "title": "{{productName}} ガイド",
+      "searchPlaceholder": "症状・エラー・キーワードで検索…",
+      "loading": "読み込み中…",
+      "noResults": "一致する項目がありません",
+      "errorLoading": "ガイドを読み込めませんでした",
+      "selectPrompt": "項目を選択すると詳しい対処法が表示されます",
+      "symptomLabel": "症状",
+      "stepsLabel": "手順",
+      "crewPromptLabel": "クルーに依頼する",
+      "ifStuckLabel": "それでも解決しない場合",
+      "copy": "コピー",
+      "copied": "コピーしました",
+      "sendToChat": "チャットに送る",
+      "expectLabel": "期待される結果",
+      "sourcesLabel": "出典",
+      "filterPlatform": "プラットフォーム",
+      "filterTopic": "トピック",
+      "filterClear": "フィルターをクリア",
+      "trustConfirmed": "確認済み",
+      "trustKnownBug": "既知の不具合",
+      "trustUnverified": "未検証",
+      "communityBadge": "コミュニティ",
+      "retry": "再試行",
+      "detailError": "この項目を読み込めませんでした",
+      "platform": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux",
+        "cloudDesktop": "クラウドデスクトップ",
+        "docker": "Docker",
+        "phone": "スマートフォン"
+      },
+      "manifest": {
+        "display_name": "Kiro Crew ガイド",
+        "description": "Kiro Crew 向けの検索可能なトラブルシューティング／ハウツー知識ベース。症状やキーワードで修正方法を見つけられ、エージェントも MCP 経由で同じ項目を照会できます。",
+        "page_label": "ガイド",
+        "highlight_1": "厳選したトラブルシューティング／ハウツー知識ベースを症状やキーワードで検索",
+        "highlight_2": "各項目に実行すべき正確なコマンドと各ステップの期待結果を記載",
+        "highlight_3": "エージェントは MCP（guide_search / guide_get）で同じ修正方法を参照し、推測しない",
+        "highlight_4": "内部エディションは公開内容を変えずに独自の項目を追加できる",
+        "use_case_1": "症状やキーワードで Kiro Crew の問題の修正方法を、ダッシュボードで、またはエージェントが MCP 経由で調べる。",
+        "configuration_1": "App Store からアプリを有効化します。公開項目はアプリに同梱され、内部エディションはデータ overlay で独自の項目を追加します。"
+      }
+    },
     "agentWorlds": {
       "manifest": {
         "use_case_1": "クルーの作業中、実行中のエージェント、cron、サブエージェントをセカンドスクリーンで一覧できます。",
