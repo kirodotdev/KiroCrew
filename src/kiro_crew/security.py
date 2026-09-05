@@ -11029,22 +11029,43 @@ def is_sensitive_bash_command(
        ``is_sensitive_path()`` to catch obfuscation (e.g. ``ca""t ~/.aws/credentials``,
        ``awk '{print}' $HOME/.ssh/id_rsa``, ``sed -n p ~/../../etc/shadow``).
 
-    Between them runs **pass 1b**, which repeats the pass-1 matchers over
-    separator-run-COLLAPSED copies of the subject. That is a Win32 *shell grammar*
-    heuristic: a shell opens the store ``%LOCALAPPDATA%\\kiro-cli`` names when
-    handed ``%LOCALAPPDATA%\\\\kiro-cli``, so the run carries no meaning and
-    collapsing it closes the doubled spelling (#6350).
+    ``_subject_is_shell_grammar`` says whether *command* is a shell COMMAND LINE
+    (the default) or a larger text — a source-code body — being scanned as
+    defense-in-depth. It keys the shell-grammar heuristics that have NO
+    per-string subject form — pass 1b and pass 3 below — while the remaining
+    execution-model passes (4, 5, and the env-credential shapes) are governed
+    by the SUBJECT parameters further down: they always run, re-pointed at the
+    command strings a source body contains rather than switched off. The two
+    mechanisms compose; neither alone describes a source caller:
 
-    ``_subject_is_shell_grammar=False`` skips ONLY pass 1b, for a caller scanning a
-    subject that is not a shell command line -- a **source-code body**, where a
-    backslash run is an ESCAPE rather than a redundant separator. There ``\\\\`` is
-    one backslash and ``\\.`` is a literal dot, so collapsing strips the escapes and
-    manufactures a path the subject never contained: a ``re`` pattern that redacts a
-    fenced store, or a docstring merely naming one, reads as an access to it. Every
-    other pass still runs, so a source body keeps the path matcher, the extraction
-    control, the relative-traversal matcher, the normalizer, IMDS and env-credential
-    detection -- and its own caller keeps its ``is_sensitive_path`` check on the
-    resolved file path.
+    * **Pass 1b** (separator-run collapse) repeats the pass-1 matchers over
+      separator-run-COLLAPSED copies of the subject. That is a Win32 shell
+      heuristic: a shell opens the store ``%LOCALAPPDATA%\\kiro-cli`` names when
+      handed ``%LOCALAPPDATA%\\\\kiro-cli``, so the run carries no meaning and
+      collapsing it closes the doubled spelling (#6350). In SOURCE a backslash
+      run is an ESCAPE — ``\\\\`` is one backslash, ``\\.`` a literal dot — so
+      collapsing manufactures a path the subject never contained: a ``re``
+      pattern that redacts a fenced store reads as an access to it. A source
+      caller replaces this pass with the decoded-literal scan
+      (``is_sensitive_source_body``).
+    * **Pass 3** (native-shell entry-then-read) models ``cd`` state and
+      variable resolution across statements — one command line's execution,
+      which raw source text is not. A shell payload embedded in source lives
+      in a string literal, and a literal IS shell-grammar subject matter, so
+      the caller extracts the literals and feeds each one back through this
+      function at the default subject (see
+      ``mcp_cron._shell_scannable_literals``).
+
+    The TEXT-EVIDENCE passes run for both subjects: the pass-1 regex fences,
+    the trust-root extraction control, the relative-traversal matcher, the
+    normalizer token scan, and IMDS all refuse only when the text itself names
+    something sensitive, which is as meaningful in source as in a command — and
+    a source caller keeps its own ``is_sensitive_path`` check on the resolved
+    file path. The runtime sandbox is a partial backstop, not the control:
+    script subprocesses get the crew-fenced leaves masked at every sandbox
+    level (``_CREW_HIDDEN_LEAVES``), but the ``standard`` mode they run under
+    deliberately leaves ``~/.aws``/``~/.ssh`` readable — which is exactly why
+    the literal scan is required.
 
     ``_traversal_subjects`` and ``_env_subject`` re-point the passes that REQUIRE a
     command line at the
@@ -11123,10 +11144,16 @@ def is_sensitive_bash_command(
     if normalizer_result:
         return normalizer_result
 
-    # ── Pass 3: native-shell entry-then-relative-read scan ──
-    native_result = _check_native_home_entry_then_fenced_read(command)
-    if native_result:
-        return native_result
+    # ── Passes 3-5 model shell EXECUTION, so they run only when the subject IS a
+    # shell command line. On a source file they resolve variables, `cd` state and
+    # pipeline delivery that no shell will ever perform on that text, and their
+    # fail-closed analysis budgets refuse on the file's sheer length — see the
+    # docstring. The text-evidence passes above and below run for every subject.
+    if _subject_is_shell_grammar:
+        # ── Pass 3: native-shell entry-then-relative-read scan ──
+        native_result = _check_native_home_entry_then_fenced_read(command)
+        if native_result:
+            return native_result
 
     # ── Passes 4 and 5: the two TRAVERSAL analyses ──
     # Both walk shell STRUCTURE under a fail-closed budget, so unlike every pass above
@@ -11300,6 +11327,43 @@ def is_sensitive_source_body(text: str) -> str | None:
         # module takes everywhere else.
         _env_subject="".join(subjects),
     )
+
+
+def is_shell_payload_literal(literal: str) -> str | None:
+    """The shell-EXECUTION verdict on ONE string literal from a source body.
+
+    The companion to :func:`is_sensitive_source_body`, owning the other half of
+    the source-subject split: that function answers the NAMING question for a
+    body and its literal VALUES (fence hits, with pattern-slot exoneration for
+    redactors), while this one answers the EXECUTION question for a literal —
+    is this text, handed to a shell, a traversal or credential-dump payload?
+    A literal is exactly the text a shell would receive, so the execution-model
+    analyses that judge fiction on raw source (see
+    ``is_sensitive_bash_command``'s subject flag) are sound here and only here.
+
+    Deliberately does NOT re-run the naming passes: they already ran, with
+    their exonerations, in ``is_sensitive_source_body`` — re-asking them here
+    would re-deny the redaction literals that scan deliberately allows (the
+    #7912 class). Callers pair this with that function, never use it alone.
+
+    Returns a denial reason, or None when clean.
+    """
+    native = _check_native_home_entry_then_fenced_read(literal)
+    if native:
+        return native
+    alt = _check_alt_traversal_reaches_fence(literal)
+    if alt:
+        return alt
+    find_result = _check_find_traversal_reaches_fence(literal)
+    if find_result:
+        return find_result
+    # IMDS runs here as well as on the raw body: an ESCAPE-spelled endpoint
+    # (`"http://\x31\x36\x39.254.169.254/…"`) exists only in the DECODED
+    # literal, so the raw-text IMDS pass never sees it.
+    imds = _check_imds_access(literal)
+    if imds:
+        return imds
+    return _check_env_credential_access(literal)
 
 
 # `NAME=value` prefix. `normalize_shell_command` keeps it as a single token, and

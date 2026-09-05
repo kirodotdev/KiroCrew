@@ -17,6 +17,7 @@ Tools:
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import logging
 import os
@@ -64,6 +65,7 @@ from kiro_crew.security import (
     is_sensitive_bash_command,
     is_sensitive_path,
     is_sensitive_source_body,
+    is_shell_payload_literal,
     scan_exfiltration_urls,
 )
 from kiro_crew.sel import sel
@@ -754,6 +756,411 @@ def _vet_shell_command(command: str) -> str | None:
     return None
 
 
+def _shell_scannable_literals(text: str) -> tuple[bool, list[str]]:
+    """(parses, the string literals of *text* worth scanning as shell commands).
+
+    A shell payload embedded in Python lives in a string literal, and a literal
+    is exactly the text a shell would receive — so it is the one part of a source
+    body the execution-model shell passes are SOUND on. Docstrings are excluded
+    because they are prose and the shell modeling fabricates on prose (see
+    :func:`_vet_script_contents`); a docstring is the first statement of a
+    module, class or function body, per the compiler's own definition. F-string
+    fragments are plain ``ast.Constant`` strings inside a ``JoinedStr`` and are
+    included, so a payload split around an interpolation still shows its parts.
+    Literals are deduplicated, order-preserving. ``parses=False`` means the body
+    is not valid Python and yields no literals — the caller falls back to
+    scanning the raw text.
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return False, []
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(node, "body", [])
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstrings.add(id(body[0].value))
+    seen: set[str] = set()
+    literals: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+            and node.value.strip()
+            and node.value not in seen
+        ):
+            seen.add(node.value)
+            literals.append(node.value)
+    return True, literals
+
+
+#: Callable names that hand their command to a shell. The ``run`` family is a
+#: sink only with ``shell=True``; ``system``/``popen``/``getoutput``/
+#: ``getstatusoutput``/``create_subprocess_shell`` always are. Matched on the
+#: call's LAST name segment so both ``subprocess.run`` and a
+#: ``from subprocess import run`` spelling hit. ``create_subprocess_exec`` is
+#: deliberately absent: it takes an argv list and starts no shell, the same
+#: reason the subprocess argv-list form is a residual, not a sink.
+_SHELL_SINK_ALWAYS = frozenset(
+    {"system", "popen", "getoutput", "getstatusoutput", "create_subprocess_shell"}
+)
+_SHELL_SINK_WITH_FLAG = frozenset({"run", "call", "check_call", "check_output", "Popen"})
+#: Modules whose sink attributes the walk tracks. ``asyncio`` is here for
+#: ``create_subprocess_shell`` (also importable from ``asyncio.subprocess``);
+#: ``asyncio.run`` is NOT a shell sink -- it shares a name with subprocess's
+#: flag-gated sink, and with no ``shell`` spelling and fewer than 9 positionals
+#: the flag rule already answers False, so ordinary async crons stay vettable.
+_SHELL_SINK_MODULES = ("os", "subprocess", "asyncio")
+
+#: Characters no shell REWRITES: a sink literal built solely from these is
+#: executed as written on POSIX shells and cmd.exe alike, so the textual gate's
+#: verdict on it is a verdict on what runs. Everything else -- `$`/backtick
+#: (POSIX expansion/substitution), `%`/`!`/`^` (cmd.exe variables, delayed
+#: expansion, escapes), `*`/`?`/`[` (pathname expansion: `cat ~/.ss*/id_rsa`
+#: reads the key while naming no fenced path), quotes and backslashes
+#: (dequoting splices: `~/.s"s"h`), and redirection/pipe/separator operators --
+#: lets the executed text differ from the scanned text. An ALLOWLIST, not a
+#: denylist of rewrite operators: shells differ and grow, so enumerating the
+#: dangerous set is one unenumerated operator away from reopening the class,
+#: while the safe set is small and closed. `~` is included: tilde expansion is
+#: a rewrite, but to a path the fence matchers already model (they match
+#: home-anchored spellings), so it cannot CONCEAL -- excluding it would refuse
+#: nearly every benign command for no coverage.
+_SHELL_VERBATIM_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" " -_./:=,+@~"
+)
+
+
+def _shell_executes_verbatim(text: str) -> bool:
+    """True when every character is one no shell rewrites (see the set)."""
+    return all(ch in _SHELL_VERBATIM_CHARS for ch in text)
+
+
+def _attr_chain_root(node: ast.Attribute) -> str | None:
+    """The base Name of a pure attribute chain, or None.
+
+    ``asyncio.subprocess.create_subprocess_shell`` reaches the sink through a
+    NESTED attribute whose ``value`` is itself an Attribute; resolving the
+    chain to its root Name lets both the call matcher and the escape-as-value
+    forfeits see it without enumerating chain depths.
+    """
+    value: ast.expr = node.value
+    while isinstance(value, ast.Attribute):
+        value = value.value
+    return value.id if isinstance(value, ast.Name) else None
+
+
+def _dynamic_shell_sink(text: str) -> bool:
+    """True when a shell-execution call takes a command this scan cannot read.
+
+    The literal scan (:func:`_shell_scannable_literals`) judges every string
+    the source can hand to a shell — but only strings that exist in the source.
+    A command COMPOSED at runtime (``verb + tail``, an f-string, ``__doc__``, a
+    variable) reaches ``shell=True`` with no individually-blocking literal, so
+    a sink whose command argument is not a plain string literal is refused
+    outright: it cannot be statically vetted, and the honest answer is the same
+    fail-closed one the shell gate gives its own analysis budgets. A literal
+    argument is fine — the literal scan already judged it. An ``args`` LIST
+    (no shell) is not a sink here; see the residual note in
+    :func:`_vet_script_contents`.
+
+    Recognition is MODULE-QUALIFIED: attribute calls on the os/subprocess/
+    asyncio modules (``asyncio.create_subprocess_shell`` is an always-shell
+    sink; nested chains like ``asyncio.subprocess.create_subprocess_shell``
+    resolve through :func:`_attr_chain_root`) and bare names
+    imported FROM those modules (``from subprocess import run``). An unrelated
+    method that merely shares a sink's name (``renderer.run(job, shell=theme)``)
+    is not a sink. ASSIGNMENT aliasing is closed as a CLASS rather than by
+    chasing spellings (the closure #7913 established for module authenticity):
+    a sink-capable value may only be CALLED, and any reference that ESCAPES as
+    a value forfeits the whole body — ``r = subprocess.run``, ``x = subprocess``,
+    ``getattr(subprocess, "run")``, ``holder = [os.system]`` and every container/
+    argument/return spelling all put a shell-capable callable somewhere no
+    static walk can follow, so each fails closed on the mention itself. Plain
+    attribute READS on the modules (``os.environ``, ``os.path.join``) are
+    unaffected: only the module object itself as a bare value, a SINK attribute
+    outside call position, and a from-imported SINK name outside call position
+    forfeit. The remaining residual is acquisition that never mentions a watched
+    name at all — ``importlib.import_module("subprocess")``, ``sys.modules``
+    string routes, ``exec`` — which is invisible to every static text scan (an
+    ``exec`` body needs no shell sink to read files in pure Python) and was
+    equally open on base. An unparseable body answers False: the caller's
+    fallback scans it raw, with shell grammar, instead.
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    # Sink recognition is MODULE-QUALIFIED, not name-shaped: `renderer.run(job,
+    # shell=theme)` and `client.system(payload)` are ordinary application calls
+    # and must not be misread as shell sinks. A call counts only when its target
+    # is an attribute of a tracked shell module (through `import
+    # subprocess as sp` aliases) or a bare name imported FROM one of them
+    # (`from subprocess import run`, `from os import system`, aliased or not).
+    # Assignment aliasing is closed by the escape-as-value forfeits below.
+    module_aliases: set[str] = set()
+    imported_names: dict[str, str] = {}
+    import_roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                import_roots.add(alias.asname or alias.name.split(".")[0])
+                if alias.name in _SHELL_SINK_MODULES:
+                    module_aliases.add(alias.asname or alias.name)
+                elif alias.name.split(".")[0] in _SHELL_SINK_MODULES:
+                    # `import os.path` (no asname) binds the TOP-LEVEL name
+                    # `os`, so `os.system` is reachable through it; with an
+                    # asname (`import os.path as p`) only the submodule is
+                    # bound and the top-level name is not. `asyncio.subprocess`
+                    # is the one submodule that CARRIES a sink, so its asname
+                    # binds a sink-carrying module and is tracked too.
+                    if alias.asname is None:
+                        module_aliases.add(alias.name.split(".")[0])
+                    elif alias.name == "asyncio.subprocess":
+                        module_aliases.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    # A wildcard import binds a set this walk cannot
+                    # enumerate -- and for ANY source module, not only the
+                    # tracked ones: a module without ``__all__`` re-exports
+                    # every imported module it holds (``from glob import *``
+                    # would bind ``os`` on such a module), so the sink
+                    # carriers can arrive under their own names, recorded
+                    # nowhere. The forfeit condition is the UNKNOWABLE
+                    # binding set itself (#7913's wildcard closure), so every
+                    # wildcard import fails closed outright.
+                    return True
+                if alias.name in _SHELL_SINK_MODULES:
+                    # A from-imported name that IS a tracked module name binds
+                    # (presumptively) that MODULE, whatever module re-exports
+                    # it: `from asyncio import subprocess [as asp]`,
+                    # `from subprocess import os as o` (subprocess imports
+                    # os), `from shutil import os` -- the source module is
+                    # irrelevant to what arrives. Fail closed on the NAME: a
+                    # same-named non-module attribute only makes vetting
+                    # stricter, never looser.
+                    module_aliases.add(alias.asname or alias.name)
+                    continue
+                if node.module in _SHELL_SINK_MODULES or node.module == "asyncio.subprocess":
+                    imported_names[alias.asname or alias.name] = alias.name
+    # ESCAPE-AS-VALUE forfeits (the aliasing closure — see the docstring). A
+    # shell-capable value may only be CALLED; any other mention hands it to a
+    # place no static walk can follow, so the mention itself fails closed:
+    #   * a SINK attribute of the module outside call position
+    #     (`r = subprocess.run`, `keep(os.system)`, `[sp.Popen]`);
+    #   * the MODULE itself as a bare value (`x = subprocess`) — with it goes
+    #     every sink it carries;
+    #   * a from-imported SINK name outside call position (`r = run`);
+    #   * `getattr(<module>, ...)` — the attribute name is a string this walk
+    #     will not chase, so the read is treated as an escape.
+    # Plain non-sink attribute reads (`os.environ`, `os.path.join(...)`) are
+    # untouched: the attribute must itself be a sink name for the first rule,
+    # and an Attribute node's `value` mention of the module is not a bare-value
+    # mention of it.
+    sink_names = _SHELL_SINK_ALWAYS | _SHELL_SINK_WITH_FLAG
+    sink_imported = {local for local, orig in imported_names.items() if orig in sink_names}
+    call_funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    attr_values = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            if (
+                _attr_chain_root(node) in module_aliases
+                and node.attr in sink_names
+                and id(node) not in call_funcs
+            ):
+                return True
+            if _attr_chain_root(node) in module_aliases and (
+                node.attr.startswith("__") and node.attr.endswith("__")
+            ):
+                # A DUNDER attribute of a tracked module is reflection
+                # surface, not a named capability: `subprocess.__dict__["run"]`
+                # hands back the namespace and `__getattribute__("ru" + "n")`
+                # builds the name at runtime, so neither can be checked
+                # against the sink set. The Attribute node is what shields the
+                # module Name from the bare-value forfeit below (`vars(sp)`
+                # already forfeits there), so the dunder read forfeits as the
+                # same class: the module's capability set escaping whole.
+                return True
+            if (
+                _attr_chain_root(node) in module_aliases
+                and node.attr in _SHELL_SINK_MODULES
+                and id(node) not in attr_values
+                and id(node) not in call_funcs
+            ):
+                # `x = asyncio.subprocess` -- or `x = subprocess.os`, since
+                # tracked modules re-export each other -- binds a
+                # sink-CARRYING module to an untracked name: the
+                # module-as-value escape one attribute deep. A CHAINED read
+                # (`asyncio.subprocess.create_subprocess_shell(...)`) is this
+                # node in attribute-value position and stays allowed; any
+                # other mention hands the submodule somewhere the walk cannot
+                # follow, so it forfeits like the bare module value.
+                return True
+            if (
+                node.attr in _SHELL_SINK_MODULES
+                and isinstance(node.value, ast.Name)
+                and node.value.id in import_roots
+                and node.value.id not in module_aliases
+            ):
+                # A tracked module reached as an ATTRIBUTE of some other
+                # imported module -- `shutil.os`, `glob.os.system(...)`:
+                # most stdlib modules re-export the modules they import, so
+                # any import is a carrier. The attribute IS (presumptively)
+                # the sink-carrying module arriving under an untracked chain
+                # root, which this walk's module_aliases mechanism cannot
+                # follow, so the mention itself fails closed -- read, call
+                # chain, or value escape alike. Same-named non-module
+                # attributes only make vetting stricter.
+                return True
+        elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Store):
+            if node.id in sink_imported and id(node) not in call_funcs:
+                return True
+            if (
+                node.id in module_aliases
+                and id(node) not in attr_values
+                and id(node) not in call_funcs
+            ):
+                # The module as a bare value. Import statements bind via
+                # ast.alias (not Name), so `import os` itself never trips this.
+                return True
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if (
+                isinstance(func, ast.Name)
+                and func.id == "getattr"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id in module_aliases
+            ):
+                return True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if _attr_chain_root(func) not in module_aliases:
+                continue
+            name = func.attr
+        elif isinstance(func, ast.Name):
+            name = imported_names.get(func.id, "")
+            if not name:
+                continue
+        else:
+            continue
+        has_unpacking = any(kw.arg is None for kw in node.keywords)
+        has_starred_args = any(isinstance(a, ast.Starred) for a in node.args)
+        if name in _SHELL_SINK_ALWAYS:
+            is_sink = True
+        elif name in _SHELL_SINK_WITH_FLAG:
+            # `shell` is also REACHABLE POSITIONALLY: it is Popen's 9th
+            # parameter, and the run/call/check_* wrappers forward their
+            # positionals to Popen — so `run(cmd, -1, None, None, None, None,
+            # None, True, True)` runs a shell with no `shell=` keyword on the
+            # call. A call with 9+ positionals is judged on that argument
+            # (non-literal-False fails closed, same rule as the keyword), and
+            # a *starred unpacking puts every position at an unknowable index,
+            # so it fails closed outright.
+            shell_kw = next((kw for kw in node.keywords if kw.arg == "shell"), None)
+            if shell_kw is not None:
+                # shell=False is not a sink; shell=<anything not literally
+                # False> cannot be ruled out, so it is treated as one.
+                is_sink = not (
+                    isinstance(shell_kw.value, ast.Constant) and shell_kw.value.value is False
+                )
+            elif has_starred_args:
+                is_sink = True
+            elif len(node.args) >= 9:
+                shell_pos = node.args[8]
+                is_sink = not (isinstance(shell_pos, ast.Constant) and shell_pos.value is False)
+            elif has_unpacking:
+                # No explicit shell= — but a `**kwargs` unpacking can carry
+                # `shell: True` invisibly (`subprocess.run(cmd, **{"shell":
+                # True})` runs a shell), so an unpacked call cannot be ruled
+                # out and is treated as a sink. Without an unpacking, no
+                # shell= means no shell.
+                is_sink = True
+            else:
+                continue
+        else:
+            continue
+        if not is_sink:
+            continue
+        command = node.args[0] if node.args else None
+        if command is not None and isinstance(command, ast.Starred):
+            # The command position itself is unknowable under *unpacking.
+            return True
+        if command is None:
+            # `command` is os.system/os.popen's keyword; `args` the subprocess
+            # family's; `cmd` getoutput/getstatusoutput's.
+            command = next(
+                (kw.value for kw in node.keywords if kw.arg in ("args", "cmd", "command")),
+                None,
+            )
+        if command is None:
+            # A sink with no visible command: fine when the call simply has
+            # none, but a `**kwargs` unpacking can hide it (`subprocess.run(
+            # shell=True, **{"args": payload})`), so that shape fails closed.
+            if has_unpacking:
+                return True
+            continue
+        if isinstance(command, ast.Constant) and isinstance(command.value, str):
+            # A literal command at a shell sink is judged by the FULL
+            # command-line gate here, not left to the pass-through literal
+            # scan alone: this is the one place a literal is PROVABLY a shell
+            # command, so the whole-command analyses apply at full strength.
+            if is_sensitive_bash_command(command.value) is not None:
+                return True
+            # Even a clean scan cannot vouch for text the shell REWRITES --
+            # POSIX `${UNSET}` splices, cmd.exe `%VAR%`/`!VAR!`/`^` escapes,
+            # glob expansion (`~/.ss*/id_rsa` reads the key naming no fenced
+            # path) -- so the literal must consist solely of characters no
+            # shell rewrites (see `_SHELL_VERBATIM_CHARS`): then the scanned
+            # text IS the executed text. Anything else fails closed, the same
+            # rule as a composed command, which such a literal is, just
+            # spelled inside one string.
+            if not _shell_executes_verbatim(command.value):
+                return True
+            continue
+        if isinstance(command, (ast.List, ast.Tuple)):
+            literal_elements = [
+                el.value
+                for el in command.elts
+                if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            ]
+            if len(literal_elements) == len(command.elts):
+                # An argv list/tuple of ALL string literals -- the exact
+                # shape the refusal message recommends -- is statically
+                # vettable even when a `**kwargs` unpacking might hide
+                # `shell=True`: every element is a literal the literal
+                # scan already judged. But element-wise judgment is not
+                # enough under a shell: Windows JOINS the list into one
+                # cmd.exe command line, so a traversal split across
+                # elements (`["rg", "'AKIA'", "~"]`) executes combined
+                # while each fragment scans clean. The JOINED form is
+                # therefore judged as a command line too (space-join is
+                # exact for Windows and conservative for POSIX, where a
+                # shell would execute only args[0] -- a judged literal).
+                # The verbatim-character rule applies equally: joined text
+                # a shell would rewrite cannot be vetted. Any non-literal
+                # element keeps the refusal.
+                joined = " ".join(literal_elements)
+                if is_sensitive_bash_command(joined) is not None:
+                    return True
+                if not _shell_executes_verbatim(joined):
+                    return True
+                continue
+        return True
+    return False
+
+
 def _vet_script_contents(text: str) -> str | None:
     """Scan a cron SCRIPT body for credential-exfiltration patterns.
 
@@ -772,28 +1179,79 @@ def _vet_script_contents(text: str) -> str | None:
     exfiltration — which a human rubber-stamping the prompt would not catch — is
     the threat this gate closes.
 
-    ``is_sensitive_source_body`` is the same carve-out for the same reason,
-    one pass further in: ``is_sensitive_bash_command``'s pass 1b collapses
-    separator RUNS because a Win32 shell treats them as redundant, but in Python
-    source a backslash run is an ESCAPE. Collapsing strips it, so a body that
-    merely REDACTS or NAMES a fenced store — a ``re`` pattern, a docstring —
-    reads as an access to it and the job is denied at every fire, permanently
-    (the fire-time gate deliberately does not auto-pause).
+    THE SUBJECT SPLIT. A script body is Python SOURCE, but a shell payload it
+    carries lives in a STRING LITERAL (``subprocess.run("…", shell=True)``,
+    ``os.system("…")``). So the body and its literals are scanned as different
+    subjects:
 
-    Dropping that pass outright would reopen the doubled-separator fence bypass
-    INSIDE a script, so it is REPLACED rather than removed:
-    ``is_sensitive_source_body`` owns that pairing in ``security.py`` — it applies
-    the same three checks to each
-    DECODED string literal, which is where the run still exists —
-    ``open(r"...\\\\kiro-cli\\\\c.json")`` hands the OS two backslashes and Win32
-    collapses them. A literal is exonerated only when it provably flows into the
-    PATTERN operand of a pattern-consuming call, so an unknown sink over-blocks. A
-    body that does not
-    parse yields no literals to inspect, and then the raw shell scan runs WITH the
-    collapse, so an unparseable body is never quietly exonerated.
+    * The WHOLE BODY goes through ``is_sensitive_source_body``: every
+      text-evidence pass over the full text, with the shell-grammar heuristics
+      off. Pass 1b's separator collapse is REPLACED (not dropped) by that
+      function's decoded-literal fence scan — in source a backslash run is an
+      ESCAPE, so collapsing raw source manufactures paths, while the run still
+      exists in the DECODED literal, which is where Win32 would collapse it
+      (``open(r"...\\\\kiro-cli\\\\c.json")``). The execution-model passes
+      (pipeline walk, ``find`` delivery analysis, env pipeline shapes) are off
+      for raw source because they judge fiction there: the pipeline walk's
+      fail-closed stage budget is exceeded by LINE COUNT alone (a ~700-line
+      script was refused with "more pipeline stages than this gate inspects"
+      at every fire, forever — the fire-time gate deliberately does not
+      auto-pause), and the ``find`` analysis has resolved cross-line fragments
+      of ordinary Python into a fenced path the file never names.
+    * EACH NON-DOCSTRING STRING LITERAL runs the shell-EXECUTION analyses
+      (``is_shell_payload_literal``: native entry, alt-traversal, ``find``
+      delivery, env pipeline shapes): a literal is exactly the text a shell
+      would receive, so the modeling is sound there, and this is what catches a
+      traversal payload (``rg 'AKIA' ~``) that raw-text scanning never caught —
+      Python quoting swallows the payload, so the pre-split scan returned None
+      on ``subprocess.run("rg 'AKIA' ~", shell=True)`` too. The NAMING passes
+      are deliberately not re-run on literals: ``is_sensitive_source_body``
+      already judged the values, with its redactor exonerations — re-asking
+      would re-deny the #7912 class. This matters because
+      script crons run in the ``standard`` sandbox, which deliberately leaves
+      ``~/.aws``/``~/.ssh`` readable (user scripts may legitimately use creds);
+      only the crew-fenced leaves (``_CREW_HIDDEN_LEAVES``) are masked at every
+      sandbox level. Docstrings are excluded from THIS payload scan: they are
+      prose, and the execution modeling fabricates on prose (measured on this
+      box's real cron scripts: 3 of 23 scripts' docstrings drew a traversal
+      verdict from sentences like "Find commits on main…", while 3,700+
+      non-docstring literals drew zero). Docstring VALUES still go through
+      ``is_sensitive_source_body``'s fence scan, which is naming-based and
+      prose-safe.
+    * EVERY SHELL EXECUTION SINK must take a literal. A command COMPOSED at
+      runtime (``verb + tail``, an f-string, ``__doc__`` — which is how an
+      excluded docstring would become executable — or any variable) reaches
+      ``os.system``/``shell=True`` with no individually-blocking literal, so
+      :func:`_dynamic_shell_sink` refuses a sink whose command argument is not
+      a plain string literal: literal-or-refused, nothing dynamic slips between
+      the two scans. Measured cost of the rule: zero — none of the 23 real
+      cron scripts on the reporting host uses ``os.system`` or ``shell=True``
+      at all.
+    * A body that does NOT parse yields no literals to inspect, and
+      ``is_sensitive_source_body`` then scans the raw text WITH full shell
+      grammar, so an unparseable body is never quietly exonerated (it could
+      not run as a cron script anyway — the runner imports it as Python).
 
-    Every other pass still runs, and ``_vet_script_file`` keeps its own
+    Every other check still runs, and ``_vet_script_file`` keeps its own
     ``is_sensitive_path`` on the resolved path.
+
+    THE RESIDUAL, stated plainly rather than implied: this vet is a lexical
+    gate against what a human rubber-stamping the ``cron_add`` prompt would not
+    catch; it does not claim to defeat obfuscated Python. An argv-list exec
+    (``subprocess.run(["rg", …])``), a pure-Python read (``open``/``os.walk``
+    — no shell shape exists for any pass to see), source re-read via
+    ``__file__``, and sink acquisition that never mentions a watched name
+    (``importlib.import_module("subprocess")``, ``sys.modules`` string routes,
+    ``exec``) are all outside static text analysis — and were equally outside
+    it BEFORE this change, when the raw-text scan returned None even on a
+    direct ``shell=True`` call whose literal carried a credential-directory
+    traversal, because Python quoting swallowed the payload. (Assignment
+    aliasing and wildcard imports are NOT residual: the escape-as-value and
+    unknowable-binding forfeits in ``_dynamic_shell_sink`` fail closed on
+    those.) For the residual classes the controls are the runtime sandbox
+    (crew-fenced leaves masked at every level) and the ``standard`` mode's
+    deliberate posture on user cloud/SSH credential directories — a product
+    decision, not a property this scan can supply.
     """
     if _CRON_CRED_PATH_RE.search(text):
         return (
@@ -802,10 +1260,29 @@ def _vet_script_contents(text: str) -> str | None:
         )
     if _CRON_SECRET_ENV_RE.search(text) or _CRON_SECRET_NAME_RE.search(text):
         return "Error: cron script blocked: references a protected secret environment variable"
-    # One entry point owns the pairing: the literal scan replaces pass 1b for a source
-    # subject, and a body that did not parse keeps the raw-text collapse. See
+    # One entry point owns the pass-1b pairing: the decoded-literal fence scan
+    # replaces the separator collapse for a source subject, and a body that did
+    # not parse keeps the raw-text scan WITH full shell grammar. See
     # ``is_sensitive_source_body``.
     reason = is_sensitive_source_body(text)
+    if reason is None:
+        parses, literals = _shell_scannable_literals(text)
+        if parses:
+            # PAYLOAD scan: each non-docstring literal through the full gate at
+            # the shell subject -- a literal is exactly the text a shell would
+            # receive, so the execution modeling is sound there and only there.
+            for literal in literals:
+                literal_reason = is_shell_payload_literal(literal)
+                if literal_reason:
+                    reason = f"{literal_reason} (in a string literal)"
+                    break
+            if reason is None and _dynamic_shell_sink(text):
+                return (
+                    "Error: cron script blocked: a shell execution call (os.system / "
+                    "subprocess with shell=True) takes a command that is not a plain "
+                    "string literal, so it cannot be statically vetted. Use a literal "
+                    "command string, or an argv list without shell=True."
+                )
     if reason:
         safe_reason = redact(reason)
         return f"Error: cron script blocked by security policy: {safe_reason}"
