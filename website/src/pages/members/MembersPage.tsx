@@ -162,6 +162,19 @@ export default function MembersPage() {
     () => members.find((m) => m.name === activeName),
     [members, activeName],
   )
+  // The shared-memory disclosure is only honest when this member's memory
+  // actually IS shared: the workspace-default store (ordinary sessions and
+  // every default-store member read it), or a named store that at least one
+  // OTHER member also uses. A member on its own dedicated store keeps its
+  // own memory — the limitation the note discloses does not apply there.
+  const memoryShared = useMemo(() => {
+    if (!active) return false
+    const store = String(active.memory_store || 'default')
+    if (store === 'default') return true
+    return members.some(
+      (m) => m.name !== active.name && String(m.memory_store || 'default') === store,
+    )
+  }, [members, active])
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted once from the roster
   // snapshot — live re-sorting mid-session would move rows under the cursor.
@@ -854,10 +867,15 @@ export default function MembersPage() {
               <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
             </div>
           </dl>
-          {/* Honest disclosure: per-member memory isolation does not exist yet. */}
-          <div className="mt-3 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
-            {t('pages.membersPage.memory_shared_note')}
-          </div>
+          {/* Honest disclosure, rendered only when it is TRUE for this member:
+              the store is the workspace default or another member shares it.
+              A member on a dedicated store keeps its own memory, and showing
+              the note there would misinform. */}
+          {memoryShared && (
+            <div className="mt-3 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
+              {t('pages.membersPage.memory_shared_note')}
+            </div>
+          )}
           <button
             onClick={() => navigate(CREW_MANAGER_PATH)}
             className="mt-4 w-full inline-flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-md border border-border hover:bg-accent/40"

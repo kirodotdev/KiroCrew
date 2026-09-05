@@ -25,7 +25,7 @@ mkdirSync(OUT, { recursive: true })
 
 const MEMBERS = [
   { name: 'radar', slug: 'radar', bound: true, slot_key: 'member-radar', running: true, kiro_agent: 'kirocrew-autofix', workspace: 'autofix', memory_store: 'default', model: '', last_active_ts: 1000, last_message: 'Six new issues: four covered by open PRs.' },
-  { name: 'scout', slug: 'scout', bound: false, slot_key: '', running: false, kiro_agent: 'kirocrew-research', workspace: 'default', memory_store: 'default', model: 'claude-opus-5' },
+  { name: 'scout', slug: 'scout', bound: false, slot_key: '', running: false, kiro_agent: 'kirocrew-research', workspace: 'default', memory_store: 'scout-own', model: 'claude-opus-5' },
   { name: 'fixer', slug: 'fixer', bound: true, slot_key: 'member-fixer', running: false, kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', model: '', last_active_ts: 900, last_message: 'Two PRs opened for the queue.' },
   { name: 'scribe', slug: 'scribe', bound: false, slot_key: '', running: false, kiro_agent: 'kirocrew-lite', workspace: 'docs', memory_store: 'default', model: '' },
 ]
@@ -249,6 +249,21 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   })
   check('05-wide composer input width', inputCap === '816px', `maxWidth=${inputCap}`)
   await page.screenshot({ path: `${OUT}/05-thread-wide-1920.png` })
+  await page.close()
+}
+
+// 06 — dedicated-store member: scout keeps its own memory (memory_store
+// 'scout-own', no other member shares it), so the shared-memory disclosure
+// must NOT render in its drawer. Frame 02 (radar, default store) is the
+// positive counterpart proving the note still appears where it is true.
+{
+  const page = await newPage('dark')
+  await page.getByText('scout', { exact: true }).first().click()
+  await page.getByTestId('member-drawer').waitFor()
+  const drawer = await page.getByTestId('member-drawer').textContent()
+  check('06-dedicated-store store shown', /scout-own/.test(drawer || ''), 'memory store row present')
+  check('06-dedicated-store no disclosure', !/share one memory/i.test(drawer || ''), 'note absent for isolated memory')
+  await page.screenshot({ path: `${OUT}/06-dedicated-store-dark.png` })
   await page.close()
 }
 

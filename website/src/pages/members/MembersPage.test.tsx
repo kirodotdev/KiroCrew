@@ -213,6 +213,32 @@ describe('MembersPage drawer and edit jump', () => {
     expect(drawer).toHaveTextContent(/share one memory/i)
   })
 
+  it('hides the shared-memory disclosure for a member on its own dedicated store', async () => {
+    // The note claims this member's memory is shared. On a dedicated store
+    // (not default, used by no other member) that claim is false, so the
+    // note must not render — a disclosure that misinforms is worse than none.
+    await renderPage([
+      row({ bound: true, slot_key: 'member-oncall', memory_store: 'oncall-own' }),
+      row({ name: 'beta', slug: 'beta', memory_store: 'default' }),
+    ])
+    fireEvent.click(await screen.findByText('oncall'))
+    const drawer = await screen.findByTestId('member-drawer')
+    expect(drawer).toHaveTextContent('oncall-own')
+    expect(drawer).not.toHaveTextContent(/share one memory/i)
+  })
+
+  it('keeps the disclosure when a NAMED store is shared by another member', async () => {
+    // Isolation is per-store, not per-"non-default": two members pointed at
+    // the same named store still share memory with each other.
+    await renderPage([
+      row({ bound: true, slot_key: 'member-oncall', memory_store: 'triage' }),
+      row({ name: 'beta', slug: 'beta', memory_store: 'triage' }),
+    ])
+    fireEvent.click(await screen.findByText('oncall'))
+    const drawer = await screen.findByTestId('member-drawer')
+    expect(drawer).toHaveTextContent(/share one memory/i)
+  })
+
   it('toggles the drawer via the Details button', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await screen.findByText('oncall'))
