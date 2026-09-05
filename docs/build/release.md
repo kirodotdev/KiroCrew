@@ -1010,6 +1010,77 @@ For the desktop swap itself, `ota-test.yml` is the end-to-end proof; run it on
 demand after a change to the updater. It validates the swap mechanism, not
 Gatekeeper acceptance, since it signs with a throwaway identity.
 
+### After a stable release: check the version the user actually sees
+
+The recipe above proves the bytes are live. It does not prove they are labelled
+correctly, and that is where every stable release so far has gone wrong — each
+time one layer further out than the last:
+
+| Release | Bytes | What was wrong anyway |
+|---|---|---|
+| v0.3.0 | correct | fed the RC's own `0.3.0-insider.13` stamp, so stable clients read as insider |
+| v0.4.0 | correct | source files were re-stamped bare, but the shipped wheel was still `0.4.0rc14` |
+| v0.5.0 | correct | wheel and feeds finally bare — the GitHub Release page had no Windows asset |
+
+So the failure mode is not "the release did not happen". It is "the release
+happened and advertises the wrong thing", which no lane fails on. Check the
+label surfaces explicitly:
+
+```bash
+CH=stable; V=0.5.0            # the version you just tagged
+PTR=https://updates.crew.kiro.dev
+BYTES=https://download.crew.kiro.dev
+
+# 1. Every feed advertises the BARE version -- no rc/insider suffix anywhere.
+for f in latest-cli.json latest-mac.yml latest-linux.yml latest-linux-arm64.yml latest.yml; do
+  printf '%-22s ' "$f"
+  curl -fsS "$PTR/feed/$CH/$f" | grep -oE "\"?version\"?:? *\"?[0-9][^\",]*" | head -1
+done
+
+# 2. The wheel's EMBEDDED version, not just its filename. This is what
+#    `pip show` and `kirocrew --version` print, and a promotion cannot change it.
+curl -fsS "$PTR/feed/$CH/latest-cli.json" > /tmp/feed.json
+python3 - <<'PY'
+import hashlib, io, json, re, urllib.request, zipfile
+d = json.load(open("/tmp/feed.json"))
+raw = urllib.request.urlopen(d["wheel_url"], timeout=120).read()
+assert hashlib.sha256(raw).hexdigest() == d["sha256"], "wheel does not match the feed digest"
+z = zipfile.ZipFile(io.BytesIO(raw))
+meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+print("filename:", d["wheel_url"].rsplit("/", 1)[-1])
+print("METADATA Version:", re.search(r"^Version: (.+)$", z.read(meta).decode(), re.M).group(1))
+PY
+
+# 3. The GitHub Release page carries every platform, with no RC-stamped asset.
+gh api "repos/kirodotdev/KiroCrew/releases/tags/v$V" --jq '.assets[].name' | sort
+gh api "repos/kirodotdev/KiroCrew/releases/tags/v$V" --jq '.assets[].name' \
+  | grep -Ei 'rc[0-9]|insider' && echo 'STALE RC ASSET' || echo 'no rc-stamped asset'
+```
+
+What each check is really for:
+
+- **The feeds** are what a running client reads, so a suffix here is what makes a
+  stable install describe itself as a prerelease. All five must agree.
+- **The embedded wheel version** is the one surface a byte-reuse promotion can
+  never fix, which is why stable rebuilds by default. Verify it from the wheel
+  itself: a clean filename around RC-stamped metadata is exactly the v0.4.0
+  shape.
+- **The release page** is assembled by an extension allowlist, so a platform is
+  omitted silently rather than loudly. Compare the asset list against the
+  publish lanes that ran; `test_release_promotion_contract.py` pins the two
+  together, but a lane added without a matching extension still deserves a look
+  here. macOS and Windows are the two the allowlist does NOT cover: each has two
+  possible producers in a promotion run — the promoted bundle and a fresh
+  build — so each is taken from an explicit path, and exactly one asset per
+  platform should appear. Two Windows installers, or one whose name carries a
+  version other than the tag's, means the page is offering a rebuild the
+  promotion was supposed to replace.
+
+A discrepancy is NOT recoverable in place — published keys are immutable and the
+feed is already advertising the wrong label. The remedy is the next version
+forward, so it is worth spending the five minutes on these three checks while
+the run is still fresh.
+
 ## Recovery: roll forward
 
 **There is no rollback.** The recovery path for a bad release is to cut a new

@@ -779,9 +779,19 @@ jobs:
   # to Stable with no GitHub Release page and no assets. Naming each dependency
   # explicitly is the documented workaround and the pattern every other lane in
   # this file already uses.
+  #
+  # `build-windows` is in `needs` as a WAIT EDGE and deliberately not in the
+  # `if:` below. Without the edge, `download-artifact` collects whatever exists
+  # the moment it runs, so a Windows build still queued on a slow runner would
+  # be omitted from the page with nothing going red -- the same silent-omission
+  # failure this job's Windows asset exists to end. Without the exemption from
+  # the `if:`, a Windows problem would take the whole release page down with it,
+  # and per-platform independence (soft_fail, an optional bundle role, a
+  # probe-and-skip publish lane) is the one thing every other Windows hop here
+  # already preserves.
   github-release:
     name: Create GitHub Release
-    needs: [version, stable-gate, sign-and-notarize]
+    needs: [version, stable-gate, sign-and-notarize, build-windows]
     if: >-
       ${{ always() && needs.version.result == 'success' &&
           needs.stable-gate.result == 'success' &&
@@ -811,7 +821,28 @@ jobs:
       # only from the exact gated artifact emitted after notarization, stapling,
       # and Gatekeeper verification. The unsigned electron-builder zip/DMG are
       # inter-job inputs only and must never become GitHub Release assets.
+      #
+      # The extension list is an ALLOWLIST, so a platform whose extension is
+      # missing is silently absent from the release page rather than failing
+      # anything. The Windows installer was absent exactly that way from v0.2.0
+      # through v0.5.0: every one of those releases published one to the CDN and
+      # to the update feed while the GitHub Release page offered none, and
+      # nothing went red. `test_release_promotion_contract.py` now pins the
+      # collected set against the publishing lanes so a new platform cannot be
+      # forgotten the same way.
+      #
+      # The extension glob is only sound for a format with exactly ONE producer
+      # in the run. macOS and Windows each have two, so both are selected by an
+      # explicit path instead -- see the Windows block below for why an `*.exe`
+      # entry in this glob would put a never-promoted installer on a stable page.
+      #
+      # Deliberately NOT collected: `*.exe.blockmap` (a differential-update
+      # sidecar the feed consumes, not something a human downloads) and
+      # `latest*.yml` (channel feed pointers, which are published to the CDN by
+      # their own lanes and would be misleading as release assets).
       - name: Assemble release assets (require gated macOS artifacts)
+        env:
+          PROMOTE_MODE: ${{ needs.version.outputs.promote_mode }}
         run: |
           set -euo pipefail
           mkdir -p release
@@ -877,6 +908,39 @@ jobs:
 
           cp "$NOTARIZED_ZIP" "release/KiroCrew-${{ needs.version.outputs.version }}-universal-mac.zip"
           cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.version.outputs.version }}-universal.dmg"
+
+          # The Windows installer, selected per MODE rather than by extension.
+          # A promotion run holds TWO installers: the candidate's promoted bytes
+          # inside the gated bundle, and a fresh one from `build-windows`, which
+          # carries no `if:` and so rebuilds even when nothing consumes it.
+          # electron-builder's default name embeds the version, so the two names
+          # differ and an `*.exe` glob attaches BOTH -- putting an installer that
+          # was never soaked or promoted on a stable page, looking the more
+          # official of the pair for carrying the version number.
+          if [ "${PROMOTE_MODE:-}" = "true" ]; then
+            WINDOWS_INSTALLER="${NOTARIZED_DIR}/KiroCrew-Setup.exe"
+            [ -s "$WINDOWS_INSTALLER" ] || WINDOWS_INSTALLER=""
+          else
+            # Scoped to the producing artifact, and two is a bug rather than a
+            # coin flip: this must never guess which installer to publish.
+            # Mirrors record-promotion's at_most_one selector.
+            mapfile -t installers < <(find artifacts -type f -path '*build-windows-x64*' -name '*.exe')
+            if [ "${#installers[@]}" -gt 1 ]; then
+              echo "::error::expected at most one Windows installer, found ${#installers[@]}"
+              printf '%s\n' "${installers[@]}"
+              exit 1
+            fi
+            WINDOWS_INSTALLER="${installers[0]:-}"
+          fi
+          # Absence is a NOTICE, not a failure. build-windows is soft-fail so a
+          # Windows problem cannot hold back mac, Linux and the CLI; the bundle
+          # role is optional for the same reason. Loud in the run summary is the
+          # most this hop may do without reintroducing that coupling.
+          if [ -n "$WINDOWS_INSTALLER" ]; then
+            cp "$WINDOWS_INSTALLER" "release/KiroCrew-${{ needs.version.outputs.version }}-Setup-x64.exe"
+          else
+            echo "::notice::no Windows installer available to this run; the release page will offer none."
+          fi
           ls -la release/
 
       # Only a stable release has a CHANGELOG.md section to show (the stable

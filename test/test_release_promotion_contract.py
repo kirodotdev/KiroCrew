@@ -193,6 +193,105 @@ def test_every_stable_lane_consumes_the_verified_handoff() -> None:
     assert mac_inputs["promote"] == PROMOTE_EXPRESSION
 
 
+def _assemble_run() -> str:
+    """The assembly step's shell, quote-normalized so a match ignores quoting."""
+    run = _step(
+        RELEASE, "github-release", "Assemble release assets (require gated macOS artifacts)"
+    )["run"]
+    return run.replace("'", '"')
+
+
+def test_release_page_offers_every_platform_that_publishes() -> None:
+    """The asset allowlist must cover every platform with a publish lane.
+
+    ``Assemble release assets`` collects by extension, so a platform whose
+    extension is missing is simply absent from the release page -- no job fails,
+    nothing goes red. The Windows installer was missing from v0.2.0 through
+    v0.5.0: each of those releases published one to the CDN and the update feed
+    while the GitHub Release page offered none.
+
+    Derived from the publish lanes rather than restating the list, so adding a
+    lane for a new package format fails here until the release page collects it
+    too.
+    """
+    jobs = _workflow(RELEASE)["jobs"]
+    assemble = _assemble_run()
+
+    #: The extension each publish lane's format lands on. macOS is deliberately
+    #: absent: its assets come only from the gated notarized handoff, never from
+    #: a glob, which is what the sibling test pins.
+    lane_extension = {
+        "publish-cli": (".whl", ".tar.gz"),
+        "publish-linux-appimage-x64": (".AppImage",),
+        "publish-linux-appimage-arm64": (".AppImage",),
+        "publish-linux-deb-x64": (".deb",),
+        "publish-linux-deb-arm64": (".deb",),
+        "publish-linux-rpm-x64": (".rpm",),
+        "publish-linux-rpm-arm64": (".rpm",),
+        "publish-windows-x64": (".exe",),
+    }
+    for lane, extensions in lane_extension.items():
+        assert lane in jobs, f"{lane} is gone; update this mapping deliberately"
+        for extension in extensions:
+            assert f'-name "*{extension}"' in assemble, (
+                f"{lane} publishes {extension} but the release page does not collect it"
+            )
+
+    # Sidecars and feed pointers are NOT downloadable assets. The blockmap is a
+    # differential-update input and latest*.yml are channel pointers published
+    # by their own lanes.
+    assert '-name "*.exe.blockmap"' not in assemble
+    assert '-name "latest' not in assemble
+
+
+def test_the_windows_installer_is_chosen_per_mode_not_by_extension() -> None:
+    """A promotion run holds two installers, and only one of them is promotable.
+
+    ``build-windows`` carries no ``if:``, so a promotion run rebuilds the
+    installer even though nothing consumes it -- while the promoted candidate's
+    own bytes sit in the gated bundle under ``KiroCrew-Setup.exe``.
+    electron-builder's default name embeds the version, so the two names differ
+    and a bare ``-name "*.exe"`` in the collection glob attaches BOTH: a stable
+    page would then offer a never-soaked rebuild beside the promoted installer,
+    the rebuild looking the more official of the two for carrying the version.
+
+    So the extension glob must NOT cover ``.exe``, and the selection must branch
+    on ``promote_mode`` -- the same discriminator every other lane here reads.
+    """
+    assemble = _assemble_run()
+    glob_line = next(line for line in assemble.split("\n") if line.startswith("find artifacts"))
+    assert '-name "*.exe"' not in glob_line, "an .exe glob cannot tell a rebuild from a promotion"
+
+    step = _step(
+        RELEASE, "github-release", "Assemble release assets (require gated macOS artifacts)"
+    )
+    assert step["env"]["PROMOTE_MODE"] == "${{ needs.version.outputs.promote_mode }}"
+    assert '[ "${PROMOTE_MODE:-}" = "true" ]' in assemble
+    # Promotion republishes the bundle's byte-identical installer...
+    assert '"${NOTARIZED_DIR}/KiroCrew-Setup.exe"' in assemble
+    # ...and a rebuild takes the producing artifact, refusing to guess between two.
+    assert '-path "*build-windows-x64*" -name "*.exe"' in assemble
+    assert "expected at most one Windows installer" in assemble
+
+
+def test_the_release_page_waits_for_windows_without_depending_on_it() -> None:
+    """The wait edge closes the race; the missing `if:` clause keeps it optional.
+
+    ``download-artifact`` collects whatever exists when it runs, so without
+    ``build-windows`` in ``needs`` a Windows build still queued on a slow runner
+    is simply omitted from the page -- the same silent omission the Windows asset
+    exists to end. Requiring its RESULT would be the opposite error: a Windows
+    failure would take the whole release page down, when soft_fail, the optional
+    bundle role and the probe-and-skip publish lane all exist to stop exactly
+    that.
+    """
+    job = _workflow(RELEASE)["jobs"]["github-release"]
+    assert "build-windows" in job["needs"]
+    assert "needs.build-windows" not in job["if"]
+    # Only always() lets the job run at all once a dependency may be skipped.
+    assert "always()" in job["if"]
+
+
 def test_github_release_selects_explicit_versioned_macos_handoff() -> None:
     verify = _step(RELEASE, "github-release", "Verify promoted release bytes")["run"]
     assert f'--bundle-dir "artifacts/{PROMOTION_ARTIFACT}"' in verify
