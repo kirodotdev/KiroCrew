@@ -702,10 +702,16 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
       {/* No hand-off: the answer textarea above is unsaved. */}
       {nudgeMut.isError && <ErrorNotice message={errMsg(nudgeMut.error)} className="mt-2" />}
     </div>}
-    {campaign.status === 'failed' && <div className="p-3 rounded-md mb-4 border border-danger bg-danger/10">
-      <div className="text-sm font-medium text-danger flex items-center gap-1"><AlertTriangle size={14} /> {i18nT('apps.autoResearch.researchLabPage.research_stopped')}</div>
-      <div className="text-xs mt-1">{campaign.error_message || i18nT('apps.autoResearch.researchLabPage.the_campaign_stopped_unexpectedly')} {i18nT('apps.autoResearch.researchLabPage.findings_so_far_are_preserved_below')}</div>
-      <button className="text-xs px-2 py-1 mt-2 rounded bg-accent text-accent-fg" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>
+    {/* The campaign's persisted last error. Findings and the campaign record are
+        on disk, so the hand-off loses nothing; Resume stays a sibling control. */}
+    {campaign.status === 'failed' && <div className="mb-4 flex flex-col items-start gap-2">
+      <ErrorNotice
+        title={i18nT('apps.autoResearch.researchLabPage.research_stopped')}
+        message={`${campaign.error_message || i18nT('apps.autoResearch.researchLabPage.the_campaign_stopped_unexpectedly')} ${i18nT('apps.autoResearch.researchLabPage.findings_so_far_are_preserved_below')}`}
+        askAgent
+        className="w-full"
+      />
+      <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>
     </div>}
     {(campaign.status === 'complete' || campaign.status === 'stopped') && !isActive && (
       <div className="p-3 rounded-md mb-4 border border-accent bg-accent/5">

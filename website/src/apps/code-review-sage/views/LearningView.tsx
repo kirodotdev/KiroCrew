@@ -74,20 +74,12 @@ export function ConsolidateControl({
   })
   const busy = running || mut.isPending
 
+  // Two rows, not one: the notices carry their own agent hand-off, and putting
+  // that beside Consolidate / Cancel would make three actions share one
+  // horizontal group. The action row stays on top; failures stack under it.
   return (
-    <span className="ml-auto inline-flex items-center gap-2">
-      {error && !busy && (
-        /* Visible, not tooltip-only — the same reason a refused post shows its
-           cause: a hover target tells a keyboard or touch user nothing. The
-           learnings are persisted, so the hand-off loses nothing. */
-        <ErrorNotice
-          title={i18nT('apps.codeReviewSage.views.learningView.merge_failed_ruleset_unchanged')}
-          message={error}
-          variant="inline"
-          askAgent
-          className="max-w-[38ch]"
-        />
-      )}
+    <span className="ml-auto inline-flex flex-col items-end gap-1">
+    <span className="inline-flex items-center gap-2">
       {busy ? (
         <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted">
           <Loader2 size={11} className="animate-spin motion-reduce:animate-none" />
@@ -126,6 +118,19 @@ export function ConsolidateControl({
           <Wand2 size={11} aria-hidden="true" />
           {i18nT('apps.codeReviewSage.views.learningView.consolidate')}
         </button>
+      )}
+    </span>
+      {error && !busy && (
+        /* Visible, not tooltip-only — the same reason a refused post shows its
+           cause: a hover target tells a keyboard or touch user nothing. The
+           learnings are persisted, so the hand-off loses nothing. */
+        <ErrorNotice
+          title={i18nT('apps.codeReviewSage.views.learningView.merge_failed_ruleset_unchanged')}
+          message={error}
+          variant="inline"
+          askAgent
+          className="max-w-[38ch]"
+        />
       )}
       {mut.error && (
         <ErrorNotice message={(mut.error as Error).message} variant="inline" askAgent />

@@ -90,10 +90,16 @@ export default function AgentSessionButton({
   // instead of inheriting an earlier dismissal.
   const [dismissed, setDismissed] = useState(false)
   useEffect(() => { if (concluded) setDismissed(false) }, [concluded])
-  const noticeOpen = concluded && !dismissed
+  // A failed start rides the same popover, for the same reason: an inline
+  // notice in this non-shrinking action group wraps at 320px and stretches the
+  // button off-screen. Reset per failure so a new one shows afresh.
+  const [errorDismissed, setErrorDismissed] = useState(false)
+  useEffect(() => { if (error) setErrorDismissed(false) }, [error])
+  const errorOpen = Boolean(error) && !errorDismissed
+  const noticeOpen = (concluded && !dismissed) || errorOpen
 
   return (
-    <Popover open={noticeOpen} onOpenChange={(open) => { if (!open) setDismissed(true) }}>
+    <Popover open={noticeOpen} onOpenChange={(open) => { if (!open) { setDismissed(true); setErrorDismissed(true) } }}>
       <span data-testid="agent-session-action-row" className="inline-flex items-center gap-1.5">
         <PopoverAnchor asChild>
           <button
@@ -101,8 +107,9 @@ export default function AgentSessionButton({
             disabled={busy || disabled}
             // Kept as a residual affordance for a pointer user who has dismissed
             // the popover. It is no longer the ONLY route to the reason, which is
-            // what made it a defect.
-            title={concluded ? noticeText : (hasSession ? resumeHint : startHint)}
+            // what made it a defect. While a failure is held it carries that
+            // cause, so a stray outside click does not lose it until the next try.
+            title={error ? error.message : concluded ? noticeText : (hasSession ? resumeHint : startHint)}
             className={
               // Solid/filled, not a ghost outline: these are the pane's primary
               // actions, so they carry the design system's accent fill (the same
@@ -133,17 +140,6 @@ export default function AgentSessionButton({
               : pendingLabel}
           </span>
         )}
-
-        {/* The cause is visible, not tooltip-only, and the session start acts on
-            a persisted issue — nothing on screen is a draft. */}
-        {error && (
-          <ErrorNotice
-            title={i18nT('apps.issueRadar.components.agentSessionButton.couldn_t_start')}
-            message={error.message}
-            variant="inline"
-            askAgent
-          />
-        )}
       </span>
 
       {/* Narrower than the wrapper's default 288px when the viewport cannot spare
@@ -157,13 +153,24 @@ export default function AgentSessionButton({
         collisionPadding={8}
         className="w-[min(18rem,calc(100vw-1.5rem))] p-3 space-y-2"
       >
+        {/* The cause is visible, not tooltip-only, and the session start acts on
+            a persisted issue — nothing on screen is a draft, so the hand-off is on. */}
+        {errorOpen && error && (
+          <ErrorNotice
+            title={i18nT('apps.issueRadar.components.agentSessionButton.couldn_t_start')}
+            message={error.message}
+            askAgent
+          />
+        )}
         {/* Announced as well as shown. A screen reader reaches this by focus (the
             popover is a dialog and takes focus on open); the live role covers the
             case where it does not move. */}
-        <p role="status" className="text-[12px] leading-snug text-text">
-          {noticeText}
-        </p>
-        {onOpenOlderSessions && (
+        {concluded && !dismissed && (
+          <p role="status" className="text-[12px] leading-snug text-text">
+            {noticeText}
+          </p>
+        )}
+        {concluded && !dismissed && onOpenOlderSessions && (
           // The point of the whole change: the copy names a destination, so the
           // destination has to be something the user can go to. Clicking Resume on
           // finished work means "show me the result" — offering only "redo it" is

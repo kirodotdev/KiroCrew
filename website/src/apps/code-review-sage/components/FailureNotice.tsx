@@ -32,22 +32,22 @@ export default function FailureNotice({
 }) {
   const reason = failureReason(run, changeId)
   if (!reason) return null
+  // The driver's own wording rides INSIDE the notice, on its own line, when it
+  // differs from the explanation: it is the diagnostic the agent needs, and a
+  // sibling element would keep it out of the hand-off. The block variant
+  // preserves the line break.
+  const message = reason.raw && reason.raw !== reason.text
+    ? `${reason.text}\n${reason.raw}`
+    : reason.text
 
   return (
     <div className="flex flex-col items-start gap-2">
       <ErrorNotice
         title={i18nT('apps.codeReviewSage.components.failureNotice.this_review_failed')}
-        message={reason.text}
+        message={message}
         askAgent
         className="w-full"
       />
-      {/* The driver's own wording, kept for a bug report. Only shown when it
-          differs from the explanation, so it is not stated twice. */}
-      {reason.raw && reason.raw !== reason.text && (
-        <div className="font-mono text-[11px] text-muted break-words">
-          {reason.raw}
-        </div>
-      )}
       {onRetry && (
         <button
           type="button"

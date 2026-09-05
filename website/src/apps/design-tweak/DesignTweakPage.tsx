@@ -501,6 +501,10 @@ export default function DesignTweak() {
   }, [])
   const [mode, setMode] = useState<'preview' | 'edit'>('preview')
   const [status, setStatus] = useState('')
+  // A capture or follow-up the overlay handed up that the backend refused. Kept
+  // apart from `status` (progress prose) so it renders as an error notice, not
+  // as a muted line that fades into the next status update.
+  const [bridgeError, setBridgeError] = useState('')
   const [reqOpen, setReqOpen] = useState<Record<string, boolean>>({})     // requestId -> expanded?
   const [sendingId, setSendingId] = useState('') // request currently being sent
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
@@ -1085,20 +1089,21 @@ export default function DesignTweak() {
               thread: [{ role: 'user', text: d.payload.comment }],
             })
             setReqOpen((m) => ({ ...m, [out.id as string]: true }))   // reveal the draft
+            setBridgeError('')
             setStatus(i18nT('apps.designTweak.status.added_comment', {
               label: out.label ?? '', n: out.commentCount ?? 0, number: out.number ?? 0,
             }))
             refresh()
           } else {
             const error = out?.error || i18nT('apps.designTweak.status.unknown')
-            setStatus(i18nT('apps.designTweak.status.capture_failed', { error }))
+            setBridgeError(i18nT('apps.designTweak.status.capture_failed', { error }))
             // Tell the overlay too: without this its composer sits on "Adding to
             // request…" with the comment stranded, since `created` was its only
             // exit. On `create_failed` it reopens the composer with the text.
             postToOverlay({ type: 'create_failed', clientRef: d.clientRef, error })
           }
         } catch (err) {
-          setStatus(i18nT('apps.designTweak.status.capture_failed', { error: errMsg(err) }))
+          setBridgeError(i18nT('apps.designTweak.status.capture_failed', { error: errMsg(err) }))
           postToOverlay({ type: 'create_failed', clientRef: d.clientRef, error: errMsg(err) })
         }
         return
@@ -1111,7 +1116,7 @@ export default function DesignTweak() {
           const origin = commentIndexRef.current[d.id]
           if (!origin) {
             const error = i18nT('apps.designTweak.status.follow_up_origin_missing')
-            setStatus(error)
+            setBridgeError(error)
             postToOverlay({ type: 'dispatch_failed', id: d.id, text: d.text, error })
             return
           }
@@ -1125,20 +1130,21 @@ export default function DesignTweak() {
           })
           if (out?.ok) {
             setReqOpen((m) => ({ ...m, [out.id as string]: true }))
+            setBridgeError('')
             setStatus(i18nT('apps.designTweak.status.follow_up_added', {
               label: out.label ?? '', number: out.number ?? 0,
             }))
             refresh()
           } else {
             const error = out?.error || i18nT('apps.designTweak.status.unknown')
-            setStatus(i18nT('apps.designTweak.status.follow_up_failed', { error }))
+            setBridgeError(i18nT('apps.designTweak.status.follow_up_failed', { error }))
             // The overlay drew the reply optimistically; this lets it take the
             // bubble back and restore the text instead of showing a sent reply
             // that was never persisted.
             postToOverlay({ type: 'dispatch_failed', id: d.id, text: d.text, error })
           }
         } catch (err) {
-          setStatus(i18nT('apps.designTweak.status.follow_up_failed', { error: errMsg(err) }))
+          setBridgeError(i18nT('apps.designTweak.status.follow_up_failed', { error: errMsg(err) }))
           postToOverlay({ type: 'dispatch_failed', id: d.id, text: d.text, error: errMsg(err) })
         }
         return
@@ -1702,6 +1708,10 @@ export default function DesignTweak() {
         </div>
 
         {status && <div className="px-5 py-1 text-[11px] text-muted truncate">{status}</div>}
+        {/* No hand-off: the refused comment is sitting restored in the preview
+            overlay's composer (see `create_failed` / `dispatch_failed`), and the
+            navigation would unmount the iframe that holds it. */}
+        <ErrorNotice message={bridgeError} onDismiss={() => setBridgeError('')} className="mx-5 my-1" />
 
         {/* request tree + history (nesting mirrors the Sessions folder view) */}
         <div className="flex-1 min-h-0 flex flex-col">
