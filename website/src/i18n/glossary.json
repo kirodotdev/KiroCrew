@@ -2,6 +2,7 @@
   "_comment": "Do-not-translate list. These proper nouns must appear verbatim in every language. Matching is word-boundary, not substring. Enforced by glossary.test.ts. A phrase belongs here only if no identifier form of it (dev_fleet, DEVFLEET) and no legitimate compound spelling (German 'Kiro Crew-Dashboard') appears in the catalogs: the check is a near-miss detector, so it would read those as respellings of the product name.",
   "dnt": [
     "Agent Worlds",
+    "AgentCore",
     "Amazon Polly",
     "AWS",
     "AWS SSM Session Manager",

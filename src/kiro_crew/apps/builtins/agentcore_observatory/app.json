@@ -1,0 +1,52 @@
+{
+  "name": "agentcore-observatory",
+  "version": "0.1.0",
+  "displayName": "AgentCore Observatory",
+  "description": "Read-only visibility into your Amazon Bedrock AgentCore deployments. See every runtime's state, which evaluators and online-evaluation configs are attached, and what is actually measurable — with the gaps labelled as gaps instead of shown as zeroes. Point it at an AWS profile name and a region; credentials are resolved by the aws CLI and never read or stored here.",
+  "author": "kirocrew",
+  "license": "MIT",
+  "defaultEnabled": false,
+  "highlights": [
+    "Runtime, version and endpoint state for every AgentCore runtime in a region",
+    "Online-evaluation configs shown next to the evaluators they run, including the ones switched off",
+    "Profile name and region only — no credential is ever read, written, or cached",
+    "An authorization failure is reported as one, never as an account with nothing deployed",
+    "Read-only: every call is a list verb, and agent sessions are refused by the cloud chokepoint"
+  ],
+  "tags": [
+    "aws",
+    "agentcore",
+    "bedrock",
+    "observability",
+    "evaluation"
+  ],
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/agentcore-observatory",
+        "label": "AgentCore",
+        "icon": "Telescope"
+      }
+    ]
+  },
+  "permissions": {
+    "api": [
+      "/api/apps/agentcore-observatory",
+      "/api/apps/agentcore-observatory/*"
+    ],
+    "storage": true,
+    "network": true
+  },
+  "dependencies": {
+    "optionalCommands": [
+      "aws"
+    ]
+  },
+  "iconUrl": "/app-assets/agentcore-observatory/icon.svg",
+  "screenshots": [
+    "/app-assets/agentcore-observatory/screenshot-main.png"
+  ]
+}
