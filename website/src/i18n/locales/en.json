@@ -1226,7 +1226,6 @@
           "comment_placeholder": "Write a comment…",
           "comment_submit": "Comment",
           "comment_title": "Add a comment",
-          "dismiss_error": "Dismiss the error",
           "merge": "Merge",
           "merge_hint": "Merge this {{subject}} now — the provider still enforces its required reviews and checks",
           "needs_a_reason": "Write a reason first",
@@ -1515,7 +1514,7 @@
             "this_is_an_approximate_list_inferred_from_issue": ", this is an approximate list inferred from issue\n              authors. The full roster and member management live on",
             "triage_labels": "Triage labels",
             "without_push_access_to": "Without push access to",
-            "your_edits_are_kept_here_but_won_t_persist_if_yo": "your edits are kept here but won't persist. If you just updated Issue Radar, restart the backend so the settings API is available."
+            "your_edits_are_kept_here_but_won_t_persist_if_yo": "Your edits are kept here but won't persist. If you just updated Issue Radar, restart the backend so the settings API is available."
           }
         },
         "tagging": {

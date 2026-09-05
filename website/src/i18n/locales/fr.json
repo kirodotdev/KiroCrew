@@ -2000,7 +2000,6 @@
           "comment_placeholder": "Écrire un commentaire…",
           "comment_submit": "Commenter",
           "comment_title": "Ajouter un commentaire",
-          "dismiss_error": "Ignorer l'erreur",
           "merge": "Fusionner",
           "merge_hint": "Fusionner cette {{subject}} maintenant — le fournisseur applique toujours ses revues et vérifications obligatoires",
           "needs_a_reason": "Indiquez d'abord une raison",
@@ -2599,7 +2598,7 @@
             "which_labels_mark_newcomer_friendly_work_so_issu": "Quelles étiquettes signalent un travail accessible aux nouveaux venus, pour qu’Issue Radar puisse mettre en avant les tickets à orienter vers les nouveaux contributeurs.",
             "which_labels_mean_an_issue_still_needs_triage_dr": "Quelles étiquettes signifient qu’un ticket nécessite encore un triage. Alimente le compteur « Non triés » de la vue d’ensemble et la file des tickets nécessitant une attention.",
             "without_push_access_to": "Sans accès en écriture à",
-            "your_edits_are_kept_here_but_won_t_persist_if_yo": "vos modifications sont conservées ici mais ne seront pas persistées. Si vous venez de mettre à jour Issue Radar, redémarrez le backend pour que l’API des paramètres soit disponible."
+            "your_edits_are_kept_here_but_won_t_persist_if_yo": "Vos modifications sont conservées ici mais ne seront pas persistées. Si vous venez de mettre à jour Issue Radar, redémarrez le backend pour que l’API des paramètres soit disponible."
           }
         },
         "tagging": {

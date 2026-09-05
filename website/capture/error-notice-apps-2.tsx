@@ -104,9 +104,13 @@ function After() {
       <Section title="CrewPageView — ErrorNotice askAgent (read failure, no draft)">
         <ErrorNotice title="Couldn't load this crew" message={CREW_LOAD_ERROR} askAgent />
       </Section>
-      <Section title="PrActionsBar — cause visible, askAgent, dismissable">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <ErrorNotice title="Action failed" message={ACTION_ERROR} variant="inline" askAgent onDismiss={() => {}} />
+      <Section title="PrActionsBar — cause visible, askAgent, dismissable, own row above the buttons">
+        <div className="w-full min-w-0">
+          <ErrorNotice title="Action failed" message={ACTION_ERROR} askAgent onDismiss={() => {}} className="mb-1.5" />
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <Btn>Approve</Btn>
+            <Btn>Request changes</Btn>
+          </div>
         </div>
       </Section>
       <Section title="MeetingsPage — in-page ErrorNotice askAgent (toast kept as transient feedback)">

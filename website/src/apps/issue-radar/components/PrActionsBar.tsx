@@ -296,136 +296,140 @@ export default function PrActionsBar({
   }
 
   return (
-    <div className="flex items-center gap-1.5 flex-wrap">
+    <div className="w-full min-w-0">
       {/* The composer is closed here, so nothing on screen is a draft: the
-          cause is shown in full (it used to hide in a `title=`) and handed off. */}
+          cause is shown in full (it used to hide in a `title=`) and handed off.
+          Its own row, above the buttons — the action row already carries its
+          pre-existing action count and must not grow. */}
       {actions.error && (
         <ErrorNotice
           title={i18nT('apps.issueRadar.components.prActionsBar.action_failed')}
           message={actions.error.message}
-          variant="inline"
           askAgent
           onDismiss={actions.clearError}
+          className="mb-1.5"
         />
       )}
 
-      {/* A closed PR keeps only "reopen": approving or arming auto-merge on it
-          would be refused by the provider. The two VERDICT buttons additionally wait
-          for the head commit — a review names the revision it was formed on, so
-          until the detail read lands there is nothing to pin one to. */}
-      {!closed && Boolean(reviewSha) && (
-        <>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {/* A closed PR keeps only "reopen": approving or arming auto-merge on it
+            would be refused by the provider. The two VERDICT buttons additionally wait
+            for the head commit — a review names the revision it was formed on, so
+            until the detail read lands there is nothing to pin one to. */}
+        {!closed && Boolean(reviewSha) && (
+          <>
+            <Btn
+              onClick={() => openComposer('approve')}
+              disabled={Boolean(actions.busy)}
+              // The provider's own word for the item ("pull request" / "merge
+              // request") is interpolated, so a GitLab workspace never reads "PR".
+              title={i18nT('apps.issueRadar.components.prActionsBar.approve_hint', {
+                subject: terms.changeRequestTitle,
+              })}
+            >
+              <Check className="lucide-inline" />
+              {i18nT('apps.issueRadar.components.prActionsBar.approve')}
+            </Btn>
+            <Btn
+              onClick={() => openComposer(PR_ACTION.requestChanges)}
+              disabled={Boolean(actions.busy)}
+              title={i18nT('apps.issueRadar.components.prActionsBar.request_changes_hint', {
+                subject: terms.changeRequestTitle,
+              })}
+            >
+              <CircleSlash className="lucide-inline" />
+              {i18nT('apps.issueRadar.components.prActionsBar.request_changes')}
+            </Btn>
+          </>
+        )}
+  
+        <Btn
+          onClick={() => openComposer('comment')}
+          disabled={Boolean(actions.busy)}
+          title={i18nT('apps.issueRadar.components.prActionsBar.comment_hint', {
+            subject: terms.changeRequestTitle,
+          })}
+        >
+          <MessageSquarePlus className="lucide-inline" />
+          {i18nT('apps.issueRadar.components.prActionsBar.comment')}
+        </Btn>
+  
+        {/* MERGE, offered only when the provider says the PR is mergeable right now.
+            It cannot bypass a gate — branch protection is enforced on the provider's
+            own endpoint — but showing it on a blocked PR would present a button whose
+            only outcome is a refusal, which is the "do not offer what the provider
+            will refuse" rule this bar follows everywhere else. Auto-merge below is the
+            affordance for exactly that case. */}
+        {!closed && mergeable && (
           <Btn
-            onClick={() => openComposer('approve')}
+            primary
+            // The sha THIS RENDER showed, closed over by the handler. Merge has no
+            // typing window like the composer, so one render tick is the whole
+            // exposure — and the server re-reads the PR and refuses a moved head
+            // (409 `merge_conflict`) regardless.
+            onClick={() => actions.merge(liveSha)}
             disabled={Boolean(actions.busy)}
-            // The provider's own word for the item ("pull request" / "merge
-            // request") is interpolated, so a GitLab workspace never reads "PR".
-            title={i18nT('apps.issueRadar.components.prActionsBar.approve_hint', {
+            title={i18nT('apps.issueRadar.components.prActionsBar.merge_hint', {
               subject: terms.changeRequestTitle,
             })}
           >
-            <Check className="lucide-inline" />
-            {i18nT('apps.issueRadar.components.prActionsBar.approve')}
+            {actions.busy === PR_ACTION.merge
+              ? <Loader2 className="lucide-inline animate-spin" />
+              : <GitMerge className="lucide-inline" />}
+            {i18nT('apps.issueRadar.components.prActionsBar.merge')}
           </Btn>
+        )}
+  
+        {!closed && showAutoMerge && (
           <Btn
-            onClick={() => openComposer(PR_ACTION.requestChanges)}
+            onClick={() => actions.setAutoMerge(!autoMergeOn)}
             disabled={Boolean(actions.busy)}
-            title={i18nT('apps.issueRadar.components.prActionsBar.request_changes_hint', {
+            // The label states what will HAPPEN, and the tooltip states what
+            // auto-merge is — the distinction between this and "merge now" is the
+            // whole point, so it is said in the UI rather than only in the code.
+            title={autoMergeOn
+              ? i18nT('apps.issueRadar.components.prActionsBar.auto_merge_off_hint')
+              : i18nT('apps.issueRadar.components.prActionsBar.auto_merge_on_hint')}
+            className={autoMergeOn ? 'text-aim border-aim' : undefined}
+          >
+            {actions.busy === PR_ACTION.autoMerge || actions.busy === PR_ACTION.cancelAutoMerge
+              ? <Loader2 className="lucide-inline animate-spin" />
+              : <GitMerge className="lucide-inline" />}
+            {autoMergeOn
+              ? i18nT('apps.issueRadar.components.prActionsBar.auto_merge_cancel')
+              : i18nT('apps.issueRadar.components.prActionsBar.auto_merge_enable')}
+          </Btn>
+        )}
+  
+        {closed ? (
+          <Btn
+            onClick={actions.reopen}
+            disabled={Boolean(actions.busy)}
+            title={i18nT('apps.issueRadar.components.prActionsBar.reopen_hint', {
               subject: terms.changeRequestTitle,
             })}
           >
-            <CircleSlash className="lucide-inline" />
-            {i18nT('apps.issueRadar.components.prActionsBar.request_changes')}
+            {actions.busy === PR_ACTION.reopen
+              ? <Loader2 className="lucide-inline animate-spin" />
+              : <CircleDot className="lucide-inline" />}
+            {i18nT('apps.issueRadar.components.prActionsBar.reopen')}
           </Btn>
-        </>
-      )}
-
-      <Btn
-        onClick={() => openComposer('comment')}
-        disabled={Boolean(actions.busy)}
-        title={i18nT('apps.issueRadar.components.prActionsBar.comment_hint', {
-          subject: terms.changeRequestTitle,
-        })}
-      >
-        <MessageSquarePlus className="lucide-inline" />
-        {i18nT('apps.issueRadar.components.prActionsBar.comment')}
-      </Btn>
-
-      {/* MERGE, offered only when the provider says the PR is mergeable right now.
-          It cannot bypass a gate — branch protection is enforced on the provider's
-          own endpoint — but showing it on a blocked PR would present a button whose
-          only outcome is a refusal, which is the "do not offer what the provider
-          will refuse" rule this bar follows everywhere else. Auto-merge below is the
-          affordance for exactly that case. */}
-      {!closed && mergeable && (
-        <Btn
-          primary
-          // The sha THIS RENDER showed, closed over by the handler. Merge has no
-          // typing window like the composer, so one render tick is the whole
-          // exposure — and the server re-reads the PR and refuses a moved head
-          // (409 `merge_conflict`) regardless.
-          onClick={() => actions.merge(liveSha)}
-          disabled={Boolean(actions.busy)}
-          title={i18nT('apps.issueRadar.components.prActionsBar.merge_hint', {
-            subject: terms.changeRequestTitle,
-          })}
-        >
-          {actions.busy === PR_ACTION.merge
-            ? <Loader2 className="lucide-inline animate-spin" />
-            : <GitMerge className="lucide-inline" />}
-          {i18nT('apps.issueRadar.components.prActionsBar.merge')}
-        </Btn>
-      )}
-
-      {!closed && showAutoMerge && (
-        <Btn
-          onClick={() => actions.setAutoMerge(!autoMergeOn)}
-          disabled={Boolean(actions.busy)}
-          // The label states what will HAPPEN, and the tooltip states what
-          // auto-merge is — the distinction between this and "merge now" is the
-          // whole point, so it is said in the UI rather than only in the code.
-          title={autoMergeOn
-            ? i18nT('apps.issueRadar.components.prActionsBar.auto_merge_off_hint')
-            : i18nT('apps.issueRadar.components.prActionsBar.auto_merge_on_hint')}
-          className={autoMergeOn ? 'text-aim border-aim' : undefined}
-        >
-          {actions.busy === PR_ACTION.autoMerge || actions.busy === PR_ACTION.cancelAutoMerge
-            ? <Loader2 className="lucide-inline animate-spin" />
-            : <GitMerge className="lucide-inline" />}
-          {autoMergeOn
-            ? i18nT('apps.issueRadar.components.prActionsBar.auto_merge_cancel')
-            : i18nT('apps.issueRadar.components.prActionsBar.auto_merge_enable')}
-        </Btn>
-      )}
-
-      {closed ? (
-        <Btn
-          onClick={actions.reopen}
-          disabled={Boolean(actions.busy)}
-          title={i18nT('apps.issueRadar.components.prActionsBar.reopen_hint', {
-            subject: terms.changeRequestTitle,
-          })}
-        >
-          {actions.busy === PR_ACTION.reopen
-            ? <Loader2 className="lucide-inline animate-spin" />
-            : <CircleDot className="lucide-inline" />}
-          {i18nT('apps.issueRadar.components.prActionsBar.reopen')}
-        </Btn>
-      ) : (
-        <Btn
-          danger
-          onClick={actions.close}
-          disabled={Boolean(actions.busy)}
-          title={i18nT('apps.issueRadar.components.prActionsBar.close_hint', {
-            subject: terms.changeRequestTitle,
-          })}
-        >
-          {actions.busy === PR_ACTION.close
-            ? <Loader2 className="lucide-inline animate-spin" />
-            : <CircleSlash className="lucide-inline" />}
-          {i18nT('apps.issueRadar.components.prActionsBar.close')}
-        </Btn>
-      )}
+        ) : (
+          <Btn
+            danger
+            onClick={actions.close}
+            disabled={Boolean(actions.busy)}
+            title={i18nT('apps.issueRadar.components.prActionsBar.close_hint', {
+              subject: terms.changeRequestTitle,
+            })}
+          >
+            {actions.busy === PR_ACTION.close
+              ? <Loader2 className="lucide-inline animate-spin" />
+              : <CircleSlash className="lucide-inline" />}
+            {i18nT('apps.issueRadar.components.prActionsBar.close')}
+          </Btn>
+        )}
+      </div>
     </div>
   )
 }

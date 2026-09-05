@@ -17,6 +17,7 @@ import { asArray } from '../../lib/format'
 
 import { i18nT } from '../../../../i18n/t'
 import ErrorNotice from '../../../../components/ErrorNotice'
+import { findReport } from '../../../../utils/errorReport'
 // Heuristic name patterns used only to *suggest* likely labels (one-click add);
 // the user always confirms. Repos name these things a dozen different ways.
 const TRIAGE_PATTERN = /(^|[\s:_/-])(triage|untriaged|unconfirmed|pending|needs?[\s_/-]?(triage|info|repro|reproduction|investigation|review|response|details?|decision))/i
@@ -369,28 +370,33 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           : saveMutation.isSuccess ? <span className="ml-2 opacity-70 inline-flex items-center gap-1">{i18nT('apps.issueRadar.views.settings.repoSettings.saved')} <Check size={12} className="lucide-inline" /></span> : null}
       </p>
 
-      {(settingsQuery.isError || saveMutation.isError) && (
-        <div className="mb-6">
-          {settingsQuery.isError ? (
-            // A read; the form below still edits fine, so nothing is at stake.
-            <ErrorNotice
-              title={i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_load_saved_settings')}
-              message={(settingsQuery.error as Error)?.message}
-              askAgent
-            />
-          ) : (
-            /* No hand-off: the settings form below (label pickers, toggles) holds
-               the unsaved edits this failure is about. */
-            <ErrorNotice
-              title={i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_save_your_changes')}
-              message={(saveMutation.error as Error)?.message}
-            />
-          )}
-          <p className="mt-1.5 text-[12px] text-muted">
-            {i18nT('apps.issueRadar.views.settings.repoSettings.your_edits_are_kept_here_but_won_t_persist_if_yo')}
-          </p>
-        </div>
-      )}
+      {(settingsQuery.isError || saveMutation.isError) && (() => {
+        // The "edits are kept here / restart the backend" consequence rides
+        // INSIDE the alert as a second line, so a screen reader hears the fix
+        // with the failure. The raw message is still what the journal lookup
+        // keys on, so it is resolved separately and passed as `report`.
+        const raw = ((settingsQuery.error ?? saveMutation.error) as Error)?.message ?? ''
+        const message = `${raw}\n${i18nT('apps.issueRadar.views.settings.repoSettings.your_edits_are_kept_here_but_won_t_persist_if_yo')}`
+        return settingsQuery.isError ? (
+          // A read; the form below still edits fine, so nothing is at stake.
+          <ErrorNotice
+            title={i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_load_saved_settings')}
+            message={message}
+            report={findReport(raw)}
+            askAgent
+            className="mb-6"
+          />
+        ) : (
+          /* No hand-off: the settings form below (label pickers, toggles) holds
+             the unsaved edits this failure is about. */
+          <ErrorNotice
+            title={i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_save_your_changes')}
+            message={message}
+            report={findReport(raw)}
+            className="mb-6"
+          />
+        )
+      })()}
 
       <Card
         icon={Bell}

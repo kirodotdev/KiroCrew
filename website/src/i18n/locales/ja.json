@@ -1924,7 +1924,6 @@
           "comment_placeholder": "コメントを入力…",
           "comment_submit": "コメント",
           "comment_title": "コメントを追加",
-          "dismiss_error": "エラーを閉じる",
           "merge": "マージ",
           "merge_hint": "この{{subject}}を今すぐマージします。プロバイダーは必要なレビューとチェックを強制します",
           "needs_a_reason": "最初に理由を記入してください",

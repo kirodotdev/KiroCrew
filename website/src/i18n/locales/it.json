@@ -1949,7 +1949,6 @@
           "comment_placeholder": "Scrivi un commento…",
           "comment_submit": "Commenta",
           "comment_title": "Aggiungi un commento",
-          "dismiss_error": "Ignora l'errore",
           "merge": "Esegui merge",
           "merge_hint": "Esegui ora il merge di questa {{subject}} — il provider applica comunque le revisioni e verifiche obbligatorie",
           "needs_a_reason": "Scrivi prima una motivazione",
@@ -2548,7 +2547,7 @@
             "which_labels_mark_newcomer_friendly_work_so_issu": "Quali etichette indicano il lavoro adatto ai nuovi arrivati, così Issue Radar può mostrare le issue da indirizzare ai contributori alla prima esperienza.",
             "which_labels_mean_an_issue_still_needs_triage_dr": "Quali etichette indicano che una issue necessita ancora di triage. Determina il conteggio \"Senza triage\" della Panoramica e la coda degli elementi che richiedono attenzione.",
             "without_push_access_to": "Senza accesso push a",
-            "your_edits_are_kept_here_but_won_t_persist_if_yo": "le tue modifiche vengono mantenute qui ma non verranno salvate in modo permanente. Se hai appena aggiornato Issue Radar, riavvia il backend così l'API delle impostazioni diventa disponibile."
+            "your_edits_are_kept_here_but_won_t_persist_if_yo": "Le tue modifiche vengono mantenute qui ma non verranno salvate in modo permanente. Se hai appena aggiornato Issue Radar, riavvia il backend così l'API delle impostazioni diventa disponibile."
           }
         },
         "tagging": {

@@ -1949,7 +1949,6 @@
           "comment_placeholder": "Escribe un comentario…",
           "comment_submit": "Comentar",
           "comment_title": "Añadir un comentario",
-          "dismiss_error": "Descartar el error",
           "merge": "Fusionar",
           "merge_hint": "Fusionar este {{subject}} ahora: el proveedor sigue aplicando sus revisiones y comprobaciones obligatorias",
           "needs_a_reason": "Escribe primero un motivo",
@@ -2548,7 +2547,7 @@
             "which_labels_mark_newcomer_friendly_work_so_issu": "Qué etiquetas marcan el trabajo apto para recién llegados, para que Issue Radar pueda destacar las incidencias que se derivan a quienes contribuyen por primera vez.",
             "which_labels_mean_an_issue_still_needs_triage_dr": "Qué etiquetas indican que una incidencia todavía necesita clasificación. Alimenta el conteo “Sin clasificar” del Resumen y la cola de asuntos que requieren atención.",
             "without_push_access_to": "Sin acceso de escritura a",
-            "your_edits_are_kept_here_but_won_t_persist_if_yo": "tus cambios se conservan aquí, pero no se guardarán. Si acabas de actualizar Issue Radar, reinicia el backend para que la API de ajustes esté disponible."
+            "your_edits_are_kept_here_but_won_t_persist_if_yo": "Tus cambios se conservan aquí, pero no se guardarán. Si acabas de actualizar Issue Radar, reinicia el backend para que la API de ajustes esté disponible."
           }
         },
         "tagging": {

@@ -1924,7 +1924,6 @@
           "comment_placeholder": "댓글을 입력하세요…",
           "comment_submit": "댓글",
           "comment_title": "댓글 추가",
-          "dismiss_error": "오류 닫기",
           "merge": "병합",
           "merge_hint": "이 {{subject}}을(를) 지금 병합합니다 — 제공자의 필수 리뷰와 검사는 그대로 적용됩니다",
           "needs_a_reason": "먼저 이유를 작성하세요",
