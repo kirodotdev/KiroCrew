@@ -7976,7 +7976,9 @@
       "what_a_crew_starts_from_its_model_skills_tools_mc": "エージェントの出発点 — モデル、スキル、ツール、MCP サーバー、ガードレール",
       "when_nothing_names_a_template_use": "テンプレートが指定されていない場合に使用",
       "where_it_comes_from": "提供元",
-      "yes_delete_it": "はい、削除します"
+      "yes_delete_it": "はい、削除します",
+      "retry": "再試行",
+      "delete_unavailable_references_failed": "クルー名簿またはフォールバックテンプレート設定を読み込めなかったため、読み込まれるまでこのテンプレートは削除できません。"
     },
     "aidlc": {
       "dagView": {
@@ -8032,7 +8034,6 @@
       "after_installation_run": "インストール後、実行:",
       "api_access": "API アクセス",
       "app_not_found": "アプリが見つかりません",
-      "app_not_found_2": "アプリ「{{name}}」が見つかりません",
       "apps": "アプリ",
       "author": "著者:",
       "back_to_apps": "アプリに戻る",
@@ -8046,7 +8047,6 @@
       "details": "詳細",
       "disable": "無効",
       "disabled": "無効",
-      "dismiss_error": "エラーを無視",
       "doesnt_exist": "「{{name}}」は存在しません",
       "enable": "有効",
       "enabled": "有効",
@@ -8054,7 +8054,6 @@
       "failed_to_load_app": "アプリの読み込みに失敗",
       "failed_to_uninstall": "アンインストール失敗",
       "features": "機能",
-      "fix_with_ai": "AI で修正",
       "github_stars": "GitHub スター数",
       "github_stars_2": "GitHub スター数: {{value}}",
       "install": "インストール",
@@ -8103,10 +8102,13 @@
       "v_2": "· v",
       "websocket_events": "WebSocket イベント",
       "all_contributors": "すべての貢献者",
-      "contributors": "貢献者"
+      "contributors": "貢献者",
+      "retry": "再試行"
     },
     "appPage": {
-      "loading_app": "アプリを読み込み中…"
+      "loading_app": "アプリを読み込み中…",
+      "retry": "再試行",
+      "back_to_apps": "アプリに戻る"
     },
     "appsPage": {
       "action_failed": "{{name}} の{{action}}に失敗しました",
@@ -8179,7 +8181,6 @@
       "access_reachable": "：アクセス可能",
       "account_12_digits_optional_iam_identity_style": "アカウント（12 桁、オプション — iam-identity-style）",
       "active_deployments": "アクティブなデプロイ",
-      "add_failed": "追加に失敗",
       "admin": "管理者",
       "also_create_in_aws_config": "AWS config にも作成",
       "and_click": "をクリック",
@@ -8225,7 +8226,6 @@
       "details": "詳細",
       "dismiss": "非表示",
       "e_g_my_sandbox": "例：my-sandbox",
-      "error": "エラー：{{error}}",
       "est_cost_not_a_bill": "推定コスト（請求ではありません）",
       "estimated_total": "推定合計 —",
       "found_in_your_aws_config": "AWS config で見つかった：",
@@ -8283,7 +8283,6 @@
       "register": "登録",
       "registered_profile": "プロファイル「{{name}}」を登録しました。",
       "remove": "削除",
-      "remove_failed": "削除に失敗",
       "remove_from_registry": "レジストリから {{name}} を削除",
       "remove_profile_confirm": "レジストリから「{{name}}」を削除します。~/.aws/config には手を加えません。",
       "removed_from_registry_your_aws_config_is_untouche": "レジストリから削除されました (お客様の ~/.aws/config は変更されません)。",
@@ -8306,7 +8305,6 @@
       "unknown": "不明",
       "unknown_2": "(不明)",
       "unverified": "未確認",
-      "update_failed": "更新に失敗",
       "us_west_2": "us-west-2",
       "v1_fails_with": "; v1 は失敗します",
       "verified": "確認済み",
@@ -8327,7 +8325,9 @@
       "destroy_title": "サイトを完全に削除しますか？",
       "destroy_button": "サイトを完全に削除",
       "remove_profile_title": "プロファイルを削除しますか？",
-      "remove_profile_button": "プロファイルを削除"
+      "remove_profile_button": "プロファイルを削除",
+      "retry": "再試行",
+      "profile_errors_title": "一部のプロファイルを一覧表示できませんでした"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· リモートコピーでより新しいバージョンが利用可能です",
@@ -8450,7 +8450,13 @@
       "your_current_edits_are_saved_as_a_version_first": "現在の編集内容はバージョンとして最初に保存されるため、何も失われません。",
       "check_again": "再確認",
       "rechecking": "確認中…",
-      "recheck_publication_notice": "この公開の状態を再確認する"
+      "recheck_publication_notice": "この公開の状態を再確認する",
+      "back_to_live": "ライブに戻る",
+      "versions_failed_to_load": "バージョンの読み込みに失敗しました",
+      "comments_failed_to_load": "コメントの読み込みに失敗しました",
+      "comment_action_failed": "コメント操作に失敗しました",
+      "activity_failed_to_load": "アクティビティの読み込みに失敗しました",
+      "sync_status_unavailable": "同期状態を取得できません"
     },
     "artifactPopoutFrame": {
       "artifact": "アーティファクト",
@@ -8486,7 +8492,6 @@
       "delete": "削除…",
       "deploying": "デプロイ中…",
       "drop_here_to_unfile": "— ここにドロップして未分類にする",
-      "error": "エラー",
       "expired": "有効期限切れ",
       "filter_artifacts": "{{provider}} のアーティファクトをフィルター…",
       "filter_by_kind": "種類で絞り込み",
@@ -8562,7 +8567,8 @@
       "widgets_files_and_snippets_live_tracked_with_ver": "ウィジェット、ファイル、スニペット — バージョン履歴とともにライブ追跡",
       "your_artifacts": "あなたのアーティファクト",
       "local_preview": "Local preview",
-      "more_actions": "その他のアクション"
+      "more_actions": "その他のアクション",
+      "retry": "再試行"
     },
     "capabilitiesPage": {
       "agent_capabilities": "エージェント機能",
@@ -8611,7 +8617,6 @@
       "dismiss": "却下",
       "e_g_investigate_gamma_deployment_failure": "例: Gammaデプロイメント障害を調査",
       "failed_to_add_agent": "エージェントの追加に失敗しました",
-      "failed_to_clear_context_error": "コンテキストのクリアに失敗しました: {{error}}",
       "failed_to_create_channel": "チャネルの作成に失敗しました",
       "is_working": "作業中…",
       "listen_all": "すべて",
@@ -8627,7 +8632,6 @@
       "new_channel": "新しいチャネル",
       "new_channel_2": "新しいチャネル",
       "no_channels_yet": "チャネルがまだありません",
-      "ok": "OK",
       "preset_custom_empty": "カスタム（空）",
       "preset_incident_response": "インシデント対応",
       "reply": "返信",
@@ -8650,7 +8654,14 @@
       "this_will_reset_conversation_history_for_all_age": "すべてのエージェントの会話履歴がリセットされます。設定は保持されます。",
       "thread": "スレッド",
       "topic": "トピック",
-      "unknown_error": "不明なエラー"
+      "failed_to_load_channels": "チャネル一覧の読み込みに失敗しました",
+      "failed_to_load_presets": "チームプリセットの読み込みに失敗しました",
+      "failed_to_load_channel": "このチャネルの読み込みに失敗しました",
+      "failed_to_send_message": "メッセージの送信に失敗しました",
+      "failed_to_dismiss_agent": "エージェントの却下に失敗しました",
+      "failed_to_update_agent": "エージェントの更新に失敗しました",
+      "failed_to_close_channel": "チャネルを閉じられませんでした",
+      "failed_to_clear_context": "コンテキストのクリアに失敗しました"
     },
     "chat": {
       "activityViewer": {
@@ -9255,10 +9266,8 @@
       "could_not_switch_variant": "バージョンを切り替えられませんでした",
       "could_not_start_a_new_session": "新しいセッションを開始できませんでした",
       "could_not_start_session_message_restored": "新しいセッションを開始できませんでした：{{error}}。メッセージは復元されました — もう一度送信して再試行してください。",
-      "dismiss_error": "エラーを閉じる",
       "dismiss_upload_error": "アップロードエラーを閉じる",
       "enter_split_view": "分割表示にする",
-      "error_reading_file": "_ファイルの読み込みエラー_",
       "esc_to_dismiss": "Esc で閉じる",
       "expand_knowledge_context": "ナレッジコンテキストを展開",
       "failed_to_apply_plan": "計画を適用できませんでした",
@@ -9328,7 +9337,6 @@
       "tool_status_loaded": "このセッションで読み込み済み",
       "type_to_filter": "入力して絞り込む…",
       "type_to_search_this_conversation": "入力してこの会話を検索します。",
-      "unable_to_read_file": "_ファイルを読み込めません。_",
       "unknown_error": "不明なエラー",
       "upload_failed_check_file_type_and_size_max_50_mb": "アップロードに失敗しました — ファイル形式とサイズを確認してください (最大 50 MB)",
       "upload_failed_error": "アップロードに失敗しました: {{error}}",
@@ -9336,7 +9344,11 @@
       "worktree_creation_returned_no_path": "ワークツリーの作成結果にパスがありません",
       "loading_earlier_messages": "以前のメッセージを読み込み中…",
       "send_failed_with_error": "送信に失敗しました: {{error}}",
-      "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。"
+      "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
+      "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
+      "http_status": "HTTP {{status}}",
+      "could_not_rename_session": "セッション名を変更できませんでした",
+      "could_not_generate_title": "タイトルを生成できませんでした"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",
@@ -9561,7 +9573,11 @@
       "workflow_running_other": "{{count}} 件のワークフローが実行中",
       "flat_view_hide_folders_in_board_columns": "フラット表示 — ボードの列内のフォルダーを非表示",
       "show_folders_in_board_columns": "ボードの列内のフォルダーを表示",
-      "switch_to_flat_view_hide_folders_in_board_columns": "フラット表示に切り替え（ボードの列内のフォルダーを非表示）"
+      "switch_to_flat_view_hide_folders_in_board_columns": "フラット表示に切り替え（ボードの列内のフォルダーを非表示）",
+      "folders_load_failed": "フォルダーを読み込めませんでした",
+      "columns_load_failed": "ボードの列を読み込めませんでした",
+      "folder_update_failed": "フォルダーの更新に失敗しました",
+      "board_update_failed": "ボードの更新に失敗しました"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -9711,7 +9727,6 @@
       "disk": "ディスク:",
       "disk_worktrees": "ディスク（ワークツリー）",
       "dismiss": "却下",
-      "dismiss_provision_status": "プロビジョニングステータスを却下",
       "dismiss_sync_status": "同期ステータスを却下",
       "each_row_below_is_a_git_worktree_discovered_from": "以下の各行は、メインチェックアウトから発見されたGitワークツリーです。使用",
       "empty_worktree_cannot_be_undone": "空のワークツリー。元に戻せません。",
@@ -9908,7 +9923,8 @@
       "pod_home_disk": "Pod ホームのディスク: {{value}}",
       "orphan_pods_label": "孤立した Pod ホーム: {{value}}",
       "total_disk_used_by_running_pod_homes": "実行中の Pod ホームが使用するディスク合計",
-      "pod_homes_left_on_disk_with_no_live_pod": "稼働中の Pod がないままディスクに残る Pod ホーム"
+      "pod_homes_left_on_disk_with_no_live_pod": "稼働中の Pod がないままディスクに残る Pod ホーム",
+      "disk_usage_unavailable": "ディスク使用量を取得できません"
     },
     "developer": {
       "agentBackendTab": {
@@ -10015,7 +10031,6 @@
       "actions": "アクション",
       "bundled": "バンドル済み",
       "cancel": "キャンセル",
-      "check_your_connection_or_configuration_and_try_a": "接続または設定を確認して、もう一度試してください。",
       "click_again_to_confirm": "もう一度クリックして確認",
       "command": "コマンド",
       "config": "設定",
@@ -10071,7 +10086,10 @@
       "user": "ユーザー",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
-      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills."
+      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
+      "retry": "再試行",
+      "show_last_error": "{{name}} の最新のエラーを表示",
+      "test_failed_for": "{{name}} のテストに失敗しました"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "このワークスペースの一意な識別子。エージェントは名前でワークスペースを参照します。",

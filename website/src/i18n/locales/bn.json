@@ -8083,7 +8083,9 @@
       "what_a_crew_starts_from_its_model_skills_tools_mc": "একটি এজেন্ট যা থেকে শুরু করে — তার মডেল, স্কিল, টুল, MCP সার্ভার আর সুরক্ষা নিয়ম",
       "when_nothing_names_a_template_use": "যখন কোনো টেমপ্লেট বলা হয়নি, তখন ব্যবহার করা হবে",
       "where_it_comes_from": "এটি কোথা থেকে এসেছে",
-      "yes_delete_it": "হ্যাঁ, মুছে ফেলুন"
+      "yes_delete_it": "হ্যাঁ, মুছে ফেলুন",
+      "retry": "আবার চেষ্টা করুন",
+      "delete_unavailable_references_failed": "ক্রু রোস্টার বা ফলব্যাক-টেমপ্লেট সেটিং লোড করা যায়নি, তাই সেগুলি লোড না হওয়া পর্যন্ত এই টেমপ্লেট মোছা যাবে না।"
     },
     "aidlc": {
       "dagView": {
@@ -8140,7 +8142,6 @@
       "after_installation_run": "ইনস্টলেশনের পরে চালান:",
       "api_access": "API অ্যাক্সেস",
       "app_not_found": "অ্যাপ পাওয়া যায়নি",
-      "app_not_found_2": "\"{{name}}\" অ্যাপ পাওয়া যায়নি",
       "apps": "অ্যাপ",
       "author": "নির্মাতা:",
       "back_to_apps": "অ্যাপে ফিরে যান",
@@ -8154,7 +8155,6 @@
       "details": "বিবরণ",
       "disable": "নিষ্ক্রিয় করুন",
       "disabled": "নিষ্ক্রিয়",
-      "dismiss_error": "ত্রুটি খারিজ করুন",
       "doesnt_exist": "\"{{name}}\" বলে কিছু নেই",
       "enable": "সক্রিয় করুন",
       "enabled": "সক্রিয়",
@@ -8162,7 +8162,6 @@
       "failed_to_load_app": "অ্যাপ লোড করা যায়নি",
       "failed_to_uninstall": "আনইনস্টল করা যায়নি",
       "features": "বৈশিষ্ট্য",
-      "fix_with_ai": "AI দিয়ে ঠিক করুন",
       "github_stars": "GitHub স্টার",
       "github_stars_2": "GitHub স্টার: {{value}}",
       "install": "ইনস্টল করুন",
@@ -8211,10 +8210,13 @@
       "v_2": "· v",
       "websocket_events": "WebSocket ইভেন্ট",
       "all_contributors": "সব অবদানকারী",
-      "contributors": "অবদানকারী"
+      "contributors": "অবদানকারী",
+      "retry": "আবার চেষ্টা করুন"
     },
     "appPage": {
-      "loading_app": "অ্যাপ লোড হচ্ছে…"
+      "loading_app": "অ্যাপ লোড হচ্ছে…",
+      "retry": "আবার চেষ্টা করুন",
+      "back_to_apps": "অ্যাপে ফিরে যান"
     },
     "appsPage": {
       "action_failed": "{{name}}-কে {{action}} করা যায়নি",
@@ -8294,7 +8296,6 @@
       "access_reachable": ": অ্যাক্সেস পাওয়া যাচ্ছে",
       "account_12_digits_optional_iam_identity_style": "অ্যাকাউন্ট (12 ডিজিট, ঐচ্ছিক — iam-identity-style)",
       "active_deployments": "সক্রিয় ডিপ্লয়মেন্ট",
-      "add_failed": "যোগ করা যায়নি",
       "admin": "Admin",
       "also_create_in_aws_config": "AWS config-এও তৈরি করুন",
       "and_click": "এবং ক্লিক করুন",
@@ -8340,7 +8341,6 @@
       "details": "বিবরণ",
       "dismiss": "খারিজ করুন",
       "e_g_my_sandbox": "যেমন my-sandbox",
-      "error": "ত্রুটি: {{error}}",
       "est_cost_not_a_bill": "আনুমানিক খরচ (বিল নয়)",
       "estimated_total": "আনুমানিক মোট —",
       "found_in_your_aws_config": "আপনার AWS কনফিগে পাওয়া গেছে:",
@@ -8398,7 +8398,6 @@
       "register": "রেজিস্টার করো",
       "registered_profile": "'{{name}}' প্রোফাইল রেজিস্টার হয়েছে।",
       "remove": "সরান",
-      "remove_failed": "সরানো যায়নি",
       "remove_from_registry": "রেজিস্ট্রি থেকে {{name}} সরাও",
       "remove_profile_confirm": "রেজিস্ট্রি থেকে “{{name}}” সরাবে? তোমার ~/.aws/config-এ কোনো হাত পড়বে না।",
       "removed_from_registry_your_aws_config_is_untouche": "রেজিস্ট্রি থেকে সরানো হয়েছে (তোমার ~/.aws/config অপরিবর্তিত)।",
@@ -8422,7 +8421,6 @@
       "unknown": "অজানা",
       "unknown_2": "(অজানা)",
       "unverified": "যাচাই করা হয়নি",
-      "update_failed": "আপডেট করা যায়নি",
       "us_west_2": "us-west-2",
       "v1_fails_with": "; v1 ব্যর্থ হয় এই ত্রুটি দিয়ে:",
       "verified": "যাচাই করা হয়েছে",
@@ -8444,7 +8442,9 @@
       "destroy_title": "সাইট ডেস্ট্রয় করবেন?",
       "destroy_button": "সাইট ডেস্ট্রয় করুন",
       "remove_profile_title": "প্রোফাইল সরাবেন?",
-      "remove_profile_button": "প্রোফাইল সরান"
+      "remove_profile_button": "প্রোফাইল সরান",
+      "retry": "আবার চেষ্টা করুন",
+      "profile_errors_title": "কিছু প্রোফাইল তালিকাভুক্ত করা যায়নি"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· রিমোট কপিতে একটি নতুন সংস্করণ পাওয়া যাচ্ছে",
@@ -8567,7 +8567,13 @@
       "publication_notice_generic": "এই লিঙ্কটি এখনও কাজ না করতে পারে।",
       "check_again": "আবার পরীক্ষা করুন",
       "rechecking": "পরীক্ষা করা হচ্ছে…",
-      "recheck_publication_notice": "এই প্রকাশনার অবস্থা আবার পরীক্ষা করুন"
+      "recheck_publication_notice": "এই প্রকাশনার অবস্থা আবার পরীক্ষা করুন",
+      "back_to_live": "লাইভে ফিরে যান",
+      "versions_failed_to_load": "সংস্করণ লোড করা যায়নি",
+      "comments_failed_to_load": "মন্তব্য লোড করা যায়নি",
+      "comment_action_failed": "মন্তব্যের কাজ ব্যর্থ",
+      "activity_failed_to_load": "কার্যকলাপ লোড করা যায়নি",
+      "sync_status_unavailable": "সিঙ্ক অবস্থা অনুপলব্ধ"
     },
     "artifactPopoutFrame": {
       "artifact": "আর্টিফ্যাক্ট",
@@ -8604,7 +8610,6 @@
       "delete": "মুছুন…",
       "deploying": "ডিপ্লয় হচ্ছে…",
       "drop_here_to_unfile": "— ফোল্ডার থেকে সরাতে এখানে ছাড়ুন",
-      "error": "ত্রুটি",
       "expired": "মেয়াদ শেষ",
       "filter_artifacts": "{{provider}} আর্টিফ্যাক্ট ফিল্টার করো…",
       "filter_by_kind": "ধরন অনুযায়ী ফিল্টার",
@@ -8681,7 +8686,8 @@
       "local_preview": "Local preview",
       "more_actions": "আরও অ্যাকশন",
       "published_distribution_disabled": "প্রকাশিত — ডেলিভারি নেটওয়ার্ক নিষ্ক্রিয়",
-      "published_notice_generic": "প্রকাশিত — লিঙ্ক এখনও কাজ না করতে পারে"
+      "published_notice_generic": "প্রকাশিত — লিঙ্ক এখনও কাজ না করতে পারে",
+      "retry": "আবার চেষ্টা করুন"
     },
     "capabilitiesPage": {
       "agent_capabilities": "এজেন্টের সক্ষমতা",
@@ -8732,7 +8738,6 @@
       "dismiss": "বাদ দিন",
       "e_g_investigate_gamma_deployment_failure": "যেমন Gamma ডিপ্লয়মেন্ট ব্যর্থতা তদন্ত করুন",
       "failed_to_add_agent": "এজেন্ট যোগ করা যায়নি",
-      "failed_to_clear_context_error": "কনটেক্সট সাফ করা যায়নি: {{error}}",
       "failed_to_create_channel": "চ্যানেল তৈরি করা যায়নি",
       "is_working": "কাজ করছে…",
       "listen_all": "সব",
@@ -8748,7 +8753,6 @@
       "new_channel": "নতুন চ্যানেল",
       "new_channel_2": "নতুন চ্যানেল",
       "no_channels_yet": "এখনও কোনো চ্যানেল নেই",
-      "ok": "ঠিক আছে",
       "preset_custom_empty": "কাস্টম (খালি)",
       "preset_incident_response": "ইনসিডেন্ট রেসপন্স",
       "reply": "উত্তর দিন",
@@ -8772,7 +8776,14 @@
       "this_will_reset_conversation_history_for_all_age": "এটি সব এজেন্টের কথোপকথনের ইতিহাস রিসেট করবে। কনফিগ অপরিবর্তিত থাকবে।",
       "thread": "থ্রেড",
       "topic": "টপিক",
-      "unknown_error": "অজানা ত্রুটি"
+      "failed_to_load_channels": "চ্যানেল লোড করা যায়নি",
+      "failed_to_load_presets": "টিম প্রিসেট লোড করা যায়নি",
+      "failed_to_load_channel": "চ্যানেলটি লোড করা যায়নি",
+      "failed_to_send_message": "বার্তা পাঠানো যায়নি",
+      "failed_to_dismiss_agent": "এজেন্ট সরানো যায়নি",
+      "failed_to_update_agent": "এজেন্ট আপডেট করা যায়নি",
+      "failed_to_close_channel": "চ্যানেল বন্ধ করা যায়নি",
+      "failed_to_clear_context": "কনটেক্সট মুছা যায়নি"
     },
     "chat": {
       "activityViewer": {
@@ -9388,10 +9399,8 @@
       "could_not_switch_variant": "সংস্করণ পরিবর্তন করা যায়নি",
       "could_not_start_a_new_session": "নতুন সেশন শুরু করা যায়নি",
       "could_not_start_session_message_restored": "নতুন সেশন শুরু করা গেল না: {{error}}। তোমার বার্তা ফিরিয়ে আনা হয়েছে — আবার চেষ্টা করতে সেটি ফের পাঠাও।",
-      "dismiss_error": "ত্রুটি বাদ দিন",
       "dismiss_upload_error": "আপলোড ত্রুটি বাদ দিন",
       "enter_split_view": "স্প্লিট ভিউতে যান",
-      "error_reading_file": "_ফাইল পড়তে ত্রুটি_",
       "esc_to_dismiss": "বাদ দিতে Esc চাপুন",
       "expand_knowledge_context": "নলেজ কনটেক্সট প্রসারিত করো",
       "failed_to_apply_plan": "প্ল্যান প্রয়োগ করা যায়নি",
@@ -9462,7 +9471,6 @@
       "tool_status_loaded": "এই সেশনে লোডেড",
       "type_to_filter": "ফিল্টার করতে টাইপ করুন…",
       "type_to_search_this_conversation": "এই কথোপকথনে খুঁজতে টাইপ করো।",
-      "unable_to_read_file": "_ফাইল পড়া যাচ্ছে না।_",
       "unknown_error": "অজানা ত্রুটি",
       "upload_failed_check_file_type_and_size_max_50_mb": "আপলোড ব্যর্থ — ফাইলের ধরন ও আকার দেখে নাও (সর্বোচ্চ 50 MB)",
       "upload_failed_error": "আপলোড ব্যর্থ: {{error}}",
@@ -9470,7 +9478,11 @@
       "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি",
       "loading_earlier_messages": "পূর্ববর্তী বার্তা লোড হচ্ছে…",
       "send_failed_with_error": "পাঠানো যায়নি: {{error}}",
-      "delivery_unconfirmed": "ডেলিভারি নিশ্চিত হয়নি — আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে; আবার পাঠানোর আগে কথোপকথনটি দেখে নিন।"
+      "delivery_unconfirmed": "ডেলিভারি নিশ্চিত হয়নি — আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে; আবার পাঠানোর আগে কথোপকথনটি দেখে নিন।",
+      "could_not_read_file_reason": "{{path}} পড়া যায়নি ({{reason}})",
+      "http_status": "HTTP {{status}}",
+      "could_not_rename_session": "সেশনের নাম পরিবর্তন করা যায়নি",
+      "could_not_generate_title": "শিরোনাম তৈরি করা যায়নি"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",
@@ -9706,7 +9718,11 @@
       "workflow_running_other": "{{count}}টি ওয়ার্কফ্লো চলছে",
       "flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউ — বোর্ড কলামে ফোল্ডার লুকান",
       "show_folders_in_board_columns": "বোর্ড কলামে ফোল্ডার দেখান",
-      "switch_to_flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউতে যান (বোর্ড কলামে ফোল্ডার লুকান)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউতে যান (বোর্ড কলামে ফোল্ডার লুকান)",
+      "folders_load_failed": "ফোল্ডার লোড করা যায়নি",
+      "columns_load_failed": "বোর্ড কলাম লোড করা যায়নি",
+      "folder_update_failed": "ফোল্ডার আপডেট ব্যর্থ",
+      "board_update_failed": "বোর্ড আপডেট ব্যর্থ"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
@@ -9857,7 +9873,6 @@
       "disk": "ডিস্ক:",
       "disk_worktrees": "ডিস্ক (worktrees)",
       "dismiss": "খারিজ করুন",
-      "dismiss_provision_status": "প্রভিশন স্ট্যাটাস খারিজ করুন",
       "dismiss_sync_status": "সিঙ্ক স্ট্যাটাস খারিজ করুন",
       "each_row_below_is_a_git_worktree_discovered_from": "নিচের প্রতিটি সারি হলো main চেকআউট থেকে পাওয়া একটি git worktree। ব্যবহার করুন",
       "empty_worktree_cannot_be_undone": "খালি worktree। এটি ফেরানো যাবে না।",
@@ -10054,7 +10069,8 @@
       "pod_home_disk": "পড-হোম ডিস্ক: {{value}}",
       "orphan_pods_label": "অনাথ পড হোম: {{value}}",
       "total_disk_used_by_running_pod_homes": "চলমান পড হোম দ্বারা ব্যবহৃত মোট ডিস্ক",
-      "pod_homes_left_on_disk_with_no_live_pod": "কোনও সক্রিয় পড ছাড়াই ডিস্কে থাকা পড হোম"
+      "pod_homes_left_on_disk_with_no_live_pod": "কোনও সক্রিয় পড ছাড়াই ডিস্কে থাকা পড হোম",
+      "disk_usage_unavailable": "ডিস্ক ব্যবহার অনুপলব্ধ"
     },
     "developer": {
       "agentBackendTab": {
@@ -10162,7 +10178,6 @@
       "actions": "অ্যাকশন",
       "bundled": "বান্ডিল করা",
       "cancel": "বাতিল",
-      "check_your_connection_or_configuration_and_try_a": "আপনার সংযোগ বা কনফিগারেশন পরীক্ষা করে আবার চেষ্টা করুন।",
       "click_again_to_confirm": "নিশ্চিত করতে আবার ক্লিক করো",
       "command": "কমান্ড",
       "config": "কনফিগ",
@@ -10218,7 +10233,10 @@
       "user": "ব্যবহারকারী",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
-      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills."
+      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
+      "retry": "আবার চেষ্টা করুন",
+      "show_last_error": "{{name}}-এর সর্বশেষ ত্রুটি দেখান",
+      "test_failed_for": "{{name}}-এর পরীক্ষা ব্যর্থ"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "এই ওয়ার্কস্পেসের জন্য একটি অনন্য শনাক্তকারী। এজেন্ট নাম দিয়ে ওয়ার্কস্পেস উল্লেখ করে।",

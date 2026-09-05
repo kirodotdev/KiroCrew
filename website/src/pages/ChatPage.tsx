@@ -1663,6 +1663,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // short-circuits `slot.model or agent_model` and would override a template or
   // global pin the user did configure.
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
+  // One in-page slot for every failed action whose only report used to be a
+  // notification-centre toast, a native alert() or a swallowed catch (fork,
+  // plan-from-here, apply-plan, steer, rename, title generation, the agent
+  // default-model pin, a session create that failed while sending, a file the
+  // panel could not read). Rendered once, above the composer, through
+  // ErrorNotice; the newest failure wins, the same shape as `refusedPress`.
+  // `title` is optional because several sites already own a whole-sentence
+  // message ("Fork failed: …") that must stay intact for the error-journal match.
+  const [actionError, setActionError] = useState<{ title?: string; message: string } | null>(null)
+  const showActionError = useCallback((message: string, title?: string) => {
+    // Same failure re-reported (an effect re-run, a retry that fails the same
+    // way) keeps the stored object, so React bails out instead of re-rendering.
+    setActionError(prev => (prev && prev.message === message && prev.title === title) ? prev : { title, message })
+  }, [])
   // NOT fire-and-forget: the receipt is the only thing that knows whether the
   // text reached the running turn, and the optimistic bubble asserts that it did.
   // The same `/api/chat` POST as `send()` with the `steer` flag, through the
@@ -1962,14 +1976,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // crash copy when sessionStorage rejected the ingress write.
         queued.unshift(prompt)
       }
+      // The restaged prompt goes back into the hand-off FIFO, not into the
+      // composer, so nothing on the page shows it was recovered: the toast alone
+      // would leave a blank chat. Same title and body, in-page as well.
+      const restageTitle = i18nT('pages.chatPage.could_not_start_a_new_session')
+      const restageBody = i18nT('pages.chatPage.could_not_start_session_message_restored', {
+        error: createFailReason(error),
+      })
+      showActionError(restageBody, restageTitle)
       dispatch(addNotification({
         ts: uniqueNotificationTs(),
         kind: 'agent',
         priority: 'critical',
-        title: i18nT('pages.chatPage.could_not_start_a_new_session'),
-        body: i18nT('pages.chatPage.could_not_start_session_message_restored', {
-          error: createFailReason(error),
-        }),
+        title: restageTitle,
+        body: restageBody,
       }))
     }
     errorHandoffProcessingRef.current = true
@@ -2066,7 +2086,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         setTimeout(() => processErrorHandoffsRef.current(), 0)
       }
     }
-  }, [dispatch, persistErrorHandoffClaims])
+  }, [dispatch, persistErrorHandoffClaims, showActionError])
   processErrorHandoffsRef.current = () => { void processErrorHandoffs() }
 
   // Drain the error hand-off channel ("Ask the agent" on an error surface).
@@ -2343,6 +2363,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       : [])
     knowledgeFetchRef.current.clearResults()
     setUploadError('')
+    setUploadHint('')
+    // A pane-level action failure ("Fork failed", "Could not read …") belongs to
+    // the slot it happened in; carried over, it reads as the new slot's.
+    setActionError(null)
     flushDrafts()
   }, [activeSlot, flushDrafts])
   // Persist drafts on unmount (navigating away from chat page)
@@ -2489,7 +2513,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // earlier (or back into the slot-change effect) would let a file/paste change
   // batched with the switch smear onto the new slot.
   useEffect(() => { composerSlotRef.current = activeSlot }, [activeSlot])
+  // Two states, not one: `uploadError` is a FAILED request (the server's error
+  // body, a thrown upload, a capture that could not complete) and renders
+  // through ErrorNotice; `uploadHint` is the pre-flight validation the page
+  // itself decided (too many files, file too large) — nothing was attempted, so
+  // it stays plain status text.
   const [uploadError, setUploadError] = useState('')
+  const [uploadHint, setUploadHint] = useState('')
   // Resize details keyed by uploaded server path. Rendered as a badge on the
   // attachment chip itself (FilePreviewStrip) instead of a banner — the info
   // describes one staged file, so it lives on that file's chip. Keyed by the
@@ -3457,17 +3487,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* ignore */ }
     if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
     try {
-      const [{ text }] = await Promise.all([
+      const [{ text, ok, status }] = await Promise.all([
         queryClient.fetchQuery({
           queryKey: ['file-read', filePath],
           queryFn: async () => {
             const url = fileReadUrl(filePath)
             const res = await fetch(url)
+            // A 404 is a real answer about the file (it is not on disk), so the
+            // panel shows that placeholder. Any other failure is an ERROR: it is
+            // reported as one below instead of being rendered as the file's text.
             const text = res.ok
               ? await res.text()
               : res.status === 404 ? i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-              : i18nT('pages.chatPage.unable_to_read_file')
-            return { text, ok: res.ok }
+              : ''
+            return { text, ok: res.ok, status: res.status }
           },
           staleTime: 10_000,
         }),
@@ -3476,16 +3509,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           queryFn: () => api.fileDiff(filePath),
         }),
       ])
+      if (!ok && status !== 404) {
+        // Read failure — nothing in the viewer to lose, so the notice hands off.
+        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status }) }))
+        return
+      }
       tabsCtl.openFile(filePath, text, activeSlotRef.current ?? null, optsForReplace(opts))
       dispatch(openActivityPanel())
       // The right-hand dock is a single slot; the file viewer is render-gated
       // behind !search.isOpen. Close the find pane so the opened file actually
       // shows instead of being silently suppressed.
       search.close()
-    } catch {
-      tabsCtl.openFile(filePath, i18nT('pages.chatPage.error_reading_file'), activeSlotRef.current ?? null, optsForReplace(opts))
-      dispatch(openActivityPanel())
-      search.close()
+    } catch (e) {
+      // The read itself threw (network, aborted). Reported above the composer
+      // rather than as a tab whose "content" is the error sentence.
+      showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
     }
     // Depend on the stable member, not the whole hook object: `search.close` is a
     // useCallback([]) in useMessageSearch, while the `search` object changes
@@ -3496,7 +3534,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // a called member is attributed to its receiver — not because anything here
     // reads `search` itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch, so the listed member already pins everything this body calls; depending on the enclosing object instead would churn the onFileOpen prop on every transcript row each render
-  }, [queryClient, tabsCtl, dispatch, search.close])
+  }, [queryClient, tabsCtl, dispatch, search.close, showActionError])
 
   /** Open a DIRECTORY as a panel tab.
    *
@@ -3629,12 +3667,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (result.ok) {
         await dispatch(switchSlot(result.key))
       } else {
-        alert(i18nT('pages.chatPage.fork_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
+        showActionError(i18nT('pages.chatPage.fork_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
       }
     } catch (e) {
-      alert(i18nT('pages.chatPage.fork_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+      showActionError(i18nT('pages.chatPage.fork_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
     }
-  }, [activeSlot, dispatch, forkCfg])
+  }, [activeSlot, dispatch, forkCfg, showActionError])
 
   const handlePlanFromHere = useCallback(async (visibleIndex: number, messageId?: string) => {
     if (!activeSlot) return
@@ -3645,12 +3683,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // Unified view: the forked orchestrator slot lives in the same sidebar.
         if (!mode) navigate('/chat')
       } else {
-        alert(i18nT('pages.chatPage.plan_from_here_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
+        showActionError(i18nT('pages.chatPage.plan_from_here_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
       }
     } catch (e) {
-      alert(i18nT('pages.chatPage.plan_from_here_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+      showActionError(i18nT('pages.chatPage.plan_from_here_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
     }
-  }, [activeSlot, dispatch, mode, navigate])
+  }, [activeSlot, dispatch, mode, navigate, showActionError])
 
   const handleFileSave = useCallback(async (filePath: string, content: string) => {
     // Capture the slot BEFORE awaiting: if the user switches chats mid-save, the
@@ -3730,14 +3768,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // so an async capture lands where it started, not where the user switched to.
     const requestSlot = targetSlot !== undefined ? targetSlot : activeSlotRef.current
     setUploadError('')
-    if (files.length > 20) { setUploadError(i18nT('pages.chatPage.too_many_files_max_20')); return }
+    setUploadHint('')
+    if (files.length > 20) { setUploadHint(i18nT('pages.chatPage.too_many_files_max_20')); return }
     // Video is deliberately exempt from this pre-check: it has a much larger
     // server-side ceiling and streams to disk there, so the 50 MB figure this
     // message states would be a lie for a recording. Its own 413 carries the
     // real cap and surfaces through the `upload_failed_error` branch below,
     // the same route every other server-side rejection already takes.
     const big = files.find(f => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
-    if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
+    if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     setUploading(true)
     try {
       const res = await api.uploadFiles(files)
@@ -5185,12 +5224,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           if (retryNow) {
             setAutoSendTick(t => t + 1)
           } else {
+            // In-page as well as the toast: with no slot there is no composer
+            // restore and no error bubble, so the notice is the only thing on
+            // the page that says the send did not happen.
+            const queuedBody = i18nT('pages.chatPage.message_queued_until_session_ready', { error: createFailReason(e) })
+            showActionError(queuedBody, i18nT('pages.chatPage.could_not_start_a_new_session'))
             dispatch(addNotification({
               ts: uniqueNotificationTs(),
               kind: 'agent',
               priority: 'critical',
               title: i18nT('pages.chatPage.could_not_start_a_new_session'),
-              body: i18nT('pages.chatPage.message_queued_until_session_ready', { error: createFailReason(e) }),
+              body: queuedBody,
             }))
           }
         } else if (!onScreen) {
@@ -5202,12 +5246,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           const lostContext = knowledgeBlock
             ? ' Its knowledge context was not kept — re-pick it before you resend.'
             : ''
+          // The restored draft lives in a session that is not on screen, so the
+          // page the user is looking at shows nothing without this notice.
+          const draftBody = i18nT('pages.chatPage.message_saved_as_draft', { error: createFailReason(e), extra: lostContext })
+          showActionError(draftBody, i18nT('pages.chatPage.could_not_start_a_new_session'))
           dispatch(addNotification({
             ts: uniqueNotificationTs(),
             kind: 'agent',
             priority: 'critical',
             title: i18nT('pages.chatPage.could_not_start_a_new_session'),
-            body: i18nT('pages.chatPage.message_saved_as_draft', { error: createFailReason(e), extra: lostContext }),
+            body: draftBody,
             slot: uiSlot,
           }))
         }
@@ -6080,11 +6128,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       queryKey: ['file-read', t.path!],
       queryFn: async () => {
         const res = await fetch(fileReadUrl(t.path!))
+        // Same contract as handleFileOpen: a 404 is a real answer and keeps its
+        // placeholder; any other failure is reported as an error, never as text.
         const text = res.ok
           ? await res.text()
           : res.status === 404 ? i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-          : i18nT('pages.chatPage.unable_to_read_file')
-        return { text, ok: res.ok }
+          : ''
+        return { text, ok: res.ok, status: res.status }
       },
       staleTime: 10_000,
     })),
@@ -6093,20 +6143,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // lifecycle (error/retry/dedupe); this effect only writes results back, and
   // the content===undefined guard keeps it idempotent (a hydrated tab leaves
   // coldFileTabs, so it isn't re-patched).
+  // Read failures already reported, by tab id. The effect below re-runs whenever
+  // ANY cold query settles, so without this a failure the user dismissed would
+  // come back each time an unrelated tab hydrated. Cleared when the tab's read
+  // succeeds, so a retry that fails again is reported again.
+  const reportedColdReadsRef = useRef(new Set<string>())
   useEffect(() => {
     coldFileResults.forEach((r, i) => {
       const t = coldFileTabs[i]
       if (!t || t.content !== undefined) return
-      if (r.data) tabsCtl.patchTab(t.id, { content: r.data.text, savedContent: r.data.text })
-      else if (r.isError) {
-        // The placeholder is not user work: stamp it as its own baseline so
-        // the tab counts clean and the next chip/tree click retries the read
-        // instead of "protecting" the error text as unsaved edits.
-        const errText = i18nT('pages.chatPage.error_reading_file')
-        tabsCtl.patchTab(t.id, { content: errText, savedContent: errText })
+      if (r.data && (r.data.ok || r.data.status === 404)) {
+        reportedColdReadsRef.current.delete(t.id)
+        tabsCtl.patchTab(t.id, { content: r.data.text, savedContent: r.data.text })
+      } else if ((r.data || r.isError) && !reportedColdReadsRef.current.has(t.id)) {
+        // The tab stays cold (its buffer untouched, so the next chip/tree click
+        // retries the read) and the failure is reported above the composer.
+        // Writing the error sentence into the tab made it look like the file's
+        // own text — and a clean, saveable one at that.
+        reportedColdReadsRef.current.add(t.id)
+        const reason = r.isError
+          ? (errMessage(r.error) || i18nT('pages.chatPage.unknown_error'))
+          : i18nT('pages.chatPage.http_status', { status: r.data!.status })
+        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: t.path!, reason }))
       }
     })
-  }, [coldFileResults, coldFileTabs, tabsCtl])
+  }, [coldFileResults, coldFileTabs, tabsCtl, showActionError])
   // Session mode of the active slot. In the unified chat view the page-level
   // `mode` prop is always '' — the slot's own mode is the source of truth for
   // header identity (Autopilot icon + tooltip).
@@ -6152,12 +6213,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // discoverable only by reopening the menu. Body is the agent name plus the
     // server's own message, so it carries no untranslated prose of its own.
     onError: (e: Error, vars) => {
+      const title = i18nT('pages.chatPage.could_not_set_the_agent_default_model')
+      const body = `${vars.agent}: ${e?.message || i18nT('components.errorBoundary.something_went_wrong')}`
+      // The save did not persist, so the page itself has to say so — the toast
+      // is transient and lives in the notification centre.
+      showActionError(body, title)
       dispatch(addNotification({
         ts: uniqueNotificationTs(),
         kind: 'agent',
         priority: 'critical',
-        title: i18nT('pages.chatPage.could_not_set_the_agent_default_model'),
-        body: `${vars.agent}: ${e?.message || i18nT('components.errorBoundary.something_went_wrong')}`,
+        title,
+        body,
       }))
     },
   })
@@ -6681,9 +6747,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const r = await api.planFromChat(steps, planTaskId)
       if (r.ok) { navigate('/projects?applied=' + (r.task_id || planTaskId)); return true }
     } catch { /* API error */ }
-    alert(i18nT('pages.chatPage.failed_to_apply_plan'))
+    showActionError(i18nT('pages.chatPage.failed_to_apply_plan'))
     return false
-  }, [planTaskId, navigate])
+  }, [planTaskId, navigate, showActionError])
 
   // Grouping depends ONLY on `messages`; `slotRunning` decides one boolean on the
   // trailing turn. Bundling both in one memo re-ran the whole O(N) grouping pass on
@@ -7440,6 +7506,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     unpinById,
   } = useChatPins(activeSlot ?? undefined)
   const [pinNotice, setPinNotice] = useState<string | null>(null)
+  // A pinned-message page load that was REFUSED — kept apart from `pinNotice`
+  // (which carries the not-found / unavailable answers) so it renders as an
+  // error rather than as status text.
+  const [pinLoadError, setPinLoadError] = useState<string | null>(null)
   const [pendingPinnedJump, setPendingPinnedJump] = useState<{
     slotKey: string
     messageTs: string
@@ -7459,6 +7529,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const di = messageToDisplayIdxRef.current.get(msgIdx)
     if (di === undefined) return false
     setPinNotice(null)
+    setPinLoadError(null)
     navToDisplayIndex(di, { behavior: 'smooth', align: 'center' })
     setHighlightTs(messageTs)
     setTimeout(() => setHighlightTs(null), 3000)
@@ -7469,6 +7540,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (activeSlot && (!cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
       pinnedJumpPageLoadsRef.current = 0
       setPinNotice(null)
+      setPinLoadError(null)
       setPendingPinnedJump({ slotKey: activeSlot, messageTs, mid, origin })
       return
     }
@@ -7538,7 +7610,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (isSupersededPagingRejection(err)) return
       if (!cancelled) {
         pinnedJumpPageLoadsRef.current = 0
-        setPinNotice(loadFailedNotice)
+        setPinLoadError(loadFailedNotice)
         setPendingPinnedJump(null)
       }
     })
@@ -7585,18 +7657,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const handleUnpinById = useCallback((id: string) => {
     void unpinById(id).catch(() => {})
   }, [unpinById])
-  const pinStatus = pinNotice ?? (chatPinsError
-    ? i18nT(chatPinsError === 'pin' ? 'pages.chat.pins.pin_failed' : chatPinsError === 'pin_limit' ? 'pages.chat.pins.pin_limit_reached' : 'pages.chat.pins.unpin_failed')
+  // Split by kind. `pinError` is something that FAILED — a refused page load,
+  // a pin/unpin request the server rejected (useChatPins keeps that state, so
+  // the `.catch(() => {})` at the call sites is not a swallow). `pinStatus` is
+  // an answer — the message is not in this history, the pin limit is reached.
+  const pinError = pinLoadError ?? (chatPinsError && chatPinsError !== 'pin_limit'
+    ? i18nT(chatPinsError === 'pin' ? 'pages.chat.pins.pin_failed' : 'pages.chat.pins.unpin_failed')
     : null)
+  const pinStatus = pinNotice ?? (chatPinsError === 'pin_limit' ? i18nT('pages.chat.pins.pin_limit_reached') : null)
   const dismissPinStatus = useCallback(() => {
     setPinNotice(null)
+    setPinLoadError(null)
     clearChatPinsError()
   }, [clearChatPinsError])
   useEffect(() => {
-    if (!pinStatus) return
+    if (!pinStatus && !pinError) return
     const timeout = window.setTimeout(dismissPinStatus, 8000)
     return () => window.clearTimeout(timeout)
-  }, [pinStatus, dismissPinStatus])
+  }, [pinStatus, pinError, dismissPinStatus])
 
   // Track the timestamp of the previous search-nav step so we can tell "user is
   // holding Enter through many matches" apart from "user landed on one match".
@@ -8855,18 +8933,46 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             onError={setUploadError}
           />
         )}
-        {uploadError && (
-          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--danger) 45%, transparent)' }}>
-            <span className="text-sm text-text flex-1">{uploadError}</span>
-            <button onClick={() => setUploadError('')} aria-label={i18nT('pages.chatPage.dismiss_upload_error')} className="text-muted hover:text-text text-lg leading-none">&times;</button>
+        {/* Pane-level notices above the composer. Every ErrorNotice here has the
+            hand-off ON: the composer beneath holds a live draft, but it is
+            persisted per slot on every keystroke and on slot switch (the
+            setDraft effects above), and an in-chat hand-off opens a FRESH slot
+            without navigating away -- so the draft survives. */}
+        {uploadHint && (
+          <div role="status" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+            <span className="text-sm text-text flex-1">{uploadHint}</span>
+            <button onClick={() => setUploadHint('')} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text text-lg leading-none">&times;</button>
           </div>
         )}
-        {sidError && (
-          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-            <span className="text-sm text-text flex-1">{sidError}</span>
-            <button onClick={() => setSidError('')} aria-label={i18nT('pages.chatPage.dismiss_error')} className="text-muted hover:text-text text-lg leading-none">&times;</button>
-          </div>
-        )}
+        <ErrorNotice
+          message={uploadError}
+          onDismiss={() => setUploadError('')}
+          askAgent
+          className="mx-4 mt-2 mb-0 animate-rise"
+          testId="upload-error"
+        />
+        <ErrorNotice
+          message={sidError}
+          onDismiss={() => setSidError('')}
+          askAgent
+          className="mx-4 mt-2 mb-0 animate-rise"
+          testId="sid-error"
+        />
+        <ErrorNotice
+          title={actionError?.title}
+          message={actionError?.message}
+          onDismiss={() => setActionError(null)}
+          askAgent
+          className="mx-4 mt-2 mb-0 animate-rise"
+          testId="action-error"
+        />
+        <ErrorNotice
+          message={pinError}
+          onDismiss={dismissPinStatus}
+          askAgent
+          className="mx-4 mt-2 mb-0 animate-rise"
+          testId="pin-error"
+        />
         {pinStatus && (
           <div role="status" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
             <span className="text-sm text-text flex-1">{pinStatus}</span>
@@ -8892,10 +8998,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             arriving from the other three paths. */}
         {unresumableResume && (
           <div className="mx-4 mt-2 mb-0" data-testid="unresumable-resume-error">
+            {/* Hand-off on. The composer beneath holds a live draft, but it is
+                persisted per slot on every keystroke and on slot switch (the
+                setDraft effects above), and an in-chat hand-off opens a FRESH
+                slot without navigating away -- so the draft survives. */}
             <ErrorNotice
               message={unresumableNoticeMessage(unresumableResume)}
               onDismiss={() => dispatch(clearUnresumableResume())}
               variant="block"
+              askAgent
             />
           </div>
         )}
@@ -9052,7 +9163,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md bg-bg-hover">
                   {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                   {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
-                  <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none md:max-w-[50vw] focus:!shadow-none" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} {...titleIme.bindComposition<HTMLInputElement>({ onBlur: () => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { dispatch(sseSlotTitle({ key: activeSlot, title: titleDraft.trim() })); api.renameSlot(activeSlot, titleDraft.trim()).catch(() => {}) } cancelTitleRef.current = false; setEditingTitleSlot(null) } })} onKeyDown={e => { if (e.key === 'Enter' && titleIme.claimEnter(e)) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { titleIme.reset(); cancelTitleRef.current = true; setEditingTitleSlot(null) } }} />
+                  <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none md:max-w-[50vw] focus:!shadow-none focus-visible:border-b focus-visible:border-accent" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} {...titleIme.bindComposition<HTMLInputElement>({ onBlur: () => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { dispatch(sseSlotTitle({ key: activeSlot, title: titleDraft.trim() })); api.renameSlot(activeSlot, titleDraft.trim()).catch(e => showActionError(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT('pages.chatPage.could_not_rename_session'))) } cancelTitleRef.current = false; setEditingTitleSlot(null) } })} onKeyDown={e => { if (e.key === 'Enter' && titleIme.claimEnter(e)) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { titleIme.reset(); cancelTitleRef.current = true; setEditingTitleSlot(null) } }} />
                 </div>
               ) : (
                 <div className="cursor-text flex min-w-0 items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md group-hover/header:bg-bg-hover transition-colors">
@@ -9063,8 +9174,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     <Pen size={13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 transition-opacity" />
                   </Clickable>
                   {activeSlot && (generatingTitleSlots.has(activeSlot) ? <Loader size={16} className="shrink-0 text-accent animate-spin" /> : <Btn aria-label={i18nT('pages.chatPage.regenerate_title_with_llm')} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-40 hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0" title={i18nT('pages.chatPage.regenerate_title_with_llm')} onClick={e => { e.stopPropagation(); if (!activeSlot || generatingTitleSlots.has(activeSlot)) return; const slot = activeSlot; setGeneratingTitleSlots(prev => new Set(prev).add(slot)); api.generateTitle(slot).then(r => { /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */ if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title })) }).catch(e => {
-                    // eslint-disable-next-line no-console -- surface title-generation failures for debugging
-                    console.warn('Failed to generate title:', e)
+                    showActionError(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT('pages.chatPage.could_not_generate_title'))
                   }).finally(() => setGeneratingTitleSlots(prev => { const next = new Set(prev); next.delete(slot); return next })) }}><Sparkles size={16} /></Btn>)}
                 </div>
               )}

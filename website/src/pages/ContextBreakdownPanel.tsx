@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api } from '../api/client'
+import ErrorNotice from '../components/ErrorNotice'
 import { fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import type { SubagentActivity } from '../types'
@@ -550,7 +551,7 @@ function ContextBreakdownCard({ trace }: { trace: ContextTrace }) {
  *  say anything.
  */
 export function ContextBreakdownTab({ slot, subagents }: { slot: string; subagents?: Record<string, SubagentActivity> }) {
-  const { data, isLoading } = useQuery<ContextTrace>({
+  const { data, isLoading, error } = useQuery<ContextTrace>({
     queryKey: ['context-trace', slot],
     queryFn: () => api.telemetryContextTrace(slot),
     enabled: !!slot,
@@ -561,6 +562,9 @@ export function ContextBreakdownTab({ slot, subagents }: { slot: string; subagen
   return (
     <div className="h-full overflow-auto p-3">
       <SessionBreakdownTree subagents={subagents ?? {}} />
+      {/* A failed trace read otherwise rendered as an empty panel. Read-only
+          side tab, so the hand-off loses nothing; the poll above retries. */}
+      <ErrorNotice message={error ? (error instanceof Error ? error.message : String(error)) : null} askAgent className="mb-3" />
       <ContextBreakdownPanel trace={data} isLoading={isLoading} />
     </div>
   )

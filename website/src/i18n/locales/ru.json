@@ -8297,7 +8297,9 @@
       "what_a_crew_starts_from_its_model_skills_tools_mc": "С чего начинает агент: модель, навыки, инструменты, MCP-серверы и правила безопасности",
       "when_nothing_names_a_template_use": "Когда шаблон не указан, использовать",
       "where_it_comes_from": "Откуда он взялся",
-      "yes_delete_it": "Да, удалить"
+      "yes_delete_it": "Да, удалить",
+      "retry": "Повторить",
+      "delete_unavailable_references_failed": "Не удалось загрузить список команды или настройку резервного шаблона, поэтому удаление этого шаблона недоступно, пока они не загрузятся."
     },
     "aidlc": {
       "dagView": {
@@ -8356,7 +8358,6 @@
       "after_installation_run": "После установки выполните:",
       "api_access": "Доступ к API",
       "app_not_found": "Приложение не найдено",
-      "app_not_found_2": "Приложение «{{name}}» не найдено",
       "apps": "Приложения",
       "author": "Автор:",
       "back_to_apps": "Назад к приложениям",
@@ -8370,7 +8371,6 @@
       "details": "Подробности",
       "disable": "Отключить",
       "disabled": "Отключено",
-      "dismiss_error": "Скрыть ошибку",
       "doesnt_exist": "«{{name}}» не существует",
       "enable": "Включить",
       "enabled": "Включено",
@@ -8378,7 +8378,6 @@
       "failed_to_load_app": "Не удалось загрузить приложение",
       "failed_to_uninstall": "Не удалось удалить",
       "features": "Возможности",
-      "fix_with_ai": "Исправить с помощью ИИ",
       "github_stars": "Звёзды GitHub",
       "github_stars_2": "Звёзды GitHub: {{value}}",
       "install": "Установить",
@@ -8427,10 +8426,13 @@
       "v_2": "· v",
       "websocket_events": "События WebSocket",
       "all_contributors": "Все контрибьюторы",
-      "contributors": "Контрибьюторы"
+      "contributors": "Контрибьюторы",
+      "retry": "Повторить"
     },
     "appPage": {
-      "loading_app": "Загрузка приложения…"
+      "loading_app": "Загрузка приложения…",
+      "retry": "Повторить",
+      "back_to_apps": "Назад к приложениям"
     },
     "appsPage": {
       "action_failed": "Не удалось {{action}} {{name}}",
@@ -8524,7 +8526,6 @@
       "access_reachable": ": доступ подтверждён",
       "account_12_digits_optional_iam_identity_style": "Аккаунт (12 цифр, необязательно — формат iam-identity)",
       "active_deployments": "Активные развёртывания",
-      "add_failed": "не удалось добавить",
       "admin": "Admin",
       "also_create_in_aws_config": "Также создать в конфигурации AWS",
       "and_click": "и нажмите",
@@ -8570,7 +8571,6 @@
       "details": "Подробности",
       "dismiss": "Скрыть",
       "e_g_my_sandbox": "например, my-sandbox",
-      "error": "Ошибка: {{error}}",
       "est_cost_not_a_bill": "Прибл. стоимость (не счёт)",
       "estimated_total": "Примерно всего —",
       "found_in_your_aws_config": "Найдено в вашей конфигурации AWS:",
@@ -8628,7 +8628,6 @@
       "register": "Зарегистрировать",
       "registered_profile": "Профиль «{{name}}» зарегистрирован.",
       "remove": "Удалить",
-      "remove_failed": "не удалось удалить",
       "remove_from_registry": "Удалить {{name}} из реестра",
       "remove_profile_confirm": "Удаляет «{{name}}» из реестра. Твой ~/.aws/config не изменяется.",
       "removed_from_registry_your_aws_config_is_untouche": "Удалено из реестра (твой ~/.aws/config не изменён).",
@@ -8654,7 +8653,6 @@
       "unknown": "неизвестно",
       "unknown_2": "(неизвестно)",
       "unverified": "не проверено",
-      "update_failed": "не удалось обновить",
       "us_west_2": "us-west-2",
       "v1_fails_with": "; v1 завершается с ошибкой",
       "verified": "проверено",
@@ -8678,7 +8676,9 @@
       "destroy_title": "Уничтожить сайт?",
       "destroy_button": "Уничтожить сайт",
       "remove_profile_title": "Удалить профиль?",
-      "remove_profile_button": "Удалить профиль"
+      "remove_profile_button": "Удалить профиль",
+      "retry": "Повторить",
+      "profile_errors_title": "Некоторые профили не удалось получить"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· в удалённой копии доступна более новая версия",
@@ -8801,7 +8801,13 @@
       "your_current_edits_are_saved_as_a_version_first": "Ваши текущие правки сначала сохраняются как версия, поэтому ничего не потеряется.",
       "check_again": "Проверить снова",
       "rechecking": "Проверка…",
-      "recheck_publication_notice": "Повторно проверить состояние этой публикации"
+      "recheck_publication_notice": "Повторно проверить состояние этой публикации",
+      "back_to_live": "Вернуться к текущей версии",
+      "versions_failed_to_load": "Не удалось загрузить версии",
+      "comments_failed_to_load": "Не удалось загрузить комментарии",
+      "comment_action_failed": "Действие с комментарием не выполнено",
+      "activity_failed_to_load": "Не удалось загрузить активность",
+      "sync_status_unavailable": "Статус синхронизации недоступен"
     },
     "artifactPopoutFrame": {
       "artifact": "Артефакт",
@@ -8840,7 +8846,6 @@
       "delete": "Удалить…",
       "deploying": "Развёртывание…",
       "drop_here_to_unfile": "— перетащите сюда, чтобы убрать из папки",
-      "error": "Ошибка",
       "expired": "Просрочено",
       "filter_artifacts": "Фильтр артефактов {{provider}}...",
       "filter_by_kind": "Фильтр по типу",
@@ -8919,7 +8924,8 @@
       "widgets_files_and_snippets_live_tracked_with_ver": "Виджеты, файлы и фрагменты кода — отслеживаются в реальном времени, с историей версий",
       "your_artifacts": "Ваши артефакты",
       "local_preview": "Local preview",
-      "more_actions": "Другие действия"
+      "more_actions": "Другие действия",
+      "retry": "Повторить"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Возможности агента",
@@ -8974,7 +8980,6 @@
       "dismiss": "Отключить",
       "e_g_investigate_gamma_deployment_failure": "напр. Разобраться со сбоем развёртывания в Gamma",
       "failed_to_add_agent": "Не удалось добавить агента",
-      "failed_to_clear_context_error": "Не удалось очистить контекст: {{error}}",
       "failed_to_create_channel": "Не удалось создать канал",
       "is_working": "работает…",
       "listen_all": "все",
@@ -8990,7 +8995,6 @@
       "new_channel": "Новый канал",
       "new_channel_2": "Новый канал",
       "no_channels_yet": "Пока нет каналов",
-      "ok": "OK",
       "preset_custom_empty": "Свой (пустой)",
       "preset_incident_response": "Реагирование на инциденты",
       "reply": "Ответить",
@@ -9016,7 +9020,14 @@
       "this_will_reset_conversation_history_for_all_age": "История переписки будет сброшена для всех агентов. Настройки сохранятся.",
       "thread": "Ветка",
       "topic": "Тема",
-      "unknown_error": "неизвестная ошибка"
+      "failed_to_load_channels": "Не удалось загрузить каналы",
+      "failed_to_load_presets": "Не удалось загрузить шаблоны команд",
+      "failed_to_load_channel": "Не удалось загрузить канал",
+      "failed_to_send_message": "Не удалось отправить сообщение",
+      "failed_to_dismiss_agent": "Не удалось убрать агента",
+      "failed_to_update_agent": "Не удалось обновить агента",
+      "failed_to_close_channel": "Не удалось закрыть канал",
+      "failed_to_clear_context": "Не удалось очистить контекст"
     },
     "chat": {
       "activityViewer": {
@@ -9654,10 +9665,8 @@
       "could_not_switch_variant": "Не удалось переключить версию",
       "could_not_start_a_new_session": "Не удалось начать новую сессию",
       "could_not_start_session_message_restored": "Не удалось начать новую сессию: {{error}}. Сообщение восстановлено — отправь его снова, чтобы повторить.",
-      "dismiss_error": "Закрыть ошибку",
       "dismiss_upload_error": "Закрыть ошибку загрузки",
       "enter_split_view": "Перейти в разделённый вид",
-      "error_reading_file": "_Ошибка чтения файла_",
       "esc_to_dismiss": "Esc — закрыть",
       "expand_knowledge_context": "Развернуть контекст знаний",
       "failed_to_apply_plan": "Не удалось применить план",
@@ -9730,7 +9739,6 @@
       "tool_status_loaded": "Загружено в этой сессии",
       "type_to_filter": "Введите для фильтрации…",
       "type_to_search_this_conversation": "Начни вводить, чтобы искать в этой переписке.",
-      "unable_to_read_file": "_Не удалось прочитать файл._",
       "unknown_error": "неизвестная ошибка",
       "upload_failed_check_file_type_and_size_max_50_mb": "Не удалось загрузить — проверь тип и размер файла (максимум 50 МБ)",
       "upload_failed_error": "Не удалось загрузить: {{error}}",
@@ -9738,7 +9746,11 @@
       "worktree_creation_returned_no_path": "Создание worktree не вернуло путь",
       "loading_earlier_messages": "Загрузка предыдущих сообщений…",
       "send_failed_with_error": "Не удалось отправить: {{error}}",
-      "delivery_unconfirmed": "Доставка не подтверждена — ваш текст возвращён в поле ввода; проверьте переписку, прежде чем отправлять снова."
+      "delivery_unconfirmed": "Доставка не подтверждена — ваш текст возвращён в поле ввода; проверьте переписку, прежде чем отправлять снова.",
+      "could_not_read_file_reason": "Не удалось прочитать {{path}} ({{reason}})",
+      "http_status": "HTTP {{status}}",
+      "could_not_rename_session": "Не удалось переименовать сессию",
+      "could_not_generate_title": "Не удалось создать заголовок"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",
@@ -9996,7 +10008,11 @@
       "workflow_running_other": "{{count}} рабочего процесса выполняется",
       "flat_view_hide_folders_in_board_columns": "Плоский вид — скрыть папки в колонках доски",
       "show_folders_in_board_columns": "Показать папки в колонках доски",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Переключиться на плоский вид (скрыть папки в колонках доски)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Переключиться на плоский вид (скрыть папки в колонках доски)",
+      "folders_load_failed": "Не удалось загрузить папки",
+      "columns_load_failed": "Не удалось загрузить колонки доски",
+      "folder_update_failed": "Не удалось обновить папку",
+      "board_update_failed": "Не удалось обновить доску"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
@@ -10149,7 +10165,6 @@
       "disk": "Диск:",
       "disk_worktrees": "Диск (worktree)",
       "dismiss": "Скрыть",
-      "dismiss_provision_status": "Скрыть статус подготовки",
       "dismiss_sync_status": "Скрыть статус синхронизации",
       "each_row_below_is_a_git_worktree_discovered_from": "Каждая строка ниже — это git worktree, найденный в основной рабочей копии. Используйте",
       "empty_worktree_cannot_be_undone": "Пустой worktree. Отменить нельзя.",
@@ -10346,7 +10361,8 @@
       "pod_home_disk": "Диск домашних каталогов подов: {{value}}",
       "orphan_pods_label": "Осиротевшие домашние каталоги подов: {{value}}",
       "total_disk_used_by_running_pod_homes": "Всего диска, занятого домашними каталогами работающих подов",
-      "pod_homes_left_on_disk_with_no_live_pod": "Домашние каталоги подов на диске без активного пода"
+      "pod_homes_left_on_disk_with_no_live_pod": "Домашние каталоги подов на диске без активного пода",
+      "disk_usage_unavailable": "Данные об использовании диска недоступны"
     },
     "developer": {
       "agentBackendTab": {
@@ -10456,7 +10472,6 @@
       "actions": "Действия",
       "bundled": "встроенный",
       "cancel": "Отмена",
-      "check_your_connection_or_configuration_and_try_a": "Проверьте подключение или настройки и попробуйте снова.",
       "click_again_to_confirm": "Нажми ещё раз для подтверждения",
       "command": "Команда",
       "config": "конфигурация",
@@ -10512,7 +10527,10 @@
       "user": "пользовательский",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
-      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills."
+      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
+      "retry": "Повторить",
+      "show_last_error": "Показать последнюю ошибку для {{name}}",
+      "test_failed_for": "Тест для {{name}} не пройден"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Уникальный идентификатор этой рабочей области. Агенты ссылаются на рабочие области по имени.",

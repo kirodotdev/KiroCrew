@@ -233,9 +233,11 @@ describe('an abort is distinguishable from a real failure', () => {
     const path = await import('node:path')
     const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
 
-    // The catch must return on an abort BEFORE reaching the notice.
+    // The catch must return on an abort BEFORE reaching the notice. A failed
+    // page load is an ERROR (it renders through ErrorNotice via
+    // `setPinLoadError`), distinct from the `setPinNotice` answers.
     const guard = src.indexOf('if (isSupersededPagingRejection(err)) return')
-    const notice = src.indexOf('setPinNotice(loadFailedNotice)', guard)
+    const notice = src.indexOf('setPinLoadError(loadFailedNotice)', guard)
     expect(guard).toBeGreaterThan(-1)
     expect(notice).toBeGreaterThan(guard)
   })
@@ -260,7 +262,7 @@ describe('an abort is distinguishable from a real failure', () => {
     // A fetch error is transient. Only the two genuinely-gone branches may claim
     // the history no longer holds the row; the catch gets its own copy.
     expect(body.match(/setPinNotice\(notFoundNotice\)/g)).toHaveLength(2)
-    expect(body.match(/setPinNotice\(loadFailedNotice\)/g)).toHaveLength(1)
+    expect(body.match(/setPinLoadError\(loadFailedNotice\)/g)).toHaveLength(1)
     const catchGuard = body.indexOf('if (isSupersededPagingRejection(err)) return')
     expect(body.indexOf('setPinNotice(notFoundNotice)', catchGuard)).toBe(-1)
   })

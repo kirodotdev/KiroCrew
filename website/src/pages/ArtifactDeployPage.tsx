@@ -2,9 +2,10 @@ import { useState } from 'react'
 import Clickable from '../components/Clickable'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, Globe, Copy, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, Lock, CheckCircle, XCircle, Rocket, Plus, Star } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Globe, Copy, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, Lock, CheckCircle, Rocket, Plus, Star } from 'lucide-react'
 import type { Artifact } from '../types'
 import { PageHeader, Card, CardTitle, StatCard, Btn, Input, Toggle , Badge} from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 import SimpleSelect from '../components/SimpleSelect'
 import { useConfirm } from '../components/ConfirmDialog'
 import PublicPublishAckModal from '../components/PublicPublishAckModal'
@@ -13,6 +14,8 @@ import { safeHttpUrl } from '../lib/safeUrl'
 import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
+import { toApiError } from '../api/apiError'
+import { errMessage } from '../utils/thunkError'
 const BASE = '/api/deploy'
 
 interface ProfileEntry { name: string; region: string; account: string; verified_at: string; note: string }
@@ -41,12 +44,17 @@ interface SiteMutationResp {
 
 // Route all fetches through proper X-Session-Key header (client.ts pattern).
 const _sk = { 'X-Session-Key': 'dashboard:ui' }
+// A non-2xx reply becomes a thrown `ApiError` (status + the backend's own
+// `error`/`detail` text, via the shared factory), so a 4xx/5xx body reaches
+// useQuery/useMutation `.error` instead of being handed back as `data`.
 async function jget<T>(path: string): Promise<T> {
   const r = await fetch(BASE + path, { headers: { ..._sk } })
+  if (!r.ok) throw await toApiError(r)
   return (await r.json()) as T
 }
 async function jsend<T>(path: string, body: unknown, method = 'POST'): Promise<{ status: number; data: T }> {
   const r = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
+  if (!r.ok) throw await toApiError(r)
   return { status: r.status, data: (await r.json()) as T }
 }
 
@@ -64,6 +72,9 @@ export default function ArtifactDeployPage() {
   const [boundaryNote, setBoundaryNote] = useState('')
   const [policyTier, setPolicyTier] = useState<'static' | 'fullstack'>('static')
   const [notice, setNotice] = useState<string | null>(null)
+  // Failed actions land here, separate from `notice` (success text only) so
+  // the two never share one accent-styled card.
+  const [failure, setFailure] = useState<string | null>(null)
   const [showGuide, setShowGuide] = useState(true)
   const [showSecurity, setShowSecurity] = useState(false)
   const [showNewProfile, setShowNewProfile] = useState(false)
@@ -73,39 +84,45 @@ export default function ArtifactDeployPage() {
   const [npRole, setNpRole] = useState('')
   const [npCreate, setNpCreate] = useState(false)
 
-  const { data: deployCfg } = useQuery<{ cloudDeploymentEnabled?: boolean }>({
+  const cfgQ = useQuery<{ cloudDeploymentEnabled?: boolean }>({
     queryKey: ['deploy-web', 'config'],
     queryFn: () => jget('/config'),
   })
+  const deployCfg = cfgQ.data
   // Absent means an older backend that predates the flag — treat as enabled so a
   // version skew never hides a working deploy surface. Only an explicit false
   // withholds it.
   const cloudDeploymentDisabled = deployCfg?.cloudDeploymentEnabled === false
 
-  const { data: profilesResp } = useQuery<ProfilesResp>({
+  const profilesQ = useQuery<ProfilesResp>({
     queryKey: ['deploy-web', 'profiles'],
     queryFn: () => jget('/profiles'),
     enabled: !cloudDeploymentDisabled,
   })
+  const profilesResp = profilesQ.data
   const profiles = profilesResp?.profiles || []
   const defaultProfile = profilesResp?.default || ''
   const availableProfiles = profilesResp?.available || []
 
-  const { data: sitesResp } = useQuery<{ sites: Site[]; configured: boolean; profile_errors?: string[] }>({
+  const sitesQ = useQuery<{ sites: Site[]; configured: boolean; profile_errors?: string[] }>({
     queryKey: ['deploy-web', 'sites'],
     queryFn: () => jget('/list'),
     refetchInterval: 30000,
   })
+  const sitesResp = sitesQ.data
   const sites = sitesResp?.sites || []
+  const profileErrors = sitesResp?.profile_errors || []
 
-  const { data: webappResp } = useQuery<{ artifacts: Artifact[] }>({
+  const webappQ = useQuery<{ artifacts: Artifact[] }>({
     queryKey: ['deploy-web', 'webapps'],
     queryFn: async () => {
       const r = await fetch('/api/artifacts?kind=webapp')
+      if (!r.ok) throw await toApiError(r)
       return (await r.json()) as { artifacts: Artifact[] }
     },
     refetchInterval: 30000,
   })
+  const webappResp = webappQ.data
   const webapps = (webappResp?.artifacts || []).filter((a) => a.webapp_metadata)
   const webappCost = (a: Artifact): number => {
     const est = a.webapp_metadata?.cost?.estimates || []
@@ -133,56 +150,67 @@ export default function ArtifactDeployPage() {
     qc.invalidateQueries({ queryKey: ['deploy-web', 'profiles'] })
     qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] })
   }
+  // jsend throws on any non-2xx reply, so every failure — a backend `{error}`
+  // body as much as a network rejection — arrives here and is shown through
+  // ErrorNotice; onSuccess only ever sees a 2xx.
   const addProfile = useMutation({
     mutationFn: (p: { name: string; region: string; create?: boolean; account?: string; role?: string; default?: boolean }) =>
       jsend<{ error?: string }>('/profiles', p),
-    onSuccess: ({ status, data }, p) => {
-      if (status >= 400) { setNotice(i18nT('pages.artifactDeployPage.error', { error: data?.error || i18nT('pages.artifactDeployPage.add_failed') })); return }
+    onSuccess: (_res, p) => {
+      setFailure(null)
       setNotice(p.create
         ? i18nT('pages.artifactDeployPage.created_and_registered_profile', { name: p.name })
         : i18nT('pages.artifactDeployPage.registered_profile', { name: p.name }))
       setShowNewProfile(false); setNpName(''); setNpAccount(''); setNpRole(''); setNpCreate(false)
       refreshProfiles()
     },
+    onError: (e) => setFailure((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const setDefaultProfile = useMutation({
     mutationFn: (name: string) => jsend<{ error?: string }>(`/profiles/${encodeURIComponent(name)}`, { default: true }, 'PUT'),
-    onSuccess: ({ status, data }) => {
-      if (status >= 400) { setNotice(i18nT('pages.artifactDeployPage.error', { error: data?.error || i18nT('pages.artifactDeployPage.update_failed') })); return }
+    onSuccess: () => {
+      setFailure(null)
       refreshProfiles()
     },
+    onError: (e) => setFailure((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const removeProfile = useMutation({
     mutationFn: (name: string) => jsend<{ error?: string }>(`/profiles/${encodeURIComponent(name)}`, {}, 'DELETE'),
-    onSuccess: ({ status, data }) => {
-      if (status >= 400) { setNotice(i18nT('pages.artifactDeployPage.error', { error: data?.error || i18nT('pages.artifactDeployPage.remove_failed') })); return }
+    onSuccess: () => {
+      setFailure(null)
       setNotice(i18nT('pages.artifactDeployPage.removed_from_registry_your_aws_config_is_untouche'))
       refreshProfiles()
     },
+    onError: (e) => setFailure((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const verify = useMutation({
     mutationFn: (name: string) => jsend<Reach>('/verify', { profile: name }),
     onSuccess: ({ data }) => { setReach(data); refreshProfiles() },
+    // A rejected check (400 body or transport failure) is an unreachable
+    // verdict too — it renders through the same unreachable notice below.
+    onError: (e, name) => setReach({ reachable: false, profile: name, error: (errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')) }),
   })
 
   const loadPolicyMut = useMutation({
     mutationFn: () => jget<{ policy: string; boundary_policy?: string; boundary_policy_name?: string; boundary_note?: string }>(`/iam-policy?tier=${policyTier}`),
     onSuccess: (data) => {
+      setFailure(null)
       setPolicy(data.policy)
       // Fullstack also requires the permissions-boundary policy —
       // iam:CreateRole is conditioned on it, so first deploy fails without it.
       setBoundaryPolicy(data.boundary_policy || '')
       setBoundaryNote(data.boundary_note ? `${data.boundary_note} (name: ${data.boundary_policy_name || ''})` : '')
     },
+    onError: (e) => setFailure((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
 
   const recallMut = useMutation({
     // Two-call guard mirroring destroy — preview resolves the
     // LIVE resources, the dialog names them, and the confirmed call binds to
     // them so a recreated site is refused (409) instead of being emptied.
+    // Either call failing throws out of jsend and lands in onError.
     mutationFn: async (s: Site): Promise<{ status: number; data: SiteMutationResp }> => {
       const prev = await jsend<SiteMutationResp>('/recall', { site_id: s.site_id, profile: s.profile || '' })
-      if (prev.status !== 200) throw new Error(prev.data?.error || `Recall preview failed (${prev.status})`)
       const r: SiteResources = prev.data.resources || {}
       const ok = await confirm({
         title: i18nT('pages.artifactDeployPage.recall_title'),
@@ -195,22 +223,22 @@ export default function ArtifactDeployPage() {
         expected_bucket: r.bucket || '', expected_distribution_id: r.distribution_id || '',
       })
     },
-    onSuccess: ({ status, data }, s) => {
+    onSuccess: ({ status }, s) => {
       if (status === 0) return
-      setNotice(status === 200
-        ? i18nT('pages.artifactDeployPage.recalled', { name: s.site_id })
-        : i18nT('pages.artifactDeployPage.error', { error: data?.error ?? '' }))
+      setFailure(null)
+      setNotice(i18nT('pages.artifactDeployPage.recalled', { name: s.site_id }))
       qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] })
     },
+    onError: (e) => setFailure((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
 
   const destroyMut = useMutation({
     // Two-call guard on the irreversible path. The preview call
     // resolves the LIVE resources; the dialog names those; the confirmed
     // call binds to them so a site recreated since preview is refused (409).
+    // Either call failing throws out of jsend and lands in onError.
     mutationFn: async (s: Site): Promise<{ status: number; data: SiteMutationResp }> => {
       const prev = await jsend<SiteMutationResp>('/destroy', { site_id: s.site_id, profile: s.profile || '' })
-      if (prev.status !== 200) throw new Error(prev.data?.error || `Destroy preview failed (${prev.status})`)
       const r: SiteResources = prev.data.resources || {}
       const ok = await confirm({
         title: i18nT('pages.artifactDeployPage.destroy_title'),
@@ -223,13 +251,13 @@ export default function ArtifactDeployPage() {
         expected_bucket: r.bucket || '', expected_distribution_id: r.distribution_id || '',
       })
     },
-    onSuccess: ({ status, data }, s) => {
+    onSuccess: ({ status }, s) => {
       if (status === 0) return
-      setNotice(status === 200
-        ? i18nT('pages.artifactDeployPage.destroying', { name: s.site_id })
-        : i18nT('pages.artifactDeployPage.error', { error: data?.error ?? '' }))
+      setFailure(null)
+      setNotice(i18nT('pages.artifactDeployPage.destroying', { name: s.site_id }))
       qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] })
     },
+    onError: (e) => setFailure((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
 
   function loadPolicy() { loadPolicyMut.mutate() }
@@ -295,6 +323,29 @@ export default function ArtifactDeployPage() {
         <StatCard label={i18nT('pages.artifactDeployPage.ready_to_deploy')} value={draftWebapps.length} delay={60} />
         <StatCard label={i18nT('pages.artifactDeployPage.est_cost_not_a_bill')} value={estCost > 0 ? `≤ ${formatCost(estCost)}` : formatCost(0)} delay={120} />
       </div>
+
+      {/* Read failures for the config + profiles queries. Sites/webapps report
+          inside the Deployments card, beside their own Refresh button. */}
+      {(cfgQ.isError || profilesQ.isError) && (
+        <div className="flex flex-col gap-2 mb-3">
+          {/* No hand-off while the new-profile form (npName/npAccount/npRole)
+              is open — it is unsaved and the hand-off unmounts this page.
+              With the form closed nothing on the page is at risk. */}
+          <ErrorNotice message={cfgQ.isError ? (errMessage(cfgQ.error) || i18nT('components.errorBoundary.something_went_wrong')) : null} askAgent={!showNewProfile} />
+          <ErrorNotice message={profilesQ.isError ? (errMessage(profilesQ.error) || i18nT('components.errorBoundary.something_went_wrong')) : null} askAgent={!showNewProfile} />
+          <div>
+            <Btn onClick={() => { if (cfgQ.isError) cfgQ.refetch(); if (profilesQ.isError) profilesQ.refetch() }}>
+              <RefreshCw size={12} /> {i18nT('pages.artifactDeployPage.retry')}
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {/* No hand-off while the new-profile form (npName/npAccount/npRole) is
+          open — a failed register/verify/remove leaves it filled and unsaved,
+          and the hand-off unmounts this page. With the form closed the inputs
+          of every action here are already persisted, so hand-off is safe. */}
+      <ErrorNotice message={failure} onDismiss={() => setFailure(null)} askAgent={!showNewProfile} className="mb-3" />
 
       {notice && (
         <Card style={{ whiteSpace: 'pre-wrap', borderColor: 'var(--accent)', fontSize: 12 }}>{notice}</Card>
@@ -494,12 +545,18 @@ export default function ArtifactDeployPage() {
           </div>
         )}
         {reach && (
-          <div style={{ marginTop: 10, fontSize: 12, color: reach.reachable ? 'var(--ok)' : 'var(--danger)' }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              {reach.reachable
-                ? <><CheckCircle size={12} /> {reach.profile}{i18nT('pages.artifactDeployPage.access_reachable')}{reach.account ? ` (account ${reach.account})` : ''}</>
-                : <><XCircle size={12} /> {reach.detail || reach.error || i18nT('pages.artifactDeployPage.not_reachable')}</>}
-            </span>
+          <div style={{ marginTop: 10, fontSize: 12 }}>
+            {reach.reachable
+              ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--ok)' }}>
+                  <CheckCircle size={12} /> {reach.profile}{i18nT('pages.artifactDeployPage.access_reachable')}{reach.account ? ` (account ${reach.account})` : ''}
+                </span>
+              : <>
+                  {/* No hand-off while the new-profile form (npName/npAccount/npRole)
+                      is open — it is unsaved and the hand-off unmounts this page.
+                      With the form closed the verified profile is already
+                      registered, so nothing is lost. */}
+                  <ErrorNotice variant="inline" message={reach.detail || reach.error || i18nT('pages.artifactDeployPage.not_reachable')} askAgent={!showNewProfile} />
+                </>}
             <div style={{ color: 'var(--muted)', fontSize: 11 }}>{reach.note}</div>
           </div>
         )}
@@ -528,8 +585,11 @@ export default function ArtifactDeployPage() {
         </div>
       </Card>
 
-      {/* Pending confirmations — deploy previews awaiting human confirm */}
-      <PendingConfirmations qc={qc} />
+      {/* Pending confirmations — deploy previews awaiting human confirm.
+          No hand-off while the new-profile form (npName/npAccount/npRole) is
+          open on this page; otherwise the pending entries are server-persisted
+          and nothing is lost. */}
+      <PendingConfirmations qc={qc} askAgent={!showNewProfile} />
 
       {/* Ready to deploy — CardTitle + InfoTip */}
       {draftWebapps.length > 0 && (
@@ -600,6 +660,21 @@ export default function ArtifactDeployPage() {
           </CardTitle>
           <Btn onClick={() => { qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] }); qc.invalidateQueries({ queryKey: ['deploy-web', 'webapps'] }) }}><RefreshCw size={12} /> {i18nT('pages.artifactDeployPage.refresh')}</Btn>
         </div>
+        {/* Read failures sit beside the Refresh button above, which is their
+            retry. No hand-off while the new-profile form (npName/npAccount/
+            npRole) is open — it is unsaved and the hand-off unmounts this
+            page; otherwise the listing holds no draft. */}
+        {(sitesQ.isError || webappQ.isError || profileErrors.length > 0) && (
+          <div className="flex flex-col gap-2 mb-3">
+            <ErrorNotice message={sitesQ.isError ? (errMessage(sitesQ.error) || i18nT('components.errorBoundary.something_went_wrong')) : null} askAgent={!showNewProfile} />
+            <ErrorNotice message={webappQ.isError ? (errMessage(webappQ.error) || i18nT('components.errorBoundary.something_went_wrong')) : null} askAgent={!showNewProfile} />
+            <ErrorNotice
+              title={profileErrors.length > 0 ? i18nT('pages.artifactDeployPage.profile_errors_title') : undefined}
+              message={profileErrors.length > 0 ? profileErrors.join('\n') : null}
+              askAgent={!showNewProfile}
+            />
+          </div>
+        )}
         {sites.length + deployedWebapps.length === 0 && (
           <div style={{ fontSize: 13, color: 'var(--muted)' }}>
             {i18nT('pages.artifactDeployPage.no_deployments_yet_publish_an_artifact_from_its')} <b style={{ color: 'var(--text)' }}>{i18nT('pages.artifactDeployPage.deploy')}</b>.
@@ -689,16 +764,19 @@ interface PendingEntry {
   created_at_epoch: number
 }
 
-function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
-  const { data } = useQuery<{ pending: PendingEntry[] }>({
+// `askAgent` is decided by the page: the new-profile form lives on the same
+// page, and a hand-off from this card unmounts it along with everything else.
+function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQueryClient>; askAgent: boolean }) {
+  const pendingQ = useQuery<{ pending: PendingEntry[] }>({
     queryKey: ['deploy-web', 'pending'],
     queryFn: async () => {
       const r = await fetch(BASE + '/pending', { headers: { 'X-Session-Key': 'dashboard:ui' } })
+      if (!r.ok) throw await toApiError(r)
       return (await r.json()) as { pending: PendingEntry[] }
     },
     refetchInterval: 10000,
   })
-  const pending = data?.pending || []
+  const pending = pendingQ.data?.pending || []
   // The pending entry awaiting the blocking public-exposure acknowledgment.
   // Confirming a pending entry deploys immediately, so it goes through the same
   // gate as a Publish-panel confirm rather than firing straight from the row.
@@ -732,13 +810,19 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
     },
   })
 
-  if (!pending.length) return null
+  if (!pending.length && !pendingQ.isError) return null
 
   return (
     <Card>
       <CardTitle>
         <Rocket size={15} /> {i18nT('pages.artifactDeployPage.pending_confirmations_count', { count: pending.length })}
       </CardTitle>
+      {pendingQ.isError && (
+        <div className="flex items-start gap-2 mb-3">
+          <ErrorNotice message={(errMessage(pendingQ.error) || i18nT('components.errorBoundary.something_went_wrong'))} askAgent={askAgent} className="flex-1" />
+          <Btn onClick={() => pendingQ.refetch()}><RefreshCw size={12} /> {i18nT('pages.artifactDeployPage.retry')}</Btn>
+        </div>
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
         {pending.map((e) => {
           const age = Math.round((Date.now() / 1000 - e.created_at_epoch) / 60)
@@ -771,14 +855,16 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
                   {i18nT('pages.artifactDeployPage.dismiss')}
                 </Btn>
               </div>
-              {(confirmMut.isError || dismissMut.isError) && (
-                <div style={{ color: 'var(--error, #dc2626)', fontSize: 11, padding: '2px 10px' }}>
-                  {(confirmMut.error as Error)?.message || (dismissMut.error as Error)?.message}
-                </div>
-              )}
             </div>
           )
         })}
+        {/* Pending entries are server-persisted, so a failed confirm/dismiss
+            loses nothing here; the page decides `askAgent` for its own draft. */}
+        <ErrorNotice
+          message={confirmMut.isError ? (errMessage(confirmMut.error) || i18nT('components.errorBoundary.something_went_wrong')) : dismissMut.isError ? (errMessage(dismissMut.error) || i18nT('components.errorBoundary.something_went_wrong')) : null}
+          onDismiss={() => { confirmMut.reset(); dismissMut.reset() }}
+          askAgent={askAgent}
+        />
       </div>
       {/* Same blocking acknowledgment the Publish panel uses — confirming here
           creates the public resource, so it cannot be a one-click row action. */}

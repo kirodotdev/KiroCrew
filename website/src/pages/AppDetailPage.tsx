@@ -12,10 +12,11 @@ import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, ChevronLeft, ChevronRight, X, Monitor, Copy, Terminal,
-  Sparkles, Target, Settings2, Star,
+  Target, Settings2, Star,
 } from 'lucide-react'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
+import { isNotFoundError } from '../api/apiError'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, { APP_EXECUTION_DENIED, isTrustDeniedError, useTrustGate } from '../components/appstore/TrustAppModal'
@@ -23,7 +24,8 @@ import { isRegistrySourced, sanitizeStargazersCount } from '../components/appsto
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../hooks/usePinchZoom'
-import AskAgentButton from '../components/AskAgentButton'
+import ErrorNotice from '../components/ErrorNotice'
+import { findReport, recordError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import type { AppContributor } from '../types'
@@ -611,6 +613,9 @@ export default function AppDetailPage() {
   const [repoUrl, setRepoUrl] = useState('')
   const [contributors, setContributors] = useState<AppContributor[]>([])
   const [contribLoading, setContribLoading] = useState(false)
+  /** A rejected contributors fetch, kept apart from `[]` so a transport failure
+   *  does not read as "no contributors". */
+  const [contribError, setContribError] = useState('')
 
   useEffect(() => {
     // Prefer the registry/manifest repo, then the git URL the app was trusted
@@ -621,21 +626,33 @@ export default function AppDetailPage() {
       (v): v is string => typeof v === 'string' && /^https:\/\/github\.com\//i.test(v),
     ) || ''
     setRepoUrl(url)
+    setContribError('')
     if (!url) { setContributors([]); setContribLoading(false); return }
     let cancelled = false
     setContribLoading(true)
     api.appContributors(url)
       .then(res => { if (!cancelled) setContributors(res.contributors || []) })
-      .catch(() => { if (!cancelled) setContributors([]) })
+      .catch((e: unknown) => { if (!cancelled) { setContributors([]); setContribError(e instanceof Error ? e.message : String(e)) } })
       .finally(() => { if (!cancelled) setContribLoading(false) })
     return () => { cancelled = true }
   }, [app])
 
-  // Helper: open chat with a pre-filled message (same mechanism as useChatLauncher from app-sdk)
-  const openChatWithMessage = useCallback((message: string) => {
-    ;(window as Window & { __mc_chat_launch?: { message: string; ts: number } }).__mc_chat_launch = { message, ts: Date.now() }
-    navigate('/chat')
-  }, [navigate])
+  /** Journal an install failure WITH the tail of its log, then show it.
+   *
+   *  The streaming install bypasses the `api.*` journal hook, so without this the
+   *  agent hand-off on the failure notice would carry only the one-line message.
+   *  The log is read from the rendered <pre> (the accumulated state, not a stale
+   *  closure); `recordError` redacts and caps it. The message string is the
+   *  journal key, so it must be exactly what `setError` shows. */
+  const reportInstallFailure = useCallback((message: string, source: 'api' | 'system') => {
+    recordError({
+      source,
+      message,
+      endpoint: '/api/apps/registry/install-stream',
+      detail: installLogRef.current?.textContent || undefined,
+    })
+    setError(message)
+  }, [])
 
   // Abort in-flight streaming install on unmount
   useEffect(() => () => { installAbortRef.current?.abort() }, [])
@@ -645,15 +662,34 @@ export default function AppDetailPage() {
     setLoading(true)
     clearError()
     try {
-      // Try installed app first
-      const installed = await api.getApp(name).catch(() => null)
-      // Also check registry for richer metadata (screenshots, highlights)
-      const registryData = await api.listRegistry().catch(() => ({ apps: [], serverPlatform: { os: '', arch: '' } }))
-      const registryList = (registryData.apps || []) as RegistryEntry[]
+      // Try installed app first. Only a 404 means "not installed"; any other
+      // rejection is a load failure and must not be shown as "not found".
+      let installed: Awaited<ReturnType<typeof api.getApp>> | null = null
+      try {
+        installed = await api.getApp(name)
+      } catch (e: unknown) {
+        if (!isNotFoundError(e)) throw e
+      }
+      // Also check registry for richer metadata (screenshots, highlights). A
+      // failure here is held rather than swallowed: an INSTALLED app can still
+      // render from its manifest, but the reader is told the catalog was not
+      // reachable; an app that is not installed cannot be resolved without it.
+      let registryList: RegistryEntry[] = []
+      let sideFailure: unknown = null
+      try {
+        const registryData = await api.listRegistry()
+        registryList = (registryData.apps || []) as RegistryEntry[]
+      } catch (e: unknown) {
+        sideFailure = e
+      }
 
       // Fetch server hostname for client install template variables
-      const sysInfo = await api.system().catch(() => ({ hostname: '' }))
-      if (sysInfo.hostname) setServerHostname(sysInfo.hostname)
+      try {
+        const sysInfo = await api.system()
+        if (sysInfo.hostname) setServerHostname(sysInfo.hostname)
+      } catch (e: unknown) {
+        sideFailure ??= e
+      }
       const registryEntry = registryList.find((r) => r.name === name)
 
       if (installed) {
@@ -821,9 +857,14 @@ export default function AppDetailPage() {
           installed: registryEntry.installed ?? false,
           platform: registryEntry.platform,
         })
-      } else {
-        setError(i18nT('pages.appDetailPage.app_not_found_2', { name }))
+      } else if (sideFailure) {
+        // Neither installed nor in the catalog — but the catalog read FAILED, so
+        // this is a load failure, not a missing app.
+        throw sideFailure
       }
+      // Otherwise a real not-found: `app` stays null with no error, and the
+      // render below shows the "doesn't exist" page for exactly that pair.
+      if (sideFailure) setError(sideFailure instanceof Error ? sideFailure.message : String(sideFailure))
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_load_app'))
     } finally {
@@ -933,7 +974,7 @@ export default function AppDetailPage() {
         await load()
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
-        setError(result.error || i18nT('pages.appDetailPage.install_failed'))
+        reportInstallFailure(result.error || i18nT('pages.appDetailPage.install_failed'), 'system')
         return 'failed'
       }
     } catch (e: unknown) {
@@ -953,7 +994,7 @@ export default function AppDetailPage() {
         return 'trust-required'
       }
       setInstallDone(true)
-      setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.install_failed'))
+      reportInstallFailure(e instanceof Error ? e.message : i18nT('pages.appDetailPage.install_failed'), 'api')
       return 'failed'
     } finally {
       // Only clear loading if this is still the active install —
@@ -1090,11 +1131,23 @@ export default function AppDetailPage() {
   }
 
   if (!app) {
+    // Two different pages share this branch: `error` set means the load FAILED
+    // (transport, 5xx), so the header must not announce "not found" and the
+    // failure gets the shared surface plus a retry; no error means the name
+    // genuinely resolves to nothing.
     return (
       <>
-        <PageHeader title={i18nT('pages.appDetailPage.app_not_found')} subtitle={error || i18nT('pages.appDetailPage.doesnt_exist', { name })} />
-        <div className="flex-1 flex items-center justify-center p-8">
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('pages.appDetailPage.back_to_apps')}</Btn>
+        <PageHeader
+          title={error ? i18nT('pages.appDetailPage.apps') : i18nT('pages.appDetailPage.app_not_found')}
+          subtitle={error ? i18nT('pages.appDetailPage.failed_to_load_app') : i18nT('pages.appDetailPage.doesnt_exist', { name })}
+        />
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8">
+          {/* Nothing on this page is editable, so the hand-off loses nothing. */}
+          <ErrorNotice message={error} askAgent />
+          <div className="flex items-center gap-2">
+            {error && <Btn onClick={() => { void load() }}>{i18nT('pages.appDetailPage.retry')}</Btn>}
+            <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('pages.appDetailPage.back_to_apps')}</Btn>
+          </div>
         </div>
       </>
     )
@@ -1175,26 +1228,16 @@ export default function AppDetailPage() {
           </div>
         )}
 
-        {/* Error */}
-        {error && (
-          <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
-            <div className="flex-1 min-w-0">
-              {/* No special execution-policy branch here any more: an untrusted
-                  third-party app is refused with `app_execution_denied`, and that
-                  refusal is now resolved INLINE by the consent modal (granting
-                  this one app) rather than by sending the user off to flip a
-                  blanket switch. Everything that still reaches this box is an
-                  unrecognized backend failure, so it renders the prose — better
-                  than swallowing it — plus a hand-off to the agent, since raw
-                  backend prose is otherwise a dead end. */}
-              <span className="text-danger text-sm block">{error}</span>
-              <div className="mt-2">
-                <AskAgentButton message={error} />
-              </div>
-            </div>
-            <button aria-label={i18nT('pages.appDetailPage.dismiss_error')} className="text-danger/60 hover:text-danger text-sm shrink-0" onClick={clearError}><X className="lucide-inline" /></button>
-          </div>
-        )}
+        {/* Error. No special execution-policy branch here any more: an untrusted
+            third-party app is refused with `app_execution_denied`, and that
+            refusal is now resolved INLINE by the consent modal (granting this
+            one app) rather than by sending the user off to flip a blanket
+            switch. Everything that still reaches this box is an unrecognized
+            backend failure, so it renders the prose — better than swallowing
+            it — plus the agent hand-off, since raw backend prose is otherwise
+            a dead end. The page holds no draft (every action commits on
+            click), so the hand-off is safe. */}
+        <ErrorNotice message={error} askAgent onDismiss={clearError} className="mb-4 animate-rise" />
 
         {/* Third-party execution-trust consent. Opened when an enable OR a
             registry install is refused with code `app_execution_denied`, instead
@@ -1368,30 +1411,26 @@ export default function AppDetailPage() {
               <div className="flex items-center gap-2">
                 {!installDone && <Loader2 size={14} className="animate-spin text-accent" />}
                 {installDone && !error && <Check size={14} className="text-ok" />}
-                {installDone && error && <X size={14} className="text-danger" />}
-                <CardTitle>
-                  {!installDone ? i18nT('pages.appDetailPage.installing') : error ? i18nT('pages.appDetailPage.install_failed') : i18nT('pages.appDetailPage.install_complete')}
-                </CardTitle>
+                {installDone && error ? (
+                  /* The failure headline is the shared surface, not a bespoke
+                     "Fix with AI" button. The hand-off resolves the journal entry
+                     `reportInstallFailure` wrote for this exact message, so it
+                     carries the log tail the old button pasted by hand. The
+                     message itself already shows in the page banner above; this
+                     row states the outcome. */
+                  <ErrorNotice
+                    variant="inline"
+                    message={i18nT('pages.appDetailPage.install_failed')}
+                    report={findReport(error)}
+                    askAgent
+                  />
+                ) : (
+                  <CardTitle>
+                    {!installDone ? i18nT('pages.appDetailPage.installing') : i18nT('pages.appDetailPage.install_complete')}
+                  </CardTitle>
+                )}
               </div>
               <div className="flex items-center gap-2">
-                {installDone && error && (
-                  <Btn onClick={() => {
-                    const appSourcePath = `~/.kiro/crew/app-sources/${app?.name || name}/`
-                    const msg = [
-                      `App "${app?.displayName || name}" installation failed. Error log:`,
-                      '',
-                      '```',
-                      installLog.slice(-2000),
-                      '```',
-                      '',
-                      `The app source is at: ${appSourcePath}`,
-                      `Read the README.md and any setup instructions in that directory, then fix the environment and complete the installation.`,
-                    ].join('\n')
-                    openChatWithMessage(msg)
-                  }}>
-                    <Sparkles size={14} /> {i18nT('pages.appDetailPage.fix_with_ai')}
-                  </Btn>
-                )}
                 {installDone && (
                   <button className="text-muted hover:text-text transition-colors p-1" onClick={() => setShowInstallLog(false)} aria-label={i18nT('pages.appDetailPage.close')}>
                     <X size={14} />
@@ -1648,7 +1687,7 @@ export default function AppDetailPage() {
               {app.repo && <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>}
               {typeof app.stargazersCount === 'number' && <div>{i18nT('pages.appDetailPage.github_stars_2', { value: fmtNumber(app.stargazersCount) })}</div>}
               {app.author && <div>{i18nT('pages.appDetailPage.author')} {app.author}</div>}
-              {repoUrl && (contribLoading || contributors.length > 0) && (
+              {repoUrl && (contribLoading || contributors.length > 0 || contribError) && (
                 <div className="flex items-start gap-2 flex-wrap">
                   <span className="shrink-0">{i18nT('pages.appDetailPage.contributors')}</span>
                   {contribLoading ? (
@@ -1661,6 +1700,9 @@ export default function AppDetailPage() {
                         />
                       ))}
                     </div>
+                  ) : contribError ? (
+                    /* Read-only details row: the hand-off has nothing to lose. */
+                    <ErrorNotice message={contribError} variant="inline" askAgent />
                   ) : (
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {contributors.slice(0, 6).map(c => (

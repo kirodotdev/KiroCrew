@@ -64,7 +64,9 @@ describe('HooksPage table sticky Actions column', () => {
     expect(cls).toContain('right-0')
     expect(cls).toContain('bg-card')
     // The row names the group the overlay listens to…
-    expect(src).toMatch(/<tr key=\{h\.id\} className=\{`group\/hookrow /)
+    // The row is wrapped in a keyed Fragment so its expandable last_error row
+    // can follow it as a sibling; the key moved to the Fragment.
+    expect(src).toMatch(/<Fragment key=\{h\.id\}>\s*<tr className=\{`group\/hookrow /)
     // …and the overlay mirrors zebra on even rows, hover on odd rows.
     const overlay = src.match(/<div aria-hidden className=\{`absolute inset-0 -z-10 ([^`]*)`\} \/>/)
     expect(overlay, 'the row-state overlay is gone from the Actions cell').toBeTruthy()
