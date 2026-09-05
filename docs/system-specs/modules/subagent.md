@@ -6,6 +6,24 @@ The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents 
 
 Supports `on_tool_approval` callback for interactive tool approval (routed through gateway's approval system in Normal/Trust modes).
 
+### Run coordinator seam
+
+`SubagentManager` accepts an optional typed `RunCoordinator` and defaults to the
+deterministic in-memory implementation. This is a pre-authority dependency seam:
+the synchronous spawn path and all terminal effects still use the existing
+manager fields and run-folder persistence. The manager does not schedule an
+async coordinator mutation from `spawn()` because doing so would weaken the
+current durable-before-visible ordering. Coordinator authority moves only in a
+later migration phase.
+
+The port defines typed desired/observed state, terminal outcomes, idempotent
+commands, execution leases with fencing epochs, optimistic lifecycle versions,
+and delivery claims with an independent fencing epoch. The in-memory adapter is
+the executable contract oracle for later durable implementations; it is not a
+restart store. During this pre-authority phase it accepts executable `spawn` and
+`continue` submissions; control operations fail closed until their target and
+fencing semantics land.
+
 ## Constants
 
 | Constant | Value | Purpose |
