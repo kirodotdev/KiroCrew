@@ -26,11 +26,16 @@ there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
 
 **Note:** the removed Bedrock provider and the removed standalone provider were
 **deleted** during de-Amazoning, along with their config fields and the
-multi-provider dispatch factory. `acp/client.py` keeps a dormant
-`ACP_BACKEND_CLAUDE` seam (`AcpProvider` can in principle drive
-`claude-agent-acp`) so an internal companion can re-register a Claude backend,
-but the public provider factory never selects it — `kiro-cli` is the only
-backend.
+multi-provider dispatch factory. What did NOT go with them is the harness seam:
+`acp/client.py` owns the whole `ACP_BACKEND_CLAUDE` spawn path, and
+`BASELINE_SELECTABLE_BACKENDS` (`acp_backends.py`) now contains every id in
+`ACP_BACKENDS_KNOWN` — kiro-cli, KAS, Claude Code and Codex — so a plain public
+build selects any of them through `agent.acp_backend`. An earlier revision of
+this note called the claude branch dormant and unreachable; that was wrong, and
+`../features/agent-host-contract.md` records why. What varies per harness is
+machine-local (which binaries the operator installed) and per deployment (the
+`agent_backend` governance scope), not which build you have. The registration
+seam an edition still uses is for a harness the core does not ship at all.
 See [`../features/claude-code-provider.md`](../features/claude-code-provider.md).
 
 ### LLMProvider ABC (`providers/base.py`)
@@ -81,13 +86,15 @@ must require the raw form.
 The sole provider. Spawns a long-lived `kiro-cli acp --agent <name>` subprocess
 and speaks JSON-RPC 2.0 over stdio.
 
-**Dormant backend seam:** `AcpProvider`/`AcpClient` retain an `acp_backend`
-parameter (`"" ` → kiro-cli; `"claude"` / `ACP_BACKEND_CLAUDE` → `claude-agent-acp`)
-so an internal companion can re-register a Claude backend over the same
-client. **The public provider factory only ever selects kiro-cli** — the claude
-branch is unreachable in this build. Its binary-resolution + config-isolation
-details live in [`acp-client.md`](acp-client.md); do not re-add the registration
-glue or a provider selector (see the repo-root `CLAUDE.md`).
+**Harness seam:** `AcpProvider`/`AcpClient` take an `acp_backend` parameter
+(`""` → kiro-cli; `"kas"` → Kiro's agent service over `kiro-cli acp`; `"claude"` /
+`ACP_BACKEND_CLAUDE` → `claude-agent-acp`; `"codex"` → `codex-acp`), and all four
+are baseline-selectable on a public build — so every branch here is reachable and
+none is dormant. Per-harness binary resolution and config isolation live in
+[`acp-client.md`](acp-client.md), and what each harness must supply beyond the
+wire is [`../features/agent-host-contract.md`](../features/agent-host-contract.md).
+Selecting a harness stays a matter of `agent.acp_backend`: do not re-add the
+registration glue or a provider selector (see the repo-root `CLAUDE.md`).
 
 **Key APIs:**
 - `start()` → `AcpClient.ensure_ready()` (spawns process, handshake, session/new)

@@ -44,10 +44,17 @@ NO_MIRROR: dict[str, str] = {
         "no mirror"
     ),
     ACP_BACKEND_CODEX: (
-        "codex is in ACP_BACKENDS_KNOWN but not in BASELINE_SELECTABLE_BACKENDS, so "
-        "no build offers it and there is no session to configure. It has the same "
-        "gap claude had; when an edition registers a codex provider, its mirror goes "
-        "here and AcpClient._codex_session_mcp_servers returns it"
+        "codex IS in BASELINE_SELECTABLE_BACKENDS, so a public build offers it and "
+        "serves sessions on it today — the mirror is simply unwritten and the shape "
+        "the adapter accepts is unverified, which is why "
+        "AcpClient._codex_session_mcp_servers still returns []. That empty array is a "
+        "real user-visible state: nothing is PROJECTED onto a codex session, and what "
+        "it does carry is decided elsewhere — _pooled_mcp_servers appends the shared "
+        "gateway's broker stubs for every backend alike, so Crew's own control plane "
+        "arrives when the overlay wrapped it and the session has no MCP tools at all "
+        "when that gateway is off. Do not shorten this to 'nothing is mounted': "
+        "unprojected does not mean absent. Listed here to keep the omission "
+        "explained; NOT a claim that it needs no mirror"
     ),
 }
 
