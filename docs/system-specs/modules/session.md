@@ -452,6 +452,126 @@ App-authenticated requests may rewind only a slot's own dashboard session:
 a channel-linked slot is refused, because its effective session is a
 conversation the app does not own.
 
+**`edit-resend` is the same boundary, not a lighter one.** It truncates and
+persists history exactly as rewind does, so it runs the same three-step sequence
+— discard the native conversation, flush the cleared resume sid, then rewrite the
+retained history — and refuses with `edit_resend_prepare_failed` /
+`edit_resend_session_busy` / `edit_resend_save_failed` /
+`edit_resend_slot_rebound` rather than reporting success on a boundary that did
+not land. Its own error vocabulary is deliberate: a client must be able to tell
+which endpoint refused without string-matching a sentence.
+
+**A busy SESSION is not the same question as a busy slot.** `slot.running` tracks
+only that slot's own task, while `discard_conversation` is a full teardown that
+also releases the shared sub-agent runtime. So `edit-resend` applies the same two
+guards the sibling `reset-conversation` teardown applies before the same call, in
+the same order and with the same codes: `slot_orchestrating` (409) when
+`slot._in_stage_execution` — an autopilot plan reads `running` False *between*
+stages while still mid-plan — and `slot_subagents_running` (409) via the shared
+`chat_utils.subagents_attached` predicate, because the parent turn ends before
+its children do. The predicate fails closed on an unreadable probe: unknown
+children are not zero children. `skip_if_busy=True` on the discard remains the
+atomic backstop for a turn admitted after these guards answered False.
+
+Eight properties are load-bearing on this boundary, and each fails toward the
+permissive answer if dropped. `edit-resend` carries all eight; the bullets name
+the four where `rewind` does not yet, so nobody reads them as already shared:
+
+- **The edited window is prepared on a copy, and the copy is SEVERED.**
+  `copy.copy` is shallow, so reassigning `messages` alone leaves `_queue`,
+  `_pending`, `_question_pending`, `_on_question_retired`, and `event` aliased to
+  the live slot — and `_ChatSlot.append` writes through four of them. An
+  un-severed copy therefore publishes the edited row to the live stream reader
+  and announces the live question cards as retired *before* any refusal path can
+  run, leaving a phantom row and a card-less "needs input" behind for an edit the
+  server rejected. The commit is the one place the prepared `_pending`,
+  `_question_pending`, `event` state and the retirement announcement become live.
+- **The slot is reserved before the awaits.** `slot.running` derives from
+  `slot.task` and the send path is not serialized on `slot._lock`, so a send
+  arriving while a durable boundary is pending would otherwise see an idle slot
+  and dispatch a competing turn that the commit then erases. The reservation
+  publishes a dispatch task that runs the turn only on commit; on abort it hands
+  a send it diverted to the queue to the canonical successor dispatch, so nothing
+  is stranded. An entry queued *before* the reservation keeps its own trigger.
+- **The commit re-checks its target on every path**, success included, through
+  ONE predicate so no path can check a different subset. Three axes move
+  independently across the awaits: the **transcript key** (a cron or workflow
+  injection re-links the slot; the snapshot froze the old routing, so the save's
+  own `expected_history_key` guard cannot see the live slot move and only this
+  loop-side check can), the **slot object** (a close-and-recreate under the same
+  name is a different conversation that leaves the transcript key unchanged, so
+  only object identity catches it), and the **dispatch reservation** (if
+  something else has taken `slot.task`, committing would run this handler's turn
+  alongside whatever now owns the slot — two concurrent turns writing one
+  window). Any of the three refuses with a retryable 503.
+- **The periodic dirty-slot flush is excluded for the whole rewrite.** Because
+  the live slot keeps the full window until the commit, a flush tick can snapshot
+  that stale window, block behind the rewrite on the per-session history lock,
+  and then write the snapshot back on top — restoring every message the rewrite
+  just discarded. `edit-resend` therefore saves through
+  `chat_persistence.save_slot_off_loop` (with `expected_history_key`, and
+  `best_effort=False` so a failure reaches its 503 rather than being swallowed
+  and re-armed as a dirty retry) instead of a bare `asyncio.to_thread`. That
+  helper raises `slot._metadata_persist_inflight` around the write and lowers it
+  in a `finally` — the flag `flush_slot_now` already honours to keep the unpinned
+  periodic writer off a slot with a guarded write pending. Shielding the
+  *wrapper* rather than the inner future is what keeps the exclusion held: a
+  cancellation reaching the shield leaves the coroutine running, so its `finally`
+  cannot release the flag early.
+- **The cancellation drain survives REPEATED cancellation.** The worker thread
+  cannot be interrupted, so once the rewrite starts it lands whether the handler
+  lives or not; the handler therefore has to learn the outcome and commit to
+  match. `CancelledError` is a `BaseException`, so a second cancellation — a
+  gateway shutdown reaching a handler already unwinding from a client disconnect
+  — is not absorbed by an `except Exception` and a bare `await` on the save task
+  abandons a landed rewrite. `edit-resend` re-shields the drain a bounded number
+  of times (`_SAVE_DRAIN_ATTEMPTS`) and reads the outcome off the **settled**
+  task rather than awaiting it, so a cancel landing between the two cannot lose
+  it. Giving up leaves the live slot untouched, which is the safe half of the
+  desync. **`rewind` still drains with a bare `await`**, so it remains exposed.
+- **A row that arrives during the boundary is carried, not replaced away.**
+  `workflow_inject` and `cron_inject` append through `append_and_surface` /
+  `slot.append` on the event loop and take no `slot._lock`, so a completion
+  landing mid-boundary reaches the live window while the boundary holds the lock.
+  A wholesale `slot.messages = prospective_slot.messages` drops it, and the
+  rewrite save cannot restore it because a rewrite deliberately skips the
+  cross-process-append scan (`collect_foreign = not rewrite`) — leaving the row
+  in neither the window nor the file. `edit-resend` therefore carries arrived
+  rows (identified by row object, since the window front can be trimmed and a
+  restore-path row has no `meta.mid`) onto the committed window and pending
+  queue. Appending them after the prospective window is the correct order, not
+  merely a convenient one: `monotonic_transcript_ts` only ever moves a row
+  forward, so an arrived row can never be stamped *earlier* than the edited one —
+  but it can be stamped **identically**, because on a coarse clock (Windows ticks
+  in ~15.6 ms steps) both appends read the same instant, and list order is what
+  separates that tie. Its question map is intersected rather than adopted, so a card retired
+  by either the edit or an arrived row stays retired. A carried row reaches disk
+  the ordinary way — the commit sets `_dirty`, so the next periodic flush writes
+  the merged window — and deliberately **not** through a second guarded save
+  after the commit: no await may sit between the commit and the dispatch release
+  (see the next bullet), so that write is not available without paying a worse
+  failure. **`rewind` still replaces wholesale**, so the same injected-row loss is
+  open there and on the other rewrite-save callers (`regenerate`, `fork`); closing
+  it belongs with the shared boundary contract rather than one endpoint.
+- **The commit and the dispatch release are separated by no await.** Once the
+  live slot has adopted the truncated window, the reserved dispatch is armed and
+  only `dispatch_ready.set()` in the handler's `finally` is left to run. An await
+  in that gap lets a cron or workflow completion rebind the slot, and the
+  released dispatch then runs the edited prompt against ANOTHER conversation —
+  and the commit-target fence cannot rescue it, because refusing after the live
+  slot has adopted the truncated window would leave a truncation with no turn.
+  So post-commit work is left to the next periodic flush rather than awaited
+  here. **`rewind` still awaits its orphan-session cleanup in that gap**, so it
+  remains exposed.
+- **App ownership is authorized through the shared gate**
+  (`_check_slot_app_ownership`, plus `_reauthorize_after_await` across the
+  body-read await), because discarding a native conversation is a destructive
+  capability. It authorizes the `_app` binding, the effective SESSION key, and
+  the TRANSCRIPT key, so a channel-linked slot and an unbound channel-origin slot
+  are both covered by one check rather than a per-endpoint link test. Denials are
+  404, not 403 — indistinguishable from a missing slot (anti-enumeration); the
+  real reason is in the SEL audit log.
+
 ### Eager Respawn
 
 After a hard kill, `_eager_respawn(key)` calls `get_or_create(key)` in a background task so the next user message finds a warm session. On failure, logs at debug and does nothing — the next message triggers `get_or_create` again via the normal path.

@@ -505,7 +505,6 @@ test/test_chat_backfill.py
 test/test_chat_folder_app_isolation.py
 test/test_chat_folder_suggest.py
 test/test_chat_nav.py
-test/test_chat_regenerate_cov80.py
 test/test_chat_slot_create_folder.py
 test/test_chat_slot_end_wait.py
 test/test_chat_slot_interrupt.py
