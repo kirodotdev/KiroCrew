@@ -845,9 +845,12 @@ def test_every_session_reset_goes_through_the_chokepoint() -> None:
         "a switch handler resets the session directly, so a pending "
         "ask_question would outlive the agent it was waiting on"
     )
-    assert body[1].count("await _reset_slot_session(") >= 5, (
+    direct = body[1].count("await _reset_slot_session(")
+    via_warn = body[1].count("await _reset_slot_session_or_warn(")
+    assert direct + via_warn >= 10, (
         "expected the agent, model, bulk-model, reasoning-effort and workspace "
-        "switches to reset through the chokepoint"
+        "switches (plus reload) to reset through the chokepoint — directly or "
+        "via _reset_slot_session_or_warn, which wraps it"
     )
 
 

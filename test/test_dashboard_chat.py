@@ -7579,7 +7579,19 @@ class TestRuntimeWiring:
         slot.agent = "oncall"
         slot.workspace = "oncall-ws"
         slot.project = "/tmp/oncall"
-        state.sessions.reset = AsyncMock(side_effect=RuntimeError("shutdown blew up"))
+        old = MagicMock()
+        old.has_active_turn.return_value = False
+        state.sessions.get_provider = MagicMock(return_value=old)
+
+        async def _pop_then_raise(*_a, **_k):
+            # The canonical post-pop shape: the provider is deregistered
+            # before the shutdown raises, so the helper's identity probe
+            # classifies the raise as post-pop and the handler answers the
+            # committed switch.
+            state.sessions.get_provider = MagicMock(return_value=None)
+            raise RuntimeError("shutdown blew up")
+
+        state.sessions.reset = AsyncMock(side_effect=_pop_then_raise)
 
         mock_cfg = MagicMock()
         mock_cfg.agents = {"research": MagicMock(workspace="research-ws", memory_store="default")}
@@ -7634,7 +7646,8 @@ class TestRuntimeWiring:
     ):
         """A failed switch never disturbs values written while it was in flight.
 
-        Commit-after-reset means the failure path touches nothing, so state
+        The handler commits before the reset and its failure path touches
+        nothing further, so state
         written by a concurrent actor during the (failing) reset — e.g. the
         project endpoint, which does not take the slot lock — survives
         untouched. Restoring captured priors here (the old rollback shape)
@@ -7656,6 +7669,10 @@ class TestRuntimeWiring:
             raise RuntimeError("shutdown blew up")
 
         state.sessions.reset = AsyncMock(side_effect=_concurrent_switch_lands_then_reset_fails)
+        # No live session was ever registered for the key, so the helper's
+        # identity probe classifies the raise as post-pop and answers the
+        # committed switch rather than a 500.
+        state.sessions.get_provider = MagicMock(return_value=None)
 
         mock_cfg = MagicMock()
         mock_cfg.agents = {"research": MagicMock(workspace="research-ws", memory_store="default")}
@@ -7697,6 +7714,112 @@ class TestRuntimeWiring:
             assert slot.agent == "writer"
             assert slot.workspace == "writing-ws"
             assert slot.project == "/tmp/writing"
+
+    def _patch_agent_resolution(self, monkeypatch):
+        """Stub config + binding resolution so the agent switch reaches its reset."""
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {"research": MagicMock(workspace="research-ws", memory_store="default")}
+        mock_cfg.workspaces = {"research-ws": MagicMock(dir="/tmp/research")}
+        mock_cfg.default_workspace = "default"
+        mock_cfg.default_memory_store = "default"
+        mock_cfg.memory_stores = {}
+        mock_cfg.memory = MagicMock()
+        mock_bindings = MagicMock()
+        mock_bindings.workspace_dir = Path("/tmp/research")
+        mock_bindings.memory_store_name = "default"
+        mock_bindings.model = ""
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: mock_cfg
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat.resolve_agent_bindings",
+            lambda cfg, name, project_dir=None: mock_bindings,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda cfg, name, project_dir=None: mock_bindings,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat._workspace_name_for_dir",
+            lambda cfg, ws_dir: "research-ws",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir",
+            lambda cfg, ws_dir: "research-ws",
+        )
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_reset_raise_before_pop_propagates(
+        self, tmp_path, monkeypatch
+    ):
+        """A raise with the session STILL REGISTERED propagates as a 500.
+
+        The SAME provider instance registered before and after the raise
+        means the failure came BEFORE the session pop (e.g. in the
+        pending-wait unblock): the old session survives on the old agent, so
+        a 200 + warning would report a switch that did not take. The
+        committed values are rolled back before the raise escapes — the
+        acting tab keeps its old store value on a non-2xx, and the probe has
+        proven the surviving session still runs the old binding.
+        """
+        from kiro_crew.providers.base import LLMProvider
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "oncall"
+        alive = MagicMock(spec=LLMProvider)
+        alive.has_active_turn.return_value = False
+        state.sessions.get_provider = MagicMock(return_value=alive)
+        state.sessions.reset = AsyncMock(side_effect=RuntimeError("pre-pop boom"))
+        self._patch_agent_resolution(monkeypatch)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
+            assert resp.status == 500
+            assert slot.agent == "oncall"
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_reset_raise_with_successor_succeeds(
+        self, tmp_path, monkeypatch
+    ):
+        """A successor registered post-pop is not the unpopped old session.
+
+        A concurrent send can register a SUCCESSOR session for the same key
+        after the pop and before the old session's shutdown raises: the
+        helper's probe compares instance IDENTITY, so a different registered
+        provider still classifies as post-pop — the switch is committed, the
+        successor cold-started from the committed bindings, and the answer is
+        200 + warning.
+        """
+        from kiro_crew.providers.base import LLMProvider
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "oncall"
+        old = MagicMock(spec=LLMProvider)
+        old.has_active_turn.return_value = False
+        state.sessions.get_provider = MagicMock(return_value=old)
+
+        async def _pop_register_successor_and_raise(*_a, **_k):
+            successor = MagicMock(spec=LLMProvider)
+            successor.has_active_turn.return_value = False
+            state.sessions.get_provider = MagicMock(return_value=successor)
+            raise RuntimeError("shutdown boom")
+
+        state.sessions.reset = AsyncMock(side_effect=_pop_register_successor_and_raise)
+        self._patch_agent_resolution(monkeypatch)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["ok"] is True
+            assert data["agent"] == "research"
+            assert data["warning"] == "old session teardown incomplete"
+            assert slot.agent == "research"
 
     @pytest.mark.asyncio
     async def test_api_chat_slot_agent_success_commit_spares_concurrent_pick(

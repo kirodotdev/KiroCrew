@@ -92,6 +92,71 @@ class TestChatSlotReasoningEffort:
             assert slot.reasoning_effort == "low"
 
     @pytest.mark.asyncio
+    async def test_reset_raise_before_pop_propagates(self):
+        # A raise with the session STILL REGISTERED came before the pop: the
+        # old session survives on the old effort, so a 200 + warning would
+        # report a switch that did not take. The helper re-raises instead of
+        # answering a committed-switch success it cannot vouch for, and the
+        # handler restores the prior effort first — the acting tab keeps its
+        # old store value on a non-2xx, and the probe has proven the
+        # surviving session still runs it.
+        from kiro_crew.providers.base import LLMProvider
+
+        slot = _ChatSlot("test")
+        slot.reasoning_effort = "high"
+        state = _mock_state(slot)
+        alive = MagicMock(spec=LLMProvider)
+        alive.has_active_turn.return_value = False
+        state.sessions.get_provider = MagicMock(return_value=alive)
+        state.sessions.reset = AsyncMock(side_effect=RuntimeError("pre-pop boom"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "low"},
+            )
+            assert resp.status == 500
+            assert slot.reasoning_effort == "high"
+            # The rollback re-pushes so a broadcast that carried the
+            # provisional value mid-await is corrected.
+            state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_raise_with_successor_session_still_succeeds(self):
+        # A concurrent send can register a SUCCESSOR session for the same key
+        # after the pop and before the old session's shutdown raises: the
+        # helper's probe compares instance IDENTITY, so a different registered
+        # provider is NOT the unpopped old session — the switch is committed
+        # and the answer is 200 + warning.
+        from kiro_crew.providers.base import LLMProvider
+
+        slot = _ChatSlot("test")
+        slot.reasoning_effort = "high"
+        state = _mock_state(slot)
+        old = MagicMock(spec=LLMProvider)
+        old.has_active_turn.return_value = False
+        state.sessions.get_provider = MagicMock(return_value=old)
+
+        async def _pop_register_successor_and_raise(*_a, **_k):
+            successor = MagicMock(spec=LLMProvider)
+            successor.has_active_turn.return_value = False
+            state.sessions.get_provider = MagicMock(return_value=successor)
+            raise RuntimeError("shutdown boom")
+
+        state.sessions.reset = AsyncMock(side_effect=_pop_register_successor_and_raise)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "low"},
+            )
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["ok"] is True
+            assert data["reasoning_effort"] == "low"
+            assert data["warning"] == "old session teardown incomplete"
+            assert slot.reasoning_effort == "low"
+            state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_failed_reset_spares_concurrent_writes(self):
         # Commit-after-reset: the failure path touches nothing, so a value
         # written by a concurrent actor while the reset was failing survives

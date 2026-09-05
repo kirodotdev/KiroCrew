@@ -3151,6 +3151,7 @@ async def _reset_slot_session_or_warn(
     session_key: str,
     *,
     switch_kind: str,
+    skip_if_busy: bool = True,
 ) -> bool | None:
     """:func:`_reset_slot_session` for the commit-before-reset switch handlers.
 
@@ -3170,19 +3171,25 @@ async def _reset_slot_session_or_warn(
     connected client rendering the OLD value over a switch that actually
     happened (the acting tab's ``performSlotSwitch`` also keeps its old store
     value on a non-2xx). ``None`` tells the caller to record the degraded
-    teardown and FALL THROUGH — its rebind guard (``effective_session_key``)
-    must still run, so a slot rebound during the raising await keeps answering
-    rollback + 409 — and then answer 200 with
-    :data:`_TEARDOWN_INCOMPLETE_WARNING` after the usual slots push. This is
-    the agent and reasoning-effort handlers' precedent, shared here so the
-    model and workspace handlers' four call sites (first attempt +
-    idle-decline retry each) do not repeat the try block. Only the raise path
-    is new: a normal ``bool`` verdict passes through untouched, so the decline
-    (``False``) ladders keep their semantics.
+    teardown and answer 200 with :data:`_TEARDOWN_INCOMPLETE_WARNING` after
+    the usual slots push; a caller with a rebind guard
+    (``effective_session_key`` — the model and workspace handlers) must still
+    FALL THROUGH and run it, so a slot rebound during the raising await keeps
+    answering rollback + 409. Shared
+    by all four commit-before-reset switch handlers (agent, reasoning effort,
+    model, workspace) so none of them repeats the try block: the model and
+    workspace handlers call twice each (first attempt + idle-decline retry),
+    the agent and reasoning-effort handlers once each. Only the raise path is
+    handled here: a normal ``bool`` verdict passes through untouched, so the
+    decline (``False``) ladders keep their semantics.
 
-    ``skip_if_busy`` is fixed at True because every caller is a switch handler
-    whose destructive fallback must decline atomically against a slipped-in
-    turn (their shared invariant); a caller that wants propagation keeps using
+    ``skip_if_busy`` forwards to :func:`_reset_slot_session`. It defaults to
+    True because the model and workspace handlers' destructive fallback must
+    decline atomically against a slipped-in turn (their shared invariant).
+    The agent and reasoning-effort handlers pass False, keeping their force
+    semantics: they carry no decline ladder, so for them a busy session is
+    torn down rather than declined, exactly as their direct calls did. A
+    caller that wants every raise to propagate keeps using
     :func:`_reset_slot_session` directly.
     """
     # Captured BEFORE the await: the post-raise probe must compare INSTANCE
@@ -3195,7 +3202,7 @@ async def _reset_slot_session_or_warn(
     # committed-success answer is truthful for it.
     prior_provider = state.sessions.get_provider(session_key)
     try:
-        return await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
+        return await _reset_slot_session(state, slot, session_key, skip_if_busy=skip_if_busy)
     except Exception:
         if (
             prior_provider is not None
@@ -5481,19 +5488,28 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # silently erase an action that happened after the agent pick).
         pre_await_workspace = slot.workspace
         pre_await_project = slot.project
+        # The agent's own prior value, for the one failure path that rolls
+        # back: the pre-pop propagate below, where the probe has proven the
+        # old session still runs this binding.
+        pre_await_agent = slot.agent
 
         # Commit the agent BEFORE any await in this section: a message send
         # landing while the resolution warm-up or the reset await is in
         # flight creates a fresh session from the slot's CURRENT bindings,
         # so the new agent must already be visible or that session
         # cold-starts on the old binding and stays stale after the switch
-        # reports success. Deliberately NO rollback on a failing reset: the
+        # reports success. NO rollback on a POST-POP teardown failure: the
         # reset pops the session from the map before shutting the process
-        # down, so by the time shutdown can fail the old binding's session
-        # no longer exists — every future send cold-starts on the NEW
-        # binding, and a replacement session created by a concurrent send
-        # mid-reset already runs it. Restoring the old label would advertise
-        # a binding nothing runs (and tear against that replacement).
+        # down, so once the pop has happened the old binding's session no
+        # longer exists — every future send cold-starts on the NEW binding,
+        # and a replacement session created by a concurrent send mid-reset
+        # already runs it. Restoring the old label would advertise a binding
+        # nothing runs (and tear against that replacement). That the pop
+        # happened is VERIFIED, not assumed: the reset below routes through
+        # _reset_slot_session_or_warn, which propagates a pre-pop raise —
+        # and THAT path does roll back (see the except below), because the
+        # probe has proven the opposite premise: the old session survives on
+        # this old binding.
         slot.agent = agent_name
 
         # Resolve workspace from agent bindings. The response value is seeded
@@ -5556,18 +5572,47 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             "Slot %s agent switched to %r, resetting session", name, agent_name or "kirocrew"
         )
         teardown_incomplete = False
+        # The switch is COMMITTED already (slot.agent above), so a teardown
+        # raise is answered as a success with a degraded-teardown warning —
+        # but only once the helper has verified the raise came AFTER the
+        # session pop. A pre-pop raise means the old session survives on the
+        # old binding, so the helper propagates it and this request answers
+        # 500 instead of a false success. skip_if_busy=False keeps this
+        # handler's force semantics (no decline ladder).
         try:
-            await _reset_slot_session(state, slot, _history_key_for(name))
+            reset_verdict = await _reset_slot_session_or_warn(
+                state,
+                slot,
+                _history_key_for(name),
+                switch_kind="agent",
+                skip_if_busy=False,
+            )
         except Exception:
-            # The switch is COMMITTED regardless: the reset pops the session
-            # before its shutdown can fail, so the new binding is what every
-            # replacement or future session runs. This is a success with a
-            # degraded teardown, and it must be reported as one — a 500 here
-            # would make the acting tab's performSlotSwitch keep the OLD
-            # store value, corrupting the cycle base and the displayed state
-            # for a switch that actually happened.
+            # The identity probe proved the pop never happened: the old
+            # session is still alive on the old binding, so the committed
+            # values describe a switch that did not take — and the acting
+            # tab keeps its OLD store value on the 500, so leaving them
+            # would split server state from every client. Restore CAS-style:
+            # only a field still holding THIS request's write is rolled
+            # back, so a concurrent explicit pick that landed during the
+            # raising await keeps its win (the same baseline rule the
+            # commit itself follows).
+            if slot.agent == agent_name:
+                slot.agent = pre_await_agent
+            if slot.workspace == new_workspace:
+                slot.workspace = pre_await_workspace
+            if slot.project == new_project:
+                slot.project = pre_await_project
+            # A slots broadcast or the periodic dirty flush may have carried
+            # the provisional values while the reset awaited; re-mark and
+            # re-push so clients and persisted state land back on the
+            # rolled-back truth (push_slots_update coalesces, so the extra
+            # push is absorbed into the window).
+            slot._dirty = True
+            state.push_slots_update()
+            raise
+        if reset_verdict is None:
             teardown_incomplete = True
-            logger.exception("Slot %s agent switch: old session teardown incomplete", name)
 
         # Persist the new agent so the session resumes under the correct
         # agent after a gateway restart. INSIDE the lock: two racing switches
@@ -6715,18 +6760,41 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # The effort is committed BEFORE the reset: a message send landing
             # while the reset await is in flight cold-starts a session from
             # the slot's CURRENT value, so the new effort must already be
-            # visible. A failing teardown does NOT undo the switch (the reset
-            # pops the session first, so every replacement runs the new
-            # value) and is reported as a success with a warning — a 500
-            # would make the acting tab keep the OLD store value for a
-            # switch that actually happened.
+            # visible.
+            pre_reset_effort = slot.reasoning_effort
             slot.reasoning_effort = effort
+            # A teardown raise does NOT undo the switch (the reset pops the
+            # session before its shutdown can fail, so every replacement runs
+            # the new value) and is answered as a success with a warning —
+            # but only once the helper has verified the raise came AFTER the
+            # session pop. A pre-pop raise means the old session survives on
+            # the old effort, so the helper propagates it and this request
+            # answers 500 instead of a false success — after restoring the
+            # prior effort, because the probe has proven the surviving
+            # session still runs it and the acting tab keeps its old store
+            # value on a non-2xx. CAS-style: only a value still holding THIS
+            # request's write is rolled back, so a concurrent switch that
+            # landed during the raising await keeps its win.
+            # skip_if_busy=False keeps this handler's force semantics (no
+            # decline ladder).
             try:
-                await _reset_slot_session(state, slot, session_key)
-            except Exception:
-                logger.exception(
-                    "Slot %s reasoning_effort switch: old session teardown incomplete", name
+                reset_verdict = await _reset_slot_session_or_warn(
+                    state,
+                    slot,
+                    session_key,
+                    switch_kind="reasoning_effort",
+                    skip_if_busy=False,
                 )
+            except Exception:
+                if slot.reasoning_effort == effort:
+                    slot.reasoning_effort = pre_reset_effort
+                # Same re-sync as the agent handler's rollback: a broadcast
+                # or dirty flush during the raising await may have carried
+                # the provisional value.
+                slot._dirty = True
+                state.push_slots_update()
+                raise
+            if reset_verdict is None:
                 state.push_slots_update()
                 return web.json_response(
                     {
