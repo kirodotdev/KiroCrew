@@ -347,6 +347,57 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "read_slack_history",
+            "description": (
+                "Read recent messages from a Slack channel or DM the bot is a "
+                "member of. Use to check whether a user replied (e.g. an approval "
+                "or a follow-up) so a cron or agent can react to it. Returns the "
+                "most recent messages as {user, text, ts}, newest first, with the "
+                "bot's own messages excluded by default so you see the human's "
+                "replies. Pass thread_ts to read one thread's replies instead of "
+                "the channel timeline. Message text is redacted for credentials "
+                "and exfiltration URLs before it is returned."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": (
+                            "Channel or DM ID to read (e.g. D0123ABC456 for a DM, "
+                            "C0123ABC456 for a channel). The bot must be a member."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max messages to return (default 20, max 100).",
+                    },
+                    "thread_ts": {
+                        "type": "string",
+                        "description": (
+                            "Optional thread timestamp. When set, returns that "
+                            "thread's replies instead of the channel timeline."
+                        ),
+                    },
+                    "oldest": {
+                        "type": "string",
+                        "description": (
+                            "Optional Slack ts lower bound; only messages at or "
+                            "after this timestamp are returned."
+                        ),
+                    },
+                    "include_bot": {
+                        "type": "boolean",
+                        "description": (
+                            "Include the bot's own messages too (default false — "
+                            "bot messages are filtered out so you see human replies)."
+                        ),
+                    },
+                },
+                "required": ["channel"],
+            },
+        },
+        {
             "name": "file_send",
             "description": (
                 "Send a file to the user. Copies the file to the outbox and "
@@ -712,6 +763,47 @@ def read_slack_profile(name: str, args: dict[str, Any]) -> str:
     return json.dumps(profile, indent=2)
 
 
+def read_slack_history(name: str, args: dict[str, Any]) -> str:
+    channel = str(args.get("channel", "")).strip()
+    if not channel:
+        return "Error: channel required."
+    if not CHANNEL_ID_RE.match(channel):
+        return "Error: invalid channel ID format."
+    payload: dict[str, Any] = {"channel": channel}
+    # Clamp limit to [1, 100]; default 20.
+    try:
+        limit = int(args.get("limit", 20))
+    except (TypeError, ValueError):
+        limit = 20
+    payload["limit"] = max(1, min(limit, 100))
+    if args.get("thread_ts"):
+        ts = str(args["thread_ts"]).strip()
+        if not _SLACK_TS_RE.match(ts):
+            return "Error: invalid thread_ts format."
+        payload["thread_ts"] = ts
+    if args.get("oldest"):
+        oldest = str(args["oldest"]).strip()
+        if not _SLACK_TS_RE.match(oldest):
+            return "Error: invalid oldest format."
+        payload["oldest"] = oldest
+    if args.get("include_bot"):
+        payload["include_bot"] = True
+
+    resp = mcp_core._post("/api/slack-history", payload)
+    if resp.get("error"):
+        return f"Error: {resp['error']}"
+    messages = resp.get("messages", [])
+    # Defence-in-depth: redact message text before returning to the LLM
+    # (channel content is an untrusted / exfil surface).
+    for m in messages:
+        text = m.get("text")
+        if isinstance(text, str):
+            text, _ = redact_exfiltration_urls(text)
+            text, _ = redact_credentials(text)
+            m["text"] = text
+    return json.dumps(messages, indent=2)
+
+
 def file_send(name: str, args: dict[str, Any]) -> str:
     src = Path(args.get("path", ""))
     desc = redact(args.get("description", ""))
@@ -894,5 +986,6 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "send_notification": send_notification,
     "delete_message": delete_message,
     "read_slack_profile": read_slack_profile,
+    "read_slack_history": read_slack_history,
     "file_send": file_send,
 }

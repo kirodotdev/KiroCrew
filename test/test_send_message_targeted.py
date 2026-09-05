@@ -19,7 +19,11 @@ if "kiro_crew.slack.handler" not in sys.modules:
     _stub.is_tracked_channel = lambda cid: False  # type: ignore[attr-defined]
     sys.modules["kiro_crew.slack.handler"] = _stub
 
-from kiro_crew.dashboard.handlers import api_send_message, api_slack_profile  # noqa: E402
+from kiro_crew.dashboard.handlers import (  # noqa: E402
+    api_send_message,
+    api_slack_history,
+    api_slack_profile,
+)
 from kiro_crew.messaging.link import ChannelLink  # noqa: E402
 from kiro_crew.telegram.client import TELEGRAM_MAX_TEXT  # noqa: E402
 
@@ -28,6 +32,7 @@ def _make_app(state) -> web.Application:
     app = web.Application()
     app.router.add_post("/api/send-message", api_send_message)
     app.router.add_post("/api/slack-profile", api_slack_profile)
+    app.router.add_post("/api/slack-history", api_slack_history)
     app["state"] = state
     return app
 
@@ -1605,3 +1610,117 @@ class TestSendMessageToolChannelType:
             out = _call_tool({"text": "hi", "channel_type": "telegram"})
             assert out.startswith("Error:")
             assert "telegram" in out
+
+
+class TestSlackHistory:
+    @pytest.mark.asyncio
+    async def test_happy_path_timeline(self, mock_sel):
+        """Reading a channel returns messages with redacted text, bot msgs dropped."""
+        slack = MagicMock()
+        slack.fetch_channel_history = AsyncMock(
+            return_value=[
+                {"user": "U0123ABC456", "text": "price B2727875", "ts": "200.0"},
+                {"bot_id": "B999", "text": "notification", "ts": "199.0"},
+                {"user": "U0123ABC456", "text": "older reply", "ts": "198.0"},
+            ]
+        )
+        state = _mock_state(slack_client=slack)
+        app = _make_app(state)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/slack-history", json={"channel": "D0123ABC456"})
+            assert resp.status == 200
+            data = await resp.json()
+            msgs = data["messages"]
+            # Bot message filtered out; two human messages remain, newest first.
+            assert [m["ts"] for m in msgs] == ["200.0", "198.0"]
+            assert msgs[0]["text"] == "price B2727875"
+
+    @pytest.mark.asyncio
+    async def test_thread_path(self, mock_sel):
+        """thread_ts routes to fetch_thread_replies."""
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(
+            return_value=[{"user": "U0123ABC456", "text": "APPROVE", "ts": "300.0"}]
+        )
+        state = _mock_state(slack_client=slack)
+        app = _make_app(state)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/slack-history",
+                json={"channel": "C0123ABC456", "thread_ts": "111.222"},
+            )
+            assert resp.status == 200
+            slack.fetch_thread_replies.assert_awaited_once()
+            data = await resp.json()
+            assert data["messages"][0]["text"] == "APPROVE"
+
+    @pytest.mark.asyncio
+    async def test_missing_channel_returns_400(self, mock_sel):
+        state = _mock_state(slack_client=MagicMock())
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/slack-history", json={})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_invalid_channel_format_returns_400(self, mock_sel):
+        state = _mock_state(slack_client=MagicMock())
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/slack-history", json={"channel": "not-a-channel"})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_slack_not_connected_returns_503(self, mock_sel):
+        state = _mock_state(slack_client=None)
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/slack-history", json={"channel": "D0123ABC456"})
+            assert resp.status == 503
+
+    @pytest.mark.asyncio
+    async def test_missing_scope_returns_403(self, mock_sel):
+        from slack_sdk.errors import SlackApiError
+
+        slack = MagicMock()
+        slack.fetch_channel_history = AsyncMock(
+            side_effect=SlackApiError(
+                "missing_scope", {"error": "missing_scope", "needed": "im:history"}
+            )
+        )
+        state = _mock_state(slack_client=slack)
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/slack-history", json={"channel": "D0123ABC456"})
+            assert resp.status == 403
+
+
+class TestReadSlackHistoryMcpTool:
+    def test_schema_and_handler_registered(self):
+        """The read_slack_history tool has both a schema and a handler."""
+        from kiro_crew.mcp_tools import messaging as m
+
+        names = {s["name"] for s in m.schemas()}
+        assert "read_slack_history" in names
+        assert "read_slack_history" in m.HANDLERS
+
+    def test_handler_redacts_and_validates(self):
+        """Handler validates channel and redacts returned text."""
+        from unittest.mock import patch as _patch
+
+        from kiro_crew.mcp_tools import messaging as m
+
+        # Invalid channel is rejected before any POST.
+        assert m.read_slack_history("read_slack_history", {"channel": "bad"}).startswith(
+            "Error:"
+        )
+
+        with _patch.object(
+            m.mcp_core,
+            "_post",
+            return_value={"messages": [{"user": "U1", "text": "hi", "ts": "1.0"}]},
+        ):
+            out = m.read_slack_history("read_slack_history", {"channel": "D0123ABC456"})
+            assert "hi" in out
