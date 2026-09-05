@@ -1743,6 +1743,229 @@ class TestMessageQueue:
         assert mgr.is_cancelled("nope", "ts1") is False
 
 
+class TestResetPreservesQueuedMessages:
+    """reset() (e.g. record_failure's circuit breaker, or AcpPromptBusy
+    recovery) tears down a session mid-turn. Any follow-up messages a caller
+    had queued behind that turn must survive the teardown and reach the next
+    session opened for the same key, instead of being silently discarded
+    along with the killed session object."""
+
+    @pytest.mark.asyncio
+    async def test_queued_messages_survive_a_reset_and_reach_the_next_session(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")  # turn 1 in flight
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        mgr.enqueue("k1", "ts3", "third", force=True)
+
+        await mgr.reset("k1")  # e.g. AcpPromptBusy recovery, still "holding" the old semaphore
+        assert "k1" not in mgr._sessions
+
+        await mgr.get_or_create("k1")  # the next cold start for this key
+        assert mgr.dequeue("k1") == ("ts2", "second", {})
+        assert mgr.dequeue("k1") == ("ts3", "third", {})
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_reset_with_no_queued_messages_leaves_the_next_session_empty(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        await mgr.reset("k1")
+        await mgr.get_or_create("k1")
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_destroy_does_not_rescue_the_queue(self, cfg):
+        """destroy() is an intentional, user-visible wipe (permanent history
+        deletion, bulk clear) -- unlike reset()'s transparent failure
+        recovery, dropping anything queued behind it is the expected
+        behavior, mirroring stop_turn's explicit clear_queue() before a
+        user-initiated hard kill."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.destroy("k1")
+        await mgr.get_or_create("k1")
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_discard_conversation_does_not_rescue_the_queue(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.discard_conversation("k1")
+        await mgr.get_or_create("k1")
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_clear_queue_also_drops_an_already_rescued_queue(self, cfg):
+        """A stop/clear issued after reset() already rescued a queue, but
+        before any new session reopens the key, must not leave that rescued
+        queue reachable -- otherwise messages the caller explicitly asked to
+        clear resurface once a session next opens for the key. There is no
+        live session at this point (stop_turn's own early-return on a
+        missing session is exactly why clear_queue must not depend on one
+        existing), so clear_queue is called directly, as stop_turn's
+        preserve_queue=False path would.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")  # rescues the queue into _orphaned_queues
+        assert "k1" not in mgr._sessions
+
+        mgr.clear_queue("k1")  # e.g. a /stop issued before the next message arrives
+
+        await mgr.get_or_create("k1")  # the next cold start for this key
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.parametrize("wipe", ["destroy", "discard_conversation"])
+    @pytest.mark.asyncio
+    async def test_a_wipe_after_a_reset_drops_the_rescued_queue(self, cfg, wipe):
+        """Same gap clear_queue had, reached through the other two wipes: the
+        queue is already rescued (reset ran) and no session holds the key yet,
+        so the wipe's own ``self._sessions.pop`` has nothing to drop. A
+        destroy promises no resume, and discard_conversation throws away the
+        conversation the follow-ups were addressed to, so neither may leave
+        the rescued queue behind for the next cold start to replay."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")  # rescues the queue into _orphaned_queues
+        assert mgr._orphaned_queues.get("k1")
+
+        await getattr(mgr, wipe)("k1")
+        assert "k1" not in mgr._orphaned_queues
+
+        await mgr.get_or_create("k1")  # the next cold start for this key
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.parametrize("drop", ["clear_queue", "destroy", "discard_conversation"])
+    @pytest.mark.asyncio
+    async def test_dropping_a_rescued_queue_unlinks_its_temp_images(self, cfg, tmp_path, drop):
+        """A rescued entry is as far from _dispatch_queued's cleanup as a live
+        one -- it has no session left to consume it -- so every path that
+        discards one owes it the same unlink pass live entries get."""
+        temp = tmp_path / "queued-image.png"
+        temp.write_bytes(b"x")
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(temp)])
+        await mgr.reset("k1")
+        assert temp.exists()  # the rescue must NOT unlink -- the entry still lives
+
+        result = getattr(mgr, drop)("k1")
+        if result is not None:
+            await result
+        assert not temp.exists()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_cancels_an_already_rescued_message(self, cfg):
+        """A Slack ``message_deleted`` landing in the orphan window -- after
+        reset() rescued the queue but before the next session reopens the
+        key -- must still be able to cancel the entry it names. Without
+        this, the next cold start adopts and dispatches a message the user
+        already deleted."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")  # rescues the queue into _orphaned_queues
+        assert "k1" not in mgr._sessions
+
+        assert mgr.cancel_queued("k1", "ts2") is True
+
+        await mgr.get_or_create("k1")  # the next cold start for this key
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_unlinks_temp_images_for_a_rescued_message(self, cfg, tmp_path):
+        temp = tmp_path / "queued-image.png"
+        temp.write_bytes(b"x")
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(temp)])
+        await mgr.reset("k1")
+        assert temp.exists()
+
+        assert mgr.cancel_queued("k1", "ts2") is True
+        assert not temp.exists()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_misses_land_safely_during_the_orphan_window(self, cfg):
+        """A cancel for an unrelated msg_ts while a rescued queue sits in
+        _orphaned_queues (no live session) must miss cleanly -- not raise,
+        and not touch the rescued entries it doesn't name."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")
+
+        assert mgr.cancel_queued("k1", "no-such-ts") is False
+
+        await mgr.get_or_create("k1")
+        assert mgr.dequeue("k1") == ("ts2", "second", {})
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_clears_an_already_rescued_queue(self, cfg):
+        """A ``/stop`` issued in the orphan window -- no live session yet,
+        but a queue reset() rescued is sitting in _orphaned_queues -- must
+        still clear it, matching clear_queue's own no-live-session handling.
+        Before the fix, stop_turn's early return on a missing session
+        skipped clear_queue entirely, leaving the rescued queue to resurface
+        on the next cold start despite the explicit stop."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")  # rescues the queue into _orphaned_queues
+        assert "k1" not in mgr._sessions
+
+        outcome = await mgr.stop_turn("k1")
+        assert outcome == "idle"
+        assert "k1" not in mgr._orphaned_queues
+
+        await mgr.get_or_create("k1")  # the next cold start for this key
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_preserve_queue_leaves_a_rescued_queue_alone(self, cfg):
+        """preserve_queue=True must skip the rescued-queue drop too, same as
+        it already skips the live-queue drop."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")
+
+        outcome = await mgr.stop_turn("k1", preserve_queue=True)
+        assert outcome == "idle"
+        assert mgr._orphaned_queues.get("k1")
+
+        await mgr.get_or_create("k1")
+        assert mgr.dequeue("k1") == ("ts2", "second", {})
+        mgr.release("k1")
+        await mgr.close_all()
+
+
 class TestDrainProviders:
     """Tests for drain_all_providers and drain_warm_pool."""
 
@@ -1891,7 +2114,11 @@ class TestResetWithPid:
         assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
-    async def test_reset_unlinks_temp_files_from_the_dropped_queue(self, cfg, tmp_path):
+    async def test_reset_rescues_the_queue_instead_of_unlinking_its_temp_files(self, cfg, tmp_path):
+        """reset() no longer drops the queue outright -- it rescues it into
+        ``_orphaned_queues`` (see TestResetPreservesQueuedMessages), so the
+        temp file behind a queued image must survive the reset and is only
+        unlinked once something actually drops that rescue."""
         img = tmp_path / "img.png"
         img.write_bytes(b"fake")
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
@@ -1900,6 +2127,10 @@ class TestResetWithPid:
 
         await mgr.reset("k1")
 
+        assert img.exists()
+        assert mgr._orphaned_queues.get("k1")
+
+        await mgr.destroy("k1")  # drops the rescue -- now it unlinks
         assert not img.exists()
 
     @pytest.mark.asyncio

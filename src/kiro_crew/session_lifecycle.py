@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable, MutableMapping
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
@@ -47,6 +48,7 @@ class _SessionEntry(Protocol):
     first_turn: object
     retire_on_identity_change: bool
     prev_turn_cancelled: bool
+    queue: deque[tuple[str, str, dict[str, Any]]]
 
 
 class _SessionMapPort(Protocol):
@@ -111,6 +113,8 @@ class SessionLifecycleOwner(Protocol):
     def _is_continuable_key(self, key: str) -> bool: ...
 
     def clear_queue(self, key: str) -> None: ...
+
+    def _drop_orphaned_queue(self, key: str) -> None: ...
 
     def release(self, key: str) -> None: ...
 
@@ -204,6 +208,19 @@ class SessionLifecycleState:
     suppress_replay: set[str] = field(default_factory=set)
     origin_links: dict[str, Any] = field(default_factory=dict)
     on_recycled: _RecycleCallback | None = None
+    # Queued follow-up messages (enqueue()/dequeue()) rescued from a session
+    # torn down mid-turn by reset() -- e.g. record_failure's circuit breaker,
+    # or AcpPromptBusy recovery -- so the next cold start for the same key
+    # resumes them instead of the caller they were queued behind silently
+    # discarding them along with the killed session. Only reset() (and
+    # remove_if_unclaimed()'s re-rescue) populate this; destroy(),
+    # discard_conversation() and clear_queue() drop it (those are
+    # intentional, user-visible wipes where pending follow-ups are expected
+    # to go too — mirrors stop_turn's explicit clear_queue() before a
+    # user-initiated hard kill).
+    orphaned_queues: dict[str, "deque[tuple[str, str, dict[str, Any]]]"] = field(
+        default_factory=dict
+    )
 
 
 class SessionLifecycleService:
@@ -258,6 +275,16 @@ class SessionLifecycleService:
     @_on_recycled.setter
     def _on_recycled(self, callback: _RecycleCallback | None) -> None:
         self.state.on_recycled = callback
+
+    @property
+    def _orphaned_queues(self) -> dict[str, "deque[tuple[str, str, dict[str, Any]]]"]:
+        return self.state.orphaned_queues
+
+    @_orphaned_queues.setter
+    def _orphaned_queues(
+        self, orphaned_queues: dict[str, "deque[tuple[str, str, dict[str, Any]]]"]
+    ) -> None:
+        self.state.orphaned_queues = orphaned_queues
 
     async def refresh_defaults(self) -> None:
         """Adopt config changes that only affect new sessions."""
@@ -398,6 +425,14 @@ class SessionLifecycleService:
                 # own suspension point, so that ordering still holds; only the
                 # crumb unlink is deferred to a worker.
                 await record_session_ended(key, end_reason=END_REASON_RESET)
+            # Rescue any messages queued behind the turn that triggered this
+            # reset (e.g. via AcpPromptBusy recovery) so the next cold start
+            # for this key picks them up instead of losing them with the
+            # session object. Reuses the deque directly -- the session being
+            # discarded has no other use for it.
+            rescued_queue = session is not None and bool(session.queue)
+            if session is not None and session.queue:
+                self._orphaned_queues[key] = session.queue
         if clear_conversation and session is not None:
             # The registry lock, not an absence of suspension points, is what makes
             # this safe: the end record above awaits, but it awaits while this
@@ -408,7 +443,14 @@ class SessionLifecycleService:
             # any of them runs, and this clear cannot erase a successor's pointer.
             owner._session_map.clear_sid(key)
         if session:
-            await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
+            if not rescued_queue:
+                # A rescued queue is aliased into _orphaned_queues above, not
+                # discarded -- unlinking here would delete the temp images
+                # behind messages that are still alive and waiting for the
+                # next cold start. Its eventual unlink is owed by whichever
+                # path actually drops it later (_drop_orphaned_queue, or the
+                # unclaimed-session TTL backstop's own rescue-then-unlink).
+                await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
             # Capture PID and child tree before shutdown clears them.
             client = getattr(session.provider, "_client", None)
             raw_pid = getattr(client, "_pid", None) if client else None
@@ -686,7 +728,23 @@ class SessionLifecycleService:
             self._origin_links.pop(key, None)
             # Same tick as the removal: see reset.
             await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
-        await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
+            # This session can carry a queue reset() rescued from a PRIOR
+            # reset() (see its docstring): a resume prefetch racing ahead of
+            # the real turn adopts that rescue speculatively, and if nothing
+            # claims it before this TTL backstop fires, discarding it here
+            # with no re-rescue would silently finish the data loss reset()
+            # tried to prevent in the first place -- the messages would never
+            # reach any live session. Put it back exactly as reset() does, so
+            # the next real cold start for this key adopts it same as if this
+            # speculative detour never happened.
+            rescued_queue = bool(session.queue)
+            if rescued_queue:
+                self._orphaned_queues[key] = session.queue
+        if not rescued_queue:
+            # See reset()'s matching guard: a rescued queue is aliased into
+            # _orphaned_queues above, not discarded, so unlinking here would
+            # delete temp images still owed to a next cold start.
+            await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
         await session.provider.shutdown()
         await owner.release_subagent_runtime(key)
         self._deps.logger.info(
@@ -716,6 +774,12 @@ class SessionLifecycleService:
             if session is not None:
                 # Same tick as the pop: see reset.
                 await record_session_ended(key, end_reason=END_REASON_DESTROYED)
+            # A destroy promises no resume, so a queue a PRIOR reset()
+            # rescued for this key must not survive to be replayed into the
+            # next cold start (reset() itself deliberately leaves live queues
+            # alone -- see its docstring -- but its leftovers are this
+            # method's to drop).
+            owner._drop_orphaned_queue(key)
         try:
             if session:
                 await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
@@ -774,6 +838,11 @@ class SessionLifecycleService:
             if session is not None:
                 # Same lock hold as the pop, exactly like the clear_sid below.
                 await record_session_ended(key, end_reason=END_REASON_DISCARDED)
+            # Same reasoning as destroy(): the conversation this key's
+            # rescued queue was addressed to is gone, so replaying it into
+            # the fresh one would land follow-ups with no context to follow
+            # up on.
+            owner._drop_orphaned_queue(key)
         # The registry lock, not an absence of suspension points, is what keeps a
         # cold start racing this teardown from registering a replacement sid for the
         # key in between, so this clear cannot erase a SUCCESSOR's pointer. The end
@@ -1060,11 +1129,21 @@ class SessionLifecycleService:
         logger = self._deps.logger
         key = owner._fold_key(key)
         session = owner._sessions.get(key)
+
+        if not preserve_queue:
+            # Ahead of the no-session early-return below on purpose: a
+            # reset() can rescue a queue into _orphaned_queues (see its
+            # docstring) before the next session reopens this key, and
+            # clear_queue() drops that rescue too. Skipping this call
+            # whenever session is None would leave a stop issued during that
+            # orphan window unable to clear it, and the messages it just
+            # asked to drop would resurface once a session next opens for
+            # this key.
+            owner.clear_queue(key)
+
         if not session:
             return "idle"
 
-        if not preserve_queue:
-            owner.clear_queue(key)
         budget: float = owner._cfg.agent.soft_stop_budget_secs
         t0 = self._deps.monotonic()
 

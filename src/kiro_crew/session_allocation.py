@@ -135,6 +135,10 @@ class _AllocationOwner(Protocol):
     _provider_factory: ProviderFactory | None
     _session_map: Any
     _recycling: dict[str, Any]
+    # Owned by the lifecycle boundary (see session_lifecycle.SessionLifecycleState);
+    # exposed here so a cold start can adopt a queue reset() rescued for this
+    # key and so clear_queue()/cancel_queued() can reach it too.
+    _orphaned_queues: dict[str, Any]
     _pool_size: int
     _pool_agent: str
     _pool_cwd: str
@@ -936,6 +940,20 @@ class SessionAllocationService:
         key = self._owner._fold_key(key)
         session = self._sessions.get(key)
         if not session:
+            # No live session for this key doesn't mean nothing is queued: a
+            # reset() may have rescued a queue into _orphaned_queues that
+            # hasn't been adopted by a new session yet (see
+            # SessionLifecycleState.orphaned_queues). A deletion landing in
+            # that window must still be able to cancel the entry it names --
+            # otherwise the next cold start adopts and dispatches a message
+            # the user already deleted.
+            orphaned = self._owner._orphaned_queues.get(key)
+            if orphaned:
+                for index, (queued_ts, _, kwargs) in enumerate(orphaned):
+                    if queued_ts == msg_ts:
+                        self._deps.unlink_queued_temp_paths(kwargs)
+                        del orphaned[index]
+                        return True
             return False
         for index, (queued_ts, _, kwargs) in enumerate(session.queue):
             if queued_ts == msg_ts:
@@ -957,6 +975,17 @@ class SessionAllocationService:
         return False
 
     def clear_queue(self, key: str) -> None:
+        """Clear queued messages and cancelled markers, unlinking temp files.
+
+        Also drops any queue reset() rescued into ``_orphaned_queues`` for
+        this key (see ``SessionLifecycleState.orphaned_queues``) -- without
+        this, a stop/clear issued after a reset already rescued a queue but
+        before the next session opens for the key would leave that rescued
+        queue untouched (no live session exists yet to route through), and
+        the messages the caller just asked to clear would resurface once a
+        session next opens for this key. A rescued entry is just as far from
+        dequeue()'s cleanup as a live one, so it needs the same unlink pass.
+        """
         key = self._owner._fold_key(key)
         session = self._sessions.get(key)
         if session:
@@ -964,6 +993,18 @@ class SessionAllocationService:
                 self._deps.unlink_queued_temp_paths(kwargs)
             session.queue.clear()
             session.cancelled.clear()
+        self._drop_orphaned_queue(key)
+
+    def _drop_orphaned_queue(self, key: str) -> None:
+        """Discard a rescued queue for ``key``, unlinking its temp files.
+
+        Every path that discards a queue entry must unlink (see
+        ``unlink_queued_temp_paths``), and a rescued entry is exactly as far
+        from ``dequeue()``'s cleanup as a live one -- it has no session left
+        to consume it. Callers already hold ``key`` folded.
+        """
+        for _, _, kwargs in self._owner._orphaned_queues.pop(key, ()):
+            self._deps.unlink_queued_temp_paths(kwargs)
 
     async def is_provider_alive(self, key: str) -> bool | None:
         key = self._owner._fold_key(key)
@@ -1459,6 +1500,13 @@ class SessionAllocationService:
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
+                    # Adopt any queue a reset() rescued for this key (see
+                    # SessionLifecycleState.orphaned_queues) so a mid-turn
+                    # teardown's queued follow-ups resume on this cold start
+                    # instead of being lost with the killed session.
+                    rescued_queue = owner._orphaned_queues.pop(key, None)
+                    if rescued_queue:
+                        session.queue = rescued_queue
                     replay_needed = getattr(provider, "_history_replay_needed", False) is True
                     if provider_switched or replay_needed:
                         session.provider_switch_replay = True

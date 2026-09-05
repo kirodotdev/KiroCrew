@@ -40,6 +40,7 @@ class TestSessionManagerQueue:
         mgr = SessionManager.__new__(SessionManager)
         mgr._sessions = {}
         mgr._lock = asyncio.Lock()
+        mgr._orphaned_queues = {}
         provider = MagicMock()
         provider.is_alive.return_value = True
         sess = _Session(provider=provider)
@@ -549,6 +550,7 @@ class TestStopTurnPreserveQueue:
         mgr._sessions = {}
         mgr._lock = asyncio.Lock()
         mgr._background_tasks = set()
+        mgr._orphaned_queues = {}
         cfg = MagicMock()
         cfg.agent.soft_stop_budget_secs = 5.0
         mgr._cfg = cfg

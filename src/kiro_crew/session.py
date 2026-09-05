@@ -1286,6 +1286,14 @@ class SessionManager:
         self._lifecycle_state_boundary().on_recycled = value
 
     @property
+    def _orphaned_queues(self) -> dict[str, "deque[tuple[str, str, dict]]"]:
+        return self._lifecycle_state_boundary().orphaned_queues
+
+    @_orphaned_queues.setter
+    def _orphaned_queues(self, value: dict[str, "deque[tuple[str, str, dict]]"]) -> None:
+        self._lifecycle_state_boundary().orphaned_queues = value
+
+    @property
     def _sessions(self) -> dict[str, "_Session"]:
         return self._registry_state().sessions
 
@@ -2276,6 +2284,10 @@ class SessionManager:
     def clear_queue(self, key: str) -> None:
         """Clear queued messages and their temporary paths."""
         self._allocation_boundary().clear_queue(key)
+
+    def _drop_orphaned_queue(self, key: str) -> None:
+        """Discard a queue reset() rescued for a folded key, unlinking temp files."""
+        self._allocation_boundary()._drop_orphaned_queue(key)
 
     async def is_provider_alive(self, key: str) -> bool | None:
         """Probe a folded session provider outside the registry lock."""
