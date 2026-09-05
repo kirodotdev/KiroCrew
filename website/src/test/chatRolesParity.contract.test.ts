@@ -38,15 +38,22 @@ const CHROME_ONLY_ROLES: Record<string, string> = {
 }
 
 /**
- * ChatPage host entries that do not override a default. Each is a SHAPE entry
- * (`roles: ['*']` + `match`) or a deliberately undrawn role, with the reason
- * it is page-only rather than a registry default.
+ * Host entries that do not override a default. ChatPage's host list is the
+ * dashboard's shared row set (`createTranscriptRenderers`, which ChatPane
+ * also uses) plus the page-only entries, so both are listed: each is a SHAPE
+ * entry (`roles: ['*']` + `match`), a role the SDK has no row for, or a
+ * deliberately undrawn role, with the reason it is not a registry default.
  */
 const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
-  thinking_block: 'ThinkingBlock with page disclosure state; the registry folds reasoning into the group summary (same id as transcriptRenderers)',
-  recovery_inject: 'RecoveryCard for gateway-authored inject rows; the registry renders inject as prose (resolveInjectCard decides, shared; same id as transcriptRenderers)',
+  // -- shared dashboard set (pages/chat/transcriptRenderers.tsx) --
+  thinking_block: 'ThinkingBlock with disclosure state; the registry folds reasoning into the group summary',
+  recovery_inject: 'RecoveryCard for gateway-authored inject rows; the registry renders inject as prose (resolveInjectCard decides, shared)',
+  workflow_completion: 'WorkflowCompletionCard needs session/folder/panel hand-offs the SDK has no seam for',
+  workflow_run_tool: 'launch card refining the tool line; store-connected',
+  subagent_run_tool: 'launch card refining the tool line; store-connected',
+  tool_completion: 'the ✅/🚫 completion sibling draws nothing, claimed so no surface\'s unclaimed-role fallback prints it',
+  // -- page-only --
   permission: 'undrawn here; the registry leaves it to GROUPED_ROLES',
-  workflow_completion: 'WorkflowCompletionCard needs page-only session/folder/panel hand-offs',
   hidden_invisible_assistant: 'zero-width-space quiet-cycle rows; the registry applies the same skip inside its assistant entry',
   bubble: 'the page\'s user / inject / assistant row, with fork, pin, footer, regenerate and search-scope chrome',
 }
@@ -77,8 +84,15 @@ function registryClaimedRoles(): Set<string> {
   return roles
 }
 
+const factorySrc = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
+
 function hostEntryIds(): string[] {
-  return [...rendererBlock().matchAll(/^\s+id: '([a-z_]+)',?$/gm)].map(m => m[1])
+  const page = [...rendererBlock().matchAll(/^\s+id: '([a-z_]+)',?$/gm)].map(m => m[1])
+  // The page spreads the shared dashboard set into its list; its entries are
+  // host entries here too.
+  const spreads = /\.\.\.shared,/.test(rendererBlock()) && /const shared = createTranscriptRenderers\(/.test(rendererBlock())
+  const shared = spreads ? [...factorySrc.matchAll(/^\s+id: '([a-z_]+)',?$/gm)].map(m => m[1]) : []
+  return [...page, ...shared]
 }
 
 describe('chat role parity (ChatPage consumes the app-sdk registry)', () => {
@@ -92,6 +106,18 @@ describe('chat role parity (ChatPage consumes the app-sdk registry)', () => {
     // come back as a `switch`.
     expect(rendererBlock()).not.toMatch(/if \(m\.role\s*[!=]==\s*'[a-z_]+'\)/)
     expect(rendererBlock()).not.toMatch(/switch \(m\.role\)/)
+  })
+
+  it('the SDK defaults that render through ctx.wrapper are unreachable on this page', () => {
+    // `ctx.wrapper` is the SDK's conversational-row layout; the page passes a
+    // keyed Fragment for it, which is only sound if no row reaches those
+    // defaults. Host entries resolve first, so it holds iff the page's bubble
+    // claims every role the wrapper-using defaults claim.
+    const wrapperUsers = defaultMessageRenderers.filter(r => /ctx\.wrapper\(/.test(r.render.toString()))
+    expect(wrapperUsers.map(r => r.id).sort()).toEqual(['assistant', 'inject', 'user'])
+    const bubbleRoles = rendererBlock().match(/id: 'bubble',\s*\n\s*roles: \[([^\]]*)\]/)
+    expect(bubbleRoles).not.toBeNull()
+    for (const r of wrapperUsers) for (const role of r.roles) expect(bubbleRoles![1]).toContain(`'${role}'`)
   })
 
   it('a role nobody claims falls back to the BUBBLE by reference, never to an SDK default by position', () => {

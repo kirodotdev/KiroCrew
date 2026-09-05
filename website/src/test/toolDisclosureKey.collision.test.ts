@@ -16,7 +16,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import reducer, { refreshSlot } from '../store/chatSlice'
-import { messageRowKey, toolDisclosureKey } from '../pages/ChatPage'
+import { messageRowKey } from '../pages/ChatPage'
+import { toolDisclosureKey } from '../pages/chat/transcriptRenderers'
 import type { ChatMessage } from '../types'
 
 const SLOT = 'disclosure-key-slot'
