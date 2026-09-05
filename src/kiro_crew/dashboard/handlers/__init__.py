@@ -122,6 +122,11 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_lessons_create,
     api_lessons_delete,
 )
+from kiro_crew.dashboard.handlers.migration import (  # noqa: E402, F401
+    api_cron_move,
+    api_session_move,
+    api_taskrun_move,
+)
 
 # ── Diagnostics / Report a Problem (handlers/diagnostics.py) ──
 from kiro_crew.dashboard.handlers.diagnostics import (  # noqa: E402, F401

@@ -401,6 +401,16 @@ export interface CronJob {
    * Absent / null for legacy jobs created without an explicit TZ — treat as UTC. */
   timezone?: string | null
   skip_dates?: string[] | null
+  /** Where this job was migrated to, or null when it did not move. Always
+   * present from the API so a consumer never has to tell an absent key from a
+   * job that stayed. A migrated job is retained and non-executing, which is
+   * otherwise indistinguishable from user-paused. */
+  migrated_to?: {
+    crew_id: string
+    label?: string | null
+    remote_unit_id: string
+    migrated_ts: number
+  } | null
   script?: string | null; command?: string | null; last_result?: string | null; last_error?: string | null
   is_running?: boolean; running_since?: number | null
   folder_id?: string

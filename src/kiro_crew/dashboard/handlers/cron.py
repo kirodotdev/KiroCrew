@@ -1415,10 +1415,49 @@ async def api_crons(request: web.Request) -> web.Response:
     ]
     return web.json_response(
         {
-            "jobs": data,
+            "jobs": attach_migration_tombstones(data),
             "server_tz": redact_credentials(redact_exfiltration_urls(tz_name or "")[0])[0] or None,
         }
     )
+
+
+def attach_migration_tombstones(rows: list[dict]) -> list[dict]:
+    """Annotate each job row with where it was migrated to, or ``None``.
+
+    Requirement 7.3 names "the surface that listed the unit before the move",
+    and for most users that surface is this page rather than `kirocrew cron
+    list`. Without this a migrated job renders as an ordinary paused one: cron
+    persists ``enabled=False`` (so the double-fire guard holds) but derives
+    ``user_paused`` from it on reload, leaving nothing that says the work now
+    lives on another crew.
+
+    ``migrated_to`` is always present, ``None`` when the job did not move, so
+    the frontend never has to tell an absent key from a not-migrated job.
+
+    A broken registry degrades to "nothing moved" — the same floor the CLI
+    keeps. Losing a redirect hint is recoverable; a failed schedule listing
+    hides every job the user has.
+    """
+    moved: dict = {}
+    try:
+        from kiro_crew.migration.tombstones import TombstoneRegistry
+
+        moved = TombstoneRegistry(
+            store_dir=config_dir() / "migration").list_for_kind("cron")
+    except Exception:
+        logger.debug("tombstone registry unavailable for the cron list",
+                     exc_info=True)
+        moved = {}
+
+    for row in rows:
+        tomb = moved.get(row.get("id"))
+        row["migrated_to"] = None if tomb is None else {
+            "crew_id": tomb.target_crew.crew_id,
+            "label": tomb.target_crew.label,
+            "remote_unit_id": tomb.remote_unit_id,
+            "migrated_ts": tomb.migrated_ts,
+        }
+    return rows
 
 
 # ── Cron Folders ──

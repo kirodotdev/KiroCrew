@@ -153,7 +153,10 @@ choice blob makes the usage line unreadable.
 | `kirocrew setup --slack` | Run the guided Slack credential + slash-command setup (opt-in) |
 | `kirocrew setup --whatsapp` | Run the guided WhatsApp opt-in: report the optional `whatsapp` extra and the pairing state, then enable the channel (opt-in) |
 | `kirocrew doctor` | Verify kiro-cli is installed and config is valid |
-| `kirocrew cron add/list/remove` | Manage cron jobs |
+| `kirocrew cron add/list/remove` | Manage cron jobs. `list` prints a `↪ migrated to <crew>` line under a job that has been moved to another crew. |
+| `kirocrew cron move <job-id> --to <crew>` | **Plan** moving a cron schedule to another crew: prints the handoff id, the fields that ship, the host requirements, and any fidelity findings. Planning only — it does not execute the handoff (no transmit transport exists yet). See [instances.md §16](instances.md#16-crew-work-migration-move-a-live-unit-of-work-to-another-crew). |
+| `kirocrew taskrun move <task-id> --to <crew> [--runs-file PATH]` | **Plan** moving a task-runner run, off `runs.json`. Reports the resume-vs-restart classification and the tasks already complete. Note `runs.json` is a SUBSET of the live `Project` — it carries no `WorkingMemory` and no `current_task` — so the dashboard endpoint plans from richer state than this verb can. Planning only. |
+| `kirocrew session move <slot> --to <crew>` | **Refuses with exit 2**, naming why: a session bundle is only coherent snapshotted from the live slot with new turns blocked, and the CLI cannot quiesce a slot it does not own. Use the dashboard's session action instead. |
 | `kirocrew spawn run/list` | Manage background subagents |
 | `kirocrew app install/list/enable/disable/uninstall` | Manage App Kit apps. Uninstall preserves `apps/<name>/data/` by default. |
 | `kirocrew app uninstall NAME --purge-data` | Explicitly uninstall an app and permanently delete its app data. |

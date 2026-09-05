@@ -1,0 +1,128 @@
+# bands.yaml — control-band config for the Maintain stage of crew-work-migration (#7577)
+#
+# Read by the DETERMINISTIC detection script; the model is never in the detection
+# path. On a breach the agent is invoked per tier and writes its finding as a NEW
+# intent.md that re-enters Stage 1.
+#
+# ── Why these metrics and not latency ────────────────────────────────────────
+# The obvious metric for a migration feature is handoff duration, and it IS
+# emitted (Req 7.5, on every terminal audit entry). It is deliberately NOT the
+# primary band: a slow migration is an annoyance, whereas a migration that ends
+# with TWO owners means a cron job firing twice or a task run re-executing side
+# effects that already happened. So the bands watch ownership integrity first and
+# latency last.
+#
+# ── Honest precondition ──────────────────────────────────────────────────────
+# Nothing calls MigrationCoordinator.migrate() in production yet (see REVIEW.md
+# §6), so every band below reads zero until the transmit step is wired. They are
+# committed now because the audit events they consume already exist and are
+# tested — arming detection after the first incident is how the first incident
+# goes unnoticed.
+
+metrics:
+
+  # ── Tier-critical: the single-owner invariant ──────────────────────────────
+  - metric: migration_dual_owner_detected
+    description: >
+      Reconciliation found, or a scheduler observed, one unit executable on two
+      crews. This is the failure the whole protocol exists to prevent.
+    source: security_event_log        # operation=reconcile.* / migrate.*
+    baseline: absolute                # not statistical — the expected value is 0
+    rules: any_nonzero
+    tiers:
+      - sigma: 3
+        action: propose
+        allow: [pull_request, "runbook:quiesce-duplicate-owner"]
+    note: >
+      No 1σ/2σ tier on purpose. There is no "slightly dual-owned": a single
+      occurrence is a correctness breach and goes straight to the acting tier.
+
+  # ── The crash window must converge ────────────────────────────────────────
+  - metric: migration_unreconciled_handoffs
+    description: >
+      Handoffs that reached durable ack but never reached tombstone, still
+      unresolved after a gateway start. Each one is a unit whose ownership is
+      ambiguous until reconcile() runs.
+    source: "<config dir>/migration/tombstones.json + accept records"
+    baseline: absolute
+    rules: any_nonzero
+    tiers:
+      - sigma: 2
+        action: diagnose
+        tools: [Read, Grep]
+      - sigma: 3
+        action: propose
+        allow: [pull_request]
+    note: >
+      Expected to read nonzero the moment migrate() is wired WITHOUT a startup
+      reconcile() caller. That is the point: this band is the alarm for the known
+      gap in REVIEW.md §6, not a hypothetical.
+
+  # ── Refusals should be rare and explicable ────────────────────────────────
+  - metric: migration_refusal_rate
+    description: >
+      Share of attempts ending `refused` (preflight blocked) rather than
+      `migrated`. A refusal is correct behaviour, so this is a band, not a
+      threshold — a rising rate means targets are drifting out of spec, or
+      preflight has become too strict to be useful.
+    source: security_event_log        # operation=migrate.refused
+    baseline: rolling_30d
+    rules: western_electric
+    tiers:
+      - sigma: 1
+        action: log
+      - sigma: 2
+        action: diagnose
+        tools: [Read, Grep]
+
+  # ── Rollback must actually restore the source ─────────────────────────────
+  - metric: migration_failed_without_resume
+    description: >
+      Migrations that ended `failed` where the source did NOT return to
+      executing. Directly contradicts the binding invariant: any failure short
+      of durable ack leaves the source owning the work.
+    source: security_event_log        # migrate.failed with no resume observed
+    baseline: absolute
+    rules: any_nonzero
+    tiers:
+      - sigma: 3
+        action: propose
+        allow: [pull_request]
+
+  # ── Secret scanning must not become noise-or-nothing ─────────────────────
+  - metric: migration_secret_refusals
+    description: >
+      Bundles refused by the credential scan, source-side or receiver-side. A
+      spike means either a real leak path opened or the scanner started matching
+      benign payloads — both need eyes, and the second silently trains users to
+      route around the check.
+    source: security_event_log        # accept.refused reason=credential material
+    baseline: rolling_30d
+    rules: western_electric
+    tiers:
+      - sigma: 2
+        action: diagnose
+        tools: [Read, Grep]
+
+  # ── Latency, last ────────────────────────────────────────────────────────
+  - metric: migration_duration_p95
+    description: >
+      Per-unit-kind handoff latency (Req 7.5). Tracked per kind because a
+      task-run bundle legitimately dwarfs a cron one; a single pooled figure
+      would hide a regression in the cheap kind.
+    source: security_event_log        # duration on terminal entries
+    baseline: rolling_30d
+    rules: western_electric
+    group_by: [bundle_kind]
+    tiers:
+      - sigma: 1
+        action: log
+      - sigma: 2
+        action: diagnose
+        tools: [Read, Grep]
+
+# ── Wiring note ─────────────────────────────────────────────────────────────
+# Register detection with a SCRIPT cron (deterministic, zero tokens):
+#   cron_add(script='~/.kiro/crew/crons/migration_bands.py:check', ...)
+# The script must not call an LLM — it reads the audit log, evaluates the rules
+# above, and only invokes the agent on a breach, at the tier named here.

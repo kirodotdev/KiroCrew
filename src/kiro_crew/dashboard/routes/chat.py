@@ -55,6 +55,10 @@ def register(app: web.Application) -> None:
     # precedent: aiohttp resolves in registration order, so a later
     # ``/api/chat/slots/{slot}`` POST would otherwise shadow this path.
     app.router.add_post("/api/chat/slots/import", session_transfer.api_chat_slot_import)
+    # Crew-to-crew work migration (issue #7577): plan a session's move. Lives on
+    # the gateway because a session bundle is only coherent when taken from the
+    # LIVE slot -- the CLI verb refuses for exactly that reason.
+    app.router.add_post("/api/chat/slots/{slot}/move", handlers.api_session_move)
     app.router.add_get("/api/chat/slots/{slot}", chat.api_chat_slot_detail)
     app.router.add_get("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary)
     # Same path, POST: reading a summary must stay free of side effects, so
