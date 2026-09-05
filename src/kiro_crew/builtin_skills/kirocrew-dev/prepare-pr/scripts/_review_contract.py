@@ -66,6 +66,7 @@ DEFAULT_MARKER_BINDINGS = (
     ("claude-ai-review", "OPUS"),
     ("design-review", "DESIGN"),
     ("ux-review", "UX"),
+    ("first-principles-review", "FIRST-PRINCIPLES"),
 )
 _COMMENT_KEY_RE = re.compile(r"\A\s*<!--\s*([a-z0-9-]+)\s*-->")
 FINDING_RE = re.compile(

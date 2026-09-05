@@ -82,6 +82,10 @@ REVIEWED_STAMP_RE = _review_contract.REVIEWED_STAMP_RE
 BLOCK_MERGE_RE = _review_contract.BLOCK_MERGE_RE
 DEFAULT_MARKER_AUTHORS = _review_contract.DEFAULT_MARKER_AUTHORS
 DEFAULT_MARKER_BINDINGS = _review_contract.DEFAULT_MARKER_BINDINGS
+# `Design-Verdict: CONCERNS`, `UX-Verdict: PASS`, `First-Principles-Verdict: BLOCK`
+VERDICT_LINE_RE = re.compile(
+    r"^[A-Za-z-]+-Verdict:\s*(PASS|CONCERNS|BLOCK)\b", re.MULTILINE | re.IGNORECASE
+)
 _COMMENT_KEY_RE = _review_contract._COMMENT_KEY_RE
 FINDING_RE = _review_contract.FINDING_RE
 DISPOSITION_PREFIX = _review_contract.DISPOSITION_PREFIX
@@ -1021,11 +1025,17 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
             "blocking": [],
             "findings": {},
             "elided": [],
+            "verdicts": {},
             "pinned": only is not None,
         }
     fresh_by_name: dict = {name: False for name in (only or ())}
     findings: dict = {}
     blocking = set()
+    # Whole-design lanes (Design, UX, First Principles) end their body with a
+    # `<Lane>-Verdict: PASS|CONCERNS|BLOCK` line. Only BLOCK gates; CONCERNS is
+    # advisory -- but an unanswered CONCERNS is the review the loop most often
+    # misses, because nothing else prints it. Surface it, never gate on it.
+    verdicts: dict = {}
     # Reviewers whose freshness rests on an ELIDED stamp (see sha_matches). The
     # gate accepts those, but silently swallowing them would hide the emitter
     # defect for good: nobody would learn a lane is mangling the SHA it was
@@ -1052,6 +1062,9 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
                     findings[name] = len(FINDING_LINE_RE.findall(body))
                     if not any(head_sha.startswith(sha) for sha in own_stamps):
                         elided.add(name)
+                    vm = VERDICT_LINE_RE.search(body)
+                    if vm:
+                        verdicts[name] = vm.group(1).upper()
         for sha in BLOCK_MERGE_RE.findall(body):
             if sha_matches(sha, head_sha):
                 blocking.add(name or "(unattributed)")
@@ -1062,6 +1075,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
         "blocking": sorted(blocking),
         "findings": findings,
         "elided": sorted(elided),
+        "verdicts": verdicts,
         "pinned": only is not None,
     }
 
@@ -1606,7 +1620,7 @@ def main(argv):
     else:
         for name in sorted(marker_eval["findings"]):
             print(
-                "  - {}: fresh{}{}{}".format(
+                "  - {}: fresh{}{}{}{}".format(
                     sanitize(name),
                     "  [BLOCK-MERGE]" if name in marker_eval["blocking"] else "",
                     (
@@ -1618,6 +1632,19 @@ def main(argv):
                         "  [stamp elided the head's middle - emitter transcription "
                         "artifact, verified against this head]"
                         if name in (marker_eval.get("elided") or ())
+                        else ""
+                    ),
+                    (
+                        "  verdict={}{}".format(
+                            marker_eval["verdicts"][name],
+                            (
+                                "  <- whole-design review: answer per item, and read it "
+                                "BEFORE fixing line-level findings"
+                                if marker_eval["verdicts"][name] == "CONCERNS"
+                                else ""
+                            ),
+                        )
+                        if name in (marker_eval.get("verdicts") or {})
                         else ""
                     ),
                 )

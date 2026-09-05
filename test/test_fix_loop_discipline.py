@@ -452,7 +452,9 @@ class TestDeferralDiscipline:
         text = PREPARE_PR.read_text(encoding="utf-8")
         assert LABEL in text
         assert "Due: YYYY-MM-DD" in text
-        assert "never deferrable" in text
+        # The skill no longer forbids deferral locally; it must still tell the agent
+        # how the server treats a deferred security-class finding.
+        assert "do not accept a deferral as a ruling on a security" in text
 
 
 @pytest.mark.skipif(
