@@ -187,10 +187,24 @@ Two properties to internalise before you design a rollout:
   instantly, and a host that is off takes it when it next starts. The poller waits
   a full interval before its first run, since boot has just fetched from the same
   source — so a fleet restarting together does not stampede your endpoint.
-- **The document is the whole ceiling, not a patch.** The fetched policy replaces
-  the local one outright; there is no merge with `~/.kiro/crew/security_policy.json`
-  and no per-host addendum. Anything a host needs must be in the published
-  document (or in a narrower per-surface profile, which can only tighten).
+- **The document is the whole ceiling, not a patch — but it is one rung of a
+  ladder.** The fetched policy replaces the *previously fetched* one outright; there
+  is no merge of two central documents and no per-host addendum that can loosen what
+  you published. What it does not replace is the rest of the ladder: a managed
+  profile above it still outranks it, and a local `security_policy.json` below it
+  still tightens it. That holds identically at boot and on every refresh, because
+  both run the same composition — so a host you tightened locally does not quietly
+  lose that tightening at its next successful poll.
+- **The fetched document outranks every local file.** A local policy — including one
+  named by `KIROCREW_SECURITY_POLICY` — can only *tighten* what you published; it
+  cannot loosen a single clause. That reverses the older behaviour, where a local
+  file beat the central one and the fleet ceiling was therefore advisory: anyone who
+  could set an environment variable could point it at a permissive file. The one
+  thing above the fetched document is
+  [the managed tier](#the-managed-tier-a-ceiling-a-standard-user-cannot-touch), and
+  the one way a local file can override rather than narrow is a dated grant you write
+  into the published document yourself — see
+  [Rolling back a bad push](#rolling-back-a-bad-push).
 
 ### The two ways to point a host at a source
 
@@ -205,6 +219,53 @@ The two compose, and the environment wins **per setting** — so a host can be
 redirected to a canary endpoint, or have its interval lengthened during an
 incident, without editing (and re-signing) the document the rest of the fleet is
 reading.
+
+Both of these say *where the document comes from*, not *whether it binds*. Neither
+is a channel a standard user cannot touch: an environment variable is per-process
+and redefinable by whoever launches the process, so your MDM can **set** one but
+never **pin** one, and a bootstrap policy file lives in a directory the user may
+own. If you need the ceiling itself to be untouchable, place it in
+[the managed tier](#the-managed-tier-a-ceiling-a-standard-user-cannot-touch) as
+well — the two work together, since a managed document may carry the
+`distribution` block that names your source.
+
+When it does, that source is **pinned**: the refresh, timeout, cache-age and
+on-unavailable variables are ignored on that host, and so is `KIROCREW_POLICY_URL` once
+the managed block names a `source`, so nobody who can set a variable can point it at a
+document of their own — which is the whole reason to put the block there. If you pin
+only the cadence and leave the `source` out, `KIROCREW_POLICY_URL` still supplies the
+address: it is the only channel left that can, and disregarding it would switch central
+distribution off on that host rather than harden it. They are ignored rather than
+rejected, so setting one does not
+stop the host from starting; you get a warning naming the variables, never their values
+since a URL can carry a token, and a governance audit record. If your managed profile
+says nothing about `distribution` at all, none of this applies to that host and every
+`KIROCREW_POLICY_*` variable works as it always did — there is no fleet choice to
+protect until you publish one. `KIROCREW_POLICY_HEADERS`
+still works, because that credential is per-machine by design and is not your fleet's
+choice of document. A block in any other tier's file keeps the per-setting environment
+override described above.
+
+The full order Kiro Crew loads in, highest first:
+
+| Tier | Where | Role |
+|---|---|---|
+| 1 | the MDM-managed configuration profile | **authority** — the only channel a standard user cannot write |
+| 2 | the centrally distributed document | **authority** — one document, every host |
+| 3 | `KIROCREW_SECURITY_POLICY` | subordinate — tightens only |
+| 4 | a companion edition's packaged policy | subordinate — tightens only |
+| 5 | `~/.kiro/crew/security_policy.json` | subordinate — tightens only |
+
+A `distribution` block is read from the first of those tiers that supplies one — the
+managed profile, then `KIROCREW_SECURITY_POLICY`, then a companion's packaged policy,
+then `~/.kiro/crew/security_policy.json` — so naming a source in the file
+`KIROCREW_SECURITY_POLICY` points at works exactly as naming it in any other tier's
+file.
+
+Tiers 3–5 are mutually exclusive (the first one present is used) and the result is
+the authority narrowed by it: allow-lists intersect, deny-lists union, a strictness
+level takes the stricter value. A subordinate cannot repeal by omission either — a
+scope it simply leaves out keeps the authority's value.
 
 ```bash
 KIROCREW_POLICY_URL=https://config.corp.example/kirocrew/security_policy.json
@@ -251,7 +312,7 @@ Kiro Crew runs as — the file *and* every directory above it**: a source that a
 write, and the refresher would install that ceiling without a restart. A `0444` file in a
 writable directory does not count: it can be replaced by unlink-and-recreate. Use a
 root-owned path or a read-only mount; if what you want is a local, editable policy file, that is
-`KIROCREW_SECURITY_POLICY` (tier 1), not this channel. The validator is a content digest,
+`KIROCREW_SECURITY_POLICY`, not this channel. The validator is a content digest,
 so a host on a shared mount re-reads only when the bytes actually change — including the
 case where you replace the file with a same-size version and preserve its timestamp.
 Plain
@@ -300,11 +361,12 @@ A one-shot CLI run has no background poller, so it reports none even on a host
 whose gateway is polling happily; the live refresher's own state is on
 `GET /api/governance/policy` and in the dashboard's security panel.
 
-`kirocrew policy fetch` fetches now, validates the document, and on success
-installs it and records it as this host's last-known-good. Run from a shell, what
-outlives the command is the validation and the cache write — the install lands in
-that short-lived CLI process, and the running gateway takes the change on its own
-next poll, or immediately at its next start from the cache the fetch just wrote.
+`kirocrew policy fetch` fetches now, folds the document back into the tier ladder,
+validates that composed result, and on success installs it and records the fetched
+document as this host's last-known-good. Run from a shell, what outlives the command is
+the validation and the cache write — the install lands in that short-lived CLI process,
+and the running gateway takes the change on its own next poll, or immediately at its
+next start from the cache the fetch just wrote.
 The command says which of those applies, because with a **boot-only** source (no
 `refresh_interval_secs`) there is no next poll: a gateway already running keeps its
 ceiling until it is restarted. Set a refresh interval if a push has to bind
@@ -351,8 +413,10 @@ effect on the next start:
 
 - `KIROCREW_POLICY_ON_UNAVAILABLE=degrade` — boot, and report the degradation.
 - unset `KIROCREW_POLICY_URL` — stop fetching centrally on this host.
-- `KIROCREW_SECURITY_POLICY=/path/to/local.json` — govern from a local file,
-  which outranks the central tier entirely.
+- `KIROCREW_SECURITY_POLICY=/path/to/local.json` — supply a local ceiling so the
+  host has one. Note what this is **not**: a local file no longer outranks the
+  central tier, so on a host that *did* reach the endpoint it only tightens what you
+  published. It is a way to give a host a ceiling, not a way to escape one.
 
 A refusal to establish the ceiling aborts every `kirocrew` command on that host,
 `policy source` included, because each of them boots the same platform context.
@@ -364,16 +428,258 @@ If you cannot tolerate a non-booting host, set `degrade` fleet-wide and watch th
 governance indicator instead. That is a real trade, not a workaround: a degraded
 host runs under whatever local policy it has, which may be none.
 
+### The managed tier: a ceiling a standard user cannot touch
+
+Everything above answers *where the document comes from*. This answers *who can
+replace it*. An environment variable is per-process and redefinable by whoever
+launches the process, and a policy file under the user's own data home is theirs to
+edit — so neither is a channel your fleet can rely on. A **managed configuration
+profile** is: it lands as a root-owned file that the MDM re-asserts on every
+check-in, so a local edit is reverted rather than honoured, and it is the **highest**
+tier, above every environment variable and every local file.
+
+The tier is **inert when the file is absent**, which is every standalone install, so
+adopting it changes nothing for hosts you have not targeted.
+
+| Platform | Path Kiro Crew reads | How you write it |
+|---|---|---|
+| macOS | `/Library/Managed Preferences/dev.kirocrew.plist` | a configuration profile with preference domain `dev.kirocrew` |
+| Linux | `/etc/kirocrew/security_policy.json` | config management (Ansible, Puppet, Chef, Intune for Linux) writing as root |
+
+The document is the **same schema** as `security_policy.json` — the same `version`
+and `boot`, the same governed scopes (`tools`, `commands`, `network`, `filesystem`,
+`capabilities.*` …), and the same `updates`, `distribution`, `break_glass` and
+`identity` blocks. [The example policy](assets/security-policy.example.json) is a
+valid managed document as it stands. On macOS it is that document expressed as a
+property list; on Linux it is the JSON verbatim. Kiro Crew picks the parser from the
+file extension, so do not rename either one.
+
+**Jamf Pro.** Computers → Configuration Profiles → New → **Application & Custom
+Settings** → *External Applications*, source *Custom Schema* or *Upload*, with
+**Preference Domain** `dev.kirocrew` and your policy as the payload. Scope it to the
+smallest test group first, then widen. Jamf writes
+`/Library/Managed Preferences/dev.kirocrew.plist` on the next check-in and rewrites it
+on every subsequent one — that re-assertion is the property the tier depends on, so do
+not deliver the file with a script instead.
+
+**Intune (macOS).** Devices → Configuration → Create → macOS → Templates →
+**Preference file**, with **Preference domain name** `dev.kirocrew` and the plist
+uploaded as the property list file. Same result, same re-assertion.
+
+**Linux.** Write the JSON as root. Ansible, for example:
+
+```yaml
+- name: install the Kiro Crew managed ceiling
+  ansible.builtin.copy:
+    src: security_policy.json
+    dest: /etc/kirocrew/security_policy.json
+    owner: root
+    group: root
+    mode: "0644"
+```
+
+**A file that fails the trust checks is REFUSED, not ignored.** Kiro Crew does not
+fall through to a lower tier when the managed file looks wrong, because falling
+through is exactly the override this tier exists to remove — so the host fails to
+start and says why. What it requires:
+
+- **owned by root** (uid 0). A file at the managed path owned by anyone else is a
+  misconfiguration or an attempt, and neither should quietly widen the ceiling.
+- **not group- or world-writable** — no `0o022` bits. `0644` is right; `0664` is
+  refused, because anyone in the group could rewrite the fleet ceiling.
+- **a regular file, not a symlink.** The open uses `O_NOFOLLOW`, so a symlink planted
+  at the managed path is refused rather than followed.
+- **at most 1 MiB**, and parseable as a plist (macOS) or JSON (elsewhere) **object**.
+- **openable by the account Kiro Crew runs as.** Ownership and mode govern who may
+  *write* the file; Kiro Crew still has to read it, so `0644` under a traversable
+  directory is what satisfies both. Tightening the file to `0600`, or the directory to
+  root-only, on a host where Kiro Crew does not run as root fails the start with the
+  path in the message rather than falling through to a lower tier — that fall-through is
+  what an earlier existence pre-check did when the directory denied it, quietly
+  disabling the ceiling the hardening was meant to protect.
+
+**There is no managed tier on Windows.** A Windows host reads no managed document at
+all — not a refused one, an absent one — so treat the managed profile as a macOS and
+Linux control and give a Windows fleet its ceiling through
+[central distribution](#central-policy-distribution-one-security-policy-every-host)
+instead. The reason is that the plausible location, `%ProgramData%\KiroCrew\`, is
+resolved from an environment variable the launching user controls, and the checks above
+cannot make up for it: Windows has no uid to compare, so the ownership and mode tests
+do not apply and only the regular-file test would remain. That combination would let a
+standard user point the **highest** authority at a file they wrote, which is worse than
+having no managed tier — so the tier is absent until it can be built on the
+non-overridable known-folder API with a real ACL check, which is not in this release.
+
+If a host refuses to start, `kirocrew doctor` is exempt from the abort and will name
+the reason.
+
+**How far this goes — stated plainly.** None of this binds a user with **local root**.
+Root can rewrite the managed file, clear the opt-in in `admission_policy.json`, or
+edit the installed Python — the wheel installs readable `.py` files and hiding them
+would not be a boundary. What you get is worth having anyway:
+
+- a **standard user cannot loosen the ceiling at all** — there is no tier they can
+  write that widens it; and
+- an **admin who edits the managed file** has that edit reverted by the MDM on its
+  next check-in, and the change is in the audit trail.
+
+Making the ceiling hold against root needs server-side attestation — the client
+proving which policy digest it loaded, with no service on a mismatch. That is not
+built, and it is not a thing you can configure your way to today.
+
+### Signing with a public key you publish
+
+Ownership of the managed file proves a standard user did not write it. A signature
+proves **you** authored the bytes, which is the other half — and it is the half that
+covers a fetched document, a compromised distribution endpoint, or a file swapped in
+transit before the MDM wrote it. Kiro Crew verifies **Ed25519** and the trust root
+holds only the **public** half, so reading a host confers no ability to forge a
+ceiling.
+
+Generate a key pair once, and keep the private half off every managed host:
+
+```bash
+openssl genpkey -algorithm ed25519 -out policy-signing.key      # keep this OFF the fleet
+openssl pkey -in policy-signing.key -pubout -outform DER | tail -c 32 | base64
+```
+
+Publish the public half in `admission_policy.json`, keyed by the policy's
+`identity.issuer`, alongside the two opt-ins:
+
+```json
+{
+  "require_policy_signature": true,
+  "require_asymmetric_policy_signature": true,
+  "trust_public_keys": {
+    "corp-security": "kEo0…base64 or hex, the 32 raw bytes…="
+  }
+}
+```
+
+- **`trust_public_keys`** is checked **before** the legacy symmetric `trust_keys`, so a
+  fleet migrating can carry both during the rollout and have the strong proof win per
+  issuer. Base64 (padding optional) or hex is accepted — whichever your tooling emits.
+- **`require_policy_signature`** demands a verified signature on **every** tier: the
+  managed profile, the fetched document, and any local file. Place the key before you
+  set it, or every policy is refused.
+- **`require_asymmetric_policy_signature`** additionally refuses to accept a symmetric
+  HMAC verdict as proof. Set it once you have finished migrating; a fleet already
+  signing with a shared secret must not have its ceiling invalidated by an upgrade.
+
+Both flags and the key live in `admission_policy.json` — or in the file
+`KIROCREW_ADMISSION_POLICY` names — rather than in the policy, because a document must
+not be the authority on whether it has to be authentic: an attacker rewriting the
+policy would simply clear such a flag. That file is on the protected floor the agent
+cannot read or write, and it is **per-host**: nothing distributes it, so place it with
+the same config management that places the managed profile.
+
+**You cannot deliver the key in the configuration profile that carries the ceiling.**
+There is no policy-side key at all: a policy document containing `trust_public_keys` is
+**refused**, because an unknown top-level key fails closed. `admission_policy.json` is
+the only trust root, and it is placed as its own file.
+
+Write the flags as real JSON **booleans**, not strings.
+`"require_asymmetric_policy_signature": "false"` — an easy mistake in a hand-edited or
+templated file — is dropped with a warning rather than read as `false`, because reading
+it as truthy would silently turn the requirement **on** and reject every correctly
+HMAC-signed ceiling you publish.
+
+**What signing does not buy, stated plainly.** The trust root is a file in the user's
+own data home, and an environment variable can point Kiro Crew at a different one — so
+a standard user on the host can clear `require_policy_signature` and
+`require_asymmetric_policy_signature`, in place or by redirection. Signing binds a user
+who does not edit their own trust root: it makes a document you published
+tamper-**evident** to a host that loads it, and it does not make the requirement itself
+unclearable on that host. Protecting the trust root is a separate change of comparable
+size to central distribution, and it is not built.
+
+Coverage is the whole document minus the signature, `identity.issuer` included, so a
+signed policy cannot be re-labelled as issued by someone else, and re-indenting the
+file does not invalidate it while changing any value does. There is still **no signing
+runbook**: no `kirocrew policy sign`, no key distribution tooling, no rotation
+procedure. You compute the signature over the canonical form (sorted keys, compact
+separators, UTF-8) and place the key yourself.
+
+### If you leave signing off
+
+Verification is **advisory by default**: with `require_policy_signature` unset — as
+[the example policy](assets/security-policy.example.json) leaves it — an unsigned
+policy still loads and still governs, at every tier, with no key to provision. That
+is a reasonable starting point when the endpoint is already an authenticated,
+TLS-fronted internal service and the managed profile is delivered by an MDM you
+trust; what you give up is detecting a document that was altered between your hand
+and the host's. `kirocrew policy show` prints the verdict, so you can see which
+of the two you are running.
+
 ### Rolling back a bad push
 
 One document governing every host is the widest blast radius in this model, so
 plan the retraction before the first rollout.
 
-`KIROCREW_SECURITY_POLICY` — an explicit **local** file path — outranks the
-central tier and is the retraction lever. It is reachable without fixing the
-endpoint, which is the point: an operator recovering from a bad push needs a
-channel that outranks the thing that broke. Keep a known-good policy on each host
-(or in your host image) so setting one variable is the whole recovery.
+**The lever is a grant you write into the ceiling, not a variable you set on the
+host.** `KIROCREW_SECURITY_POLICY` no longer outranks the central tier — it can only
+tighten it — because while it did, the fleet ceiling was advisory: any account that
+could set an environment variable could point it at a permissive file. What replaces
+it is `break_glass`, a dated block in an **authority** document (the managed profile
+or the published one) naming the lower tier it releases:
+
+```json
+"break_glass": {
+  "tiers": ["env"],
+  "expires": "2026-09-30T00:00:00Z"
+}
+```
+
+While that grant is live, a file named by `KIROCREW_SECURITY_POLICY` **replaces** the
+authority outright rather than narrowing it — which is what recovery requires, since
+intersecting cannot undo a clause that is too strict. Three things to know before you
+rely on it:
+
+- **`expires` is required.** A block with no parseable expiry grants nothing. An
+  undated grant is a permanent hole that outlives the incident it was opened for, so
+  the fail-closed direction is also the one an operator who forgets to remove the
+  block wants. Bare dates are read as UTC.
+- **`tiers` accepts only `env`, `bundled` and `home`.** `managed` and `central` are
+  not valid — they *are* the authority, so "grant yourself an override" is not
+  expressible. A misspelled tier name is **refused**, not ignored, so you find out
+  when you publish rather than during the incident.
+- **Every use is loud, and the record comes first.** Pulling the lever writes a
+  `security_policy_break_glass` audit record naming both tiers and logs a warning
+  carrying the expiry, so an operator reading logs during an incident sees that a
+  local document is in charge. If that record cannot be written the override is
+  **refused** and startup fails naming both tiers, rather than the rollback taking
+  effect unrecorded — so a host that cannot write its own audit trail is a host where
+  the lever does not work, and that is deliberate. Ordinary tightening is unaffected:
+  it is audited best-effort and an unwritable log never blocks it.
+
+That has a consequence for how you plan: **the grant has to be published before you
+need it.** A bad push that omits `break_glass` leaves nothing on the host that beats
+it, so carry the block in the document you publish (with a rolling expiry) if you want
+one-variable recovery, or be prepared to fix the endpoint and let hosts re-fetch.
+Either way, keep a known-good policy on each host or in your host image.
+
+A live grant also stands the poller down, so your rollback is not overwritten a minute
+later: `kirocrew policy fetch` refuses before spending a request and says why, each
+background cycle refuses on the same test before spending one, and an install would be
+refused anyway as a last guard. The loop itself keeps **running** — it is the expiry
+that ends the rollback, and a loop that had stopped would not be there to notice it, so
+a dated grant would have become a permanent one until the host restarted. Because the
+refusal is decided before the fetch, a cycle under a live grant costs no request, and
+the first cycle after the grant lapses re-fetches and reinstates the fleet ceiling with
+no operator action. A local file **without** a grant does none of that — it is merely a
+subordinate, and refreshes carry on installing the authority it tightens.
+
+The stand-down covers both states you can be in, and every tier a grant can name.
+**After a restart** the ladder has recomposed and the installed ceiling *is* the
+released rollback, carrying the grant that released it — so the poller recognises the
+lever by asking which tier the running ceiling came from, which is what makes a granted
+`home` or `bundled` rollback stand it down exactly as an `env` one does. **Before a
+restart**, when you have just dropped the rollback document and nothing has recomposed
+yet, it instead asks whether the live grant names `env` or `home` and whether such a
+file is there now — that is precisely the moment a poll would install over the lever you
+just pulled, so it is checked rather than assumed. A `KIROCREW_SECURITY_POLICY` rollback
+is additionally required to exist, since a variable can outlive the file it names; a
+packaged or home document is not.
 
 A running fleet is better protected than a restarting one, and the difference
 matters when you plan:
@@ -391,46 +697,15 @@ matters when you plan:
   (with `KIROCREW_POLICY_URL` pointed at a canary object) before you publish it
   to the fleet's URL.
 
-### Signing, and how far it goes
-
-A fetched policy may carry a detached signature in its `identity` block. Making a
-**verified** signature mandatory is one switch, and it is deliberately not in the
-policy: `require_policy_signature` in the operator-controlled
-`admission_policy.json`, which demands one on *every* policy tier, the fetched one
-included.
-
-The trust key lives in that same file, under `trust_keys` keyed by the policy's
-`identity.issuer`. Both live there rather than in the policy for the same reason: a
-document must not be the authority on whether it has to be authentic, since an
-attacker rewriting the policy would simply clear such a flag — and
-`admission_policy.json` is on the protected floor the agent cannot write.
-
-Coverage is the whole document minus the signature, `identity.issuer` included, so a
-signed policy cannot be re-labelled as issued by someone else, and re-indenting the
-file does not invalidate it while changing any value does.
-
-Two limitations, stated plainly:
-
-- **The primitive is symmetric HMAC-SHA256.** Any host that can verify a
-  signature holds a secret that can also *produce* one, so this detects an
-  endpoint or transport that tampered with the document — not a host that decided
-  to forge its own. It raises the bar; it is not a public-key attestation. An
-  asymmetric verify swaps in behind the same helper if that changes.
-- **No signing runbook ships.** There is no `kirocrew policy sign`, no key
-  distribution tooling and no rotation procedure; you compute the signature and
-  place the key yourself. `require_policy_signature` on a fleet with no matching
-  trust key means every policy is refused, so place the key first. Leaving it
-  `false` — as [the example policy](assets/security-policy.example.json) does — is
-  a reasonable starting point when the endpoint is already an authenticated,
-  TLS-fronted internal service.
-
 ### What is not included
 
 So you do not plan around capabilities that are not here:
 
-- **No MDM or directory integration.** Kiro Crew reads an environment variable
-  and an HTTPS URL. Jamf, Intune, Group Policy, Ansible and friends are how a
-  host gets pointed at a source; nothing on this side knows about them.
+- **No directory integration, and MDM only as a file.** Kiro Crew reads a managed
+  configuration profile at a fixed per-platform path, an environment variable and an
+  HTTPS URL. Jamf, Intune, Group Policy and Ansible are how that file arrives and how
+  a host gets pointed at a source; nothing on this side talks to them, enrols with
+  them, or knows whether a host is enrolled at all.
 - **No fleet-compliance reporting.** There is no console that lists which hosts
   adopted which version. Each host reports only its own posture, over
   `kirocrew policy source`, the dashboard's policy viewer, and its own audit log
@@ -443,8 +718,9 @@ So you do not plan around capabilities that are not here:
   who reads it. Canarying means publishing to a second object and pointing a few
   hosts at it with `KIROCREW_POLICY_URL`.
 - **Nothing is distributed except the policy.** Profiles, the admission policy
-  (including the trust keys), `config.json` and agent configuration are all still
-  per-host.
+  (including `trust_public_keys` and the two signature opt-ins), `config.json` and
+  agent configuration are all still per-host — place them with the same config
+  management that places the managed profile.
 
 ## Related
 

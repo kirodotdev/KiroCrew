@@ -30,21 +30,35 @@ refresh interval changed without editing a signed document.
 Precedence, and why this tier sits where it does
 ------------------------------------------------
 
-``load_security_policy`` resolves, first present winning:
+``load_security_policy`` resolves, highest first.  The top two tiers are
+AUTHORITIES; every tier below one of them may only **tighten** it:
 
-1. ``KIROCREW_SECURITY_POLICY`` — an explicit LOCAL file.
+1. the **MDM-managed configuration profile** — root-owned, re-asserted by the
+   device management system on every check-in.
 2. **this tier** — the centrally-distributed document.
-3. the companion-bundled resource.
-4. ``<data-home>/security_policy.json``.
-5. none → ungoverned.
+3. ``KIROCREW_SECURITY_POLICY`` — an explicit LOCAL file.
+4. the companion-bundled resource.
+5. ``<data-home>/security_policy.json``.
+6. none → ungoverned.
 
-Tier 1 stays above this one because it is the **rollback lever**.  A bad central
-push is the failure mode with the widest blast radius in the whole model — one
-document, every host — and an operator recovering from it needs a channel that
-outranks the thing that broke, reachable without waiting for the endpoint to be
-fixed.  Tiers 3 and 4 sit below because they are what the fetched document is
-*replacing*; a fleet that ships a bootstrap policy naming a source expects the
-source to win, or the bootstrap could never be superseded.
+Tiers 3–5 are mutually exclusive (first present wins among them) and collectively
+form the *subordinate*, which intersects into the authority above it.  So this tier
+now outranks ``KIROCREW_SECURITY_POLICY``, which it did not use to: while the env
+file sat above the fetched document the enterprise ceiling was advisory — any
+account that can set an environment variable could point it at a permissive file and
+the fleet's ceiling never bound.  Tiers 4 and 5 sit below for the older reason,
+unchanged: they are what the fetched document is *replacing*, and a fleet that ships
+a bootstrap policy naming a source expects the source to win, or the bootstrap could
+never be superseded.
+
+The **rollback lever** survives that reversal, but as an explicit grant instead of an
+accident of ordering.  A bad central push is still the failure mode with the widest
+blast radius in the whole model — one document, every host — so an authority
+document may carry a dated ``break_glass`` block naming the tier it releases
+(``governance.BreakGlass``), and a released tier REPLACES the authority outright.
+:func:`break_glass_local_policy` is this module's half of that contract: a live grant
+for the ``env`` tier is what lets a local file outrank a live REFRESH, and without one
+a local file merely intersects and cannot displace anything.
 
 Availability, and the one thing this must never do
 --------------------------------------------------
@@ -120,15 +134,19 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import ENV_TRUTHY
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
+    BREAK_GLASS_TIERS,
     DEFAULT_FETCH_TIMEOUT_SECS,
     MAX_DURATION_SECS,
     MAX_POLICY_BYTES,
     MIN_REFRESH_INTERVAL_SECS,
     SIGNATURE_VERIFIED,
+    TIER_ENV,
+    TIER_HOME,
     UNAVAILABLE_DEGRADE,
     UNAVAILABLE_FAIL_CLOSED,
     GovernanceCeiling,
     PolicyDistribution,
+    _policy_home_path,
 )
 from kiro_crew.platform.governance_health import mark_governance_incident
 from kiro_crew.platform_compat import (
@@ -489,8 +507,9 @@ def _fetch_file(request: FetchRequest) -> FetchedPolicy:
     read-only file. The field manual already tells
     operators to distribute to a "read-only, root-owned path"; this makes that a
     precondition instead of advice. An operator who genuinely wants a local, editable
-    policy file has the channel designed for it — ``KIROCREW_SECURITY_POLICY``, tier 1,
-    which is read once at boot and outranks this tier anyway.
+    policy file has the channel designed for it — ``KIROCREW_SECURITY_POLICY``, which is
+    read once at boot and TIGHTENS this tier (and replaces it outright only while an
+    authority document's ``break_glass`` grant for the ``env`` tier is live).
 
     **Opened ONCE, and the validator is a DIGEST of the bytes read.**  Stat-then-read is
     two trips to a path an administrator (or anything sharing the mount) can replace in
@@ -530,8 +549,9 @@ def _fetch_file(request: FetchRequest) -> FetchedPolicy:
                 "as. A file:// distribution source must be read-only to it, or an agent "
                 "subprocess could publish its own ceiling. Use a root-owned path or a "
                 "read-only mount; for a local, editable policy use "
-                "KIROCREW_SECURITY_POLICY instead — that is the channel designed for it, "
-                "and it outranks this tier anyway."
+                "KIROCREW_SECURITY_POLICY instead — that is the channel designed for "
+                "it; it tightens this tier, and replaces it outright only while a "
+                "break_glass grant for the env tier is live."
             )
         with os.fdopen(fd, "rb", closefd=False) as handle:
             body = handle.read(MAX_POLICY_BYTES + 1)
@@ -640,6 +660,26 @@ def request_headers() -> Dict[str, str]:
     return {str(k): str(v) for k, v in parsed.items()}
 
 
+def _audit_managed_override_ignored(names: "list[str]") -> None:
+    """Best-effort audit that a managed-source override was refused.  Never raises."""
+    try:
+        from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+        from kiro_crew.sel import sel
+
+        sel().log_governance_decision(
+            scope="distribution",
+            item=",".join(names),
+            outcome="denied",
+            rule="managed-source-pinned",
+            layer="policy",
+            reason="the managed tier declares the central distribution",
+            session_key=HOST_SESSION_KEY,
+            tool_name="policy_distribution",
+        )
+    except Exception:
+        logger.debug("could not audit the ignored managed-source override", exc_info=True)
+
+
 def resolve_distribution(declared: Optional[PolicyDistribution] = None) -> PolicyDistribution:
     """The effective distribution settings: the env channel over *declared*.
 
@@ -648,6 +688,54 @@ def resolve_distribution(declared: Optional[PolicyDistribution] = None) -> Polic
     without editing (and re-signing) the published document.
     """
     base = declared or PolicyDistribution()
+
+    if base.managed:
+        # The MANAGED tier declared this source, so the environment does not get a
+        # vote. Honouring KIROCREW_POLICY_URL here would let any account that can set
+        # a variable choose which document becomes the fleet ceiling -- the exact
+        # redirection the managed tier exists to prevent, and enough to strip every
+        # centrally supplied restriction when the managed document delegates the real
+        # policy to a fetched one.
+        #
+        # Attempts are IGNORED rather than raised. Raising would hand an unprivileged
+        # account a denial-of-service lever over a managed host, and the security goal
+        # is only that the override cannot take effect. Credentials are not affected:
+        # they live in KIROCREW_POLICY_HEADERS, are read elsewhere, and are per-machine
+        # by design.
+        pinned = [
+            POLICY_REFRESH_ENV,
+            POLICY_TIMEOUT_ENV,
+            POLICY_MAX_AGE_ENV,
+            POLICY_UNAVAILABLE_ENV,
+        ]
+        if base.source:
+            # The fleet named an address, so the address is pinned too.
+            pinned.insert(0, POLICY_URL_ENV)
+        else:
+            # The managed document declared the CADENCE but no address. That is the
+            # documented two-channel split -- whatever provisions the host owns the
+            # URL while the fleet publishes the interval, the staleness bound and
+            # on_unavailable -- so KIROCREW_POLICY_URL is the ONLY channel that can
+            # supply the source. Ignoring it here hardened nothing, because there is
+            # no redirection to refuse when the fleet never chose an address; it just
+            # left the source empty, which switches the central tier off entirely and
+            # drops every centrally supplied restriction. That is the looser-ceiling
+            # failure this whole ladder exists to prevent, arrived at through the
+            # code meant to prevent it.
+            env_source = os.environ.get(POLICY_URL_ENV, "").strip()
+            if env_source:
+                base = replace(base, source=env_source)
+        attempted = sorted(name for name in pinned if os.environ.get(name, "").strip())
+        if attempted:
+            # The names are our own constants, never the values, which could be a
+            # credential-bearing URL.
+            logger.warning(
+                "ignoring %s: the managed security policy declares the central "
+                "distribution and a local environment override cannot redirect it",
+                ", ".join(attempted),
+            )
+            _audit_managed_override_ignored(attempted)
+        return base
 
     source = os.environ.get(POLICY_URL_ENV, "").strip() or base.source
     refresh = _env_number(POLICY_REFRESH_ENV, whole=True)
@@ -1931,6 +2019,46 @@ def _unavailable(dist: PolicyDistribution, reason: str) -> None:
     )
 
 
+def _managed_safe_headers(dist: PolicyDistribution) -> Dict[str, str]:
+    """Per-machine headers, minus any that could redirect a MANAGED source.
+
+    ``resolve_distribution`` pins the address of a managed distribution so a local
+    environment override cannot point it elsewhere -- but it explicitly left
+    ``KIROCREW_POLICY_HEADERS`` alone, on the grounds that headers carry credentials and
+    are per-machine by design. ``Host`` breaks that reasoning: it is not a credential, it
+    selects the virtual host, and a shared reverse proxy in front of the fleet endpoint
+    routes on it. So a standard account could leave the pinned URL untouched and still be
+    served an attacker-controlled unsigned document -- the redirection the pin exists to
+    refuse, arrived at through the one channel the pin did not cover.
+
+    Matched case-insensitively because HTTP header names are case-insensitive and
+    ``urllib`` will send whatever spelling it is given: a check for ``Host`` alone is
+    defeated by ``host`` or ``HOST``.
+
+    DROPPED rather than raised, following the same rule ``resolve_distribution`` states
+    for the variables it pins: raising would hand an unprivileged account a
+    denial-of-service lever over a managed host, and the security goal is only that the
+    override cannot take effect. Every other header, credentials included, is untouched.
+    """
+    headers = request_headers()
+    if not dist.managed:
+        return headers
+    dropped = sorted(name for name in headers if name.strip().lower() == "host")
+    if not dropped:
+        return headers
+    kept = {name: value for name, value in headers.items() if name.strip().lower() != "host"}
+    # The header NAME only, never its value -- a Host value names the attacker's vhost and
+    # the surrounding log is not the place to republish it.
+    logger.warning(
+        "ignoring the %s header from %s: the managed security policy pins the central "
+        "distribution and a local header cannot redirect it",
+        ", ".join(dropped),
+        POLICY_HEADERS_ENV,
+    )
+    _audit_managed_override_ignored([f"{POLICY_HEADERS_ENV}:Host"])
+    return kept
+
+
 def fetch_once(dist: PolicyDistribution, cached: Optional[CachedPolicy] = None) -> FetchedPolicy:
     """One conditional fetch through the registered transport for *dist.source*."""
     fetcher = _fetcher_for(dist.source)
@@ -1938,7 +2066,7 @@ def fetch_once(dist: PolicyDistribution, cached: Optional[CachedPolicy] = None) 
         FetchRequest(
             url=dist.source,
             timeout_secs=dist.effective_timeout(),
-            headers=request_headers(),
+            headers=_managed_safe_headers(dist),
             etag=cached.etag if cached else "",
             last_modified=cached.last_modified if cached else "",
         )
@@ -2054,26 +2182,115 @@ class RefreshOutcome:
     signature_state: str = ""
 
 
-def tier1_local_policy() -> str:
-    """The explicit local policy path that OUTRANKS this tier, or ``""``.
+def break_glass_local_policy() -> str:
+    """The local policy path an ACTIVE break-glass grant lets outrank this tier, or ``""``.
 
-    ``KIROCREW_SECURITY_POLICY`` is precedence tier 1 and the documented rollback
-    lever: an operator recovering from a bad central push pins a local file, and the
-    whole recovery story rests on that file winning. It has to win against a live
-    REFRESH as well as against a boot, and a refresh is where it is easiest to miss —
-    the poller is already running when the file appears.
+    ``KIROCREW_SECURITY_POLICY`` no longer outranks the central document merely by
+    existing — it is a subordinate tier that TIGHTENS the fetched ceiling, and a
+    refresher must not treat it as a reason to stop. The rollback lever it used to be
+    is now an explicit grant: an authority document carries a dated ``break_glass``
+    block naming the tier it releases, and only while that grant is live does a local
+    file REPLACE the fetched ceiling rather than narrow it.
 
-    Checked by path EXISTENCE rather than by inferring provenance from what this
-    process happens to have installed. That is what makes it exact: it asks the same
-    question ``load_security_policy`` asks, so the refresher cannot disagree with the
-    ladder. It also stays correct in the case digest-based inference gets wrong — a
-    host that booted UNGOVERNED under ``degrade`` and then becomes able to reach its
-    source has no tier-1 file, so the refresh proceeds and the ceiling finally binds.
+    So both halves have to hold before a refresh stands down:
+
+    * the env variable names a file that EXISTS — the same question
+      ``load_security_policy`` asks, so the refresher cannot disagree with the ladder,
+      and a stale variable naming a deleted file cannot freeze the fleet policy; and
+    * the ceiling currently INSTALLED grants break-glass to the ``env`` tier and that
+      grant has not expired.
+
+    Both, because either alone gets a real case wrong. Without the grant test a plain
+    local file would block every refresh again — the advisory-ceiling hole the
+    precedence reversal exists to close. Without the existence test an authority that
+    merely *offers* the lever would stop polling on a host where no operator ever
+    pulled it.
+
+    The grant is read off the installed ceiling through
+    ``context.installed_context()``, deliberately not ``current_context()``: the
+    no-context answer here is "grant nothing", which is the conservative one (a
+    refresh proceeds and the fleet ceiling binds), and resolving a context to learn
+    that would make merely asking the question compose a ceiling. An unbooted process,
+    an ungoverned host, and an authority document carrying no ``break_glass`` block all
+    answer the same way — nothing is blocked.
     """
-    raw = os.environ.get("KIROCREW_SECURITY_POLICY", "").strip()
-    if not raw:
+    from kiro_crew.platform.context import installed_context
+
+    installed = installed_context()
+    ceiling = getattr(installed, "governance", None) if installed is not None else None
+    if ceiling is None:
         return ""
-    return raw if Path(raw).exists() else ""
+    # Ask which tier actually PRODUCED the installed ceiling, rather than asking only
+    # about ``env``. ``break_glass.tiers`` may name env, bundled or home, so testing a
+    # single tier let a live, authorised home/bundled rollback be installed over --
+    # the same failure the env case exists to prevent, one tier along.
+    grant = ceiling.break_glass
+    tier = getattr(ceiling, "tier", "") or ""
+
+    # Shape 1 -- the installed ceiling IS the released rollback. This is the state
+    # after a restart: the ladder recomposed, the grant travelled with the document it
+    # released, so the ceiling names its own subordinate tier. Testing the tier the
+    # ceiling actually came from (rather than ``env`` alone) is what makes a granted
+    # home or bundled rollback stand a refresh down too.
+    if tier in BREAK_GLASS_TIERS and grant.grants(tier):
+        # One branch per tier, because "the document is still there" is a different
+        # question for each and the previous single exemption got two of them wrong:
+        #
+        #   env      -- a VARIABLE can outlive the file it names, so re-check the path.
+        #   home     -- a user file the operator can DELETE, and deleting it is how a
+        #               rollback ordinarily ends, so re-check it too. Exempting it kept
+        #               a deleted home rollback rejecting every refresh until expiry.
+        #   bundled  -- packaged inside the edition. It cannot be removed independently
+        #               of the install, so there is nothing to re-check.
+        if tier == TIER_ENV:
+            raw = os.environ.get("KIROCREW_SECURITY_POLICY", "").strip()
+            return raw if raw and Path(raw).exists() else ""
+        if tier == TIER_HOME:
+            return f"the {tier} tier policy" if _policy_home_path().exists() else ""
+        return f"the {tier} tier policy"
+
+    # Shape 2 -- the AUTHORITY is installed, its grant is live, and the operator has
+    # just dropped the rollback document without restarting. Nothing has recomposed
+    # yet, so shape 1 cannot see it -- and this is precisely the moment a poll would
+    # install over the lever the operator just pulled. Only env and home can appear
+    # mid-run; a granted bundled document is packaged, so it was already present at
+    # boot and shape 1 covers it.
+    # Tiers 3-5 are MUTUALLY EXCLUSIVE in the loader -- the first present one wins -- so
+    # "a granted tier's file exists" is not the same question as "that tier governs". A
+    # present env document makes home unreachable, and standing the poll down on a home
+    # grant anyway froze central refreshes for good on the strength of a grant for a tier
+    # that could never have composed. Asking the loader's question instead is what keeps
+    # the refresher and the ladder from disagreeing about who is subordinate.
+    env_raw = os.environ.get("KIROCREW_SECURITY_POLICY", "").strip()
+    env_present = bool(env_raw) and Path(env_raw).exists()
+    # Bundled outranks home (the loader resolves managed -> env -> bundled -> home), so
+    # a present bundled resource makes home unreachable exactly as a present env
+    # document does. Read through the same remembered value the ladder composes from,
+    # so the refresher and the loader cannot disagree about who is subordinate.
+    from kiro_crew.platform.governance import _LAST_BUNDLED
+
+    bundled_present = _LAST_BUNDLED is not None
+    for candidate in (TIER_ENV, TIER_HOME):
+        if not grant.grants(candidate):
+            continue
+        if candidate == TIER_ENV:
+            if env_present:
+                return env_raw
+            continue
+        if env_present or bundled_present:
+            # Either one outranks home, so home is not the subordinate and its grant
+            # cannot stand a refresh down. Honouring it anyway froze central refreshes
+            # for the whole grant window on the strength of a rollback that could never
+            # have composed. A granted bundled document is itself packaged and present
+            # at boot, so shape 1 has already covered that case.
+            break
+        # ``_policy_home_path`` rather than a local copy of the path: the refresher must
+        # ask the SAME question the ladder asks, and two spellings of the home location
+        # is how they would drift apart.
+        home = _policy_home_path()
+        if home.exists():
+            return str(home)
+    return ""
 
 
 def _body_digest(body: bytes) -> str:
@@ -2114,15 +2331,33 @@ def validate_ceiling(ceiling: GovernanceCeiling) -> None:
     from kiro_crew.platform.governance import assert_policy_signature_satisfied
     from kiro_crew.platform.governance_profiles import assert_profile_floor
 
-    tier1 = tier1_local_policy()
-    if tier1:
+    break_glass = break_glass_local_policy()
+    if break_glass:
         raise PlatformCompositionError(
-            f"refusing to install a centrally fetched ceiling while {tier1} supplies "
-            "one: KIROCREW_SECURITY_POLICY is precedence tier 1 and the rollback lever, "
-            "so a poll must not displace it"
+            f"refusing to install a centrally fetched ceiling while {break_glass} supplies "
+            "one: the installed ceiling grants break-glass to the KIROCREW_SECURITY_POLICY "
+            "tier, so that file is the operator's authorised rollback lever and a poll must "
+            "not displace it"
         )
     assert_policy_signature_satisfied(ceiling)
     assert_profile_floor(ceiling)
+
+
+def _install_composed(composed: GovernanceCeiling) -> None:
+    """Validate an ALREADY-composed ceiling as boot would, then install it.
+
+    Split out of :func:`apply_ceiling` so the two callers that arrive with a composed
+    ladder share one implementation. ``apply_ceiling`` composes a freshly fetched CENTRAL
+    document and lands here; the lapsed-rollback repair composes a ladder with NO central
+    rung (a host whose cache is empty) and lands here too. Duplicating the validate-then-
+    install tail is how those two would drift, and the drift would be silent -- a path
+    that installs without validating admits a ceiling this host would have refused to
+    boot under.
+    """
+    from kiro_crew.platform.context import current_context, set_context
+
+    validate_ceiling(composed)
+    set_context(replace(current_context(), governance=composed))
 
 
 def apply_ceiling(ceiling: GovernanceCeiling) -> None:
@@ -2149,10 +2384,17 @@ def apply_ceiling(ceiling: GovernanceCeiling) -> None:
     a tightening.  The ordinal floor, which is what "would this host have started
     under the candidate" actually means, still applies.
     """
-    from kiro_crew.platform.context import current_context, set_context
+    # Compose BEFORE validating and installing. A refresh replaces exactly one rung
+    # of the ladder, so installing the fetched document by itself would drop the
+    # managed authority above it and every local restriction below it -- a host
+    # tightened at boot would find that tightening gone at the first successful poll,
+    # a ceiling that loosens itself on a timer. Routing through the loader's own
+    # composition is what keeps boot and refresh from diverging, and validating the
+    # COMPOSED result means the floor gates judge what will actually govern.
+    from kiro_crew.platform.governance import compose_installed_ceiling
 
-    validate_ceiling(ceiling)
-    set_context(replace(current_context(), governance=ceiling))
+    composed = compose_installed_ceiling(ceiling)
+    _install_composed(composed)
 
     # NOTE: the selectable-ACP-backend set is deliberately NOT recomputed here.
     #
@@ -2173,6 +2415,170 @@ def apply_ceiling(ceiling: GovernanceCeiling) -> None:
     # one-line change once retirement exists -- ``apply_selectable_denials`` assigns
     # ``baseline - denied`` rather than mutating, so it is already safe to re-run with a
     # looser ceiling.
+
+
+@contextlib.contextmanager
+def _stale_env_tier_omitted() -> Iterator[None]:
+    """Hide a DANGLING ``KIROCREW_SECURITY_POLICY`` for the duration of a repair.
+
+    Retiring an expired env rollback recomposes the ladder, and that compose re-reads the
+    env tier. ``_read_env_policy`` RAISES when the variable still names a file the
+    operator has deleted -- which is the ordinary way an operator ends a rollback -- so
+    the repair reported a compose failure on every poll and the EXPIRED ceiling kept
+    governing indefinitely. The round-9b guard had turned an escaping crash into a
+    permanent stall with the same security outcome: an override outliving its own window.
+
+    Deleting the document IS the operator's signal that the tier is gone, so for this one
+    call a dangling variable reads as unset. Scoped deliberately: only an ABSENT target
+    is hidden, never an unreadable one, because a variable pointing at a file that exists
+    but cannot be read is still a misconfiguration a boot must surface. Restored in a
+    ``finally``, so the loader's own refusal is intact everywhere else.
+    """
+    raw = os.environ.get("KIROCREW_SECURITY_POLICY", "").strip()
+    dangling = bool(raw) and not Path(raw).exists()
+    if not dangling:
+        yield
+        return
+    logger.warning(
+        "%s still names a file that no longer exists; treating the env tier as absent "
+        "while retiring the lapsed break-glass rollback",
+        "KIROCREW_SECURITY_POLICY",
+    )
+    saved = os.environ.pop("KIROCREW_SECURITY_POLICY")
+    try:
+        yield
+    finally:
+        os.environ["KIROCREW_SECURITY_POLICY"] = saved
+
+
+def _repair_lapsed_rollback(
+    dist: PolicyDistribution, cached: Optional["CachedPolicy"]
+) -> Optional[RefreshOutcome]:
+    """Retire a break-glass rollback whose grant has expired, without fetching.
+
+    A released rollback is the one installed ceiling whose validity ends on a CLOCK
+    rather than on a publish, so nothing about the SOURCE tells this host that the
+    window has closed.  Placing the repair after the fetch therefore made the escape
+    hatch's own expiry depend on the reachability of the very thing it overrides: with
+    the endpoint down, every poll returned at the transport error and the lapsed
+    rollback kept governing for as long as the outage lasted.
+
+    So it runs BEFORE the fetch, off the CACHED document, and every later exit from
+    :func:`refresh_now` is already repaired -- a 304, a digest match, a changed
+    document, a transport failure and a refused push alike.  One implementation
+    instead of one per branch: the findings in this area were each a different branch
+    of the same missing invariant, which is what a per-branch patch keeps producing.
+
+    Returns an outcome when it acted, so the caller returns immediately; ``None`` when
+    there was nothing to do.
+    """
+    from kiro_crew.platform.context import current_context
+
+    installed = current_context().governance
+    if installed is None or installed.tier not in installed.break_glass.tiers:
+        # Not a released rollback. Asked as "does this ceiling's OWN grant name its own
+        # tier", not as "is this tier grantable": the bare set test also matched a
+        # subordinate tier governing ALONE, which is the ordinary shape on a host whose
+        # central tier degraded. A host booting with `on_unavailable=degrade`, a cache
+        # past `max_cache_age_secs` and an unreachable endpoint installs one of the
+        # subordinate tiers (env, home or bundled) with an EMPTY break_glass, so the
+        # repair fired for a grant that never existed:
+        # it logged "the break-glass grant over the %s tier has lapsed" at an operator
+        # who never pulled a lever, and re-installed the very stale cached document that
+        # boot had deliberately rejected as too old. The composed result stayed
+        # `central ∩ subordinate`, so this tightened rather than loosened -- which is why
+        # it is a correctness and operator-trust bug rather than a security hole.
+        #
+        # Still self-clearing, and for a stronger reason than before: once the central
+        # document is restored the installed tier is no longer named by its own grant, so
+        # this never fires again.
+        return None
+    # Reaching here means the grant is NOT live: the caller's pre-fetch guard stands the
+    # poll down while the window is open, so this cannot cut an operator's recovery
+    # short. It only ever fires after the expiry the authority itself wrote.
+    central: Optional[GovernanceCeiling] = None
+    if cached is not None:
+        try:
+            central = parse_distributed_policy(cached.body, source=dist.source)
+        except PlatformCompositionError as exc:
+            return _refresh_failure(
+                REFRESH_REJECTED,
+                dist,
+                f"the cached ceiling can no longer replace the lapsed rollback: {exc}",
+                incident="rejected",
+            )
+    from kiro_crew.platform.governance import compose_installed_ceiling, compose_local_ceiling
+
+    with _stale_env_tier_omitted():
+        try:
+            # Guarded for the same reason the install below is: this compose READS the
+            # subordinate tiers, so it can fail at runtime on state that was fine when the
+            # rollback was installed -- KIROCREW_SECURITY_POLICY still set after the file it
+            # names is deleted is the ordinary case. Unguarded it escaped ``refresh_now`` and
+            # the refresher's blanket handler swallowed it, so the repair was skipped with no
+            # incident record at all: the one outcome an audited escape hatch may not have.
+            # With a cache, the fetched rung is replaced and the ladder recomposed
+            # around it. WITHOUT one there is still a ladder to restore: a managed
+            # authority is read from disk, not fetched, so on a host with
+            # ``on_unavailable=degrade`` and an empty cache the managed tier plus its
+            # subordinates is locally available the whole time. Bailing out here left an
+            # EXPIRED rollback governing for as long as the outage lasted, above a
+            # managed ceiling that was sitting right there -- the override outliving its
+            # own dated window, which is the one thing this repair exists to prevent.
+            #
+            # ``compose_local_ceiling`` returns None when there is genuinely nothing to
+            # restore to (no managed tier and no subordinate), and the equality check
+            # below covers the case where the ladder recomposes to what is already
+            # installed: in both the rollback stands, because dropping it with nothing
+            # better would leave the host LOOSER rather than tighter.
+            recomposed = (
+                compose_installed_ceiling(central)
+                if central is not None
+                else compose_local_ceiling()
+            )
+        except PlatformCompositionError as exc:
+            return _refresh_failure(
+                REFRESH_REJECTED,
+                dist,
+                f"the lapsed break-glass rollback could not be recomposed: {exc}",
+                incident="compose",
+            )
+        if recomposed is None or recomposed == installed:
+            return None
+        if central is None and recomposed.tier in BREAK_GLASS_TIERS:
+            # No cache AND no authority above the rollback: the ladder recomposed to a
+            # SUBORDINATE tier, which on this host is the rollback's own document. Swapping
+            # it for itself buys no tightening and bumps the ceiling generation for nothing,
+            # so the rollback stands until a fetch succeeds -- dropping a ceiling for an
+            # equivalent one leaves the host no tighter. A composed tier that is NOT
+            # grantable means a managed authority is present and is what gets restored,
+            # which is the case this branch exists for.
+            return None
+        try:
+            _install_composed(recomposed)
+        except Exception as exc:
+            # The rollback is lapsed but the central ceiling will not install. Keeping the
+            # running ceiling and reporting is the choice the install path already makes: a
+            # poll must not take down a host that is up, and the operator gets a reason.
+            return _refresh_failure(
+                REFRESH_REJECTED,
+                dist,
+                f"the lapsed break-glass rollback could not be replaced by "
+                f"the central ceiling: {exc}",
+                incident="compose",
+            )
+        logger.warning(
+            "the break-glass grant over the %s tier has lapsed; %s governs again",
+            installed.tier,
+            (
+                "the central security policy"
+                if central is not None
+                else "the locally available security ceiling"
+            ),
+        )
+        _run_post_install_hooks()
+        _audit_refresh(REFRESH_APPLIED, dist)
+        return RefreshOutcome(REFRESH_APPLIED, signature_state=recomposed.signature_state)
 
 
 def refresh_now(*, force: bool = False) -> RefreshOutcome:
@@ -2201,15 +2607,21 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
         )
     if not dist.enabled:
         return RefreshOutcome(REFRESH_NOT_CONFIGURED)
-    # Before spending a fetch: a tier-1 local file outranks this tier, so there is
-    # nothing a refresh could usefully install. ``apply_ceiling`` refuses too, as the
-    # hard guard; this arm exists so the operator gets a reason instead of a fetch
+    # Before spending a fetch: while an authority-granted break-glass is live, the local
+    # file outranks this tier, so there is nothing a refresh could usefully install. A
+    # local file WITHOUT that grant is only a subordinate and does not reach this arm —
+    # it intersects into whatever the refresh installs. ``apply_ceiling`` refuses too, as
+    # the hard guard; this arm exists so the operator gets a reason instead of a fetch
     # followed by a rejection.
-    tier1 = tier1_local_policy()
-    if tier1:
+    break_glass = break_glass_local_policy()
+    if break_glass:
+        # The label names the channel; do NOT re-append a variable name here. The lever
+        # can be the env path, the home document or the bundled resource, and telling an
+        # operator to unset a variable they never set is worse than saying nothing.
         detail = (
-            f"{tier1} (KIROCREW_SECURITY_POLICY) outranks the central source; "
-            "not fetching. Unset it to follow the fleet policy again."
+            f"{break_glass} holds a live break-glass grant and outranks the central "
+            "source; not fetching. Remove it, or let the grant expire, to follow the "
+            "fleet policy again."
         )
         logger.info("%s", detail)
         return RefreshOutcome(REFRESH_REJECTED, _sanitize_detail(detail, dist.source))
@@ -2227,6 +2639,12 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
     if pre_fetch is not None and pre_fetch.source_digest != _source_digest(dist.source):
         pre_fetch = None
     cached = None if force else pre_fetch
+    # BEFORE the fetch on purpose: a lapsed rollback must not keep governing just
+    # because the source is unreachable. ``pre_fetch`` rather than ``cached`` -- a
+    # forced refresh still has to retire an expired grant.
+    lapsed = _repair_lapsed_rollback(dist, pre_fetch)
+    if lapsed is not None:
+        return lapsed
     try:
         fetched = fetch_once(dist, cached)
     except PlatformCompositionError as exc:
@@ -2728,15 +3146,23 @@ class _Refresher:
             return current
         if not dist.enabled:
             return 0
-        if tier1_local_policy():
-            # An operator pinned a local file mid-incident. Polling on would fetch and
-            # then refuse every cycle, so stop and say so once; the next boot resolves
-            # the ladder afresh.
-            logger.warning(
-                "a local KIROCREW_SECURITY_POLICY file now outranks the central source; "
-                "stopped polling"
-            )
-            return 0
+        # A live break-glass grant deliberately does NOT stop the loop, and this is
+        # the one place that decision is made. Returning 0 here ended the thread, and
+        # because a grant is DATED that turned a time-boxed rollback into a permanent
+        # one: the moment the grant expired there was nothing left running to notice,
+        # so the permissive local ceiling kept governing until someone restarted the
+        # process. The expiry was decorative.
+        #
+        # The earlier reasoning for stopping was that "polling on would fetch and
+        # refuse every cycle", and that is simply not what happens: ``refresh_now``
+        # tests the grant BEFORE spending a fetch and returns REJECTED, so a cycle
+        # under a live grant costs one predicate and no network. Staying alive is
+        # therefore nearly free, and it is what makes the expiry self-healing --
+        # the first cycle after the grant lapses fetches and reinstates the fleet
+        # ceiling with no operator action.
+        #
+        # A local file with no live grant never reached this arm anyway: it is merely
+        # a subordinate and tightens whatever the loop installs.
         return dist.effective_refresh_interval() or current
 
     def last(self) -> Tuple[Optional[RefreshOutcome], float]:
@@ -2958,7 +3384,7 @@ __all__ = [
     "touch_cache",
     "reset_fetch_window",
     "reset_process_state",
-    "tier1_local_policy",
+    "break_glass_local_policy",
     "load_distributed_policy",
     "fetch_once",
     "apply_ceiling",
