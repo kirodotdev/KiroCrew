@@ -226,6 +226,11 @@ export default function SessionAutomationPopover({
   const draft = editor.draft
   const hasDirtyFields = Object.keys(editor.dirty).length > 0
 
+  function requestOpenChange(nextOpen: boolean) {
+    if (!nextOpen && busy) return
+    onOpenChange(nextOpen)
+  }
+
   function updateDraft(field: keyof Draft, value: string) {
     setEditor(current => ({
       ...current,
@@ -328,7 +333,7 @@ export default function SessionAutomationPopover({
   }
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
+    <Popover open={open} onOpenChange={requestOpenChange}>
       <PopoverTrigger asChild>
         <IconButton
           aria-label={monitor
@@ -356,7 +361,7 @@ export default function SessionAutomationPopover({
               {i18nT('components.sessionAutomationPopover.description')}
             </p>
           </div>
-          <IconButton aria-label={i18nT('components.sessionAutomationPopover.close')} onClick={() => onOpenChange(false)}>
+          <IconButton aria-label={i18nT('components.sessionAutomationPopover.close')} onClick={() => requestOpenChange(false)}>
             <X className="lucide-inline" aria-hidden />
           </IconButton>
         </div>

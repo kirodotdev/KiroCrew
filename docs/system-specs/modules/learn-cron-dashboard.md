@@ -2291,6 +2291,9 @@ stays disabled until the refreshed reads prove the slot empty.
 Snapshot and mutation failures render through the shared `ErrorNotice` surface.
 Agent hand-off remains disabled because navigation would discard the unsaved
 monitor draft; snapshot retry and mutation retry remain in the editor.
+While a mutation is pending, user-triggered close requests are ignored so a
+late failure cannot hide its error and discard the submitted draft. A successful
+mutation still closes the editor directly after scheduling the authoritative refetch.
 The legacy-create handoff remains available after a read failure because its
 server-side create-only lock rejects a concurrent record without replacement.
 A live automation frame updates that slot query alongside its Redux upsert. A

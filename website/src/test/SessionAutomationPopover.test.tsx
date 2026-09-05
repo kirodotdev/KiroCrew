@@ -49,6 +49,7 @@ function renderPopover(
   onChange = vi.fn(),
   creationReady = true,
   sessionMode = '',
+  onOpenChange = vi.fn(),
 ) {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   const props = (next: AutomationRecord | null, slotKey = 'chat-1') => (
@@ -57,7 +58,7 @@ function renderPopover(
         slotKey={slotKey}
         automation={next}
         open
-        onOpenChange={() => {}}
+        onOpenChange={onOpenChange}
         onChange={onChange}
         creationReady={creationReady}
         sessionMode={sessionMode}
@@ -68,6 +69,7 @@ function renderPopover(
   return {
     client,
     onChange,
+    onOpenChange,
     ...view,
     rerenderAutomation: (next: AutomationRecord | null, slotKey?: string) => (
       view.rerender(props(next, slotKey))
@@ -376,6 +378,22 @@ describe('SessionAutomationPopover', () => {
     await waitFor(() => expect(api.monitorUpdate).toHaveBeenCalled())
 
     expect(instructions).toBeDisabled()
+  })
+
+  it('keeps the popover open while a save is pending', async () => {
+    ;(api.monitorUpdate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
+    const onOpenChange = vi.fn()
+    renderPopover(activeMonitor, vi.fn(), true, '', onOpenChange)
+
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'Instructions for the agent when it wakes' }),
+      { target: { value: 'Address the latest review.' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(api.monitorUpdate).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(onOpenChange).not.toHaveBeenCalled()
   })
 
   it('does not overwrite a newer structured monitor with a delayed legacy response', async () => {
