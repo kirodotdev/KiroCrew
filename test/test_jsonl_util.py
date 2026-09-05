@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import re
-import sys
 import threading
 import time
 from pathlib import Path
@@ -21,7 +20,7 @@ from pathlib import Path
 import pytest
 
 import kiro_crew
-from kiro_crew import platform_compat
+from kiro_crew import jsonl_util, platform_compat
 from kiro_crew.image_artifacts import MAX_IMAGE_BYTES_PER_MESSAGE
 from kiro_crew.jsonl_util import (
     RECORD_CAP,
@@ -454,95 +453,185 @@ class TestBoundedRecordReaders:
             got = list(strict_raw_records(fh, path, cap=cap))
         assert got == [body + b"\r\n"], got
 
-    def test_many_records_in_one_read_scale_linearly(self, tmp_path):
-        """A carriage-return-dense file must not cost quadratic time.
+    def test_many_records_in_one_read_scale_linearly(self, tmp_path, monkeypatch):
+        """A carriage-return-dense file must not cost quadratic work.
 
         A chunk full of such records is the cheap way to trigger it on an
         agent-writable file, so this pins the COST, not just the output.
 
-        Measured as a RATIO between two sizes rather than an absolute ceiling,
-        and that choice is a correction. A ceiling looks more robust and is
-        actually the opposite: it encodes this machine's speed, so it fails on
-        any slower one. The first version of this test asserted 1.0s for 200,000
-        records -- comfortable locally at 0.10s -- and it duly went red on CI at
-        1.101s. A ratio cancels the machine out, because both measurements pay
-        the same constant factor.
+        Asserted on the reader's SCAN TRACE, not on a clock, and that choice is
+        the third correction in this test's history. The first version asserted
+        an absolute ceiling (1.0s for 200,000 records) and went red on a slower
+        CI machine. The second asserted a wall-clock ratio between two sizes,
+        which cancels machine speed -- and still flaked twice: once on Windows
+        clock quantisation (one scheduler tick against three reads as exactly
+        3.00x), and once on a shared runner where a single noisy doubled sample
+        (0.319s against a 0.101s base) read as 3.15x with no quadratic work in
+        sight (#8606). Best-of-3 `process_time` sampling and a measured-quantum
+        floor were already in place for that second flake; a clock on a shared
+        runner is noise all the way down. Per the AGENTS.md testing convention
+        (assert shape, not duration; pin the linear path deterministically
+        where the code has structure to observe), this now observes the work
+        itself.
 
-        Thresholds from measurement on the shipped reader and on both quadratic
-        forms it replaced: linear 2.02x, one `bytes.find` per terminator 3.86x,
-        re-slicing the buffer per record 6.9x. 3.0x sits between them.
+        The structure observed: `_frames` walks each buffered chunk by OFFSET,
+        issuing exactly one `_BOUNDARY_RE.search(buf, start)` per record with a
+        strictly advancing `start`, and slices the remainder once per chunk.
+        Both quadratic forms this test exists to catch break that trace shape
+        deterministically through this seam:
 
-        `process_time` excludes time this process was not running, so a busy
-        runner does not leak in, and the best of several attempts is used
-        because scheduling noise can only ever make a sample slower.
+        - Re-slicing the buffer per record hands every search a FRESH object
+          with `start` 0, so its per-buffer traces are single-call and the
+          start-at-0 count -- constant for the offset walk -- goes per-record,
+          which the zero-start bound catches.
+        - Replacing the single regex scan with one `bytes.find` per terminator
+          (quadratic on a file with no `\\n` until the end) abandons this seam
+          entirely, so the trace goes empty and the hits-per-record assertion
+          fails.
 
-        The ratio cancels the machine's SPEED but not its clock GRANULARITY, and
-        that gap is what made this test flake. Windows advances `process_time` on
-        the scheduler tick (~15.6 ms) while still reporting a 100 ns unit, so a
-        baseline of a couple of ticks forces the ratio onto small integers: one
-        tick against three reads as exactly 3.00x and failed a bar the reader
-        never crossed (`assert 3.0 < 3.0` on CI, twice). `base > 0` did not catch
-        it, because one tick is not zero. So the workload GROWS until the baseline
-        is many ticks wide, which is the only thing that makes quantisation error
-        small relative to the number being divided.
+        Cost added OFF the seam -- say, copying the tail once per record while
+        still searching the original buffer by offset -- is invisible to any
+        trace, so a generous absolute `process_time` budget at the small
+        doubled size backstops a catastrophic blowup, per the testing
+        convention's "keep a small-n absolute assertion alongside". Unlike the
+        ratio it replaces, the budget carries two orders of magnitude of
+        headroom, so neither a slow shared runner nor coverage tracing can
+        cross it.
 
-        Skipped under a TRACER because tracing breaks the ratio's premise rather
-        than merely slowing things down: it charges per Python line executed, so
-        it inflates the linear per-record bookkeeping while leaving the C-level
-        scanning and copying -- which is where the quadratic cost lives --
-        untouched. That flattens the very difference being measured. CI runs
-        coverage on the 3.12 shards only, which is exactly where this first
-        failed and why it passed everywhere else.
+        The doubling assertion is exact, not a ratio with headroom: doubling
+        the record count must exactly double the number of boundary searches
+        (the cap here is far above the chunk size, so per-record search counts
+        cannot depend on where chunk boundaries fall). Integer counts have no
+        noise to leave headroom for.
         """
-        if sys.gettrace() is not None:
-            pytest.skip("a tracer distorts Python-level cost relative to C-level; see docstring")
 
-        def best_of(count: int, attempts: int = 3) -> float:
+        class _TraceBoundaryRe:
+            """Counting shim over the module's boundary regex.
+
+            Records ``(buf, start, found)`` per search so the offset-walk shape
+            is assertable, and delegates the actual match unchanged -- the
+            reader under test still does its real work on its real data. The
+            buffer OBJECT is kept, not just its ``id()``: a freed chunk's id can
+            be reused by the next one, which would let two different buffers
+            alias one walk in the analysis below.
+            """
+
+            def __init__(self, real: re.Pattern[bytes]) -> None:
+                self._real = real
+                self.calls: list[tuple[bytes, int, bool]] = []
+                self.dropped = 0
+
+            def search(self, buf: bytes, start: int = 0) -> re.Match[bytes] | None:
+                match = self._real.search(buf, start)
+                self.calls.append((buf, start, match is not None))
+                return match
+
+        def scan_trace(count: int) -> _TraceBoundaryRe:
             path = tmp_path / f"dense{count}.jsonl"
             path.write_bytes(b'{"a":1}\r' * count + b"\n")
-            best = float("inf")
-            for _ in range(attempts):
-                start = time.process_time()
+            trace = _TraceBoundaryRe(jsonl_util._BOUNDARY_RE)
+            monkeypatch.setattr(jsonl_util, "_BOUNDARY_RE", trace)
+            try:
                 with open(path, "rb") as fh:
                     got = sum(1 for _ in bounded_raw_records(fh, path, cap=64 * 1024 * 1024))
-                best = min(best, time.process_time() - start)
-                # `count`, not count + 1: the final record's own carriage return
-                # plus the trailing newline form one CRLF terminator.
-                assert got == count, got
-            return best
+            finally:
+                monkeypatch.setattr(jsonl_util, "_BOUNDARY_RE", trace._real)
+            # `count`, not count + 1: the final record's own carriage return
+            # plus the trailing newline form one CRLF terminator.
+            assert got == count, got
+            # Keep only searches over THIS file's buffers. The shim patches a
+            # module global, and this repo's test floor warns that singleton
+            # daemon threads outlive their tests; a stray in-process reader on
+            # some other file during the window would otherwise tip the exact
+            # counts below. Every buffer of ours starts with our record bytes
+            # under the one-chunk read this test relies on; the dropped count
+            # is carried into the failure message so that if chunking ever
+            # changes (a later chunk starts with a carried b"\\r"), a failure
+            # here names the filter, not the production walk.
+            kept = [c for c in trace.calls if c[0].startswith(b'{"a":1}\r')]
+            trace.dropped = len(trace.calls) - len(kept)
+            trace.calls = kept
+            return trace
 
-        # The REPORTED resolution is not the granularity that bites (Windows
-        # reports 100 ns and advances ~15.6 ms), so measure the real quantum: the
-        # smallest nonzero step the clock actually takes.
-        def process_time_quantum() -> float:
-            start = time.process_time()
-            while True:
-                step = time.process_time() - start
-                if step > 0:
-                    return step
-
-        quantum = max(process_time_quantum() for _ in range(3))
-        # 40 ticks holds quantisation under ~2.5% of the baseline, so it cannot
-        # move a linear 2.0x onto the 3.0x bar.
-        floor = max(0.05, quantum * 40)
-
-        count = 100_000
-        base = best_of(count)
-        while base < floor and count < 1_600_000:
-            count *= 2
-            base = best_of(count)
-        if base < floor:
-            pytest.skip(
-                f"process_time quantum {quantum:.6f}s needs a baseline over {floor:.3f}s; "
-                f"{count} records only reached {base:.3f}s, so the ratio would be quantised"
+        def assert_linear_walk(trace: _TraceBoundaryRe, count: int) -> tuple[int, int]:
+            """Pin the one-search-per-record shape; return (hits, misses)."""
+            hits = sum(1 for _, _, found in trace.calls if found)
+            misses = len(trace.calls) - hits
+            # Exactly one successful boundary scan per record. Zero means the
+            # walk bypassed this seam (the per-terminator `bytes.find` form
+            # lives off it); more means some record's bytes were scanned to a
+            # match twice, which is where quadratic cost starts.
+            assert hits == count, (
+                f"{hits} boundary hits for {count} records ({trace.dropped} "
+                "calls filtered as foreign): the walk is not finding each "
+                "terminator exactly once through the shared regex"
             )
+            # A miss is the search that ends one chunk's walk, so misses count
+            # chunks, and chunks must stay constant-ish, never per-record. The
+            # cap is far above the file size here, so the whole file is one
+            # buffered chunk; 2 leaves room for an EOF-shaped final probe
+            # without letting a per-record re-scan (misses == count) through.
+            assert misses <= 2, (
+                f"{misses} missed boundary searches for {count} records: "
+                "the walk is re-scanning the buffer instead of advancing"
+            )
+            # The offset walk itself: within one buffer object every search
+            # starts strictly past the previous one. Re-slicing the buffer per
+            # record (the 6.9x quadratic form) restarts every search at 0 on a
+            # fresh object, so its per-buffer traces are single-call and its
+            # start-0 count is per-record -- both checked here.
+            per_buf: dict[int, int] = {}
+            for buf, start, _ in trace.calls:
+                prev = per_buf.get(id(buf))
+                if prev is not None:
+                    assert start > prev, (
+                        f"search restarted at {start} after {prev} within one "
+                        "buffer: the walk is re-scanning instead of advancing"
+                    )
+                per_buf[id(buf)] = start
+            zero_starts = sum(1 for _, start, _ in trace.calls if start == 0)
+            assert zero_starts <= 2, (
+                f"{zero_starts} searches started at offset 0 for {count} "
+                "records: the buffer is being re-sliced per record"
+            )
+            return hits, misses
 
-        doubled = best_of(count * 2)
-        ratio = doubled / base
-        assert ratio < 3.0, (
-            f"doubling {count} records cost {ratio:.2f}x "
-            f"(base {base:.3f}s, doubled {doubled:.3f}s, quantum {quantum:.6f}s), "
-            "which suggests quadratic work"
+        count = 10_000
+        base = scan_trace(count)
+        base_hits, base_misses = assert_linear_walk(base, count)
+
+        # Doubling the records exactly doubles the boundary searches that do
+        # per-record work, and adds nothing to the constant chunk overhead.
+        # Both sides are measured off the traces; integers carry no noise, so
+        # the comparison is exact where the wall-clock ratio needed headroom.
+        doubled = scan_trace(count * 2)
+        doubled_hits, doubled_misses = assert_linear_walk(doubled, count * 2)
+        assert doubled_hits == 2 * base_hits, (
+            f"doubling {count} records took {doubled_hits} boundary hits "
+            f"against a base of {base_hits}, which suggests superlinear scanning"
+        )
+        assert doubled_misses == base_misses, (
+            f"chunk overhead grew from {base_misses} to {doubled_misses} on "
+            "doubling, which suggests the walk's overhead scales with input"
+        )
+
+        # Catastrophic-blowup backstop, per the testing convention's "keep a
+        # small-n absolute assertion alongside": cost added off the regex seam
+        # (copying bytes while still searching by offset) is invisible to the
+        # trace above, and this is the coarse net under it. The bound is
+        # deliberately generous -- this read measures in tens of milliseconds,
+        # so 5s is two orders of magnitude of headroom that neither a loaded
+        # shared runner nor coverage tracing crosses, unlike the 3.0x ratio
+        # this test used to carry (#8606).
+        budget_path = tmp_path / f"dense{count * 2}.jsonl"
+        begin = time.process_time()
+        with open(budget_path, "rb") as fh:
+            again = sum(1 for _ in bounded_raw_records(fh, budget_path, cap=64 * 1024 * 1024))
+        elapsed = time.process_time() - begin
+        assert again == count * 2, again
+        assert elapsed < 5.0, (
+            f"reading {count * 2} records took {elapsed:.2f}s of process time, "
+            "a catastrophic blowup no runner slowness explains"
         )
 
     def test_strict_reader_refuses_invalid_utf8_rather_than_replacing_it(self, tmp_path):
