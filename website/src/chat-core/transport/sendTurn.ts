@@ -1,5 +1,15 @@
 import { api } from '../../api/client'
-import { confirmedDelivered, readSendReceipt, SendReceiptBody } from '../../utils/sendDelivery'
+import { confirmedDelivered, readSendReceipt, SendReceiptBody, SendResponseLike } from '../../utils/sendDelivery'
+
+/** Client-minted one-shot correlation id for a send. Rides `meta.sendId`; the
+ *  server preserves meta on the user row it appends, so an echo, a transcript
+ *  page or a polled slot detail carries the id back and the row is matchable
+ *  by identity instead of content equality (#2845, #6075). One spelling for
+ *  every surface, so ids minted by ChatPage, ChatPane and ChatEmbed cannot
+ *  drift in shape. */
+export function mintSendId(): string {
+  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
 
 /** Stop waiting on a send's response. Reaching this bound means the request
  *  was received and only the reply is late: the turn is running and its output
@@ -61,6 +71,34 @@ export interface SendReceipt {
   reason?: string
 }
 
+/** What a send puts on the wire. Surface-neutral: the endpoint, the auth
+ *  header and any surface-specific body fields (an app embed's `agent`) are
+ *  the wire's business, not the caller's. */
+export interface SendWirePayload {
+  message: string
+  slot?: string
+  meta?: Record<string, unknown>
+}
+
+/**
+ * The fetch seam under `sendTurn`. A wire performs ONE `POST` and hands back
+ * something the shared `readSendReceipt` classifier can read: it resolves
+ * with the response on every HTTP status (a 4xx/5xx is a readable refusal,
+ * never a rejection) and rejects only when the request itself failed to go
+ * out, or with an `AbortError` once `signal` fires.
+ *
+ * The transport is one implementation; the wire is per surface. The
+ * dashboard's own client is the default. An app-sdk embed reaches the same
+ * endpoint through its permission-scoped `AppApi`, whose JSON helper throws
+ * on non-2xx -- its wire adapter re-expresses that as a resolved refusal so
+ * the classification above is the same for every caller.
+ */
+export type SendWire = (payload: SendWirePayload, signal: AbortSignal) => Promise<SendResponseLike>
+
+/** The dashboard client's wire: `POST /api/chat?ws=1` with the session key. */
+const dashboardSendWire: SendWire = (payload, signal) =>
+  api.sendChat(payload.message, payload.slot, undefined, signal, payload.meta)
+
 export interface SendTurnOptions {
   /** Wire text, already serialized (dir tokens, file markers). The server
    *  refuses an empty wire text above every dispatch branch, so an empty
@@ -68,6 +106,8 @@ export interface SendTurnOptions {
   message: string
   slot?: string
   meta?: Record<string, unknown>
+  /** Which fetch seam carries the POST. Defaults to the dashboard client. */
+  wire?: SendWire
 }
 
 /**
@@ -86,13 +126,11 @@ export interface SendTurnOptions {
 export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), SEND_ABORT_MS)
+  const wire = opts.wire ?? dashboardSendWire
   try {
-    const r = await api.sendChat(
-      opts.message,
-      opts.slot,
-      undefined,
+    const r = await wire(
+      { message: opts.message, slot: opts.slot, meta: opts.meta },
       controller.signal,
-      opts.meta,
     )
     const { body, outcome } = await readSendReceipt(r)
     if (outcome === 'refused') return { status: 'refused', body, reason: typeof body.error === 'string' ? body.error : undefined }

@@ -122,9 +122,13 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "O agente está trabalhando...",
+      "app_not_allowed_to_send": "Este aplicativo não tem permissão para enviar mensagens de chat.",
       "chat_message": "Mensagem do chat",
+      "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
+      "delivery_unconfirmed_option": "Entrega não confirmada — verifique a conversa e, se estiver faltando, escolha a opção novamente.",
       "message": "Mensagem...",
       "send": "Enviar",
+      "send_failed_connection": "Não foi possível enviar — verifique sua conexão e tente novamente.",
       "send_message": "Enviar mensagem",
       "session_ready_type_a_message_to_start": "Sessão pronta. Digite uma mensagem para começar.",
       "streaming": "em streaming"

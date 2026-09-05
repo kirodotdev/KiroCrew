@@ -71,7 +71,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
   // Default: return empty slot data
   mockGet.mockResolvedValue({ messages: [], running: false, title: '' })
-  mockPost.mockResolvedValue({})
+  mockPost.mockResolvedValue({ ok: true })
   queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -226,10 +226,14 @@ describe('ChatEmbed', () => {
         fireEvent.click(screen.getByLabelText('Send message'))
       })
 
-      expect(mockPost).toHaveBeenCalledWith('/api/chat', {
+      // `?ws=1` selects the JSON receipt the shared transport reads; the scoped
+      // path check ignores the query, so the app's `/api/chat` grant still covers it.
+      expect(mockPost).toHaveBeenCalledWith('/api/chat?ws=1', {
         message: 'hello world',
         slot: 'slot-1',
         agent: 'test-agent',
+        // Client-minted correlation id, same convention as ChatPage/ChatPane.
+        meta: { sendId: expect.stringMatching(/^s-/) },
       })
     })
 
@@ -260,7 +264,7 @@ describe('ChatEmbed', () => {
         fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
       })
 
-      expect(mockPost).toHaveBeenCalledWith('/api/chat', expect.objectContaining({
+      expect(mockPost).toHaveBeenCalledWith('/api/chat?ws=1', expect.objectContaining({
         message: 'hello',
       }))
     })
@@ -301,7 +305,7 @@ describe('ChatEmbed', () => {
       })
 
       expect(onSend).toHaveBeenCalledWith('hi')
-      expect(mockPost).not.toHaveBeenCalledWith('/api/chat', expect.anything())
+      expect(mockPost).not.toHaveBeenCalledWith('/api/chat?ws=1', expect.anything())
     })
 
     it('still posts to /api/chat when no onSend is supplied', async () => {
@@ -316,7 +320,7 @@ describe('ChatEmbed', () => {
       })
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/api/chat',
+        '/api/chat?ws=1',
         expect.objectContaining({ message: 'hi', slot: 'slot-1' }),
       )
     })
@@ -546,7 +550,7 @@ describe('ChatEmbed follow-up options', () => {
     })
 
     expect(input.value).toBe('Run tests')
-    expect(mockPost).not.toHaveBeenCalledWith('/api/chat', expect.anything())
+    expect(mockPost).not.toHaveBeenCalledWith('/api/chat?ws=1', expect.anything())
   })
 
   it('picking an option twice removes it from the draft again', async () => {

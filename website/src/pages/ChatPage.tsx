@@ -370,6 +370,7 @@ import { parseSubagentCompletionMessage } from './chat/subagentCompletion'
 import { headline as subagentHeadline } from './chat/SubagentCompletionCard'
 import { fmtDateFields, fmtNumber } from '../i18n/format'
 import { fmtMessageTime, fmtMessageTimeFull } from './chat/messageTime'
+import { mintSendId } from '../chat-core/transport/sendTurn'
 /**
  * Human-readable reason from a rejected thunk. `unwrap()` rejects with RTK's
  * SERIALIZED error — a plain object, never an `Error` instance — so an
@@ -498,15 +499,6 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
  *  suffix is as reload-stable as the key it disambiguates. Rows without a
  *  `mid` (locally-minted streaming/optimistic bubbles) fall back to `msgKey`
  *  alone, which is exactly the uniqueness they had before. */
-/** Client-generated one-shot correlation id for an optimistic user bubble.
- *  The server preserves meta fields on the user row it appends, so an echo or
- *  transcript page carries this id back and the bubble is matchable without
- *  relying on content equality (#2845). Shared by the plain send path and the
- *  mid-turn steer path (#6075) so the two cannot drift in id shape. */
-function mintSendId(): string {
-  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
-
 function msgIdentityKey(m: ChatMessage, msgKey: (m: ChatMessage) => string): string {
   const mid = m.meta?.mid
   return typeof mid === 'string' && mid ? `${msgKey(m)}~${mid}` : msgKey(m)

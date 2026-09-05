@@ -72,7 +72,11 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "Agent is working...",
-      "message": "Message..."
+      "app_not_allowed_to_send": "This app isn't allowed to send chat messages.",
+      "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again.",
+      "delivery_unconfirmed_option": "Delivery not confirmed — check the transcript, then re-pick the option if it is missing.",
+      "message": "Message...",
+      "send_failed_connection": "Couldn't send — check your connection and try again."
     }
   },
   "apps": {

@@ -33,7 +33,7 @@ import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { tryQuickSend } from '../lib/quickSend'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
-import { sendTurn } from '../chat-core/transport/sendTurn'
+import { sendTurn, mintSendId } from '../chat-core/transport/sendTurn'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -475,7 +475,7 @@ export default function ChatPane({
     // content-equality fallback can never reconcile the server echo against
     // the optimistic bubble — without this id the echo appends a SECOND user
     // bubble carrying the raw marker.
-    const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    const sendId = mintSendId()
     // Optimistic user bubble: show immediately in the right position (mirrors the
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running) — the backend returns a "queued" message instead, avoiding a duplicate.

@@ -119,9 +119,13 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "Agent arbeitet...",
+      "app_not_allowed_to_send": "Diese App darf keine Chatnachrichten senden.",
       "chat_message": "Chat-Nachricht",
+      "delivery_unconfirmed": "Zustellung nicht bestätigt — dein Text steht wieder im Eingabefeld; prüfe den Verlauf, bevor du erneut sendest.",
+      "delivery_unconfirmed_option": "Zustellung nicht bestätigt — prüfe den Verlauf und wähle die Option erneut, falls sie fehlt.",
       "message": "Nachricht...",
       "send": "Senden",
+      "send_failed_connection": "Senden fehlgeschlagen — prüfe deine Verbindung und versuche es erneut.",
       "send_message": "Nachricht senden",
       "session_ready_type_a_message_to_start": "Sitzung bereit. Geben Sie eine Nachricht ein, um zu beginnen.",
       "streaming": "Streaming"

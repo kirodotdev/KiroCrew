@@ -18,6 +18,7 @@ import {
   type ReactNode,
 } from 'react'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
+import { AppApiError, AppApiPermissionError } from './apiError'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -398,7 +399,7 @@ function createScopedApi(allowedPaths: string[], appName: string): AppApi {
     const normalized = parsed.pathname
     const allowed = allowedPaths.some(p => normalized === p || normalized.startsWith(p.endsWith('/') ? p : p + '/'))
     if (!allowed) {
-      throw new Error(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
+      throw new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
     }
     return normalized + parsed.search
   }
@@ -413,7 +414,7 @@ function createScopedApi(allowedPaths: string[], appName: string): AppApi {
       // iframe copy of this SDK — detection is a no-op and the throw below is
       // unchanged either way.
       noteStaleOwnerResponse(res.status, text)
-      throw new Error(`API ${res.status}: ${text}`)
+      throw new AppApiError(res.status, text)
     }
     // An empty-body response is not JSON — res.json() would throw a SyntaxError
     // (e.g. a 204 No Content on DELETE, or a 200 with an empty body and no
