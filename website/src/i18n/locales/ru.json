@@ -6108,7 +6108,13 @@
       "searching_ctrl_enter_held": "Поиск… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
       "searching_enter_held": "Поиск… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
       "type_2_chars_to_search_files_ctrl_enter_held": "Введите 2+ символа для поиска файлов и папок… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
-      "type_2_chars_to_search_files_enter_held": "Введите 2+ символа для поиска файлов и папок… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение"
+      "type_2_chars_to_search_files_enter_held": "Введите 2+ символа для поиска файлов и папок… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
+      "search_failed": "Не удалось выполнить поиск файлов",
+      "search_timed_out": "Время поиска файлов истекло",
+      "search_failed_ctrl_enter_sends": "Не удалось выполнить поиск файлов — Ctrl+Enter отправит сообщение",
+      "search_timed_out_ctrl_enter_sends": "Время поиска файлов истекло — Ctrl+Enter отправит сообщение",
+      "search_failed_enter_sends": "Не удалось выполнить поиск файлов — Enter отправит сообщение",
+      "search_timed_out_enter_sends": "Время поиска файлов истекло — Enter отправит сообщение"
     },
     "fileRenderers": {
       "download": "Скачать",
@@ -6896,7 +6902,8 @@
       "search_recent_projects": "Поиск по недавним проектам",
       "search_recent_projects_2": "Поиск по недавним проектам…",
       "select": "Выбрать",
-      "subdirectories": "Подкаталоги"
+      "subdirectories": "Подкаталоги",
+      "recent_unavailable": "Недавние проекты недоступны"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Я понимаю, опубликовать публично",
@@ -9182,10 +9189,14 @@
         "parent_folder": "Родительская папка",
         "refresh": "Обновить",
         "search_failed": "Поиск не удался",
+        "search_timed_out": "Время поиска истекло",
         "search_files": "Поиск файлов",
         "searching": "Поиск…",
         "showing_first_matches": "Показаны первые {{shown}} совпадений",
-        "unable_to_list_folder": "Не удалось получить список папки"
+        "unable_to_list_folder": "Не удалось получить список папки",
+        "listing_timed_out": "Время получения списка папки истекло",
+        "search_denied": "Нет доступа к этой папке",
+        "search_root_missing": "Папка не найдена"
       },
       "knowledgePicker": {
         "cancel": "Отмена",

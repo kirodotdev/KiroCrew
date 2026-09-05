@@ -5823,7 +5823,13 @@
       "searching_ctrl_enter_held": "搜索中… —— 按 Ctrl+Enter 暂时不会发送，按 Esc 关闭后可按 Ctrl+Enter 直接发送消息",
       "searching_enter_held": "搜索中… —— 按 Enter 暂时不会发送，按 Esc 关闭后可按 Enter 直接发送消息",
       "type_2_chars_to_search_files_ctrl_enter_held": "输入 2 个以上字符搜索文件和文件夹… —— 按 Ctrl+Enter 暂时不会发送，按 Esc 关闭后可按 Ctrl+Enter 直接发送消息",
-      "type_2_chars_to_search_files_enter_held": "输入 2 个以上字符搜索文件和文件夹… —— 按 Enter 暂时不会发送，按 Esc 关闭后可按 Enter 直接发送消息"
+      "type_2_chars_to_search_files_enter_held": "输入 2 个以上字符搜索文件和文件夹… —— 按 Enter 暂时不会发送，按 Esc 关闭后可按 Enter 直接发送消息",
+      "search_failed": "文件搜索失败",
+      "search_timed_out": "文件搜索超时",
+      "search_failed_ctrl_enter_sends": "文件搜索失败 —— 按 Ctrl+Enter 直接发送消息",
+      "search_timed_out_ctrl_enter_sends": "文件搜索超时 —— 按 Ctrl+Enter 直接发送消息",
+      "search_failed_enter_sends": "文件搜索失败 —— 按 Enter 直接发送消息",
+      "search_timed_out_enter_sends": "文件搜索超时 —— 按 Enter 直接发送消息"
     },
     "fileRenderers": {
       "download": "下载",
@@ -6596,7 +6602,8 @@
       "search_recent_projects": "搜索最近项目",
       "search_recent_projects_2": "搜索最近项目…",
       "select": "选择",
-      "subdirectories": "子目录"
+      "subdirectories": "子目录",
+      "recent_unavailable": "无法获取最近的项目"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "我已了解，公开发布",
@@ -8810,10 +8817,14 @@
         "parent_folder": "上级目录",
         "refresh": "刷新",
         "search_failed": "搜索失败",
+        "search_timed_out": "搜索超时",
         "search_files": "搜索文件",
         "searching": "正在搜索…",
         "showing_first_matches": "显示前 {{shown}} 个匹配项",
-        "unable_to_list_folder": "无法列出目录内容"
+        "unable_to_list_folder": "无法列出目录内容",
+        "listing_timed_out": "文件夹列表超时",
+        "search_denied": "无权访问该文件夹",
+        "search_root_missing": "未找到文件夹"
       },
       "knowledgePicker": {
         "cancel": "取消",

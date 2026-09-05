@@ -58,7 +58,9 @@ describe('FolderPanel', () => {
     // Navigation is internal to the tab (no tab-per-directory explosion), but
     // the new cwd is lifted so the tab strip label can follow.
     expect(onPathChange).toHaveBeenCalledWith('/Users/me/ws/src')
-    await waitFor(() => expect(browse).toHaveBeenCalledWith('/Users/me/ws/src'))
+    // The signal is react-query's, so a superseded listing aborts; this asserts the
+    // path it navigated to, which is the subject, rather than the argument count.
+    await waitFor(() => expect(browse).toHaveBeenCalledWith('/Users/me/ws/src', expect.any(AbortSignal)))
   })
 
   it('offers a parent row, and suppresses it at the filesystem root', async () => {
@@ -82,7 +84,9 @@ describe('FolderPanel', () => {
   it('surfaces a listing failure instead of rendering a silently empty folder', async () => {
     vi.spyOn(api, 'browseFiles').mockRejectedValue(new Error('Access denied'))
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
-    await waitFor(() => expect(screen.getByText('Access denied')).toBeTruthy())
+    // Catalog copy, not the server's own string: rendering that raw is what the
+    // i18n invariant forbids. The point still stands — a failure is not an empty folder.
+    await waitFor(() => expect(screen.getByText('Unable to list folder')).toBeTruthy())
     expect(screen.queryByText('Empty folder')).toBeNull()
   })
 

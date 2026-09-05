@@ -231,6 +231,83 @@ describe('ProjectPicker', () => {
       expect(await screen.findByText('No recent projects')).toBeInTheDocument()
     })
 
+    it('ignores a superseded browse rejection that lands after a newer success', async () => {
+      // Without the generation guard the first drill's late rejection set listError
+      // after the second drill had already rendered valid rows.
+      let rejectFirst: (e: Error) => void = () => {}
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs)
+        .mockImplementationOnce(() => new Promise((_res, rej) => { rejectFirst = rej }))
+        .mockResolvedValue(mockBrowseDirs('/home/u', [{ name: 'beta', path: '/home/u/beta' }]))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      const input = await screen.findByLabelText('Project directory path')
+      fireEvent.change(input, { target: { value: '/home/u/' } })
+      expect(await screen.findByText('beta')).toBeInTheDocument()
+      await act(async () => { rejectFirst(new Error('stale')) })
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.getByText('beta')).toBeInTheDocument()
+    })
+
+    it('keeps the previous listing while a drill is pending, not an emptiness claim', async () => {
+      // "No subdirectories" asserts a folder IS empty, so a listing still in flight must
+      // not render it -- on a wedged gateway that claim would hold for the whole deadline.
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs)
+        .mockResolvedValueOnce(mockBrowseDirs('/home/u', [{ name: 'beta', path: '/home/u/beta' }]))
+        .mockImplementationOnce(() => new Promise(() => {}))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      const input = await screen.findByLabelText('Project directory path')
+      expect(await screen.findByText('beta')).toBeInTheDocument()
+      fireEvent.keyDown(input, { key: 'ArrowDown' })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalledTimes(2))
+      expect(screen.queryByText('No subdirectories')).toBeNull()
+      expect(screen.getByText('beta')).toBeInTheDocument()
+    })
+
+    it('names a browse timeout apart from a browse failure', async () => {
+      // A wedged gateway and a refusal are different remedies, so the picker must not
+      // render one copy for both -- the folder panel's search already distinguishes them.
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs).mockRejectedValue(
+        Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }),
+      )
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Folder listing timed out/)
+      expect(screen.queryByText(/Unable to list folder/)).toBeNull()
+    })
+
+    it('surfaces a recent-projects failure instead of silently landing on Browse', async () => {
+      // Flipping to Browse is the fallback, but on its own it reads as "you have no recent
+      // projects" -- a claim about the user's data, not about a request that never answered.
+      vi.mocked(api.recentProjects).mockRejectedValue(
+        Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }),
+      )
+      vi.mocked(api.browseDirs).mockResolvedValue(mockBrowseDirs('/home/u', []))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByText('Recent projects unavailable')).toBeInTheDocument()
+    })
+
+    it('surfaces a browse failure instead of showing it as an empty directory', async () => {
+      // The listing is deadline-bound, so a wedged gateway rejects rather than hanging.
+      // "No subdirectories" would report a folder as empty on a listing that never arrived.
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Unable to list folder/)
+      expect(screen.queryByText('No subdirectories')).toBeNull()
+    })
+
     it('switches to Browse tab when no recent projects exist', async () => {
       vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
       vi.mocked(api.browseDirs).mockResolvedValue(mockBrowseDirs('/home/u', [

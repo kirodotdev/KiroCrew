@@ -1360,7 +1360,13 @@
       "searching_enter_held": "Searching… — Enter won’t send yet; press Esc, then Enter sends the message",
       "searching_ctrl_enter_held": "Searching… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "no_matches_ctrl_enter_sends": "No matching files — Ctrl+Enter sends the message",
-      "no_matches_enter_sends": "No matching files — Enter sends the message"
+      "no_matches_enter_sends": "No matching files — Enter sends the message",
+      "search_failed": "File search failed",
+      "search_timed_out": "File search timed out",
+      "search_failed_ctrl_enter_sends": "File search failed — Ctrl+Enter sends the message",
+      "search_timed_out_ctrl_enter_sends": "File search timed out — Ctrl+Enter sends the message",
+      "search_failed_enter_sends": "File search failed — Enter sends the message",
+      "search_timed_out_enter_sends": "File search timed out — Enter sends the message"
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
@@ -2720,6 +2726,9 @@
       "copy_failed_select_the_link_and_copy_it_manually": "Copy failed — select the link and copy it manually.",
       "could_not_create_a_link_try_again": "Could not create a link — try again.",
       "phone_connection_is_disabled_by_policy_on_this_dep": "Phone connection is disabled by policy on this deployment."
+    },
+    "projectPicker": {
+      "recent_unavailable": "Recent projects unavailable"
     }
   },
   "hooks": {
@@ -3212,11 +3221,15 @@
         "no_files_match": "No files match",
         "parent_folder": "Parent folder",
         "refresh": "Refresh",
+        "search_denied": "Access denied to this folder",
         "search_failed": "Search failed",
+        "search_timed_out": "Search timed out",
         "search_files": "Search files",
+        "search_root_missing": "Folder not found",
         "searching": "Searching…",
         "showing_first_matches": "Showing the first {{shown}} matches",
-        "unable_to_list_folder": "Unable to list folder"
+        "unable_to_list_folder": "Unable to list folder",
+        "listing_timed_out": "Folder listing timed out"
       },
       "knowledgePicker": {
         "knowledge_results_for_query": "Knowledge results for “{{query}}”",

@@ -5918,7 +5918,13 @@
       "searching_ctrl_enter_held": "Wird gesucht… — Ctrl+Enter sendet noch nicht; drücken Sie Esc, dann sendet Ctrl+Enter die Nachricht",
       "searching_enter_held": "Wird gesucht… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
       "type_2_chars_to_search_files_ctrl_enter_held": "Geben Sie 2+ Zeichen ein, um Dateien und Ordner zu suchen… — Ctrl+Enter sendet noch nicht; drücken Sie Esc, dann sendet Ctrl+Enter die Nachricht",
-      "type_2_chars_to_search_files_enter_held": "Geben Sie 2+ Zeichen ein, um Dateien und Ordner zu suchen… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht"
+      "type_2_chars_to_search_files_enter_held": "Geben Sie 2+ Zeichen ein, um Dateien und Ordner zu suchen… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
+      "search_failed": "Dateisuche fehlgeschlagen",
+      "search_timed_out": "Zeitüberschreitung bei der Dateisuche",
+      "search_failed_ctrl_enter_sends": "Dateisuche fehlgeschlagen — Ctrl+Enter sendet die Nachricht",
+      "search_timed_out_ctrl_enter_sends": "Zeitüberschreitung bei der Dateisuche — Ctrl+Enter sendet die Nachricht",
+      "search_failed_enter_sends": "Dateisuche fehlgeschlagen — Enter sendet die Nachricht",
+      "search_timed_out_enter_sends": "Zeitüberschreitung bei der Dateisuche — Enter sendet die Nachricht"
     },
     "fileRenderers": {
       "download": "Herunterladen",
@@ -6696,7 +6702,8 @@
       "search_recent_projects": "Kürzliche Projekte suchen",
       "search_recent_projects_2": "Kürzliche Projekte suchen…",
       "select": "Auswählen",
-      "subdirectories": "Unterverzeichnisse"
+      "subdirectories": "Unterverzeichnisse",
+      "recent_unavailable": "Zuletzt verwendete Projekte nicht verfügbar"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Ich habe verstanden, öffentlich veröffentlichen",
@@ -8934,10 +8941,14 @@
         "parent_folder": "Übergeordneter Ordner",
         "refresh": "Aktualisieren",
         "search_failed": "Suche fehlgeschlagen",
+        "search_timed_out": "Zeitüberschreitung bei der Suche",
         "search_files": "Dateien suchen",
         "searching": "Suche…",
         "showing_first_matches": "Die ersten {{shown}} Treffer werden angezeigt",
-        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
+        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden",
+        "listing_timed_out": "Zeitüberschreitung beim Auflisten des Ordners",
+        "search_denied": "Kein Zugriff auf diesen Ordner",
+        "search_root_missing": "Ordner nicht gefunden"
       },
       "knowledgePicker": {
         "cancel": "Abbrechen",

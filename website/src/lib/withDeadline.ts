@@ -1,3 +1,11 @@
+/**
+ * SCOPE BOUNDARY: a per-endpoint deadline is for a fetch the USER WAITS ON with the UI
+ * blocked behind it -- a composer menu, a picker, a panel listing -- where an unsettled
+ * promise is indistinguishable from an empty result. Do not add a constant per endpoint
+ * past that set; a general bound belongs in the shared transport instead, and when one
+ * lands these constants are RETIRED, never left layered over it as a second deadline.
+ */
+
 /** An `Error` and not a `DOMException`, which the abort reason would otherwise be:
  *  the i18n gate exempts `Error` as a diagnostic callee, `DOMException` it reports. */
 function timeoutReason(): Error {

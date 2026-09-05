@@ -115,7 +115,7 @@ describe('WorkspacePicker', () => {
   describe('directory browsing', () => {
     it('loads the default directory and seeds the path input with it', async () => {
       renderPicker()
-      expect(await pathInput()).toHaveValue('/home/u')
+      await waitFor(async () => expect(await pathInput()).toHaveValue('/home/u'))
       expect(api.browseDirs).toHaveBeenCalledWith(undefined)
     })
 
@@ -154,18 +154,25 @@ describe('WorkspacePicker', () => {
       expect(screen.queryByLabelText('Back')).not.toBeInTheDocument()
     })
 
+    it('keeps the previous listing while a drill is pending, not an emptiness claim', async () => {
+      // "No subdirectories" asserts a folder IS empty, so it must not stand in for a
+      // listing still in flight: on a wedged gateway it would hold for the whole deadline.
+      vi.mocked(api.browseDirs)
+        .mockResolvedValueOnce(browseResult())
+        .mockImplementationOnce(() => new Promise(() => {}))
+      renderPicker()
+      fireEvent.click(await screen.findByText('beta'))
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalledTimes(2))
+      expect(screen.queryByText('No subdirectories')).toBeNull()
+      expect(screen.getByText('beta')).toBeInTheDocument()
+    })
+
     it('shows the empty state when a directory has no children', async () => {
       vi.mocked(api.browseDirs).mockResolvedValue(browseResult('/home/u', '/home', []))
       renderPicker()
       expect(await screen.findByText('No subdirectories')).toBeInTheDocument()
     })
 
-    it('swallows a browse failure and stays usable', async () => {
-      vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
-      renderPicker()
-      expect(await screen.findByText('No subdirectories')).toBeInTheDocument()
-      expect(screen.getByLabelText('Project directory path')).toHaveValue('')
-    })
   })
 
   describe('typed filtering', () => {

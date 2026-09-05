@@ -5823,7 +5823,13 @@
       "searching_ctrl_enter_held": "검색 중… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "searching_enter_held": "검색 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
       "type_2_chars_to_search_files_ctrl_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
-      "type_2_chars_to_search_files_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다"
+      "type_2_chars_to_search_files_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
+      "search_failed": "파일 검색에 실패했습니다",
+      "search_timed_out": "파일 검색 시간 초과",
+      "search_failed_ctrl_enter_sends": "파일 검색에 실패했습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "search_timed_out_ctrl_enter_sends": "파일 검색 시간 초과 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "search_failed_enter_sends": "파일 검색에 실패했습니다 — Enter 키를 누르면 메시지가 전송됩니다",
+      "search_timed_out_enter_sends": "파일 검색 시간 초과 — Enter 키를 누르면 메시지가 전송됩니다"
     },
     "fileRenderers": {
       "download": "다운로드",
@@ -6596,7 +6602,8 @@
       "search_recent_projects": "최근 프로젝트 검색",
       "search_recent_projects_2": "최근 프로젝트 검색…",
       "select": "선택",
-      "subdirectories": "하위 디렉터리"
+      "subdirectories": "하위 디렉터리",
+      "recent_unavailable": "최근 프로젝트를 사용할 수 없음"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "이해했습니다. 공개로 게시합니다",
@@ -8810,10 +8817,14 @@
         "parent_folder": "상위 폴더",
         "refresh": "새로 고침",
         "search_failed": "검색 실패",
+        "search_timed_out": "검색 시간 초과",
         "search_files": "파일 검색",
         "searching": "검색 중…",
         "showing_first_matches": "처음 {{shown}}개의 일치 항목 표시 중",
-        "unable_to_list_folder": "폴더 목록을 표시할 수 없습니다"
+        "unable_to_list_folder": "폴더 목록을 표시할 수 없습니다",
+        "listing_timed_out": "폴더 목록 시간 초과",
+        "search_denied": "이 폴더에 접근할 수 없습니다",
+        "search_root_missing": "폴더를 찾을 수 없습니다"
       },
       "knowledgePicker": {
         "cancel": "취소",

@@ -6013,7 +6013,13 @@
       "searching_ctrl_enter_held": "Recherche… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
       "searching_enter_held": "Recherche… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
       "type_2_chars_to_search_files_ctrl_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
-      "type_2_chars_to_search_files_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message"
+      "type_2_chars_to_search_files_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
+      "search_failed": "La recherche de fichiers a échoué",
+      "search_timed_out": "Délai de recherche de fichiers dépassé",
+      "search_failed_ctrl_enter_sends": "La recherche de fichiers a échoué — Ctrl+Enter envoie le message",
+      "search_timed_out_ctrl_enter_sends": "Délai de recherche de fichiers dépassé — Ctrl+Enter envoie le message",
+      "search_failed_enter_sends": "La recherche de fichiers a échoué — Enter envoie le message",
+      "search_timed_out_enter_sends": "Délai de recherche de fichiers dépassé — Enter envoie le message"
     },
     "fileRenderers": {
       "download": "Télécharger",
@@ -6796,7 +6802,8 @@
       "search_recent_projects": "Rechercher dans les projets récents",
       "search_recent_projects_2": "Rechercher dans les projets récents…",
       "select": "Sélectionner",
-      "subdirectories": "Sous-dossiers"
+      "subdirectories": "Sous-dossiers",
+      "recent_unavailable": "Projets récents indisponibles"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "J'ai compris, publier publiquement",
@@ -9058,10 +9065,14 @@
         "parent_folder": "Dossier parent",
         "refresh": "Actualiser",
         "search_failed": "Échec de la recherche",
+        "search_timed_out": "Délai de recherche dépassé",
         "search_files": "Rechercher des fichiers",
         "searching": "Recherche…",
         "showing_first_matches": "Affichage des {{shown}} premières correspondances",
-        "unable_to_list_folder": "Impossible de lister le dossier"
+        "unable_to_list_folder": "Impossible de lister le dossier",
+        "listing_timed_out": "Délai de listage du dossier dépassé",
+        "search_denied": "Accès refusé à ce dossier",
+        "search_root_missing": "Dossier introuvable"
       },
       "knowledgePicker": {
         "cancel": "Annuler",

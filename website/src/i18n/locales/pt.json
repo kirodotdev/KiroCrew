@@ -6013,7 +6013,13 @@
       "searching_ctrl_enter_held": "Pesquisando… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
       "searching_enter_held": "Pesquisando… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
       "type_2_chars_to_search_files_ctrl_enter_held": "Digite 2+ caracteres para pesquisar arquivos e pastas… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
-      "type_2_chars_to_search_files_enter_held": "Digite 2+ caracteres para pesquisar arquivos e pastas… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem"
+      "type_2_chars_to_search_files_enter_held": "Digite 2+ caracteres para pesquisar arquivos e pastas… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
+      "search_failed": "A pesquisa de arquivos falhou",
+      "search_timed_out": "A pesquisa de arquivos expirou",
+      "search_failed_ctrl_enter_sends": "A pesquisa de arquivos falhou — Ctrl+Enter envia a mensagem",
+      "search_timed_out_ctrl_enter_sends": "A pesquisa de arquivos expirou — Ctrl+Enter envia a mensagem",
+      "search_failed_enter_sends": "A pesquisa de arquivos falhou — Enter envia a mensagem",
+      "search_timed_out_enter_sends": "A pesquisa de arquivos expirou — Enter envia a mensagem"
     },
     "fileRenderers": {
       "download": "Baixar",
@@ -6796,7 +6802,8 @@
       "search_recent_projects": "Pesquisar projetos recentes",
       "search_recent_projects_2": "Pesquisar projetos recentes…",
       "select": "Selecionar",
-      "subdirectories": "Subdiretórios"
+      "subdirectories": "Subdiretórios",
+      "recent_unavailable": "Projetos recentes indisponíveis"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Eu entendi, publicar publicamente",
@@ -9058,10 +9065,14 @@
         "parent_folder": "Pasta pai",
         "refresh": "Atualizar",
         "search_failed": "A pesquisa falhou",
+        "search_timed_out": "A pesquisa expirou",
         "search_files": "Pesquisar arquivos",
         "searching": "Pesquisando…",
         "showing_first_matches": "Mostrando as primeiras {{shown}} correspondências",
-        "unable_to_list_folder": "Não foi possível listar a pasta"
+        "unable_to_list_folder": "Não foi possível listar a pasta",
+        "listing_timed_out": "A listagem da pasta expirou",
+        "search_denied": "Sem acesso a esta pasta",
+        "search_root_missing": "Pasta não encontrada"
       },
       "knowledgePicker": {
         "cancel": "Cancelar",

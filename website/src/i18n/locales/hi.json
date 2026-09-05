@@ -5918,7 +5918,13 @@
       "searching_ctrl_enter_held": "खोज रहे हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
       "searching_enter_held": "खोज रहे हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
       "type_2_chars_to_search_files_ctrl_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
-      "type_2_chars_to_search_files_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा"
+      "type_2_chars_to_search_files_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
+      "search_failed": "फ़ाइल खोज विफल रही",
+      "search_timed_out": "फ़ाइल खोज का समय समाप्त",
+      "search_failed_ctrl_enter_sends": "फ़ाइल खोज विफल रही — Ctrl+Enter संदेश भेज देगा",
+      "search_timed_out_ctrl_enter_sends": "फ़ाइल खोज का समय समाप्त — Ctrl+Enter संदेश भेज देगा",
+      "search_failed_enter_sends": "फ़ाइल खोज विफल रही — Enter संदेश भेज देगा",
+      "search_timed_out_enter_sends": "फ़ाइल खोज का समय समाप्त — Enter संदेश भेज देगा"
     },
     "fileRenderers": {
       "download": "डाउनलोड करें",
@@ -6696,7 +6702,8 @@
       "search_recent_projects": "हाल के प्रोजेक्ट खोजें",
       "search_recent_projects_2": "हाल के प्रोजेक्ट खोजें…",
       "select": "चुनें",
-      "subdirectories": "सब-डायरेक्टरी"
+      "subdirectories": "सब-डायरेक्टरी",
+      "recent_unavailable": "हाल की परियोजनाएँ अनुपलब्ध"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "मैं समझता हूँ, सार्वजनिक रूप से प्रकाशित करें",
@@ -8934,10 +8941,14 @@
         "parent_folder": "पैरेंट फ़ोल्डर",
         "refresh": "रिफ़्रेश करें",
         "search_failed": "खोज विफल",
+        "search_timed_out": "खोज का समय समाप्त",
         "search_files": "फ़ाइलें खोजें",
         "searching": "खोज रहे हैं…",
         "showing_first_matches": "पहले {{shown}} मिलान दिखा रहे हैं",
-        "unable_to_list_folder": "फ़ोल्डर की सूची नहीं बनाई जा सकी"
+        "unable_to_list_folder": "फ़ोल्डर की सूची नहीं बनाई जा सकी",
+        "listing_timed_out": "फ़ोल्डर सूची का समय समाप्त",
+        "search_denied": "इस फ़ोल्डर तक पहुँच नहीं है",
+        "search_root_missing": "फ़ोल्डर नहीं मिला"
       },
       "knowledgePicker": {
         "cancel": "रद्द करें",
