@@ -75,12 +75,14 @@ class TestApiSlashCommands:
     async def test_blocked_commands_absent_from_suggestions(self):
         """Regression guard: no blocked command may appear in the suggestion
         payload. /tangent regressed this way once — present in _SLASH_COMMANDS
-        (so the menu offered it) but rejected at execution time."""
+        (so the menu offered it) but rejected at execution time. /todos is also
+        blocked because the kiro-cli ACP harness does not implement it."""
         payload = await _get("kiro")
         names = {item["name"] for item in payload}
         leaked = names & _BLOCKED_SLASH_COMMANDS
         assert not leaked, f"blocked commands advertised in menu: {sorted(leaked)}"
         assert "/tangent" not in names
+        assert "/todos" not in names
 
     @pytest.mark.asyncio
     async def test_claude_code_provider_filters_blocked_commands(self):
