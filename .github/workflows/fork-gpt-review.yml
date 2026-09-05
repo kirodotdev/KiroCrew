@@ -378,24 +378,45 @@ jobs:
           model = "openai.gpt-5.6-sol"
           model_reasoning_effort = "medium"
 
-          # Withhold the Bedrock credentials from the shell the MODEL can run,
-          # while leaving them available to the CLI process itself. This is the
-          # source-level half of #8671: the reviewer's own shell inherits the
-          # job's AWS credentials today, so a malicious fork can prompt it to
-          # print them, and no output filter can close that -- the model chooses
-          # the encoding, so shape matching and literal-value matching are both
-          # evadable. `shell_environment_policy` governs the environment handed
-          # to SPAWNED SUBPROCESSES, not the CLI's own, which is exactly the
-          # split required: Bedrock still authenticates, the shell tool sees no
-          # keys. Both `codex exec` calls in this lane read this one file.
+          # Deliberately NOT set here: `default_permissions` with a
+          # `[permissions.*]` deny on the credential file. Both `codex exec`
+          # calls below pass the read-only sandbox flag on the command line, and
+          # that flag SELECTS the legacy sandbox instead of a named permissions
+          # profile -- so a deny written here is silently inert. It was written
+          # here, it was inert, and this lane's own GPT reviewer caught it. A
+          # config that asserts an authority it does not have is worse than an
+          # absent one: it reads to a human as a closed hole.
+          #
+          # Removing it rather than removing the flag is deliberate too. The flag
+          # governs today, so deleting the config changes the effective sandbox
+          # by exactly nothing and needs no fact about this CLI version; dropping
+          # the flag instead would hand control to whatever 0.150.1 falls back to,
+          # which could be MORE permissive than read-only.
+
+          # Resolve Bedrock credentials from a profile FILE rather than the
+          # environment, so the credential-bearing variables can be dropped from
+          # the steps that run the model (see their `env:` blocks). Read the PR
+          # body before treating this as a mitigation: on an ephemeral runner the
+          # file and the environment are both same-UID reachable and both die
+          # with the runner, so this RELOCATES the credential, it does not reduce
+          # the exposure. Its value is as a prerequisite for moving the
+          # credential behind a UID boundary, which is the only thing that does.
+          [model_providers.amazon-bedrock.aws]
+          profile = "review"
+          region = "us-east-1"
+
+          # Defence in depth: withhold the credentials from the shell the MODEL
+          # can run even if they are somehow present in the CLI's own
+          # environment. `shell_environment_policy` governs the environment
+          # handed to SPAWNED SUBPROCESSES, not the CLI's own. `inherit` is the
+          # load-bearing key and is long-standing; `filters` and
+          # `ignore_default_excludes` could not be verified against 0.150.1 --
+          # on that version the exclusion field may be `exclude` (a glob array)
+          # rather than the `filters` map, which would leave both inert. Do not
+          # copy `filters` elsewhere assuming it works.
           [shell_environment_policy]
           inherit = "core"
-          # Apply the built-in secret-name exclusions (names containing KEY,
-          # SECRET or TOKEN). Codex's default is to KEEP those, which is why the
-          # credentials reach the shell today.
           ignore_default_excludes = false
-          # Explicit and case-insensitive, so the guard does not rest on the
-          # name heuristic alone.
           filters = { "AWS_*" = "exclude", "AWS_SESSION_TOKEN" = "exclude", "AWS_SECRET_ACCESS_KEY" = "exclude", "AWS_ACCESS_KEY_ID" = "exclude" }
           # The region is not a credential and the provider needs it.
           set = { AWS_REGION = "us-east-1" }
@@ -408,10 +429,52 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
+      - name: Stage the minted credentials into a profile file (discovery pass)
+        run: |
+          set -uo pipefail
+          # The credentials the step above minted arrive as job
+          # environment variables. Copy them into a profile file so the model
+          # step can drop the variables entirely while the CLI still
+          # authenticates. Nothing about HOW the job authenticates changes: the
+          # configure-aws-credentials step above is untouched and still the only
+          # thing that mints anything.
+          #
+          # Staged under RUNNER_TEMP rather than the SDK's default global path,
+          # and selected with AWS_SHARED_CREDENTIALS_FILE. Reachability is
+          # identical -- same UID either way, which is the whole point of #8789 --
+          # but writing the global default would clobber an existing credentials
+          # file on any non-ephemeral or self-hosted runner, and it keeps the
+          # lane's credential material to one non-canonical location.
+          CREDS_DIR="$RUNNER_TEMP/review-aws"
+          mkdir -p "$CREDS_DIR"
+          umask 077
+          {
+            printf '[review]\n'
+            printf 'aws_access_key_id = %s\n' "$AWS_ACCESS_KEY_ID"
+            printf 'aws_secret_access_key = %s\n' "$AWS_SECRET_ACCESS_KEY"
+            printf 'aws_session_token = %s\n' "$AWS_SESSION_TOKEN"
+            printf 'region = us-east-1\n'
+          } > "$CREDS_DIR/credentials"
+          chmod 600 "$CREDS_DIR/credentials"
+
       - name: GPT 5.6 review (discovery pass)
         id: review
         env:
           AWS_REGION: us-east-1
+          # Blank the credential variables for THIS STEP ONLY -- the one thing in
+          # this change provable by reading this file. The codex process does not
+          # hold them, so /proc/<ppid>/environ yields nothing to the shell the
+          # model drives. The job-level credentials minted above are untouched:
+          # later steps that need them (the Opus adjudication) still see them.
+          # Authentication moves to the profile file staged above. That file is
+          # readable by the same UID, so this RELOCATES the credential rather than
+          # reducing the exposure -- see the PR body. It is the prerequisite for
+          # putting the credential behind a UID boundary, not a mitigation.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+          AWS_PROFILE: review
+          AWS_SHARED_CREDENTIALS_FILE: ${{ runner.temp }}/review-aws/credentials
           PATCH_FILE: ${{ runner.temp }}/authentic.patch
           HEAD: ${{ steps.pr.outputs.head_sha }}
           NONCE: ${{ steps.intent.outputs.nonce }}
@@ -651,10 +714,35 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
+      - name: Stage the minted credentials into a profile file (falsification pass)
+        run: |
+          set -uo pipefail
+          # Re-staged because the step above re-assumed the role and minted FRESH
+          # credentials; the file written before the discovery pass now holds an
+          # expired session. Same rationale as that step, including the
+          # RUNNER_TEMP location.
+          CREDS_DIR="$RUNNER_TEMP/review-aws"
+          mkdir -p "$CREDS_DIR"
+          umask 077
+          {
+            printf '[review]\n'
+            printf 'aws_access_key_id = %s\n' "$AWS_ACCESS_KEY_ID"
+            printf 'aws_secret_access_key = %s\n' "$AWS_SECRET_ACCESS_KEY"
+            printf 'aws_session_token = %s\n' "$AWS_SESSION_TOKEN"
+            printf 'region = us-east-1\n'
+          } > "$CREDS_DIR/credentials"
+          chmod 600 "$CREDS_DIR/credentials"
+
       - name: GPT 5.6 review (falsification pass)
         id: gpt_pass2
         env:
           AWS_REGION: us-east-1
+          # Same reasoning as the discovery pass above.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+          AWS_PROFILE: review
+          AWS_SHARED_CREDENTIALS_FILE: ${{ runner.temp }}/review-aws/credentials
           DISCOVERY_OUTPUT_MAX_BYTES: "50000"
           PASS_WALL: 55m
           HEAD: ${{ steps.pr.outputs.head_sha }}

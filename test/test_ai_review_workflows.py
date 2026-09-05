@@ -5035,12 +5035,96 @@ class TestModelShellDoesNotInheritCredentials:
         "AWS_SESSION_TOKEN",
     )
 
-    def _policy(self) -> dict:
+    def _config(self) -> dict:
         """Parse the config.toml the GPT lane writes, as the CLI will read it."""
         script = _step_script(_workflow("fork-gpt-review.yml"), self.CONFIG_STEP)
         start = script.index("<<'EOF'\n") + len("<<'EOF'\n")
         body = script[start : script.index("\nEOF", start)]
-        config = tomllib.loads(body)
+        # The lane sed-substitutes $HOME after writing; the permissions table
+        # needs absolute paths, so resolve the placeholder the same way.
+        return tomllib.loads(body.replace("__HOME__", "/home/runner"))
+
+    def _model_steps(self) -> list[dict]:
+        doc = yaml.safe_load(_workflow("fork-gpt-review.yml"))
+        steps = [s for job in doc["jobs"].values() for s in job["steps"]]
+        found = [s for s in steps if s.get("id") in {"review", "gpt_pass2"}]
+        assert len(found) == 2, "the GPT lane's model-call steps changed; re-audit #8671"
+        return found
+
+    def test_the_model_steps_do_not_receive_the_credentials(self) -> None:
+        """The one property provable by reading this repository.
+
+        Everything else here depends on how the pinned CLI interprets its config,
+        which cannot be checked without the binary. This is a property of the
+        workflow file: if the credential variables are blank in the step's own
+        ``env:``, the codex process does not hold them, so the shell it spawns
+        gets nothing from ``/proc/<ppid>/environ`` -- the bypass that defeated
+        the first attempt at #8671. Note this RELOCATES the credential to a
+        profile file readable by the same UID; it does not reduce the exposure.
+        """
+        for step in self._model_steps():
+            env = step["env"]
+            for name in self.CREDENTIAL_NAMES:
+                assert env.get(name) == "", f"{step['id']}: {name} still reaches the model process"
+            assert env.get("AWS_PROFILE"), f"{step['id']}: no profile to authenticate with"
+            assert env.get("AWS_REGION"), f"{step['id']}: the provider still needs a region"
+
+    def test_the_provider_resolves_credentials_from_a_profile(self) -> None:
+        aws = self._config()["model_providers"]["amazon-bedrock"]["aws"]
+        assert aws.get("profile"), "nothing replaces the credentials layer 1 removed"
+        assert aws.get("region")
+        for step in self._model_steps():
+            assert step["env"]["AWS_PROFILE"] == aws["profile"], "profile name disagrees"
+
+    def _sandbox_flag_lines(self) -> list[str]:
+        """Lines that actually PASS --sandbox, excluding comment prose about it.
+
+        The config step's comment explains the flag's precedence, so a plain
+        substring count over the file sees three occurrences where only two are
+        arguments.
+        """
+        return [
+            line
+            for line in _workflow("fork-gpt-review.yml").splitlines()
+            if "--sandbox read-only" in line and not line.lstrip().startswith("#")
+        ]
+
+    def test_the_config_claims_no_authority_the_sandbox_flag_overrides(self) -> None:
+        """A config that asserts an authority it does not have is worse than none.
+
+        Both ``codex exec`` calls pass ``--sandbox read-only`` on the command
+        line, and that flag SELECTS the legacy sandbox instead of a named
+        permissions profile -- so a ``default_permissions`` deny written into
+        config.toml is silently inert. It was written, it was inert, and this
+        lane's own GPT reviewer caught it: the config read to a human as a closed
+        hole while the credential file stayed readable.
+
+        This asserts the inverse of the original mistake. If anyone re-adds a
+        permissions profile while the flag is still passed, this fails and points
+        them at the precedence rather than letting the claim ship.
+        """
+        cfg = self._config()
+        assert len(self._sandbox_flag_lines()) == 2, "sandbox-flag count changed; re-audit"
+        assert "default_permissions" not in cfg, (
+            "config.toml selects a permissions profile while --sandbox is passed "
+            "on the command line, which overrides it -- the deny is inert"
+        )
+        assert "permissions" not in cfg, (
+            "a [permissions.*] profile is defined but --sandbox on the command "
+            "line means it is never applied"
+        )
+
+    def test_the_credentials_are_staged_for_every_model_pass(self) -> None:
+        """Each pass re-assumes the role, so each needs its profile re-staged."""
+        doc = yaml.safe_load(_workflow("fork-gpt-review.yml"))
+        steps = [s for job in doc["jobs"].values() for s in job["steps"]]
+        staged = [
+            s for s in steps if str(s.get("name", "")).startswith("Stage the minted credentials")
+        ]
+        assert len(staged) == len(self._model_steps()), "a model pass runs with a stale profile"
+
+    def _policy(self) -> dict:
+        config = self._config()
         assert "shell_environment_policy" in config, (
             "the GPT lane writes no shell_environment_policy, so the shell it "
             "spawns for the model inherits the job's Bedrock credentials (#8671)"
@@ -5101,10 +5185,10 @@ class TestModelShellDoesNotInheritCredentials:
         """One config write must cover both model shells, not just the first."""
         lane = _workflow("fork-gpt-review.yml")
         wrote = lane.index(f"      - name: {self.CONFIG_STEP}")
-        boundaries = [m.start() for m in re.finditer(r"--sandbox read-only", lane)]
-        assert len(boundaries) == 2, "the GPT lane's shell count changed; re-audit #8671"
-        for at in boundaries:
-            assert wrote < at, "a model shell starts before the policy is written"
+        flags = self._sandbox_flag_lines()
+        assert len(flags) == 2, "the GPT lane's shell count changed; re-audit #8671"
+        for line in flags:
+            assert wrote < lane.index(line), "a model shell starts before the policy is written"
 
     @pytest.mark.parametrize(("lane", "step_name"), CLAUDE_MODEL_CALLS)
     def test_no_claude_lane_grants_the_model_a_shell(self, lane: str, step_name: str) -> None:
