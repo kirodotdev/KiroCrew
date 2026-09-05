@@ -5,6 +5,7 @@ import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIco
 import { api } from '../../api/client'
 import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import { countDiffStats } from '../../utils/diffLineCounts'
 import { toApiDecision } from '../../utils/approvalDecision'
@@ -84,7 +85,16 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
   }, [autoLoad])
   if (text !== null) return <>{text}</>
   if (loading) return <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.loading')}</span>
-  if (error) return <button className="text-danger/70 hover:text-danger text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.failed_click_to_retry')}</button>
+  // Retry and hand-off are two separate controls: the notice carries the
+  // agent hand-off (a side-panel read failure, nothing to lose), the button
+  // stays the retry. Folding "click to retry" into the error text made the
+  // notice itself the only affordance and left the failure a dead end.
+  if (error) return (
+    <span className="inline-flex flex-wrap items-center gap-2 font-body">
+      <ErrorNotice variant="inline" message={i18nT('pages.chat.activityViewer.output_load_failed')} askAgent />
+      <button type="button" className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.retry')}</button>
+    </span>
+  )
   return <button className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.load_output_from_disk')}</button>
 }
 
@@ -107,6 +117,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
 
   // Approval handling for pending subagents
   const dispatch = useAppDispatch()
+  // Outcome of the last approve / reject / cancel round-trip that FAILED. The
+  // Redux flags only roll back the busy state, which left a refused decision
+  // indistinguishable from one that never happened.
+  const [actionError, setActionError] = useState<string | null>(null)
   // 1-click transcript: chip selection expands the card, scrolls it into
   // view, and (via DiskLoader autoLoad) fetches the output — then clears the
   // selection so a later re-click re-triggers.
@@ -120,6 +134,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const onApprove = useCallback((e: React.MouseEvent, action: 'approve' | 'reject') => {
     e.stopPropagation()
     if (!a.approval_id) return
+    setActionError(null)
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
     api.resolveApproval(a.approval_id, action).then(() => {
       // See the matching note in ChatInput's resolveOneSpawn: the backend's
@@ -130,7 +145,13 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       if (action === 'reject' && slot) {
         dispatch(sseSubagentDone({ slot, id: a.id, elapsed: 0, error: 'rejected' }))
       }
-    }).catch(() => dispatch(markSubagentApproving({ id: a.id, approving: false })))
+    }).catch((e: unknown) => {
+      dispatch(markSubagentApproving({ id: a.id, approving: false }))
+      const reason = e instanceof Error ? e.message : ''
+      setActionError(reason
+        ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+        : i18nT('components.approvalCard.decision_failed'))
+    })
   }, [a.approval_id, a.id, slot, dispatch])
 
   // Live elapsed timer for running subagents
@@ -156,7 +177,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
 
   const onCancel = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
-    api.spawnDelete(a.id).catch(() => {})
+    setActionError(null)
+    // The card converges through the spawn/done stream on success; a refused
+    // delete leaves it running, so say so instead of letting the press vanish.
+    api.spawnDelete(a.id).catch(() => setActionError(i18nT('pages.chat.activityViewer.cancel_failed')))
   }, [a.id])
 
   const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
@@ -255,6 +279,13 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         </div>
       )}
       {isPending && a.approving && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
+      {/* Activity panel, no draft to lose → hand-off on. Also covers a refused
+          Cancel on a running card. */}
+      {actionError && (
+        <div className="px-3 pb-2">
+          <ErrorNotice variant="inline" message={actionError} askAgent />
+        </div>
+      )}
       {/* Output (streaming body) */}
       {!isPending && !collapsed && (
       <>
@@ -265,10 +296,11 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           {a.lastTool && <div className="text-accent mt-1"><Wrench className="lucide-inline" /> {a.lastTool}</div>}
         </pre>
       </div>
-      {/* Error details */}
+      {/* Error details — a backend-reported subagent failure, so it takes the
+          shared notice (hand-off on: nothing in this panel is unsaved). */}
       {a.error && (
         <div className="px-3 py-1.5 text-[12px] border-t border-border/20 space-y-0.5">
-          <div className="text-red-400">{a.error}</div>
+          <ErrorNotice variant="inline" message={a.error} askAgent />
           {a.lastTool && <div className="text-muted/40">{i18nT('pages.chat.activityViewer.last_tool')} {a.lastTool}</div>}
         </div>
       )}
@@ -291,12 +323,20 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   const [localDecision, setLocalDecision] = useState<string | null>(null)
   const isResolved = resolved || !!localDecision
   const [acting, setActing] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
   const onAction = useCallback(async (action: string) => {
     setActing(true)
+    setActionError(null)
     setLocalDecision(action)
     try {
       await api.resolveApproval(entry.approval_id!, toApiDecision(action))
-    } catch { setLocalDecision(null); setActing(false) }
+    } catch (e: unknown) {
+      setLocalDecision(null); setActing(false)
+      const reason = e instanceof Error ? e.message : ''
+      setActionError(reason
+        ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+        : i18nT('components.approvalCard.decision_failed'))
+    }
   }, [entry.approval_id])
 
   // This card mounts only for non-chat approvals (see the `isSpawnApproval`
@@ -330,6 +370,12 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
         </div>
       )}
       {acting && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
+      {/* Approval card in the activity panel: no draft → hand-off on. */}
+      {actionError && (
+        <div className="px-3 pb-2">
+          <ErrorNotice variant="inline" message={actionError} askAgent />
+        </div>
+      )}
     </div>
   )
 }
@@ -536,7 +582,7 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
   // same panel. It is optional because this tab also renders outside a chat (no
   // panel to open into), where the standalone detail page stays the target.
   const navigate = useNavigate()
-  const { data: artifactData, isFetching: artifactsFetching } = useQuery<{ artifacts: Artifact[] }>({
+  const { data: artifactData, isFetching: artifactsFetching, isError: artifactsError } = useQuery<{ artifacts: Artifact[] }>({
     queryKey: ['session-artifact-records', slot],
     queryFn: () => api.artifacts({ touchedBy: slot }),
     enabled: !!slot,
@@ -544,7 +590,7 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
   // The whole library, for section B. Its own query key so the session query's
   // invalidations don't force a refetch of the (larger) library list and vice
   // versa; both still refresh on the shared ['artifacts'] invalidation below.
-  const { data: libraryData, isFetching: libraryFetching } = useQuery<{ artifacts: Artifact[] }>({
+  const { data: libraryData, isFetching: libraryFetching, isError: libraryError } = useQuery<{ artifacts: Artifact[] }>({
     queryKey: ['artifacts', 'panel-library'],
     queryFn: () => api.artifacts({}),
   })
@@ -565,6 +611,10 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
     onSuccess: invalidate,
   })
   const busySlug = pinMut.isPending ? (pinMut.variables as string) : null
+  // A refused save used to just un-busy the row. The backend reason (when it
+  // gives one) is the journal key, so it goes in `message`; the fixed lead is
+  // the title.
+  const pinErrorReason = pinMut.isError ? (pinMut.error instanceof Error ? pinMut.error.message : '') : ''
 
   const rows = useMemo<SessionArtifactRow[]>(() => {
     const out: SessionArtifactRow[] = (artifactData?.artifacts || []).map(toRow)
@@ -635,6 +685,24 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
   return (
     <div className="flex-1 overflow-y-auto py-1.5">
       <div className="px-3 flex flex-col">
+        {/* Read failures first: without these a failed load rendered as the
+            "nothing touched yet" hero, which is a claim the panel cannot make.
+            Side panel with no draft → hand-off on for all three. */}
+        {artifactsError && (
+          <ErrorNotice className="mb-2" message={i18nT('pages.chat.activityViewer.artifacts_load_failed')} askAgent />
+        )}
+        {libraryError && (
+          <ErrorNotice className="mb-2" message={i18nT('pages.chat.activityViewer.library_load_failed')} askAgent />
+        )}
+        {pinMut.isError && (
+          <ErrorNotice
+            className="mb-2"
+            title={pinErrorReason ? i18nT('pages.chat.activityViewer.artifact_save_failed') : undefined}
+            message={pinErrorReason || i18nT('pages.chat.activityViewer.artifact_save_failed')}
+            askAgent
+            onDismiss={() => pinMut.reset()}
+          />
+        )}
         {/* Section A — this session. When the session has touched nothing yet, a
             short hero explains what the panel collects instead of an empty heading. */}
         {rows.length > 0 ? (
@@ -835,25 +903,41 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     [ids, subagents],
   )
   const [retryingFailed, setRetryingFailed] = useState(false)
+  // Outcome of the last batch control (retry-failed / dismiss-done) that did
+  // not fully succeed. Both used to discard their settled results, so a
+  // rejected retry or a refused delete was invisible.
+  const [batchError, setBatchError] = useState<string | null>(null)
   const retryFailed = useCallback(() => {
     setRetryingFailed(true)
-    Promise.allSettled(failedRetryableIds.map(id => api.spawnRetry(id))).finally(() => setRetryingFailed(false))
+    setBatchError(null)
+    Promise.allSettled(failedRetryableIds.map(id => api.spawnRetry(id)))
+      .then(results => {
+        const rejected = results.filter(r => r.status === 'rejected').length
+        if (rejected > 0) setBatchError(i18nT('pages.chat.activityViewer.retry_failed_error', { count: rejected }))
+      })
+      .finally(() => setRetryingFailed(false))
   }, [failedRetryableIds])
   const dismissDone = useCallback(() => {
     // Slot-scoped by construction: delete exactly this slot's terminal cards
     // by id — the global DELETE /api/spawn clear would nuke other sessions'
     // completed agents too (their cards would 404 on status/output).
-    for (const id of terminalIds) api.spawnDelete(id).catch(() => {})
+    // The local clear stays optimistic; a refused delete is reported so the
+    // user knows the card still exists server-side.
+    setBatchError(null)
+    void Promise.allSettled(terminalIds.map(id => api.spawnDelete(id))).then(results => {
+      if (results.some(r => r.status === 'rejected')) setBatchError(i18nT('pages.chat.activityViewer.dismiss_failed'))
+    })
     dispatchRedux(clearTerminalSubagents({ slot }))
   }, [dispatchRedux, slot, terminalIds])
 
-  // Dynamic Workflow runs (M6) — dedup + caching + self-managed polling
-  const { data: wfRuns = [] } = useQuery<WfRunRow[]>({
+  // Dynamic Workflow runs (M6) — dedup + caching + self-managed polling.
+  // Through the api client, which REJECTS on a non-OK response (its doc comment
+  // states the rule: "never as 'no runs'") and carries the backend body as an
+  // ApiError — the journal context the hand-off exists to recover. The raw
+  // fetch this replaces mapped a failure to `{ runs: [] }`.
+  const { data: wfRuns = [], isError: wfRunsError } = useQuery<WfRunRow[]>({
     queryKey: ['workflow-runs'],
-    queryFn: () =>
-      fetch('/api/workflows/runs', { credentials: 'same-origin' })
-        .then(r => (r.ok ? r.json() : { runs: [] }))
-        .then(d => (Array.isArray(d?.runs) ? d.runs : [])),
+    queryFn: () => api.workflowRuns().then(d => (Array.isArray(d?.runs) ? (d.runs as WfRunRow[]) : [])),
     enabled: open,
     refetchInterval: 2500,
   })
@@ -1009,6 +1093,12 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
               )}
             </div>
           )}
+          {/* Batch-control outcome. Activity panel, no draft → hand-off on. */}
+          {batchError && (
+            <div className="mx-2 mb-2">
+              <ErrorNotice message={batchError} askAgent onDismiss={() => setBatchError(null)} />
+            </div>
+          )}
           {/* Pending approvals */}
           {visibleLog.filter(isSpawnApproval).map((entry, i) => (
             <ApprovalEntry key={`a${i}`} entry={entry} />
@@ -1061,6 +1151,11 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {/* Workflows tab (M6): live dynamic-workflow runs */}
       {effectiveTab === 'workflows' && (
         <div className="flex-1 overflow-y-auto py-2 px-3 flex flex-col gap-2">
+          {/* A failed list read is not "no runs": say so above whatever the
+              cache still holds. Status panel, no draft → hand-off on. */}
+          {wfRunsError && (
+            <ErrorNotice message={i18nT('pages.chat.activityViewer.workflow_runs_load_failed')} askAgent />
+          )}
           {wfRunsForSlot.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2">
               <span className="text-[24px]"><Workflow className="lucide-inline" /></span>

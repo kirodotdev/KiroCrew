@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactElement } from 'react'
 import McpInfoButton from '../pages/chat/McpInfoButton'
 import { api } from '../api/client'
 
@@ -12,6 +14,14 @@ vi.mock('../api/client', () => ({
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { tool_search: true } }),
   },
 }))
+
+// The popover's two reads are react-query queries (per website/AGENTS.md), so
+// the component needs a provider; a fresh client per render keeps one test's
+// cached answer out of the next.
+function render(ui: ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+}
 
 describe('McpInfoButton', () => {
   beforeEach(() => { vi.clearAllMocks() })

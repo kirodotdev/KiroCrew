@@ -1128,6 +1128,11 @@ const REFUSED_PRESS_TITLE_KEYS = {
   continue: 'pages.chatPage.could_not_continue',
   regenerate: 'pages.chatPage.could_not_regenerate',
   switch_variant: 'pages.chatPage.could_not_switch_variant',
+  // Two keys because the two /side failures leave different visible states: a
+  // refused open leaves no panel, a refused turn leaves the panel open beside
+  // the notice — "couldn't open" over an open panel contradicts what the user sees.
+  side_open: 'pages.chatPage.could_not_open_side_chat',
+  side_turn: 'pages.chatPage.could_not_send_to_side_chat',
 } as const
 type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
 
@@ -5022,6 +5027,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const slashResult = await interceptSlashCommand(slashTxt, uiSlot, dispatch)
       if (slashResult.intercepted) {
         if (!optionText && !slashResult.failed) { setInput(''); setPasteBlocks([]) }
+        // Keeping the composer intact is the recovery; this is the report.
+        // Same surface as a refused footer press, so the reason sits above the
+        // draft it left in place instead of only in the console.
+        if (slashResult.failed) {
+          setRefusedPress({
+            action: slashResult.stage === 'turn' ? 'side_turn' : 'side_open',
+            message: slashResult.error || i18nT('pages.chatPage.side_command_not_run'),
+          })
+        }
         return
       }
     }
@@ -9603,6 +9617,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     title={i18nT(REFUSED_PRESS_TITLE_KEYS[refusedPress.action])}
                     message={refusedPress.message}
                     onDismiss={() => setRefusedPress(null)}
+                    // Hand-off on. The composer beneath holds a live draft, but it
+                    // is persisted per slot on every keystroke and on slot switch
+                    // (the setDraft effects above), and an in-chat hand-off opens
+                    // a FRESH slot without navigating away — so the draft survives.
+                    askAgent
                   />
                 </div>
               )}
@@ -9635,11 +9654,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   </div>
                 </div>
               )}
-              {knowledgeFetch.results.length > 0 || knowledgeFetch.loading ? (
+              {knowledgeFetch.results.length > 0 || knowledgeFetch.loading || knowledgeFetch.error ? (
                 <KnowledgePicker
                   results={knowledgeFetch.results}
                   query={knowledgeFetch.query}
                   loading={knowledgeFetch.loading}
+                  error={knowledgeFetch.error}
+                  onRetry={knowledgeFetch.retrySearch}
                   onInject={(selected) => {
                     knowledgeFetch.inject(selected)
                   }}

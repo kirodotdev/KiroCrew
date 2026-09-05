@@ -9083,7 +9083,6 @@
         "complete": "Завершено",
         "dismiss_done_count": "Скрыть завершённые ({{count}})",
         "error": "Ошибка",
-        "failed_click_to_retry": "Ошибка — нажмите, чтобы повторить",
         "input": "Ввод",
         "issues": "Задачи",
         "last_tool": "Последний инструмент:",
@@ -9128,7 +9127,16 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "ожидает запуска — в очереди из-за лимита одновременных запусков",
         "workflows": "Рабочие процессы",
         "workspace_empty": "В этой рабочей области пока нет файлов",
-        "workspace_truncated": "Большая рабочая область — показаны первые 10 000 файлов"
+        "workspace_truncated": "Большая рабочая область — показаны первые 10 000 файлов",
+        "output_load_failed": "Не удалось загрузить вывод",
+        "retry": "Повторить",
+        "cancel_failed": "Не удалось отменить субагента",
+        "dismiss_failed": "Некоторые завершённые субагенты не были удалены на сервере и могут появиться снова",
+        "retry_failed_error": "Не удалось повторить {{count}} из неудавшихся субагентов",
+        "artifacts_load_failed": "Не удалось загрузить артефакты этой сессии",
+        "library_load_failed": "Не удалось загрузить библиотеку артефактов",
+        "artifact_save_failed": "Не удалось сохранить артефакт",
+        "workflow_runs_load_failed": "Не удалось загрузить запуски рабочих процессов"
       },
       "assistantMessage": {
         "applied_to_tasks": "Применено к задачам",
@@ -9165,7 +9173,8 @@
         "needs_earlier_history_count_few": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщения",
         "needs_earlier_history_count_many": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
         "needs_earlier_history_count_other": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
-        "share_message": "Поделиться картинкой"
+        "share_message": "Поделиться картинкой",
+        "copy_failed": "Не удалось скопировать"
       },
       "chatFooter": {
         "compacting": "Сжатие контекста…",
@@ -9236,6 +9245,8 @@
         "inject_context": "Вставить контекст",
         "knowledge_results_for_query": "Результаты из базы знаний по «{{query}}»",
         "no_knowledge_found_for_query": "Ничего не найдено в базе знаний по «{{query}}»",
+        "retry": "Повторить",
+        "search_failed_for_query": "Поиск по базе знаний не удался: «{{query}}»",
         "searching_knowledge_for_query": "Поиск в базе знаний по «{{query}}»…",
         "selected": "выбрано ·",
         "tokens": "токенов"
@@ -9243,7 +9254,9 @@
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Агент «{{name}}» загружает только свои серверы MCP.",
         "disabled": "отключено",
+        "load_failed": "Не удалось загрузить серверы MCP",
         "mcp_servers_count": "Серверы MCP ({{count}}/{{total}})",
+        "mode_load_failed": "Не удалось прочитать режим Tool Search; показано значение по умолчанию",
         "none_loaded": "Не загружено",
         "session_mcp_servers": "Серверы MCP сессии"
       },
@@ -9579,11 +9592,13 @@
         "copied": "Скопировано",
         "copy_link": "Копировать ссылку на сообщение",
         "unpin": "Открепить",
-        "jump_to_message": "Перейти к сообщению"
+        "jump_to_message": "Перейти к сообщению",
+        "copy_failed": "Не удалось скопировать"
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "Загрузить предыдущие сообщения",
-        "error_retry": "Не удалось загрузить предыдущие сообщения — повторить"
+        "load_failed": "Не удалось загрузить предыдущие сообщения",
+        "retry": "Повторить"
       },
       "sessionSummary": {
         "empty_body": "Сводка создаётся по завершении хода. Отправьте сообщение, чтобы получить её для этой сессии.",
@@ -9634,6 +9649,7 @@
         "close_search": "Закрыть поиск",
         "ctx_add_to_chat": "Добавить в чат",
         "filter_placeholder": "Фильтр файлов…",
+        "git_status_failed": "Не удалось прочитать статус git",
         "refresh": "Обновить",
         "resize": "Изменить размер обозревателя файлов",
         "tree_mode": "Режим списка файлов"
@@ -9781,7 +9797,10 @@
       "could_not_read_file_reason": "Не удалось прочитать {{path}} ({{reason}})",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Не удалось переименовать сессию",
-      "could_not_generate_title": "Не удалось создать заголовок"
+      "could_not_generate_title": "Не удалось создать заголовок",
+      "could_not_open_side_chat": "Не удалось открыть боковой чат",
+      "side_command_not_run": "Команда /side не была выполнена. Ваше сообщение осталось в поле ввода.",
+      "could_not_send_to_side_chat": "Не удалось отправить в боковой чат"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",

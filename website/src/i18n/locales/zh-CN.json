@@ -8717,7 +8717,6 @@
         "complete": "已完成",
         "dismiss_done_count": "忽略已完成（{{count}}）",
         "error": "错误",
-        "failed_click_to_retry": "失败 — 点击重试",
         "input": "输入",
         "issues": "Issues",
         "last_tool": "最后一个工具：",
@@ -8762,7 +8761,16 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队",
         "workflows": "工作流",
         "workspace_empty": "此工作区还没有文件",
-        "workspace_truncated": "工作区较大 — 仅显示前 10,000 个文件"
+        "workspace_truncated": "工作区较大 — 仅显示前 10,000 个文件",
+        "output_load_failed": "无法加载输出",
+        "retry": "重试",
+        "cancel_failed": "无法取消该子代理",
+        "dismiss_failed": "部分已完成的子代理未能在服务端清除，可能会再次出现",
+        "retry_failed_error": "有 {{count}} 个失败的子代理无法重试",
+        "artifacts_load_failed": "无法加载本次会话的产物",
+        "library_load_failed": "无法加载产物库",
+        "artifact_save_failed": "无法保存产物",
+        "workflow_runs_load_failed": "无法加载工作流运行"
       },
       "assistantMessage": {
         "applied_to_tasks": "已应用到任务",
@@ -8796,7 +8804,8 @@
         "more_actions": "更多操作",
         "needs_active_chat": "此对话完成打开后可用",
         "needs_earlier_history_count_other": "选择以加载更早的历史记录 — 还剩 {{count}} 条更早的消息",
-        "share_message": "分享为图片"
+        "share_message": "分享为图片",
+        "copy_failed": "复制失败"
       },
       "chatFooter": {
         "compacting": "压缩中…",
@@ -8864,6 +8873,8 @@
         "inject_context": "注入上下文",
         "knowledge_results_for_query": "知识结果：“{{query}}”",
         "no_knowledge_found_for_query": "未找到匹配的知识：“{{query}}”",
+        "retry": "重试",
+        "search_failed_for_query": "知识搜索失败：“{{query}}”",
         "searching_knowledge_for_query": "正在搜索知识：“{{query}}”…",
         "selected": "已选 ·",
         "tokens": "个令牌"
@@ -8871,7 +8882,9 @@
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "代理“{{name}}”仅加载自己的 MCP 服务器。",
         "disabled": "已禁用",
+        "load_failed": "无法加载 MCP 服务器",
         "mcp_servers_count": "MCP 服务器（{{count}}/{{total}}）",
+        "mode_load_failed": "无法读取 Tool Search 模式，当前显示的是默认值",
         "none_loaded": "未加载任何项",
         "session_mcp_servers": "会话 MCP 服务器"
       },
@@ -9183,11 +9196,13 @@
         "copied": "已复制",
         "copy_link": "复制消息链接",
         "unpin": "取消置顶",
-        "jump_to_message": "跳转到消息"
+        "jump_to_message": "跳转到消息",
+        "copy_failed": "复制失败"
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "加载更早的消息",
-        "error_retry": "无法加载更早的消息 — 重试"
+        "load_failed": "无法加载更早的消息",
+        "retry": "重试"
       },
       "sessionSummary": {
         "empty_body": "摘要在一轮对话结束时生成。发送一条消息即可为此会话生成摘要。",
@@ -9235,6 +9250,7 @@
         "close_search": "关闭搜索",
         "ctx_add_to_chat": "添加到聊天",
         "filter_placeholder": "筛选文件…",
+        "git_status_failed": "无法读取 Git 状态",
         "refresh": "刷新",
         "resize": "调整文件浏览器大小",
         "tree_mode": "文件列表模式"
@@ -9379,7 +9395,10 @@
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "无法重命名会话",
-      "could_not_generate_title": "无法生成标题"
+      "could_not_generate_title": "无法生成标题",
+      "could_not_open_side_chat": "无法打开随手问",
+      "side_command_not_run": "/side 命令未执行。你的消息仍保留在输入框中。",
+      "could_not_send_to_side_chat": "无法发送到随手问"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",

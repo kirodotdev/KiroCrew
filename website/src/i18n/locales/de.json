@@ -8839,7 +8839,6 @@
         "complete": "Abgeschlossen",
         "dismiss_done_count": "Abgeschlossene schließen ({{count}})",
         "error": "Fehler",
-        "failed_click_to_retry": "Fehlgeschlagen — klicken zum Wiederholen",
         "input": "Eingabe",
         "issues": "Issues",
         "last_tool": "Letztes Werkzeug:",
@@ -8884,7 +8883,16 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "wartet auf den Start — in der Warteschlange hinter der Parallelitätsgrenze",
         "workflows": "Workflows",
         "workspace_empty": "Dieser Arbeitsbereich enthält noch keine Dateien",
-        "workspace_truncated": "Großer Arbeitsbereich — nur die ersten 10.000 Dateien werden angezeigt"
+        "workspace_truncated": "Großer Arbeitsbereich — nur die ersten 10.000 Dateien werden angezeigt",
+        "output_load_failed": "Ausgabe konnte nicht geladen werden",
+        "retry": "Erneut versuchen",
+        "cancel_failed": "Subagent konnte nicht abgebrochen werden",
+        "dismiss_failed": "Einige abgeschlossene Subagenten wurden serverseitig nicht entfernt und können wieder erscheinen",
+        "retry_failed_error": "{{count}} der fehlgeschlagenen Subagenten konnten nicht wiederholt werden",
+        "artifacts_load_failed": "Artefakte dieser Sitzung konnten nicht geladen werden",
+        "library_load_failed": "Artefaktbibliothek konnte nicht geladen werden",
+        "artifact_save_failed": "Artefakt konnte nicht gespeichert werden",
+        "workflow_runs_load_failed": "Workflow-Ausführungen konnten nicht geladen werden"
       },
       "assistantMessage": {
         "applied_to_tasks": "Auf Aufgaben angewendet",
@@ -8919,7 +8927,8 @@
         "needs_active_chat": "Verfügbar, sobald diese Unterhaltung vollständig geöffnet ist",
         "needs_earlier_history_count_one": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachricht",
         "needs_earlier_history_count_other": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachrichten",
-        "share_message": "Als Bild teilen"
+        "share_message": "Als Bild teilen",
+        "copy_failed": "Kopieren fehlgeschlagen"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -8988,6 +8997,8 @@
         "inject_context": "Kontext einfügen",
         "knowledge_results_for_query": "Wissensergebnisse für „{{query}}“",
         "no_knowledge_found_for_query": "Kein Wissen gefunden für „{{query}}“",
+        "retry": "Erneut versuchen",
+        "search_failed_for_query": "Wissenssuche fehlgeschlagen für „{{query}}“",
         "searching_knowledge_for_query": "Wissen wird durchsucht nach „{{query}}“…",
         "selected": "ausgewählt ·",
         "tokens": "Tokens"
@@ -8995,7 +9006,9 @@
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Der Agent „{{name}}“ lädt nur seine eigenen MCP-Server.",
         "disabled": "deaktiviert",
+        "load_failed": "MCP-Server konnten nicht geladen werden",
         "mcp_servers_count": "MCP-Server ({{count}}/{{total}})",
+        "mode_load_failed": "Tool-Search-Modus konnte nicht gelesen werden; Standard wird angezeigt",
         "none_loaded": "Keine geladen",
         "session_mcp_servers": "MCP-Server der Sitzung"
       },
@@ -9315,11 +9328,13 @@
         "copied": "Kopiert",
         "copy_link": "Link zur Nachricht kopieren",
         "unpin": "Loslösen",
-        "jump_to_message": "Zur Nachricht springen"
+        "jump_to_message": "Zur Nachricht springen",
+        "copy_failed": "Kopieren fehlgeschlagen"
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "Frühere Nachrichten laden",
-        "error_retry": "Frühere Nachrichten konnten nicht geladen werden — erneut versuchen"
+        "load_failed": "Frühere Nachrichten konnten nicht geladen werden",
+        "retry": "Erneut versuchen"
       },
       "sessionSummary": {
         "empty_body": "Die Zusammenfassung entsteht am Ende eines Zugs. Sende eine Nachricht, um eine für diese Sitzung zu erhalten.",
@@ -9368,6 +9383,7 @@
         "close_search": "Suche schließen",
         "ctx_add_to_chat": "Zum Chat hinzufügen",
         "filter_placeholder": "Dateien filtern…",
+        "git_status_failed": "Git-Status konnte nicht gelesen werden",
         "refresh": "Aktualisieren",
         "resize": "Dateibrowser-Größe ändern",
         "tree_mode": "Dateilisten-Modus"
@@ -9513,7 +9529,10 @@
       "could_not_read_file_reason": "{{path}} konnte nicht gelesen werden ({{reason}})",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Die Sitzung konnte nicht umbenannt werden",
-      "could_not_generate_title": "Es konnte kein Titel erzeugt werden"
+      "could_not_generate_title": "Es konnte kein Titel erzeugt werden",
+      "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",
+      "side_command_not_run": "Der Befehl /side wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
+      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

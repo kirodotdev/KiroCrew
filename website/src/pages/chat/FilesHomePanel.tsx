@@ -88,8 +88,9 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
               {/* A failed fetch is not a missing setting: the directory is set
                   (the header is naming it), the tree endpoint just would not
                   serve it. Retrying is the remedy, so the affordance sits with
-                  the message instead of only as a header icon. */}
-              <span className="text-[12.5px]">{t('pages.chat.filesHome.tree_error')}</span>
+                  the message instead of only as a header icon. The Files tab
+                  holds no draft → hand-off on, beside the retry. */}
+              <ErrorNotice message={t('pages.chat.filesHome.tree_error')} askAgent />
               <button
                 onClick={refresh}
                 className="text-[12px] px-2.5 h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border border-border"
