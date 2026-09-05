@@ -40,6 +40,7 @@ from kiro_crew.apps.backend import (
 )
 from kiro_crew.apps.bridges import (
     RegistrationResult,
+    app_conversation_keys,
     deregister_app,
     deregister_app_crons_from_service,
     register_app,
@@ -1097,6 +1098,10 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     # Cost: a concurrent same-app lifecycle op waits up to the onUninstall
     # timeout — acceptable, since those ops genuinely conflict and the lock is
     # per-app (other apps are unaffected).
+    #
+    # Counted inside the lock (Step 6) but reported after it, so it is bound
+    # before the block that fills it.
+    dropped = 0
     async with app_lifecycle_lock(name):
         # A retained startup hook still owns the old app's AppContext. Bound the
         # wait and refuse the uninstall if it remains live; deleting files or
@@ -1345,6 +1350,46 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             result = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), lambda: uninstall_app(name, keep_data=keep_data)
             )
+
+        # Step 6: drop the resume pointer of every conversation the app owned.
+        #
+        # INSIDE the lifecycle lock, and that is the point: this is a step of the
+        # uninstall, not an epilogue to it. Outside, a concurrent reinstall could
+        # take the lock the moment we release it and be serving the SAME slot key
+        # again while our scan is still running — and the pointer we then clear is
+        # the new installation's, not the dead one's. The lock is keyed on the app
+        # name, so it serializes exactly the reinstall that would collide.
+        #
+        # On success only: a failed uninstall leaves nothing changed, so a
+        # still-installed app keeps the pointers its slots are still entitled to
+        # resume. Not in `deregister_app` (Step 3) — that also runs on disable, and
+        # App Store Sync is a disable/enable pair.
+        #
+        # Cleared through the LIVE session map (`discard_conversation`), never a
+        # throwaway `SessionMap`: this gateway holds a long-lived map whose `_data`
+        # loaded at startup and whose every write rewrites the whole file from that
+        # snapshot, so a detached write here would be undone by the next unrelated
+        # mutation — restoring the very pointer we just dropped — and would take
+        # whatever the live map had not flushed with it (`SessionMap`'s rule 3).
+        # `discard_conversation` also tears the live session down, which is what
+        # stops a still-open tab of the uninstalled app from re-recording a sid on
+        # its next turn and silently undoing this.
+        if result.ok:
+            sessions = getattr(request.app.get("state"), "sessions", None)
+            if sessions is not None:
+                # Resolution reads every mapped session's metadata line off disk;
+                # off the loop so a large history does not park the gateway.
+                owned = await asyncio.get_running_loop().run_in_executor(
+                    None, app_conversation_keys, name
+                )
+                for key in owned:
+                    try:
+                        await sessions.discard_conversation(key)
+                        dropped += 1
+                    except Exception:  # noqa: BLE001 — bookkeeping must not fail an uninstall
+                        logger.warning(
+                            "could not drop the resume pointer for %r", key, exc_info=True
+                        )
     if not result.ok:
         sel().log_api_access(
             caller="dashboard",
@@ -1362,6 +1407,9 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     # leftover tabs UNDISMISSABLE -- `notify_slot_closed` returns False when the
     # hook raises and `api_chat_slot_delete` refuses the close on that.
     forget_app_hooks(name)
+
+    if dropped:
+        uninstall_log.append(f"Dropped {dropped} conversation pointer(s)")
 
     # Step 6: Clean up workspace (each registry app has its own workspace)
     if is_registry_source(info.get("source", "")):

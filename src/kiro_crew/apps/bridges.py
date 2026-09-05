@@ -50,8 +50,11 @@ from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
+from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
+from kiro_crew.history import ConversationLog
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
+from kiro_crew.session_map import SessionMap
 
 logger = logging.getLogger(__name__)
 
@@ -2759,10 +2762,131 @@ def reconcile_enabled_app_resources() -> dict[str, int]:
     return counts
 
 
+def app_conversation_keys(app_name: str) -> list[str]:
+    """Session keys that still hold a resume pointer and belong to *app_name*.
+
+    A slot key an app chooses is often DETERMINISTIC — one slot per object it tracks,
+    named after that object — so the next slot created under that name is the same
+    key, and ``session.py``'s ``resume_sid = self._session_map.get(key)`` hands it the
+    previous conversation. That is correct while the app is installed: it is how a
+    long-lived per-object conversation keeps what it has learned about that object.
+    It stops being correct once the app is gone: reinstall it, open the same object,
+    and the first turn resumes a conversation from the previous installation — a
+    transcript from code that no longer exists.
+
+    Ownership is read from the record that already outlives the tab: every save
+    writes ``app`` into the conversation's metadata line, and closing a tab is a
+    save. Live ``_ChatSlot._app`` cannot answer here (the CLI path has no gateway,
+    and a closed slot is gone from a running one), and ``open_slots.json`` cannot
+    either — it tracks tabs to REOPEN, so a closed slot leaves it while the resume
+    pointer deliberately stays. A closed app slot is the mainline state before an
+    uninstall, so sourcing ownership from open tabs would miss the common case.
+
+    Scoped to keys that still have a sid, which makes this index exactly as wide as
+    the problem: a pointer exists only if a conversation was started, and starting
+    one writes the metadata line this reads. Reading the session map through a
+    throwaway instance is sound because nothing here writes — the class's rule 3
+    forbids a detached WRITE, and the callers below each clear through the writer
+    their own process owns.
+
+    Returns keys sorted for stable logs. Never raises: an uninstall the user asked
+    for does not fail over bookkeeping.
+    """
+    if not app_name:
+        return []
+    try:
+        log = ConversationLog()
+        owned = [
+            key
+            for key in SessionMap().mapped_sids_by_key()
+            if log.get_metadata(key).get("app") == app_name
+        ]
+        return sorted(owned)
+    except Exception:  # noqa: BLE001 — bookkeeping must not fail an uninstall
+        logger.warning("resolving %r's conversation keys failed", app_name, exc_info=True)
+        return []
+
+
+def discard_app_session_pointers(app_name: str) -> int:
+    """Drop the resume pointer of every conversation this app owned. CLI PATH ONLY.
+
+    Called by the UNINSTALL paths only, and deliberately NOT from
+    :func:`deregister_app`: that runs on **disable** too (the CLI's disable action,
+    the disable route, and the enable/update reconcile), and disable is how an app
+    is routinely restarted — App Store Sync is a disable/enable pair. Clearing
+    pointers there would discard the accumulated context of every long-lived
+    conversation the app owns, on every sync.
+
+    ``clear_sid``, not ``delete``: the entry also carries the Slack thread/channel
+    linkage and the reverse index built from it, so dropping the whole row would
+    silently unlink a mirrored session. The cleared value is stashed as
+    ``discarded_sid``, so this is diagnosable and reversible by hand — the native
+    conversation itself is untouched on disk.
+
+    **Holds the gateway lock across the whole scan and write, and that is the
+    mechanism, not a courtesy.** This writes through a throwaway ``SessionMap``,
+    which is only sound when no other instance holds the file: a running gateway
+    keeps a long-lived map whose ``_data`` loaded at startup and whose every write
+    rewrites the whole file from that snapshot, so two writers do not merge — the
+    loser's rows vanish. Writing anyway would both fail to drop the pointer (the
+    live map's next write restores it) and drop whatever that map recorded since
+    this process read, costing an unrelated session its sid or its channel link.
+    Merely *asking* whether a gateway is up cannot establish that: a gateway
+    starting between the question and the write lands in exactly the case the
+    question was meant to exclude. Taking the same lock the gateway takes makes the
+    exclusion real in both directions — while we hold it no gateway can start, and
+    if one is already up we cannot take it and decline instead. Doing nothing is
+    the pre-existing behaviour; corrupting a stranger's session is not.
+
+    The cost is stated rather than hidden: a gateway attempting to start inside this
+    window is refused as it would be by any other holder. The window is one scan
+    plus one write, and the alternative is losing another session's row.
+
+    The in-gateway route does not come through here at all — it clears through the
+    live map, inside the app lifecycle lock.
+
+    Returns the number of pointers dropped, or 0 when it declined.
+    """
+    try:
+        with GatewayLock(config_dir()):
+            keys = app_conversation_keys(app_name)
+            if not keys:
+                return 0
+            smap = SessionMap()
+            # ``clear_sid`` reports whether it dropped anything, so the count is
+            # conversations orphaned by THIS uninstall rather than keys looked at.
+            cleared = sum(1 for key in keys if smap.clear_sid(key))
+            # Durable BEFORE the lock is released. Off-loop writes are inline today,
+            # so this is belt and braces — but the ordering is the invariant, not a
+            # property inherited from being off the loop, which a later refactor
+            # could change without noticing this depends on it.
+            smap.flush()
+    except GatewayLockError:
+        logger.info(
+            "Left %s's conversation pointers in place: a gateway owns session_map.json "
+            "and a second writer would drop rows it has not flushed yet",
+            app_name,
+        )
+        return 0
+    except Exception:  # noqa: BLE001 — bookkeeping must not fail an uninstall
+        logger.warning("session pointer cleanup for %r failed", app_name, exc_info=True)
+        return 0
+    if cleared:
+        logger.info(
+            "Dropped %d resume pointer(s) for %s so a reinstall starts fresh",
+            cleared,
+            app_name,
+        )
+    return cleared
+
+
 def deregister_app(app_name: str) -> RegistrationResult:
     """Deregister all resources for an app.
 
     Removes symlinks and cron manifests.  Does not remove the app directory.
+
+    Does NOT touch session resume pointers — see
+    :func:`discard_app_session_pointers` for why that belongs to uninstall alone.
     """
     result = RegistrationResult()
 

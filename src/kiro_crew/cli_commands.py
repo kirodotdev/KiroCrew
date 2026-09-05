@@ -29,6 +29,7 @@ from kiro_crew.agent import reset_agent_model
 from kiro_crew.apps.bridges import (
     deregister_app,
     deregister_app_crons_from_service,
+    discard_app_session_pointers,
     register_app,
     register_app_crons_with_service,
 )
@@ -795,7 +796,15 @@ def _handle_app(args: argparse.Namespace) -> None:
         keep_data = not getattr(args, "purge_data", False)
         result = uninstall_app(args.name, keep_data=keep_data)
         if result.ok:
+            # AFTER success, matching this function's trust-grant reasoning: a
+            # failed uninstall leaves nothing changed, so a still-installed app
+            # keeps the pointers its slots are still entitled to resume. Returns
+            # 0 and says why when a gateway holds the lock — it owns
+            # session_map.json single-writer, so this process must not write it.
+            dropped = discard_app_session_pointers(args.name)
             print(f"✅ {result.message}")
+            if dropped:
+                print(f"   dropped {dropped} conversation pointer(s) — a reinstall starts fresh")
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
