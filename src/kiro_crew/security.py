@@ -4389,6 +4389,11 @@ def _substitution_bodies(text: str) -> "list[str]":
     first does not truncate the outer body; backticks are taken pairwise.  Only
     the BODY is returned -- a bare ``kill`` must not be attributed a name that
     merely appears in a LATER, unrelated command of the same line.
+
+    Finding the closer is `_substitution_closer`'s job, and it is QUOTE-AWARE: a
+    ``)`` the shell reads as a literal character does not end the body.  Without
+    that, ``$(printf ')' ; find <fenced> -exec cat {} +)`` yielded ``printf '``
+    and every consumer of this helper was blind to the rest of the substitution.
     """
     bodies: list[str] = []
     i = 0
@@ -4396,36 +4401,387 @@ def _substitution_bodies(text: str) -> "list[str]":
         # PROCESS substitutions run their body as a command just as a command
         # substitution does -- ``cat <(kirocrew token)`` executes the inner command and
         # feeds its output through a pipe.  Same paren-nesting walk.
-        if text.startswith("<(", i) or text.startswith(">(", i):
-            depth = 1
-            j = i + 2
-            while j < len(text) and depth:
-                if text[j] == "(":
-                    depth += 1
-                elif text[j] == ")":
-                    depth -= 1
-                j += 1
-            bodies.append(text[i + 2 : j - 1 if depth == 0 else len(text)])
-            i = j
-            continue
-        if text.startswith("$(", i):
-            depth = 1
-            j = i + 2
-            while j < len(text) and depth:
-                if text[j] == "(":
-                    depth += 1
-                elif text[j] == ")":
-                    depth -= 1
-                j += 1
-            bodies.append(text[i + 2 : j - 1 if depth == 0 else len(text)])
-            i = j
+        if text.startswith("<(", i) or text.startswith(">(", i) or text.startswith("$(", i):
+            end, closed = _substitution_closer(text, i + 2, ")")
+            bodies.append(text[i + 2 : end - 1 if closed else len(text)])
+            i = end
         elif text[i] == "`":
-            j = text.find("`", i + 1)
-            bodies.append(text[i + 1 : j if j != -1 else len(text)])
-            i = len(text) if j == -1 else j + 1
+            end, closed = _substitution_closer(text, i + 1, "`")
+            bodies.append(text[i + 1 : end - 1 if closed else len(text)])
+            i = end
         else:
             i += 1
     return bodies
+
+
+# The quote state for an ANSI-C quoted region. Two characters rather than one so it
+# cannot collide with the plain ``'`` state, whose escaping rules differ.
+_ANSI_C_QUOTE = "$'"
+
+
+def _quoting_step(text: str, j: int, quote: str) -> "tuple[int, str] | None":
+    """``(next index, quote state)`` when QUOTING alone decides ``text[j]``, else None.
+
+    None means the character is unquoted and is not an escape, so only the caller
+    knows what it means -- a delimiter to count, a marker to queue, or nothing.
+
+    Single-sourced deliberately. Every scan in this module that hunts a delimiter in
+    shell text needs exactly these rules, and a second copy of them drifts: the
+    arithmetic and brace skip began as a raw counter, and a quoted paren in
+    ``$(( $(true ')') ))`` ended that skip one paren early -- the same defect, in a
+    helper written to fix it (found in review). The rules:
+
+    * inside single quotes nothing is special -- not a backslash, not a double
+      quote -- until the next ``'``;
+    * inside ANSI-C quotes ``$'...'`` a backslash DOES escape, so ``\\'`` does not
+      end the region.  That distinction is the difference between reading
+      ``$'\\')'`` as ending before the paren and reading it as bash does -- the
+      early-close direction, which is the whole defect class this scan exists to
+      close.  The module already models ``$'...'`` elsewhere, so a scan that did not
+      would be an inconsistency of this change's own making;
+    * inside double quotes a backslash hides the next character and ``"`` ends the
+      region;
+    * outside quotes a backslash hides the next character and either quote opens a
+      region.
+
+    A single quote INSIDE double quotes must not open a region, which is why the
+    state is one quote CHARACTER and not two flags: otherwise the apostrophe in
+    ``$(echo "it's fine")`` leaves the scan quoted for the rest of the text.
+    """
+    ch = text[j]
+    if quote == _ANSI_C_QUOTE:
+        if ch == "\\":
+            return j + 2, quote
+        return j + 1, "" if ch == "'" else quote
+    if quote == "'":
+        return j + 1, "" if ch == "'" else quote
+    if ch == "\\":
+        return j + 2, quote
+    if quote == '"':
+        return j + 1, "" if ch == '"' else quote
+    if not quote and text.startswith(_ANSI_C_QUOTE, j):
+        return j + 2, _ANSI_C_QUOTE
+    if ch in "'\"":
+        return j + 1, ch
+    return None
+
+
+# A heredoc marker ends at whitespace or at any operator that could follow it.
+_HEREDOC_MARKER_STOP = frozenset(" \t\n;)|&<>")
+
+
+def _heredoc_marker_word(text: str, start: int) -> "tuple[str, int] | None":
+    """``(unquoted marker, index just past the marker word)`` at *start*, or None.
+
+    Distinct from ``_heredoc_marker`` below, which answers a different question --
+    that one takes a whole TOKEN and reports the marker it declares; this one reads
+    the marker out of a longer text and reports where it ended, because the scan
+    has to carry on from there.
+
+    The marker may be quoted or backslashed (``<<"EOF"``, ``<<'EOF'``, ``<<\\EOF``)
+    while the terminator LINE carries its unquoted value, so the quoting is stripped
+    here.  None when there is no marker at all, which the caller treats as "no
+    closer found" rather than guessing.
+    """
+    j = start
+    while j < len(text) and text[j] in " \t":
+        j += 1
+    marker: list[str] = []
+    while j < len(text) and text[j] not in _HEREDOC_MARKER_STOP:
+        ch = text[j]
+        if ch == "\\":
+            if j + 1 < len(text):
+                marker.append(text[j + 1])
+            j += 2
+            continue
+        if ch in "'\"":
+            close = text.find(ch, j + 1)
+            if close == -1:
+                return None
+            marker.append(text[j + 1 : close])
+            j = close + 1
+            continue
+        marker.append(ch)
+        j += 1
+    word = "".join(marker)
+    return (word, j) if word else None
+
+
+def _heredoc_bodies_end(text: str, start: int, markers: "list[tuple[str, bool]]") -> "int | None":
+    """Index just past the LAST queued heredoc body beginning at *start*, or None.
+
+    A heredoc body is data, not grammar: every character until its terminator line
+    is text the shell hands to the command, so a ``)`` or a lone ``"`` in there is
+    inert.  Reading one as grammar is a truncation with the same consequence as the
+    quoted paren, and it was measured executable in bash.
+
+    One command may open SEVERAL heredocs -- ``cat <<A <<B`` is legal, and bash
+    queues one body per operator, back to back after the line that named them.  So
+    the bodies are consumed IN ORDER: handling only the first leaves the second
+    body's text to be read as grammar, and a ``)`` sitting there closed the
+    substitution early while bash ran the command behind it (found in review).
+
+    ``<<-`` permits leading TABS on its terminator line and plain ``<<`` does not,
+    which each marker carries as its own flag rather than being applied to the
+    whole queue.  The distinction is kept rather than always stripping: finding a
+    terminator EARLIER than the shell does would resume the scan inside what is
+    still heredoc data and could close on a ``)`` the shell never reads.
+
+    None when any terminator line is missing -- and the caller then takes the rest
+    of the text, since a body inspected too far is safe and one cut short is the
+    defect.
+    """
+    pos = start
+    for word, strip_tabs in markers:
+        while True:
+            if pos > len(text):
+                return None
+            end = text.find("\n", pos)
+            line = text[pos:] if end == -1 else text[pos:end]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            if candidate.rstrip("\r") == word:
+                if end == -1:
+                    return len(text)
+                pos = end + 1
+                break
+            if end == -1:
+                return None
+            pos = end + 1
+    return pos
+
+
+# Where one shell WORD ends and the next begins, for the reserved words this scan
+# has to recognise. Bash only reads ``case`` / ``esac`` as reserved when they stand
+# alone, so ``lowercase)`` must not arm the pattern rule.
+_SHELL_WORD_BREAK = frozenset(" \t\n;&|()<>")
+
+# What kind of region a scan frame is in: what closes it, and whether the shell runs
+# a COMMAND inside it. Command grammar -- heredocs, ``#`` comments, ``case`` patterns
+# -- exists only in the two that do.
+_SUB_COMMAND = "cmd"  # $( ), <( ), >( )   -- closed by ), parens nest
+_SUB_BACKTICK = "backtick"  # ` `          -- closed by a backtick
+_SUB_BRACE = "brace"  # ${ }               -- closed by }, braces nest
+_SUB_ARITHMETIC = "arith"  # $(( ))        -- closed by )), parens nest
+
+
+def _word_at(text: str, j: int, word: str) -> bool:
+    """True if *word* stands alone at *j* rather than sitting inside a longer word."""
+    if not text.startswith(word, j):
+        return False
+    before = text[j - 1] if j else " "
+    after = text[j + len(word)] if j + len(word) < len(text) else " "
+    return before in _SHELL_WORD_BREAK and after in _SHELL_WORD_BREAK
+
+
+def _in_command_position(text: str, j: int) -> bool:
+    """True if a command could START at *j* -- the previous real character separates.
+
+    Used to tell the reserved word ``esac`` from the ordinary string ``esac``, which
+    a command may pass as an argument.
+
+    A backslash-newline is a line CONTINUATION, not a separator: ``echo \\``+newline+
+    ``esac`` is the single command ``echo esac``, so the ``esac`` is an argument.
+    Reading that newline as a separator disarmed the pattern rule and let the next
+    paren close the substitution while bash ran the traversal behind it (found in
+    review). Parity matters -- ``\\\\``+newline is a literal backslash followed by a
+    real newline, which does separate.
+    """
+    k = j - 1
+    while k >= 0:
+        if text[k] in " \t":
+            k -= 1
+            continue
+        if text[k] == "\n":
+            slashes = 0
+            while k - 1 - slashes >= 0 and text[k - 1 - slashes] == "\\":
+                slashes += 1
+            if slashes % 2 == 1:
+                k -= slashes + 1
+                continue
+        break
+    return k < 0 or text[k] in ";&|(\n"
+
+
+def _substitution_closer(text: str, start: int, closer: str) -> "tuple[int, bool]":
+    """``(index just past the closer, whether one was found)`` for a body at *start*.
+
+    Counting parentheses alone answers "where does this substitution end?" with a
+    position the shell does not agree with, because the shell decides that from
+    STATE the scan did not have.  ``$(printf ')' ; find <fenced> -exec cat {} +)``
+    closed at the quoted paren, so the body came back as ``printf '`` and the
+    traversal after the decoy was never seen -- by ANY of this helper's consumers,
+    since they all read bodies through it.  The closing BACKTICK is hidden by the
+    same devices, so one walk serves both closers.
+
+    Everything below answers one question -- is this ``)`` a closer, or just a
+    character? -- and every construct where the answer is "just a character" was
+    measured RUNNING the traversal in bash while the gate allowed it:
+
+    * quoting.  Inside single quotes nothing is special until the next ``'``; inside
+      double quotes a backslash hides the next character and ``"`` ends the region;
+      outside quotes a backslash hides the next character.  One quote CHARACTER is
+      tracked, not two flags, because a single quote inside double quotes opens
+      nothing -- otherwise the apostrophe in ``$(echo "it's fine")`` leaves the scan
+      quoted for the rest of the text and swallows the real closer.
+    * a NESTED substitution is its own quoting world, so it gets its own frame
+      rather than being counted through.  Flat state read the second ``"`` of
+      ``$(echo -n "$(printf ")")" ; find ...)`` as ending the OUTER quoted region,
+      after which a literal paren closed the substitution.  Frames are an explicit
+      stack, not recursion: a command may nest deeper than the interpreter's own
+      call limit, and blowing the stack is not an answer.
+    * a heredoc BODY is data until its terminator line.  Markers are queued at the
+      marker and consumed at the newline that ends their line, because one command
+      may open several (``cat <<A <<B``) and the rest of the marker's own line is
+      still grammar.
+    * a ``${ }`` expansion and a ``$(( ))`` arithmetic expansion hold characters the
+      shell does not act on there.  Stepping over arithmetic also keeps its ``<<``
+      a left shift rather than a heredoc marker.
+    * a ``#`` COMMENT runs to the end of the line, so ``$(true # )`` closes on the
+      NEXT line and not at that paren.  Only at a word boundary -- ``a#b`` is one
+      ordinary word.
+    * a ``case`` PATTERN is terminated by ``)``.  Between ``case`` and its ``esac``
+      both parens are ignored, which keeps a ``(x|y)`` pattern balanced-neutral too.
+
+    Nothing here decides where a substitution BEGINS: the caller still opens one on
+    every ``$(`` / ``<(`` / ``>(`` / backtick it sees, quoted or not.  Making the
+    opener quote-aware too would DROP bodies -- the payload of ``sh -c 'echo
+    $(kirocrew token)'`` is inside single quotes -- and this scanner exists to hand
+    consumers more text to inspect, never less.
+
+    Anything unterminated -- a quote, a heredoc, an expansion, a nested frame --
+    leaves *closed* False and the caller takes the rest of the text as the body,
+    which is the same conservative fallback an unbalanced paren already had: a body
+    that reaches too far is inspected too much, while one that stops early is the
+    bug above.
+    """
+    # Per-frame state, so a nested region cannot leak its quoting or its delimiters
+    # outward. ``kind`` says what closes the frame and whether command grammar --
+    # heredocs, comments, ``case`` -- is live inside it.
+    stack: list[tuple[str, int, str, list[tuple[str, bool]], int]] = []
+    kind = _SUB_BACKTICK if closer == "`" else _SUB_COMMAND
+    depth = 1
+    quote = ""
+    pending: list[tuple[str, bool]] = []
+    cases = 0
+    j = start
+    while j < len(text):
+        ch = text[j]
+        # A nested region is its own world. Expansions stay live inside DOUBLE
+        # quotes and die inside single ones, which is exactly when one may open.
+        if quote != "'":
+            opened = None
+            if text.startswith("$((", j):
+                opened, step_over = _SUB_ARITHMETIC, 3
+            elif text.startswith("${", j):
+                opened, step_over = _SUB_BRACE, 2
+            elif text.startswith("$(", j):
+                opened, step_over = _SUB_COMMAND, 2
+            elif ch == "`" and kind != _SUB_BACKTICK:
+                opened, step_over = _SUB_BACKTICK, 1
+            if opened is not None:
+                stack.append((kind, depth, quote, pending, cases))
+                # Arithmetic opens TWO parens, so its frame starts one deeper.
+                kind, depth, quote, pending, cases = (
+                    opened,
+                    2 if opened == _SUB_ARITHMETIC else 1,
+                    "",
+                    [],
+                    0,
+                )
+                j += step_over
+                continue
+        step = _quoting_step(text, j, quote)
+        if step is not None:
+            j, quote = step
+            continue
+        # The queued heredoc bodies begin at the newline that ends the COMMAND, and
+        # a newline inside an unterminated quote does not end it: in
+        # ``cat <<EOF "x`` the quoted word runs on across lines, so the first line
+        # spelling ``EOF`` is part of that word and not the terminator. Reached only
+        # when the quoting step declined the character, which is exactly "outside
+        # quotes" -- flushing on any newline instead consumed lines as body and let
+        # the paren after them close the substitution (found in review).
+        if ch == "\n" and pending:
+            end = _heredoc_bodies_end(text, j + 1, pending)
+            if end is None:
+                return len(text), False
+            pending = []
+            j = end
+            continue
+        # ── unquoted, and only where the shell runs a COMMAND is this grammar ──
+        if kind in (_SUB_COMMAND, _SUB_BACKTICK):
+            if ch == "#" and (j == 0 or text[j - 1] in _SHELL_WORD_BREAK):
+                # To the newline, NOT past it: the newline is where a pending
+                # heredoc body starts, and the branch above still has to see it.
+                newline = text.find("\n", j)
+                if newline == -1:
+                    return len(text), False
+                j = newline
+                continue
+            # A heredoc is EXACTLY two ``<``. Deciding that from a two-character
+            # prefix test reads the second ``<`` of a here-string as a heredoc of
+            # its own -- in ``cat <<< "x)"`` the marker then parsed as ``x)`` -- so
+            # measure the whole run: ``<`` is a redirect, ``<<`` a heredoc, ``<<<``
+            # a here-string whose operand the quoting rules already cover.
+            if ch == "<":
+                run = len(text[j:]) - len(text[j:].lstrip("<"))
+                if run != 2:
+                    j += run
+                    continue
+                dash = text.startswith("-", j + 2)
+                found = _heredoc_marker_word(text, j + (3 if dash else 2))
+                if found is None:
+                    return len(text), False
+                word, j = found
+                pending.append((word, dash))
+                continue
+            # ARMING is generous and DISARMING is strict, deliberately. Missing a
+            # real ``case`` counts its pattern paren and closes the body early,
+            # which is a bypass; missing a real ``esac`` keeps ignoring parens and
+            # runs the body long, which is only imprecision. So ``case`` arms on any
+            # standalone word, while ``esac`` disarms only in command position -- an
+            # ``esac`` handed to a command as an ARGUMENT ended the rule early and
+            # let the next paren close while bash ran the traversal behind it.
+            if _word_at(text, j, "case"):
+                cases += 1
+                j += 4
+                continue
+            if _word_at(text, j, "esac") and _in_command_position(text, j):
+                cases = max(0, cases - 1)
+                j += 4
+                continue
+        # ── the delimiters this frame is counting ──
+        if kind == _SUB_BRACE:
+            opener, closing = "{", "}"
+        elif kind == _SUB_BACKTICK:
+            opener, closing = "", "`"
+        else:
+            opener, closing = "(", ")"
+        if cases and ch in "()" and kind in (_SUB_COMMAND, _SUB_ARITHMETIC):
+            j += 1
+            continue
+        if opener and ch == opener:
+            depth += 1
+        elif ch == closing:
+            depth -= 1
+            if depth <= 0:
+                if not stack:
+                    return j + 1, True
+                # A heredoc belongs to the INPUT STREAM, not to the frame that
+                # declared it: closing ``$(cat <<A)`` does not consume A's body, and
+                # bash still reads it at the next newline. Dropping the queue on pop
+                # left that body to be read as grammar, and the ``)`` in it closed
+                # the outer substitution while bash ran the traversal behind it
+                # (found in review). The parent's own markers were declared earlier
+                # in the text, so they stay ahead of the inner frame's.
+                inherited = pending
+                kind, depth, quote, pending, cases = stack.pop()
+                if inherited:
+                    pending = pending + inherited
+                j += 1
+                continue
+        j += 1
+    return len(text), False
 
 
 def _redirect_glue_point(word: str) -> "int | None":
