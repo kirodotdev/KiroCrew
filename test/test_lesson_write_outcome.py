@@ -34,6 +34,14 @@ def _store(tmp_path) -> VectorMemoryStore:
     return store
 
 
+def _rule_of(row) -> str:
+    """The rule text of a lesson row, in either storage shape."""
+    import json as _json
+
+    value = _json.loads(row["value_json"])
+    return value["rule"] if isinstance(value, dict) else value
+
+
 class TestWriteLessonOutcomes:
     """Each declining path names WHICH rule declined, not just that one did."""
 
@@ -386,7 +394,12 @@ class TestLessonsRouteReportsTheOutcome:
         import json as _json
 
         body = _json.loads(resp.text)
-        assert body == {"ok": False, "outcome": "refused", "reason": "injection_blocked"}
+        assert body == {
+            "ok": False,
+            "outcome": "refused",
+            "reason": "injection_blocked",
+            "superseded": [],
+        }
 
     async def test_no_op_stays_ok_but_names_the_outcome(self):
         resp, state = await self._post(LessonWriteResult(LessonWriteOutcome.UNCHANGED))
@@ -442,7 +455,12 @@ class TestLessonsRouteReportsTheOutcome:
         import json as _json
 
         body = _json.loads(resp.text)
-        assert body == {"ok": True, "outcome": "unchanged", "reason": None}
+        assert body == {
+            "ok": True,
+            "outcome": "unchanged",
+            "reason": None,
+            "superseded": [],
+        }
 
 
 class TestLearnAddToolReportsTheOutcome:
@@ -502,3 +520,511 @@ class TestLearnAddToolReportsTheOutcome:
         """Version skew during an update must not turn a real save into a scare."""
         text = self._call({"ok": True})
         assert text == "Saved lesson: a rule"
+
+
+class TestASupersedingWriteNamesWhatItRemoved:
+    """The store deletes a stored lesson the submitted rule contains, and said nothing.
+
+    From the issue: teach "never force push to a shared branch", then teach "when a
+    release is in progress, never force push to a shared branch, and tell the release
+    manager first". The second rule's text CONTAINS the first, so the substring rule
+    tombstones the general lesson -- and the call returned a plain ``inserted`` with
+    ``reason=None``. The user was told the save succeeded and there was no longer any
+    rule against force pushing outside a release.
+
+    Deleting is deliberate (``write_lesson``'s docstring: "longer wins" / "newer
+    replaces older"), and these tests do NOT assert it stopped. They assert the write
+    now NAMES the rule it destroyed, which is the only recoverable trace: the row is
+    tombstoned, so it is gone from ``get_lessons``, ``learn_list`` and the injected
+    lessons block.
+
+    POSITIVE CONTROL for these tests: they fail on unpatched ``main``, where
+    ``LessonWriteResult`` has no ``superseded`` field at all -- ``result.superseded``
+    raises ``AttributeError``. That is a fail for the right reason (the field does not
+    exist), and it is distinct from a fail on the wording of a message.
+    """
+
+    GENERAL = "never force push to a shared branch"
+    NARROWER = (
+        "when a release is in progress, never force push to a shared branch, "
+        "and tell the release manager first"
+    )
+
+    def test_the_general_rule_is_still_deleted(self, tmp_path):
+        """Pinned deliberately: the fix REPORTS the supersede, it does not prevent it.
+
+        Without this, a later change could "fix" the issue by loosening the
+        containment test, and the tests below would still pass while the dedup rule
+        that keeps the store from filling with near-identical lessons had quietly
+        stopped saying no. This is the assertion that makes that visible.
+        """
+        store = _store(tmp_path)
+        try:
+            store.write_lesson(self.GENERAL, "tool")
+            store.write_lesson(self.NARROWER, "tool")
+            live = [_rule_of(row) for row in store.get_lessons()]
+            assert self.GENERAL not in live, "supersede-on-containment must still delete"
+            assert self.NARROWER in live
+        finally:
+            store.close()
+
+    def test_the_write_names_the_rule_it_superseded(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            store.write_lesson(self.GENERAL, "tool")
+            result = store.write_lesson(self.NARROWER, "tool")
+            # Still an insert, still truthy -- the submitted lesson did land.
+            assert result.outcome is LessonWriteOutcome.INSERTED
+            assert bool(result) is True
+            # ...and the call no longer hides what that cost.
+            assert result.superseded == (self.GENERAL,)
+        finally:
+            store.close()
+
+    def test_a_write_that_supersedes_nothing_reports_nothing(self, tmp_path):
+        """The field must not be a warning that fires on every write.
+
+        A surface renders it with a bare ``if``, so a non-empty value on an ordinary
+        insert would put a data-loss warning in front of the user for a write that
+        lost nothing -- and a warning that always fires is read as noise, which is how
+        a real one gets ignored.
+        """
+        store = _store(tmp_path)
+        try:
+            first = store.write_lesson(self.GENERAL, "tool")
+            assert first.superseded == ()
+            unrelated = store.write_lesson("write commit messages in the imperative", "tool")
+            assert unrelated.superseded == ()
+        finally:
+            store.close()
+
+    def test_one_write_names_every_rule_it_removed_not_just_the_first(self, tmp_path):
+        """The delete branch ``continue``s, so a single call can tombstone several rows.
+
+        A count would be a smaller lie than silence but still a lie: the user cannot
+        restore a rule the report does not name.
+
+        The two stored rules are deliberately unrelated to each other -- they share no
+        significant word, so neither supersedes the other and both are live when the
+        third write arrives. A chain of progressively longer rules could not set this
+        up, because each write already collapses the one before it.
+        """
+        store = _store(tmp_path)
+        try:
+            store.write_lesson("prefer tabs", "preference")
+            store.write_lesson("run ruff", "tool")
+            assert len(store.get_lessons()) == 2, "the two rules must not dedup each other"
+            result = store.write_lesson("prefer tabs and run ruff on every python file", "tool")
+            assert set(result.superseded) == {"prefer tabs", "run ruff"}
+            live = [_rule_of(row) for row in store.get_lessons()]
+            assert live == ["prefer tabs and run ruff on every python file"]
+        finally:
+            store.close()
+
+    def test_the_refuse_direction_is_unchanged_and_deletes_nothing(self, tmp_path):
+        """The OTHER direction of the same test must keep refusing.
+
+        Submitting a rule CONTAINED IN a stored one is genuinely covered by it, so it
+        is declined without mutating anything. Loosening the containment test to save
+        the general lesson would have changed this too -- accumulating a near-identical
+        row for every re-phrasing. It is pinned here so that cannot happen quietly.
+        """
+        store = _store(tmp_path)
+        try:
+            store.write_lesson("always run the linter before pushing a branch", "tool")
+            result = store.write_lesson("run the linter", "tool")
+            assert result.outcome is LessonWriteOutcome.DEDUPED
+            assert result.reason == "substring_covered"
+            assert result.superseded == ()
+            live = [_rule_of(row) for row in store.get_lessons()]
+            assert live == ["always run the linter before pushing a branch"]
+        finally:
+            store.close()
+
+    def test_the_report_keeps_the_not_clause_of_the_rule_it_removed(self, tmp_path):
+        """A report that drops the clause hands back a rule the user cannot restore.
+
+        Dedup compares rules through ``_lesson_embed_text``, which returns the ``rule``
+        field ALONE so the comparison basis matches the embedding space. Reporting on
+        that same rendering silently dropped the NOT-clause -- so the clause, which
+        carries the sharpest part of the guidance, became unrecoverable at the exact
+        moment the row was tombstoned. The report uses the display rendering instead;
+        the comparisons still use the embed one, so no dedup decision moves.
+        """
+        store = _store(tmp_path)
+        try:
+            store.write_lesson("prefer ruff over flake8", "tool", "for type checking")
+            result = store.write_lesson(
+                "in CI prefer ruff over flake8 and fail the build on any finding", "tool"
+            )
+            assert result.outcome is LessonWriteOutcome.INSERTED
+            assert len(result.superseded) == 1
+            reported = result.superseded[0]
+            assert reported.startswith("prefer ruff over flake8")
+            assert "for type checking" in reported, "the NOT-clause was dropped from the report"
+            assert reported == "prefer ruff over flake8 \u2014 NOT: for type checking"
+        finally:
+            store.close()
+
+    def test_a_clause_less_rule_is_reported_verbatim_with_no_separator(self, tmp_path):
+        """The display rendering must not decorate a row that has no clause."""
+        store = _store(tmp_path)
+        try:
+            store.write_lesson(self.GENERAL, "tool")
+            result = store.write_lesson(self.NARROWER, "tool")
+            assert result.superseded == (self.GENERAL,)
+            assert "NOT:" not in result.superseded[0]
+        finally:
+            store.close()
+
+    def test_the_advice_it_prints_describes_a_recovery_the_policy_permits(self, tmp_path):
+        """The warning's purpose is restorability, so its advice must actually work.
+
+        Measured, because the wording was weaker than this before: a VERBATIM re-add of
+        the superseded rule is declined by the substring branch (the narrower rule now
+        contains it), so telling the user only to "re-add it" would send them into a
+        refusal. Two recoveries do work, and both are what the text now names.
+        """
+        store = _store(tmp_path)
+        try:
+            store.write_lesson(self.GENERAL, "tool")
+            store.write_lesson(self.NARROWER, "tool")
+
+            # 1. Verbatim re-add: declined, and it changes nothing.
+            again = store.write_lesson(self.GENERAL, "tool")
+            assert again.outcome is LessonWriteOutcome.DEDUPED
+            assert again.reason == "substring_covered"
+            assert again.superseded == ()
+            assert [_rule_of(r) for r in store.get_lessons()] == [self.NARROWER]
+
+            # 2. Wording sharing few significant words: coexists, nothing superseded.
+            other = store.write_lesson(
+                "protected branches reject a forced update at all times", "tool"
+            )
+            assert other.outcome is LessonWriteOutcome.INSERTED
+            assert other.superseded == (), "a non-overlapping rule must not ping-pong"
+            assert len(store.get_lessons()) == 2
+        finally:
+            store.close()
+
+    def test_removing_the_narrower_rule_first_restores_the_general_one_exactly(self, tmp_path):
+        """The other recovery the text names, and the only one that restores verbatim."""
+        store = _store(tmp_path)
+        try:
+            store.write_lesson(self.GENERAL, "tool")
+            store.write_lesson(self.NARROWER, "tool")
+            narrower_key = next(
+                r["key"] for r in store.get_lessons() if _rule_of(r) == self.NARROWER
+            )
+            store.delete_semantic(narrower_key, "user_explicit")
+            restored = store.write_lesson(self.GENERAL, "tool")
+            assert restored.outcome is LessonWriteOutcome.INSERTED
+            assert [_rule_of(r) for r in store.get_lessons()] == [self.GENERAL]
+        finally:
+            store.close()
+
+    def test_removing_only_the_substring_branch_would_not_have_saved_the_lesson(self):
+        """Why the fix reports instead of preventing: the collapse is over-determined.
+
+        Verbatim containment at word boundaries makes the stored rule's keyword set a
+        SUBSET of the submitted rule's, so the topic-overlap rule three lines below
+        scores 100% and deletes the same row anyway. Deleting the substring branch
+        alone therefore changes nothing a user would notice -- the general lesson is
+        still gone, just via the next rule down. Preventing the collapse means editing
+        all three dedup rules, which is the design call the issue reserved for
+        maintainers.
+
+        Computed from the store's own keyword helper so it cannot drift from the
+        arithmetic the branch actually performs.
+        """
+        keywords = VectorMemoryStore._lesson_keywords
+        general = keywords(self.GENERAL.lower())
+        narrower = keywords(self.NARROWER.lower())
+        assert general, "the general rule must contribute keywords for the branch to run"
+        assert general <= narrower, "containment should make the keyword set a subset"
+        ratio = len(general & narrower) / min(len(narrower), len(general))
+        assert ratio == 1.0
+        assert ratio >= 0.5, "topic overlap would delete the general lesson regardless"
+
+
+class TestSupersedeReachesTheSurfacesAHumanReads:
+    """A field nothing renders is not a fix. These pin the two report surfaces."""
+
+    @pytest.mark.asyncio
+    async def test_the_route_forwards_the_superseded_rules(self):
+        """Drives the real route, so it fails on main where the response omits the key."""
+        resp, _state = await TestLessonsRouteReportsTheOutcome()._post(
+            LessonWriteResult(
+                LessonWriteOutcome.INSERTED,
+                None,
+                ("never force push to a shared branch",),
+            )
+        )
+        import json as _json
+
+        body = _json.loads(resp.text)
+        assert body["ok"] is True, "the submitted lesson did land"
+        assert body["outcome"] == "inserted"
+        assert body["superseded"] == ["never force push to a shared branch"]
+
+    def _tool_call(self, response):
+        from kiro_crew.mcp_tools import learn
+
+        with (
+            patch.object(learn.mcp_core, "_post", return_value=response),
+            patch.object(learn.mcp_core, "_resolve_session_key", return_value="dashboard:ui"),
+            patch.object(learn.mcp_core, "_vet_memory_writes_governance", return_value=None),
+        ):
+            return learn.learn_add("learn_add", {"rule": "a rule", "category": "tool"})
+
+    def test_the_tool_warns_and_quotes_the_removed_rule_in_full(self):
+        text = self._tool_call(
+            {
+                "ok": True,
+                "outcome": "inserted",
+                "reason": None,
+                "superseded": ["never force push to a shared branch"],
+            }
+        )
+        assert "Saved lesson" in text
+        assert "REMOVED 1 stored lesson" in text
+        # Quoted in full, not counted or previewed: this text is the last readable
+        # copy of a tombstoned row.
+        assert "never force push to a shared branch" in text
+
+    def test_the_tool_says_nothing_when_nothing_was_superseded(self):
+        text = self._tool_call({"ok": True, "outcome": "inserted", "reason": None})
+        assert "Saved lesson" in text
+        assert "REMOVED" not in text
+
+    def test_the_tool_ignores_a_superseded_field_that_is_not_a_list_of_text(self):
+        """It crosses HTTP, so the shape is not this tool's to trust.
+
+        A malformed value must read as "none reported" -- which is what every gateway
+        older than this field says -- rather than rendering a repr into a warning.
+        """
+        for junk in ({"a": 1}, "a string", [None, 3, "  "], 7):
+            text = self._tool_call(
+                {"ok": True, "outcome": "inserted", "reason": None, "superseded": junk}
+            )
+            assert "REMOVED" not in text, f"rendered a warning for {junk!r}"
+
+
+class TestASupersededRuleIsSanitizedBeforeItIsShown:
+    """The reported rule is stored USER TEXT, so echoing it raw is a new exposure.
+
+    Reporting a superseded rule means printing text a user typed once, on a path that
+    did not print it before. Both surfaces already had the right treatment for stored
+    text and this write path was simply not routed through it -- `learn list` strips
+    terminal control sequences on every print, and `api_lessons_create` already sends
+    the lesson's own rule through `_redact_memory_field`.
+    """
+
+    def test_the_cli_strips_terminal_control_sequences_from_a_removed_rule(self, tmp_path):
+        """An OSC payload stored in a lesson must not be executed by reporting it.
+
+        This is the one write path guaranteed to print a rule the user is NOT looking
+        at, so an escape sequence here retitles the window or writes the clipboard for
+        a rule the user never asked to see.
+        """
+        import argparse
+
+        from kiro_crew import cli_commands
+
+        store = _store(tmp_path)
+        # A stored general rule carrying an OSC window-title payload and a CSI clear.
+        evil = "never \x1b]0;pwned\x07force \x1b[2Jpush"
+        store.write_lesson(evil, "tool")
+        args = argparse.Namespace(
+            learn_action="add",
+            rule=f"during a release {evil} and tell the release manager",
+            category="tool",
+            negative=None,
+        )
+        with (
+            patch.object(cli_commands, "VectorMemoryStore", return_value=store),
+            patch.object(cli_commands, "LessonStore", return_value=MagicMock()),
+            patch.object(cli_commands.KiroCrewConfig, "load", return_value=MagicMock()),
+        ):
+            import io
+            from contextlib import redirect_stdout
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli_commands._learn(args)
+            out = buf.getvalue()
+        assert "REMOVED 1 stored lesson" in out, "the supersede must still be reported"
+        # Scoped to the REMOVED block, which is what this change prints. The `Saved:`
+        # line above it echoes the rule the user just typed on their own command line,
+        # unsanitized on main and unchanged here -- a different threat model (their own
+        # input, in the same breath) from a STORED rule, which consolidation, an import
+        # or a subagent may have written and which this block prints when the user is
+        # not looking at it. Masking a string the user literally just typed would tell
+        # them nothing and hide their own command from them.
+        removed_block = out[out.index("REMOVED") :]
+        # The readable rule survives around the sequences. "pwned" is deliberately NOT
+        # asserted present: it is the OSC sequence's own payload, and the regex consumes
+        # a whole OSC run, so removing it is correct rather than over-broad.
+        assert "never" in removed_block and "push" in removed_block
+        assert "pwned" not in removed_block, "the OSC payload itself must not survive"
+        assert "\x1b]" not in removed_block, "raw OSC reached the terminal"
+        assert "\x1b[" not in removed_block, "raw CSI reached the terminal"
+        assert "\x07" not in removed_block
+
+    def test_the_cli_redacts_a_credential_in_a_removed_rule(self, tmp_path):
+        """The CLI must agree with the route about whether a superseded rule may leak.
+
+        Both deliver the same field, so a secret redacted on one path and printed on the
+        other is one feature disagreeing with itself. A lesson written by history
+        consolidation carries model output the user never typed, so this is not
+        "their own secret in their own terminal".
+        """
+        import argparse
+        import io
+        from contextlib import redirect_stdout
+
+        from kiro_crew import cli_commands
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        store = _store(tmp_path)
+        store.write_lesson(f"never commit {secret} to the repository", "tool")
+        args = argparse.Namespace(
+            learn_action="add",
+            rule=f"during a release never commit {secret} to the repository and tell the lead",
+            category="tool",
+            negative=None,
+        )
+        with (
+            patch.object(cli_commands, "VectorMemoryStore", return_value=store),
+            patch.object(cli_commands, "LessonStore", return_value=MagicMock()),
+            patch.object(cli_commands.KiroCrewConfig, "load", return_value=MagicMock()),
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli_commands._learn(args)
+            out = buf.getvalue()
+        assert "REMOVED 1 stored lesson" in out, "the supersede must still be reported"
+        removed_block = out[out.index("REMOVED") :]
+        assert secret not in removed_block, "raw credential printed for a removed rule"
+        assert "never commit" in removed_block, "the rule is redacted, not dropped"
+
+    def test_the_cli_cannot_reassemble_a_credential_split_by_a_control_sequence(self, tmp_path):
+        """Pins the ORDER of the two treatments, which is where this went wrong once.
+
+        The intuitive order is the unsafe one. Redacting first leaves
+        ``AKIA<CSI>IOSFODNN7EXAMPLE`` untouched -- the escape breaks the token so the
+        credential regex does not match -- and the control-strip then REASSEMBLES the
+        complete credential and prints it. Stripping first can only JOIN characters,
+        never split a token, so the regex sees the whole credential.
+
+        This is why the two earlier tests are not enough between them: each shows one
+        treatment happens, neither shows they compose in the safe order. A stored
+        credential is planted pre-split here so a future reordering reddens.
+        """
+        import argparse
+        import io
+        from contextlib import redirect_stdout
+
+        from kiro_crew import cli_commands
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        split = "AKIA\x1b[0mIOSFODNN7EXAMPLE"
+        store = _store(tmp_path)
+        store.write_lesson(f"never commit {split} to the repository", "tool")
+        args = argparse.Namespace(
+            learn_action="add",
+            rule=f"during a release never commit {split} to the repository and tell the lead",
+            category="tool",
+            negative=None,
+        )
+        with (
+            patch.object(cli_commands, "VectorMemoryStore", return_value=store),
+            patch.object(cli_commands, "LessonStore", return_value=MagicMock()),
+            patch.object(cli_commands.KiroCrewConfig, "load", return_value=MagicMock()),
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli_commands._learn(args)
+            out = buf.getvalue()
+        assert "REMOVED 1 stored lesson" in out, "the supersede must still be reported"
+        removed_block = out[out.index("REMOVED") :]
+        assert secret not in removed_block, "control stripping reassembled the credential"
+        assert split not in removed_block, "the split credential was printed as stored"
+
+    @pytest.mark.asyncio
+    async def test_the_route_redacts_a_credential_in_a_removed_rule(self):
+        """A credential a user once put in a lesson must not be echoed on deletion.
+
+        Worse than a read: the row is being deleted, so this response is the only place
+        that text is returned at all, and it reaches both the dashboard and the
+        ``learn_add`` tool.
+        """
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        resp, _state = await TestLessonsRouteReportsTheOutcome()._post(
+            LessonWriteResult(
+                LessonWriteOutcome.INSERTED, None, (f"never commit the key {secret}",)
+            )
+        )
+        import json as _json
+
+        body = _json.loads(resp.text)
+        assert len(body["superseded"]) == 1, "the supersede must still be reported"
+        assert secret not in body["superseded"][0], "raw credential returned in a response"
+        assert secret not in resp.text
+
+    def test_no_dedup_log_line_carries_lesson_text(self, tmp_path, caplog):
+        """The whole scan logs IDENTITIES, never content, on every branch.
+
+        A lesson holds whatever the user once told the agent -- credentials, paths,
+        names -- so a log line carrying its text turns a silent-deletion bug into a
+        disclosure bug, on a sink that persists to disk and may reach a notification
+        channel. Filtering the text on the way out only narrows that; logging the
+        store's own row ids removes it, and those ids are what let an operator join the
+        line to the tombstoned row and to the ``delete_semantic`` audit record.
+
+        The result is the read path where the text belongs, and the last assertion
+        checks it still carries the full rule -- so this test cannot be satisfied by
+        losing the recovery channel along with the exposure.
+
+        Each of the three dedup branches is driven separately, and every record emitted
+        is checked, because the three lines are independent and only one of them was
+        added by this change.
+        """
+        import logging
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        cases = {
+            # label -> (stored rule, submitted rule) selecting one branch each
+            "substring-delete": (
+                f"never commit {secret} to the repository",
+                f"during a release never commit {secret} to the repository and tell the lead",
+            ),
+            "substring-covered": (
+                f"always rotate {secret} on the first of the month",
+                f"rotate {secret}",
+            ),
+            "topic-overlap": (
+                f"rotate the deployment key {secret} monthly and audit the log",
+                f"rotate the deployment key {secret} weekly instead",
+            ),
+        }
+        for label, (stored, submitted) in cases.items():
+            store = _store(tmp_path / label.replace("-", "_"))
+            try:
+                store.write_lesson(stored, "tool")
+                caplog.clear()
+                with caplog.at_level(logging.DEBUG, logger="kiro_crew.vector_memory"):
+                    result = store.write_lesson(submitted, "tool")
+                emitted = [r.getMessage() for r in caplog.records]
+                assert emitted, f"{label}: no log record, so this asserts nothing"
+                for message in emitted:
+                    assert secret not in message, f"{label}: a credential reached the log"
+                    assert "rotate" not in message, f"{label}: rule text reached the log"
+                    assert "commit" not in message, f"{label}: rule text reached the log"
+                    assert "lesson." in message, f"{label}: rows should be named by id"
+                if label == "substring-delete":
+                    # The recovery channel still carries the full text.
+                    assert result.superseded, "the supersede must have happened"
+                    assert secret in result.superseded[0], "the result carries the text"
+            finally:
+                store.close()

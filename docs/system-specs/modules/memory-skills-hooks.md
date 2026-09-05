@@ -544,21 +544,53 @@ falling back would resurrect lessons the user deleted and ignore the scope gate.
 whose `repo_scope` is present but unusable counts as neither.
 
 **Single write path** — all lesson writes go through `write_lesson()` which provides:
-- Substring dedup: "use dark mode" won't duplicate "always use dark mode"
+- Substring dedup, and it is ASYMMETRIC. A submitted rule contained in a stored one is
+  declined and nothing is mutated (`deduped` / `substring_covered`): "use dark mode"
+  won't duplicate "always use dark mode". A submitted rule that CONTAINS a stored one
+  deletes the stored row instead — "longer wins" — so teaching "when a release is in
+  progress, never force push to a shared branch" retires a stored "never force push to
+  a shared branch". Note the direction of that trade: attaching a condition to a rule
+  makes its text longer and its guidance NARROWER, so the row that survives can be the
+  one that applies in fewer cases.
 - Topic-overlap dedup: "use light mode" replaces "use dark mode" (>50% keyword overlap → newer wins)
 - Allowlist validation, injection scanning, audit logging
+
+Substring-delete and topic-overlap are not independent: verbatim containment at word
+boundaries makes the stored rule's keyword set a subset of the submitted rule's, so
+overlap scores 100% and the topic rule would delete the same row the substring rule
+did. Suppressing either one alone does not keep both lessons — which is why
+`write_lesson` REPORTS its deletions (below) rather than declining to make them, and
+why a caller that must never replace an existing lesson routes to
+`set_semantic_if_absent` instead (see `onboarding_import`, whose comment records that a
+foreign directive could otherwise delete a correction the user taught the agent).
 
 **What a write reports.** `write_lesson()` returns a `LessonWriteResult` naming WHICH
 outcome occurred: `inserted` / `enriched` / `unchanged` / `deduped` / `refused`, plus a
 short reason code (a `SemanticRejectCode` value for a refusal, the dedup rule's name for
 a dedup, `kept_stored_clause` for the one `unchanged` case that is not a byte-identical
-re-submit). The vocabulary is shared with `LessonStore.save_or_enrich()`, which already
-returned the first three words, so both stores describe the same events the same way.
+re-submit), plus `superseded` — the rules this call DELETED. The outcome vocabulary is
+shared with `LessonStore.save_or_enrich()`, which already returned the first three
+words, so both stores describe the same events the same way — but only the vocabulary is
+shared, not the dedup policy: the JSONL store matches on exact rule text plus scope and
+has no rule that supersedes, so it keeps both a general rule and the narrower rule
+containing it.
+
 The distinction matters because two outcomes mean "your lesson did not land"
 (`refused`, `deduped`) while two mean "your lesson is fine, there was nothing to do"
 (`unchanged`, and the kept-clause variant) — a caller reading only a bool cannot tell
 them apart, and the `learn add` CLI guessed wrong, writing a second `lessons.jsonl`
 record on every one of them.
+
+`superseded` exists because every other field describes what happened to the SUBMITTED
+lesson, so a write that tombstoned a stored rule reported a bare `inserted` with
+`reason=None` and the caller was told its lesson was saved with nothing naming the cost.
+The result is the only channel that can carry it: the deleted row is a tombstone, so by
+the time the caller looks it is absent from `get_lessons()`, from `learn_list` and from
+the injected lessons block. It is empty on every path that deleted nothing (including
+`enriched`, which is decided in pass 1 and skips the dedup scan), is forwarded by
+`/api/lessons` as a JSON array, and is rendered in full — not counted, not truncated —
+by the `learn add` CLI and the `learn_add` tool, because that text is the last readable
+copy of the removed rule.
 
 **The result's truth value is the old bool, deliberately.** `bool(result)` is `wrote`,
 byte-for-byte the predicate the previous `-> bool` return answered, so the three callers
@@ -571,7 +603,8 @@ bare assertion would keep passing while asserting nothing — a silent hazard my
 flag, since a bare `if` on any object is legal. `stored` is the separate property for
 "is my lesson in the store" (true for a no-op re-submit, which is NOT a write). Surfaces
 that report to a human or a model — the `learn add` CLI, the `POST /api/lessons` response
-(`ok` / `outcome` / `reason`), the `learn_add` tool result — read `outcome` and `reason`.
+(`ok` / `outcome` / `reason` / `superseded`), the `learn_add` tool result — read `outcome`
+and `reason`, and name the `superseded` rules when there are any.
 The dashboard Memory tab clears its draft and refreshes the list only for `inserted`
 or `enriched`; `unchanged` clears the draft but reports that it was already stored,
 while `deduped` and `refused` preserve the draft and surface the reason so it can be
@@ -608,7 +641,7 @@ lesson beat a contradicting preference in the same prompt.
 |----------|------------|-----------|
 | Lesson contradicts a preference | Lesson wins via the `[Learned corrections]` framing | `context.py` |
 | Two semantic writes to one key | `user_explicit` overrides all; else higher confidence; confidences within 0.1 count as equal so newer wins | `vector_memory._write_semantic()` |
-| Duplicate lessons | Substring dedup, then topic-overlap dedup (≥50% of the smaller keyword set → newer replaces older), then embedding dedup (cosine > 0.85 → longer text wins) | `vector_memory.write_lesson()` |
+| Duplicate lessons | Substring dedup (contained-in-stored declines; contains-a-stored-one DELETES it, "longer wins"), then topic-overlap dedup (≥50% of the smaller keyword set → newer replaces older), then embedding dedup (cosine > 0.85 → longer text wins). Every deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
 | Contradicting episodic fragments | No explicit resolution: time decay plus MMR surfaces the newer/more relevant fragment | `vector_memory.search_episodic()` |
 | A semantic value is superseded | `_retire_stale_episodic()` tombstones episodic rows that quote the old value | `vector_memory._write_semantic()` step 9 |
 
