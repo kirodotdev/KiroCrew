@@ -49,7 +49,9 @@ Update button arms a pending request (`POST /api/update/arm`; single-use
 nonce, TTL 10 min, written owner-only to the data home and never returned to
 the SPA), and `kirocrew update approve` on the gateway host presents the
 nonce back (`POST /api/update/approve`, loopback + unix-socket preferred),
-upon which the gateway runs the shadow apply itself and restarts. The full
+upon which the gateway removes the nonce before accepting the approval, fails
+closed if that removal does not succeed, then runs the shadow apply itself and
+restarts. The full
 drain lease (§5) and hash-pinned dependency constraints remain open. pipx
 installs keep the installer re-run.
 

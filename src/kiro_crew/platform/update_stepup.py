@@ -187,8 +187,16 @@ def consume(nonce: str) -> PendingUpdate:
         )
     if not nonce or not hmac.compare_digest(pending.nonce, nonce):
         raise StepUpError("approval nonce does not match the armed request")
-    clear_pending()
+    _consume_pending_file()
     return pending
+
+
+def _consume_pending_file() -> None:
+    """Remove the nonce for a successful approval, failing closed on error."""
+    try:
+        pending_path().unlink()
+    except OSError as exc:
+        raise StepUpError(f"could not consume the pending update request: {exc}") from exc
 
 
 def clear_pending() -> None:
