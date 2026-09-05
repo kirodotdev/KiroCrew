@@ -9454,7 +9454,10 @@ class GatewayOrchestrator:
             await asyncio.to_thread(flush_breadcrumb_writes, 2.0)
         except Exception:
             logger.debug("Breadcrumb flush before update restart failed", exc_info=True)
-        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
+        from kiro_crew.platform.wheel_engine import respawn_executable
+
+        exe = await asyncio.to_thread(respawn_executable)
+        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
 
     async def _check_for_updates_legacy(self) -> None:
         """Legacy update check — the existing layout-aware logic."""
@@ -10374,7 +10377,10 @@ class GatewayOrchestrator:
             # Use -m kiro_crew rather than sys.argv[0] so the restart resolves
             # the freshly reinstalled entry point regardless of how the
             # original process was launched.
-            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
+            from kiro_crew.platform.wheel_engine import respawn_executable
+
+            exe = await asyncio.to_thread(respawn_executable)
+            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
         except Exception:
             logger.warning("Auto-update failed", exc_info=True)
             if self.dashboard_state:
@@ -10599,7 +10605,10 @@ class GatewayOrchestrator:
         except Exception:
             logger.debug("Breadcrumb flush before install restart failed", exc_info=True)
         # Restart into the freshly-installed version.
-        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
+        from kiro_crew.platform.wheel_engine import respawn_executable
+
+        exe = await asyncio.to_thread(respawn_executable)
+        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
 
     # ------------------------------------------------------------------
     # Main run loop
