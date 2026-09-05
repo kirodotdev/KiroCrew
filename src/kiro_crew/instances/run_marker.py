@@ -167,17 +167,30 @@ def _pid_record(pid: int) -> str:
 
 
 def _run_dir() -> Path:
-    """Return ``<config_dir>/run`` (created ``0700``); mirrors sandbox._ensure_run_dir."""
+    """Return ``<config_dir>/run`` (created owner-only); mirrors sandbox._ensure_run_dir.
+
+    ``restrict_dir_to_owner``, not ``os.chmod(0o700)``: on POSIX the two are the
+    same call, but a mode is meaningless on Windows, where a bare chmod leaves
+    the directory on the inherited DACL. This directory holds the gateway's
+    credential, its pid — the identity a client checks before trusting a port —
+    and the marker naming an executable mint will exec, so it must be owner-only
+    on every platform. The directory helper is also what makes the sidecars
+    safe: its Windows grants carry ``(OI)(CI)``, so files created inside inherit
+    owner-only, which ``atomic_write(mode=0o600)`` cannot deliver there.
+
+    Best-effort by contract, unlike the fail-loud helper it calls: ``_run_dir``
+    is reached through :func:`secret_path` on the dashboard's startup path, and
+    a directory that cannot be tightened (owned by another uid, an unresolvable
+    SID) must not take the gateway down.
+    """
     d = config_dir() / "run"
     d.mkdir(parents=True, exist_ok=True)
     try:
-        # exist_ok does not re-apply mode on an existing dir — enforce 0700 so the
-        # marker (which names an executable mint will exec) isn't world-writable.
-        # 0o700 (owner-only) is deliberate for a dir holding an exec'd path;
-        # semgrep's 0o644 default is wrong for a private dir (mirrors sandbox.py).
-        os.chmod(d, 0o700)  # nosemgrep
+        # exist_ok does not re-apply the mode/DACL to an existing dir, so tighten
+        # unconditionally rather than only on the create.
+        platform_compat.restrict_dir_to_owner(d)
     except OSError:
-        pass
+        logger.debug("could not restrict run dir %s to its owner", d, exc_info=True)
     return d
 
 
