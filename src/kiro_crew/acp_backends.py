@@ -41,9 +41,10 @@ logger = logging.getLogger(__name__)
 ACP_BACKEND_CLAUDE = "claude"
 ACP_BACKEND_KAS = "kas"
 # The Codex ACP adapter: a Node stdio server that boots the Codex app server and
-# translates ACP onto its operations. Known so that an edition shipping a provider
-# for it can register the id; absent from BASELINE_SELECTABLE_BACKENDS below, so no
-# build offers it until something registers it.
+# translates ACP onto its operations. It IS in BASELINE_SELECTABLE_BACKENDS below,
+# so a plain public build offers it and serves sessions on it today. What is still
+# unwritten is its agent-config projection, not the switch: its session MCP array is
+# empty (see AcpClient._codex_session_mcp_servers and providers/mirrors/registry).
 ACP_BACKEND_CODEX = "codex"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
