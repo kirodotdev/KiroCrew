@@ -166,13 +166,21 @@ function resolveMode(pref: ModePreference): ResolvedMode {
   return pref === 'system' ? getSystemMode() : pref
 }
 
+/**
+ * The `data-theme` value the stylesheet keys a palette on. The default palette
+ * (`emerald`) is spelled as the bare mode — `dark` / `light` — because that is
+ * how `index.css` names its `:root` fallbacks; every other theme, custom ones
+ * included, is `<slug>-<mode>`. Exported so any other renderer of the same
+ * stylesheet (the Storybook preview) resolves the attribute through this one
+ * rule instead of restating it.
+ */
+export function themeDataAttribute(colorTheme: ColorTheme, mode: ResolvedMode): string {
+  return colorTheme === 'emerald' ? mode : `${colorTheme}-${mode}`
+}
+
 function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode, pref: ModePreference) {
   const el = document.documentElement
-  if (colorTheme.startsWith('custom-')) {
-    el.dataset.theme = `${colorTheme}-${mode}`
-  } else {
-    el.dataset.theme = colorTheme === 'emerald' ? mode : `${colorTheme}-${mode}`
-  }
+  el.dataset.theme = themeDataAttribute(colorTheme, mode)
   el.dataset.mode = mode
   // The PREFERENCE, exposed separately from the resolved mode because the two
   // mean different things to the Electron shell. `data-mode` is what to paint;

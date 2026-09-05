@@ -20,6 +20,7 @@ import {
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
 import { precompressPlugin } from './scripts/precompress.mjs'
+import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
 import {
   parseBrandingConfig,
   applyBrandingToHtml,
@@ -571,23 +572,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
-    // Force a SINGLE instance of every CONTEXT-CARRYING singleton across the
-    // bundle. A KIROCREW_EDITION_DIR in a separate repo may resolve these from
-    // ITS OWN node_modules; a second copy binds an edition component's hooks to
-    // a DIFFERENT context instance than the core's providers — "Invalid hook
-    // call" (react), "No QueryClient set" / null router context / silently empty
-    // data (the rest) — only at runtime, only in the out-of-repo edition build.
-    // Dedupe the libraries the core's provider tree owns; harmless in the stock
-    // single-node_modules build. (See website/AGENTS.md — edition peer-dep rule.)
-    dedupe: [
-      'react',
-      'react-dom',
-      'react-redux',
-      'react-router',
-      'react-router-dom',
-      '@tanstack/react-query',
-      'framer-motion',
-    ],
+    dedupe: CONTEXT_SINGLETON_DEDUPE,
   },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
@@ -722,6 +707,8 @@ export default defineConfig({
       exclude: [
         'src/test/**',
         'src/**/*.test.{ts,tsx}',
+        // Storybook fixtures: development-only, never in the served bundle.
+        'src/**/*.stories.{ts,tsx}',
         'src/**/*.d.ts',
         'src/vite-env.d.ts',
       ],

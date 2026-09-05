@@ -11,6 +11,10 @@ coverage
 # `dist` rule above does not cover it.
 dist-dev
 
+# Storybook static build (`npm run build-storybook`) and its dev log.
+storybook-static
+*storybook.log
+
 # Electron
 electron/dist
 electron/node_modules

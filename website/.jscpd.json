@@ -15,6 +15,7 @@
     "**/public/**",
     "**/*.test.ts",
     "**/*.test.tsx",
+    "**/*.stories.tsx",
     "**/test/**",
     "**/integration/**",
     "**/playwright/**",

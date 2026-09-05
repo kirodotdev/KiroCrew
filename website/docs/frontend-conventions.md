@@ -49,6 +49,13 @@ Other shared modules:
 `@kirocrew/ui`. Adding a primitive there makes it app-facing API, so add
 deliberately.
 
+Stories for these primitives live in `src/stories/` and render them in isolation
+under every theme (`npm run storybook`); see
+[testing § Component stories](testing.md#choosing-a-layer). Seven primitives have
+one today. A story is the cheapest place to look at a new variant or prop, so add
+or update one when you touch a primitive that has one; a per-primitive
+requirement is not in force until the change that makes CI render stories.
+
 ### Which switcher
 
 Three components render the same pill, because a user should see one control for
