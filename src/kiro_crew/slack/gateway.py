@@ -3690,6 +3690,32 @@ class GatewayOrchestrator:
                         # User-initiated cancel: CronService.cancel() owns the
                         # bookkeeping/history — no failure counting, no delivery.
                         return None
+                    if result.get("status") == "skipped":
+                        # Overlapping wake refused because this job is already
+                        # spawning or running. Not a job defect, so no failure
+                        # counting and no delivery -- counting it would strike a
+                        # job for a transient scheduling overlap.
+                        #
+                        # But returning None alone is NOT neutral: _execute treats
+                        # any non-"error" last_status as success, so it would set
+                        # last_status="ok" AND call record_success(), fabricating a
+                        # run that never happened and refilling the auto-pause
+                        # budget. The cancelled branch above escapes that only
+                        # because _execute additionally checks self._cancelled_jobs
+                        # membership, and a refused overlap is not in that set.
+                        #
+                        # So use the established deliberately-neutral shape of the
+                        # starvation and fire-time-denial paths: last_status="error"
+                        # to skip the success branch, run_never_started=True as the
+                        # retention marker, and DELIBERATELY NOT record_failure() --
+                        # a strike is only ever counted by that explicit call, never
+                        # by last_status, so this spends no budget and refills none.
+                        logger.info("Cron '%s': overlapping run refused, skipping", job.name)
+                        job.clear_carried_result()
+                        job.last_status = "error"
+                        job.last_error = "Another run of this job was already starting or running"
+                        job.run_never_started = True
+                        return None
                     output = result.get("output", "")
                     if not output.strip():
                         if result.get("status") == "ok":
@@ -4025,6 +4051,20 @@ class GatewayOrchestrator:
                     if status == "cancelled":
                         # User-initiated cancel: CronService.cancel() owns the
                         # bookkeeping/history — no failure counting, no delivery.
+                        return None
+                    if status == "skipped":
+                        # Overlapping wake refused because this job is already
+                        # spawning or running -- no failure counting, no delivery.
+                        # See the command path for why returning None alone would
+                        # be recorded as a SUCCESS: last_status="error" skips
+                        # _execute's success branch, run_never_started=True is the
+                        # retention marker, and record_failure() is deliberately
+                        # NOT called so the overlap costs no auto-pause strike.
+                        logger.info("Cron '%s': overlapping run refused, skipping", job.name)
+                        job.clear_carried_result()
+                        job.last_status = "error"
+                        job.last_error = "Another run of this job was already starting or running"
+                        job.run_never_started = True
                         return None
                     if status == "ok":
                         job.clear_carried_result()
