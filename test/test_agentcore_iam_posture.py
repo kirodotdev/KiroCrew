@@ -1,0 +1,401 @@
+"""AgentCore instance Policy.json postures and successor boundary."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from kiro_crew.cloud import iam
+
+_WORKLOAD_DIR = "arn:aws:bedrock-agentcore:*:*:workload-identity-directory/default"
+_WORKLOAD_ID = (
+    "arn:aws:bedrock-agentcore:*:*:workload-identity-directory/default/workload-identity/kirocrew"
+)
+_WORKLOAD_RESOURCES = [_WORKLOAD_DIR, _WORKLOAD_ID]
+
+# Byte-stable original boundary: SSM-core + source-bucket read, no AgentCore.
+_ORIGINAL_BOUNDARY_SIDS = frozenset({"SsmCore", "SourceBucketRead"})
+
+
+def _statement_by_sid(doc: dict[str, Any], sid: str) -> dict[str, Any]:
+    return next(s for s in doc["Statement"] if s["Sid"] == sid)
+
+
+def _actions(st: dict[str, Any]) -> set[str]:
+    raw = st["Action"]
+    return {raw} if isinstance(raw, str) else set(raw)
+
+
+def _resources(st: dict[str, Any]) -> list[str]:
+    raw = st["Resource"]
+    return [raw] if isinstance(raw, str) else list(raw)
+
+
+def test_launcher_policy_json_has_no_invoke_gateway() -> None:
+    text = iam.policy_json()
+    assert "InvokeGateway" not in text
+    assert "GetWorkloadAccessToken" not in text
+    assert "GetGateway" not in text
+    assert "ListGatewayTargets" not in text
+    assert "SynchronizeGatewayTargets" not in text
+
+
+def test_workload_token_grants_omit_identity_wildcard() -> None:
+    wildcard = (
+        "arn:aws:bedrock-agentcore:*:*:workload-identity-directory/default/"
+        "workload-identity/kirocrew-*"
+    )
+    assert wildcard not in iam.policy_json()
+    for posture in ("workload", "login"):
+        dumped = json.dumps(iam.agentcore_instance_policy_document(posture))
+        assert wildcard not in dumped
+        dumped = json.dumps(iam.agentcore_boundary_policy_document("123456789012", posture))
+        assert wildcard not in dumped
+
+
+def test_launcher_policy_can_create_agentcore_identity() -> None:
+    st = _statement_by_sid(iam.policy_document(), "AgentCoreWorkloadIdentityControlPlane")
+    assert st["Effect"] == "Allow"
+    assert "bedrock-agentcore:CreateWorkloadIdentity" in _actions(st)
+    assert "bedrock-agentcore:DeleteWorkloadIdentity" in _actions(st)
+    assert "InvokeGateway" not in "".join(_actions(st))
+    assert "GetWorkloadAccessToken" not in "".join(_actions(st))
+    assert _resources(st) == _WORKLOAD_RESOURCES
+
+
+def test_agentcore_workload_name_is_per_tag() -> None:
+    assert iam.agentcore_workload_name("kc-abc123", "workload") == "kirocrew-kc-abc123"
+    assert iam.agentcore_workload_name("kc-abc123", "login") == "kirocrew-kc-abc123"
+    assert iam.agentcore_workload_name("kc-abc123", "none") == ""
+    assert iam.normalize_agentcore_posture("") == "none"
+    assert iam.normalize_agentcore_posture("WORKLOAD") == "workload"
+
+
+def test_launcher_create_role_omits_successor_boundary() -> None:
+    st = _statement_by_sid(iam.policy_document(), "IamCreateRoleWithBoundary")
+    cond = st["Condition"]["ArnLike"]["iam:PermissionsBoundary"]
+    values = [cond] if isinstance(cond, str) else list(cond)
+    assert values == [f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}"]
+    assert f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}" not in values
+
+
+def test_agentcore_deploy_create_role_uses_successor_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AgentCore-posture CreateRole passes the admin-pre-created successor."""
+    import kiro_crew.cloud.source as source_mod
+    from kiro_crew.cloud import aws, ec2, sizes
+
+    seen: dict[str, int] = {"require": 0, "ensure": 0}
+
+    def _require(profile: str, region: str) -> str:
+        seen["require"] += 1
+        return f"arn:aws:iam::1:policy/{iam.AGENTCORE_BOUNDARY_NAME}"
+
+    def _ensure(profile: str, region: str, *, name: str | None = None) -> str:
+        seen["ensure"] += 1
+        return f"arn:aws:iam::1:policy/{iam.BOUNDARY_NAME}"
+
+    monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
+    monkeypatch.setattr(source_mod, "require_agentcore_boundary", _require)
+    monkeypatch.setattr(source_mod, "ensure_instance_boundary", _ensure)
+    monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1", "igw"))
+    monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, "ok", ""))
+    monkeypatch.setattr(
+        ec2,
+        "describe",
+        lambda *a, **k: {"instance_id": "i-1", "stack_status": "CREATE_COMPLETE"},
+    )
+    result = ec2.deploy(
+        tag="t1",
+        tier=sizes.default_tier(),
+        profile="dev",
+        region="us-east-1",
+        ship_source=False,
+        agentcore_posture="workload",
+    )
+    assert seen["require"] == 1
+    assert seen["ensure"] == 0
+    assert f"arn:aws:iam::1:policy/{iam.AGENTCORE_BOUNDARY_NAME}" in " ".join(result.argv)
+
+
+def test_agentcore_deploy_fails_closed_when_successor_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing successor must abort before CloudFormation deploy."""
+    import kiro_crew.cloud.source as source_mod
+    from kiro_crew.cloud import aws, ec2, sizes
+
+    def _require(profile: str, region: str) -> str:
+        raise aws.AWSError(
+            "successor missing",
+            action="iam:GetPolicy",
+        )
+
+    monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
+    monkeypatch.setattr(source_mod, "require_agentcore_boundary", _require)
+    monkeypatch.setattr(
+        source_mod,
+        "ensure_instance_boundary",
+        lambda *a, **k: pytest.fail("must not CreatePolicy the original on AgentCore launch"),
+    )
+    ran: list[str] = []
+    monkeypatch.setattr(aws, "run_aws", lambda *a, **k: ran.append("deploy") or (0, "ok", ""))
+    with pytest.raises(aws.AWSError, match="successor missing"):
+        ec2.deploy(
+            tag="t1",
+            tier=sizes.default_tier(),
+            profile="dev",
+            region="us-east-1",
+            ship_source=False,
+            agentcore_posture="login",
+        )
+    assert ran == []
+
+
+def test_launcher_create_once_omits_successor_name() -> None:
+    st = _statement_by_sid(iam.policy_document(), "IamInstanceBoundaryCreateOnce")
+    assert set(st["Action"]) == {
+        "iam:CreatePolicy",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+    }
+    resources = _resources(st)
+    assert resources == [f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}"]
+    assert f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}" not in resources
+    assert not any(r.endswith("*") for r in resources)
+
+
+def test_launcher_reads_successor_boundary_without_create() -> None:
+    st = _statement_by_sid(iam.policy_document(), "IamAgentCoreBoundaryRead")
+    assert set(st["Action"]) == {"iam:GetPolicy", "iam:GetPolicyVersion"}
+    assert "iam:CreatePolicy" not in st["Action"]
+    assert _resources(st) == [f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}"]
+
+
+def test_workload_instance_document_denies_for_jwt() -> None:
+    doc = iam.agentcore_instance_policy_document("workload")
+    identity = _statement_by_sid(doc, "AgentCoreIdentity")
+    assert identity["Effect"] == "Allow"
+    assert _actions(identity) == {
+        "bedrock-agentcore:GetWorkloadAccessToken",
+    }
+    assert _resources(identity) == _WORKLOAD_RESOURCES
+
+    assert all(s["Sid"] != "AgentCoreGateway" for s in doc["Statement"])
+    for st in doc["Statement"]:
+        if st["Effect"] == "Allow":
+            assert "InvokeGateway" not in _actions(st)
+
+    deny = _statement_by_sid(doc, "DenyJwtPathOnWorkloadPosture")
+    assert deny["Effect"] == "Deny"
+    assert _actions(deny) == {"bedrock-agentcore:GetWorkloadAccessTokenForJWT"}
+    assert _resources(deny) == ["*"]
+
+    inspect = _statement_by_sid(doc, "AgentCoreGatewayInspect")
+    assert inspect["Effect"] == "Allow"
+    assert _actions(inspect) == {
+        "bedrock-agentcore:GetGateway",
+        "bedrock-agentcore:ListGatewayTargets",
+        "bedrock-agentcore:GetGatewayTarget",
+    }
+    assert _resources(inspect) == ["arn:aws:bedrock-agentcore:*:*:gateway/*"]
+
+    for st in doc["Statement"]:
+        if st["Effect"] == "Allow":
+            assert "*" not in _resources(st)
+
+
+def test_login_instance_document_denies_userid_and_invoke() -> None:
+    doc = iam.agentcore_instance_policy_document("login")
+    identity = _statement_by_sid(doc, "AgentCoreIdentityForJwt")
+    assert identity["Effect"] == "Allow"
+    assert _actions(identity) == {"bedrock-agentcore:GetWorkloadAccessTokenForJWT"}
+    assert _resources(identity) == _WORKLOAD_RESOURCES
+
+    deny = _statement_by_sid(doc, "DenyUserIdAndIamGateway")
+    assert deny["Effect"] == "Deny"
+    assert _actions(deny) == {
+        "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+        "bedrock-agentcore:InvokeGateway",
+    }
+    assert _resources(deny) == ["*"]
+
+    inspect = _statement_by_sid(doc, "AgentCoreGatewayInspect")
+    assert inspect["Effect"] == "Allow"
+    assert "bedrock-agentcore:GetGateway" in _actions(inspect)
+    assert _resources(inspect) == ["arn:aws:bedrock-agentcore:*:*:gateway/*"]
+
+    dumped = json.dumps(doc)
+    assert "GetWorkloadAccessTokenForUserId" in dumped
+    assert '"Effect": "Allow"' not in dumped.split("GetWorkloadAccessTokenForUserId")[0][-80:]
+    for st in doc["Statement"]:
+        if st["Effect"] == "Allow":
+            assert "InvokeGateway" not in _actions(st)
+            assert "GetWorkloadAccessTokenForUserId" not in _actions(st)
+            assert "*" not in _resources(st)
+
+
+def test_original_boundary_document_unchanged() -> None:
+    doc = iam.boundary_policy_document("123456789012")
+    dumped = json.dumps(doc, sort_keys=True, separators=(",", ":"))
+    assert "bedrock-agentcore" not in dumped
+    assert "InvokeGateway" not in dumped
+    assert "GetWorkloadAccessToken" not in dumped
+    sids = {s["Sid"] for s in doc["Statement"]}
+    assert sids == _ORIGINAL_BOUNDARY_SIDS
+    ssm = _statement_by_sid(doc, "SsmCore")
+    assert "ssm:UpdateInstanceInformation" in ssm["Action"]
+    s3 = _statement_by_sid(doc, "SourceBucketRead")
+    assert s3["Action"] == ["s3:GetObject"]
+    assert s3["Resource"] == "arn:aws:s3:::kirocrew-src-123456789012-*/*"
+    assert json.loads(iam.boundary_policy_json("123456789012")) == doc
+
+
+def test_successor_boundary_is_union_ceiling() -> None:
+    for posture in ("workload", "login"):
+        doc = iam.agentcore_boundary_policy_document("123456789012", posture)
+        sids = {s["Sid"] for s in doc["Statement"]}
+        assert "SsmCore" in sids
+        assert "SourceBucketRead" in sids
+        dumped = json.dumps(doc)
+        for action in (
+            "bedrock-agentcore:GetWorkloadAccessToken",
+            "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+            "bedrock-agentcore:GetGateway",
+            "bedrock-agentcore:ListGatewayTargets",
+        ):
+            assert action in dumped
+        assert "InvokeGateway" not in dumped
+        assert "GetWorkloadAccessTokenForUserId" not in dumped
+        assert "SynchronizeGatewayTargets" not in dumped
+        inspect = _statement_by_sid(doc, "AgentCoreInspectCeiling")
+        assert _resources(inspect) == ["arn:aws:bedrock-agentcore:*:*:gateway/*"]
+        s3 = _statement_by_sid(doc, "SourceBucketRead")
+        assert s3["Resource"] == "arn:aws:s3:::kirocrew-src-123456789012-*/*"
+
+
+def test_successor_boundary_name_is_distinct() -> None:
+    assert iam.AGENTCORE_BOUNDARY_NAME == "kirocrew-ec2-boundary-agentcore"
+    assert iam.BOUNDARY_NAME == "kirocrew-ec2-boundary"
+    assert iam.AGENTCORE_BOUNDARY_NAME != iam.BOUNDARY_NAME
+
+
+def test_template_allowed_pattern_lists_both_boundary_names() -> None:
+    from kiro_crew.cloud import ec2
+
+    text = ec2.load_template()
+    assert "kirocrew-ec2-boundary" in text
+    assert "kirocrew-ec2-boundary-agentcore" in text
+    assert "kirocrew-ec2-boundary(-agentcore)?" in text or (
+        "kirocrew-ec2-boundary" in text and "agentcore" in text
+    )
+
+
+def test_template_instance_policies_include_inspect() -> None:
+    from kiro_crew.cloud import ec2
+
+    text = ec2.load_template()
+    assert text.count("AgentCoreGatewayInspect") >= 2
+    assert "bedrock-agentcore:GetGateway" in text
+    assert "bedrock-agentcore:GetGatewayTarget" in text
+    assert "SynchronizeGatewayTargets" not in text
+    assert "gateway/*" in text
+    assert "Action: [bedrock-agentcore:InvokeGateway]" not in text
+
+
+@pytest.mark.asyncio
+async def test_iam_policy_api_returns_labeled_instance_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.cloud import launch_job as lj
+    from kiro_crew.dashboard import handlers_cloud as hc
+
+    monkeypatch.setattr(hc.sys, "platform", "linux")
+    state = SimpleNamespace(
+        owner_id="owner-1",
+        cloud_launch_sync=True,
+        cloud_launch_store=lj.LaunchJobStore(root=tmp_path / "launch-jobs"),
+    )
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request(
+        "GET",
+        "/api/cloud/iam-policy?instance=1&posture=workload",
+        app=app,
+    )
+    req["user"] = "owner-1"
+    req["app"] = ""
+    resp = await hc.api_cloud_iam_policy(req)
+    assert resp.status == 200
+    body = json.loads(resp.body.decode("utf-8"))
+    assert "policy" in body
+    assert "InvokeGateway" not in body["policy"]
+    instance = json.loads(body["instance_policy"])
+    assert body["instance_posture"] == "workload"
+    for st in instance["Statement"]:
+        if st["Effect"] == "Allow":
+            assert "InvokeGateway" not in json.dumps(st)
+
+
+def test_cli_iam_policy_instance_flag(capsys: pytest.CaptureFixture[str]) -> None:
+    from kiro_crew import cli_cloud
+
+    ns = type("NS", (), {"cloud_action": "iam-policy", "instance": True, "posture": "login"})()
+    assert cli_cloud.handle_cloud(ns) == 0
+    out = capsys.readouterr().out
+    assert "GetWorkloadAccessTokenForJWT" in out
+    assert "DenyUserIdAndIamGateway" in out
+
+
+def test_cli_iam_policy_instance_requires_posture(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--instance`` without ``--posture`` must not emit the privileged sibling."""
+    from kiro_crew import cli_cloud
+
+    ns = type("NS", (), {"cloud_action": "iam-policy", "instance": True, "posture": None})()
+    assert cli_cloud.handle_cloud(ns) != 0
+    captured = capsys.readouterr()
+    assert "InvokeGateway" not in captured.out
+    assert "InvokeGateway" not in captured.err
+
+
+def test_iam_boundary_agentcore_selector_passes_successor_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew import cli_cloud
+
+    seen: dict[str, Any] = {}
+
+    def _ensure(profile: str, region: str, *, name: str | None = None) -> str:
+        seen["name"] = name
+        return f"arn:aws:iam::1:policy/{iam.AGENTCORE_BOUNDARY_NAME}"
+
+    monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "us-east-1"))
+    monkeypatch.setattr("kiro_crew.cloud.source.ensure_instance_boundary", _ensure)
+    ns = type("NS", (), {"agentcore": True, "profile": "dev", "region": "us-east-1"})()
+    assert cli_cloud._cloud_iam_boundary(ns) == 0
+    assert seen["name"] == iam.AGENTCORE_BOUNDARY_NAME
+
+
+def test_iam_boundary_default_creates_original_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import cli_cloud
+
+    seen: dict[str, Any] = {}
+
+    def _ensure(profile: str, region: str, *, name: str | None = None) -> str:
+        seen["name"] = name
+        return f"arn:aws:iam::1:policy/{iam.BOUNDARY_NAME}"
+
+    monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "us-east-1"))
+    monkeypatch.setattr("kiro_crew.cloud.source.ensure_instance_boundary", _ensure)
+    ns = type("NS", (), {"agentcore": False, "profile": "dev", "region": "us-east-1"})()
+    assert cli_cloud._cloud_iam_boundary(ns) == 0
+    assert seen["name"] is None

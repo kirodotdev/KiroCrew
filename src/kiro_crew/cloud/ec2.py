@@ -235,9 +235,7 @@ def _zone_shadows_host(zone: str, host: str) -> bool:
     return host == zone or host.endswith("." + zone)
 
 
-def shadowed_download_hosts(
-    vpc_id: str, profile: str, region: str
-) -> list[tuple[str, str]]:
+def shadowed_download_hosts(vpc_id: str, profile: str, region: str) -> list[tuple[str, str]]:
     """``(host, zone)`` pairs where a private hosted zone hides a download host.
 
     An interface VPC endpoint with private DNS enabled creates a private hosted
@@ -309,9 +307,7 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
     )
 
 
-def discover_network(
-    profile: str, region: str, instance_type: str = ""
-) -> tuple[str, str, str]:
+def discover_network(profile: str, region: str, instance_type: str = "") -> tuple[str, str, str]:
     """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
 
     ``egress_kind`` is ``"nat"`` or ``"igw"`` — the caller uses it to decide
@@ -535,6 +531,9 @@ def build_deploy_argv(
     allow_ssh_cidr: str = "",
     source_bucket: str = "",
     source_key: str = "",
+    agentcore_posture: str = "none",
+    agentcore_workload_name: str = "",
+    agentcore_gateway_url: str = "",
 ) -> list[str]:
     """Assemble the exact ``aws cloudformation deploy`` argv (also the dry-run output).
 
@@ -542,6 +541,8 @@ def build_deploy_argv(
     instance permissions boundary (``source.ensure_instance_boundary`` creates it
     once); it fills the template's ``PermissionsBoundaryArn`` parameter so the
     InstanceRole is capped by it instead of a per-launch CFN-authored boundary.
+    ``agentcore_posture`` / ``agentcore_workload_name`` opt the stack into
+    creating ``AWS::BedrockAgentCore::WorkloadIdentity``.
     """
     overrides = [
         f"InstanceType={tier.instance_type}",
@@ -552,6 +553,9 @@ def build_deploy_argv(
         f"AssociatePublicIp={associate_public_ip}",
         f"StackTag={tag}",
         f"PermissionsBoundaryArn={permissions_boundary_arn}",
+        f"AgentCorePosture={agentcore_posture}",
+        f"AgentCoreWorkloadName={agentcore_workload_name}",
+        f"AgentCoreGatewayUrl={agentcore_gateway_url}",
     ]
     # Prefer the S3 source (private-repo safe); else pass git repo/ref fallback.
     if source_bucket:
@@ -594,6 +598,8 @@ def deploy(
     disable_rollback: bool = False,
     dry_run: bool = False,
     proc_sink: Optional[Any] = None,
+    agentcore_posture: str = "none",
+    agentcore_gateway_url: str = "",
 ) -> DeployResult:
     """Provision (or update) the KiroCrew stack. Idempotent by stack name.
 
@@ -605,6 +611,11 @@ def deploy(
     returns the exact argv without calling AWS. ``proc_sink`` is forwarded to
     :func:`aws.run_aws` for the (long) deploy call so a caller running deploy on
     a background thread can terminate the child on Ctrl+C.
+    ``agentcore_posture`` of ``workload`` or ``login`` creates an Amazon
+    Bedrock AgentCore standalone WorkloadIdentity and CreateRole's the
+    instance under the successor boundary. That policy must already
+    exist (``iam-boundary --agentcore``); the generated launcher cannot
+    CreateRole it, so AgentCore launches need admin credentials.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
@@ -620,7 +631,12 @@ def deploy(
     if ref:
         ref = validate_field(ref, _REF_SPEC) or ""
 
+    from kiro_crew.cloud import iam
     from kiro_crew.cloud import source as source_mod
+
+    posture = iam.normalize_agentcore_posture(agentcore_posture)
+    workload_name = iam.agentcore_workload_name(tag, posture)
+    agentcore_gateway_url = iam.normalize_agentcore_gateway_url(agentcore_gateway_url)
 
     if ship_source is None:
         ship_source = source_mod.find_repo_root() is not None
@@ -643,6 +659,9 @@ def deploy(
             allow_ssh_cidr=allow_ssh_cidr,
             source_bucket="<auto>" if ship_source else "",
             source_key=f"{tag}/kirocrew-src.tar.gz" if ship_source else "",
+            agentcore_posture=posture,
+            agentcore_workload_name=workload_name,
+            agentcore_gateway_url=agentcore_gateway_url,
         )
         return DeployResult(
             tag=tag,
@@ -662,7 +681,14 @@ def deploy(
     # InstanceRole is capped by it. Done before the source upload so a
     # boundary-create failure (e.g. missing iam:CreatePolicy) surfaces before we
     # ship anything to S3.
-    boundary_arn = source_mod.ensure_instance_boundary(profile, region)
+    # none-posture CreateRole uses the original boundary (generated
+    # launcher grant). AgentCore posture GetPolicy's the admin-pre-created
+    # successor and passes that ARN — the CreateRole IAM gate then
+    # requires admin credentials. Do not CreatePolicy the successor here.
+    if posture in ("workload", "login"):
+        boundary_arn = source_mod.require_agentcore_boundary(profile, region)
+    else:
+        boundary_arn = source_mod.ensure_instance_boundary(profile, region)
 
     # Package + upload the local source so the box installs from S3 (no GitHub
     # access needed). Fall back to a git clone only if source shipping is off.
@@ -689,9 +715,7 @@ def deploy(
                 subnet_id, profile, region, tier.instance_type
             )
         else:
-            vpc_id, subnet_id, egress_kind = discover_network(
-                profile, region, tier.instance_type
-            )
+            vpc_id, subnet_id, egress_kind = discover_network(profile, region, tier.instance_type)
         # Both paths above settle on a VPC; check the resolver BEFORE provisioning
         # anything. A private hosted zone that shadows a download host makes the
         # bootstrap fail deterministically minutes later, blaming the wrong layer.
@@ -714,6 +738,9 @@ def deploy(
         allow_ssh_cidr=allow_ssh_cidr,
         source_bucket=source_bucket,
         source_key=source_key,
+        agentcore_posture=posture,
+        agentcore_workload_name=workload_name,
+        agentcore_gateway_url=agentcore_gateway_url,
     )
     # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
     # on the gateway being healthy). "No changes" exits 0 with a message on reuse.

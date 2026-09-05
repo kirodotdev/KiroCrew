@@ -539,6 +539,35 @@ class TestEnsureInstanceBoundary:
             source.ensure_instance_boundary("dev", "us-east-1")
 
 
+class TestRequireAgentcoreBoundary:
+    def test_reuses_verified_successor(self, monkeypatch):
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        expected = iam.boundary_document_for_name(iam.AGENTCORE_BOUNDARY_NAME, _ACCT12)
+        monkeypatch.setattr(
+            aws, "checked_json", lambda args, *a, **k: _boundary_verify_json(args, expected)
+        )
+        created: list[list[str]] = []
+
+        def fake_run(args, *a, **k):
+            created.append(list(args[:2]))
+            if args[:2] == ["iam", "get-policy"]:
+                return (0, "{}", "")
+            raise AssertionError(f"must not run {args[:2]}")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        arn = source.require_agentcore_boundary("dev", "us-east-1")
+        assert arn == iam.boundary_arn(_ACCT12, iam.AGENTCORE_BOUNDARY_NAME)
+        assert ["iam", "create-policy"] not in created
+
+    def test_missing_successor_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        monkeypatch.setattr(aws, "run_aws", lambda args, *a, **k: (255, "", "NoSuchEntity"))
+        with pytest.raises(aws.AWSError, match="iam-boundary --agentcore"):
+            source.require_agentcore_boundary("dev", "us-east-1")
+
+
 _ACCT = "123456789012"
 _BUCKET = f"kirocrew-src-{_ACCT}-us-east-1"
 

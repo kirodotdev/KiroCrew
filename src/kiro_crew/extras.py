@@ -38,6 +38,7 @@ REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "feishu": ("lark-oapi>=1.4,<2",),
     "voice-aws": ("boto3>=1.34,<2", "amazon-transcribe>=0.6,<1"),
     "voice": ("boto3>=1.34,<2", "amazon-transcribe>=0.6,<1", "pywhispercpp>=1.5,<2"),
+    "agentcore": ("boto3>=1.34,<2",),
 }
 
 
