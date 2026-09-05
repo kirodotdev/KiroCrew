@@ -715,6 +715,23 @@ jobs:
         run: |
           if [ -f codex-review-output.md ]; then
             perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-review-output.md
+            # Then redact the ACTUAL inherited credential VALUES, not just their
+            # shapes. An AWS secret access key is 40 characters of [A-Za-z0-9/+=]
+            # with no distinctive prefix, so a BARE value (no `name=` beside it)
+            # survives every shape rule above: it is not AKIA/ASIA, it is not a
+            # named key=value, and it is far short of the 200+ char base64 run the
+            # withhold filter looks for. Matching the value itself cannot be
+            # evaded by how the model chooses to print it. This runs before the
+            # comment step, so it protects the blocked, clear and unstamped paths
+            # alike rather than only the branch that surfaces an unstamped body.
+            for cred in AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID; do
+              val="$(printenv "$cred" 2>/dev/null || true)"
+              # Length guard, not just an emptiness guard: `\Q\E` on an empty
+              # string is an empty pattern that matches at EVERY position and
+              # would carpet the file with the marker.
+              [ "${#val}" -ge 16 ] || continue
+              CRED_VALUE="$val" perl -i -pe 's/\Q$ENV{CRED_VALUE}\E/[REDACTED-CREDENTIAL]/g' codex-review-output.md
+            done
           fi
 
       # ── ADJUDICATION ────────────────────────────────────────────────────────
@@ -985,6 +1002,74 @@ jobs:
               echo "</details>"
             else
               echo "_No completed GPT verdict for this commit; see the Fork GPT 5.6 Review job logs._"
+              # REPORTING ONLY. Without this, a review that ran to completion but
+              # whose `[GPT-REVIEWED] <sha>` stamp is absent or SHA-corrupted put
+              # its entire body in the job logs and posted only the line above --
+              # the reader saw "no verdict" and could not tell a clean review with
+              # a mangled stamp from a review that never produced findings. Show
+              # the captured body; it is already credential-redacted by "Redact
+              # credential shapes" above, which runs `if: always()`.
+              #
+              # Every marker is DE-BRACKETED first. pr_status.py's
+              # REVIEWED_STAMP_RE (`\[([A-Z][A-Z0-9_-]*)-REVIEWED\]\s+<sha>`) and
+              # BLOCK_MERGE_RE (`\[BLOCK-MERGE\]\s+<sha>`) both anchor on a
+              # literal "[", so a de-bracketed token is inert to them in exactly
+              # the way an absent one is. That is the point: today this branch
+              # posts no body and pr_status.py sees no markers, and after this
+              # change it still sees none, so nothing downstream reads an
+              # unstamped review as freshly reviewed or as a posted verdict.
+              #
+              # The pattern deliberately matches the BRACKETED TOKEN ALONE and
+              # does NOT require a following sha. Requiring one would reintroduce
+              # the exact hole this branch exists to avoid: Python's `\s+` spans
+              # newlines but line-oriented sed cannot, so a model emitting
+              # `[GPT-REVIEWED]\n<sha>` would slip past a sha-anchored sed while
+              # pr_status.py still read it as a live stamp -- and that spelling
+              # lands HERE precisely because the `grep -Fq` above is single-line
+              # too, so it fails to find the marker and sends us down this branch.
+              # Both parser patterns need `[NAME-REVIEWED]` / `[BLOCK-MERGE]`
+              # contiguous on one line (their character classes exclude newline),
+              # so breaking the bracket alone cannot be bypassed by any
+              # whitespace arrangement.
+              # This branch does not decide the check-run; "Finalize check-run
+              # (fail closed)" below re-derives it from the same missing stamp and
+              # stays `failure`.
+              #
+              # Where this body actually lands: the upsert below (#8292/#8350)
+              # never PATCHes on an incomplete run, so this body is only ever
+              # CREATED, and only when the comment lookup succeeded and found no
+              # existing marker comment. That is also why the de-bracketing above
+              # is load-bearing rather than belt-and-braces -- the comment it
+              # creates is then the ONLY marker comment on the PR, so a live
+              # stamp in it would have nothing to contradict it.
+              if [ -s codex-review-output.md ]; then
+                # WITHHOLD before showing anything. The reviewer runs agentically
+                # with credentials in its environment, and a malicious fork can
+                # inject a prompt that both dumps that environment AND omits the
+                # verdict stamp -- which routes here by construction. The redaction
+                # above catches an AWS key ID and named `key=value` forms but not a
+                # bare secret value, a GitHub token, or a PEM block, and before this
+                # branch existed nothing was posted here at all. So if any
+                # credential shape survives, publish NOTHING and point at the log.
+                # Same pattern as the fork first-principles/UX lanes; a long
+                # unbroken base64 run is included deliberately because an AWS
+                # session token has no distinctive prefix.
+                if grep -Eq '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z2-7]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9/+=]{200,})' codex-review-output.md; then
+                  echo
+                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork GPT 5.6 Review job logs._"
+                else
+                  echo
+                  echo "<details>"
+                  echo "<summary>Captured review output — no verdict stamp for this commit, so this is NOT a verdict</summary>"
+                  echo
+                  sed -E \
+                    -e 's/\[([A-Z][A-Z0-9_-]*)-REVIEWED\]/(\1-REVIEWED-UNSTAMPED)/g' \
+                    -e 's/\[BLOCK-MERGE\]/(BLOCK-MERGE-UNSTAMPED)/g' \
+                    codex-review-output.md
+                  echo
+                  echo "</details>"
+                fi
+              fi
             fi
             if [ -s codex-adjudication.md ]; then
               echo
