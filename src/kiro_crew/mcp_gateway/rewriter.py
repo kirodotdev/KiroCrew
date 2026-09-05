@@ -136,6 +136,12 @@ _WRAPPER_MARKER_LEGACY = "_mc_mcp_gateway_wrapped"
 # ``--target-args-sep`` flag (not used here; not a problem in practice).
 _TARGET_ARGS_SEP = "|"
 
+# The global sharing switch applies to every routed server. PoolKey normally
+# partitions by agent and workspace, so both dimensions must be neutral when
+# sharing is enabled; command, environment, sandbox, and approval dimensions
+# remain part of the key.
+_SHARED_POOL_AGENT = "kirocrew-shared"
+
 #: The stub is launched as a module by the interpreter running KiroCrew.
 #: ``sys.executable`` is baked into the overlay rather than resolved at
 #: launch time because kiro-cli strips env when it spawns MCP
@@ -706,12 +712,12 @@ def _rewrite_single_spec(
         new_servers[name] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=name,
-            agent_name=agent_name,
+            agent_name=_SHARED_POOL_AGENT if pooling_enabled else agent_name,
             original=entry,
             env_pairs=entry_env,
             target_command=resolved_cmd,
             socket_path=socket_path,
-            work_dir=work_dir,
+            work_dir=(stubs_dir.parent / "shared") if pooling_enabled else work_dir,
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
@@ -814,12 +820,12 @@ def _rewrite_single_spec(
         new_servers[alias] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=alias,
-            agent_name=agent_name,
+            agent_name=_SHARED_POOL_AGENT if pooling_enabled else agent_name,
             original=entry,
             env_pairs=entry_env,
             target_command=resolved_cmd,
             socket_path=socket_path,
-            work_dir=work_dir,
+            work_dir=(stubs_dir.parent / "shared") if pooling_enabled else work_dir,
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,

@@ -133,18 +133,56 @@ def _rewrite(
     stub_servers: frozenset[str] = frozenset(),
     pooling_enabled: bool = True,
     forward_env: bool = False,
+    work_dir: Path | None = None,
 ) -> tuple[dict, int]:
     return _rewrite_single_spec(
         spec,
         stubs_dir=tmp_path / "stubs",
         socket_path=tmp_path / "gw.sock",
-        work_dir=tmp_path / "wd",
+        work_dir=work_dir or tmp_path / "wd",
         sandbox_mode="auto",
         approval_mode="interactive",
         stub_servers=stub_servers,
         pooling_enabled=pooling_enabled,
         forward_env=forward_env,
     )
+
+
+class TestGlobalSharing:
+    def test_enabled_global_gate_uses_one_neutral_pool_identity(self, tmp_path: Path) -> None:
+        server = {"command": sys.executable, "args": ["-m", "context7"]}
+        first, _ = _rewrite(
+            {"name": "reviewer", "mcpServers": {"context7": server}},
+            tmp_path,
+            stub_servers=frozenset({"context7"}),
+            work_dir=tmp_path / "review-workspace",
+        )
+        second, _ = _rewrite(
+            {"name": "implementer", "mcpServers": {"context7": server}},
+            tmp_path,
+            stub_servers=frozenset({"context7"}),
+            work_dir=tmp_path / "implementation-workspace",
+        )
+
+        first_args = first["mcpServers"]["context7"]["args"]
+        second_args = second["mcpServers"]["context7"]["args"]
+        assert first_args == second_args
+        assert first_args[first_args.index("--agent") + 1] == "kirocrew-shared"
+        assert first_args[first_args.index("--work-dir") + 1].endswith("shared")
+
+    def test_disabled_global_gate_keeps_agent_identity(self, tmp_path: Path) -> None:
+        out, _ = _rewrite(
+            {
+                "name": "reviewer",
+                "mcpServers": {"context7": {"command": sys.executable, "env": {"TOKEN": "x"}}},
+            },
+            tmp_path,
+            stub_servers=frozenset({"context7"}),
+            forward_env=True,
+            pooling_enabled=False,
+        )
+        args = out["mcpServers"]["context7"]["args"]
+        assert args[args.index("--agent") + 1] == "reviewer"
 
 
 def test_disabled_poolable_server_is_not_wrapped(tmp_path: Path) -> None:
@@ -934,7 +972,10 @@ def test_expand_env_map_expands_values_only(monkeypatch) -> None:
     assert _expand_env_map({"${env:TOK}": "v"}) == {"${env:TOK}": "v"}
 
 
-def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("pooling_enabled", [True, False])
+def test_rewriter_writes_resolved_env_to_sidecar(
+    tmp_path: Path, monkeypatch, pooling_enabled: bool
+) -> None:
     """End-to-end (write side): a stubbed server with env forwarding on has its
     ${env:VAR} resolved into the 0600 sidecar gatewayd/the stub spawn the backend
     from; an unresolved reference stays literal. This is the only path that
@@ -952,9 +993,18 @@ def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) ->
             },
         },
     }
-    _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
+    rewritten, _ = _rewrite(
+        spec,
+        tmp_path,
+        stub_servers=frozenset({"srv"}),
+        forward_env=True,
+        pooling_enabled=pooling_enabled,
+    )
 
-    sidecar = env_sidecar_dir_for_stubs(tmp_path / "stubs") / env_sidecar_name("agent-a", "srv")
+    sidecar_agent = "kirocrew-shared" if pooling_enabled else "agent-a"
+    stub_args = rewritten["mcpServers"]["srv"]["args"]
+    assert stub_args[stub_args.index("--agent") + 1] == sidecar_agent
+    sidecar = env_sidecar_dir_for_stubs(tmp_path / "stubs") / env_sidecar_name(sidecar_agent, "srv")
     written = json.loads(sidecar.read_text(encoding="utf-8"))
     assert written["AUTH"] == "s3cr3t-token"  # resolved
     assert written["OTHER"] == "${MISSING}"  # unresolved stays literal
