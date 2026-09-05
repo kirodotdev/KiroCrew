@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.dashboard.crash_dump_store import (
     DUMP_PREFIX,
@@ -1058,3 +1059,139 @@ def test_owner_alive_without_recorded_start_id_trusts_liveness(dumps_dir: Path) 
     removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid)
     assert removed == 0
     assert p.exists()
+
+
+# ── PID-reuse guard: cross-platform start-id probe ──
+
+# Above Linux's pid_max ceiling (2**22) yet inside the header's _PID_MAX range,
+# so `/proc/<pid>/stat` can never exist for it on any platform while the header
+# still parses. That makes "the procfs probe cannot answer" a property of the
+# value rather than of the host the test runs on.
+_UNREACHABLE_PID = 2**30
+
+
+def _stub_identity_sources(
+    monkeypatch: pytest.MonkeyPatch, *, stable: str | None, coarse: str | None
+) -> None:
+    """Give the two platform_compat start-time routines DIFFERENT answers.
+
+    ``get_process_start_id`` is the persisted-identity routine; ``process_start_time``
+    is the kill-guard one whose non-Linux POSIX leg is a 1-second, TZ-rendered
+    ``ps -o lstart=`` string. Stubbing both apart is what makes the assertion
+    below name a source rather than merely observe a value.
+    """
+    monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: stable)
+    monkeypatch.setattr(platform_compat, "process_start_time", lambda pid: coarse)
+
+
+def test_start_id_comes_from_the_persisted_identity_routine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The recorded value decides whether sweep_stale_dumps UNLINKS a dump, so it
+    # must come from platform_compat.get_process_start_id — in-process on every
+    # platform and microsecond-resolution on macOS. process_start_time's POSIX
+    # leg is `ps -o lstart=`: 1-second and locale/TZ-rendered, and documented as
+    # safe only because drift there makes a KILL guard decline to act. Under this
+    # caller drift deletes instead, so the coarse source must not be consulted.
+    _stub_identity_sources(monkeypatch, stable="stable-id", coarse="Wed Sep  3 10:00:00 2026")
+    assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) == "stable-id"
+
+
+def test_start_id_is_none_when_the_identity_routine_declines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `None` means "identity unknown" (Windows, or a process we may not
+    # introspect) — NOT a mismatch. The header then omits the token and readers
+    # fall back to plain PID liveness. Falling through to the coarse routine here
+    # would manufacture an identity the guard is not entitled to act on.
+    _stub_identity_sources(monkeypatch, stable=None, coarse="Wed Sep  3 10:00:00 2026")
+    assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) is None
+
+
+def test_real_start_id_round_trips_through_the_header(dumps_dir: Path) -> None:
+    # No stubbing: whatever this host's identity routine really returns must
+    # survive the `# PID:` line, which is parsed with a single whitespace-
+    # delimited token. A value that fails to parse reads as "no attributable
+    # owner", which drops a live session's dump out of rotation's never-a-victim
+    # set while faulthandler still holds the fd.
+    expected = platform_compat.get_process_start_id(os.getpid())
+    with opened_dump_file(dumps_dir) as f:
+        owner = crash_dump_store._dump_owner(f.path)
+    assert owner is not None
+    pid, _domain, start_id = owner
+    assert pid == os.getpid()
+    assert start_id == expected
+    if expected is not None:
+        assert expected.split() == [expected], "recorded start id must be a single token"
+
+
+def test_header_records_start_id_on_a_non_procfs_platform(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # macOS has no `/proc`, but get_process_start_id answers there from libproc.
+    # Stub it to stand in for that platform and require the header to carry the
+    # token, so a later sweep can detect PID reuse there too.
+    _stub_identity_sources(monkeypatch, stable="non-procfs-token", coarse=None)
+    with opened_dump_file(dumps_dir) as f:
+        content = f.path.read_text(encoding="utf-8")
+    expected = f"# PID: {os.getpid()} @ {crash_dump_store._pid_domain()} start=non-procfs-token\n"
+    assert expected in content
+
+
+def test_pid_reuse_detected_without_procfs(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End-to-end consequence. When the recorded start id no longer matches the
+    # one the PID reports now, the owner is dead and its header-only dump is
+    # stale — even though the PID probes alive. Without a working probe the
+    # live PID protects the file forever.
+    _stub_identity_sources(monkeypatch, stable="current-token", coarse=None)
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T130000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T130000Z\n"  # brand-ok: mirrors production dump header
+        f"# PID: {_UNREACHABLE_PID} @ {crash_dump_store._pid_domain()} start=recycled-token\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    assert crash_dump_store._owner_alive(p, _live_pid) is False
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 1
+    assert not p.exists()
+
+
+def test_unknown_live_identity_keeps_the_dump(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other direction, and the one that makes the Windows `None` safe: a
+    # recorded token whose live counterpart is unknown must NOT count as a
+    # mismatch. The dump stays, protected by plain PID liveness.
+    _stub_identity_sources(monkeypatch, stable=None, coarse=None)
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T131000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T131000Z\n"  # brand-ok: mirrors production dump header
+        f"# PID: {_UNREACHABLE_PID} @ {crash_dump_store._pid_domain()} start=recorded-token\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    assert crash_dump_store._owner_alive(p, _live_pid) is True
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 0
+    assert p.exists()
+
+
+def test_rotation_reclaims_recycled_pid_dumps_without_procfs(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Rotation's never-a-victim rule keys on `_owner_alive(...) is True`, so
+    # without a working probe every recycled-PID dump is immune and the cap
+    # stops holding; with it they rank as ordinary header-only victims again.
+    _stub_identity_sources(monkeypatch, stable="current-token", coarse=None)
+    for name in ("20260717T140000Z", "20260717T150000Z", "20260717T160000Z"):
+        p = dumps_dir / f"{DUMP_PREFIX}{name}{DUMP_SUFFIX}"
+        p.write_text(
+            f"# KiroCrew loop-stall crash dump — opened {name}\n"  # brand-ok: mirrors production dump header
+            f"# PID: {_UNREACHABLE_PID} @ {crash_dump_store._pid_domain()} start=recycled-token\n"
+            "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+            "\n"
+        )
+    removed = rotate_dumps(max_dumps=2, dumps_dir=dumps_dir, is_pid_alive=_live_pid)
+    assert removed == 2
+    assert len(list(dumps_dir.iterdir())) == 1
