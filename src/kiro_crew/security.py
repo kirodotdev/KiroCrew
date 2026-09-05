@@ -18304,7 +18304,113 @@ _BASH_EXFIL_RES: list[tuple[re.Pattern[str], str]] = [
     # `-T`: curl's upload flag is uppercase, so this does NOT match lowercase long
     # options such as `--trace-time`. `-T` must begin at a word boundary.
     (re.compile(r"\bcurl\b.*(?:^|\s)-T\s*\S"), "curl -T upload"),
+    # curl / gh multipart upload with an `=` between flag and value:
+    # `--form="k=@f"`, `-Fk=@f`, `--form=k=@f`. The `-F *=@` / `--form *=@` globs
+    # above only cover the space-separated spelling, so these slipped past.
+    # Anchored on a `curl` or `gh` invocation before the flag — the two tools
+    # whose flag this is (gh's `-F field=@file` spelling is the same upload) —
+    # so a bare `-Fk=@f` in some other program's argv (`echo -Fk=@f`) is no
+    # longer a false positive. The anchor's scan to the flag is a tempered dot
+    # that stops at the NEXT `curl`/`gh` anchor, so each anchor backtracks only
+    # across its own window — the distance to the next anchor — and the windows
+    # telescope: `curl` repeated 16k times walks the command once, not once per
+    # anchor. (Tempering on the FLAG instead reads wrong: with no flag present
+    # every anchor's window runs to the end of the command and the windows
+    # overlap — that shape measured 68 s on 144 KB.) The flag sits at a word
+    # boundary, then a separator, an optional
+    # (possibly quoted) field name, `=`, and the `@` file sigil. The field name
+    # is any run of characters other than whitespace, quote, `=` and `@` — the
+    # same set curl and gh accept for array / nested fields
+    # (`-F'files[x][content]=@f'`) as well as plain names, so a `[`/`]` name
+    # cannot slip the gate — OR a quoted body that itself carries the `=@`
+    # (`-F'foo bar=@f'`: curl accepts a SPACED field name, so a body class that
+    # stops at the space read `foo` and demanded `=@` next, found ` bar=@f`, and
+    # the upload sailed through). CASE-SENSITIVE like the `-T`
+    # regex above: `-F` is curl's uppercase short flag, and matching a lowercase
+    # `-f` (`sort -f … @x`) would false-positive. `--form-string` is excluded
+    # via the lookahead — it never reads a file (`--form-string k=@f` posts the
+    # literal string `@f`).
+    #
+    # The separator is `(?:\s*=\s*|\s*)`: one whitespace run per alternative. Two
+    # `\s*` straddling an optional `=` are indistinguishable to the backtracker,
+    # so a flag followed by a long whitespace run costs a full rescan per space —
+    # 40k spaces is ~20 s of CPU on the event loop. Each alternative here owns
+    # exactly one run, so a failing match walks it once per alternative: linear.
+    (
+        re.compile(
+            r"\b(?:curl|gh)\b(?:(?!\b(?:curl|gh)\b).)*"
+            r"(?:^|\s)(?:--form(?!-string)|-F)(?:\s*=\s*|\s*)"
+            r"(?:\"[^\"]*=@|'[^']*=@|\"?[^\s\"=@]*\"?=@)"
+        ),
+        "curl multipart file upload (= separated)",
+    ),
+    # gh request body read from a LOCAL FILE: `gh api --input body.json`,
+    # `gh repo edit --field k=@f.txt`. `--input`/`--field` are ordinary words in
+    # other tools' commands, so the regex is anchored on a `gh` invocation
+    # followed by an `api`/`repo`/`release` subcommand — the gh subcommands that
+    # accept these flags — before the flag. A bare `gh` elsewhere (`nightly
+    # gh-sync`, `hover api`) does not match, and neither do curl/wget commands
+    # carrying the same flag spellings (already covered by their own branches).
+    # `-F` is deliberately NOT in the flag alternation: `gh api -F k=v` with an
+    # INLINE value reads no file, and the `@file` spellings (`-F k=@f`,
+    # `-Fk=@f`) are already caught by the `-F *=@` glob and the multipart regex
+    # above. The span between anchor and flag is a tempered dot that stops at
+    # the NEXT `gh api`/`repo`/`release` anchor — with the same leading
+    # `(?:^|\s)` the anchor itself has, so a DECOY inside a word or a quoted
+    # argument (`-H "xgh api"`) does not stop the scan: a boundary-less
+    # lookahead halted the loop at the `g` of `xgh`, and the loop can only
+    # backtrack BACKWARD, never resume past its stop — leaving `--input` beyond
+    # the decoy unreachable by any anchor. Each anchor backtracks only across
+    # its own window and the windows telescope — a command built of
+    # `gh api x ` repeated 16k times (144 KB) walks once in well under a
+    # second, where a plain `.*` retries the tail from EVERY anchor and spends
+    # ~19 s on the event loop, past the gateway watchdog.
+    # `--input -` and `--input=-` (stdin) are excluded by refusing a value
+    # that is a LONE `-` — in plain or quoted spelling (`"-"`, `'-'`: the shell
+    # deletes the quotes before gh sees the dash, so a quote in the text is
+    # still stdin). A longer dash-leading value is a real path
+    # (`--input=-body.json`) and still denied. As is a hypothetical
+    # `--input-raw`, since `-` cannot follow the `\b`. Case-insensitive like
+    # every other entry in the list (`GH API` is the same capability).
+    #
+    # Each flag separates itself from its value with `(?:\s*=\s*|\s+)` — one
+    # whitespace run per alternative, for the same linearity reason as the
+    # multipart regex above — and the stdin lookahead sits BEHIND that
+    # separator. An optional `=` straddled by two `\s*` is re-readable as the
+    # start of the value, which would deny `--input=-` even though `-` reads no
+    # file.
+    (
+        re.compile(
+            r"(?:^|\s)gh\s+(?:api|repo|release)\b"
+            r"(?:(?!(?:^|\s)gh\s+(?:api|repo|release)\b).)*"
+            r"(?:^|\s)(?:--input\b(?:\s*=\s*|\s+)"
+            r"(?!-[\"']?(?:\s|$)|[\"']-[\"']?(?:\s|$))\S"
+            r"|--field\b(?:\s*=\s*|\s+)\S*=@)",
+            re.IGNORECASE,
+        ),
+        "gh request body from file (--input / --field)",
+    ),
 ]
+
+
+# The always-on regex branches that are ALSO matched against quote-normalized
+# per-segment argv views (see ``audit_bash_exfiltration``) so a re-spelling the
+# shell resolves — `--in''put` — cannot slip a rule the raw text scans past.
+# Labels absent here stay raw-text-only, as before.
+_EXFIL_VIEW_LABELS = frozenset(
+    {
+        "curl multipart file upload (= separated)",
+        "gh request body from file (--input / --field)",
+    }
+)
+
+# Multipart spellings checked per TOKEN in the view pass. ``shlex`` splits on
+# whitespace OUTSIDE quotes only, so a single token carrying a space (`-Ffoo
+# bar=@f`, the dequote of `-Ffo''o bar=@f` or `-F'foo bar=@f'`) is PROOF the
+# space came from quoting — curl's spaced field name — and the token ending in
+# `=@` is the upload shape. The regex is anchored to the token's START so an
+# `-F` inside a larger word never matches.
+_EXFIL_MULTIPART_TOKEN_RE = re.compile(r"(?:--form(?!-string)|-F).*?=@")
 
 
 # Which catalog rule each always-on exfil branch enforces, so a denial maps back
@@ -18337,6 +18443,10 @@ _BASH_EXFIL_RULE_BY_LABEL: dict[str, tuple[str, ...]] = {
     "nc/ncat file redirect": ("data-exfil-nc-file-redirect",),
     "nc/ncat reverse shell": ("reverse-shell-nc", "reverse-shell-ncat"),
     "curl -T upload": ("data-exfil-curl-upload",),
+    # Same catalog row as the space-separated `-F *=@` / `--form *=@` globs: the
+    # `=`-joined spellings are the same capability, so one toggle governs all of
+    # them.
+    "curl multipart file upload (= separated)": ("data-exfil-curl-multipart-upload",),
 }
 
 #: For a label whose regex spans several catalog rows, the token that identifies
@@ -18345,6 +18455,57 @@ _BASH_EXFIL_RULE_BY_LABEL: dict[str, tuple[str, ...]] = {
 _BASH_EXFIL_ROW_DISCRIMINATORS: dict[str, tuple[tuple[str, str], ...]] = {
     "nc/ncat reverse shell": (("ncat", "reverse-shell-ncat"), ("nc", "reverse-shell-nc")),
 }
+
+
+def _split_unquoted_separators(text: str) -> list[str]:
+    """Split *text* at shell command separators that sit OUTSIDE quotes.
+
+    ``;``, ``&`` (and ``&&``), ``|`` (and ``||``), newlines and backticks END one
+    command and begin another only when the shell reads them as operators; the
+    same characters inside ``'…'`` / ``"…'`` are DATA — ``-H "X:a&b"`` hands curl
+    one header, not two commands. The quote-unaware split the deny tiers use
+    cannot see that difference, and a view built over its segments let
+    ``gh api repos/o/r/issues -H "X:a&b" --in''put secrets.json`` hide the flag in
+    a segment that no longer contained the ``gh`` anchor. This walk goes through
+    :func:`_iter_shell_chars` — the ONE quote/escape state machine — so an
+    escaped or quoted separator cannot split, and a backslash-escaped character
+    is carried whole. ``$(`` is deliberately NOT a boundary here: not splitting it
+    can only FUSE two commands into one view (deny more), never divide one into
+    pieces a match can straddle.
+
+    Unterminated quotes keep the tail as one segment (state never closes), which
+    is the reading bash cannot parse either — the degraded view, never a silent
+    half.
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    state, ansi = 0, False
+    for step in _iter_shell_chars(text, state, ansi):
+        state, ansi = step.state, step.ansi
+        if step.active and step.char in ";&|`\n":
+            if step.char == "&":
+                # `&` beside a redirection is FD DUPLICATION, not background:
+                # `gh api 2>&1 --input secrets.json` runs ONE command whose
+                # stderr goes to stdout — splitting at that `&` severed the
+                # `gh` anchor from the flag that followed it and both
+                # fragments read as unrelated commands. Adjoining (`>&`, `<&`)
+                # or leading (`&>`, `&>>`) redirection operators keep the `&`
+                # glued to its `>`/`<` and inside the same segment. When this
+                # errs, it errs by FUSING what bash separates — a longer
+                # view, deny-more — never by dividing one command in two.
+                prev_ch = text[step.offset - 1] if step.offset else ""
+                next_ch = text[step.offset + 1] if step.offset + 1 < len(text) else ""
+                if prev_ch in "><" or next_ch == ">":
+                    buf.append(step.text)
+                    continue
+            if buf:
+                segments.append("".join(buf))
+                buf = []
+            continue
+        buf.append(step.text)
+    if buf:
+        segments.append("".join(buf))
+    return segments
 
 
 def _exfil_rule_id_for_match(label: str, matched: str, rule_ids: tuple[str, ...]) -> str:
@@ -18412,6 +18573,49 @@ def audit_bash_exfiltration(
             if _on(matched_id):
                 return f"Blocked: command matches data-exfiltration pattern ({label})"
         continue
+
+    # Quote-normalized views. A shell deletes quotes and empty-string splices
+    # before the program runs, so `--in''put` reaches gh as `--input` while the
+    # raw scan above reads the `''` and moves on — a spelling gap that turns a
+    # guardrail into a suggestion. The branches in _EXFIL_VIEW_LABELS are
+    # therefore also matched against the per-segment argv view _shell_tokens
+    # renders (the same quote-normalized shape the deny tiers match, but
+    # CASE-PRESERVED, because the `-F` rule above is deliberately
+    # case-sensitive and a lowercased view would deny `sort -f … @x`). The
+    # segment split is the QUOTE-AWARE one: a separator inside quotes is data
+    # (`-H "X:a&b"` is one header), so splitting on it would cut the `gh` anchor
+    # apart from the flag that follows and rebuild two views neither of which
+    # matches — the spelling gap would just move rather than close. Views only
+    # ever ADD denials: a token pass that changes nothing is skipped, and a
+    # pass that fails costs the view, never the raw verdict — so no branch that
+    # was denied can stop being denied. Gated on the two rules' anchors so
+    # ordinary commands pay no tokenizer cost.
+    stripped = lower.replace("'", "").replace('"', "")
+    if "curl" in stripped or "gh" in stripped:
+        for seg in _split_unquoted_separators(command):
+            if not seg.strip():
+                continue
+            try:
+                tokens = _shell_tokens(seg)
+            except Exception:
+                continue
+            view = " ".join(tokens)
+            if not view or view == seg:
+                continue
+            if any(_EXFIL_MULTIPART_TOKEN_RE.match(t) for t in tokens):
+                if _on("data-exfil-curl-multipart-upload"):
+                    return "Blocked: command matches data-exfiltration pattern (curl multipart file upload (= separated))"
+            for rx, label in _BASH_EXFIL_RES:
+                if label not in _EXFIL_VIEW_LABELS:
+                    continue
+                rule_ids = _BASH_EXFIL_RULE_BY_LABEL.get(label, ())
+                if not rule_ids:
+                    if rx.search(view):
+                        return f"Blocked: command matches data-exfiltration pattern ({label})"
+                    continue
+                for m in rx.finditer(view):
+                    if _on(_exfil_rule_id_for_match(label, m.group(0), rule_ids)):
+                        return f"Blocked: command matches data-exfiltration pattern ({label})"
     return None
 
 
