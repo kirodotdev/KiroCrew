@@ -5904,7 +5904,8 @@
         "tips_explore_ratio": 0.2,
         "gitlab_hosts": [],
         "jira_hosts": [],
-        "jira_auth": []
+        "jira_auth": [],
+        "link_patterns": []
       }
     },
     {
@@ -6850,6 +6851,62 @@
       "tags": [],
       "label": "Email",
       "help": "Atlassian account email for Cloud instances (used in Basic auth header). Leave empty for Server/DC instances that use a PAT.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.link_patterns",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Transcript Link Patterns",
+      "help": "Rewrite matching plain text in chat transcripts into clickable links at display time (e.g. ticket ids like PROJ-123 to your tracker). Each rule pairs a JavaScript regex with an absolute http(s) URL template in which '{match}' inserts the matched text, percent-encoded. Rendering-only: stored messages never change. Text inside code blocks, existing links, and raw HTML is not rewritten; an inline code span whose whole text matches becomes a link chip.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "dashboard.link_patterns.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "dashboard.link_patterns.*.pattern",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pattern",
+      "help": "JavaScript regular expression matched against transcript text (e.g. '\\\\bPROJ-\\\\d+\\\\b'). A rule that matches the empty string is ignored.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.link_patterns.*.url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "URL Template",
+      "help": "Link target for each match: an absolute http(s) URL in which '{match}' inserts the matched text, percent-encoded (e.g. 'https://tracker.example.com/browse/{match}'). The renderer additionally requires the placeholder outside the host and refuses userinfo.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

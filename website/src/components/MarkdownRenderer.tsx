@@ -2,7 +2,7 @@ import React, { createContext, useContext, memo, useEffect, useMemo, useRef, use
 import Clickable from './Clickable'
 import { HOVER_NONE_ACTION_BTN_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
-import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare } from 'lucide-react'
+import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare, ExternalLink } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { canonicalChatHref, sessionKeyFrom, sessionKeyFromChatHref } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
@@ -46,6 +46,7 @@ import { LinkChip, LinkCard } from './LinkPreview'
 import { parseSourceLinkUrl, forgeChipLabel, type PullRequestLink } from '../utils/pullRequestLinks'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import { JiraHostsCtx } from '../lib/jiraHosts'
+import { wholeMatchAutolinkHref, rearmConfigScanBudget } from '../utils/autolinkRules'
 import JiraLogo from './icons/JiraLogo'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
@@ -1176,6 +1177,31 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
           safeProps={safeProps}
           onOpen={sessionActions.onSessionOpen!}
         >{children}</SessionChip>
+      )
+    }
+    // A span whose WHOLE text matches an operator-configured autolink rule is
+    // that work item (`PROJ-123`), so it links out
+    // instead of only copying. `inlineCode` is opaque to `remarkAutolinkRules`
+    // by design; whole-match keeps the chip atomic — `npm PROJ-123 run` stays a
+    // plain copyable span — and the session chip wins first: in-app navigation
+    // over an external link for a text both recognize. The native title
+    // discloses the real target, same disclosure discipline as the path chip
+    // below.
+    const patternHref = wholeMatchAutolinkHref(raw)
+    if (patternHref) {
+      return (
+        <a
+          href={patternHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={patternHref}
+          className="no-underline focus-ring"
+        >
+          {/* The glyph is what tells this chip apart from a copy chip at
+              rest: without it the two are pixel-identical and the click
+              outcome (open a tab vs copy) is a surprise. */}
+          <code className={`${CHIP_BASE} cursor-pointer hover:underline`} {...safeProps}>{reserve}{children}<ExternalLink className="lucide-inline ml-1" aria-hidden /></code>
+        </a>
       )
     }
     return <CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{reserve}{children}</CopyableCode>
@@ -3640,6 +3666,15 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
 export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, collapseDiffs = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const blocks = useBlockAssembler(content, streaming)
+  // One message = one config-rule scan pool. The blocks below each mount their
+  // OWN remark tree, so the rearm cannot live at the plugin's tree entry — a
+  // fence-heavy message would restore the pool once per block and multiply the
+  // 50ms ceiling by the block count. Render-phase on purpose (same discipline
+  // as ChatPage's registry write): the pool must be full before the first
+  // block's synchronous remark pass, and parent-then-children render order
+  // guarantees exactly that. Double-invoke under StrictMode is harmless — the
+  // pool is refilled before any drain either way.
+  rearmConfigScanBudget()
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is
    *  only the artifact-link delegation it has always been. */

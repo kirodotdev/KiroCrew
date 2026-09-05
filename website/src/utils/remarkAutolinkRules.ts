@@ -11,7 +11,7 @@
  *
  * Contract and ordering: `website/docs/extension-seams.md`.
  */
-import { autolinkHref, getAutolinkRules } from './autolinkRules'
+import { autolinkHref, getAutolinkRules, configScanBudgetExhausted, drainConfigScanBudget } from './autolinkRules'
 
 type MdNode = {
   type: string
@@ -57,13 +57,29 @@ function tagKind(value: string): TagKind {
 
 type Hit = { start: number; end: number; text: string; href: string }
 
+/**
+ * Ceiling on hits collected from ONE text node. Every hit becomes a link
+ * node in the tree, so an adversarial node packed with matches would
+ * otherwise mint tens of thousands of DOM anchors in a single message. No
+ * real paragraph holds hundreds of work items; past the cap the rest of the
+ * node stays plain text.
+ */
+const MAX_HITS_PER_NODE = 200
+
 /** Matches accepted in registration order, then ordered by position. */
 function hitsIn(value: string): Hit[] {
   const hits: Hit[] = []
   for (const rule of getAutolinkRules()) {
+    // A rule carrying a subject cap (operator-config rules) skips oversized
+    // nodes outright: the cap is what bounds its scan cost on transcript
+    // text, which is attacker-shaped input.
+    const metered = rule.maxSubject !== undefined
+    if (metered && value.length > rule.maxSubject!) continue
+    if (metered && configScanBudgetExhausted()) continue
+    const scanStart = metered ? performance.now() : 0
     rule.pattern.lastIndex = 0
     let m: RegExpExecArray | null
-    while ((m = rule.pattern.exec(value)) !== null) {
+    while (hits.length < MAX_HITS_PER_NODE && (m = rule.pattern.exec(value)) !== null) {
       const text = m[0]
       // A zero-width match cannot advance the scan: under `u` a lastIndex bump
       // lands mid-surrogate and the engine re-matches forever. Abandon the rule.
@@ -73,6 +89,7 @@ function hitsIn(value: string): Hit[] {
       const href = autolinkHref(rule, text)
       hits.push({ start, end: start + text.length, text, href })
     }
+    if (metered) drainConfigScanBudget(performance.now() - scanStart)
   }
   const accepted: Hit[] = []
   for (const h of hits) {
@@ -124,6 +141,12 @@ function transformChildren(parent: MdNode, enclosingDepth = 0): void {
 /**
  * Remark plugin. Inert with an empty registry, which is the core's own state:
  * an edition registers the vocabulary.
+ *
+ * Deliberately does NOT re-arm the config scan budget: one MESSAGE assembles
+ * many trees (`useBlockAssembler` mounts one per fence-separated block), so a
+ * tree-entry rearm would hand every block a fresh pool — 50 accepted rules ×
+ * fence-heavy message = multi-second freeze. The top-level MarkdownRenderer
+ * owns the rearm, once per message render; this plugin only drains.
  */
 export default function remarkAutolinkRules() {
   return (tree: MdNode): void => {

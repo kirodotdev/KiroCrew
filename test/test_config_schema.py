@@ -71,7 +71,11 @@ def _all_fields_recursive(
         result.append((path, f))
         tp = f.type
         if isinstance(tp, str):
-            import kiro_crew.config.loader as _mod
+            # Evaluate in the DEFINING module's namespace (standard
+            # get_type_hints semantics): the section dataclasses live in
+            # sections.py, and the loader facade's re-export list is frozen, so
+            # a post-split type is resolvable only where it is defined.
+            import kiro_crew.config.sections as _mod
 
             try:
                 tp = eval(tp, vars(_mod))  # noqa: S307
@@ -105,7 +109,8 @@ def _all_fields_recursive(
 
 def _resolve_type(f: dataclasses.Field) -> type:  # type: ignore[type-arg]
     """Resolve a field's type annotation to a runtime type."""
-    import kiro_crew.config.loader as _mod
+    # Same defining-module namespace as _all_fields_recursive above.
+    import kiro_crew.config.sections as _mod
 
     tp = f.type
     if isinstance(tp, str):

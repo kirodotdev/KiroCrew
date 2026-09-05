@@ -68,7 +68,7 @@ export function SettingsToggle({ label, description, checked, onChange, disabled
  * `<span>` — a `<label>` with a dangling `htmlFor`, or one wrapping a group of
  * buttons (SettingsStepper / SettingsButtonGroup), would be wrong. Optional so
  * the wrappers without a single labelable control keep compiling unchanged. */
-function SettingsField({ label, description, hint, configKey, controlId, children }: { label: string; description?: string; hint?: string; configKey?: string; controlId?: string; children: React.ReactNode }) {
+export function SettingsField({ label, description, hint, configKey, controlId, children }: { label: string; description?: string; hint?: string; configKey?: string; controlId?: string; children: React.ReactNode }) {
   return (
     <div data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className="flex flex-col gap-1.5 py-1.5">
       <div className="flex items-center gap-1.5">

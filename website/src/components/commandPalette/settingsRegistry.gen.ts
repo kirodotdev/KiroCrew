@@ -1165,6 +1165,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.text-link-patterns",
+    "label": "Text Link Patterns",
+    "labelKey": "pages.settings.chatPanel.link_patterns",
+    "tab": "chat",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "dashboard.link_patterns"
+  },
+  {
     "id": "chat.text-streaming-style",
     "label": "Text Streaming Style",
     "labelKey": "pages.settings.chatPanel.text_streaming_style",
