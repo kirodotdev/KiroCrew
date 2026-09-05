@@ -1498,7 +1498,14 @@ export default function SettingsPanel() {
                     value: rotationQuery.data?.identities?.pagerduty_user_id ?? '',
                     help: i18nT('apps.opsMissionControl.settingsPanel.pagerduty_user_id_help'),
                   }
-                  : undefined
+                  : p.id === 'incidentio'
+                    ? {
+                      label: i18nT('apps.opsMissionControl.settingsPanel.your_incident_io_user_id'),
+                      settingsKey: 'incidentio_user_id',
+                      value: rotationQuery.data?.identities?.incidentio_user_id ?? '',
+                      help: i18nT('apps.opsMissionControl.settingsPanel.incidentio_user_id_help'),
+                    }
+                    : undefined
               }
             />
           ))

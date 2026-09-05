@@ -725,14 +725,21 @@ Four narrow Protocols, each with a shipped default, following the CPP pattern in
 
 | Protocol | Question | Public adapters |
 |---|---|---|
-| `SignalSource` | What is firing? | `cloudwatch`, `pagerduty`, `datadog`, `github-issues`, `webhook` |
-| `RotationSource` | Who is on shift? | `pagerduty`, `always-on` (default) |
-| `ActionSink` | Ack / resolve / comment / silence | `pagerduty`, `datadog`, `github-issues`, `noop` (default) |
+| `SignalSource` | What is firing? | `cloudwatch`, `pagerduty`, `incidentio`, `datadog`, `github-issues`, `webhook` |
+| `RotationSource` | Who is on shift? | `pagerduty`, `incidentio`, `always-on` (default) |
+| `ActionSink` | Ack / resolve / comment / silence | `pagerduty`, `incidentio`, `datadog`, `github-issues`, `noop` (default) |
 | `EvidenceSource` | Surrounding context | `cloudwatch-evidence`, `datadog-evidence` |
 
 Split four ways rather than one fat interface because real providers cover
 different subsets — CloudWatch has alarms and metrics but no rotation and nothing
 to resolve.
+
+A sink also covers only the verbs its provider actually has. `incidentio` offers
+`resolve` and `comment` and nothing else: an incident.io alert's status is a strict
+`firing`/`resolved` enum with no acknowledged state, and the API has no snooze, mute
+or suppress call for a single alert (a maintenance window is account-level config).
+Advertising a verb the provider cannot perform would pass the autonomy gate and then
+fail at execute time, after the board had recorded the action as granted.
 
 ### Evidence is brokered to the agent, never delegated
 

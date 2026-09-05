@@ -374,6 +374,66 @@ class TestSettingsRoute(_HomeIsolatedAsync):
         self.assertFalse(status["schedule_conflict"])
         self.assertNotIn("refused", status["detail"])
 
+    async def test_the_incidentio_identity_round_trips_through_the_keystone(self):
+        """This route is the only way the incident.io rotation identity can be set.
+
+        ``INCIDENTIO_USER_KEY`` is operator-only, so ``policy_store.put`` refuses it from
+        anywhere outside this fence and the agent API does not expose ``/settings`` at all.
+        Without this write path the Providers panel field has nothing behind it and
+        ``RotationSource`` abstains forever — the provider silently never votes on shift.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        response = await routes._handle_put_settings(
+            _request({"incidentio_user_id": "01HZY7K3QF8V2N4M6P8R0T2W4X"})
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            _payload(response)["applied"]["incidentio_user_id"],
+            "01HZY7K3QF8V2N4M6P8R0T2W4X",
+        )
+        self.assertEqual(
+            policy_store.get(policy_store.INCIDENTIO_USER_KEY),
+            "01HZY7K3QF8V2N4M6P8R0T2W4X",
+        )
+
+    async def test_a_pasted_incidentio_identity_is_stripped_not_stored_padded(self):
+        """A copied id carries whitespace, and a padded id matches nobody.
+
+        The rotation source compares this value against the ``final`` schedule entries
+        verbatim. Storing `" 01H… "` would make every comparison miss, which presents as
+        the operator being off shift rather than as a bad setting.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        response = await routes._handle_put_settings(
+            _request({"incidentio_user_id": "  01HZY7K3QF8V2N4M6P8R0T2W4X\n"})
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            policy_store.get(policy_store.INCIDENTIO_USER_KEY),
+            "01HZY7K3QF8V2N4M6P8R0T2W4X",
+        )
+
+    async def test_an_overlong_incidentio_identity_is_refused_and_writes_nothing(self):
+        """The length cap is refused before any field is applied, not after.
+
+        ``_handle_put_settings`` applies several keys in sequence, so a validation error
+        raised late would leave a half-written settings state. This pins that the refusal
+        happens up front: the mode in the same body must not survive it.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store, rotation
+
+        response = await routes._handle_put_settings(
+            _request({"mode": "propose", "incidentio_user_id": "x" * 129})
+        )
+        self.assertEqual(response.status, 400)
+        body = _payload(response)
+        self.assertEqual(body["code"], "value_too_long")
+        self.assertIn("incidentio_user_id", body["error"])
+        self.assertIsNone(policy_store.get(policy_store.INCIDENTIO_USER_KEY))
+        self.assertEqual(rotation.app_mode(), "observe")  # the valid sibling field too
+
 
 class TestManifestCrons(unittest.TestCase):
     """The app is inert unless the manifest declares its crons."""
