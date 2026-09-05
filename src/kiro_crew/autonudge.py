@@ -2322,6 +2322,31 @@ class AutoNudgeService:
         self._emit("updated", loop)
         return decision
 
+    async def stop_monitor_if_budget_exhausted(
+        self,
+        monitor_id: str,
+        *,
+        now: float,
+    ) -> bool:
+        """Stop a spent structured monitor before starting another provider probe."""
+        stopped_loop: NudgeLoop | None = None
+        async with self._lock:
+            loop = self._loops.get(monitor_id)
+            state = loop.monitor if loop is not None else None
+            if loop is not None and state is not None and loop.active and state.outcome is None:
+                reason = monitor_budget_reason(state, now=now)
+                if reason:
+                    stopped = deepcopy(loop)
+                    if stopped.monitor is not None:
+                        stopped.monitor.last_decision = MonitorDecision.STOP_BUDGET
+                    self._apply_monitor_budget_stop(stopped, reason, stopped_at=now)
+                    await self._persist_staged_monitor_locked(loop, stopped)
+                    self._sync_terminal_completion_timer(loop)
+                    stopped_loop = loop
+        if stopped_loop is not None:
+            self._emit("updated", stopped_loop)
+        return stopped_loop is not None
+
     def _set_monitor_deadline(self, loop: NudgeLoop, deadline: float) -> None:
         """Write the scheduler authority and inspection mirror together."""
         loop.next_due_ts = deadline
@@ -2356,6 +2381,32 @@ class AutoNudgeService:
             self._sync_terminal_completion_timer(loop)
         self._emit("updated", loop)
         return loop
+
+    async def mark_terminal_notification_delivered(
+        self,
+        monitor_id: str,
+        outcome: MonitorOutcome,
+        stopped_at: float,
+    ) -> bool:
+        """Persist delivery only when the same terminal generation still exists."""
+        async with self._lock:
+            loop = self._loops.get(monitor_id)
+            state = loop.monitor if loop is not None else None
+            if (
+                loop is None
+                or state is None
+                or loop.active
+                or state.outcome is not outcome
+                or state.stopped_at != stopped_at
+                or state.terminal_notification_delivered
+            ):
+                return False
+            staged = deepcopy(loop)
+            staged_state = staged.monitor
+            assert staged_state is not None
+            staged_state.terminal_notification_delivered = True
+            await self._persist_staged_monitor_locked(loop, staged)
+        return True
 
     async def retire_monitor_for_session_close(
         self, monitor_id: str, *, now: float | None = None

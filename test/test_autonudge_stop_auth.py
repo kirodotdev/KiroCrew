@@ -75,7 +75,7 @@ def test_monitor_start_returns_directive_with_validated_payload(default_install,
         "message": "check PR #1 until green",
         "idle_secs": 300,
         "max_cycles": 5,
-        "max_runtime_secs": 0,
+        "max_runtime_secs": 14_400,
         # Whether the loop may be observation-gated. Always present and True
         # unless the caller opted out, so whichever surface applies this
         # directive reads the same decision the ack reported.
@@ -88,7 +88,7 @@ def test_monitor_start_returns_directive_with_validated_payload(default_install,
 
 def test_monitor_start_runtime_budget_passes_through(default_install):
     """An explicit wall-clock budget lands in the directive payload and is
-    echoed in the confirmation; omitting it defaults to 0 (unlimited)."""
+    echoed in the confirmation."""
     result = _call_tool_inner(
         "monitor_start",
         {"message": "watch CI", "max_runtime_secs": 7200},
@@ -109,12 +109,10 @@ def test_monitor_start_defaults_interval_300_and_bounded_cap(default_install):
     assert "no cycle cap" not in result.lower()
 
 
-def test_monitor_start_explicit_zero_cap_stays_zero(default_install):
-    """An explicit 0 means the caller really wants unlimited — 0 stays 0 and the
-    confirmation says so."""
-    result = _call_tool_inner("monitor_start", {"message": "watch PR", "max_cycles": 0})
-    assert session_directive.decode(result, "monitor_start")["max_cycles"] == 0
-    assert "no cycle cap" in result.lower()
+@pytest.mark.parametrize("field", ["max_cycles", "max_runtime_secs"])
+def test_monitor_start_rejects_unbounded_zero_limits(default_install, field):
+    with pytest.raises(ValidationError):
+        _call_tool_inner("monitor_start", {"message": "watch PR", field: 0})
 
 
 def test_monitor_start_interval_maps_to_idle_secs(default_install):

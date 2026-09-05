@@ -1075,8 +1075,8 @@ class TestMonitorToolsCanSetTheBanner:
 
         ``test_autonudge_stop_auth.py`` pins the monitor_start payload with EXACT
         dict equality, so emitting ``banner`` unconditionally would break a
-        contract test belonging to another file. A caller that sets no banner must
-        see the payload it saw before.
+        contract test belonging to another file. This assertion follows the
+        finite-runtime default while keeping the banner absent.
         """
         result = _call_tool_inner("monitor_start", {"message": "watch CI", "max_cycles": 5})
         args = session_directive.decode(result, "monitor_start")
@@ -1084,7 +1084,7 @@ class TestMonitorToolsCanSetTheBanner:
             "message": "watch CI",
             "idle_secs": 300,
             "max_cycles": 5,
-            "max_runtime_secs": 0,
+            "max_runtime_secs": 14400,
             "gate": True,
         }, "the no-banner payload shape changed (banner must stay absent; gate is the tool default)"
 

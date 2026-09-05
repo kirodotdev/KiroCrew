@@ -23,6 +23,7 @@ organized for someone browsing the repository.
 |---|---|
 | [agents.md](agents.md) | Switching between specialized agents per conversation, thread, or cron job. |
 | [skills.md](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows. |
+| [monitoring.md](monitoring.md) | Token-efficient pull-request monitoring and finite legacy fallbacks. |
 | [cron-and-scheduling.md](cron-and-scheduling.md) | Scheduling recurring tasks. |
 | [subagents.md](subagents.md) | Spawning parallel background workers for fan-out work. |
 | [dynamic-subagent-sizing.md](dynamic-subagent-sizing.md) | How the concurrent sub-agent cap is sized from host memory and CPU. |

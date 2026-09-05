@@ -78,6 +78,7 @@ def _make_orchestrator(**kwargs: Any) -> Any:
 def _mock_dashboard_state() -> MagicMock:
     ds = MagicMock()
     ds._slots = {}
+    ds.last_notification_persist = None
     ds.notify = MagicMock()
     ds.push_slots_update = MagicMock()
     ds.push_refresh = MagicMock()
@@ -1005,7 +1006,7 @@ class TestFireSlackNudgeGuards:
 class TestAutonudgeRouterAndObserver:
     """``_init_autonudge`` builds the key-namespace router and the WS observer."""
 
-    async def _wire(self, orch: Any):
+    async def _wire(self, orch: Any, *, existing_loops: list[NudgeLoop] | None = None):
         with patch("kiro_crew.slack.gateway.autonudge_enabled", return_value=True):
             with (
                 patch("kiro_crew.slack.gateway.AutoNudgeService") as mock_svc,
@@ -1015,6 +1016,8 @@ class TestAutonudgeRouterAndObserver:
                 inst.start = AsyncMock()
                 inst.subscribe = MagicMock()
                 inst.remove = AsyncMock()
+                inst.mark_terminal_notification_delivered = AsyncMock()
+                inst.list_all.return_value = existing_loops or []
                 mock_svc.return_value = inst
                 await orch._init_autonudge()
                 inst.monitor_dispatch = mock_controller.call_args.args[1]
@@ -1155,6 +1158,158 @@ class TestAutonudgeRouterAndObserver:
 
         loop = _loop("chat-1-1721")
         observer("expired", loop)
+        orch._notify_nudge_expired.assert_called_once_with(loop)
+
+    @pytest.mark.asyncio
+    async def test_observer_notifies_one_structured_terminal_transition(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch._notify_nudge_expired = MagicMock()
+        _on_fire, observer, _inst = await self._wire(orch)
+        loop = _loop("chat-1-1721")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+            stopped_at=2.0,
+        )
+
+        observer("updated", loop)
+        observer("updated", loop)
+        await asyncio.sleep(0)
+
+        orch._notify_nudge_expired.assert_called_once_with(loop)
+
+    @pytest.mark.asyncio
+    async def test_observer_marks_delivery_only_after_notification_persistence(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        persisted = asyncio.get_running_loop().create_future()
+        orch.dashboard_state.last_notification_persist = persisted
+        orch._notify_nudge_expired = MagicMock(return_value=True)
+        _on_fire, observer, inst = await self._wire(orch)
+        loop = _loop("chat-1-1721")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+            stopped_at=2.0,
+        )
+
+        observer("updated", loop)
+        await asyncio.sleep(0)
+
+        inst.mark_terminal_notification_delivered.assert_not_awaited()
+        persisted.set_result(True)
+        await asyncio.sleep(0)
+
+        inst.mark_terminal_notification_delivered.assert_awaited_once_with(
+            loop.id,
+            MonitorOutcome.SUCCESS,
+            2.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_observer_keeps_delivery_unmarked_when_notification_persistence_fails(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        persisted = asyncio.get_running_loop().create_future()
+        persisted.set_result(False)
+        orch.dashboard_state.last_notification_persist = persisted
+        orch._notify_nudge_expired = MagicMock(return_value=True)
+        _on_fire, observer, inst = await self._wire(orch)
+        loop = _loop("chat-1-1721")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+            stopped_at=2.0,
+        )
+
+        observer("updated", loop)
+        await asyncio.sleep(0)
+
+        inst.mark_terminal_notification_delivered.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_restart_replays_terminal_notice_without_delivery_record(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch._notify_nudge_expired = MagicMock()
+        loop = _loop("chat-1-1721")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+            stopped_at=2.0,
+        )
+        _on_fire, observer, inst = await self._wire(orch, existing_loops=[loop])
+
+        observer("updated", loop)
+
+        orch._notify_nudge_expired.assert_called_once_with(loop)
+        inst.mark_terminal_notification_delivered.assert_awaited_once_with(
+            loop.id,
+            MonitorOutcome.SUCCESS,
+            2.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_restart_deduplicates_terminal_notice_with_delivery_record(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch._notify_nudge_expired = MagicMock()
+        loop = _loop("chat-1-1721")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+            stopped_at=2.0,
+            terminal_notification_delivered=True,
+        )
+        _on_fire, observer, inst = await self._wire(orch, existing_loops=[loop])
+
+        observer("updated", loop)
+
+        orch._notify_nudge_expired.assert_not_called()
+        inst.mark_terminal_notification_delivered.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_observer_does_not_repeat_a_gated_legacy_terminal_notification(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch._notify_nudge_expired = MagicMock()
+        _on_fire, observer, _inst = await self._wire(orch)
+        loop = _loop("slack:111.222")
+        loop.gate = True
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+            stopped_at=2.0,
+        )
+
+        observer("expired", loop)
+        observer("fired", loop)
+
         orch._notify_nudge_expired.assert_called_once_with(loop)
 
     @pytest.mark.asyncio

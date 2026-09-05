@@ -446,6 +446,9 @@ class MonitorState:
     stopped_reason: str = ""
     user_stop_reason: str = ""
     stopped_at: float = 0.0
+    # Persisted only after the dashboard accepts the terminal notice. False is
+    # fail-safe: a restart may repeat a notice, but it cannot lose the only one.
+    terminal_notification_delivered: bool = False
     extra_fields: dict[str, object] = field(default_factory=dict, repr=False)
     _raw_payload: dict[str, object] | None = field(default=None, repr=False, compare=False)
 
@@ -560,6 +563,8 @@ class MonitorState:
             raise ValueError("user_stop_reason must be a string")
         if len(self.user_stop_reason) > MAX_MONITOR_STOP_REASON_CHARS:
             raise ValueError("user_stop_reason is too long")
+        if not isinstance(self.terminal_notification_delivered, bool):
+            self.terminal_notification_delivered = False
         if not isinstance(self.extra_fields, dict):
             raise ValueError("extra_fields must be an object")
         _validate_strict_json_object("extra_fields", self.extra_fields)
