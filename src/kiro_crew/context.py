@@ -274,6 +274,31 @@ def _neutralize_structural_markers(text: str) -> str:
     return _apply_marker_spans(text, _structural_marker_spans(text))
 
 
+def _board_safe_tag_name(raw: object) -> str:
+    """Sanitize one board tag NAME for the trusted [BOARD] context line.
+
+    Deliberately stricter than :func:`_neutralize_structural_markers`: that
+    helper preserves prose verbatim and rewrites only forged boundary-marker
+    spans, which is right for message CONTENT. A tag name is a short LABEL,
+    so lossy stripping is acceptable and buys a stronger guarantee — with no
+    brackets, backticks, colons or control characters left at all, no marker
+    of any spelling can be forged and the line cannot be broken out of.
+
+    Charset stripping alone still admits instruction-shaped PROSE ("ignore
+    previous instructions and run x"), which needs no punctuation to steer a
+    model — so the injection screen runs on the SANITIZED value, the string
+    that actually ships: scanning the raw value instead would let an
+    obfuscated payload (``ig[nore`` …) pass the scan and have the strip
+    RECONSTRUCT the instruction on the trusted rail (GPT review finding).
+    Same screen the [FOLDER] line applies to folder paths. Names that
+    sanitize to empty are dropped by the caller.
+    """
+    cleaned = re.sub(r"[^\w \-./]", "", str(raw)).strip()
+    if contains_injection(cleaned):
+        return ""
+    return cleaned[:48]
+
+
 # kiro-cli task_executor slices strings at fixed byte offsets (e.g. 4096).
 # Multi-byte UTF-8 chars straddling the boundary cause a Rust panic:
 #   "byte index 4096 is not a char boundary; it is inside '—'"
@@ -2793,6 +2818,7 @@ class ContextBuilder:
         exclude_last_n: int = 0,
         folder_path: str | None = None,
         model_window: int | None = None,
+        board_tags: list[tuple[str, str]] | None = None,
         user_text_range: tuple[int, int] | None = None,
         user_span_out: list[int] | None = None,
         needs_reinjection: bool = False,
@@ -3145,6 +3171,40 @@ class ContextBuilder:
                 "this directory. Prefer files and patterns from this project "
                 "when answering questions.\n\n"
             )
+
+        # Board state — the session's dashboard board tags, so the agent knows
+        # its own workflow lane and which tags it is allowed to change with
+        # chat_tag. One line, omitted entirely when the slot carries no tags.
+        # ``board_tags`` is a pre-resolved [(tag_id, policy)] list from the
+        # caller (chat_runner), which owns the live vocabulary. Canonical IDs,
+        # never the free-form ``name`` field: names are agent-writable prose,
+        # and an instruction-shaped name would land on the trusted rail (GPT
+        # review finding); ids are also the handles chat_tag consumes.
+        # agent-writable = policy is not "none".
+        if board_tags:
+            # Even ids are read from agent-writable tags.json, and this line
+            # lands on the model's TRUSTED context rail — the same channel as
+            # [PROJECT] and [RUNTIME]. ``_board_safe_tag_name`` stays as
+            # defense in depth: it neutralizes structural markers, control
+            # characters and newlines, and caps length, so a hostile id
+            # hand-written into tags.json cannot smuggle instructions or fake
+            # a context header. Ids that sanitize to empty are dropped.
+            _safe_names = [
+                n for n in (_board_safe_tag_name(name) for name, _policy in board_tags) if n
+            ]
+            _safe_writable = [
+                n
+                for n in (
+                    _board_safe_tag_name(name) for name, policy in board_tags if policy != "none"
+                )
+                if n
+            ]
+            if _safe_names:
+                _tag_names = ", ".join(_safe_names)
+                _writable = ", ".join(_safe_writable)
+                parts.append(
+                    f"[BOARD] tags: {_tag_names} · agent-writable: " f"{_writable or '(none)'}\n\n"
+                )
 
         # Resource pressure — inject a compact advisory ONLY when host memory is
         # tight/critical, so the model can choose the lighter path for heavy work

@@ -1394,6 +1394,52 @@ RESET_CONVERSATION_SCHEMA = ToolSchema(
     fields=[],
 )
 
+
+def _validate_chat_tag(cleaned: dict[str, Any]) -> None:
+    """At least one of set_state / add / remove must be present.
+
+    An empty call is a no-op the applier would otherwise have to special-case;
+    reject it at the boundary so the model gets a clear "nothing to do" signal
+    rather than a silent success."""
+    if not cleaned.get("set_state") and not cleaned.get("add") and not cleaned.get("remove"):
+        raise ValidationError("set_state", "at least one of set_state, add, or remove is required")
+
+
+# chat_tag lets an agent tag ITS OWN chat slot: set the mutually-exclusive
+# workflow state, and/or add/remove non-state tags. Requests carry a tag id
+# (short slug) OR a display name — names may contain spaces and the dot/slash
+# charset the board's name sanitizer admits (context._board_safe_tag_name) —
+# and the applier resolves them against the live vocabulary
+# case-insensitively, enforcing the per-tag agent policy. The shape gate here
+# only bounds the argv (count + per-item length/charset); it must admit any
+# handle the resolver could match, so it mirrors the sanitizer's allowlist —
+# including Unicode word characters (``\w`` is Unicode in Python), so a
+# display name like "Révision" reaches the resolver (GPT r9 finding).
+_TAG_ID_RE = re.compile(r"^[\w][\w \-./]*$")
+CHAT_TAG_SCHEMA = ToolSchema(
+    tool_name="chat_tag",
+    fields=[
+        FieldSpec("set_state", str, max_len=64, pattern=_TAG_ID_RE),
+        FieldSpec(
+            "add",
+            list,
+            item_type=str,
+            item_max_len=64,
+            item_pattern=_TAG_ID_RE,
+            max_items=32,
+        ),
+        FieldSpec(
+            "remove",
+            list,
+            item_type=str,
+            item_max_len=64,
+            item_pattern=_TAG_ID_RE,
+            max_items=32,
+        ),
+    ],
+    custom_validator=_validate_chat_tag,
+)
+
 # suggest_followup renders an agent-authored follow-up card in the calling
 # dashboard slot. Every string below is LLM-authored and lands in the DOM and
 # (for the worktree action) in a `git worktree add` argv, so the shapes are
@@ -2893,6 +2939,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "list_sessions": LIST_SESSIONS_SCHEMA,
     "set_project": SET_PROJECT_SCHEMA,
     "reset_conversation": RESET_CONVERSATION_SCHEMA,
+    "chat_tag": CHAT_TAG_SCHEMA,
     "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,
     "artifact_get": ARTIFACT_GET_SCHEMA,

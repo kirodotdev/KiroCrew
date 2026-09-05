@@ -32,7 +32,8 @@ Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON``
 constant. ``sel`` is a genuine cycle
 (``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
 before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
-security, chat_handlers) are deferred on purpose: they keep this module cheap to
+security, chat_handlers, chat_persistence, chat_tags, chat_tag_grants) are
+deferred on purpose: they keep this module cheap to
 import from the turn loop's import graph, and they resolve the symbol at CALL
 time so patching the SOURCE module is what tests (and any runtime override)
 actually observe — a module-scope ``from X import name`` would freeze a stale
@@ -64,7 +65,7 @@ logger = logging.getLogger(__name__)
 # admitted by the user-surface provenance gate below, then separately requires
 # the current turn to own the slot it would mutate.
 _DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question"})
-_USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation"})
+_USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation", "chat_tag"})
 
 
 def _has_user_surface(session_key: str) -> bool:
@@ -174,6 +175,8 @@ async def apply_session_directive(
             result = await _set_project(state, slot, args)
         elif kind == "reset_conversation":
             result = await _reset_conversation(slot, session_key, args)
+        elif kind == "chat_tag":
+            result = await _apply_chat_tag(state, slot, session_key, args)
         elif kind == "suggest_followup":
             result = await _suggest_followup(state, slot, args)
         elif kind == "ask_question":
@@ -800,6 +803,296 @@ async def _reset_conversation(slot: Any, session_key: str, args: dict[str, Any])
         "transcript is untouched — earlier messages stay visible in the tab and "
         "on disk."
     )
+
+
+async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[str, Any]) -> str:
+    """Apply a ``chat_tag`` directive to THIS turn's slot.
+
+    Mirrors the ``PUT /api/chat/slots/{slot}/tags`` write sequence
+    (chat_tags.api_chat_slot_tags): hold the tags write lock across
+    resolve→validate→assign→persist, read ``slot.tags`` FRESH inside the lock
+    (a concurrent folder/board edit landing mid-apply is the stale-read bug
+    class), and push a slots update after persisting.
+
+    Enforces the per-tag agent policy (chat_tags.agent_tag_policy). Named
+    refusals surface as the directive's result string: ``tag_policy_denied:<id>``
+    (not agent-writable for the requested op) and ``unknown_tag:<id>``. A no-op
+    (the session already carries exactly the requested state/labels) is audited
+    as ``no_op`` but answers with the current tag list ("No change. ...") — the
+    documented READ path.
+    On success the result includes the session's RESULTING tag names — this is
+    also the agent's tag READ path.
+    """
+    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+    from kiro_crew.dashboard.chat_tag_grants import refresh_cache
+    from kiro_crew.dashboard.chat_tags import (
+        agent_tag_grant,
+        agent_tag_policy,
+        tags_write_lock,
+        validate_folder_tag_ids,
+    )
+
+    # Identity FIRST, before any suspension point: this directive was
+    # authorized against the conversation that produced it, and the grant
+    # refresh below is an await — a concurrent rebind landing inside it must
+    # not let the capture bind the REBOUND transcript, or the in-lock recheck
+    # compares the moved key against itself and passes (GPT review finding).
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+
+    authorized_history_key = slot_history_key(slot)
+
+    # Pull the grants store read+parse off the event loop ONCE; the sync
+    # resolutions below then serve from the cache (one stat syscall each —
+    # the skill-trust reader's documented trade-off). GPT finding: the full
+    # json read must not run on the gateway loop.
+    await asyncio.to_thread(refresh_cache)
+
+    set_state = str(args.get("set_state") or "").strip()
+    add_ids = [str(t) for t in (args.get("add") or [])]
+    remove_ids = [str(t) for t in (args.get("remove") or [])]
+
+    def _sel_self_tag(outcome: str, resources: str = "") -> None:
+        try:
+            from kiro_crew.sel import sel
+
+            sel().log_api_access(
+                caller="mcp-directive",
+                operation="chat.self_tag",
+                outcome=outcome,
+                source="mcp-directive",
+                resources=resources,
+            )
+        except Exception:
+            logger.debug("chat_tag SEL api_access audit failed", exc_info=True)
+
+    # Capture the transcript identity of the TURN's slot BEFORE any awaited
+    # work: this directive was authorized against the conversation that
+    # produced it, and a rebind landing while we wait on the tags lock (or
+    # during the persist) must not let the mutation follow the slot to a
+    # different transcript. Mirrors the locked_history_key discipline in the
+    # chat_handlers metadata endpoints. ``authorized_history_key`` was
+    # captured at FUNCTION ENTRY, before the grant-refresh await — capturing
+    # it here would already be past that suspension point.
+
+    async with tags_write_lock(state):
+        # The slot may have been rebound while we awaited the lock: the write
+        # below would target the NEW transcript while this directive's
+        # authorization names the old one. Refuse rather than follow.
+        if slot_history_key(slot) != authorized_history_key:
+            _sel_self_tag("denied", "session_rebound")
+            return "Error: session_rebound"
+        # Live vocabulary, resolved INSIDE the lock. Map lowercased id AND
+        # lowercased display name -> tag dict so requests resolve
+        # case-insensitively by either handle (maintainer audit ask from
+        # #3469's closure: a user-created status tag has a uuid id, so
+        # name resolution is what keeps it reachable). Names are indexed
+        # first and ids second, so an id always wins a collision — ids are
+        # the authoritative handle.
+        vocab_by_lower: dict[str, dict[str, Any]] = {}
+        for t in state._tags:
+            tname = t.get("name")
+            if isinstance(tname, str) and tname.strip():
+                vocab_by_lower.setdefault(tname.lower(), t)
+        for t in state._tags:
+            tid = t.get("id")
+            if isinstance(tid, str):
+                vocab_by_lower[tid.lower()] = t
+
+        def _resolve(requested: str) -> dict[str, Any] | None:
+            return vocab_by_lower.get(requested.lower())
+
+        def _available() -> str:
+            names = [str(t.get("name") or t.get("id")) for t in state._tags if isinstance(t, dict)]
+            return ", ".join(n for n in names if n)
+
+        # Validate every requested id exists BEFORE any mutation, so a bad id in
+        # a multi-tag call changes nothing.
+        for requested in ([set_state] if set_state else []) + add_ids + remove_ids:
+            if _resolve(requested) is None:
+                _sel_self_tag("denied", requested)
+                return (
+                    f"Error: unknown_tag:{requested}. No tag named '{requested}' "
+                    f"found (case-insensitive, by id or name). "
+                    f"Available: {_available()}"
+                )
+
+        # Workflow-state tags are mutually exclusive, and `set_state` is the only
+        # verb carrying the peer-strip that upholds that invariant. A state id
+        # smuggled through `add` would append WITHOUT stripping peers, persisting
+        # two exclusive states — refuse and teach the boundary instead. Status-
+        # ness here (and at every authorization decision below) is the GRANT
+        # STORE's recorded bit, not the tag dict's own field: tags.json is
+        # agent-writable, so a forged ``status`` must not re-route which verbs
+        # apply or which peers get stripped.
+        for requested in add_ids:
+            if agent_tag_grant(_resolve(requested))[1]:  # type: ignore[arg-type]
+                _sel_self_tag("denied", requested)
+                return f"Error: status_tag_requires_set_state:{requested}"
+
+        # Policy: `add` needs add-only or add-remove; `remove` and the implicit
+        # removal inside `set_state` need add-remove.
+        for requested in add_ids:
+            policy = agent_tag_policy(_resolve(requested))  # type: ignore[arg-type]
+            if policy not in ("add-only", "add-remove"):
+                _sel_self_tag("denied", requested)
+                return f"Error: tag_policy_denied:{requested}"
+        for requested in remove_ids:
+            policy = agent_tag_policy(_resolve(requested))  # type: ignore[arg-type]
+            if policy != "add-remove":
+                _sel_self_tag("denied", requested)
+                return f"Error: tag_policy_denied:{requested}"
+        if set_state:
+            state_tag = _resolve(set_state)
+            # Pre-validation above guarantees every requested id resolves;
+            # narrow explicitly for the type checker.
+            assert state_tag is not None
+            # `set_state` is the workflow-state verb: the requested tag must BE
+            # a workflow state, or the peer-strip below would strip real states
+            # in exchange for a plain label. One store read answers both the
+            # status question and the policy question so the two cannot be
+            # satisfied by different sources.
+            state_policy, state_is_status = agent_tag_grant(state_tag)
+            if not state_is_status:
+                _sel_self_tag("denied", set_state)
+                return f"Error: not_a_status_tag:{set_state}"
+            if state_policy != "add-remove":
+                _sel_self_tag("denied", set_state)
+                return f"Error: tag_policy_denied:{set_state}"
+            state_canonical_id = str(state_tag["id"])
+            # `set_state=X, remove=[X]` in one call would add X then remove it,
+            # leaving the session with NO workflow state — the exact outcome
+            # set_state exists to prevent. Refuse the contradictory call.
+            for requested in remove_ids:
+                if _resolve(requested)["id"] == state_canonical_id:  # type: ignore[index]
+                    _sel_self_tag("denied", requested)
+                    return f"Error: set_state_conflicts_with_remove:{state_canonical_id}"
+
+        # FRESH read of the slot's current tags inside the lock.
+        current: list[str] = list(getattr(slot, "tags", None) or [])
+        new_tags: list[str] = list(current)
+
+        def _add(canonical_id: str) -> None:
+            if canonical_id not in new_tags:
+                new_tags.append(canonical_id)
+
+        def _remove(canonical_id: str) -> None:
+            if canonical_id in new_tags:
+                new_tags.remove(canonical_id)
+
+        if set_state:
+            state_id = _resolve(set_state)["id"]  # type: ignore[index]
+            # Mutual exclusivity: strip every OTHER workflow-state tag (any tag
+            # carrying status: True), keyed on the LIVE vocabulary rather than a
+            # hardcoded id list, then add the requested one. A removed peer that
+            # is human-only must NOT be silently stripped — refuse instead.
+            for existing in list(new_tags):
+                et = _resolve(existing)
+                if et is None:
+                    continue
+                et_policy, et_is_status = agent_tag_grant(et)
+                if et_is_status and et["id"] != state_id:
+                    if et_policy != "add-remove":
+                        _sel_self_tag("denied", et["id"])
+                        return f"Error: tag_policy_denied:{et['id']}"
+                    _remove(et["id"])
+            _add(state_id)
+
+        for requested in add_ids:
+            _add(_resolve(requested)["id"])  # type: ignore[index]
+        for requested in remove_ids:
+            _remove(_resolve(requested)["id"])  # type: ignore[index]
+
+        if new_tags == current:
+            # The documented READ path: a no-op change is how a caller asks
+            # for its current tags, so answer with them instead of a bare
+            # error (GPT r8 finding: the doc promised this and the code
+            # returned "Error: no_op" without the list). Still audited as
+            # no mutation.
+            _sel_self_tag("denied", "no_op")
+            # String ids only: a malformed (e.g. list-valued) ``id`` loaded
+            # from tags.json is unhashable and would raise here (GPT review
+            # finding); such entries resolve via the ``tid`` fallback instead.
+            name_by_id = {
+                t.get("id"): (t.get("name") or t.get("id"))
+                for t in state._tags
+                if isinstance(t.get("id"), str)
+            }
+            names = [str(name_by_id.get(tid, tid)) for tid in current]
+            shown = ", ".join(names) if names else "(none)"
+            return f"No change. This session currently carries: {shown}."
+
+        # Pin the persist to the transcript captured at TURN ENTRY (before the
+        # lock wait): a slot rebind landing during the awaited save would
+        # otherwise deliver this agent's tag mutation to a conversation it
+        # never touched. On a refused save, roll the in-memory slot back and
+        # mark it dirty so the periodic flush reconverges the durable record
+        # to the (restored) live state.
+        prior_tags = list(current)
+        slot.tags = validate_folder_tag_ids(new_tags, state)
+        applied = await save_slot_off_loop(
+            state, slot, force=True, expected_history_key=authorized_history_key
+        )
+        if not applied:
+            slot.tags = prior_tags
+            try:
+                slot._dirty = True
+            except Exception:
+                logger.debug("chat_tag rollback dirty-mark failed", exc_info=True)
+            _sel_self_tag("denied", "session_rebound")
+            return "Error: session_rebound"
+
+        # GPT r9 blocking (live-alias overwrite): a SECOND live slot bound to
+        # the same transcript still holds the pre-update tags in memory, and
+        # its next dirty flush would persist those stale tags over the update
+        # we just committed. Mirror the applied tags onto every live alias
+        # inside this same lock, so any later flush of an alias writes the
+        # same (current) state instead of losing it.
+        for other in state._slots.values():
+            if other is slot:
+                continue
+            try:
+                if slot_history_key(other) == authorized_history_key:
+                    other.tags = list(slot.tags)
+            except Exception:
+                logger.debug("chat_tag alias tag mirror failed", exc_info=True)
+
+        # GPT review finding (queued stale flush): a dirty ALIAS flush already
+        # in flight may have captured the pre-update tags BEFORE the mirror
+        # above ran, and its write can land after the confirmed save — a
+        # restart would then restore the stale tags. Re-save once AFTER the
+        # mirror: this write serializes behind any such queued flush on the
+        # same transcript, so the committed state is what lands last. Memory
+        # is already correct either way, so a failed re-save just marks the
+        # slot dirty and the periodic flush reconverges from mirrored memory.
+        try:
+            resealed = await save_slot_off_loop(
+                state, slot, force=True, expected_history_key=authorized_history_key
+            )
+            if not resealed:
+                slot._dirty = True
+        except Exception:
+            logger.debug("chat_tag post-mirror re-save failed", exc_info=True)
+            try:
+                slot._dirty = True
+            except Exception:
+                pass
+
+    _push(state)
+    _sel_self_tag("allowed", ",".join(slot.tags))
+
+    # Resulting tag NAMES for the model (the READ path). Fall back to ids for
+    # any tag whose vocabulary entry lacks a name. String ids only: a
+    # malformed (e.g. list-valued) ``id`` loaded from tags.json is unhashable
+    # and would raise here AFTER the mutation committed, reporting failure on
+    # a persisted change (GPT review finding).
+    name_by_id = {
+        t.get("id"): (t.get("name") or t.get("id"))
+        for t in state._tags
+        if isinstance(t.get("id"), str)
+    }
+    names = [str(name_by_id.get(tid, tid)) for tid in slot.tags]
+    shown = ", ".join(names) if names else "(none)"
+    return f"Board tags updated. This session now carries: {shown}."
 
 
 async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:

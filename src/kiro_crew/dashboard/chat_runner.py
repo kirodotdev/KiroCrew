@@ -74,6 +74,8 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
 from kiro_crew.dashboard.chat_summary import generate_session_summary
+from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
+from kiro_crew.dashboard.chat_tags import agent_tag_policy
 from kiro_crew.dashboard.chat_title import (
     _extract_and_redact_plan_metadata,
     _maybe_auto_title,
@@ -6662,6 +6664,31 @@ async def _run_chat(
             if is_new or slot._folder_changed:
                 folder_path = state.folder_breadcrumb(slot.folder_id) or None
                 slot._folder_changed = False
+            # Board tags: resolve the slot's tag ids to (id, agent-policy) via
+            # the live vocabulary so the [BOARD] context line can list the tags
+            # and which are agent-writable. Canonical IDs, never the free-form
+            # ``name`` field: names are agent-writable prose and an
+            # instruction-shaped name would enter trusted model context (GPT
+            # review finding); ids are also the exact handles the ``chat_tag``
+            # directive consumes. Best-effort — a resolution failure must never
+            # break message assembly.
+            board_tags: list[tuple[str, str]] | None = None
+            try:
+                _slot_tags = list(getattr(slot, "tags", None) or [])
+                if _slot_tags:
+                    # Grants-store read+parse off the loop; the per-tag
+                    # resolutions below serve from the warmed cache.
+                    await asyncio.to_thread(refresh_tag_grants_cache)
+                    _by_id = {t.get("id"): t for t in state._tags}
+                    resolved: list[tuple[str, str]] = []
+                    for _tid in _slot_tags:
+                        _t = _by_id.get(_tid)
+                        if _t is None:
+                            continue
+                        resolved.append((str(_t.get("id") or ""), agent_tag_policy(_t)))
+                    board_tags = resolved or None
+            except Exception:
+                logger.debug("board_tags resolution failed", exc_info=True)
             _color_theme = getattr(slot, "color_theme", "")
             # Governance gate: installed-pack persona injection
             # is a governable capability. A policy can force-disable it wholesale
@@ -6744,6 +6771,7 @@ async def _run_chat(
                 runtime_source="dashboard",
                 exclude_last_n=1,
                 folder_path=folder_path,
+                board_tags=board_tags,
                 model_window=model_window,
                 user_text_range=user_text_span(
                     _user_prepend_offset,

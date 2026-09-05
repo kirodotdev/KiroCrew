@@ -53,6 +53,7 @@ from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.validation import (
     ASK_QUESTION_SCHEMA,
     AUTONUDGE_STOP_SCHEMA,
+    CHAT_TAG_SCHEMA,
     MONITOR_INSPECT_SCHEMA,
     MONITOR_START_SCHEMA,
     MONITOR_STOP_SCHEMA,
@@ -621,6 +622,65 @@ def schemas() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {},
+            },
+        },
+        {
+            "name": "chat_tag",
+            "description": (
+                "Tag THIS chat session on the dashboard board so a human scanning "
+                "many sessions can see what each one needs. Use to move your own "
+                "conversation between workflow states (e.g. flip it to Review when "
+                "there is nothing left for you to do and it awaits the user), and to "
+                "add or remove non-state labels."
+                "\n\n"
+                "Arguments (at least one required): set_state=<state tag id> sets the "
+                "single mutually-exclusive workflow state (planned / todo / "
+                "implementation / review / done), replacing whichever state tag the "
+                "session currently carries; add=[ids] adds non-state labels; "
+                "remove=[ids] removes labels. Each entry may be a tag id or a "
+                "tag's display name; both resolve case-insensitively against "
+                "the board's vocabulary (an id wins when a name collides with "
+                "a different tag's id)."
+                "\n\n"
+                "PERMISSION: each tag carries an agent policy — a tag the human "
+                "reserved for themselves is refused (tag_policy_denied), an "
+                "add-only tag can be added but not removed, and workflow states "
+                "are agent-writable by default on a fresh install or when newly "
+                "created as status tags (an upgraded install starts with every "
+                "tag human-only until granted). The result reports the "
+                "session's RESULTING tag list, so this is also how you READ your own "
+                "current tags — call it with just the change you want (or a no-op "
+                "add of a tag already present) to see them."
+                "\n\n"
+                "Restrictions: slot-backed sessions only (a dashboard chat, or a "
+                "messaging thread bound to a dashboard slot) — a standalone channel "
+                "session with no slot is refused. Headless callers "
+                "(cron jobs, subagents) are refused — a cron turn can run on a user's "
+                "slot and a subagent shares its parent's, so neither may retag it. "
+                "The change applies when this turn's result is processed."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "set_state": {
+                        "type": "string",
+                        "description": (
+                            "A workflow-state tag id (planned / todo / implementation "
+                            "/ review / done). Replaces any state tag the session "
+                            "currently carries — the states are mutually exclusive."
+                        ),
+                    },
+                    "add": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag ids to add (non-state labels only; a workflow-state id is refused — use set_state).",
+                    },
+                    "remove": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag ids to remove.",
+                    },
+                },
             },
         },
         {
@@ -1433,6 +1493,30 @@ def reset_conversation(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def chat_tag(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, CHAT_TAG_SCHEMA)
+    # Stateless: the session-aware consumer (chat_runner) applies the tag change
+    # to ITS OWN slot — no session identity resolved here. The payload carries
+    # only the requested change; the consumer resolves ids against the live
+    # vocabulary, enforces the per-tag agent policy, and returns the resulting
+    # tag list (which is also this tool's READ path for the session's tags).
+    payload: dict[str, Any] = {}
+    if args.get("set_state"):
+        payload["set_state"] = args["set_state"]
+    if args.get("add"):
+        payload["add"] = args["add"]
+    if args.get("remove"):
+        payload["remove"] = args["remove"]
+    return _emit_directive(
+        "chat_tag",
+        payload,
+        "Board tag change requested for this session; if the tags are "
+        "agent-writable it takes effect when this turn's result is processed, "
+        "and the result reports the session's resulting tags. A human-only tag, "
+        "an unknown tag, or a headless caller (cron/subagent) is refused.",
+    )
+
+
 def suggest_followup(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SUGGEST_FOLLOWUP_SCHEMA)
     items = args.get("items") or []
@@ -1464,5 +1548,6 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "monitor_update": monitor_update,
     "set_project": set_project,
     "reset_conversation": reset_conversation,
+    "chat_tag": chat_tag,
     "suggest_followup": suggest_followup,
 }

@@ -512,7 +512,6 @@ test/test_chat_slot_end_wait.py
 test/test_chat_slot_interrupt.py
 test/test_chat_slot_mode.py
 test/test_chat_slot_reasoning_effort.py
-test/test_chat_tags.py
 test/test_chat_title.py
 test/test_chat_turn_timeout_consistency.py
 test/test_chat_voice.py

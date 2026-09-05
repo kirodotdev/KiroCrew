@@ -233,6 +233,196 @@ class TestTagVocabulary:
             assert data["status"] is True
 
     @pytest.mark.asyncio
+    async def test_update_tag_invalid_status_leaves_no_partial_mutation(
+        self, tmp_path, monkeypatch
+    ):
+        """GPT review: a PATCH carrying a valid rename AND an invalid status
+        must reject BEFORE any field mutates — otherwise the rejected rename
+        stays live in memory behind the 400."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Old"})).json()
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}",
+                json={"name": "New", "status": "true"},  # status: string -> 400
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_status"
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            assert live["name"] == "Old"  # rename did NOT land
+
+    @pytest.mark.asyncio
+    async def test_update_tag_string_status_row_not_promoted_by_agent_patch(
+        self, tmp_path, monkeypatch
+    ):
+        """GPT review: ``"status": "false"`` persisted in agent-writable
+        tags.json is truthy; an agent-policy PATCH must not record it as
+        workflow-state authority in the protected store."""
+        from kiro_crew.dashboard.chat_tags import agent_tag_grant
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Forged"})).json()
+            # Simulate the hand-edited file: a string status on the live row.
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            live["status"] = "false"
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-only"})
+            assert resp.status == 200
+            assert agent_tag_grant({"id": tag["id"]}) == ("add-only", False)
+
+    @pytest.mark.asyncio
+    async def test_agent_patch_does_not_promote_forged_bool_status(self, tmp_path, monkeypatch):
+        """GPT review: an agent can write a REAL ``status: true`` into
+        tags.json; an agent-only PATCH must source the minted status bit from
+        the existing protected grant, never from the file."""
+        from kiro_crew.dashboard.chat_tags import agent_tag_grant
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Forged2"})).json()
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            live["status"] = True  # forged in agent-writable tags.json
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-remove"})
+            assert resp.status == 200
+            # Policy updated, but NO workflow-state authority minted: the
+            # prior grant carried status False, and the PATCH set none.
+            assert agent_tag_grant({"id": tag["id"]}) == ("add-remove", False)
+
+    @pytest.mark.asyncio
+    async def test_failed_mint_restores_prior_grant(self, tmp_path, monkeypatch):
+        """GPT review: revoke-up-front must not become a PERMANENT revocation
+        when the replacement mint fails — the prior grant is restored and the
+        PATCH still surfaces 500."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        real_mint = ct.mint_grant
+
+        def _failing_mint(tag_id, *, policy, status):
+            if policy == "add-only":
+                raise OSError("simulated store write failure")
+            real_mint(tag_id, policy=policy, status=status)
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Keep2", "status": True})
+            ).json()
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+            monkeypatch.setattr(ct, "mint_grant", _failing_mint)
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-only"})
+            assert resp.status == 500
+            # The prior grant survives the failed narrowing PATCH.
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+
+    @pytest.mark.asyncio
+    async def test_failed_mint_rolls_back_vocabulary(self, tmp_path, monkeypatch):
+        """GPT review: a PATCH whose grant mint fails must not leave the
+        vocabulary change durable behind the 500 — both stores roll back."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_mint(tag_id, *, policy, status):
+            raise OSError("simulated store write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Stable"})).json()
+            monkeypatch.setattr(ct, "mint_grant", _failing_mint)
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}", json={"name": "Renamed", "agent": "add-only"}
+            )
+            assert resp.status == 500
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            assert live["name"] == "Stable"  # memory rolled back
+            import json as _json
+
+            on_disk = _json.loads((tmp_path / "tags.json").read_text(encoding="utf-8"))
+            disk_tag = next(t for t in on_disk if t["id"] == tag["id"])
+            assert disk_tag["name"] == "Stable"  # disk rolled back too
+
+    @pytest.mark.asyncio
+    async def test_delete_aborts_when_revoke_fails(self, tmp_path, monkeypatch):
+        """GPT review: a deletion must never outlive the authority it removes
+        — a failed revoke aborts the DELETE with the tag (and grant) intact."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_revoke(tag_id):
+            raise OSError("simulated store write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Guarded", "status": True})
+            ).json()
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+            monkeypatch.setattr(ct, "revoke_grant", _failing_revoke)
+            resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 500
+            assert any(t["id"] == tag["id"] for t in state._tags)  # still present
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+
+    @pytest.mark.asyncio
+    async def test_delete_vocab_failure_restores_grant(self, tmp_path, monkeypatch):
+        """GPT review companion: revoke succeeded but the vocabulary persist
+        failed — the captured grant is re-minted so a failed DELETE is a
+        no-op on authority."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_write(_state, _snapshot):
+            raise OSError("simulated tags.json write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Kept", "status": True})
+            ).json()
+            monkeypatch.setattr(ct, "_write_tags_snapshot", _failing_write)
+            resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 500
+            assert any(t["id"] == tag["id"] for t in state._tags)
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+
+    @pytest.mark.asyncio
+    async def test_create_mint_failure_rolls_back_the_tag(self, tmp_path, monkeypatch):
+        """GPT review: a POST with status:true whose grant mint fails must not
+        return 201 for a tag chat_tag refuses — the create rolls back in both
+        stores and surfaces 500."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_mint(tag_id, *, policy, status):
+            raise OSError("simulated store write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            monkeypatch.setattr(ct, "mint_grant", _failing_mint)
+            resp = await client.post("/api/chat/tags", json={"name": "Doomed", "status": True})
+            assert resp.status == 500
+            assert not any(t.get("name") == "Doomed" for t in state._tags)
+            import json as _json
+
+            on_disk = _json.loads((tmp_path / "tags.json").read_text(encoding="utf-8"))
+            assert not any(t.get("name") == "Doomed" for t in on_disk)
+
+    @pytest.mark.asyncio
     async def test_update_tag_empty_name_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -945,7 +1135,15 @@ class TestLoadTagsSafety:
         )
         (tmp_path / "tag_boards.json").write_text(
             _json.dumps(
-                [{"id": "c1", "name": "L", "tag_ids": ["live1", "ghost"], "mode": "any", "order": 0}]
+                [
+                    {
+                        "id": "c1",
+                        "name": "L",
+                        "tag_ids": ["live1", "ghost"],
+                        "mode": "any",
+                        "order": 0,
+                    }
+                ]
             ),
             encoding="utf-8",
         )
