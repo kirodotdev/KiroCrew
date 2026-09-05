@@ -2,25 +2,36 @@ import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Plug, Zap } from 'lucide-react'
 import { api } from '../../api/client'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 export default function McpInfoButton({ agent }: { agent?: string }) {
   const [open, setOpen] = useState(false)
   const [servers, setServers] = useState<{ name: string; enabled?: boolean }[]>([])
   const [toolSearchOn, setToolSearchOn] = useState(true)
+  // A refused read used to leave the popover on "None loaded", which is a claim
+  // about the session, not about the request. Two flags, because the two reads
+  // answer different questions: a failed server list must not be reported as a
+  // failed mode probe (and vice versa). Both reset on every open, with the data.
+  const [serversFailed, setServersFailed] = useState(false)
+  const [configFailed, setConfigFailed] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (open) {
-      api.mcpActive(agent || undefined).then(setServers).catch(() => {})
+      setServersFailed(false)
+      setConfigFailed(false)
+      // On failure the previous open's list is dropped too: a stale list under
+      // "couldn't load" would read as the current answer.
+      api.mcpActive(agent || undefined).then(setServers).catch(() => { setServers([]); setServersFailed(true) })
       // Tool Search mode: when on, MCP tool specs are deferred (search-and-call)
       // so servers show connected but their tools load only when used. Refetched
       // on every open, so it's always fresh (no stale cache to invalidate).
       api.kirocrewConfig()
         .then((c: { agent?: { tool_search?: boolean } }) => setToolSearchOn(c?.agent?.tool_search ?? true))
-        .catch(() => {})
+        .catch(() => setConfigFailed(true))
     }
   }, [open, agent])
 
@@ -63,13 +74,23 @@ export default function McpInfoButton({ agent }: { agent?: string }) {
             <span className={`font-medium ${toolSearchOn ? 'text-ok' : 'text-[var(--warn)]'}`}>{toolSearchOn ? i18nT('pages.chatPage.tool_search_deferred') : i18nT('pages.chatPage.tool_search_full')}</span>
           </div>
           <div className="text-[11px] text-muted mb-2 leading-snug">{toolSearchOn ? i18nT('pages.chatPage.tool_search_deferred_hint') : i18nT('pages.chatPage.tool_search_full_hint')}</div>
-          {servers.length === 0 ? <div className="text-muted text-[13px] italic">{i18nT('pages.chat.mcpInfoButton.none_loaded')}</div> : servers.map(s => (
+          {/* Read failures in a hover popover, nothing unsaved → hand-off on.
+              Each names the read that failed; the mode line above still shows
+              the default when the probe failed, so say so rather than let it
+              pass as a measurement. */}
+          {configFailed && (
+            <ErrorNotice variant="inline" className="mb-2" message={i18nT('pages.chat.mcpInfoButton.mode_load_failed')} askAgent />
+          )}
+          {serversFailed && (
+            <ErrorNotice variant="inline" className="mb-2" message={i18nT('pages.chat.mcpInfoButton.load_failed')} askAgent />
+          )}
+          {!serversFailed && (servers.length === 0 ? <div className="text-muted text-[13px] italic">{i18nT('pages.chat.mcpInfoButton.none_loaded')}</div> : servers.map(s => (
             <div key={s.name} className={`flex items-center gap-2 py-1 text-[13px] ${s.enabled === false ? 'opacity-40' : ''}`}>
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.enabled === false ? 'bg-muted' : 'bg-ok'}`} />
               <code className="text-text">{s.name}</code>
               {s.enabled === false && <span className="text-[11px] text-muted">{i18nT('pages.chat.mcpInfoButton.disabled')}</span>}
             </div>
-          ))}
+          )))}
           <div className="mt-2 pt-2 border-t border-border text-[11px] text-muted leading-snug">
             {agent && agent !== 'kirocrew'
               ? i18nT('pages.chat.mcpInfoButton.agent_loads_only_its_own_mcp_servers', { name: agent })

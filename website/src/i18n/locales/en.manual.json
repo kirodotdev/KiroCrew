@@ -3167,7 +3167,16 @@
         "model_effective": "Running on {{model}} (backend selects the model)",
         "workflows": "Workflows",
         "workspace_empty": "No files in this workspace yet",
-        "workspace_truncated": "Large workspace — showing the first 10,000 files"
+        "workspace_truncated": "Large workspace — showing the first 10,000 files",
+        "output_load_failed": "Couldn't load the output",
+        "retry": "Retry",
+        "cancel_failed": "Couldn't cancel the subagent",
+        "dismiss_failed": "Some finished subagents weren't cleared on the server and may reappear",
+        "retry_failed_error": "Couldn't retry {{count}} of the failed subagents",
+        "artifacts_load_failed": "Couldn't load this session's artifacts",
+        "library_load_failed": "Couldn't load the artifact library",
+        "artifact_save_failed": "Couldn't save the artifact",
+        "workflow_runs_load_failed": "Couldn't load the workflow runs"
       },
       "assistantMessage": {
         "copied": "Copied!",
@@ -3183,7 +3192,8 @@
         "needs_active_chat": "Available once this chat finishes opening",
         "needs_earlier_history_count_one": "Select to load earlier history — {{count}} earlier message remains",
         "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain",
-        "share_message": "Share as image"
+        "share_message": "Share as image",
+        "copy_failed": "Copy failed"
       },
       "chatNavPanel": {
         "link": "Link"
@@ -3207,11 +3217,15 @@
       "knowledgePicker": {
         "knowledge_results_for_query": "Knowledge results for “{{query}}”",
         "no_knowledge_found_for_query": "No knowledge found for “{{query}}”",
-        "searching_knowledge_for_query": "Searching knowledge for “{{query}}”…"
+        "searching_knowledge_for_query": "Searching knowledge for “{{query}}”…",
+        "search_failed_for_query": "Knowledge search failed for “{{query}}”",
+        "retry": "Retry"
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Agent \"{{name}}\" loads only its own MCP servers.",
-        "mcp_servers_count": "MCP Servers ({{count}}/{{total}})"
+        "mcp_servers_count": "MCP Servers ({{count}}/{{total}})",
+        "load_failed": "Couldn't load the MCP servers",
+        "mode_load_failed": "Couldn't read the Tool Search mode; showing the default"
       },
       "mcpOAuthBanner": {
         "mcp_server": "MCP server"
@@ -3382,7 +3396,8 @@
         "filter_placeholder": "Filter files…",
         "refresh": "Refresh",
         "resize": "Resize file browser",
-        "tree_mode": "File list mode"
+        "tree_mode": "File list mode",
+        "git_status_failed": "Couldn't read the git status"
       },
       "filesHome": {
         "no_project_dir": "No project directory is set for this chat",
@@ -3446,6 +3461,13 @@
         "copied_text": "Copied",
         "copy_text_failed": "Copy failed",
         "copy_text_unavailable": "Clipboard is blocked here. Your post text is selected — press Ctrl+C / ⌘C. Copy card edits from the card itself."
+      },
+      "earlierMessagesBar": {
+        "load_failed": "Couldn't load earlier messages",
+        "retry": "Retry"
+      },
+      "pins": {
+        "copy_failed": "Copy failed"
       }
     },
     "chatPage": {
@@ -3497,7 +3519,10 @@
       "upload_failed_error": "Upload failed: {{error}}",
       "worktree_creation_returned_no_path": "Worktree creation returned no path",
       "loading_earlier_messages": "Loading earlier messages…",
-      "send_failed_with_error": "Send failed: {{error}}"
+      "send_failed_with_error": "Send failed: {{error}}",
+      "could_not_open_side_chat": "Couldn't open the side chat",
+      "side_command_not_run": "The /side command was not run. Your message is still in the composer.",
+      "could_not_send_to_side_chat": "Couldn't send to the side chat"
     },
     "chatSidebar": {
       "answered_by": "answered by {{agent}}",

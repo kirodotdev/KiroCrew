@@ -8765,7 +8765,6 @@
         "complete": "সম্পূর্ণ",
         "dismiss_done_count": "সম্পন্নগুলো বাদ দিন ({{count}})",
         "error": "ত্রুটি",
-        "failed_click_to_retry": "ব্যর্থ — আবার চেষ্টা করতে ক্লিক করুন",
         "input": "ইনপুট",
         "issues": "ইস্যু",
         "last_tool": "শেষ টুল:",
@@ -8810,7 +8809,16 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে",
         "workflows": "ওয়ার্কফ্লো",
         "workspace_empty": "এই ওয়ার্কস্পেসে এখনও কোনো ফাইল নেই",
-        "workspace_truncated": "বড় ওয়ার্কস্পেস — প্রথম ১০,০০০টি ফাইল দেখানো হচ্ছে"
+        "workspace_truncated": "বড় ওয়ার্কস্পেস — প্রথম ১০,০০০টি ফাইল দেখানো হচ্ছে",
+        "output_load_failed": "আউটপুট লোড করা যায়নি",
+        "retry": "আবার চেষ্টা করুন",
+        "cancel_failed": "সাবএজেন্ট বাতিল করা যায়নি",
+        "dismiss_failed": "কিছু সম্পন্ন সাবএজেন্ট সার্ভারে মোছা যায়নি এবং আবার দেখা দিতে পারে",
+        "retry_failed_error": "ব্যর্থ সাবএজেন্টের মধ্যে {{count}} টি আবার চালানো যায়নি",
+        "artifacts_load_failed": "এই সেশনের আর্টিফ্যাক্ট লোড করা যায়নি",
+        "library_load_failed": "আর্টিফ্যাক্ট লাইব্রেরি লোড করা যায়নি",
+        "artifact_save_failed": "আর্টিফ্যাক্ট সংরক্ষণ করা যায়নি",
+        "workflow_runs_load_failed": "ওয়ার্কফ্লো রান লোড করা যায়নি"
       },
       "assistantMessage": {
         "applied_to_tasks": "টাস্কে প্রয়োগ করা হয়েছে",
@@ -8845,7 +8853,8 @@
         "needs_active_chat": "এই চ্যাট সম্পূর্ণ খোলা হলে উপলব্ধ হবে",
         "needs_earlier_history_count_one": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে",
         "needs_earlier_history_count_other": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে",
-        "share_message": "ছবি হিসেবে শেয়ার করুন"
+        "share_message": "ছবি হিসেবে শেয়ার করুন",
+        "copy_failed": "কপি ব্যর্থ হয়েছে"
       },
       "chatFooter": {
         "compacting": "কম্প্যাক্ট করা হচ্ছে…",
@@ -8916,14 +8925,18 @@
         "no_knowledge_found_for_query": "কোনো নলেজ পাওয়া যায়নি: “{{query}}”",
         "searching_knowledge_for_query": "নলেজ খোঁজা হচ্ছে: “{{query}}”…",
         "selected": "নির্বাচিত ·",
-        "tokens": "টোকেন"
+        "tokens": "টোকেন",
+        "search_failed_for_query": "নলেজ খোঁজা ব্যর্থ হয়েছে: “{{query}}”",
+        "retry": "আবার চেষ্টা করুন"
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "\"{{name}}\" এজেন্ট শুধু নিজের MCP সার্ভারগুলোই লোড করে।",
         "disabled": "নিষ্ক্রিয়",
         "mcp_servers_count": "MCP সার্ভার ({{count}}/{{total}})",
         "none_loaded": "কিছুই লোড হয়নি",
-        "session_mcp_servers": "সেশনের MCP সার্ভার"
+        "session_mcp_servers": "সেশনের MCP সার্ভার",
+        "load_failed": "MCP সার্ভার লোড করা যায়নি",
+        "mode_load_failed": "Tool Search মোড পড়া যায়নি; ডিফল্ট দেখানো হচ্ছে"
       },
       "mcpOAuthBanner": {
         "authenticated": "প্রমাণীকৃত হয়েছে।",
@@ -9235,11 +9248,13 @@
         "copied": "কপি হয়েছে",
         "copy_link": "বার্তার লিঙ্ক কপি করুন",
         "unpin": "আনপিন",
-        "jump_to_message": "বার্তায় যান"
+        "jump_to_message": "বার্তায় যান",
+        "copy_failed": "কপি ব্যর্থ হয়েছে"
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "আগের বার্তা লোড করুন",
-        "error_retry": "আগের বার্তা লোড করা যায়নি — আবার চেষ্টা করুন"
+        "load_failed": "আগের বার্তা লোড করা যায়নি",
+        "retry": "আবার চেষ্টা করুন"
       },
       "sessionSummary": {
         "empty_body": "একটি টার্ন শেষ হলে সারসংক্ষেপ লেখা হয়। এই সেশনের জন্য একটি পেতে একটি মেসেজ পাঠান।",
@@ -9290,7 +9305,8 @@
         "filter_placeholder": "ফাইল ফিল্টার করুন…",
         "refresh": "রিফ্রেশ করুন",
         "resize": "ফাইল ব্রাউজারের আকার পরিবর্তন করুন",
-        "tree_mode": "ফাইল তালিকা মোড"
+        "tree_mode": "ফাইল তালিকা মোড",
+        "git_status_failed": "Git স্ট্যাটাস পড়া যায়নি"
       },
       "filesHome": {
         "no_project_dir": "এই চ্যাটের জন্য কোনো প্রজেক্ট ডিরেক্টরি সেট করা নেই",
@@ -9429,7 +9445,10 @@
       "what_can_i_do_for_you": "আপনার জন্য কী করতে পারি?",
       "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি",
       "loading_earlier_messages": "পূর্ববর্তী বার্তা লোড হচ্ছে…",
-      "send_failed_with_error": "পাঠানো যায়নি: {{error}}"
+      "send_failed_with_error": "পাঠানো যায়নি: {{error}}",
+      "could_not_open_side_chat": "সাইড চ্যাট খোলা যায়নি",
+      "side_command_not_run": "/side কমান্ড চলেনি। আপনার বার্তা এখনও কম্পোজারে আছে।",
+      "could_not_send_to_side_chat": "সাইড চ্যাটে পাঠানো যায়নি"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",

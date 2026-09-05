@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
+import ErrorNotice from '../../components/ErrorNotice'
 import { revealOrOpen, useRevealLabel } from '../../components/FilePathMenu'
 import { useBranding } from '../../hooks/useBranding'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
@@ -363,8 +364,10 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               </span>
             </div>
             {isSearchError && (
-              <div className="px-2 py-2 text-[12px] text-danger">
-                {(searchError as Error)?.message || t('pages.chat.folderPanel.search_failed')}
+              // Read failure; the only editable field is the transient search
+              // box, not a durable draft → hand-off on.
+              <div className="px-2 py-2">
+                <ErrorNotice variant="inline" message={(searchError as Error)?.message || t('pages.chat.folderPanel.search_failed')} askAgent />
               </div>
             )}
             {!isSearchError && isSearching && matches.length === 0 && (
@@ -433,8 +436,9 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
             )}
             {isLoading && <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.loading')}</div>}
             {isError && (
-              <div className="px-2 py-2 text-[12px] text-danger">
-                {(error as Error)?.message || t('pages.chat.folderPanel.unable_to_list_folder')}
+              // List failure in a side panel with nothing unsaved → hand-off on.
+              <div className="px-2 py-2">
+                <ErrorNotice variant="inline" message={(error as Error)?.message || t('pages.chat.folderPanel.unable_to_list_folder')} askAgent />
               </div>
             )}
             {!isLoading && !isError && isEmpty && (

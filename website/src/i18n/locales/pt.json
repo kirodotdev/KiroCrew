@@ -8887,7 +8887,6 @@
         "complete": "Concluído",
         "dismiss_done_count": "Descartar concluídos ({{count}})",
         "error": "Erro",
-        "failed_click_to_retry": "Falhou — clique para tentar novamente",
         "input": "Entrada",
         "issues": "Issues",
         "last_tool": "Última ferramenta:",
@@ -8932,7 +8931,16 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "aguardando para iniciar — na fila devido ao limite de simultaneidade",
         "workflows": "Workflows",
         "workspace_empty": "Este espaço de trabalho ainda não tem arquivos",
-        "workspace_truncated": "Espaço de trabalho grande — mostrando os primeiros 10.000 arquivos"
+        "workspace_truncated": "Espaço de trabalho grande — mostrando os primeiros 10.000 arquivos",
+        "output_load_failed": "Não foi possível carregar a saída",
+        "retry": "Tentar novamente",
+        "cancel_failed": "Não foi possível cancelar o subagente",
+        "dismiss_failed": "Alguns subagentes concluídos não foram removidos no servidor e podem reaparecer",
+        "retry_failed_error": "Não foi possível repetir {{count}} dos subagentes com falha",
+        "artifacts_load_failed": "Não foi possível carregar os artefatos desta sessão",
+        "library_load_failed": "Não foi possível carregar a biblioteca de artefatos",
+        "artifact_save_failed": "Não foi possível salvar o artefato",
+        "workflow_runs_load_failed": "Não foi possível carregar as execuções de fluxo de trabalho"
       },
       "assistantMessage": {
         "applied_to_tasks": "Aplicado às tarefas",
@@ -8968,7 +8976,8 @@
         "needs_earlier_history_count_one": "Selecione para carregar o histórico anterior: resta {{count}} mensagem anterior",
         "needs_earlier_history_count_many": "Selecione para carregar o histórico anterior: restam {{count}} mensagens anteriores",
         "needs_earlier_history_count_other": "Selecione para carregar o histórico anterior: restam {{count}} mensagens anteriores",
-        "share_message": "Compartilhar como imagem"
+        "share_message": "Compartilhar como imagem",
+        "copy_failed": "Falha ao copiar"
       },
       "chatFooter": {
         "compacting": "Compactando…",
@@ -9040,14 +9049,18 @@
         "no_knowledge_found_for_query": "Nenhum conhecimento encontrado para “{{query}}”",
         "searching_knowledge_for_query": "Buscando conhecimento para “{{query}}”…",
         "selected": "selecionados ·",
-        "tokens": "tokens"
+        "tokens": "tokens",
+        "search_failed_for_query": "A busca de conhecimento falhou para “{{query}}”",
+        "retry": "Tentar novamente"
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "O agente \"{{name}}\" carrega apenas os próprios servidores MCP.",
         "disabled": "desativado",
         "mcp_servers_count": "Servidores MCP ({{count}}/{{total}})",
         "none_loaded": "Nenhum carregado",
-        "session_mcp_servers": "Servidores MCP da sessão"
+        "session_mcp_servers": "Servidores MCP da sessão",
+        "load_failed": "Não foi possível carregar os servidores MCP",
+        "mode_load_failed": "Não foi possível ler o modo Tool Search; mostrando o padrão"
       },
       "mcpOAuthBanner": {
         "authenticated": "autenticado.",
@@ -9367,11 +9380,13 @@
         "copied": "Copiado",
         "copy_link": "Copiar link da mensagem",
         "unpin": "Desafixar",
-        "jump_to_message": "Ir para a mensagem"
+        "jump_to_message": "Ir para a mensagem",
+        "copy_failed": "Falha ao copiar"
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "Carregar mensagens anteriores",
-        "error_retry": "Não foi possível carregar as mensagens anteriores — tentar novamente"
+        "load_failed": "Não foi possível carregar as mensagens anteriores",
+        "retry": "Tentar novamente"
       },
       "sessionSummary": {
         "empty_body": "O resumo é escrito quando um turno termina. Envie uma mensagem para obter um desta sessão.",
@@ -9423,7 +9438,8 @@
         "filter_placeholder": "Filtrar arquivos…",
         "refresh": "Atualizar",
         "resize": "Redimensionar o navegador de arquivos",
-        "tree_mode": "Modo de lista de arquivos"
+        "tree_mode": "Modo de lista de arquivos",
+        "git_status_failed": "Não foi possível ler o status do git"
       },
       "filesHome": {
         "no_project_dir": "Nenhum diretório de projeto definido para este chat",
@@ -9563,7 +9579,10 @@
       "what_can_i_do_for_you": "O que posso fazer por você?",
       "worktree_creation_returned_no_path": "A criação da worktree não retornou nenhum caminho",
       "loading_earlier_messages": "Carregando mensagens anteriores…",
-      "send_failed_with_error": "Falha ao enviar: {{error}}"
+      "send_failed_with_error": "Falha ao enviar: {{error}}",
+      "could_not_open_side_chat": "Não foi possível abrir o chat lateral",
+      "side_command_not_run": "O comando /side não foi executado. Sua mensagem continua no editor.",
+      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

@@ -8643,7 +8643,6 @@
         "complete": "完了",
         "dismiss_done_count": "完了を閉じる({{count}})",
         "error": "エラー",
-        "failed_click_to_retry": "失敗 — クリックして再試行",
         "input": "入力",
         "issues": "イシュー",
         "last_tool": "最後のツール:",
@@ -8688,7 +8687,16 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "開始を待機中 — 同時実行制限の後ろのキューに入っています",
         "workflows": "ワークフロー",
         "workspace_empty": "このワークスペースにはまだファイルがありません",
-        "workspace_truncated": "大規模なワークスペース — 最初の10,000ファイルのみ表示しています"
+        "workspace_truncated": "大規模なワークスペース — 最初の10,000ファイルのみ表示しています",
+        "output_load_failed": "出力を読み込めませんでした",
+        "retry": "再試行",
+        "cancel_failed": "サブエージェントをキャンセルできませんでした",
+        "dismiss_failed": "完了したサブエージェントの一部はサーバー側で消去されず、再び表示される可能性があります",
+        "retry_failed_error": "失敗したサブエージェントのうち {{count}} 件を再試行できませんでした",
+        "artifacts_load_failed": "このセッションのアーティファクトを読み込めませんでした",
+        "library_load_failed": "アーティファクトライブラリを読み込めませんでした",
+        "artifact_save_failed": "アーティファクトを保存できませんでした",
+        "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした"
       },
       "assistantMessage": {
         "applied_to_tasks": "タスクに適用済み",
@@ -8722,7 +8730,8 @@
         "more_actions": "その他の操作",
         "needs_active_chat": "このチャットを開き終えると利用できます",
         "needs_earlier_history_count_other": "選択すると以前の履歴を読み込みます（残り{{count}}件）",
-        "share_message": "画像として共有"
+        "share_message": "画像として共有",
+        "copy_failed": "コピーに失敗しました"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",
@@ -8792,14 +8801,18 @@
         "no_knowledge_found_for_query": "「{{query}}」のナレッジが見つかりません",
         "searching_knowledge_for_query": "「{{query}}」のナレッジを検索中…",
         "selected": "選択済み ·",
-        "tokens": "トークン"
+        "tokens": "トークン",
+        "search_failed_for_query": "「{{query}}」のナレッジ検索に失敗しました",
+        "retry": "再試行"
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "エージェント「{{name}}」は自身の MCP サーバーのみを読み込みます。",
         "disabled": "無効",
         "mcp_servers_count": "MCP サーバー ({{count}}/{{total}})",
         "none_loaded": "読み込みなし",
-        "session_mcp_servers": "セッションの MCP サーバー"
+        "session_mcp_servers": "セッションの MCP サーバー",
+        "load_failed": "MCP サーバーを読み込めませんでした",
+        "mode_load_failed": "Tool Search モードを読み取れませんでした。既定値を表示しています"
       },
       "mcpOAuthBanner": {
         "authenticated": "認証されました。",
@@ -9103,11 +9116,13 @@
         "copied": "コピーしました",
         "copy_link": "メッセージへのリンクをコピー",
         "unpin": "ピン留めを解除",
-        "jump_to_message": "メッセージに移動"
+        "jump_to_message": "メッセージに移動",
+        "copy_failed": "コピーに失敗しました"
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "以前のメッセージを読み込む",
-        "error_retry": "以前のメッセージを読み込めませんでした — 再試行"
+        "load_failed": "以前のメッセージを読み込めませんでした",
+        "retry": "再試行"
       },
       "sessionSummary": {
         "empty_body": "サマリーはターンの終了時に作成されます。このセッションのサマリーを得るにはメッセージを送信してください。",
@@ -9157,7 +9172,8 @@
         "filter_placeholder": "ファイルを絞り込む…",
         "refresh": "更新",
         "resize": "ファイルブラウザーのサイズを変更",
-        "tree_mode": "ファイル一覧モード"
+        "tree_mode": "ファイル一覧モード",
+        "git_status_failed": "Git の状態を読み取れませんでした"
       },
       "filesHome": {
         "no_project_dir": "このチャットにはプロジェクトディレクトリが設定されていません",
@@ -9295,7 +9311,10 @@
       "what_can_i_do_for_you": "何をお手伝いしましょうか？",
       "worktree_creation_returned_no_path": "ワークツリーの作成結果にパスがありません",
       "loading_earlier_messages": "以前のメッセージを読み込み中…",
-      "send_failed_with_error": "送信に失敗しました: {{error}}"
+      "send_failed_with_error": "送信に失敗しました: {{error}}",
+      "could_not_open_side_chat": "サイドチャットを開けませんでした",
+      "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
+      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

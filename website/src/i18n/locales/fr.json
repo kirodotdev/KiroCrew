@@ -8887,7 +8887,6 @@
         "complete": "Terminé",
         "dismiss_done_count": "Effacer les terminés ({{count}})",
         "error": "Erreur",
-        "failed_click_to_retry": "Échec — cliquez pour réessayer",
         "input": "Entrée",
         "issues": "Issues",
         "last_tool": "Dernier outil :",
@@ -8932,7 +8931,16 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "en attente de démarrage — mis en file derrière la limite de concurrence",
         "workflows": "Workflows",
         "workspace_empty": "Cet espace de travail ne contient encore aucun fichier",
-        "workspace_truncated": "Espace de travail volumineux — seuls les 10 000 premiers fichiers sont affichés"
+        "workspace_truncated": "Espace de travail volumineux — seuls les 10 000 premiers fichiers sont affichés",
+        "output_load_failed": "Impossible de charger la sortie",
+        "retry": "Réessayer",
+        "cancel_failed": "Impossible d’annuler le sous-agent",
+        "dismiss_failed": "Certains sous-agents terminés n’ont pas été effacés côté serveur et peuvent réapparaître",
+        "retry_failed_error": "Impossible de relancer {{count}} des sous-agents en échec",
+        "artifacts_load_failed": "Impossible de charger les artefacts de cette session",
+        "library_load_failed": "Impossible de charger la bibliothèque d’artefacts",
+        "artifact_save_failed": "Impossible d’enregistrer l’artefact",
+        "workflow_runs_load_failed": "Impossible de charger les exécutions de workflow"
       },
       "assistantMessage": {
         "applied_to_tasks": "Appliqué aux tâches",
@@ -8968,7 +8976,8 @@
         "needs_earlier_history_count_one": "Sélectionnez pour charger l’historique antérieur – {{count}} message antérieur restant",
         "needs_earlier_history_count_many": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
         "needs_earlier_history_count_other": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
-        "share_message": "Partager en image"
+        "share_message": "Partager en image",
+        "copy_failed": "Échec de la copie"
       },
       "chatFooter": {
         "compacting": "Compactage…",
@@ -9040,14 +9049,18 @@
         "no_knowledge_found_for_query": "Aucune connaissance trouvée pour “{{query}}”",
         "searching_knowledge_for_query": "Recherche de connaissances pour “{{query}}”…",
         "selected": "sélectionnés ·",
-        "tokens": "jetons"
+        "tokens": "jetons",
+        "search_failed_for_query": "La recherche de connaissances a échoué pour “{{query}}”",
+        "retry": "Réessayer"
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "L’agent « {{name}} » ne charge que ses propres serveurs MCP.",
         "disabled": "désactivé",
         "mcp_servers_count": "Serveurs MCP ({{count}}/{{total}})",
         "none_loaded": "Aucun chargé",
-        "session_mcp_servers": "Serveurs MCP de la session"
+        "session_mcp_servers": "Serveurs MCP de la session",
+        "load_failed": "Impossible de charger les serveurs MCP",
+        "mode_load_failed": "Impossible de lire le mode Tool Search ; valeur par défaut affichée"
       },
       "mcpOAuthBanner": {
         "authenticated": "authentifié.",
@@ -9367,11 +9380,13 @@
         "copied": "Copié",
         "copy_link": "Copier le lien vers le message",
         "unpin": "Désépingler",
-        "jump_to_message": "Aller au message"
+        "jump_to_message": "Aller au message",
+        "copy_failed": "Échec de la copie"
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "Charger les messages précédents",
-        "error_retry": "Impossible de charger les messages précédents — réessayer"
+        "load_failed": "Impossible de charger les messages précédents",
+        "retry": "Réessayer"
       },
       "sessionSummary": {
         "empty_body": "Le résumé est écrit à la fin d'un tour. Envoyez un message pour en obtenir un pour cette session.",
@@ -9423,7 +9438,8 @@
         "filter_placeholder": "Filtrer les fichiers…",
         "refresh": "Actualiser",
         "resize": "Redimensionner l'explorateur",
-        "tree_mode": "Mode liste de fichiers"
+        "tree_mode": "Mode liste de fichiers",
+        "git_status_failed": "Impossible de lire l’état git"
       },
       "filesHome": {
         "no_project_dir": "Aucun répertoire de projet n'est défini pour cette discussion",
@@ -9563,7 +9579,10 @@
       "what_can_i_do_for_you": "Que puis-je faire pour vous ?",
       "worktree_creation_returned_no_path": "La création du worktree n’a renvoyé aucun chemin",
       "loading_earlier_messages": "Chargement des messages précédents…",
-      "send_failed_with_error": "Échec de l'envoi : {{error}}"
+      "send_failed_with_error": "Échec de l'envoi : {{error}}",
+      "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
+      "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
+      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

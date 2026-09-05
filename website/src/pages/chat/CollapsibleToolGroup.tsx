@@ -250,7 +250,11 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
       )}
 
       {failure !== null && (
-        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" message={failure.terminal
+        // Hand-off on. The approval buttons hold no draft of their own, and the
+        // host composer's draft is persisted per slot (ChatPage saves it on slot
+        // switch) while the hand-off opens a FRESH slot rather than navigating
+        // away — so there is nothing here the navigation can destroy.
+        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent message={failure.terminal
           ? i18nT('components.approvalCard.approval_no_longer_pending')
           : failure.message
             ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })

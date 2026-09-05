@@ -5859,7 +5859,6 @@
         "artifacts_this_session": "This session",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Ask me to \"use a dynamic workflow to …\" — runs from this chat appear here live.",
         "cancel": "Cancel",
-        "failed_click_to_retry": "Failed — click to retry",
         "input": "Input",
         "last_tool": "Last tool:",
         "links": "Links",
@@ -6147,8 +6146,7 @@
         "jump_to_message": "Jump to message"
       },
       "earlierMessagesBar": {
-        "load_earlier_messages": "Load earlier messages",
-        "error_retry": "Couldn't load earlier messages — retry"
+        "load_earlier_messages": "Load earlier messages"
       }
     },
     "chatPage": {

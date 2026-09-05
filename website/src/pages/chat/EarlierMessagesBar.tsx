@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from 'react'
 
+import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 
@@ -30,11 +31,18 @@ export default function EarlierMessagesBar({ loading, failed, onLoad, onFocusRel
   }, [])
 
   const label = failed
-    ? i18nT('pages.chat.earlierMessagesBar.error_retry')
+    ? i18nT('pages.chat.earlierMessagesBar.retry')
     : i18nT('pages.chat.earlierMessagesBar.load_earlier_messages')
 
   return (
-    <div className="flex justify-center px-4 py-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+    <div className="flex flex-wrap justify-center items-center gap-2 px-4 py-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+      {/* The rejected history-page read goes through the shared notice; the Btn
+          stays the retry. Hand-off on: this bar holds no draft, the host
+          composer's draft is persisted per slot, and an in-chat hand-off opens a
+          fresh slot without navigating away. */}
+      {failed && (
+        <ErrorNotice variant="inline" message={i18nT('pages.chat.earlierMessagesBar.load_failed')} askAgent />
+      )}
       <Btn
         ref={btnRef}
         type="button"
@@ -45,8 +53,7 @@ export default function EarlierMessagesBar({ loading, failed, onLoad, onFocusRel
         aria-disabled={loading}
         aria-busy={loading}
         className={[
-          'text-[13px] leading-5',
-          failed ? 'text-danger border-danger/40' : 'text-muted',
+          'text-[13px] leading-5 text-muted',
           loading ? 'opacity-50' : '',
         ].join(' ')}
       >

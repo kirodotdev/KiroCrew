@@ -8765,7 +8765,6 @@
         "complete": "पूर्ण",
         "dismiss_done_count": "पूर्ण को खारिज करें ({{count}})",
         "error": "त्रुटि",
-        "failed_click_to_retry": "विफल — पुनः प्रयास के लिए क्लिक करें",
         "input": "इनपुट",
         "issues": "इश्यू",
         "last_tool": "अंतिम टूल:",
@@ -8810,7 +8809,16 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में",
         "workflows": "वर्कफ़्लो",
         "workspace_empty": "इस कार्यक्षेत्र में अभी कोई फ़ाइल नहीं है",
-        "workspace_truncated": "बड़ा कार्यक्षेत्र — केवल पहली 10,000 फ़ाइलें दिखाई जा रही हैं"
+        "workspace_truncated": "बड़ा कार्यक्षेत्र — केवल पहली 10,000 फ़ाइलें दिखाई जा रही हैं",
+        "output_load_failed": "आउटपुट लोड नहीं हो सका",
+        "retry": "फिर कोशिश करें",
+        "cancel_failed": "सबएजेंट रद्द नहीं किया जा सका",
+        "dismiss_failed": "कुछ पूर्ण हुए सबएजेंट सर्वर पर हटे नहीं और दोबारा दिख सकते हैं",
+        "retry_failed_error": "विफल सबएजेंट में से {{count}} फिर से चलाए नहीं जा सके",
+        "artifacts_load_failed": "इस सत्र के आर्टिफ़ैक्ट लोड नहीं हो सके",
+        "library_load_failed": "आर्टिफ़ैक्ट लाइब्रेरी लोड नहीं हो सकी",
+        "artifact_save_failed": "आर्टिफ़ैक्ट सहेजा नहीं जा सका",
+        "workflow_runs_load_failed": "वर्कफ़्लो रन लोड नहीं हो सके"
       },
       "assistantMessage": {
         "applied_to_tasks": "कार्यों पर लागू",
@@ -8845,7 +8853,8 @@
         "needs_active_chat": "यह चैट पूरी तरह खुल जाने पर उपलब्ध होगा",
         "needs_earlier_history_count_one": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराना संदेश शेष है",
         "needs_earlier_history_count_other": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराने संदेश शेष हैं",
-        "share_message": "छवि के रूप में साझा करें"
+        "share_message": "छवि के रूप में साझा करें",
+        "copy_failed": "कॉपी विफल"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -8916,14 +8925,18 @@
         "no_knowledge_found_for_query": "कोई ज्ञान नहीं मिला: “{{query}}”",
         "searching_knowledge_for_query": "ज्ञान खोजा जा रहा है: “{{query}}”…",
         "selected": "चयनित ·",
-        "tokens": "टोकन"
+        "tokens": "टोकन",
+        "search_failed_for_query": "ज्ञान खोज विफल: “{{query}}”",
+        "retry": "फिर कोशिश करें"
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "एजेंट \"{{name}}\" सिर्फ़ अपने ही MCP सर्वर लोड करता है।",
         "disabled": "अक्षम",
         "mcp_servers_count": "MCP सर्वर ({{count}}/{{total}})",
         "none_loaded": "कोई लोड नहीं",
-        "session_mcp_servers": "सत्र MCP सर्वर"
+        "session_mcp_servers": "सत्र MCP सर्वर",
+        "load_failed": "MCP सर्वर लोड नहीं हो सके",
+        "mode_load_failed": "Tool Search मोड नहीं पढ़ा जा सका; डिफ़ॉल्ट दिखाया जा रहा है"
       },
       "mcpOAuthBanner": {
         "authenticated": "प्रमाणित हो गया।",
@@ -9235,11 +9248,13 @@
         "copied": "कॉपी किया गया",
         "copy_link": "संदेश का लिंक कॉपी करें",
         "unpin": "अनपिन",
-        "jump_to_message": "संदेश पर जाएं"
+        "jump_to_message": "संदेश पर जाएं",
+        "copy_failed": "कॉपी विफल"
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "पुराने संदेश लोड करें",
-        "error_retry": "पुराने संदेश लोड नहीं हो सके — फिर कोशिश करें"
+        "load_failed": "पुराने संदेश लोड नहीं हो सके",
+        "retry": "फिर कोशिश करें"
       },
       "sessionSummary": {
         "empty_body": "सारांश एक टर्न पूरा होने पर लिखा जाता है। इस सेशन के लिए सारांश पाने के लिए एक संदेश भेजें।",
@@ -9290,7 +9305,8 @@
         "filter_placeholder": "फ़ाइलें फ़िल्टर करें…",
         "refresh": "रीफ़्रेश करें",
         "resize": "फ़ाइल ब्राउज़र का आकार बदलें",
-        "tree_mode": "फ़ाइल सूची मोड"
+        "tree_mode": "फ़ाइल सूची मोड",
+        "git_status_failed": "Git स्थिति पढ़ी नहीं जा सकी"
       },
       "filesHome": {
         "no_project_dir": "इस चैट के लिए कोई प्रोजेक्ट डायरेक्टरी सेट नहीं है",
@@ -9429,7 +9445,10 @@
       "what_can_i_do_for_you": "मैं आपके लिए क्या कर सकता हूँ?",
       "worktree_creation_returned_no_path": "वर्कट्री बनाने पर कोई पथ नहीं मिला",
       "loading_earlier_messages": "पुराने संदेश लोड हो रहे हैं…",
-      "send_failed_with_error": "भेजना विफल: {{error}}"
+      "send_failed_with_error": "भेजना विफल: {{error}}",
+      "could_not_open_side_chat": "साइड चैट नहीं खुल सकी",
+      "side_command_not_run": "/side कमांड नहीं चला। तुम्हारा संदेश अभी भी कंपोज़र में है।",
+      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",

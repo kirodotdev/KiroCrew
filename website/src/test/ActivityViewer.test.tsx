@@ -21,6 +21,7 @@ import notificationsReducer from '../store/notificationsSlice'
 
 vi.mock('../api/client', () => ({
   api: {
+    workflowRuns: vi.fn().mockResolvedValue({ runs: [] }),
     browseFiles: vi.fn().mockResolvedValue({ path: '/projects/foo', parent: '/', dirs: [], files: [] }),
     pullRequestSource: vi.fn().mockImplementation(() => new Promise(() => {})),
     fileDiff: vi.fn().mockResolvedValue({ diff: '' }),

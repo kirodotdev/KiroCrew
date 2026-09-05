@@ -29,6 +29,7 @@ import type { PullRequestLink } from '../utils/pullRequestLinks'
 
 vi.mock('../api/client', () => ({
   api: {
+    workflowRuns: vi.fn().mockResolvedValue({ runs: [] }),
     browseFiles: vi.fn().mockResolvedValue({ path: '/p', parent: '/', dirs: [], files: [] }),
     pullRequestSource: vi.fn().mockImplementation(() => new Promise(() => {})),
     // The Issues view is render-tested here; its payload never resolves so the

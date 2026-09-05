@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Files, Diff, Search, X, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
+import ErrorNotice from '../../components/ErrorNotice'
 import { cn } from '../../lib/utils'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { PierreWorkspaceTree } from '../../pierre/tree'
@@ -73,7 +74,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   }
   const [query, setQuery] = useState('')
 
-  const { data: status } = useQuery({
+  const { data: status, isError: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
     enabled: !!projectDir,
@@ -187,6 +188,14 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
           </button>
         </div>
+        {/* A failed status read used to make the Changed count silently read 0.
+            Its own row under the header (the 40px header is full). File rail,
+            no draft → hand-off on. */}
+        {statusError && (
+          <div className="px-2 pt-1.5 shrink-0">
+            <ErrorNotice variant="inline" message={t('pages.chat.fileBrowserRail.git_status_failed')} askAgent />
+          </div>
+        )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">
           <PierreWorkspaceTree
             mode={changedMode ? 'changed' : 'all'}
