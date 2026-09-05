@@ -5503,7 +5503,15 @@
       "split_down": "向下分屏",
       "split_right": "向右分屏",
       "split_right_d": "向右分屏（⌘D）",
-      "type_to_filter": "输入以筛选…"
+      "type_to_filter": "输入以筛选…",
+      "forked_from_options": "{{name}} 的分叉 — 选项",
+      "merged_open_parent": "打开父会话",
+      "merged_readonly_bar": "此会话已合并回其父会话",
+      "merge_back": "合并回原会话",
+      "merge_back_confirm": "将此分支的摘要合并回 “{{name}}” 并归档该分支？该分支将变为只读。",
+      "merge_back_merging": "正在合并…",
+      "merge_back_title": "将此分支的摘要合并回 {{name}} 并归档该分支",
+      "pane_actions": "窗格操作"
     },
     "cliPanel": {
       "copied": "已复制",
@@ -7847,7 +7855,19 @@
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
       "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
-      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
+      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。",
+      "merge_back_failed": "合并回原会话失败。父会话可能已不存在，或网关无法访问；请重试。",
+      "merge_back_failed_already_merged": "该分支已经合并回其父会话。",
+      "merge_back_failed_archive": "摘要已合并到父会话，但分叉未能归档。请再次点击“合并回原会话”以完成。",
+      "merge_back_failed_no_summary": "无法为该分支生成摘要——可能轮次太少，无法合并回原会话。",
+      "merge_back_failed_parent_missing": "父会话已关闭或不再存在。请先从历史记录中重新打开它。",
+      "merge_back_failed_fork_flush": "在生成摘要之前无法保存该分支的最新轮次。没有丢失任何内容——请重试。",
+      "merge_back_failed_non_persistent": "这是一个私密（无痕）会话，无法合并回父会话。",
+      "merge_back_failed_parent_save": "无法将合并的摘要保存到父会话；未合并任何内容。请重试。",
+      "merge_back_failed_running": "该分支有一个轮次正在进行。请在其空闲时重试。",
+      "merge_back_failed_parent_busy": "父会话正在进行一个轮次。请等它完成后重试。",
+      "merge_back_failed_nothing": "此分叉尚无自己的工作可合并。请先发送一条消息，然后再合并。",
+      "merge_back_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet 不可用",
@@ -9238,6 +9258,13 @@
         "copy_text_failed": "复制失败",
         "copy_text_unavailable": "当前环境禁止写入剪贴板。文案已选中——按 Ctrl+C / ⌘C 复制。你改过的卡片文字请直接从卡片上复制。",
         "export_failed": "无法生成分享卡片"
+      },
+      "mergedSummaryCard": {
+        "gap_note_other": "自此分支以来，父会话已推进 {{count}} 条消息；已合并到当前末尾。",
+        "merged_from_a_fork": "已从分支合并",
+        "merged_from_fork": "已从 {{name}} 合并",
+        "summary_covers_full_fork": "整个分支会话的摘要",
+        "summary_of_forks_work": "分支工作的摘要"
       }
     },
     "chatPage": {

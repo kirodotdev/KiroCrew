@@ -5503,7 +5503,15 @@
       "split_down": "下に分割",
       "split_right": "右に分割",
       "split_right_d": "右に分割 (⌘D)",
-      "type_to_filter": "フィルタリングするには入力…"
+      "type_to_filter": "フィルタリングするには入力…",
+      "forked_from_options": "{{name}} のフォーク — オプション",
+      "merged_open_parent": "親セッションを開く",
+      "merged_readonly_bar": "このセッションは親セッションにマージされました",
+      "merge_back": "マージして戻す",
+      "merge_back_confirm": "このフォークのサマリーを 「{{name}}」 にマージして戻し、フォークをアーカイブしますか？ フォークは読み取り専用になります。",
+      "merge_back_merging": "マージ中…",
+      "merge_back_title": "このフォークのサマリーを {{name}} にマージして戻し、フォークをアーカイブします",
+      "pane_actions": "ペインの操作"
     },
     "cliPanel": {
       "copied": "コピーしました",
@@ -7847,7 +7855,19 @@
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
-      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
+      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。",
+      "merge_back_failed": "マージして戻す処理に失敗しました。親セッションが失われたか、ゲートウェイに接続できない可能性があります。もう一度お試しください。",
+      "merge_back_failed_already_merged": "このフォークはすでに親セッションにマージされています。",
+      "merge_back_failed_archive": "要約は親セッションにマージされましたが、フォークをアーカイブできませんでした。完了するには、もう一度「マージして戻す」をクリックしてください。",
+      "merge_back_failed_no_summary": "このフォークをサマリーできませんでした — マージして戻すにはターンが少なすぎる可能性があります。",
+      "merge_back_failed_parent_missing": "親セッションは閉じられているか、存在しません。先に履歴から再度開いてください。",
+      "merge_back_failed_fork_flush": "要約の前にフォークの最新のターンを保存できませんでした。何も失われていません。もう一度お試しください。",
+      "merge_back_failed_non_persistent": "これはプライベート（シークレット）セッションのため、親セッションにマージバックできません。",
+      "merge_back_failed_parent_save": "マージした要約を親セッションに保存できませんでした。何もマージされていません。もう一度お試しください。",
+      "merge_back_failed_running": "このフォークではターンが進行中です。アイドル状態になってからもう一度お試しください。",
+      "merge_back_failed_parent_busy": "親セッションでターンが進行中です。完了してからもう一度お試しください。",
+      "merge_back_failed_nothing": "このフォークにはまだマージして戻す独自の作業がありません。まずメッセージを送ってからマージしてください。",
+      "merge_back_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "オーディオワークレットが利用できません",
@@ -9238,6 +9258,13 @@
         "copy_text_failed": "コピーできませんでした",
         "copy_text_unavailable": "この環境ではクリップボードがブロックされています。投稿テキストは選択済みです — Ctrl+C / ⌘C を押してください。編集したカードのテキストはカードから直接コピーしてください。",
         "export_failed": "共有カードを生成できませんでした"
+      },
+      "mergedSummaryCard": {
+        "gap_note_other": "このフォーク以降、親は {{count}} 件のメッセージ進んでいます。現在の末尾にマージしました。",
+        "merged_from_a_fork": "フォークからマージ済み",
+        "merged_from_fork": "{{name}} からマージ済み",
+        "summary_covers_full_fork": "フォークセッション全体のサマリー",
+        "summary_of_forks_work": "フォークの作業のサマリー"
       }
     },
     "chatPage": {

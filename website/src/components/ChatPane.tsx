@@ -1,7 +1,10 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, GitMerge, ChevronDown, MoreVertical } from 'lucide-react'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from './ui/dropdown-menu'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
@@ -12,6 +15,7 @@ import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput from './ChatInput'
 import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PendingQuestionCard from './PendingQuestionCard'
+import MergedReadonlyBar from './MergedReadonlyBar'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
@@ -21,6 +25,7 @@ import ModelDropdownList from './ModelDropdownList'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
+import { useSessionActions } from '../hooks/useSessionActions'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
@@ -34,6 +39,7 @@ import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/Ch
 import { tryQuickSend } from '../lib/quickSend'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { sendTurn, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
+import { parentSlotKeyFromForkedFrom } from '../utils/openMergedParent'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -63,6 +69,7 @@ export default function ChatPane({
   onSplitRight,
   onSplitDown,
   onOpenFull,
+  onMerged,
   agentLocked,
   frameless,
   followContentWidth,
@@ -77,6 +84,11 @@ export default function ChatPane({
    *  the earlier-messages row is hidden rather than shown inert. The optional ts
    *  anchors the destination near the pane's oldest message, not the newest. */
   onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
+  /** Merge-back succeeded (#3816 UX): the acting pane must refill its leaf with
+   *  the parent key, or it goes dead (the archived fork drops out of the slot
+   *  list and grid panes ignore Redux activeSlot). SessionGridView supplies the
+   *  leaf setter here; a pane with no grid host (member DM embed) omits it. */
+  onMerged?: (parentKey: string) => void
   /** The host declares the slot's agent server-pinned (member DM threads):
    *  the agent picker is not offered at all, instead of offering a control
    *  whose every selection the backend 409s. */
@@ -131,10 +143,17 @@ export default function ChatPane({
   const busy = useAppSelector((s) => selectComposerBusy(s, slotKey))
   // Parent link for the "↳ fork of <parent>" tag. forked_from is the parent's
   // history key (dashboard:<slot>); strip the prefix to match the bare slot key.
-  const parentKey = paneSlot?.forked_from ? paneSlot.forked_from.replace(/^dashboard:/, '') : null
+  const parentKey = paneSlot?.forked_from ? parentSlotKeyFromForkedFrom(paneSlot.forked_from) : null
   const parentTitle = useAppSelector((s) =>
     parentKey ? s.dashboard.slots.find((x) => x.key === parentKey)?.title : undefined,
   )
+  // A fork that hasn't yet been merged back can be folded into its parent
+  // (#3816). Once merged the backend archives it, so the affordance hides —
+  // EXCEPT while archive_pending: the summary persisted but archival failed
+  // (503 archive_failed), and re-invoking Merge back is the promised retry
+  // (GPT round 11), so the affordance must stay visible.
+  const isMerged = paneSlot?.merged === true && paneSlot?.archive_pending !== true
+  const { mergeBack, mergeBackPending } = useSessionActions()
   const approvalMode = useAppSelector((s) => s.dashboard.approvalMode)
   const title = paneSlot?.title || slotKey
   const displayMode = approvalMode === 'yolo' ? 'yolo' : paneSlot?.trust ? 'trust' : paneSlot?.trust_reads ? 'trust_reads' : 'normal'
@@ -638,7 +657,7 @@ export default function ChatPane({
         <div className="relative z-50 flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
           <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</span>
-          {parentKey && (
+          {parentKey && isMerged && (
             <span
               className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
               title={i18nT('components.chatPane.forked_from', { name: parentTitle || parentKey })}
@@ -646,22 +665,119 @@ export default function ChatPane({
               ↳ {parentTitle || parentKey}
             </span>
           )}
+          {parentKey && !isMerged && (
+            /* Unmerged fork: the breadcrumb pill doubles as the overflow menu
+               holding "Merge back" (AUTOSDE max-two-buttons-per-row — the
+               header row cannot take another sibling button; the maintainer's
+               #3816 ruling homes the affordance on the fork breadcrumb, and
+               the pill IS the breadcrumb). */
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="shrink-0 inline-flex items-center gap-0.5 text-[10px] text-accent bg-accent/10 hover:bg-accent/20 rounded-full px-1.5 py-0.5 truncate max-w-[38%] cursor-pointer border-none transition-colors"
+                  title={i18nT('components.chatPane.forked_from_options', { name: parentTitle || parentKey })}
+                  aria-label={i18nT('components.chatPane.forked_from_options', { name: parentTitle || parentKey })}
+                  aria-busy={mergeBackPending}
+                >
+                  <span className="truncate">
+                    {mergeBackPending
+                      ? i18nT('components.chatPane.merge_back_merging')
+                      : <>↳ {parentTitle || parentKey}</>}
+                  </span>
+                  <ChevronDown size={10} className="lucide-inline shrink-0" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-[160px]">
+                <DropdownMenuItem
+                  disabled={mergeBackPending}
+                  aria-label={i18nT('components.chatPane.merge_back')}
+                  title={i18nT('components.chatPane.merge_back_title', { name: parentTitle || parentKey })}
+                  onSelect={() => {
+                    if (mergeBackPending) return
+                    if (confirm(i18nT('components.chatPane.merge_back_confirm', { name: parentTitle || parentKey })))
+                      mergeBack(slotKey, (parent) => onMerged?.(parent))
+                  }}
+                >
+                  <GitMerge size={12} className="lucide-inline" aria-hidden="true" />
+                  {mergeBackPending
+                    ? i18nT('components.chatPane.merge_back_merging')
+                    : i18nT('components.chatPane.merge_back')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <span className="flex-1" />
           {running && <span className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>}
-          {onSplitRight && (
-            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
-              <SplitGlyph />
-            </button>
-          )}
-          {onSplitDown && (
-            <button onClick={onSplitDown} title={i18nT('components.chatPane.split_down')} aria-label={i18nT('components.chatPane.split_down')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
-              <SplitGlyph down />
-            </button>
-          )}
-          {onRemove && (
-            <button onClick={onRemove} title={i18nT('components.chatPane.close_pane')} aria-label={i18nT('components.chatPane.close_pane')} className="shrink-0 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer p-1 transition-colors bg-transparent border-none">
-              <X size={15} />
-            </button>
+          {parentKey && !isMerged && (onSplitRight || onSplitDown || onRemove) ? (
+            /* FORK panes only (AUTOSDE max-two-buttons-per-row + Design review):
+               the breadcrumb dropdown trigger is a header-row control, so the
+               three direct action icons would make four — fold them into one
+               overflow trigger, capping the row at two. Non-fork panes keep
+               their pre-existing three direct one-click actions: collapsing
+               them too would trade everyday ergonomics across all of Split
+               View to solve a control-count problem only fork panes have. */
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  title={i18nT('components.chatPane.pane_actions')}
+                  aria-label={i18nT('components.chatPane.pane_actions')}
+                  className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors"
+                >
+                  <MoreVertical size={15} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[160px]">
+                {onSplitRight && (
+                  <DropdownMenuItem
+                    onSelect={onSplitRight}
+                    aria-label={i18nT('components.chatPane.split_right')}
+                    title={i18nT('components.chatPane.split_right_d')}
+                  >
+                    <SplitGlyph />
+                    {i18nT('components.chatPane.split_right')}
+                  </DropdownMenuItem>
+                )}
+                {onSplitDown && (
+                  <DropdownMenuItem
+                    onSelect={onSplitDown}
+                    aria-label={i18nT('components.chatPane.split_down')}
+                    title={i18nT('components.chatPane.split_down')}
+                  >
+                    <SplitGlyph down />
+                    {i18nT('components.chatPane.split_down')}
+                  </DropdownMenuItem>
+                )}
+                {onRemove && (
+                  <DropdownMenuItem
+                    onSelect={onRemove}
+                    aria-label={i18nT('components.chatPane.close_pane')}
+                    title={i18nT('components.chatPane.close_pane')}
+                    className="text-danger focus:text-danger"
+                  >
+                    <X size={12} className="lucide-inline" aria-hidden="true" />
+                    {i18nT('components.chatPane.close_pane')}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : (
+            <>
+              {onSplitRight && (
+                <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+                  <SplitGlyph />
+                </button>
+              )}
+              {onSplitDown && (
+                <button onClick={onSplitDown} title={i18nT('components.chatPane.split_down')} aria-label={i18nT('components.chatPane.split_down')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+                  <SplitGlyph down />
+                </button>
+              )}
+              {onRemove && (
+                <button onClick={onRemove} title={i18nT('components.chatPane.close_pane')} aria-label={i18nT('components.chatPane.close_pane')} className="shrink-0 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer p-1 transition-colors bg-transparent border-none">
+                  <X size={15} />
+                </button>
+              )}
+            </>
           )}
         </div>
         )}
@@ -768,11 +884,27 @@ export default function ChatPane({
           </div>
         )}
 
+        {/* A merged fork is read-only: every turn/mutation endpoint answers
+            409 {code:"session_merged"}, so an enabled composer would let the
+            user type and send into a rejection with nothing warning them.
+            Replace it with the compact merged bar (#3816 UX). "Open parent"
+            hands the parent to the full session, leaving split view — the pane
+            cannot rebind to the archived fork's parent in place. */}
+        {isMerged ? (
+          <MergedReadonlyBar
+            onOpenParent={paneSlot?.forked_from && onOpenFull ? () => onOpenFull(paneSlot.forked_from!) : undefined}
+          />
+        ) : (
         <ChatInput
           value={input}
           onChange={setInput}
           onSend={doSend}
-          isRunning={busy}
+          // While the merge is in flight the backend's `_merging` gate answers
+          // any send with 409 — copy that contradicts the still-spinning
+          // "Merging…" pill (UX round 17 watch). Presenting the composer as
+          // busy routes the affordance through the same visual state a running
+          // turn uses, instead of inviting a send that can only be rejected.
+          isRunning={busy || mergeBackPending}
           onStop={onStop}
           autoFocusKey={slotKey}
           agentName={paneAgentName}
@@ -851,6 +983,7 @@ export default function ChatPane({
           onDragOver={dropTargetProps.onDragOver}
           onDragLeave={dropTargetProps.onDragLeave}
         />
+        )}
         </div>
 
         {/* Agent picker portal — anchored to the input-bar agent button. */}

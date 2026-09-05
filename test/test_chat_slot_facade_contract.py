@@ -71,6 +71,9 @@ _TO_DICT_KEYS = (
     "theme_consent_sha",
     "memory_mode",
     "forked_from",
+    # Branch-owned merge-back field (#3816): drives the read-only breadcrumb.
+    "merged",
+    "archive_pending",
     "linked_session_key",
     "app",
     "origin",

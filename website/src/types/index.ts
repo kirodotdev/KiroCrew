@@ -882,6 +882,13 @@ export interface ChatSlot {
   executor?: 'local' | 'remote'
   instance_id?: string
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
+  /** This fork was merged back into its parent (#3816): the transcript stays
+   * readable but every turn/mutation endpoint answers 409, and ChatPane renders
+   * the read-only merged breadcrumb instead of the merge-back button. */
+  merged?: boolean
+  /** The merge summary persisted but archival failed (503 archive_failed);
+   *  the Merge back affordance must stay visible so the retry is reachable. */
+  archive_pending?: boolean
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
    * survey shows only on a "user" slot, so an imported Slack thread, a

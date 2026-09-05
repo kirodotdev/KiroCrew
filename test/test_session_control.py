@@ -2692,6 +2692,9 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
         "closed_at",
         "app",
         "forked_from",
+        # Conditional-identity like forked_from: only a merged fork carries it
+        # (#3816); written truthy-only by both the full save and the merge.
+        "merged",
         "linked_session_key",
         # The remote-execution binding, written all-three-or-none by both the
         # full save and the merge. A plain local newborn carries none of it; the
@@ -2714,6 +2717,35 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
     assert meta.get("color_index") == 3
     assert meta.get("title") == "Pinned title"
     assert meta.get("title_origin") == "user"
+
+
+def test_the_empty_window_merge_persists_the_merged_flag_for_a_merged_fork(tmp_path):
+    """#3816: a merged fork routed through the empty-window merge keeps its
+    ``merged`` once-flag, mirroring the full save's meta_line — otherwise a
+    metadata-only save after merge-back would leave the on-disk line
+    open-shaped and restart would resurrect a writable fork.
+
+    Resets the module-global session-create budget first: this file's other
+    create-calling tests run the shared window close to its cap, and this test
+    must not be the one that tips a later test over it.
+    """
+    from kiro_crew.dashboard import create_rate_limit
+    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+
+    create_rate_limit.reset_for_tests()
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _folder(state, "fold00000001", "Goal")
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000001")
+    )
+    child = state.get_slot(created["target"])
+    child._merged = True
+
+    asyncio.run(save_slot_off_loop(state, child, force=True))
+    meta = state.conversation_log.get_metadata(slot_history_key(child))
+    assert meta.get("merged") is True
 
 
 def test_the_empty_window_merge_reads_slot_state_at_write_time(tmp_path):

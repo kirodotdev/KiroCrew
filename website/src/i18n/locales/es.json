@@ -5681,7 +5681,15 @@
       "split_down": "Dividir abajo",
       "split_right": "Dividir a la derecha",
       "split_right_d": "Dividir a la derecha (⌘D)",
-      "type_to_filter": "Escribe para filtrar…"
+      "type_to_filter": "Escribe para filtrar…",
+      "forked_from_options": "Fork de {{name}} — opciones",
+      "merged_open_parent": "Abrir sesión principal",
+      "merged_readonly_bar": "Esta sesión se reintegró en su sesión principal",
+      "merge_back": "Reintegrar",
+      "merge_back_confirm": "¿Reintegrar el resumen de este fork en “{{name}}” y archivar el fork? El fork quedará en solo lectura.",
+      "merge_back_merging": "Reintegrando…",
+      "merge_back_title": "Reintegrar el resumen de este fork en {{name}} y archivar el fork",
+      "pane_actions": "Acciones del panel"
     },
     "cliPanel": {
       "copied": "Copiado",
@@ -8059,7 +8067,19 @@
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",
       "switch_to_autopilot_mode_future_messages_will_us": "¿Cambiar al modo piloto automático? Los mensajes siguientes usarán el comportamiento de piloto automático (planificar → aprobar → ejecutar).",
-      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar."
+      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar.",
+      "merge_back_failed": "Falló la reintegración. La sesión principal puede haber desaparecido o el gateway no está accesible; inténtelo de nuevo.",
+      "merge_back_failed_already_merged": "Este fork ya se ha reintegrado en su sesión principal.",
+      "merge_back_failed_archive": "El resumen se reintegró en la sesión principal, pero no se pudo archivar el fork. Haga clic en Reintegrar de nuevo para terminar.",
+      "merge_back_failed_no_summary": "No se pudo resumir este fork: puede tener muy pocos turnos para reintegrarlo.",
+      "merge_back_failed_parent_missing": "La sesión principal está cerrada o ya no existe. Vuelva a abrirla desde el Historial primero.",
+      "merge_back_failed_fork_flush": "No se pudieron guardar los últimos turnos de la bifurcación antes de resumir. No se perdió nada: inténtelo de nuevo.",
+      "merge_back_failed_non_persistent": "Esta es una sesión privada (incógnito) y no se puede fusionar de nuevo en una sesión principal.",
+      "merge_back_failed_parent_save": "No se pudo guardar el resumen en la sesión principal; no se reintegró nada. Inténtelo de nuevo.",
+      "merge_back_failed_running": "Este fork tiene un turno en curso. Inténtelo de nuevo cuando esté inactivo.",
+      "merge_back_failed_parent_busy": "La sesión principal tiene un turno en curso. Inténtelo de nuevo cuando termine.",
+      "merge_back_failed_nothing": "Este fork aún no tiene trabajo propio que reintegrar. Envíele primero un mensaje y luego reintégrelo.",
+      "merge_back_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet no disponible",
@@ -9504,6 +9524,15 @@
         "copy_text_failed": "No se pudo copiar",
         "copy_text_unavailable": "El portapapeles está bloqueado aquí. El texto de tu publicación está seleccionado: pulsa Ctrl+C / ⌘C. El texto de la tarjeta que hayas editado, cópialo desde la propia tarjeta.",
         "export_failed": "No se pudo generar la tarjeta para compartir"
+      },
+      "mergedSummaryCard": {
+        "gap_note_one": "El padre avanzó {{count}} mensaje desde este fork; reintegrado al final actual.",
+        "gap_note_other": "El padre avanzó {{count}} mensajes desde este fork; reintegrado al final actual.",
+        "merged_from_a_fork": "Reintegrado desde un fork",
+        "merged_from_fork": "Reintegrado desde {{name}}",
+        "summary_covers_full_fork": "Resumen de la sesión completa del fork",
+        "summary_of_forks_work": "Resumen del trabajo del fork",
+        "gap_note_many": "El padre avanzó {{count}} mensajes desde este fork; reintegrado al final actual."
       }
     },
     "chatPage": {

@@ -279,6 +279,16 @@ class SlotProjection:
             "theme_consent_sha": slot.theme_consent_sha,
             "memory_mode": slot.memory_mode,
             "forked_from": slot.forked_from,
+            # ``merged`` drives the breadcrumb's read-only rendering. The parent
+            # KEY deliberately stays out of the snapshot: its only readers are
+            # the restore paths, which take it from persisted history meta
+            # (First Principles review — zero client consumers).
+            "merged": slot._merged,
+            # ``archive_pending`` marks the archive_failed retry window (#3816,
+            # GPT round 11): the summary IS merged but the fork could not be
+            # archived, and the only retry action is the Merge back affordance
+            # — which hides on ``merged`` alone, stranding the promised retry.
+            "archive_pending": slot._archive_pending,
             "linked_session_key": slot.linked_session_key,
             "app": slot._app,
             "origin": slot._origin,
