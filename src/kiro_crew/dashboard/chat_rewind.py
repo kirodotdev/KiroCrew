@@ -266,6 +266,21 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         redacted_content, _ = redact_credentials(redacted_content)
         prospective_slot.append("user", redacted_content, "msg msg-u")
         msgs_snapshot = list(prospective_slot.messages)
+        # The frozen-prefix boundary this snapshot must be written against. An
+        # ``append`` at the window cap credits trimmed rows to this counter, so a
+        # save that read it AFTER such a trim would emit the trimmed rows twice --
+        # once in the frozen prefix, once at the head of the snapshot. Captured
+        # here, with no await between it and the snapshot above, so the pair is
+        # exact; the save refuses on drift and this endpoint answers its retryable
+        # 503.
+        pre_await_disk_older_count = slot._disk_older_count
+        # The trim advances the durable POSITION base beside the disk boundary,
+        # and the two must move together or absolute positions
+        # (``session_control.read_messages``) disagree with the window: a row
+        # counted as having left the front while it is still IN the window either
+        # refuses a valid cursor (``since < base``) or repeats rows. The save has
+        # no contract on this one, so it travels only to the commit.
+        pre_await_disk_older_durable_count = slot._disk_older_durable_count
         retired_question_ids = [
             question_id
             for question_id in slot._question_pending
@@ -399,17 +414,46 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 slot.invalidate_source_links()
                 slot._dirty = True
                 slot._resumed_count = 0
-                # Deliberately NOT copied from ``prospective_slot``: the
-                # persistence witnesses (``_pending_rewrite``, ``_disk_*``,
-                # ``_frozen_prefix_cache``). The save above ran on the LIVE
-                # slot and stamped them with the post-rewrite truth
-                # (``_pending_rewrite`` cleared, disk window/meta/mtime cache
-                # matching the truncated file); the prospective copies are the
-                # PRE-save values. Restoring those would re-arm
-                # ``_pending_rewrite`` -- making the next flush repeat the
-                # destructive rewrite and discard any cross-process append
-                # (workflow/cron) that landed in between -- and would move the
-                # monotone ``_disk_tail_ts`` floor backwards.
+                # The frozen-prefix boundary the file was just written against.
+                # A cap-trim landing after the save read this counter credits
+                # rows to the prefix that the line above puts BACK in the live
+                # window (the prospective list was frozen pre-trim), leaving the
+                # slot claiming one row in two places -- the next default save
+                # would then emit it twice. The save wrote
+                # ``prefix(pre_await) + snapshot`` and stamped
+                # ``_disk_window_len`` to match, so adopting the same boundary is
+                # what makes the three agree. The durable position base moves with
+                # it, for the same reason and on the same rows -- leaving it
+                # advanced would count a row as having left the front while it is
+                # back in the window. Both are no-ops when nothing trimmed.
+                slot._disk_older_count = pre_await_disk_older_count
+                slot._disk_older_durable_count = pre_await_disk_older_durable_count
+                # ``_disk_window_len`` is deliberately NOT corrected here, and the
+                # direction is the whole argument. The save stamps it absolutely, so a
+                # trim BEFORE the stamp has its decrement erased and a trim AFTER it
+                # does not -- the commit cannot tell the two apart without the count
+                # the save actually wrote (which is not ``len(msgs_snapshot)``: a note
+                # row authorized elsewhere is filtered out of the write). Guessing
+                # risks over-claiming, which makes a later trim credit rows to the
+                # frozen prefix that are not in it -- the duplication this transaction
+                # exists to prevent. Leaving it possibly SHORT is the safe direction and
+                # costs no rows: a short count under-credits the prefix, and the
+                # foreign-append merge preserves an on-disk window line the memory
+                # window has dropped. Making it exact wants the save to publish its
+                # whole witness set as one routing-keyed record; see history.md.
+                # ``_frozen_prefix_cache``, the trim's last casualty, needs nothing --
+                # the trim sets it to None, which only costs the next save a re-read.
+                #
+                # Deliberately NOT copied from ``prospective_slot``: the remaining
+                # persistence witnesses (``_pending_rewrite``, ``_disk_meta_*``,
+                # ``_frozen_prefix_cache``). The save above ran on the LIVE slot
+                # and stamped them with the post-rewrite truth
+                # (``_pending_rewrite`` cleared, disk meta/mtime cache matching the
+                # truncated file); the prospective copies are the PRE-save values.
+                # Restoring those would re-arm ``_pending_rewrite`` -- making the
+                # next flush repeat the destructive rewrite and discard any
+                # cross-process append (workflow/cron) that landed in between --
+                # and would move the monotone ``_disk_tail_ts`` floor backwards.
                 if slot._pending:
                     slot.event.set()
                 else:
@@ -454,6 +498,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     slot,
                     msgs_snapshot,
                     expected_history_key=expected_history_key,
+                    expected_disk_older_count=pre_await_disk_older_count,
                 )
             )
             try:

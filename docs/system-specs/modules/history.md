@@ -223,6 +223,60 @@ no longer destroy older turns.
   consistent snapshot: it reads `_disk_older_count`, snapshots
   `list(slot.messages)`, and re-checks `_disk_older_count` (bounded retry) so a
   concurrent trim cannot interleave with the read-serialize-write.
+- **Explicit-snapshot pairing (`expected_disk_older_count`)**: a caller that
+  freezes its own `messages` snapshot on the loop and then awaits the save cannot
+  use that retry — the snapshot is already frozen, and the counter the worker
+  reads belongs to a later moment. A trim at the window cap in that gap credits
+  the trimmed rows to `_disk_older_count`, so the write emits them twice: once in
+  the frozen prefix it now claims, once at the head of the still-frozen snapshot.
+  Such a caller passes the counter it observed in the SAME synchronous stretch as
+  the snapshot; the save refuses on drift (returns `False`, writes nothing) and
+  the caller answers its retryable refusal. The rewind boundary transaction does
+  this and re-adopts the same boundary at its commit, since the commit puts the
+  pre-trim window prefix back, together with `_disk_older_durable_count`, which
+  the trim advances beside the boundary — leaving either advanced counts a row as
+  having left the window front while it is back inside it. A trim landing after
+  the worker read the boundary cannot be refused (the correct file is already
+  written), so both are corrected at the commit instead. Neither is stamped by
+  the save, so the pre-await values are the file's truth in every interleaving.
+  Any other caller that freezes a snapshot across an await owes the same pairing;
+  `save_slot_off_loop` does not forward the parameter yet, so a boundary
+  transaction routed through it still reads the live counter in the worker.
+- **`_disk_window_len` is deliberately left possibly SHORT after such a trim, and
+  the direction is the whole argument.** The save stamps it *absolutely*, so a
+  trim landing BEFORE the stamp has its decrement erased while one landing after
+  it does not — and the commit cannot distinguish the two without the count the
+  save actually wrote, which is not `len(snapshot)` either (a note row authorized
+  elsewhere is filtered out of the write, so the snapshot can be longer than the
+  file's window region). Over-claiming is the harmful direction: a later trim then
+  credits rows to the frozen prefix that the file does not hold, and the next save
+  re-emits window rows. Under-claiming costs no rows — it under-credits the prefix,
+  warns about rows that are in fact on disk, and drops the following save onto a
+  whole-file re-read, while the foreign-append merge below preserves the on-disk
+  window line the memory window has dropped. Making it exact wants the save to
+  publish its whole witness set as ONE routing-keyed record, which is also what
+  the stamping race above wants. `_frozen_prefix_cache`, the trim's last casualty,
+  needs nothing: the trim sets it to `None`, which only costs the next save a
+  re-read.
+- **Witness stamping is routing-gated**: the post-write bookkeeping
+  (`_pending_rewrite`, `_disk_window_len`, `_disk_meta_*`, `_frozen_prefix_cache`)
+  describes the file this save wrote, but it lives on the live slot, which the
+  event loop can rebind mid-write. The write stays correct (it lands on the
+  transcript authorized before it), so the save re-confirms
+  `slot_history_key(slot)` against the key it wrote and SKIPS the stamping when
+  they differ — stamping would clear a `_pending_rewrite` the new transcript still
+  owes and claim its unsaved rows as persisted. Every witness left at its pre-save
+  value is the conservative reading, so the next save re-reads the prefix,
+  re-takes the archive-safe path, and re-observes the file. The
+  `ConversationLog` cache invalidation is keyed on the file that WAS written and
+  stays unconditional. Everything the stamp needs (the post-write `stat`, the
+  carried-forward `created_at`) is computed BEFORE the re-check so the stamped
+  region is assignments only — a save runs in a worker thread, and a syscall
+  inside that region is the realistic point at which the loop gets to rebind
+  under a half-applied stamp. Full atomicity against the loop is not reachable
+  from the thread (`slot._lock` is an asyncio lock, and once the rebind path has
+  recomputed these for its own transcript no undo is right); it wants the five
+  fields collapsed into one assignable record carrying the key it describes.
 - **Cross-process lock (`_locked`)**: `_save_slot_to_history` holds the session's
   cross-process `_locked` (the SAME lock `append` / `append_off_loop` / rotate /
   rewrite / metadata edits take) across its metadata read, frozen-prefix read,

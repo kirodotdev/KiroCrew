@@ -2535,6 +2535,7 @@ def _save_slot_to_history(
     force: bool = False,
     rewrite: bool = False,
     expected_history_key: str | None = None,
+    expected_disk_older_count: int | None = None,
     rows_only: bool = False,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
@@ -2594,10 +2595,25 @@ def _save_slot_to_history(
     and persists on a later flush, and after the pop no flush ever visits that slot
     again.
 
-    Returns ``False`` only when the delete-won guard aborted the save because
-    the session was permanently deleted while this save awaited the lock — the
-    in-memory window was NOT persisted and must not be treated as durable.
-    Every other completion (including the benign no-op skips) returns ``True``.
+    ``expected_disk_older_count`` pairs an explicit *messages* snapshot with the
+    ``slot._disk_older_count`` the caller observed in the SAME synchronous stretch
+    it froze that snapshot in. A snapshot is internally consistent by
+    construction, but the frozen-prefix boundary it must be written against is
+    not: a concurrent ``append`` at the window cap trims the front and credits
+    the trimmed rows to ``_disk_older_count``, so a snapshot frozen before that
+    trim, written against the counter read after it, emits those rows twice —
+    once in the frozen prefix and once at the head of the snapshot. Supplying the
+    paired count makes that drift refuse the save (``False``, nothing written)
+    instead of committing a duplicated transcript; a caller that reads the live
+    counter itself cannot detect the drift at all. Ignored without *messages*,
+    where the bounded retry below already takes both halves together.
+
+    Returns ``False`` when the delete-won guard aborted the save because the
+    session was permanently deleted while this save awaited the lock, when
+    ``expected_history_key`` no longer matches the slot's routing, or when
+    ``expected_disk_older_count`` drifted — the in-memory window was NOT
+    persisted and must not be treated as durable. Every other completion
+    (including the benign no-op skips) returns ``True``.
     """
     if not state.conversation_log:
         return True
@@ -2615,10 +2631,25 @@ def _save_slot_to_history(
     # snapshot the window, then confirm _disk_older_count is unchanged; a small
     # bounded retry closes the race without locks (slot._lock is an asyncio.Lock
     # and so cannot be acquired from this thread). An explicit snapshot is
-    # already consistent by construction.
+    # internally consistent by construction, but its PAIRING with the frozen
+    # prefix boundary is not -- see ``expected_disk_older_count`` above.
     if messages is not None:
         window = list(messages)
         disk_older = slot._disk_older_count
+        if expected_disk_older_count is not None and disk_older != expected_disk_older_count:
+            # The window hit the cap and trimmed while this save was in flight,
+            # so the trimmed rows are now credited to the frozen prefix AND
+            # still present at the head of the frozen snapshot. Writing would
+            # duplicate them. Refuse like the guards below: nothing written, and
+            # the caller (which holds the retryable-503 contract) re-decides
+            # against the state that actually exists.
+            logger.warning(
+                "Slot %s save refused: frozen prefix moved from %d to %d during the write",
+                slot.key,
+                expected_disk_older_count,
+                disk_older,
+            )
+            return False
     else:
         for _ in range(_FLUSH_SNAPSHOT_RETRIES):
             disk_older = slot._disk_older_count
@@ -3354,45 +3385,83 @@ def _save_slot_to_history(
                     logger.debug(
                         "could not restore pre-close mtime for %s", history_key, exc_info=True
                     )
-            # A rewrite (archive-safe) save succeeded → clear the pending-rewrite
-            # flag so later saves return to the cheap default path.
-            if rewrite:
-                slot._pending_rewrite = False
-            # Record how many window messages are now on disk so memory trimming
-            # can safely fold leading window messages into the frozen prefix.
-            slot._disk_window_len = len(window)
-            # Record the disk identity this save just wrote (carried forward
-            # from ``existing_meta`` when present), so the delete-won guard can
-            # recognize a file recreated by another writer after a permanent
-            # delete on the NEXT save.
-            slot._disk_meta_created_at = str(meta_line.get("created_at") or "")
-            # A committed save is a direct observation of the file this slot
-            # writes — even when the carried-forward metadata is legacy and
-            # has no ``created_at`` for the identity string above.
-            slot._disk_meta_observed = True
-            # Record the post-write mtime in the frozen-prefix cache (even when
-            # there is no frozen prefix, ``disk_older == 0``). The cache doubles
-            # as the "did another process touch this file since we last wrote
-            # it?" signal: a matching mtime on the next save proves THIS slot was
-            # the last writer, so the frozen prefix is reusable and no NEW
+            # The witnesses below all describe THIS file. They live on the live
+            # slot, so they may only be stamped while the slot still routes to
+            # the transcript this save wrote. The event loop can rebind the slot
+            # (a cron injection re-linking it) after the routing snapshot above
+            # and while this worker writes: the write itself stays correct (it
+            # lands on the authorized transcript), but stamping would then
+            # describe the OLD file on a slot that now writes the NEW one —
+            # clearing ``_pending_rewrite`` the new transcript still owes,
+            # over-claiming ``_disk_window_len`` rows as persisted, and handing
+            # the delete-won guard another file's identity. Skipping leaves every
+            # witness at its pre-save value, which is the conservative side of
+            # each one: the next save re-reads the prefix, re-takes the
+            # archive-safe path, and re-observes the file. The cache
+            # invalidations after this block are keyed on the file that WAS
+            # written, so they stay unconditional.
+            # Everything the stamping needs is computed BEFORE the routing
+            # re-check, so the stamped region is assignments only: this runs in a
+            # worker thread, and a syscall between the check and the last
+            # assignment is the realistic point at which the event loop gets to
+            # rebind the slot underneath a half-applied stamp. It cannot be made
+            # atomic against the loop from here (``slot._lock`` is an asyncio lock
+            # and no undo is right once the rebind path has recomputed these for
+            # its own transcript) -- collapsing the five fields into one
+            # assignable record carrying the key it describes is the real fix, and
+            # belongs with that record rather than here.
+            #
+            # The frozen-prefix cache records the post-write mtime (even when
+            # there is no frozen prefix, ``disk_older == 0``). It doubles as the
+            # "did another process touch this file since we last wrote it?"
+            # signal: a matching mtime on the next save proves THIS slot was the
+            # last writer, so the frozen prefix is reusable and no NEW
             # cross-process append can have landed — letting the foreign-append
-            # scan take the O(window) fast path instead of re-reading the
-            # whole file. The foreign lines this save just preserved are cached
+            # scan take the O(window) fast path instead of re-reading the whole
+            # file. The foreign lines this save just preserved are cached
             # alongside so the fast path re-emits them verbatim: they now live in
             # the on-disk window region (after the frozen prefix), and because
             # ``disk_older`` is unchanged a bare frozen+window rebuild on the next
             # save would otherwise silently delete them.
+            _post_write_cache: tuple[float, int, int, str, list[str]] | None
             try:
                 _st = path.stat()
-                slot._frozen_prefix_cache = (
+            except OSError:
+                _post_write_cache = None
+            else:
+                _post_write_cache = (
                     _st.st_mtime,
                     _st.st_size,
                     disk_older,
                     frozen_prefix,
                     foreign_lines,
                 )
-            except OSError:
-                slot._frozen_prefix_cache = None
+            # The disk identity this save just wrote (carried forward from
+            # ``existing_meta`` when present), so the delete-won guard can
+            # recognize a file recreated by another writer after a permanent
+            # delete on the NEXT save.
+            _post_write_created_at = str(meta_line.get("created_at") or "")
+            if slot_history_key(slot) == history_key:
+                # A rewrite (archive-safe) save succeeded → clear the pending-rewrite
+                # flag so later saves return to the cheap default path.
+                if rewrite:
+                    slot._pending_rewrite = False
+                # How many window messages are now on disk, so memory trimming can
+                # safely fold leading window messages into the frozen prefix.
+                slot._disk_window_len = len(window)
+                slot._disk_meta_created_at = _post_write_created_at
+                # A committed save is a direct observation of the file this slot
+                # writes — even when the carried-forward metadata is legacy and
+                # has no ``created_at`` for the identity string above.
+                slot._disk_meta_observed = True
+                slot._frozen_prefix_cache = _post_write_cache
+            else:
+                logger.warning(
+                    "Slot %s was rebound from %s while its save was in flight; "
+                    "leaving the persistence witnesses at their pre-save values",
+                    slot.key,
+                    history_key,
+                )
             state.conversation_log._invalidate_cache(history_key)
             state.conversation_log.note_tab_id(history_key, tab_id)
             return True
