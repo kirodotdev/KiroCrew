@@ -41,4 +41,15 @@ describe('ChatInput — the focus prefetch goes through the bounded client', () 
     // Settling is the whole point; an unhandled rejection here would fail the run.
     await new Promise(r => setTimeout(r, 30))
   })
+
+  it('does not prefetch at all when the typed command menus are off', async () => {
+    // The prefetch warms the $-picker. A host that turned the menus off (an
+    // app-sdk embed) has no picker to warm, and its permission manifest never
+    // declared /api/skills -- an ambient fetch here would bypass that scoping.
+    mockApi.skills.mockImplementation(() => new Promise(() => {}))
+    renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} typedCommandMenus={false} />)
+    fireEvent.focus(screen.getByLabelText('Message input'))
+    await new Promise(r => setTimeout(r, 30))
+    expect(mockApi.skills).not.toHaveBeenCalled()
+  })
 })

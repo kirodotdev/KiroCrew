@@ -1,7 +1,7 @@
-import { useSyncExternalStore } from 'react'
-import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { useChatConfig } from './useChatConfig'
 
-const sub = (cb: () => void) => { window.addEventListener('mc-config-changed', cb); return () => window.removeEventListener('mc-config-changed', cb) }
-const get = () => loadChatConfig().simplifiedToolNames
-
-export const useSimplifiedToolNames = () => useSyncExternalStore(sub, get)
+/** The `simplifiedToolNames` chat setting as live state. A thin selector over
+ *  the shared `useChatConfig` -- one liveness implementation for every setting,
+ *  so this reader gains the focus reload the others have instead of keeping a
+ *  second spelling of the `mc-config-changed` subscription. */
+export const useSimplifiedToolNames = () => useChatConfig().simplifiedToolNames

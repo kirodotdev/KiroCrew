@@ -319,7 +319,8 @@ import {
 import { deriveFollowUpOptions, parseOptions } from '../app-sdk/protocol'
 import { isNoteRow } from '../lib/noteContract'
 import OverlayDrawer from '../components/OverlayDrawer'
-import { loadChatConfig, saveChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
+import { loadChatConfig, saveChatConfig, CONTENT_WIDTH } from './chat/ChatSettings'
+import { useChatConfig } from '../hooks/useChatConfig'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
 import { focusComposer, focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
@@ -1467,13 +1468,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [showHistorySuggestions])
   const pendingInput = useAppSelector(s => s.chat.pendingInput)
 
-  const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
-  useEffect(() => {
-    const reload = () => { const next = loadChatConfig(); setChatConfig(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next) }
-    window.addEventListener('focus', reload)
-    window.addEventListener('mc-config-changed', reload)
-    return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
-  }, [])
+  const chatConfig = useChatConfig()
 
   // Project is part of the roster's identity: re-pointing this slot at another
   // project changes which project-scoped agents exist. Derived here rather than

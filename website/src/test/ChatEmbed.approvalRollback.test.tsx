@@ -24,6 +24,8 @@ vi.mock('../app-sdk/index', () => ({
 }))
 
 import ChatEmbed from '../app-sdk/ChatEmbed'
+import { Provider } from 'react-redux'
+import { createTestStore } from './helpers'
 
 // One unresolved permission message: ChatMessageList groups it and renders the
 // CollapsibleToolGroup approval row (collapsed — running=false, so no
@@ -42,11 +44,12 @@ let queryClient: QueryClient
 
 function renderEmbed() {
   return render(
-    React.createElement(
-      QueryClientProvider,
-      { client: queryClient },
-      <ChatEmbed slotKey="slot-1" />,
-    ),
+    React.createElement(Provider, { store: createTestStore() },
+      React.createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        <ChatEmbed slotKey="slot-1" />,
+      )),
   )
 }
 

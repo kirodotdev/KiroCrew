@@ -127,9 +127,7 @@
       "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al cuadro de redacción; revisa la conversación antes de enviarlo de nuevo.",
       "delivery_unconfirmed_option": "Entrega sin confirmar: revisa la conversación y vuelve a elegir la opción si no aparece.",
       "message": "Mensaje…",
-      "send": "Enviar",
       "send_failed_connection": "No se pudo enviar: comprueba tu conexión y vuelve a intentarlo.",
-      "send_message": "Enviar mensaje",
       "session_ready_type_a_message_to_start": "Sesión lista. Escribe un mensaje para empezar.",
       "streaming": "en streaming"
     },
@@ -5520,6 +5518,7 @@
       "screenshot": "Captura de pantalla",
       "select_project": "Seleccionar proyecto",
       "send": "Enviar",
+      "sending": "Enviando…",
       "send_options": "Opciones de envío",
       "show_in_chat": "Mostrar en el chat",
       "show_pending_tool_call_in_chat": "Mostrar la llamada de herramienta pendiente en el chat",

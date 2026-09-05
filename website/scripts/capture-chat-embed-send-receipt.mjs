@@ -42,7 +42,7 @@ for (const theme of ['dark', 'light']) {
     await input.waitFor()
     if (scene === 'refused') await page.screenshot({ path: `${OUT}/idle-${theme}.png` })
     await input.fill(SENT)
-    await page.getByLabel('Send message').click()
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
     // The failure row renders from the poll-independent local state, so it is
     // there as soon as the mutation settles.
     const ROW_RE = /Send failed|Delivery not confirmed/

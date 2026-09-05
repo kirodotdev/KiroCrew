@@ -51,8 +51,6 @@
   "appSdk": {
     "chatEmbed": {
       "chat_message": "Chat message",
-      "send": "Send",
-      "send_message": "Send message",
       "session_ready_type_a_message_to_start": "Session ready. Type a message to start.",
       "streaming": "streaming"
     },

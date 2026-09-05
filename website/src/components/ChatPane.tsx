@@ -30,7 +30,8 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
-import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
+import { CONTENT_WIDTH } from '../pages/chat/ChatSettings'
+import { useChatConfig } from '../hooks/useChatConfig'
 import { tryQuickSend } from '../lib/quickSend'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { sendTurn, mintSendId } from '../chat-core/transport/sendTurn'
@@ -210,13 +211,7 @@ export default function ChatPane({
   // the same way (ChatPage.tsx's reload listener) — a pane is long-lived, so a
   // one-shot read would leave it on the old layout after the user changes the
   // setting while split view is open.
-  const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
-  useEffect(() => {
-    const reload = () => { const next = loadChatConfig(); setChatConfig(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next) }
-    window.addEventListener('focus', reload)
-    window.addEventListener('mc-config-changed', reload)
-    return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
-  }, [])
+  const chatConfig = useChatConfig()
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
   // Subscribes to the store's global refresh so a default-agent write in ANY pane (or

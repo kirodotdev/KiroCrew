@@ -8,6 +8,12 @@
  * This module lives inside the KiroCrew frontend for now. When we publish
  * it as a standalone package, apps will `import { useAppApi } from '@kirocrew/app-sdk'`
  * and the import map will resolve it to the host's vendored copy.
+ *
+ * Publish-plan note: `ChatEmbed` renders the host's native ChatInput, whose
+ * subtree reads slot state from the dashboard Redux store. It therefore
+ * requires mounting inside the host document (as every in-tree app does) and
+ * is not a store-free component -- a standalone publish either ships it as
+ * host-only or gives the composer a store-free seam first.
  */
 import {
   createContext,

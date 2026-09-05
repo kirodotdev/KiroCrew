@@ -24,10 +24,11 @@
  * Deliberately Redux-free, API-free and copy-free, like the rest of this
  * directory: it takes state and returns behaviour, so a surface backed by a
  * Redux slot, by React Query, or by an embedding app's own store can all use it.
- * Two host helpers are REUSED rather than reimplemented — `useImeGuard` for the
- * composition Enter and `chatDrafts.mergeIntoDraft` for the append — because a
- * private copy of either would be one more spelling of the thing this module
- * exists to collapse.
+ * One host helper is REUSED rather than reimplemented — `chatDrafts.mergeIntoDraft`
+ * for the append — because a private copy would be one more spelling of the thing
+ * this module exists to collapse. Enter/IME handling is NOT here: every consumer
+ * renders the native ChatInput, whose own `useImeGuard` owns that path, so a
+ * second guard in this hook was a duplicate waiting to drift.
  *
  * The draft may be UNCONTROLLED (the hook holds it; pass `initialDraft` at most)
  * or CONTROLLED (`draft` + `onDraftChange`, for a surface that already persists
@@ -42,12 +43,9 @@ import {
   useRef,
   useState,
   type Dispatch,
-  type FocusEvent,
-  type KeyboardEvent,
   type MutableRefObject,
   type SetStateAction,
 } from 'react'
-import { useImeGuard } from '../hooks/useImeGuard'
 import { mergeIntoDraft as appendToDraft } from '../utils/chatDrafts'
 
 /** Max auto-grow height (px) before the box scrolls instead of growing. */
@@ -131,25 +129,6 @@ export interface ComposerDraft {
   setDraft: Dispatch<SetStateAction<string>>
   /** Attach to the textarea so it grows with content up to `maxHeight`. */
   textareaRef: MutableRefObject<HTMLTextAreaElement | null>
-  /**
-   * Spread onto the input so the IME guard can see composition start/end, and so
-   * an abandoned composition recovers on blur. A composition abandoned WITHOUT a
-   * `compositionend` (focus moves away mid-composition, an OS-level IME cancel)
-   * leaves the guard latched; the `onBlur` half clears it, so Enter works again
-   * when focus returns. A surface with its own blur behaviour composes the two —
-   * spreading this AFTER an own `onBlur` would silently drop that handler.
-   */
-  composition: {
-    onCompositionStart: () => void
-    onCompositionEnd: () => void
-    onBlur: <T extends HTMLElement>(e: FocusEvent<T>) => void
-  }
-  /**
-   * Whether this key event is an IME committing a candidate rather than a real
-   * keypress. Exposed for a surface whose key handler is too rich to delegate to
-   * `submitOnEnter` — it still must not read a composition Enter as a submit.
-   */
-  isComposing: <T extends HTMLElement>(e: KeyboardEvent<T>) => boolean
   /** Append text to the draft, keeping whatever the user has already typed. */
   mergeIntoDraft: (incoming: string) => void
   /** Options currently forming the picked tail of the draft. */
@@ -158,13 +137,6 @@ export interface ComposerDraft {
   toggleOption: (option: string) => void
   /** `text` is above `maxBytes`. Always false when no limit was given. */
   exceedsByteLimit: (text: string) => boolean
-  /**
-   * Enter submits, Shift+Enter inserts a newline, and an Enter that is committing
-   * an IME composition does neither. Pass the surface's own submit — this hook
-   * never sends anything itself. Generic over the element so an `<input>`-based
-   * composer can use it too.
-   */
-  submitOnEnter: <T extends HTMLElement>(e: KeyboardEvent<T>, submit: () => void) => void
 }
 
 export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft {
@@ -180,7 +152,6 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
   const controlled = controlledDraft !== undefined
   const draft = controlled ? controlledDraft : internalDraft
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const ime = useImeGuard()
 
   // Read through refs so the setter identity is STABLE across renders. A setter that
   // changed every render would re-run any effect that lists it, and the side panel's
@@ -306,45 +277,13 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
     [maxBytes],
   )
 
-  const isComposing = useCallback(
-    <T extends HTMLElement>(e: KeyboardEvent<T>) => ime.isComposing(e),
-    [ime],
-  )
-
-  const submitOnEnter = useCallback(<T extends HTMLElement>(
-    e: KeyboardEvent<T>,
-    submit: () => void,
-  ) => {
-    // Escape while a composition is latched means the user cancelled the IME, and
-    // some IME/browser pairs deliver no `compositionend` for that cancel. Clear the
-    // latch and fall through untouched — no submit, no preventDefault — so the
-    // surface's own Escape behaviour (closing a panel, dismissing a picker) still
-    // runs.
-    if (e.key === 'Escape') {
-      ime.reset()
-      return
-    }
-    if (e.key !== 'Enter' || e.shiftKey) return
-    // An IME sends a final Enter to COMMIT the candidate the user just chose. Reading
-    // that as a submit sends a half-written question and is unrecoverable — the text is
-    // already gone from the box. The guard is the host's, layered over the native flag,
-    // because the native flag alone is false on that Enter in some browsers. `claimEnter`
-    // consumes the key in both outcomes, so a swallowed Enter cannot fall through to the
-    // textarea and land a newline in the question instead.
-    if (!ime.claimEnter(e)) return
-    submit()
-  }, [ime])
-
   return {
     draft,
     setDraft,
     textareaRef,
-    composition: ime.bindComposition(),
-    isComposing,
     mergeIntoDraft,
     picked,
     toggleOption,
     exceedsByteLimit,
-    submitOnEnter,
   }
 }

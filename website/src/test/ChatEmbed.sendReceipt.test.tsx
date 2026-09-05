@@ -47,11 +47,14 @@ vi.mock('../app-sdk/ChatMessageList', () => ({
 }))
 
 import ChatEmbed from '../app-sdk/ChatEmbed'
+import { Provider } from 'react-redux'
+import { createTestStore } from './helpers'
 
 let queryClient: QueryClient
 
 function renderEmbed(ui: React.ReactElement) {
-  return render(React.createElement(QueryClientProvider, { client: queryClient }, ui))
+  return render(React.createElement(Provider, { store: createTestStore() },
+    React.createElement(QueryClientProvider, { client: queryClient }, ui)))
 }
 
 async function typeAndSend(text: string) {
@@ -59,7 +62,7 @@ async function typeAndSend(text: string) {
     fireEvent.change(screen.getByLabelText('Chat message'), { target: { value: text } })
   })
   await act(async () => {
-    fireEvent.click(screen.getByLabelText('Send message'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   })
 }
 
@@ -131,11 +134,10 @@ describe('ChatEmbed send receipt policy', () => {
     })
     await act(async () => { rejectPost(new AppApiError(500, 'boom')) })
     await settle()
-    // Joined with a SPACE, not the paragraph break other composers use: this
-    // is a single-line <input>, and a browser drops newlines assigned to its
-    // value, which would glue the two into "secondfirst". jsdom keeps the
-    // newline, so the assertion must be exact to catch the real-browser bug.
-    expect(input().value).toBe('second first')
+    // The shared recovery rule's paragraph-break join, verbatim: the composer
+    // is ChatInput's textarea, the same field every other recovery site
+    // writes into, so the join renders as a real line break here too.
+    expect(input().value).toBe('second\n\nfirst')
   })
 
   it('an unreadable 2xx (the old swallowed-as-success shape) neither reports nor restores', async () => {
@@ -177,7 +179,7 @@ describe('ChatEmbed send receipt policy', () => {
     await typeAndSend('hello')
     await settle()
     expect(errorRows()).toHaveLength(1)
-    await act(async () => { fireEvent.click(screen.getByLabelText('Send message')) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })) })
     await settle()
     expect(errorRows()).toHaveLength(0)
   })
