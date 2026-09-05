@@ -37,6 +37,10 @@ export default [
       // Test files assert on visible English by design.
       'src/**/*.test.{ts,tsx}',
       'src/test/**',
+      // UI primitive components with no user-visible copy (displayName only)
+      'src/components/ui/dropdown-menu.tsx',
+      'src/components/ui/context-menu.tsx',
+      'src/components/ui/phoneSubmenu.tsx',
       // MODEL-FACING PROMPTS, by naming convention. A `*.prompt.ts` module may
       // contain ONLY the text of a message sent to an agent — no UI copy — so the
       // suffix IS the boundary and its sibling module stays fully covered. Same
