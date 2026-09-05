@@ -61,6 +61,30 @@ MAX_TASK_FAILURES = 3
 MAX_STAGE_ROUNDS = 3
 MAX_STAGE_ESCALATIONS = 2  # after 2 escalations (= 9 rounds), force-fail
 
+# Whole-plan watchdog. ``stage_timeout_seconds`` bounds one stage; a plan with
+# many stages multiplies it, so a 10-stage plan at the 30-minute default can run
+# for hours unattended. This is the ceiling for the WHOLE run, checked at each
+# stage boundary, with a single warning once the run passes
+# ``PLAN_WARN_FRACTION`` of it so the user can intervene before the cut.
+PLAN_WARN_FRACTION = 0.75
+
+# Fallback per-stage budget for a tracker built without one. The authoritative
+# value is ``orchestrator.stage_timeout_seconds``; this is only what the tracker
+# runs on between construction and the config load.
+DEFAULT_STAGE_TIMEOUT = 1800
+
+
+def _human_secs(seconds: int) -> str:
+    """Render a second count as ``30m`` / ``1m30s`` / ``45s``."""
+    if seconds >= 3600:
+        h, rem = divmod(seconds, 3600)
+        m = rem // 60
+        return f"{h}h{m}m" if m else f"{h}h"
+    if seconds >= 60:
+        m, rem = divmod(seconds, 60)
+        return f"{m}m{rem}s" if rem else f"{m}m"
+    return f"{seconds}s"
+
 
 class OrchestrationTracker:
     """Track failures and rounds per orchestrated session.
@@ -68,14 +92,30 @@ class OrchestrationTracker:
     Enforces hard limits that the LLM prompt cannot override.
     """
 
-    def __init__(self, stage_timeout_seconds: int = 1800) -> None:
+    def __init__(self, stage_timeout_seconds: int | None = None) -> None:
+        # ``None`` means "not provided -- load it from config", which is a
+        # different state from an explicit value that happens to equal the
+        # default. The stage loop reads ``budgets_unset`` to decide whether it
+        # owes this tracker a config load, so a tracker built without budgets
+        # (the Slack gateway creates one lazily when a subagent result lands) gets
+        # one, while a caller that passed a budget keeps exactly what it passed.
+        self._budgets_unset: bool = stage_timeout_seconds is None
         self._task_failures: dict[str, int] = {}  # task_key → failure count
         self._stage_rounds: dict[int, int] = {}  # stage_num → round count
         self._stage_escalations: dict[int, int] = {}  # stage_num → escalation count
         self._stage_results: dict[int, str] = {}  # stage_num → result file path
         self.stopped: bool = False
-        self._stage_timeout: int = stage_timeout_seconds
+        self._stage_timeout: int = (
+            DEFAULT_STAGE_TIMEOUT if stage_timeout_seconds is None else stage_timeout_seconds
+        )
         self._stage_start: float = 0.0  # set when stage begins
+        # Whole-plan watchdog. Monotonic deliberately: it measures how long THIS
+        # process has been running the plan, which is all it ever has to measure --
+        # a plan does not outlive its process (nothing persists the plan shape, so
+        # a restart ends the plan; see the module spec's Limitations).
+        self._plan_timeout: int = 0  # 0 = disabled
+        self._plan_start: float = 0.0  # set when the plan's first stage is entered
+        self._plan_warned: bool = False  # the 75% notice fires once per plan
 
     def stop(self) -> None:
         """User requested stop after escalation."""
@@ -84,9 +124,8 @@ class OrchestrationTracker:
     @property
     def has_escalated(self) -> bool:
         """True if any task hit failure limit or any stage hit round limit."""
-        return (
-            any(v >= MAX_TASK_FAILURES for v in self._task_failures.values())
-            or any(v >= MAX_STAGE_ROUNDS for v in self._stage_rounds.values())
+        return any(v >= MAX_TASK_FAILURES for v in self._task_failures.values()) or any(
+            v >= MAX_STAGE_ROUNDS for v in self._stage_rounds.values()
         )
 
     def reset_after_guidance(self) -> None:
@@ -118,9 +157,65 @@ class OrchestrationTracker:
     def record_round(self, stage: int) -> bool:
         """Record a spawn round for a stage. Returns True if limit reached."""
         self._stage_rounds[stage] = self._stage_rounds.get(stage, 0) + 1
-        if self._stage_rounds[stage] == 1 or not self._stage_start:
+        # Only ever STARTS the stage clock, never restarts it: the clock belongs
+        # to the stage, and `start_stage` owns the reset. The old `rounds == 1`
+        # arm was that reset, from when entering a stage and recording a round
+        # were the same call; it is unreachable now, because the only caller that
+        # introduces a new stage key is the loop, which enters through
+        # `start_stage`. The Slack handler records against `current_stage`, an
+        # existing key. Left as a floor for a tracker whose first round arrives
+        # with no stage entry at all (the lazily created Slack-only tracker) and
+        # after `reset_after_guidance` zeroes it.
+        if not self._stage_start:
             self._stage_start = time.monotonic()
+        # The whole-plan clock starts with the plan's first round and is never
+        # restarted by a later one: it is the budget for the RUN, not for a
+        # stage, so re-arming it here would make every stage boundary refresh
+        # the ceiling the watchdog is supposed to enforce.
+        if not self._plan_start:
+            self._plan_start = time.monotonic()
         return self._stage_rounds[stage] >= MAX_STAGE_ROUNDS
+
+    def start_stage(self, stage: int) -> None:
+        """Mark *stage* as the one now executing, without spending a round.
+
+        A round is one SPAWN WAVE -- the unit the subagent-completion handler
+        records, and the unit ``MAX_STAGE_ROUNDS`` budgets, because that is what
+        the orchestrator prompt promises the model ("max 3 rounds per stage").
+        Entering a stage is not a wave.
+
+        The stage loop used to enter through :meth:`record_round`, called for its
+        side effects rather than its count -- harmless while nothing on that path
+        consulted the cap. Once the cap IS consulted there (issue #1783), that
+        tick spent a third of the stage's budget before any subagent had run: a
+        dashboard stage was cut after two waves, while the same stage driven from
+        the Slack handler -- which has no stage loop and so no entry tick -- got
+        three. Stricter than the prompt promises AND inconsistent between paths.
+
+        So the side effects live here and the counting stays in
+        :meth:`record_round`. Registering the stage at zero rounds is what makes
+        :attr:`current_stage` (the highest key) point at it, which is what the
+        Slack handler then records against and what the loop resumes from.
+        """
+        self._stage_rounds.setdefault(stage, 0)
+        # Unconditional: this is the per-STAGE clock, so entering stage 2 must not
+        # inherit stage 1's elapsed time.
+        self._stage_start = time.monotonic()
+        # The whole-plan clock starts with the plan's first stage and is never
+        # restarted: it is the budget for the RUN, so re-arming it here would let
+        # every stage boundary refresh the ceiling the watchdog enforces.
+        if not self._plan_start:
+            self._plan_start = time.monotonic()
+
+    def round_limit_reached(self, stage: int) -> bool:
+        """True when *stage* has spent its whole round budget.
+
+        The same reading ``record_round`` returns, available without recording
+        another round -- the stage loop needs it again after a stage's subagent
+        wave finishes, because the rounds those waves consume are recorded by the
+        subagent-completion handler on this same tracker, not by the loop.
+        """
+        return self._stage_rounds.get(stage, 0) >= MAX_STAGE_ROUNDS
 
     def is_stage_timed_out(self) -> bool:
         """True if current stage has exceeded the timeout."""
@@ -159,11 +254,87 @@ class OrchestrationTracker:
     @property
     def timeout_human(self) -> str:
         """Human-friendly timeout string, e.g. '30m' or '1m30s'."""
-        s = self._stage_timeout
-        if s >= 60:
-            m, rem = divmod(s, 60)
-            return f"{m}m{rem}s" if rem else f"{m}m"
-        return f"{s}s"
+        return _human_secs(self._stage_timeout)
+
+    # ── Whole-plan watchdog ──
+
+    @property
+    def budgets_unset(self) -> bool:
+        """True while this tracker has never had its configured budgets applied.
+
+        The stage loop used to gate its config load on "did I just create this
+        tracker", which meant a tracker it did NOT create -- the one the Slack
+        gateway creates lazily when a subagent result lands on a slot the loop has
+        not reached -- ran the whole plan on constructor defaults: the plan
+        watchdog disabled at 0 and the stage budget at
+        :data:`DEFAULT_STAGE_TIMEOUT` regardless of config. Asking the tracker
+        instead makes the answer independent of how the loop obtained it.
+        """
+        return self._budgets_unset
+
+    def mark_budgets_loaded(self) -> None:
+        """Record that a config load has been attempted for this tracker.
+
+        Called even when the load RAISED: the fallback is the documented
+        behaviour of a failed load, and re-attempting it at every later Go would
+        turn one bad config read into one per stage gate.
+        """
+        self._budgets_unset = False
+
+    @property
+    def max_plan_duration_seconds(self) -> int:
+        """Configured ceiling for the whole plan in seconds (0 = disabled)."""
+        return self._plan_timeout
+
+    @max_plan_duration_seconds.setter
+    def max_plan_duration_seconds(self, seconds: int) -> None:
+        """Set the whole-plan budget after construction.
+
+        Same seam, and same reason, as ``stage_timeout_seconds``: the tracker is
+        published before the orchestrator config load returns, so the configured
+        value is applied here once it is known. Safe only before the first round
+        is recorded -- ``_plan_start`` is 0 until then, so no deadline the run is
+        already being measured against can move.
+        """
+        self._plan_timeout = seconds
+
+    @property
+    def plan_elapsed_seconds(self) -> int:
+        """Seconds since the plan's first round, or 0 before it started."""
+        if not self._plan_start:
+            return 0
+        return int(time.monotonic() - self._plan_start)
+
+    def is_plan_timed_out(self) -> bool:
+        """True once the whole plan has outrun ``max_plan_duration_seconds``."""
+        if not self._plan_start or not self._plan_timeout:
+            return False
+        return (time.monotonic() - self._plan_start) > self._plan_timeout
+
+    def plan_warning_due(self) -> bool:
+        """True exactly once, at the first check past ``PLAN_WARN_FRACTION``.
+
+        Latches on read: the caller emits the notice, and a plan whose remaining
+        stages each re-check must not re-announce it at every boundary.
+        """
+        if self._plan_warned or not self._plan_start or not self._plan_timeout:
+            return False
+        if (time.monotonic() - self._plan_start) < self._plan_timeout * PLAN_WARN_FRACTION:
+            return False
+        self._plan_warned = True
+        return True
+
+    @property
+    def plan_timeout_human(self) -> str:
+        """Human-friendly whole-plan budget, e.g. '2h'."""
+        return _human_secs(self._plan_timeout)
+
+    @property
+    def plan_elapsed_human(self) -> str:
+        """Human-friendly elapsed plan time, e.g. '1h30m'."""
+        return _human_secs(self.plan_elapsed_seconds)
+
+    # ── Stage ledger reads ──
 
     def round_count(self, stage: int) -> int:
         return self._stage_rounds.get(stage, 0)
@@ -257,8 +428,7 @@ Stage N: Verification
 # Loose pre-filter: catches plan-like text cheaply. False positives are
 # handled by rephrase_plan(might_not_be_plan=True) which asks the LLM.
 _PLAN_LIKE_RE = re.compile(
-    r"(?:^|\n)\s*(?:Phase|Step|Stage|Part)\s+\d+\s*[:\-—]"
-    r"|(?:^|\n)\s*\d+\.\s+\*\*[A-Z]",
+    r"(?:^|\n)\s*(?:Phase|Step|Stage|Part)\s+\d+\s*[:\-—]" r"|(?:^|\n)\s*\d+\.\s+\*\*[A-Z]",
     re.IGNORECASE,
 )
 
@@ -300,7 +470,9 @@ def validate_plan_format(text: str) -> tuple[bool, bool, list[str]]:
     return True, len(issues) == 0, issues
 
 
-async def rephrase_plan(text: str, issues: list[str], client: Any, *, might_not_be_plan: bool = False) -> str | None:
+async def rephrase_plan(
+    text: str, issues: list[str], client: Any, *, might_not_be_plan: bool = False
+) -> str | None:
     """Ask the LLM to reformat a malformed plan. Returns fixed text or None.
 
     When *might_not_be_plan* is True, the LLM is instructed to return the

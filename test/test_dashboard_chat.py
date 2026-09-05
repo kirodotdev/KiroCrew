@@ -10486,7 +10486,7 @@ class TestPythonStageLoop:
     def _isolate_config_dir(self, tmp_path, monkeypatch):
         """Redirect every config_dir used by the stage loop to a per-test tmp dir.
 
-        ``_capture_stage_result`` (in ``chat_orchestrator``) writes stage results
+        ``_write_stage_result`` (in ``chat_orchestrator``) writes stage results
         under ``config_dir() / "sessions" / slot.key``. The orchestrator imports
         ``config_dir`` into its own namespace, so patching only the ``chat`` /
         ``state`` namespaces leaves results writing to the live
