@@ -573,6 +573,56 @@ no longer destroy older turns.
   generation. Reconsolidating a few already-processed messages is harmless and
   idempotent; dropping unprocessed ones is a persisted data-integrity failure.
 
+### Send identity on a row: `sendId` scalar and `sendIds` list
+
+A dashboard send mints a client-side `sendId` so the initiating tab can retire
+its own optimistic bubble against the row the server persists. The identity is
+carried in **two spellings, and a reader MUST consult both**:
+
+- `meta.sendId` — the scalar, on a row that stands for exactly one send. The two
+  ENQUEUE paths (`queue_for_next_turn`, and the sub-agent hold branch in
+  `chat_handlers`) persist it into the QUEUE ENTRY's metadata, not only onto the
+  live `queue_push` broadcast — a tab that missed the broadcast learns the send
+  landed only from the drained row, which reads entry meta. The accepted-steer
+  path instead stamps the ROW it persists, and its `steer_push` carries the id
+  purely as a live echo (`chat_delivery`).
+- `meta.sendIds` — the list, written by `chat_runner`'s drain (`_merged_send_ids`)
+  and ONLY when a single drained row folds together more than one queued send.
+  The scalar remains present, naming just one of them.
+
+The list is not a rename of the scalar: it exists because one row can genuinely
+represent N sends. So a consumer keyed on the scalar alone silently under-matches
+a merged row — it retires one send and reinserts the others as phantom bubbles.
+Each side funnels the pair through one accessor for that reason: `rowIdentities`
+and `reconcileOptimisticEcho` in `chatSlice.ts` on the client,
+`_merged_send_ids` in `chat_runner.py` on the server. New readers should use
+those rather than reading either field directly.
+
+### Delivery markers on a row
+
+Alongside the identity, a dashboard row carries client-only delivery markers. They
+are written by the sending tab and never by the server, so a row read back from
+history carries none of them — their absence means "nothing claimed", not "not
+delivered":
+
+- `meta.optimistic` / `meta.pendingServerRow` — this row is the client's own bubble
+  standing in for a send the server has not echoed back yet. `pendingServerRow` is
+  what makes a refetch retain it instead of rebuilding it away.
+- `meta.deliveryUnknown` — the POST did not return a readable receipt, so whether
+  the turn was accepted is genuinely unknown. Live doubt.
+- `meta.deliveryUnresolved` — doubt a LATER send's confirmation demoted. The row
+  is kept, in past tense, rather than erased.
+- `meta.deliveryConfirmed` / `meta.confirmedSendId` — positive proof the send
+  landed, plus which send id the proof named.
+
+**These are independent booleans, so their combinations are not all legal.**
+Nothing clears the two doubt markers when a send later confirms, so
+`deliveryConfirmed` alongside a stale `deliveryUnknown` is representable and does
+occur. Resolve them through `rowDeliveryState` (`utils/sendDelivery.ts`), which
+owns the precedence — confirmation first, then live doubt, then spent doubt — and
+do not re-derive it per reader: two readers resolving it independently is how a
+bubble comes to render muted while the composer beside it reads "delivered".
+
 ## Session Archive (`history.py`, `history_rewrite.py`)
 
 Lines that ARE intentionally dropped (rotation, compaction, history edits) are

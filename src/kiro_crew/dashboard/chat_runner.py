@@ -4861,6 +4861,28 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         )
 
 
+def _merged_send_ids(consumed: list[dict]) -> list[str]:
+    """Every client send id the consumed entries stand for, in drain order.
+
+    Reads both the scalar `sendId` an enqueue writes and the plural `sendIds` an
+    already-merged entry carries, so folding twice does not lose the first fold's.
+    """
+    out: list[str] = []
+    for item in consumed:
+        meta = item.get("meta")
+        if not isinstance(meta, dict):
+            continue
+        one = meta.get("sendId")
+        if isinstance(one, str) and one and one not in out:
+            out.append(one)
+        many = meta.get("sendIds")
+        if isinstance(many, list):
+            for x in many:
+                if isinstance(x, str) and x and x not in out:
+                    out.append(x)
+    return out
+
+
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
@@ -5131,6 +5153,11 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     if _drained_ids:
         _drained_meta.pop("steer_delivery_id", None)
         _drained_meta["steer_delivery_ids"] = _drained_ids
+    # Accumulate, for the reason above: the scalar survives `update` as last-wins, so
+    # every earlier send on a merged row would stay unconfirmed and be resent.
+    _sent_ids = _merged_send_ids(consumed)
+    if len(_sent_ids) > 1:
+        _drained_meta["sendIds"] = _sent_ids
     # Durable provenance for every `inject` row. `cls` is NOT persisted for this
     # role (chat_persistence only keeps it for `role == "system"`), and the
     # frontend's `meta.cronLabel` exists on the wire only because parse_cls_meta

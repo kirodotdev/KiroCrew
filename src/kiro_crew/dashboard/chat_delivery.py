@@ -534,27 +534,42 @@ def queue_for_next_turn(
     message: str,
     *,
     directive_user_origin: bool = False,
+    send_id: object = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
+
+    ``send_id`` is echoed on the broadcast for the same reason ``steer_push``
+    echoes it: the queued card is what now owns the message, so the initiating
+    tab must be able to retire the optimistic row it rendered. The POST receipt
+    also reports ``queued``, but a 2xx whose body will not parse leaves that
+    unreadable, and then only this event can release the row.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import containment_meta
 
+    normalized = normalize_send_id(send_id)
+    entry_meta = containment_meta(state, slot)
+    if normalized:
+        # Durable, not just broadcast: a tab that misses `queue_push` learns the send
+        # landed only from the drained row, and the drain reads the ENTRY's meta.
+        entry_meta = {**(entry_meta or {}), "sendId": normalized}
     qid = slot.queue_append(
         message,
-        meta=containment_meta(state, slot),
+        meta=entry_meta,
         directive_user_origin=directive_user_origin,
     )
-    state.broadcast_ws(
-        "queue_push",
-        {
-            "slot": slot.key,
-            "content": _redact_for_display(sanitize_outbound(message)),
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "queue_id": qid,
-        },
-    )
+    push_payload: dict[str, object] = {
+        "slot": slot.key,
+        "content": _redact_for_display(sanitize_outbound(message)),
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "queue_id": qid,
+    }
+    if normalized:
+        # Omitted when absent so the payload shape is unchanged for a send that
+        # never minted one; the client treats absence as "no release".
+        push_payload["sendId"] = normalized
+    state.broadcast_ws("queue_push", push_payload)
     return qid

@@ -43,6 +43,7 @@ from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
     STEER_REQUEUED,
     STEER_STEERED,
+    normalize_send_id,
     queue_for_next_turn,
     steer_into_running_turn,
 )
@@ -623,6 +624,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             slot,
             message,
             directive_user_origin=not bool(request_app),
+            send_id=user_meta.get("sendId") if user_meta else None,
         )
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
@@ -674,23 +676,31 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
+        # Same release contract as `queue_for_next_turn`: the queued card owns the
+        # message, so the initiating tab needs the id to retire its optimistic row.
+        _hold_send_id = normalize_send_id(user_meta.get("sendId") if user_meta else None)
+        _hold_meta = containment_meta(state, slot)
+        if _hold_send_id:
+            # Durable, not just broadcast: a tab that misses `queue_push` learns the
+            # send landed only from the drained row, and the drain reads ENTRY meta.
+            _hold_meta = {**(_hold_meta or {}), "sendId": _hold_send_id}
         qid = slot.queue_append(
             message,
-            meta=containment_meta(state, slot),
+            meta=_hold_meta,
             directive_user_origin=not bool(request_app),
         )
         _c, _ = redact_exfiltration_urls(message)
         _c, _ = redact_credentials(_c)
         _redacted = _redact_for_display(_c)
-        state.broadcast_ws(
-            "queue_push",
-            {
-                "slot": slot.key,
-                "content": _redacted,
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "queue_id": qid,
-            },
-        )
+        _hold_payload: dict[str, object] = {
+            "slot": slot.key,
+            "content": _redacted,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "queue_id": qid,
+        }
+        if _hold_send_id:
+            _hold_payload["sendId"] = _hold_send_id
+        state.broadcast_ws("queue_push", _hold_payload)
         # Same receipt contract as the busy-slot queue branch: `queue_id`
         # binds the sender's pre-send composer state to this exact entry.
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})

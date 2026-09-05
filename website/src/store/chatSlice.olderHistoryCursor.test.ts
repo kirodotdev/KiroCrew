@@ -85,6 +85,61 @@ function resumed(store: ReturnType<typeof makeStore>) {
 
 const detail = () => api.chatSlotDetail as unknown as { mock: { calls: unknown[][] } }
 
+describe('a superseded switch must not overwrite a NEWER paging cursor', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  /** Two same-slot bounded switches, resolved NEWEST-FIRST. History grew between
+   *  them, so the stale response carries an older `next_before`. */
+  async function newestFirst() {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('grow'))
+    const mock = api.chatSlotDetail as unknown as ReturnType<typeof vi.fn>
+
+    let releaseStale: (v: unknown) => void = () => {}
+    const withheld = new Promise(res => { releaseStale = res })
+    mock.mockReturnValueOnce(withheld as never)
+    const stale = store.dispatch(switchSlot('grow'))
+
+    // The newer switch sees the grown history: a HIGHER next_before.
+    mock.mockResolvedValueOnce({ messages: HISTORY.slice(300, 400), has_more: true, total: 400, next_before: 300 })
+    await store.dispatch(switchSlot('grow'))
+    const newer = { hasMore: store.getState().chat.slotHasMore, oldest: store.getState().chat.slotOldestIndex }
+
+    releaseStale({ messages: HISTORY.slice(100, 200), has_more: true, total: 200, next_before: 100 })
+    await stale
+    return { store, newer }
+  }
+
+  it('keeps the newer cursor when the stale response lands second', async () => {
+    const { store, newer } = await newestFirst()
+
+    const s = store.getState().chat
+    expect(s.slotOldestIndex).toBe(newer.oldest)
+    expect(s.slotHasMore).toBe(newer.hasMore)
+  })
+
+  it('installs NO cursor from a superseded switch, even with none landed', async () => {
+    // Asserted the opposite until the fallback was ruled a defect: the newer refresh paged
+    // to next_before 0 while the older switch carries 100, so landing 100 skips rows.
+    const store = makeStore()
+    store.dispatch(setActiveSlot('gap'))
+    const mock = api.chatSlotDetail as unknown as ReturnType<typeof vi.fn>
+
+    let releaseSwitch: (v: unknown) => void = () => {}
+    const withheld = new Promise(res => { releaseSwitch = res })
+    mock.mockReturnValueOnce(withheld as never)
+    const switching = store.dispatch(switchSlot('gap'))
+
+    mock.mockResolvedValueOnce({ messages: HISTORY.slice(0, 50), has_more: true, total: 50, next_before: 0 })
+    await store.dispatch(refreshSlot('gap'))
+    releaseSwitch({ messages: HISTORY.slice(100, 200), has_more: true, total: 200, next_before: 100 })
+    await switching
+
+    const s = store.getState().chat
+    expect(s.slotOldestIndex).not.toBe(100)
+  })
+})
+
 describe('loadOlderMessages', () => {
   beforeEach(() => vi.clearAllMocks())
 
