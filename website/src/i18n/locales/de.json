@@ -9664,7 +9664,9 @@
       "workflow_running_other": "{{count}} Workflows laufen",
       "flat_view_hide_folders_in_board_columns": "Flache Ansicht — Ordner in den Board-Spalten ausblenden",
       "show_folders_in_board_columns": "Ordner in den Board-Spalten anzeigen",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Zur flachen Ansicht wechseln (Ordner in den Board-Spalten ausblenden)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Zur flachen Ansicht wechseln (Ordner in den Board-Spalten ausblenden)",
+      "unlink_source_link": "Von dieser Sitzung trennen",
+      "unlink_source_link_failed": "Trennen fehlgeschlagen. Erneut versuchen."
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

@@ -9664,7 +9664,9 @@
       "workflow_running_other": "{{count}} वर्कफ़्लो चल रहे हैं",
       "flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू — बोर्ड कॉलम में फ़ोल्डर छिपाएँ",
       "show_folders_in_board_columns": "बोर्ड कॉलम में फ़ोल्डर दिखाएँ",
-      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)",
+      "unlink_source_link": "इस सत्र से अनलिंक करें",
+      "unlink_source_link_failed": "अनलिंक नहीं हो सका। पुनः प्रयास करें।"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

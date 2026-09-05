@@ -9519,7 +9519,9 @@
       "workflow_running_other": "{{count}} 件のワークフローが実行中",
       "flat_view_hide_folders_in_board_columns": "フラット表示 — ボードの列内のフォルダーを非表示",
       "show_folders_in_board_columns": "ボードの列内のフォルダーを表示",
-      "switch_to_flat_view_hide_folders_in_board_columns": "フラット表示に切り替え（ボードの列内のフォルダーを非表示）"
+      "switch_to_flat_view_hide_folders_in_board_columns": "フラット表示に切り替え（ボードの列内のフォルダーを非表示）",
+      "unlink_source_link": "このセッションからリンク解除",
+      "unlink_source_link_failed": "リンク解除できませんでした。もう一度お試しください。"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

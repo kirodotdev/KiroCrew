@@ -249,6 +249,26 @@ def _validate_autocompact_pct(raw: object) -> float | None:
     return None
 
 
+def _restore_dismissed_source_links(slot: "_ChatSlot", raw: object) -> None:
+    """Rehydrate the per-slot dismissed source-link identity set from metadata.
+
+    History JSONL is a file an attacker with disk access could tamper, and these
+    keys feed the derivation filter that decides which chips a client sees, so
+    each entry is re-validated against the canonical serialized-identity grammar
+    before it is trusted. A malformed entry is dropped rather than aborting the
+    restore -- a corrupt suppression key can only ever fail to match a real
+    identity, so dropping it is safe and fails toward showing the chip.
+    """
+    if not isinstance(raw, list):
+        return
+    # Function-local to avoid a circular import: source_providers imports from the
+    # dashboard state/handler layer this module also serves. Same lazy-import
+    # convention the handlers use for source_providers.
+    from kiro_crew.dashboard.handlers.source_providers import is_valid_source_identity_key
+
+    slot._dismissed_source_links = {key for key in raw if is_valid_source_identity_key(key)}
+
+
 def save_all_slots_to_history(state: DashboardState) -> None:
     """Save all active slots to history. Called on gateway shutdown."""
     for slot in list(state._slots.values()):
@@ -961,6 +981,7 @@ def _rehydrate_slot_from_history(
             slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+        _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
         if meta.get("workspace"):
             slot.workspace = meta["workspace"]
         if meta.get("project"):
@@ -1498,6 +1519,7 @@ def _apply_recent_session(
         slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("project"):
@@ -2755,6 +2777,13 @@ def _save_slot_to_history(
                     # so the override is CLEARABLE: written even when None,
                     # like the other clearable fields above.
                     "autocompact_pct": slot.autocompact_pct,
+                    # Serialized dismissed source-link identities. CLEARABLE and
+                    # sorted for a deterministic on-disk line: this full-rebuild
+                    # branch writes it unconditionally (even when empty) so the
+                    # merge cannot leave a stale suppression behind. Dismissal is
+                    # permanent (no unlink-undo), so the set only grows within a
+                    # session; an empty set just means nothing was dismissed.
+                    "dismissed_source_links": sorted(slot._dismissed_source_links),
                 }
                 if slot.title and slot.title != slot.key:
                     fields["title"] = slot.title
@@ -3068,6 +3097,14 @@ def _save_slot_to_history(
             # Unconditional, matching the empty-window merge mirror: None is
             # the cleared "follow the global" value, not an absent field.
             meta_line["autocompact_pct"] = slot.autocompact_pct
+            # Serialized dismissed source-link identities. This path rebuilds the
+            # metadata line from scratch, so an omitted key means "no dismissals"
+            # on restore -- write it only when non-empty (sorted for a
+            # deterministic line). A dismissal is permanent (there is no unlink-
+            # undo), so the set only ever grows within a session; the empty case
+            # is simply a session that has never dismissed a chip.
+            if slot._dismissed_source_links:
+                meta_line["dismissed_source_links"] = sorted(slot._dismissed_source_links)
             if slot.mode:
                 meta_line["mode"] = slot.mode
             if slot.workspace and slot.workspace != "default":

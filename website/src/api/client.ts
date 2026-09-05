@@ -2987,6 +2987,13 @@ export const api = {
    *  this is called. */
   chatSlotSourceLinks: (slot: string): Promise<{ links: NonNullable<ChatSlot['source_links']>; total: number }> =>
     fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links').then(j),
+  /** Unlink one PR/issue/Jira chip from a session. The chip is derived by
+   *  scanning the transcript, so this records the link's serialized `identity`
+   *  in a per-slot dismissed set the derivation filters against — a local UI
+   *  action that never touches the remote provider. `identity` is the opaque key
+   *  the slots payload sends on each chip; it is passed straight back. */
+  unlinkSourceLink: (slot: string, identity: string): Promise<{ ok?: boolean; dismissed?: boolean; error?: string; code?: string }> =>
+    del('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links/' + encodeURIComponent(identity)).then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal) => {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))

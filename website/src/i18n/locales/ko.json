@@ -9519,7 +9519,9 @@
       "workflow_running_other": "워크플로 {{count}}개 실행 중",
       "flat_view_hide_folders_in_board_columns": "플랫 보기 — 보드 열에서 폴더 숨기기",
       "show_folders_in_board_columns": "보드 열에서 폴더 표시",
-      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)",
+      "unlink_source_link": "이 세션에서 링크 해제",
+      "unlink_source_link_failed": "링크를 해제하지 못했습니다. 다시 시도하세요."
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

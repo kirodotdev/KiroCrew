@@ -9809,7 +9809,9 @@
       "workflow_running_other": "{{count}} flux de travail en cours",
       "flat_view_hide_folders_in_board_columns": "Vue à plat — masquer les dossiers dans les colonnes du tableau",
       "show_folders_in_board_columns": "Afficher les dossiers dans les colonnes du tableau",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Passer à la vue à plat (masquer les dossiers dans les colonnes du tableau)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Passer à la vue à plat (masquer les dossiers dans les colonnes du tableau)",
+      "unlink_source_link": "Dissocier de cette session",
+      "unlink_source_link_failed": "Échec de la dissociation. Réessayez."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

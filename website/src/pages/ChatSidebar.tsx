@@ -656,6 +656,11 @@ interface Slot {
     // What the link points at. OPTIONAL on the wire — absent means 'change', so
     // older payloads and existing fixtures keep rendering as PR/MR chips.
     kind?: 'change' | 'issue'
+    // Opaque serialized `SourceRef.identity`, passed straight back to the
+    // unlink DELETE endpoint. OPTIONAL on the wire so a bundle newer than its
+    // gateway still renders chips (they just cannot be unlinked until the
+    // gateway sends it — the affordance hides when it is absent).
+    identity?: string
   }>
   source_links_total?: number
 }
@@ -800,6 +805,46 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
   onActivateSlot: () => void
 }) {
   const [wantsExpanded, setWantsExpanded] = useState(false)
+  const queryClient = useQueryClient()
+  // Identities the user just unlinked, hidden OPTIMISTICALLY so the chip goes at
+  // the click rather than waiting for the server's slots push to echo back. The
+  // authoritative removal still arrives via that push (and the expand refetch),
+  // so this only covers the gap; a failed unlink removes the identity here again
+  // and surfaces the error next to the strip.
+  const [optimisticallyUnlinked, setOptimisticallyUnlinked] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const [unlinkError, setUnlinkError] = useState<string | null>(null)
+
+  const unlink = useMutation({
+    mutationFn: (identity: string) => api.unlinkSourceLink(slotKey, identity),
+    onMutate: (identity: string) => {
+      setUnlinkError(null)
+      setOptimisticallyUnlinked(prev => new Set(prev).add(identity))
+    },
+    onError: (_err, identity) => {
+      // Revert: the object is still linked, so re-show its chip and say so.
+      setOptimisticallyUnlinked(prev => {
+        const next = new Set(prev)
+        next.delete(identity)
+        return next
+      })
+      // ALWAYS the localized catalog string — never the raw Error message.
+      // The failure modes here are a rebind/gone 409 ("session was deleted or
+      // rebound"), a not-found 404, or a transport error ("Failed to fetch");
+      // surfacing any of those raw would leak server/browser text and leave the
+      // 12-locale `unlink_source_link_failed` key dead on the common paths. The
+      // action is a single idempotent retry, so one friendly "couldn't unlink,
+      // try again" is the whole message the user needs; ErrorNotice still gives
+      // it the shared structured-error treatment (icon, role=alert, journal).
+      setUnlinkError(i18nT('pages.chatSidebar.unlink_source_link_failed'))
+    },
+    onSuccess: () => {
+      // The expanded list is a separate cached read; drop it so a re-expand
+      // re-fetches without the unlinked chip rather than serving the stale set.
+      void queryClient.invalidateQueries({ queryKey: ['session-source-links', slotKey] })
+    },
+  })
 
   /** What the slots payload currently says this row's links are.
    *
@@ -853,10 +898,20 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
     ;(want === 'collapse' ? collapseRef : expandRef).current?.focus()
   }, [isExpanded])
 
-  const shown = isExpanded && fetchedLinks ? fetchedLinks : links
-  // Derived from what is actually on screen, so it lands on 0 once expanded and
-  // self-corrects if a payload ever reports a total below the links it carries.
-  const hidden = typeof total === 'number' ? Math.max(0, total - shown.length) : 0
+  const shownAll = isExpanded && fetchedLinks ? fetchedLinks : links
+  // Hide anything the user just unlinked until the authoritative slots push
+  // (or expand refetch) reflects it. Keyed on the same opaque identity the
+  // DELETE endpoint takes.
+  const shown = optimisticallyUnlinked.size
+    ? shownAll.filter(link => !(link.identity && optimisticallyUnlinked.has(link.identity)))
+    : shownAll
+  // Derived from the UNFILTERED set, so the optimistic-unlink filter only
+  // removes visible chips and never inflates the overflow count: computing this
+  // against `shown` would subtract an already-hidden chip from the stale server
+  // `total` and render a phantom "+1 more" for the round-trip window until the
+  // slots push refreshes `total`. Lands on 0 once expanded and self-corrects if
+  // a payload ever reports a total below the links it carries.
+  const hidden = typeof total === 'number' ? Math.max(0, total - shownAll.length) : 0
   const changeLinks = shown.filter(link => (link.kind ?? 'change') !== 'issue')
   const issueLinks = shown.filter(link => (link.kind ?? 'change') === 'issue')
 
@@ -912,6 +967,31 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
     e.preventDefault()
   }
 
+  /** The unlink affordance rendered inside each chip: a small X that removes the
+   *  chip from THIS session. Hidden when the gateway did not send an identity
+   *  (an older backend) — there is nothing to name to the DELETE endpoint then.
+   *  Never a native anchor drag target, and it stops propagation so the click
+   *  neither navigates the chip's link nor reaches the row's switch handler. */
+  const unlinkButton = (link: SidebarSourceLink) =>
+    link.identity ? (
+      <IconButton
+        variant="danger"
+        data-testid={`session-source-unlink-${link.number}`}
+        draggable={false}
+        disabled={!connected || unlink.isPending}
+        onMouseDown={e => e.stopPropagation()}
+        onClick={e => {
+          e.preventDefault()
+          e.stopPropagation()
+          unlink.mutate(link.identity as string)
+        }}
+        className="shrink-0 -mr-0.5 ml-0.5 opacity-0 group-hover/chip:opacity-100 group-focus-within/chip:opacity-100 focus-visible:opacity-100 transition-opacity"
+        title={i18nT('pages.chatSidebar.unlink_source_link')}
+        aria-label={i18nT('pages.chatSidebar.unlink_source_link')}>
+        <X className="lucide-inline shrink-0" aria-hidden="true" />
+      </IconButton>
+    ) : null
+
   return (
     <div className="flex flex-wrap gap-1.5 mt-1">
       {changeLinks.map(link => (
@@ -923,10 +1003,23 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
         // disables its own native HTML5 drag — that would otherwise put the URL
         // on the dataTransfer instead of the slot key in the board/flat scopes
         // that use native drag.
-        <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
+        //
+        // Wrapper span rather than a button nested in the anchor (invalid HTML):
+        // the chip stays a real link and the unlink X sits beside it.
+        //
+        // NAMED group (`group/chip` + the X's `group-hover/chip:opacity-100` /
+        // `group-focus-within/chip:opacity-100`) reveals the destructive control
+        // only when the user is on THIS chip. A bare `group-hover` would bind to
+        // the ENCLOSING session-row group (the row is itself a `group` for its
+        // own hover-revealed controls), so hovering anywhere on the row would
+        // reveal EVERY chip's X at once — the per-chip name scopes it. `focus-within`
+        // keeps the X reachable by Tab (it fades in the moment it takes focus),
+        // so hiding it costs no keyboard accessibility.
+        <span key={link.url} className="group/chip inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60 hover:text-text hover:border-accent">
+        <a href={link.url} target="_blank" rel="noopener noreferrer"
           draggable={false}
           onClick={revealInPanel(link)}
-          className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
+          className="inline-flex items-center gap-1 no-underline text-inherit"
           title={chipTitle(link)}>
           <SourceLinkIcon provider={link.provider} />
           {chipLabel(link)}
@@ -973,6 +1066,8 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
             }
           })()}
         </a>
+        {unlinkButton(link)}
+        </span>
       ))}
       {issueLinks.map(link => (
         // Issue chip: the same anchor discipline (reveal in panel, no native
@@ -983,16 +1078,22 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
         // (`source_ref_label`), so nothing here branches on provider except the
         // issue dot, which Jira does not get: its label is already a whole
         // identifier (PROJ-123) rather than a bare number needing a marker.
-        <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
+        //
+        // `group/chip` (matching the change-chip wrapper) so this chip's unlink
+        // X reveals only on ITS hover/focus, not on the enclosing session row.
+        <span key={link.url} className="group/chip inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60 hover:text-text hover:border-accent">
+        <a href={link.url} target="_blank" rel="noopener noreferrer"
           data-testid={`session-issue-chip-${link.number}`}
           draggable={false}
           onClick={revealInPanel(link)}
-          className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
+          className="inline-flex items-center gap-1 no-underline text-inherit"
           title={chipTitle(link)}>
           <SourceLinkIcon provider={link.provider} />
           {link.provider !== 'jira' && <CircleDot className="lucide-inline shrink-0" aria-hidden="true" />}
           {chipLabel(link)}
         </a>
+        {unlinkButton(link)}
+        </span>
       ))}
       {hidden > 0 && (
         // Gated on `hidden`, NOT on the expand intent: a row whose payload moved
@@ -1041,6 +1142,26 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
           aria-label={i18nT('pages.chatSidebar.collapse_source_links')}>
           <ChevronUp className="lucide-inline shrink-0" aria-hidden="true" />
         </button>
+      )}
+      {unlinkError && (
+        // Surfaced next to the chips rather than as a toast (there is no toast
+        // surface in the sidebar), matching the PullRequestPanel convention of
+        // keeping the reason next to the control that caused it. ErrorNotice
+        // (not a handwritten role="alert") gives the failure the shared
+        // structured-error treatment — the errors-use-error-notice contract for
+        // a useMutation onError. The message is ALWAYS the localized catalog
+        // string (set in onError), never a raw server/browser string. askAgent
+        // is ON: per errors-use-error-notice, an action failure on a surface
+        // with no unsaved draft must offer the agent hand-off (the rule reserves
+        // askAgent={false} for a surface holding an editable draft the hand-off
+        // would unmount — not the case here), so the user can escalate the
+        // failed unlink rather than only silently retrying.
+        <ErrorNotice
+          variant="inline"
+          askAgent
+          message={unlinkError}
+          testId="session-source-unlink-error"
+        />
       )}
     </div>
   )

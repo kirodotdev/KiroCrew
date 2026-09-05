@@ -350,6 +350,15 @@ def surface_channel_session(
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
+    # Restore the dismissed source-link tombstones, mirroring the persistence
+    # loaders: this surfacing path applies metadata by hand rather than going
+    # through _rehydrate_slot_from_history, so without it an unlinked chip
+    # reappears when the channel session is re-surfaced and the next save erases
+    # the persisted tombstone. Local import for the same circular-import reason
+    # as _validate_autocompact_pct above.
+    from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
+
+    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("project"):

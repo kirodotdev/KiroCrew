@@ -1731,6 +1731,42 @@ async def test_rows_only_defers_by_the_line_tab_id_not_by_the_flag_alone(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_rows_only_defers_dismissed_source_links_to_another_writer(tmp_path) -> None:
+    """A rows-only handover must not overwrite another live slot's source-link
+    dismissals (GPT 5.6, PR #8072).
+
+    ``dismissed_source_links`` is SLOT_OWNED, so it is in ROWS_ONLY_DEFERRED: a
+    save that persists THIS slot's messages onto a transcript another live slot
+    published must carry the on-disk dismissed set back verbatim, not clobber it
+    with this slot's own. Without the fix a popped alias holding dismissal A would
+    erase the replacement slot's dismissal B on a rows-only handover.
+    """
+    state = _make_state(tmp_path)
+    slot = await _slot_with_committed_and_uncommitted_rows(state)
+    await _publish_metadata(state, slot, title="COMMITTED TITLE", folder="folder-committed")
+
+    # This slot has dismissed link A in memory.
+    slot._dismissed_source_links = {"gh:pull:acme:widgets:482:pull"}
+    slot.invalidate_source_links()
+
+    # The line on disk is ANOTHER writer's (foreign tab_id) holding dismissal B.
+    state.conversation_log.update_metadata(
+        HKEY,
+        {"tab_id": "0123456789ab", "dismissed_source_links": ["gh:issue:acme:widgets:477:issue"]},
+    )
+    assert await handlers.save_slot_off_loop(
+        state, slot, force=True, best_effort=False, rows_only=True
+    )
+    meta = state.conversation_log.get_metadata(HKEY)
+    # The other writer's dismissal survived; this slot's A did NOT overwrite it.
+    assert meta.get("dismissed_source_links") == [
+        "gh:issue:acme:widgets:477:issue"
+    ], "a rows-only handover must defer dismissed_source_links to the line's own writer"
+    assert meta.get("tab_id") == "0123456789ab"
+    assert _disk_contents(state) == ["PERSISTED-1", "PERSISTED-2", "TAIL-3", "TAIL-4"]
+
+
+@pytest.mark.asyncio
 async def test_handover_rows_only_write_still_creates_a_first_metadata_line(tmp_path) -> None:
     """With no line on disk yet there is nobody to defer to, so the slot's own wins.
 

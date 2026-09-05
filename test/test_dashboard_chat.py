@@ -3219,6 +3219,7 @@ class TestSlotLifecycle:
             "url": url,
             "kind": "change",
             "label": "#12",
+            "identity": '["github","github.com","acme","private",12,"","change",""]',
         }
         scheduler.assert_not_called()
 

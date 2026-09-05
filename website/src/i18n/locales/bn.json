@@ -9664,7 +9664,9 @@
       "workflow_running_other": "{{count}}টি ওয়ার্কফ্লো চলছে",
       "flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউ — বোর্ড কলামে ফোল্ডার লুকান",
       "show_folders_in_board_columns": "বোর্ড কলামে ফোল্ডার দেখান",
-      "switch_to_flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউতে যান (বোর্ড কলামে ফোল্ডার লুকান)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "ফ্ল্যাট ভিউতে যান (বোর্ড কলামে ফোল্ডার লুকান)",
+      "unlink_source_link": "এই সেশন থেকে আনলিঙ্ক করুন",
+      "unlink_source_link_failed": "আনলিঙ্ক করা যায়নি। আবার চেষ্টা করুন।"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

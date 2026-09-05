@@ -9519,7 +9519,9 @@
       "workflow_running_other": "{{count}} 个工作流运行中",
       "flat_view_hide_folders_in_board_columns": "扁平视图 — 隐藏看板列中的文件夹",
       "show_folders_in_board_columns": "显示看板列中的文件夹",
-      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）"
+      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）",
+      "unlink_source_link": "从此会话取消关联",
+      "unlink_source_link_failed": "无法取消关联，请重试。"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

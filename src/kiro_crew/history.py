@@ -176,6 +176,14 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "model",
         "reasoning_effort",
         "autocompact_pct",
+        # Source-link dismissals: the slot save is authoritative (it rebuilds the
+        # line from ``slot._dismissed_source_links``), so on a FULL save absence
+        # means "no dismissals". Naming it here also folds it into
+        # ROWS_ONLY_DEFERRED_META_KEYS (= SLOT_OWNED - ROWS_ONLY_OWNED), so a
+        # ROWS-ONLY save onto a transcript another live slot owns DEFERS it and
+        # carries the on-disk set back verbatim — without this a popped alias's
+        # rows-only handover would overwrite the replacement slot's own dismissals.
+        "dismissed_source_links",
         "mode",
         "workspace",
         "project",

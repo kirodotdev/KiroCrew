@@ -9954,7 +9954,9 @@
       "workflow_running_other": "{{count}} рабочего процесса выполняется",
       "flat_view_hide_folders_in_board_columns": "Плоский вид — скрыть папки в колонках доски",
       "show_folders_in_board_columns": "Показать папки в колонках доски",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Переключиться на плоский вид (скрыть папки в колонках доски)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Переключиться на плоский вид (скрыть папки в колонках доски)",
+      "unlink_source_link": "Отвязать от этого сеанса",
+      "unlink_source_link_failed": "Не удалось отвязать. Повторите попытку."
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
@@ -57,6 +58,7 @@ from kiro_crew.dashboard.chat_persistence import (
     COLOR_HEX_RE,
     _attach_variants,
     _rehydrate_slot_title,
+    _restore_dismissed_source_links,
     _validate_autocompact_pct,
     get_reasoning_effort_values,
     save_slot_off_loop,
@@ -1173,6 +1175,340 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
             dashboard_user=bool(request.get("is_dashboard_user")),
         )
     )
+
+
+async def api_chat_slot_source_link_unlink(request: web.Request) -> web.Response:
+    """DELETE /api/chat/slots/{slot}/source-links/{identity} — unlink one chip.
+
+    The PR/issue/Jira chips are DERIVED by re-scanning the transcript, so there
+    is nothing to delete: the next re-scan would re-add a removed link. Unlinking
+    instead records the link's serialized identity into the slot's dismissed set,
+    which the derivation filters against, and persists it so the chip stays gone
+    across a gateway restart. Purely local -- no remote provider is touched, so a
+    pull request is not closed and an issue is not deleted.
+
+    The ``{identity}`` segment is the serialized ``SourceRef.identity`` key that
+    the slots payload now carries on each source link (the ``identity`` field);
+    the frontend echoes that opaque value straight back here rather than
+    re-deriving it. It is validated against the canonical grammar before use --
+    a malformed key is rejected with 400 and a machine-readable ``code`` rather
+    than stored as junk that can never match a real identity.
+    """
+    # Function-local to avoid a circular import: source_providers imports from
+    # the dashboard state/handler layer. Same lazy form the sibling source-link
+    # handlers use.
+    from kiro_crew.dashboard.handlers.source_providers import is_valid_source_identity_key
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        # Same indistinguishable 404 + code as the GET path, so the response
+        # cannot be used to probe which slots exist.
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # Session-aware ownership gate, NOT the slot-only check: the dismissal is
+    # persisted (forced save) into the transcript this slot routes to, so a
+    # linked app-owned slot (a channel stem) would otherwise let an app write
+    # metadata into a foreign human conversation. _check_slot_app_ownership
+    # authorizes the transcript key the write actually lands on -- same as
+    # /autocompact, /context and /note, all of which persist slot metadata.
+    request_app = request.get("app", "")
+    denied = _check_slot_app_ownership(slot, name, request_app, "slot_source_link_unlink")
+    if denied is not None:
+        return denied
+
+    identity_key = unquote(request.match_info["identity"])
+    if not is_valid_source_identity_key(identity_key):
+        return web.json_response(
+            {"error": "invalid source-link identity", "code": "invalid_source_identity"},
+            status=400,
+        )
+
+    # Only an identity that is ACTUALLY one of this slot's currently-derived
+    # chips (or one already dismissed) may be dismissed. Without this bound a
+    # caller could submit unlimited distinct format-valid-but-absent identities,
+    # each growing the persisted dismissed set and forcing a disk write --
+    # unbounded durable-state growth. Gating on the derived set means an identity
+    # can only be dismissed if the transcript actually mentions it, so the
+    # dismissed set is bounded by the count of DISTINCT real source links the
+    # transcript carries -- not by any single snapshot's budgeted slice (dismissing
+    # one budgeted chip can reveal the next-ranked real link), but still finite and
+    # tied to genuine transcript content rather than attacker-chosen junk.
+    # Already-dismissed is allowed through so a double-click / retry stays an
+    # idempotent 200 no-op rather than a confusing 404 (the chip is gone from the
+    # derived set precisely because it worked).
+    known = {link.get("identity") for link in slot._pr_source_links()}
+    known |= slot._dismissed_source_links
+    if identity_key not in known:
+        return web.json_response(
+            {"error": "not found", "code": "source_link_not_found"}, status=404
+        )
+
+    # Serialize the ENTIRE dismiss decision — the newly-dismissed check, the
+    # in-memory mutation, the mirror, and the save/rollback — under a
+    # per-transcript transaction lock (mirrors api_chat_slot_autocompact). The
+    # lock is acquired BEFORE any mutation on purpose: if the mutation ran first
+    # (outside the lock), two concurrent DELETEs would race — the second would
+    # see the identity already in the set, take the "already dismissed" no-op
+    # path, and return 200, while the first's save could then fail and roll the
+    # dismissal back, so the second acknowledged state that no longer exists.
+    # Doing the check-and-mutate inside the lock means the second DELETE only
+    # runs after the first has fully committed or rolled back, and re-derives
+    # its own newly-dismissed decision from the settled state. Keyed by the
+    # TRANSCRIPT so alias slots serialize together; a mid-request rebind is
+    # handled by the reauth + expected_history_key pin below, not the lock key.
+    locked_history_key = slot_history_key(slot)
+    async with _source_link_txn_lock(locked_history_key):
+        stale = _reauthorize_after_await(state, slot, name, request_app, "slot_source_link_unlink")
+        if stale is not None:
+            return stale
+        authorized_history_key = slot_history_key(slot)
+        if authorized_history_key != locked_history_key:
+            # Rebound between the lock-key read and acquisition: this request
+            # holds the OLD transcript's lock while the write would target the
+            # new one, so the serialization guarantee does not cover it.
+            sel().log_tool_invocation(
+                session_key=f"dashboard:{name}",
+                agent="kirocrew",
+                source="dashboard",
+                tool_name="source_link_unlink",
+                tool_kind="permission",
+                outcome="failed",
+                error="session_gone",
+                metadata={"slot": name, "phase": "lock_rebind"},
+            )
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"},
+                status=409,
+            )
+        # The check-and-mutate now happens under the lock, so it sees state
+        # settled by any prior concurrent request (committed OR rolled back).
+        newly_dismissed = slot.dismiss_source_link(identity_key)
+        if newly_dismissed:
+            # The chip disappears immediately without a client refetch.
+            state.push_slots_update()
+            # Persist the PRIMARY commit BEFORE mirroring to sibling aliases.
+            # The dismissed set is per-slot but serialized into the SHARED
+            # transcript metadata, so a sibling alias must eventually carry this
+            # dismissal too — but mirroring first is unsafe: setting a sibling's
+            # ``_dirty`` makes it eligible for its OWN periodic flush, which runs
+            # OUTSIDE this transaction lock. If that flush landed the mirrored
+            # dismissal on disk and the primary save below then refused, the
+            # in-memory rollback could not retract the sibling's already-written
+            # bytes, so the link would stay hidden across restart despite the
+            # 409. So confirm the primary reaches disk first, then mirror — the
+            # ordering api_chat_slot_autocompact uses. ``force=True`` because a
+            # dismissal is durable state NOT tracked by ``slot._dirty`` (which
+            # only flips on message append/edit): on a freshly restored session
+            # the plain save takes its resumed-slot no-op skip and the dismissal
+            # never reaches disk. best_effort=False so a refusal is a visible
+            # False (not swallowed); expected_history_key pins the write so a
+            # rebind refuses rather than landing elsewhere.
+            try:
+                persisted = await save_slot_off_loop(
+                    state,
+                    slot,
+                    best_effort=False,
+                    force=True,
+                    expected_history_key=authorized_history_key,
+                )
+            except Exception:
+                persisted = False
+                logger.exception("Slot %s source-link dismissal persist failed", name)
+            if not persisted:
+                # A refused/failed forced save means nothing was durably
+                # recorded, so acknowledging 200 would show a chip gone that
+                # reappears on restart. No sibling has been mirrored yet (that
+                # happens only after this confirmed commit), so roll back just
+                # the primary so acknowledged state matches disk, and return 409.
+                slot._dismissed_source_links.discard(identity_key)
+                slot.invalidate_source_links()
+                state.push_slots_update()
+                sel().log_tool_invocation(
+                    session_key=f"dashboard:{name}",
+                    agent="kirocrew",
+                    source="dashboard",
+                    tool_name="source_link_unlink",
+                    tool_kind="permission",
+                    outcome="failed",
+                    error="session_gone",
+                    metadata={"slot": name, "phase": "primary_persist"},
+                )
+                return web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"},
+                    status=409,
+                )
+            # Primary is now durable. Before mirroring, RE-AUTHORIZE: the save
+            # above was an await, so routing could have rebound this slot to a
+            # different session/transcript while we were suspended. Mirroring
+            # walks ``state._slots`` and writes the dismissal into every slot
+            # sharing the (previously) authorized transcript, so a rebind here
+            # must not let that write land on a foreign transcript. Re-check
+            # ownership and that the history key is unchanged; if it moved, the
+            # primary commit already stands (the user's own unlink is durable
+            # and acknowledged) but we must NOT mirror onto a rebound topology,
+            # so skip the mirror and return success.
+            stale_after = _reauthorize_after_await(
+                state, slot, name, request_app, "slot_source_link_unlink"
+            )
+            if stale_after is None and slot_history_key(slot) == authorized_history_key:
+                # Mirror the dismissal onto every OTHER live slot sharing this
+                # transcript so a sibling's stale in-memory set cannot write the
+                # chip back. Snapshot values() — the loop may mutate the dict.
+                #
+                # Mutate ONLY the sibling's dismissed set — do NOT set
+                # ``other._dirty``. Dirtying a sibling makes it eligible for its
+                # OWN periodic flush, which serializes that slot's ENTIRE
+                # metadata from its live fields, including anything stale in
+                # memory (e.g. a title the user just renamed) — so a rename +
+                # unlink on a shared-history alias would let the flush write the
+                # sibling's stale title back over the shared transcript. The
+                # dismissal is instead persisted by the second pinned forced save
+                # below (the api_chat_slot_autocompact shape, which likewise
+                # mirrors the live field and relies on its confirmed save rather
+                # than dirtying the alias). The sibling's own next flush then
+                # re-converges its dismissed set from the now-updated field.
+                mirrored_any = False
+                mirrored_slots: list = []
+                for other in list(state._slots.values()):
+                    if other is not slot and slot_history_key(other) == authorized_history_key:
+                        if other.dismiss_source_link(identity_key):
+                            mirrored_any = True
+                            mirrored_slots.append(other)
+                # A SECOND pinned forced save (the autocompact transaction shape)
+                # persists the mirrored siblings' sets NOW, under this lock. Just
+                # marking them ``_dirty`` is not enough: an alias flush that had
+                # ALREADY snapshotted its old (still-showing) set before we
+                # mirrored can run after the primary save and write that stale
+                # set back, resurrecting an unlink we returned 200 for. Flushing
+                # the mirror durably here — pinned to the same authorized history
+                # key so a late rebind refuses rather than lands elsewhere —
+                # means the on-disk transcript already carries the dismissal
+                # before any such racing flush, so the loser can only re-persist
+                # state that already matches disk.
+                #
+                # best_effort=False: this mirror save is NOT optional. A stale
+                # alias flush can overwrite the shared transcript's bytes in the
+                # window between the primary save and this one, so THIS save is
+                # the guard that re-lands the dismissal on top. But note what is
+                # and is not durable if it FAILS: the PRIMARY commit already
+                # succeeded (its own best_effort=False save above returned True),
+                # so the dismissal IS on disk for the authorized transcript and
+                # the user's own unlink is honored — rolling the PRIMARY back in
+                # memory would make the live slot disagree with its own durable
+                # disk state (the chip would reappear in memory though it is gone
+                # on disk, and the slot's next ordinary save could even rewrite
+                # the un-dismissed line). So on a mirror-save failure KEEP the
+                # primary and return 200; roll back ONLY the mirrored SIBLINGS'
+                # in-memory sets, whose durability this save did not confirm, so
+                # each re-derives from its own on-disk state on its next flush
+                # rather than carrying an unconfirmed suppression. Log the mirror
+                # failure for the audit trail.
+                if mirrored_any:
+                    try:
+                        mirror_ok = await save_slot_off_loop(
+                            state,
+                            slot,
+                            best_effort=False,
+                            force=True,
+                            expected_history_key=authorized_history_key,
+                        )
+                    except Exception:
+                        mirror_ok = False
+                        logger.exception("Slot %s source-link mirror persist failed", name)
+                    if not mirror_ok:
+                        # The PRIMARY save already durably wrote the dismissal into
+                        # the SHARED transcript metadata for ``authorized_history_key``,
+                        # and the sibling aliases point at that SAME transcript — so
+                        # a sibling still bound to that key is CONSISTENT with disk
+                        # and must KEEP the tombstone. Discarding it here (the prior
+                        # bug) would let the sibling's next flush write "no dismissal"
+                        # back over the durable tombstone and resurrect the chip.
+                        # Instead: keep the dismissal on every alias still on the key
+                        # and re-arm its persistence (mark ``_dirty``) so a racing
+                        # flush that clobbered the shared line in the pre-save window
+                        # is corrected by the sibling re-writing its now-dismissed
+                        # set; clear it ONLY from an alias that has rebound to a
+                        # DIFFERENT transcript (there the primary's write does not
+                        # apply and keeping it would leak the suppression). The
+                        # requesting slot's own dismissal is durable and untouched.
+                        for other in mirrored_slots:
+                            if slot_history_key(other) == authorized_history_key:
+                                other._dirty = True
+                            else:
+                                other._dismissed_source_links.discard(identity_key)
+                                other.invalidate_source_links()
+                        state.push_slots_update()
+                        sel().log_tool_invocation(
+                            session_key=f"dashboard:{name}",
+                            agent="kirocrew",
+                            source="dashboard",
+                            tool_name="source_link_unlink",
+                            tool_kind="permission",
+                            outcome="allowed",
+                            metadata={"slot": name, "mirror": "persist_failed_rearmed"},
+                        )
+                        return web.json_response({"ok": True, "dismissed": True})
+            else:
+                # Post-save REBIND: routing moved this slot to a different
+                # session/transcript while the primary save was suspended. The
+                # primary commit still stands — it was pinned to
+                # ``authorized_history_key`` and durably recorded the dismissal
+                # against the OLD transcript, so the user's own unlink is
+                # honored. But the in-memory slot now carries ``identity_key`` in
+                # its dismissed set while bound to the NEW transcript, and its
+                # next save would serialize that suppression into that foreign
+                # transcript — hiding a chip the new session never unlinked.
+                # Drop the transcript-scoped dismissal from the rebound slot so
+                # it cannot leak; the OLD transcript keeps its durable tombstone,
+                # and re-deriving the new transcript's links is now clean.
+                slot._dismissed_source_links.discard(identity_key)
+                slot.invalidate_source_links()
+                state.push_slots_update()
+                # The requesting slot rebound away, but SIBLING aliases may still
+                # be bound to ``authorized_history_key`` — and the primary commit
+                # landed the tombstone on that transcript, so those siblings MUST
+                # carry the dismissal too. Skipping the mirror here (as the prior
+                # version did) leaves a sibling holding its stale showing-the-chip
+                # set; its next ordinary flush would write that set back over the
+                # durable tombstone and resurrect the unlinked chip. So mirror
+                # onto every OTHER slot still on ``authorized_history_key``
+                # (the rebound ``slot`` is excluded — it is no longer on that key)
+                # and confirm-save THROUGH one of them (``slot`` can no longer
+                # write that transcript), pinned to ``authorized_history_key`` so
+                # a further rebind of the saver refuses rather than lands
+                # elsewhere. No ``_dirty`` mark, same as the happy path.
+                mirror_saver = None
+                for other in list(state._slots.values()):
+                    if other is not slot and slot_history_key(other) == authorized_history_key:
+                        other.dismiss_source_link(identity_key)
+                        if mirror_saver is None:
+                            mirror_saver = other
+                if mirror_saver is not None:
+                    try:
+                        await save_slot_off_loop(
+                            state,
+                            mirror_saver,
+                            best_effort=True,
+                            force=True,
+                            expected_history_key=authorized_history_key,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Slot %s source-link rebind mirror persist failed "
+                            "(primary already durable)",
+                            name,
+                        )
+    sel().log_tool_invocation(
+        session_key=f"dashboard:{name}",
+        agent="kirocrew",
+        source="dashboard",
+        tool_name="source_link_unlink",
+        tool_kind="permission",
+        outcome="allowed",
+        metadata={"slot": name, "already_dismissed": not newly_dismissed},
+    )
+    return web.json_response({"ok": True, "dismissed": True})
 
 
 def _finite_number(value: Any) -> float | None:
@@ -6189,6 +6525,24 @@ def _autocompact_txn_lock(history_key: str) -> asyncio.Lock:
     return lock
 
 
+# Same per-transcript transaction lock, for the source-link unlink write. A
+# dismissal is persisted into the shared transcript metadata, so concurrent
+# unlinks (or an unlink racing a sibling flush) on alias slots that resolve onto
+# one transcript must serialize or a loser's rollback / a stale sibling can
+# overwrite the winner's acknowledged commit. Keyed by transcript, like above.
+_source_link_txn_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _source_link_txn_lock(history_key: str) -> asyncio.Lock:
+    lock = _source_link_txn_locks.get(history_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _source_link_txn_locks[history_key] = lock
+    return lock
+
+
 async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     """GET/POST /api/chat/slots/{slot}/autocompact — per-session compact threshold.
 
@@ -8109,7 +8463,13 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
-    # Restore tags + the auto-tag once-flag (mirrors the persistence loaders).
+    # Restore the dismissed source-link tombstones, mirroring the persistence
+    # loaders (_rehydrate_slot_from_history / _apply_recent_session). This
+    # RESUME path re-applies metadata by hand rather than going through those
+    # loaders, so without this an unlinked PR/issue/Jira chip reappears on
+    # resume and the next save — serializing an empty dismissed set — erases the
+    # persisted tombstone for good.
+    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
     # Without the flag, resuming a session whose auto-tag the user removed
     # would re-run maybe_auto_tag on the next message and silently re-add it.
     raw_tags = meta.get("tags")

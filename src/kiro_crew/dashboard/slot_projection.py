@@ -26,12 +26,31 @@ class SlotProjection:
             gitlab_hosts_generation,
             parse_source_url,
             source_link_path_markers,
+            source_ref_identity_key,
             source_ref_label,
         )
 
+        # Identities the user has explicitly unlinked from this session. The set
+        # is keyed on the serialized identity, so a dismissed change stays gone
+        # no matter which URL shape re-mentions it. Snapshotting it as a frozenset
+        # keeps the loop's membership test cheap and immune to a concurrent mutate.
+        # Read defensively: this scanner is a staticmethod designed to run against
+        # a bare ``object.__new__``-built slot that supplies only the fields the
+        # walk reaches, so a slot that never ran ``__init__`` (and thus has no
+        # dismissed set) must read as "nothing dismissed" rather than raise.
+        dismissed = frozenset(getattr(slot, "_dismissed_source_links", ()) or ())
+
         # The allowlist generation belongs in the cache key: a cold self-managed
-        # GitLab miss must be retried after the allowlist finishes loading.
-        cache_key = (slot._source_links_revision, gitlab_hosts_generation())
+        # GitLab miss must be retried after the allowlist finishes loading. The
+        # dismissed-set revision belongs there too: unlinking a chip bumps it via
+        # ``invalidate_source_links``, but a set that gained and then lost the
+        # same key across two edits would leave the revision unmoved, so its
+        # current contents are folded in directly rather than trusting the count.
+        cache_key = (
+            slot._source_links_revision,
+            gitlab_hosts_generation(),
+            hash(dismissed),
+        )
         if slot._source_links_cache and slot._source_links_cache[0] == cache_key:
             return slot._source_links_cache[1]
 
@@ -84,6 +103,13 @@ class SlotProjection:
                 identity = ref.identity
                 if identity in found:
                     continue
+                # Budget is already charged above, so an unlinked chip costs the
+                # same parse work it did before dismissal -- cost accounting is
+                # unchanged, only the surfaced result set shrinks. Keyed on the
+                # serialized identity so the suppression matches the object, not
+                # the particular URL that re-mentioned it.
+                if source_ref_identity_key(identity) in dismissed:
+                    continue
                 # First writer wins, and because the walk is backwards the
                 # first writer IS the most recent mention -- so the newest
                 # mention's URL (and any sub-path pin it carries) is the one
@@ -94,6 +120,13 @@ class SlotProjection:
                     "url": ref.url,
                     "kind": ref.kind,
                     "label": source_ref_label(ref),
+                    # The serialized identity travels to the client so an unlink
+                    # affordance can name this exact object back to the DELETE
+                    # endpoint without the client having to re-parse the URL. It
+                    # is the SAME key the dismissed-set filter above tests, so a
+                    # round-trip through the wire cannot drift from what the
+                    # backend suppresses.
+                    "identity": source_ref_identity_key(identity),
                 }
 
         links = list(found.values())

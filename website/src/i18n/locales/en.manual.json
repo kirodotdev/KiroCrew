@@ -3604,7 +3604,9 @@
       "workflow_running_other": "{{count}} workflows running",
       "flat_view_hide_folders_in_board_columns": "Flat view — hide folders in the board columns",
       "show_folders_in_board_columns": "Show folders in the board columns",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Switch to flat view (hide folders in the board columns)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Switch to flat view (hide folders in the board columns)",
+      "unlink_source_link": "Unlink from this session",
+      "unlink_source_link_failed": "Could not unlink. Try again."
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

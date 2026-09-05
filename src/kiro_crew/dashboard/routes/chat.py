@@ -61,6 +61,12 @@ def register(app: web.Application) -> None:
     # generating one is a separate verb rather than a query flag on the GET.
     app.router.add_post("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary_generate)
     app.router.add_get("/api/chat/slots/{slot}/source-links", chat.api_chat_slot_source_links)
+    # DELETE one chip: registered before the {slot} DELETE below so the more
+    # specific path wins aiohttp's registration-order resolution.
+    app.router.add_delete(
+        "/api/chat/slots/{slot}/source-links/{identity}",
+        chat.api_chat_slot_source_link_unlink,
+    )
     app.router.add_post("/api/chat/slots/{slot}/stop", chat.api_chat_slot_stop)
     app.router.add_post("/api/chat/slots/{slot}/interrupt", chat.api_chat_slot_interrupt)
     app.router.add_post("/api/chat/slots/{slot}/end-wait", chat.api_chat_slot_end_wait)

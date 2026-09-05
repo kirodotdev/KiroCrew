@@ -9809,7 +9809,9 @@
       "workflow_running_other": "{{count}} flussi di lavoro in esecuzione",
       "flat_view_hide_folders_in_board_columns": "Vista piatta — nascondi le cartelle nelle colonne della bacheca",
       "show_folders_in_board_columns": "Mostra le cartelle nelle colonne della bacheca",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Passa alla vista piatta (nascondi le cartelle nelle colonne della bacheca)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Passa alla vista piatta (nascondi le cartelle nelle colonne della bacheca)",
+      "unlink_source_link": "Scollega da questa sessione",
+      "unlink_source_link_failed": "Impossibile scollegare. Riprova."
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

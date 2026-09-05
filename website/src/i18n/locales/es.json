@@ -9809,7 +9809,9 @@
       "workflow_running_other": "{{count}} flujos de trabajo en ejecución",
       "flat_view_hide_folders_in_board_columns": "Vista plana — ocultar carpetas en las columnas del tablero",
       "show_folders_in_board_columns": "Mostrar carpetas en las columnas del tablero",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Cambiar a vista plana (ocultar carpetas en las columnas del tablero)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Cambiar a vista plana (ocultar carpetas en las columnas del tablero)",
+      "unlink_source_link": "Desvincular de esta sesión",
+      "unlink_source_link_failed": "No se pudo desvincular. Inténtalo de nuevo."
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
