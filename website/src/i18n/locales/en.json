@@ -6848,7 +6848,16 @@
       "driving_none": "Not driving any sessions right now.",
       "driving_idle": "Idle",
       "driving_show_all": "Show all ({{count}})",
-      "driving_show_less": "Show less"
+      "driving_show_less": "Show less",
+      "filter_starred": "Starred",
+      "filter_starred_description": "Show only starred members",
+      "filter_source_mine": "Mine",
+      "filter_source_builtin": "Built-in",
+      "filter_source_package": "From packages",
+      "filters_hide_all": "The active filters hide every member.",
+      "filters_clear": "Clear filters",
+      "star": "Star {{name}}",
+      "unstar": "Unstar {{name}}"
     },
     "migrationPage": {
       "app_migration": "App Migration",

@@ -13691,7 +13691,16 @@
       "driving_none": "現在操作中のセッションはありません。",
       "driving_idle": "アイドル",
       "driving_show_all": "すべて表示（{{count}}）",
-      "driving_show_less": "折りたたむ"
+      "driving_show_less": "折りたたむ",
+      "filter_starred": "スター付き",
+      "filter_starred_description": "スター付きのメンバーのみ表示",
+      "filter_source_mine": "自分で作成",
+      "filter_source_builtin": "組み込み",
+      "filter_source_package": "パッケージ由来",
+      "filters_hide_all": "現在のフィルターですべてのメンバーが非表示になっています。",
+      "filters_clear": "フィルターをクリア",
+      "star": "{{name}} にスターを付ける",
+      "unstar": "{{name}} のスターを外す"
     }
   },
   "privacyDisclosure": {

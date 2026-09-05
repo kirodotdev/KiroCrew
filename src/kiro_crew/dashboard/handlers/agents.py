@@ -3308,6 +3308,16 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "source" in body:
             agent.source = body["source"]
             changed.append("source")
+        if "starred" in body:
+            # Strictly a bool: a string "false" from a hand-typed request must
+            # not read as truthy and star the crew.
+            if not isinstance(body["starred"], bool):
+                return web.json_response(
+                    {"error": "starred must be a boolean", "code": "invalid_starred"},
+                    status=400,
+                )
+            agent.starred = body["starred"]
+            changed.append("starred")
         effort_inputs_after = _effort_inputs(agent)
         # The config write is the transaction's point of no return: on
         # failure the orphaned install is removed; on success the commit

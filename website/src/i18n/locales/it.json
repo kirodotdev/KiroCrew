@@ -14047,7 +14047,16 @@
       "driving_none": "Al momento non guida nessuna sessione.",
       "driving_idle": "Inattivo",
       "driving_show_all": "Mostra tutte ({{count}})",
-      "driving_show_less": "Mostra meno"
+      "driving_show_less": "Mostra meno",
+      "filter_starred": "Preferiti",
+      "filter_starred_description": "Mostra solo i membri preferiti",
+      "filter_source_mine": "Miei",
+      "filter_source_builtin": "Integrati",
+      "filter_source_package": "Da pacchetti",
+      "filters_hide_all": "I filtri attivi nascondono tutti i membri.",
+      "filters_clear": "Cancella filtri",
+      "star": "Aggiungi {{name}} ai preferiti",
+      "unstar": "Rimuovi {{name}} dai preferiti"
     }
   },
   "privacyDisclosure": {

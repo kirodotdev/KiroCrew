@@ -14226,7 +14226,16 @@
       "driving_none": "Сейчас не управляет ни одним сеансом.",
       "driving_idle": "Простой",
       "driving_show_all": "Показать все ({{count}})",
-      "driving_show_less": "Свернуть"
+      "driving_show_less": "Свернуть",
+      "filter_starred": "Избранные",
+      "filter_starred_description": "Показывать только избранных участников",
+      "filter_source_mine": "Мои",
+      "filter_source_builtin": "Встроенные",
+      "filter_source_package": "Из пакетов",
+      "filters_hide_all": "Активные фильтры скрывают всех участников.",
+      "filters_clear": "Сбросить фильтры",
+      "star": "Добавить {{name}} в избранное",
+      "unstar": "Убрать {{name}} из избранного"
     }
   },
   "privacyDisclosure": {
