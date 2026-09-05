@@ -141,6 +141,23 @@ contextBridge.exposeInMainWorld("localGatewayAPI", {
   set: (enabled) => ipcRenderer.invoke("local-gateway:set", !!enabled),
 });
 
+// Crash-artifact notice for the dashboard banner (CrashReportNotice).
+//
+// The app already captures a minidump and, on macOS, the OS writes an .ips
+// report — and until now nothing ever mentioned that either exists, which is how
+// a main-process crash reaches us as "it closed by itself" with the evidence
+// still unread on the reporter's disk. This bridge is what closes that loop.
+//
+// `get` resolves { newCount } and NOTHING else: no paths, no filenames, no
+// exception codes, not even a timestamp. `reveal` takes no argument — main.js knows
+// where the log is from the scan it performed, so this cannot be turned into a
+// request to open an arbitrary file. Absent in plain browsers and in the PWA,
+// where there is no local disk to reveal; the banner hides itself.
+contextBridge.exposeInMainWorld("crashReportsAPI", {
+  get: () => ipcRenderer.invoke("crash-reports:get"),
+  reveal: () => ipcRenderer.invoke("crash-reports:reveal"),
+});
+
 // Read-only WSL2 host-runtime readout for the Host runtime card on System >
 // Services (HostRuntimeCard). Detection only — no config writes, no
 // persistence. The main-process handler rejects every sender whose gateway is

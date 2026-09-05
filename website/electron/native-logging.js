@@ -8,12 +8,18 @@
 // process's raw stderr, and a GUI launch (Dock, Finder, Start menu) discards
 // stderr entirely. It is not in the macOS unified log either — verified against
 // a real renderer abort: `log show --last 12h` filtered to the Electron
-// framework returned zero fatal lines. So the single most useful sentence about
-// a renderer death — V8's own `Fatal error in ... / Reached heap limit /
-// invalid size` — was being thrown away, leaving only a `.ips` crash report
-// whose `asi` field is null and whose every frame symbol is a
+// framework returned zero fatal lines. What that leaves behind is a `.ips`
+// crash report whose `asi` field is null and whose every frame symbol is a
 // nearest-neighbour mismatch. `renderer-recovery.js` could say THAT the
 // renderer died and reload it; nothing could say WHY.
+//
+// What this does NOT capture, stated plainly because an earlier version of this
+// comment claimed the opposite: V8's own fatal line (`Fatal error in ... /
+// Reached heap limit / invalid size`) is printed with `fputs` to raw fd 2, and
+// `--enable-logging=file` redirects Chromium's `LOG()` sink, which is a
+// DIFFERENT stream. A V8 fatal therefore never lands in chromium.log. See the
+// "Deliberately NOT attempted" note below for why fd 2 is still unredirected,
+// and `cage-trace.js` for the narrower capture that does reach V8's own path.
 //
 // This is the same correction already applied to the gateway child process,
 // whose spawn used `stdio:"ignore"` until a silent Gatekeeper SIGKILL proved
@@ -31,6 +37,11 @@
 //      never set on the launch that actually crashed.
 //   2. A local minidump via `crashReporter`. Carries the abort context for a
 //      renderer that dies without printing anything at all.
+//
+// Capturing is only half of it: `crash-collector.js` is what makes either
+// channel reachable by the person who hit the crash, by noticing new artifacts
+// and recording them in a `crashes.log` ledger the user can hand over. Until
+// that landed, both channels wrote files nothing ever mentioned again.
 //
 // Both are bounded by keeping exactly two generations of the log file (see
 // `rotateNativeLog`): the run being debugged is almost never the run that is

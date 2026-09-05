@@ -112,7 +112,6 @@
 2 test/test_prepare_pr_prove.py
 2 test/test_project_git.py
 3 test/test_push_guard.py
-1 test/test_release_macos_fail_closed.py
 6 test/test_sandbox_argv.py
 1 test/test_sandbox_probe.py
 9 test/test_security.py

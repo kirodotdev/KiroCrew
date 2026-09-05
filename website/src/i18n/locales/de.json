@@ -5089,6 +5089,13 @@
       "upload_note": "PNG, JPEG oder WEBP. Wird vor dem Speichern quadratisch zugeschnitten und auf 512 px verkleinert.",
       "upload_too_large": "Die Datei ist zu groß (max. 20 MB)."
     },
+    "crashNotice": {
+      "diagnostics_were_saved_locally": "Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}. Fügen Sie sie Ihrer Fehlermeldung bei.",
+      "dismiss": "Schließen",
+      "reveal_failed": "Ordner konnte nicht geöffnet werden – suchen Sie im Log-Verzeichnis der App nach crashes.log.",
+      "show_diagnostics": "Diagnose anzeigen",
+      "the_app_closed_unexpectedly": "Die App wurde unerwartet beendet"
+    },
     "crewWakeSection": {
       "active": "aktiv",
       "cancel_new_schedule": "Neuen Zeitplan verwerfen",

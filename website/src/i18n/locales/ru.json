@@ -5259,6 +5259,13 @@
       "upload_note": "PNG, JPEG или WEBP. Перед сохранением обрезается до квадрата и уменьшается до 512 px.",
       "upload_too_large": "Файл слишком большой (макс. 20 МБ)."
     },
+    "crashNotice": {
+      "diagnostics_were_saved_locally": "На этом устройстве сохранено новых записей о сбоях: {{n}}. Приложите их к сообщению о проблеме.",
+      "dismiss": "Закрыть",
+      "reveal_failed": "Не удалось открыть папку — найдите crashes.log в каталоге журналов приложения.",
+      "show_diagnostics": "Показать диагностику",
+      "the_app_closed_unexpectedly": "Приложение неожиданно завершило работу"
+    },
     "crewWakeSection": {
       "active": "активно",
       "cancel_new_schedule": "Отменить новое расписание",

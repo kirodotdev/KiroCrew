@@ -5004,6 +5004,13 @@
       "upload_note": "PNG、JPEG 或 WEBP。保存前会裁剪为正方形并缩放到 512 像素。",
       "upload_too_large": "文件太大(最大 20 MB)。"
     },
+    "crashNotice": {
+      "diagnostics_were_saved_locally": "已在本机保存 {{n}} 条新的崩溃记录。反馈问题时请一并附上。",
+      "dismiss": "忽略",
+      "reveal_failed": "无法打开文件夹——请在应用的日志目录中查找 crashes.log。",
+      "show_diagnostics": "查看诊断文件",
+      "the_app_closed_unexpectedly": "应用意外退出"
+    },
     "crewWakeSection": {
       "active": "运行中",
       "cancel_new_schedule": "取消新建定时任务",

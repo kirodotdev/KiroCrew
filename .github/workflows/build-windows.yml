@@ -307,6 +307,20 @@ jobs:
           done
           echo "installer/blockmap pairing verified for ${#installers[@]} installer(s)"
 
+      - name: Record symbols manifest
+        # The same pin build-desktop.yml records for the mac and Linux legs, for
+        # the same reason: package.json resolves a RANGE (^43.x), and the wrong
+        # Electron's symbols do not fail loudly -- minidump_stackwalk prints
+        # plausible, wrong frames. Windows needs it more than the others, not
+        # less: this lane runs on BOTH channels (release.yml's build-windows
+        # carries no channel `if:`), so a Windows build is what most stable users
+        # are actually running when crash-collector.js finds them a .dmp.
+        #
+        # Must run AFTER the build -- the resolved version comes from the
+        # installed node_modules/electron, never from the range.
+        shell: bash
+        run: node scripts/emit-symbols-manifest.mjs
+
       # NSIS output: electron-builder emits the installer flat into dist/ as
       # "<productName> Setup <version>.exe", alongside a .blockmap (the
       # differential-download index electron-updater consumes) and latest.yml
@@ -324,5 +338,6 @@ jobs:
             website/electron/dist/*.exe
             website/electron/dist/*.exe.blockmap
             website/electron/dist/latest.yml
+            website/electron/dist/symbols-manifest.json
           if-no-files-found: error
           retention-days: 14

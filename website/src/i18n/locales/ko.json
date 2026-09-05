@@ -5004,6 +5004,13 @@
       "upload_note": "PNG, JPEG 또는 WEBP. 저장 전에 정사각형으로 잘리고 512px로 축소됩니다.",
       "upload_too_large": "파일이 너무 큽니다(최대 20 MB)."
     },
+    "crashNotice": {
+      "diagnostics_were_saved_locally": "이 컴퓨터에 새 크래시 기록 {{n}}개를 저장했습니다. 문제를 보고할 때 첨부해 주세요.",
+      "dismiss": "닫기",
+      "reveal_failed": "폴더를 열 수 없습니다. 앱의 로그 디렉터리에서 crashes.log를 확인하세요.",
+      "show_diagnostics": "진단 정보 보기",
+      "the_app_closed_unexpectedly": "앱이 예기치 않게 종료되었습니다"
+    },
     "crewWakeSection": {
       "active": "활성",
       "cancel_new_schedule": "새 일정 취소",

@@ -5174,6 +5174,13 @@
       "upload_note": "PNG, JPEG o WEBP. Se recorta en cuadrado y se reduce a 512 px antes de guardarse.",
       "upload_too_large": "El archivo es demasiado grande (máx. 20 MB)."
     },
+    "crashNotice": {
+      "diagnostics_were_saved_locally": "Registros de fallo nuevos guardados en este equipo: {{n}}. Adjúntalos al informar del problema.",
+      "dismiss": "Descartar",
+      "reveal_failed": "No se pudo abrir la carpeta: busca crashes.log en el directorio de registros de la aplicación.",
+      "show_diagnostics": "Mostrar diagnósticos",
+      "the_app_closed_unexpectedly": "La aplicación se cerró de forma inesperada"
+    },
     "crewWakeSection": {
       "active": "activo",
       "cancel_new_schedule": "Cancelar nueva programación",

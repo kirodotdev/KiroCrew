@@ -163,6 +163,34 @@ jobs:
           # sign-and-notarize.yml. Local certificate discovery must stay off.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
+      - name: Record symbols manifest
+        # Records WHICH Electron build these bytes were packaged against, plus
+        # the exact symbol-archive names and URLs, so a crash report from this
+        # build can still be symbolized months later.
+        #
+        # Not the symbol archives themselves, deliberately: the darwin dSYMs are
+        # ~1.65 GB (arm64) + ~1.40 GB (x64) per universal build, and Electron
+        # hosts them permanently on its own releases -- copying them here would
+        # park tens of gigabytes that then EXPIRE at this job's 14-day retention
+        # while the upstream copies do not.
+        #
+        # package.json pins a RANGE (^43.x), so two builds a month apart can
+        # resolve to different Electron versions with nothing recording which was
+        # which. That matters because the wrong version's symbols do not fail
+        # loudly: they print plausible, wrong frames. scripts/symbolize-crash.sh
+        # reads this manifest and fetches the matching asset on demand.
+        #
+        # Must run AFTER the build: the resolved version comes from the installed
+        # node_modules/electron, never from the range in package.json.
+        #
+        # The artifact upload below is the CI-internal copy and expires with this
+        # job (14 days). "Months later" is only true because release.yml's
+        # `Assemble release assets` step also copies this file, renamed per leg,
+        # into the GitHub Release -- release assets do not expire, so the pin
+        # outlives the build for exactly the released versions users crash on.
+        shell: bash
+        run: node scripts/emit-symbols-manifest.mjs
+
       - name: Upload desktop artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -173,6 +201,7 @@ jobs:
             website/electron/dist/*.AppImage
             website/electron/dist/*.deb
             website/electron/dist/*.rpm
+            website/electron/dist/symbols-manifest.json
           if-no-files-found: error
           retention-days: 14
 
