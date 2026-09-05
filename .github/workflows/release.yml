@@ -952,15 +952,88 @@ jobs:
       # softprops/action-gh-release pre-pends `body`/`body_path` to the
       # `generate_release_notes` output rather than replacing it, so the
       # native "New Contributors" block (rendered from this repository's own
-      # commit history, per commit range) still appears after our section --
-      # do not hand-write a contributors list here, see AGENTS.md's changelog
-      # rule for why a hand-written list would duplicate that block.
+      # commit history, per commit range) still appears after our section.
+      #
+      # Two transforms are applied on the way, because the CHANGELOG section is
+      # written for a rendered FILE and the release body is a comment field:
+      #
+      #  - `### Contributors` is DROPPED. The section is required to carry it
+      #    (it ships in the wheel and feeds the dashboard's Releases page, where
+      #    no native block exists), but the release page renders its own
+      #    contributor block from the tag range, so copying ours in duplicates
+      #    the list directly above GitHub's. That duplicated on v0.3.0 and again
+      #    on v0.5.0 -- as a hand-written list was blamed both times, when the
+      #    copy is what actually carries it.
+      #  - Paragraphs and list items are JOINED onto one line. GitHub renders a
+      #    release body with GFM line breaks ON, so the CHANGELOG's ~76-column
+      #    wrapping becomes real <br>s and the page shows a fixed-width column
+      #    with a wide empty gutter (reported on v0.5.0). The same text is
+      #    correct in CHANGELOG.md, where a rendered file does not do this.
       - name: Extract CHANGELOG section for the release body
         run: |
           python3 - "${{ needs.version.outputs.channel }}" "${{ needs.version.outputs.base_version }}" <<'PY_EXTRACT'
+          import re
           import sys
           sys.path.insert(0, "src")
           from kiro_crew.changelog import parse_sections
+
+          FENCE = re.compile(r"^\s*(```|~~~)")
+          HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
+          LIST_ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+")
+          # Table rows, block quotes and thematic breaks own their line.
+          STANDALONE = re.compile(r"^\s*(\||>|---\s*$|\*\*\*\s*$|___\s*$)")
+
+
+          def drop_contributors(body: str) -> str:
+              """Remove the trailing `### Contributors` subsection, if present."""
+              out, skipping = [], False
+              for line in body.split("\n"):
+                  if HEADING.match(line):
+                      skipping = line.strip().lower().startswith("### contributors")
+                  if not skipping:
+                      out.append(line)
+              return "\n".join(out)
+
+
+          def unwrap(body: str) -> str:
+              """Join each paragraph / list item onto one line, keeping structure."""
+              out, buf, in_fence, marker = [], [], False, ""
+
+              def flush():
+                  if buf:
+                      out.append(" ".join(part.strip() for part in buf))
+                      buf.clear()
+
+              for raw in body.split("\n"):
+                  if in_fence:
+                      out.append(raw)
+                      if FENCE.match(raw) and raw.strip().startswith(marker):
+                          in_fence = False
+                      continue
+                  fence = FENCE.match(raw)
+                  if fence:
+                      flush()
+                      in_fence, marker = True, fence.group(1)
+                      out.append(raw)
+                  elif not raw.strip():
+                      flush()
+                      out.append("")
+                  elif HEADING.match(raw) or STANDALONE.match(raw):
+                      flush()
+                      out.append(raw.rstrip())
+                  elif LIST_ITEM.match(raw):
+                      flush()
+                      buf.append(raw.rstrip())
+                  else:
+                      buf.append(raw.rstrip())
+              flush()
+              collapsed = []
+              for line in out:
+                  if line == "" and collapsed and collapsed[-1] == "":
+                      continue
+                  collapsed.append(line)
+              return "\n".join(collapsed).strip() + "\n"
+
 
           channel, base_version = sys.argv[1], sys.argv[2]
           notes = ""
@@ -972,7 +1045,7 @@ jobs:
                       f"::error::CHANGELOG.md has no '## [{base_version}]' section; "
                       "the stable gate should have caught this earlier."
                   )
-              notes = sections[0] + "\n"
+              notes = unwrap(drop_contributors(sections[0]))
           with open("release-notes.md", "w", encoding="utf-8") as out:
               out.write(notes)
           PY_EXTRACT

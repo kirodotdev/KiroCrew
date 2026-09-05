@@ -197,9 +197,10 @@ there is no build step at stable-tag time to add it.
    stamped in, so the shipped wheel is `kirocrew-X.Y.Z-py3-none-any.whl` and
    `kirocrew --version` prints `X.Y.Z`. Expect the full build time, not a
    pointer move. `Create GitHub Release` runs (the `if:` fix) and renders
-   GitHub's own contributor block — **do not hand-write a contributors list in
-   the body** (that duplicated the native block on v0.3.0). Verify: stable feed
-   carries the bare `X.Y.Z`, the wheel filename has no `rc`, About shows
+   GitHub's own contributor block, so the body must not carry a second one —
+   see "What the release body must not contain" below, because the body is
+   ASSEMBLED, not written, and the duplicate arrives on its own. Verify: stable
+   feed carries the bare `X.Y.Z`, the wheel filename has no `rc`, About shows
    `X.Y.Z`, CHANGELOG shows no draft heading.
 
    To ship the candidate's exact bytes instead — the only mode where stable runs
@@ -1080,6 +1081,44 @@ A discrepancy is NOT recoverable in place — published keys are immutable and t
 feed is already advertising the wrong label. The remedy is the next version
 forward, so it is worth spending the five minutes on these three checks while
 the run is still fresh.
+
+### What the release body must not contain
+
+The body is **assembled, not written**, and that is why the same three defects
+keep reaching the page. `github-release` passes the extracted CHANGELOG section
+as `body_path` AND sets `generate_release_notes: true`, and
+`softprops/action-gh-release` **pre-pends** the body to the generated notes
+rather than replacing them — so the published body is always
+`CHANGELOG section + whatever GitHub generates`. Nobody has to write a mistake
+for one to appear.
+
+- **No commit list.** `generate_release_notes: true` appends a
+  `## What's Changed` line per commit since the previous tag. On v0.5.0 that was
+  **746 lines for 922 commits** — 65% of the body, and it pushed the whole thing
+  to 125,219 characters, past GitHub's 125,000-character ceiling, so the body was
+  published TRUNCATED mid-word. The page already links "N commits to main since
+  this release", and the reader-facing summary is the CHANGELOG section. Strip it.
+- **No contributors list.** The page renders GitHub's own contributor block from
+  the tag range, natively, whatever the body says. The CHANGELOG section is
+  *required* to end with `### Contributors` (it ships inside the wheel and feeds
+  the dashboard's Releases page, where no such block exists) — so copying that
+  section into the body duplicates the list immediately above GitHub's own. This
+  duplicated on v0.3.0 and again on v0.5.0; the rule is about the BODY, and it
+  does not relax the CHANGELOG's requirement.
+- **No hard-wrapped paragraphs.** GitHub renders issue / PR / release bodies with
+  GFM line breaks ON, so a newline inside a paragraph becomes a real `<br>`.
+  CHANGELOG prose is wrapped at ~76 columns, and copied in verbatim it renders as
+  a fixed-width column with a wide empty gutter down the right of the page — the
+  "big blank area" reported on v0.5.0. The identical text looks correct in
+  `CHANGELOG.md` because a rendered *file* does not enable that option. Join each
+  paragraph and each list item onto one line and let the browser reflow;
+  headings, list nesting, code fences and tables are unaffected.
+
+Trimming the body after the fact is safe and is the normal remedy: release notes
+are prose on the GitHub page, editable independently of the tag, the CHANGELOG,
+and the published bytes. Editing them changes nothing a client downloads and does
+not touch the immutable CDN keys. What is NOT editable is the CHANGELOG section
+itself once shipped.
 
 ## Recovery: roll forward
 
