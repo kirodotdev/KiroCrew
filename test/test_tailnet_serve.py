@@ -18,10 +18,13 @@ weighting is inverted, because a publish that fails silently is the bug:
   derived origin (which carries no port) match, and the upstream target is
   loopback so publishing never widens the gateway's bind.
 * :class:`TestPublishedDetection` pins that an unreadable status document reports
-  ``None`` rather than ``False``. This code has never seen a real
-  ``tailscale serve status --json``, so "we could not tell" has to be
-  representable — reporting "not published" for a published node is the
-  checked-but-never-ran defect in a new costume.
+  ``None`` rather than ``False``. This code has seen exactly one real
+  ``tailscale serve status --json`` (embedded in
+  ``test_other_ports_only_reads_our_port_as_free``), so "we could not tell" has
+  to stay representable — reporting "not published" for a published node is the
+  checked-but-never-ran defect in a new costume — while the one determination
+  the real document licenses (port-shaped keys, none of them ours, means our
+  port is free) reads as free rather than unknown.
 """
 
 from __future__ import annotations
@@ -490,9 +493,36 @@ class TestPublishDoesNotOverwrite:
             return tailnet_serve.publish(_PORT), m
 
     def test_a_free_mount_is_published(self) -> None:
-        result, run = self._publish_with_state(ServeState(False, False, "nothing configured"))
+        result, run = self._publish_with_state(
+            ServeState(False, False, "nothing configured", port_free=True)
+        )
         assert result.ok
         run.assert_called_once()
+
+    def test_other_ports_only_is_published(self) -> None:
+        """Serve config that sits entirely on other ports does not block ours.
+
+        The dev-machine case: another project published on port 80, and the old
+        ``configured is False`` guard read that as "443 might be taken" and
+        refused a publish that would have replaced nothing.
+        """
+        result, run = self._publish_with_state(
+            ServeState(False, True, "other ports only", port_free=True)
+        )
+        assert result.ok
+        run.assert_called_once()
+
+    def test_an_inconsistent_state_without_the_free_reading_refuses(self) -> None:
+        """``configured=False`` alone is not the deciding read — ``port_free`` is.
+
+        A state object that claims nothing is configured but carries no explicit
+        port-free determination is one this module's own reader never produces,
+        and the guard takes the refusing direction for it.
+        """
+        result, run = self._publish_with_state(ServeState(False, False, "no determination"))
+        assert not result.ok
+        assert result.code == "not_ours"
+        run.assert_not_called()
 
     def test_republishing_our_own_mount_is_allowed(self) -> None:
         """Idempotent: `up` twice must not be a refusal."""
@@ -557,7 +587,9 @@ class TestLaunchFailureIsNotReportedAsMissing:
     def test_publish_says_it_could_not_launch(self) -> None:
         cli, run = _patch_cli(side_effect=OSError("Exec format error"))
         with cli, run, patch.object(
-            tailnet_serve, "serve_state", return_value=ServeState(False, False, "free")
+            tailnet_serve,
+            "serve_state",
+            return_value=ServeState(False, False, "free", port_free=True),
         ), patch.object(tailnet_serve, "is_governance_pinned_off", return_value=False):
             result = tailnet_serve.publish(_PORT)
         assert result.code != "no_cli"
@@ -665,6 +697,14 @@ class TestWithdrawalSafety:
         assert result.code == "failed"
         assert result.detail == "something nobody predicted"
 
+    def test_other_ports_only_is_an_idempotent_success(self) -> None:
+        """Nothing on our port to withdraw; the other ports' config is not touched."""
+        result, run = self._unpublish_with_state(
+            ServeState(False, True, "other ports only", port_free=True)
+        )
+        assert result.ok
+        run.assert_not_called()
+
 
 class TestPublishedDetection:
     def _state(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
@@ -734,6 +774,113 @@ class TestPublishedDetection:
         st = self._state(_doc("http://127.0.0.1:9999"))
         assert st.published is False
         assert st.configured is True
+        # 443 carries a stranger's handler, so the port is NOT free.
+        assert st.port_free is False
+
+    def test_other_ports_only_reads_our_port_as_free(self) -> None:
+        """A real status document from a Windows tailscale 1.x daemon (hostname
+        anonymized).
+
+        One mapping on HTTP 80, nothing anywhere naming 443. The document keys
+        its mappings by port in both maps (``TCP`` by bare number, ``Web`` by
+        ``host:port``), which is the evidence that lets the absent 443 key be a
+        determination — the port is free — rather than an unknown.
+        """
+        doc = {
+            "TCP": {"80": {"HTTP": True}},
+            "Web": {
+                "desk.tail1a2b3c.ts.net:80": {
+                    "Handlers": {"/": {"Proxy": "http://127.0.0.1:9980"}}
+                }
+            },
+        }
+        st = self._state(json.dumps(doc))
+        assert st.published is False
+        assert st.configured is True
+        assert st.port_free is True
+
+    def test_a_foreground_serve_on_another_port_reads_as_free(self) -> None:
+        """``Foreground`` nests whole ServeConfigs under session ids; the port
+        keys inside them are recursed into like any others."""
+        doc = {
+            "Foreground": {
+                "session-abc123def": {
+                    "TCP": {"8080": {"HTTP": True}},
+                    "Web": {"desk.tail1a2b3c.ts.net:8080": {"Handlers": {"/": {"Proxy": "x"}}}},
+                }
+            }
+        }
+        st = self._state(json.dumps(doc))
+        assert st.published is False
+        assert st.port_free is True
+
+    def test_a_services_only_document_reads_as_free(self) -> None:
+        """The tailscale/tailscale#18289 shape: ``Services`` (virtual-IP
+        services) is the only content, with a bare TCP port key, while plain
+        ``serve status`` says "No serve config" and the node's own 443 is free.
+        """
+        doc = {"Services": {"svc:mything": {"TCP": {"27224": {"HTTP": True}}}}}
+        st = self._state(json.dumps(doc))
+        assert st.published is False
+        assert st.port_free is True
+
+    def test_the_free_reading_requires_port_shaped_evidence(self) -> None:
+        """Six digits is not a port, so it is not evidence of a port-keyed schema."""
+        st = self._state(json.dumps({"Sessions": {"123456": {"proxy": "somewhere"}}}))
+        assert st.published is None
+        assert st.port_free is None
+
+    def test_an_out_of_range_number_is_not_port_evidence(self) -> None:
+        st = self._state(json.dumps({"Things": {"host:99999": {"x": 1}}}))
+        assert st.published is None
+        assert st.port_free is None
+
+    def test_a_key_that_is_evidence_of_our_port_is_never_invisible_to_it(self) -> None:
+        """The invariant the free determination stands on, pinned as a property.
+
+        Any key the evidence read parses to OUR port must also be found by the
+        port detector — otherwise one key could simultaneously be the hidden
+        443 and the port-shaped evidence used to declare 443 free. The
+        adversarial shapes here (leading zeros, a trailing newline that ``$``
+        would match before, Unicode decimal digits that ``\\d`` and ``int()``
+        both accept) are exactly the classes where the two predicates used to
+        be able to disagree.
+        """
+        adversarial = [
+            "443",
+            "host:443",
+            "host:0443",
+            "0443",
+            "443\n",
+            "host:443\n",
+            "host:٤٤٣",  # Arabic-Indic digits: int("٤٤٣") == 443
+            "[::1]:443",
+            ":443",
+            "svc:00443",
+        ]
+        port = tailnet_serve.SERVE_HTTPS_PORT
+        for key in adversarial:
+            evidence_port = tailnet_serve._key_port(key)
+            if evidence_port == port:
+                assert tailnet_serve._port_scoped_subtrees({key: {}}, port), (
+                    f"key {key!r} parses as port {port} for the evidence read "
+                    f"but the port detector does not find it"
+                )
+
+    def test_a_leading_zero_443_key_is_detected_not_free(self) -> None:
+        """``host:0443`` names 443; it must land on the refusing path, never on
+        the free one."""
+        doc = {"Web": {"host:0443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}}}}}
+        st = self._state(json.dumps(doc))
+        assert st.port_free is not True
+
+    def test_a_trailing_newline_key_is_not_port_evidence(self) -> None:
+        st = self._state(json.dumps({"TCP": {"443\n": {"HTTPS": True}}}))
+        assert st.port_free is not True
+
+    def test_unicode_digit_keys_are_not_port_evidence(self) -> None:
+        st = self._state(json.dumps({"Web": {"host:٤٤٣": {"x": 1}}}))
+        assert st.port_free is not True
 
     def test_our_handler_beside_a_strangers_at_the_mount_is_not_ours(self) -> None:
         """Ours at `/api`, a stranger's at `/` — the mount we would remove.
@@ -768,6 +915,9 @@ class TestPublishedDetection:
         st = self._state(json.dumps({"Foreign": {"proxy": f"http://127.0.0.1:{_PORT}"}}))
         assert st.published is None
         assert st.configured is True
+        # Only dict KEYS carry the document's indexing shape; the ``:5476`` in
+        # the proxy VALUE above must not count as port-keyed evidence.
+        assert st.port_free is None
 
     @pytest.mark.parametrize("stdout", ["not json at all", "<html>nope</html>"])
     def test_unreadable_output_is_unknown_not_negative(self, stdout: str) -> None:

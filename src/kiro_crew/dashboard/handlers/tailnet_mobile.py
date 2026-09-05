@@ -106,6 +106,7 @@ def _derive_step(
     trusted: bool,
     startup_host: str,
     published: bool | None,
+    port_free: bool | None,
 ) -> Step:
     """The one next action, derived HERE and nowhere else.
 
@@ -133,7 +134,12 @@ def _derive_step(
     6. ``occupied`` — serve holds this port/mount for something that is not this
        dashboard, or its state could not be determined. Publishing would REPLACE
        it, so this refuses and the card renders the manual command
-       (``kirocrew tailnet up``) for the operator to run deliberately.
+       (``kirocrew tailnet up``) for the operator to run deliberately. Decided
+       on ``port_free``, not on ``published`` alone: a stranger's handler at the
+       mount reads ``published=False`` exactly as a free port does, and offering
+       the publish button for it walked the operator into ``publish()``'s own
+       refusal one click later. Serve config that sits entirely on OTHER ports
+       is neither — it is invisible to this write and derives ``publish``.
     7. ``publish`` — everything is in place; one action left.
     8. ``ready`` — published and trusted.
     """
@@ -169,10 +175,12 @@ def _derive_step(
         return "restart_gateway"
     if published is True:
         return "ready"
-    # ``published is None`` is "could not tell", which is NOT "free". Publishing
-    # over an unknown mount is the destructive direction, so an undetermined
-    # state lands with the occupied case — same refusal, same manual escape.
-    return "publish" if published is False else "occupied"
+    # Only a provably free port earns the publish button; ``None`` ("could not
+    # tell") and ``False`` (something else holds the mount) are both the
+    # destructive direction and land with the occupied case — same refusal,
+    # same manual escape. This mirrors ``publish()``'s own guard, so the card
+    # never offers an action the write side will refuse.
+    return "publish" if (published is False and port_free is True) else "occupied"
 
 
 def _dashboard_port(request: web.Request) -> int:
@@ -347,6 +355,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         name="", installed=False, reachable=False, logged_in=False, detail=""
     )
     published: bool | None = None
+    port_free: bool | None = None
     serve_detail = ""
     if not pinned:
         # Both are subprocess round trips; neither may run on the event loop.
@@ -354,6 +363,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         if probe.name and port:
             state = await asyncio.to_thread(tailnet_serve.serve_state, port)
             published = state.published
+            port_free = state.port_free
             serve_detail = state.detail
 
     startup_host = tailnet.running_tailnet_origin(request.app)[0]
@@ -363,6 +373,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         trusted=trusted,
         startup_host=startup_host,
         published=published,
+        port_free=port_free,
     )
     return _LiveState(
         step=step,

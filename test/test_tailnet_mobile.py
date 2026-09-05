@@ -103,6 +103,7 @@ def _step(**kw) -> str:
         "trusted": True,
         "startup_host": _HOST,
         "published": True,
+        "port_free": True,
     }
     args.update(kw)
     return tailnet_mobile._derive_step(**args)  # type: ignore[arg-type]
@@ -419,6 +420,21 @@ class TestUndeterminedIsNotFree:
         assert _step(published=None) != "ready"
 
 
+class TestOccupiedIsNotOfferedThePublishButton:
+    """The card must never offer an action ``publish()`` will refuse.
+
+    ``published=False`` covers two opposite situations — the port is free, and a
+    stranger's handler sits at the mount — and the old derivation offered the
+    publish button for both, walking the second into a refusal one click later.
+    """
+
+    def test_a_strangers_handler_derives_occupied(self) -> None:
+        assert _step(published=False, port_free=False) == "occupied"
+
+    def test_an_undetermined_port_derives_occupied(self) -> None:
+        assert _step(published=False, port_free=None) == "occupied"
+
+
 class TestRestartIsNotReady:
     """The boot race: resolvable now, absent from the startup allowlist."""
 
@@ -653,7 +669,18 @@ def _machine(
         patch.object(
             tailnet_mobile.tailnet_serve,
             "serve_state",
-            return_value=SimpleNamespace(published=published, configured=True, detail=detail),
+            # A REAL ServeState, not a namespace double, so a field added to the
+            # dataclass cannot drift past this fixture unnoticed. ``port_free``
+            # mirrors the real producer's invariant: a published port is
+            # occupied (by us), an unpublished one is free here because this
+            # fixture's ``published=False`` means "ready to publish", and an
+            # undetermined ``published`` leaves the port undetermined too.
+            return_value=tailnet_mobile.tailnet_serve.ServeState(
+                published=published,
+                configured=True,
+                detail=detail,
+                port_free=(True if published is False else (False if published is True else None)),
+            ),
         ),
     ):
         yield
@@ -1701,7 +1728,9 @@ class TestStatusIsOwnerOnly:
             patch.object(
                 tailnet_mobile.tailnet_serve,
                 "serve_state",
-                return_value=SimpleNamespace(published=True, configured=True, detail="ours"),
+                return_value=tailnet_mobile.tailnet_serve.ServeState(
+                    published=True, configured=True, detail="ours", port_free=False
+                ),
             ),
         ):
             return await tailnet_mobile.api_tailnet_mobile_status(_request(**req_kw))

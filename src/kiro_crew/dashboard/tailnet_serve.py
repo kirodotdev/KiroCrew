@@ -19,9 +19,11 @@ documented contract is the opposite of what a write path needs:
   those to a bare "failed" would reproduce the unexplained-refusal problem this
   feature exists to remove.
 
-Two consequences of never having seen this daemon's real output on a live tailnet
-(this repo's dev host has no Tailscale) shape the code, and both are deliberate
-rather than provisional:
+Two consequences of having seen almost none of this daemon's real output shape
+the code, and both are deliberate rather than provisional (one real status
+document — a Windows 1.x daemon holding a single port-80 mapping — is pinned in
+the test suite, and it is what justifies the one evidence-based narrowing here,
+:func:`_has_port_shaped_keys`; everything else stays schema-agnostic):
 
 **The daemon's own output is always passed through verbatim.** ``code`` is a
 best-effort classification for the UI to branch on; ``detail`` carries what
@@ -44,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -129,11 +132,22 @@ class ServeState:
     ``published=False, configured=True`` is the dangerous middle: something is
     served here and it is not ours, so a blind withdrawal could delete a mapping
     the operator set up by hand.
+
+    ``port_free`` narrows ``configured`` to the one port this module manages:
+    ``True`` means the status document provably holds no configuration for
+    ``SERVE_HTTPS_PORT`` — either no serve config exists at all, or every
+    configured mapping names some *other* port — so publishing replaces nothing.
+    ``False`` means the port carries some configuration (ours or a stranger's);
+    ``None`` means we could not determine it, which the write guards treat
+    exactly like ``False``. The field exists because ``configured`` alone made
+    a machine whose only serve mapping sits on port 80 indistinguishable from
+    one whose 443 is genuinely occupied, and both were refused.
     """
 
     published: bool | None
     configured: bool | None
     detail: str
+    port_free: bool | None = None
 
 
 def _stream_text(stream: str | bytes | None) -> str:
@@ -306,13 +320,79 @@ def _port_scoped_subtrees(node: Any, port: int) -> list[Any]:
     if isinstance(node, dict):
         for k, v in node.items():
             key = str(k)
-            if key == str(port) or key.endswith(f":{port}"):
+            # The single shared parse, so this detector and the port-evidence
+            # read (`_has_port_shaped_keys`) cannot disagree about a key — see
+            # `_key_port`. It is a strict superset of the bare-``"443"`` and
+            # ``endswith(":443")`` string forms (every shape they match parses
+            # here too, and it additionally catches e.g. ``"host:0443"``), so no
+            # separate string comparison is needed.
+            if _key_port(key) == port:
                 found.append(v)
             found.extend(_port_scoped_subtrees(v, port))
     elif isinstance(node, list):
         for v in node:
             found.extend(_port_scoped_subtrees(v, port))
     return found
+
+
+#: A dict key that names a port the way serve-status documents name them: a bare
+#: port number (the ``TCP`` map: ``"80"``) or a ``host:port`` suffix (the ``Web``
+#: and ``AllowFunnel`` maps: ``"desk.tail.ts.net:80"``). ASCII digits only and
+#: anchored with ``\Z``: ``\d`` admits Unicode decimal digits and ``$`` matches
+#: before a trailing newline, and either quirk would let a key parse as port
+#: evidence here while escaping the string comparisons in
+#: :func:`_port_scoped_subtrees`.
+_KEY_PORT_RE = re.compile(r"(?:^|:)([0-9]{1,5})\Z")
+
+
+def _key_port(key: str) -> int | None:
+    """The port a dict key names, or ``None`` when it names no port.
+
+    THE one key→port parse, shared by both predicates built on it. The free
+    determination in :func:`serve_state` is only sound while "this key is port
+    evidence" (:func:`_has_port_shaped_keys`) and "this key names OUR port"
+    (:func:`_port_scoped_subtrees`) agree about every key — a key that parses
+    as 443 for one predicate while escaping the other (a leading-zero
+    ``"host:0443"``, say) would count as evidence of a port-keyed schema while
+    hiding the very mapping the evidence is about. Parsing once and comparing
+    the integer removes the axis such a disagreement would turn on.
+    """
+    m = _KEY_PORT_RE.search(key)
+    if not m:
+        return None
+    port = int(m.group(1))
+    return port if 0 < port <= 65535 else None
+
+
+def _has_port_shaped_keys(node: Any) -> bool:
+    """Whether any dict key anywhere in *node* names a port.
+
+    The evidence read that lets :func:`serve_state` answer "our port is free"
+    instead of "unknown" when a document holds serve config only for OTHER
+    ports. The reasoning is schema self-evidence, not a hardcoded key path: one
+    document does not record one port in its keys and another port somewhere
+    else, so a document that demonstrably keys mappings by port (a real one from
+    a Windows Tailscale 1.102 daemon reads ``{"TCP": {"80": …}, "Web":
+    {"host:80": …}}``) and contains no key naming ours has nothing on ours.
+    A document with no port-shaped keys at all offers no such evidence, and the
+    caller keeps reporting ``unknown`` for it — the conservative floor is
+    narrowed, never removed. Values are never consulted: a proxy target like
+    ``http://127.0.0.1:9980`` names a port too, but only *keys* carry the
+    document's own indexing shape. The premise is deliberately loose in one
+    direction — a short numeric key that is not a port index (a counter, a
+    numeric session id) also reads as evidence — which is safe only because
+    every schema that records a mapping on a port also keys it, so the
+    443-detector fires before this evidence is consulted.
+    """
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if _key_port(str(k)) is not None:
+                return True
+            if _has_port_shaped_keys(v):
+                return True
+    elif isinstance(node, list):
+        return any(_has_port_shaped_keys(v) for v in node)
+    return False
 
 
 def _mount_subtrees(node: Any, mount: str) -> list[Any]:
@@ -368,7 +448,7 @@ def serve_state(port: int) -> ServeState:
         # is a genuine "nothing configured" rather than an unknown. Anything else
         # unparseable is unknown.
         if not (out or "").strip():
-            return ServeState(False, False, "No serve configuration is active.")
+            return ServeState(False, False, "No serve configuration is active.", port_free=True)
         # ``configured=True``: the daemon DID answer, we just cannot read its shape.
         # That distinction is load-bearing for the publish/withdraw guards — it
         # separates "something is there that this build cannot attribute" (dangerous,
@@ -378,7 +458,7 @@ def serve_state(port: int) -> ServeState:
             None, True, "tailscale serve status returned output this build cannot read."
         )
     if doc in (None, {}, []):
-        return ServeState(False, False, "No serve configuration is active.")
+        return ServeState(False, False, "No serve configuration is active.", port_free=True)
     needles = (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
     # Two narrowings, and each closes a way the previous predicate was wrong.
     #
@@ -392,6 +472,22 @@ def serve_state(port: int) -> ServeState:
     # touches: is the handler at SERVE_MOUNT, on SERVE_HTTPS_PORT, ours?
     scoped = _port_scoped_subtrees(doc, SERVE_HTTPS_PORT)
     if not scoped:
+        # No key names our port. When the document demonstrably keys mappings by
+        # port (see _has_port_shaped_keys), that absence is a determination, not
+        # an unknown: everything serve holds sits on other ports, and the write
+        # guards may treat our port as free without endangering any of it. This
+        # is the dev-machine case — another project published on port 80 must
+        # not read as "something is on 443". A document with no port-shaped keys
+        # anywhere stays unknown, because the assumption a determination needs
+        # (mappings record their port in a key) has no evidence in it.
+        if _has_port_shaped_keys(doc):
+            return ServeState(
+                False,
+                True,
+                f"Serve is configured for other ports only; nothing is on port "
+                f"{SERVE_HTTPS_PORT}.",
+                port_free=True,
+            )
         return ServeState(
             None,
             True,
@@ -405,6 +501,7 @@ def serve_state(port: int) -> ServeState:
             True,
             f"Serve is configured on port {SERVE_HTTPS_PORT}, but this build could "
             f"not identify the handler at {SERVE_MOUNT}.",
+            port_free=False,
         )
     if any(_find_proxy_target(m, needles) for m in mounts):
         return ServeState(
@@ -412,12 +509,14 @@ def serve_state(port: int) -> ServeState:
             True,
             f"Serve is proxying {SERVE_HTTPS_PORT}{SERVE_MOUNT} to the dashboard "
             f"on port {port}.",
+            port_free=False,
         )
     return ServeState(
         False,
         True,
         f"Serve is configured on {SERVE_HTTPS_PORT}{SERVE_MOUNT}, but not for "
         f"this dashboard.",
+        port_free=False,
     )
 
 
@@ -458,10 +557,13 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
             "nothing was published. Install Tailscale, or publish the dashboard "
             "yourself and set dashboard.url instead.",
         )
-    # Proceed ONLY when the mount is explicitly free or already ours. Anything else
-    # — including a state we could not determine — refuses, because the costs are not
-    # symmetric: overwriting destroys configuration the operator rebuilds from
-    # memory, while refusing costs one copy-pasted command, which the refusal prints.
+    # Proceed ONLY when OUR PORT is explicitly free or the mount is already ours.
+    # Anything else — including a state we could not determine — refuses, because the
+    # costs are not symmetric: overwriting destroys configuration the operator
+    # rebuilds from memory, while refusing costs one copy-pasted command, which the
+    # refusal prints. ``port_free`` is the deciding read, not ``configured``: serve
+    # config that sits entirely on other ports (another project on this machine) is
+    # untouched by this write and must not block it.
     #
     # An earlier revision keyed this on ``configured is True``, reasoning that when
     # the daemon gives no usable answer the publish call would fail anyway and report
@@ -471,8 +573,7 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     # "No answer" is not "no daemon", and the permissive branch existed largely
     # because it made this module's own failure-mode tests simpler.
     state = serve_state(port)
-    _free = state.published is False and state.configured is False
-    if not (state.published is True or _free):
+    if not (state.published is True or state.port_free is True):
         return ServeResult(
             False,
             "not_ours",
@@ -605,8 +706,9 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
     at the mount actually being removed.
 
     An **undetermined** state refuses too, and that is the deliberate half. This
-    code has never seen a real ``tailscale serve status --json``, so "I could not
-    tell" must not be treated as "go ahead": the two costs are not symmetric —
+    code has seen almost none of the real ``tailscale serve status --json``
+    shapes in the wild (one document is pinned in the test suite), so "I could
+    not tell" must not be treated as "go ahead": the two costs are not symmetric —
     wrongly proceeding destroys configuration the operator has to rebuild from
     memory, while wrongly refusing costs one copy-pasted command, which the
     refusal prints.
@@ -625,6 +727,17 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
         # caller's goal ("not published") already holds.
         return ServeResult(
             True, "ok", "Nothing is published — no serve configuration is active."
+        )
+    if state.published is False and state.port_free is True:
+        # The same idempotent no-op one level narrower: serve IS configured, but
+        # everything it holds sits on other ports. There is nothing on our port
+        # to withdraw, and running the removal anyway would be a write against
+        # config that belongs to something else on this machine.
+        return ServeResult(
+            True,
+            "ok",
+            f"Nothing is published on port {SERVE_HTTPS_PORT} — serve's "
+            f"configuration is for other ports only, and it is left alone.",
         )
     if state.published is not True:
         return ServeResult(

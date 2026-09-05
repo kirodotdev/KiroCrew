@@ -376,6 +376,14 @@ the same and the difference is the whole security story:
   something else there by hand, `up` and `down` both stop and print the command
   instead of overwriting or deleting your mapping.
 
+  A serve configuration that sits entirely on **other** ports — another project
+  on this machine published on port 80 or 8443, say — blocks neither direction.
+  Publishing touches only `443/`, so when Tailscale's own status shows every
+  mapping on some other port, the card and `tailnet up` treat 443 as free and
+  proceed, and `down` leaves the other mappings alone. Only a serve entry
+  naming port 443, or a status this build cannot read or attribute, triggers
+  the refusal.
+
   At startup the setting reads your own MagicDNS name from the local Tailscale
   daemon and trusts `https://<that name>` as an origin, so you do **not** have to
   look the name up and hand-write `dashboard.url`. The Overview one-click flow
