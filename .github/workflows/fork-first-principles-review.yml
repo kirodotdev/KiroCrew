@@ -751,7 +751,7 @@ jobs:
               if gh api --method PATCH "repos/$REPO/check-runs/$1" \
                 -f status="completed" -f conclusion="$2" \
                 -f "output[title]=First Principles Review — $3" \
-                -f "output[summary]=$summary" >/dev/null 2>&1; then
+                -f "output[summary]=$summary" >/dev/null; then
                 return 0
               fi
               sleep 5
