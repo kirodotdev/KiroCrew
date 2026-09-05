@@ -8595,6 +8595,19 @@ async def _run_chat(
                     continue
                 # Auto-reject remaining tools after one rejection in a batch
                 if getattr(slot, "_batch_rejected", False):
+                    # deny-notice-exempt: cascade of the batch's FIRST rejection,
+                    # which already carried its own attribution. When the person
+                    # denied that first tool, kiro-cli's "User denied tool
+                    # execution" is the true attribution for the remainder, and
+                    # steering a policy notice would re-attribute the user's own
+                    # decision to a rule. `_batch_rejected` is also set by the
+                    # host-side auto-declines (approval timeout, no-budget,
+                    # Slack-delivery failure — every `outcome != "approved"`
+                    # below), and a cascade behind one of those inherits its
+                    # wrong attribution; the correction belongs at those
+                    # decision points where the cause is known (#8219 / #8578),
+                    # not at this cause-blind cascade, which cannot tell a
+                    # person's refusal from an expired prompt.
                     await client.reject_tool(event.request_id)
                     _title = _redact_display_text(event.title)
                     slot.append(
@@ -9001,6 +9014,18 @@ async def _run_chat(
                             metadata={"reason": "interactive"},
                         )
                 else:
+                    # deny-notice-exempt: interactive user denial. The person
+                    # clicked Reject (or "reject once"), so kiro-cli's "User
+                    # denied tool execution" is the true and correct attribution
+                    # here — the sharpest case in the class, because steering a
+                    # policy notice would tell the model a rule blocked a call
+                    # the user personally refused. The host-side auto-declines
+                    # that also funnel to this shared reject (approval timeout,
+                    # no-budget, Slack-delivery failure) are wrong-attribution
+                    # cases, but their correction belongs at their own decision
+                    # points upstream where the cause is known (#8219 / #8578),
+                    # not at this shared answer site where user and host causes
+                    # are indistinguishable.
                     await client.reject_tool(event.request_id)
                     # Explain WHY when the command tripped the read-only safety
                     # gate, so the pill reads "Cancelled due to unsafe shell
