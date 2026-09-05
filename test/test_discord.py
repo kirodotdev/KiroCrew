@@ -757,14 +757,14 @@ class TestRotationSplitting:
         r._buf = [source]
         offloads: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
 
-        def _capture(text: str, limit: int) -> list[str]:
-            return [text]
+        def _capture(text: str, limit: int) -> tuple[list[str], bool]:
+            return [text], False
 
         async def _offload(func: Any, /, *args: Any, **kwargs: Any) -> Any:
             offloads.append((func, args, kwargs))
             return func(*args, **kwargs)
 
-        monkeypatch.setattr(renderer_module, "split_markdown_safe", _capture)
+        monkeypatch.setattr(renderer_module, "split_markdown_safe_with_tier", _capture)
         monkeypatch.setattr(renderer_module.asyncio, "to_thread", _offload)
 
         await r._rotate_on_length()

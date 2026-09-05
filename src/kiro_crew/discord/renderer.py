@@ -81,7 +81,7 @@ from kiro_crew.messaging.renderer import (
     session_provenance_tag,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import split_markdown_safe, split_markdown_safe_with_tier
 from kiro_crew.messaging.status_reactions import (
     PHASE_QUEUED,
     PHASE_THINKING,
@@ -788,14 +788,11 @@ class DiscordRenderer(Renderer):
             sealed = chunks
         else:
             split_source = raw
-            chunks = await asyncio.to_thread(split_markdown_safe, split_source, limit)
+            chunks, degraded = await asyncio.to_thread(
+                split_markdown_safe_with_tier, split_source, limit
+            )
             sealed, tail = chunks[:-1], chunks[-1] if chunks else ""
-            probe_at = len(prefix := raw.removesuffix(tail))
-            probe = prefix + "![x](/tmp/x.png)" + " ".join(re.findall(r"`+", prefix)) + tail
-            spans = await asyncio.to_thread(protected_ref_spans, probe) if sealed else []
-            lost = bool(sealed) and raw.endswith(tail) and probe_at not in dict(spans)
-            dirty_cut = any(len(line) > limit for line in split_source.splitlines(True))
-            if dirty_cut or lost:
+            if degraded:
                 self._segment_uploads_safe = False
         for ch in sealed:
             self._buf = [ch]

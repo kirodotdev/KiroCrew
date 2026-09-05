@@ -69,6 +69,7 @@ from dataclasses import dataclass
 
 __all__ = [
     "split_markdown_safe",
+    "split_markdown_safe_with_tier",
     "split_markdown_bytes",
     "chunk_utf8_bytes",
     "iter_fence_spans",
@@ -218,13 +219,33 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
     chunk already holds — so the cut without a clean boundary is reachable only
     for a line longer than ``limit``.
     """
+    chunks, _ = split_markdown_safe_with_tier(text, limit, reserve=reserve)
+    return chunks
+
+
+def split_markdown_safe_with_tier(
+    text: str, limit: int, *, reserve: int = 0
+) -> tuple[list[str], bool]:
+    """Split like :func:`split_markdown_safe` but declare the tier.
+
+    Returns ``(chunks, degraded)`` where ``degraded`` is True iff the split
+    entered the context-degrading tier — a logical line longer than ``limit``
+    was cut without a clean boundary on both sides, so the deferred remainder
+    can read as a delimiter the source line never contained. Discord's
+    ``_rotate_on_length`` consumes this instead of probing with a synthetic
+    ``![x](/tmp/x.png)`` reference.
+
+    The plain :func:`split_markdown_safe` keeps its ``list[str]`` signature so
+    every other channel stays unchanged.
+    """
     if not text:
-        return []
+        return [], False
     cap = limit - reserve
     if limit <= 0 or cap <= 0 or len(text) <= cap:
-        return [text]
+        return [text], False
 
     out: list[str] = []
+    degraded = False
     work: list[_Frag] = _lines(text)
     pos = 0  # index of the next fragment to place
     buf: list[_Frag] = []  # fragments accumulated for the current chunk
@@ -310,6 +331,8 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
             # widest prefix-clean width — the documented residue, where the
             # deferred remainder can still read as a delimiter the source line
             # never contained. This is the ONLY dirty cut in the function.
+            if not clean:
+                degraded = True
             cut = width
 
         if not cut:
@@ -343,7 +366,7 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
         # No synthetic closer: the final chunk keeps an unclosed fence open so a
         # streaming caller can keep appending to it.
         out.append(tail)
-    return out
+    return out, degraded
 
 
 def chunk_utf8_bytes(text: str, max_bytes: int) -> list[str]:
