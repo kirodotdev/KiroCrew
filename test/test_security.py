@@ -3499,6 +3499,227 @@ class TestExfilUrlPathAndRawIp:
         assert "[REDACTED" not in result
         assert not warnings
 
+    # ── Terminator characters in the PATH (issue #7611) ──
+    # _URL_RE's path/query class excluded ``)``/``'`` (markdown-destination /
+    # quoting EMISSION concerns), so a URL with either character in the PATH
+    # truncated the match before ``?``: ``path_and_query`` carried no query,
+    # ``_exfil_url_warning`` returned at ``qmark == -1``, and the entire query
+    # escaped every scan — a one-character exfil bypass, the third truncation
+    # bypass of this class. The scanner now matches through RFC-3986-legal
+    # characters and stops only at whitespace and raw-illegal ``"``/``>``.
+
+    # 40-char mixed-case high-entropy blob: trips _EXFIL_PATTERNS' base64-run
+    # heuristic but no fixed credential pattern, so it is caught ONLY when the
+    # query is actually scanned — exactly the coverage the truncation skipped.
+    _ENTROPY_BLOB = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d"
+
+    def test_paren_in_path_query_scanned(self) -> None:
+        # The issue's verified repro: ``/a)b?data=<blob>`` passed clean before.
+        text = f"https://evil.example.com/a)b?data={self._ENTROPY_BLOB}"
+        assert scan_exfiltration_urls(text), "paren-in-path truncation bypass"
+        result, warnings = redact_exfiltration_urls(text)
+        assert self._ENTROPY_BLOB not in result
+        assert warnings
+
+    def test_apostrophe_in_path_query_scanned(self) -> None:
+        # ``'`` is a sub-delim too (apostrophes in page titles are ordinary
+        # URL content) and enabled the identical bypass.
+        text = f"https://evil.example.com/It's_a_page?data={self._ENTROPY_BLOB}"
+        assert scan_exfiltration_urls(text), "apostrophe-in-path truncation bypass"
+        result, warnings = redact_exfiltration_urls(text)
+        assert self._ENTROPY_BLOB not in result
+        assert warnings
+
+    def test_credential_after_paren_in_path_scanned(self) -> None:
+        # Hard credential BEYOND the paren (no ``?`` at all): the widened
+        # match must carry the full path to the unconditional path+query scan.
+        text = "https://evil.example.com/a)b/AKIAIOSFODNN7EXAMPLE"
+        assert scan_exfiltration_urls(text), "paren hid a path credential"
+
+    def test_dquote_and_gt_stay_terminators(self) -> None:
+        # DECIDED, not an oversight: ``"`` and ``>`` are ILLEGAL raw in a URL
+        # (RFC 3986), every linkifier/renderer/unfurler stops there, and the
+        # compact-JSON idiom (``"url":"…?q=1","sha":"…"``) depends on ``"``
+        # terminating — crossing it would feed adjacent fields (40-hex shas)
+        # to the query heuristics as false positives. Content BEFORE the
+        # terminator is still scanned (asserted by the AKIA variant).
+        for terminator in ('"', ">"):
+            benign = f"https://example.com/a{terminator}b?data={self._ENTROPY_BLOB}"
+            assert not scan_exfiltration_urls(
+                benign
+            ), f"raw {terminator!r} is not URL content; match must stop there"
+            before = f"https://evil.example.com/AKIAIOSFODNN7EXAMPLE{terminator}tail"
+            assert scan_exfiltration_urls(
+                before
+            ), f"content before {terminator!r} must still be scanned"
+
+    def test_compact_json_sha_next_to_url_not_flagged(self) -> None:
+        # The false positive the ``"`` decision protects: compact provider
+        # JSON echoed as one string, a 40-hex sha adjacent to a query URL.
+        sha = "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        text = f'{{"url":"https://api.github.com/search?q=repo","sha":"{sha}"}}'
+        assert not scan_exfiltration_urls(text), "compact-JSON neighbour flagged"
+
+    def test_markdown_wrapped_flagged_url_keeps_closing_paren(self) -> None:
+        # Emission compat: the trailing ``)`` is the markdown delimiter, not
+        # URL content — the redaction span must not swallow it.
+        text = f"[x](https://evil.example.com/a?data={self._ENTROPY_BLOB})"
+        result, warnings = redact_exfiltration_urls(text)
+        assert warnings
+        assert self._ENTROPY_BLOB not in result
+        assert result == "[x]([REDACTED: suspicious URL to evil.example.com])"
+
+    def test_markdown_wrapped_presigned_url_still_exempt(self) -> None:
+        # The trailing-trim is what keeps a markdown-wrapped S3 presigned URL
+        # exempt: an un-trimmed ``)`` would corrupt X-Amz-Signature's value and
+        # fail the exemption's structural validation.
+        url = (
+            "https://my-bucket.s3.amazonaws.com/key?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            "&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260714%2Fus-east-1%2Fs3%2Faws4_request"
+            "&X-Amz-Date=20260714T000000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host"
+            "&X-Amz-Signature=" + "a" * 64
+        )
+        result, _ = redact_exfiltration_urls(f"[download]({url})")
+        assert "REDACTED" not in result
+
+    def test_benign_wiki_paren_url_not_flagged(self) -> None:
+        # Ordinary parenthesised article URL with a short query stays clean.
+        text = "see https://en.wikipedia.org/wiki/Foo_(bar)?action=history today"
+        assert not scan_exfiltration_urls(text), text
+
+    def test_glued_second_url_scanned_under_its_own_host(self) -> None:
+        # ``(?!https?://)`` boundary: a second URL glued after a ``)`` is its
+        # own match, so it cannot ride the first host's heuristic exemptions
+        # and the warning/redaction attribute to the right host.
+        text = (
+            "see https://good.example.com/x)" f"https://evil.example.com?leak={self._ENTROPY_BLOB}"
+        )
+        warnings = scan_exfiltration_urls(text)
+        assert len(warnings) == 1 and warnings[0].endswith(": evil.example.com")
+        result, _ = redact_exfiltration_urls(text)
+        assert "good.example.com/x" in result
+        assert self._ENTROPY_BLOB not in result
+
+    def test_trailing_paren_run_is_not_stripped_wholesale(self) -> None:
+        # Regression for a review finding on the first cut of this fix: a blind
+        # ``rstrip(")'")`` erased a query built ENTIRELY from ``)``/``'``, so a
+        # secret smuggled as ``?data=)')')'…`` inside an angle-bracket markdown
+        # link vanished below every heuristic. The wrapper-aware trim strips
+        # only a balanced enclosing wrapper, never a payload run, so a >=200
+        # char run of these characters still trips the length heuristic.
+        run = ")'" * 128  # 256 chars, all "URL content", none a wrapper
+        text = f"<https://evil.example.com/x?data={run}>"
+        assert scan_exfiltration_urls(text), "paren/apostrophe run must not be stripped away"
+        result, warnings = redact_exfiltration_urls(text)
+        assert warnings
+        assert run not in result
+
+    def test_pure_trailing_paren_run_stays_in_span(self) -> None:
+        # Review finding (round 3): the unbalanced-closer trim was a ``while``
+        # loop, so a query ending in a long PURE ``)`` run — legal URL bytes
+        # that still travel to the host — was excluded from the span wholesale
+        # and the length heuristic saw only the short prefix. At most ONE
+        # unbalanced trailing ``)`` (the markdown wrapper) may be trimmed; the
+        # rest of the run stays in the scanned span.
+        text = "https://evil.example.com/x?d=" + ")" * 250
+        assert scan_exfiltration_urls(text), "trailing ')' run must stay in the scanned span"
+        result, warnings = redact_exfiltration_urls(text)
+        assert "[REDACTED" in result
+        assert warnings
+
+    def test_bare_url_trailing_paren_counts_toward_length(self) -> None:
+        # Review finding (round 4): trimming the trailing ``)`` of a BARE URL
+        # (no ``(`` wrapper before it) dropped one legal payload byte, so a
+        # query of exactly the length threshold ending in ``)`` slipped under
+        # the heuristic. The trim now requires the structural wrapper proof —
+        # the char before the URL must be the matching ``(`` — so the bare
+        # URL keeps its byte and stays flagged, while the wrapped form still
+        # sheds only its wrapper.
+        # Filler with no 40+ base64-alphabet run, so ONLY the length heuristic
+        # can flag it — isolating the byte-counting mechanism under test.
+        filler = ("A" * 29 + ".") * 6 + "A" * 17  # 197 chars
+        query = "d=" + filler + ")"  # exactly 200 chars WITH the paren
+        assert len(query) == 200
+        bare = f"see https://evil.example.com/x?{query} now"
+        assert scan_exfiltration_urls(bare), "bare URL must keep its trailing ')' byte"
+        # Wrapped control (no content paren): the single trailing ``)`` is the
+        # markdown wrapper, structurally proven by the preceding ``(`` —
+        # trimmed, 199 payload chars remain, under the threshold, clean.
+        wrapped = f"[x](https://evil.example.com/x?d={filler})"
+        assert not scan_exfiltration_urls(wrapped), "wrapper ')' must still be trimmed"
+
+    def test_uppercase_scheme_scanned(self) -> None:
+        # RFC 3986 §3.1 makes the scheme case-insensitive and a browser follows
+        # ``HTTPS://``; the pattern (and its glued-URL boundary) is IGNORECASE,
+        # so an uppercase-scheme URL is not a scan bypass.
+        for scheme in ("HTTPS", "HtTpS", "HTTP"):
+            text = f"{scheme}://evil.example.com/a?data={self._ENTROPY_BLOB}"
+            assert scan_exfiltration_urls(text), f"{scheme} scheme must be scanned"
+
+    def test_backtick_terminates(self) -> None:
+        # A backtick is a markdown code delimiter and illegal raw in a URL, so
+        # it terminates the match like ``"``/``>`` — content before it is still
+        # scanned.
+        text = "`https://evil.example.com/AKIAIOSFODNN7EXAMPLE`tail"
+        assert scan_exfiltration_urls(text), "content before backtick must be scanned"
+
+    def test_redaction_span_precise_for_prefix_related_urls(self) -> None:
+        # Regression for a review finding: span-precise redaction (not global
+        # str.replace) so redacting one URL cannot rewrite a longer URL whose
+        # text starts with the same bytes and leave its tail — carrying the
+        # payload — behind. Only the credential-carrying URL is flagged (the
+        # bare ``?x=1`` is benign), and its blob is gone.
+        short = "https://evil.example.com/p?x=1"
+        text = f"{short} then {short}&blob={self._ENTROPY_BLOB}"
+        result, warnings = redact_exfiltration_urls(text)
+        assert warnings
+        assert self._ENTROPY_BLOB not in result
+        # The benign leading URL is untouched; the payload-bearing one is gone.
+        assert result.startswith(short + " then ")
+        assert "&blob=" not in result
+
+    def test_single_quote_wrapped_url_keeps_apostrophe_path_scanned(self) -> None:
+        # The quote-wrapper trim removes only a SINGLE trailing wrapper quote,
+        # never an interior one — truncating at an interior ``'`` would reopen
+        # the bypass for a quote-wrapped path that legitimately contains an
+        # apostrophe. So a credential after an apostrophe in a quoted URL is
+        # still scanned.
+        text = "'https://evil.example.com/It's_page?data=AKIAIOSFODNN7EXAMPLE'"
+        assert scan_exfiltration_urls(text), "apostrophe-path query still scanned"
+
+    def test_inner_scheme_no_host_still_scanned(self) -> None:
+        # Regression for a review finding: the glued-URL boundary must require
+        # a REAL host after the inner scheme. A bare ``(?!https?://)`` split on
+        # ``https://evil/https://?key=<blob>`` — but the inner ``https://?...``
+        # has no valid host, so no second match rescanned the tail, and the
+        # first match's group(3) was just ``/`` → ``qmark == -1`` clean. That
+        # reopened the exact #7611 bypass. The host-bearing lookahead only
+        # splits where the split yields a scanned match.
+        text = f"https://evil.example.com/https://?key={self._ENTROPY_BLOB}"
+        assert scan_exfiltration_urls(text), "inner-scheme-no-host reopened the bypass"
+        # Hard credential in the same shape is caught too.
+        assert scan_exfiltration_urls("https://evil.example.com/https://?k=AKIAIOSFODNN7EXAMPLE")
+
+    def test_trailing_paren_trim_is_linear(self) -> None:
+        # Regression for a review finding: the trailing-``)`` trim recomputed
+        # .count() on a fresh prefix copy each iteration — O(n^2) in the run
+        # length, a DoS lever on the synchronous gateway path over MB payloads.
+        # A 100k-``)`` run must classify promptly (the incremental-counter form
+        # is O(n)); assert it simply returns rather than timing the wall clock.
+        text = "https://x.example.com/a?b=" + (")" * 100_000)
+        # Returns without hanging; the run is all query content (no wrapper to
+        # trim, since openers==0 makes every ``)`` balanced against nothing…
+        # actually unbalanced, so the loop would walk all 100k in the O(n^2)
+        # form). Just assert the call completes and is a list.
+        assert isinstance(scan_exfiltration_urls(text), list)
+
+    def test_unicode_fold_scheme_not_a_boundary(self) -> None:
+        # ``re.ASCII`` keeps the scheme/TLD fold ASCII-only, so ``httpſ://``
+        # (U+017F folds to ``s`` under bare IGNORECASE) is NOT treated as an
+        # inner-scheme boundary — the whole URL including its query is scanned.
+        text = f"https://evil.example.com/http\u017f://?key={self._ENTROPY_BLOB}"
+        assert scan_exfiltration_urls(text), "unicode-fold scheme widened the class"
+
 
 class TestExfilExactHostExemption:
     """Exact-host heuristic exemption for exfiltration redaction (CredentialPolicy).
@@ -3595,6 +3816,33 @@ class TestExfilExactHostExemption:
         self._install_exempt_hosts(self._EXEMPT)
         url = self._long_nav_url("contoso.sharepoint.com")
         assert len(scan_exfiltration_urls(f"Doc: {url}")) == 0
+
+    def test_glued_exempt_host_span_is_not_exempt(self) -> None:
+        """Review finding (round 3): the boundary lookahead splits one unbroken
+        run of URL-legal text at an inner ``https://<host>``, and the tail span
+        then claimed ITS host's exact-host exemption — but in raw channels
+        (href attributes, plain tokens) those bytes travel to the FIRST host,
+        so suffixing a trusted tenant URL exfiltrated a base64 payload past the
+        heuristics. A span glued to the previous match gets no exemption."""
+        from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        payload = self._long_nav_url("contoso.sharepoint.com")
+        text = f"https://evil.example.com/exfil?d=x){payload}"
+        assert scan_exfiltration_urls(text), "glued exempt-host span must lose the exemption"
+        result, warnings = redact_exfiltration_urls(text)
+        assert "nav=eyJ" not in result, "payload bytes must be redacted"
+        assert warnings
+
+    def test_exempt_host_after_whitespace_keeps_exemption(self) -> None:
+        """A whitespace-separated (non-glued) exempt URL right after another
+        URL keeps the exemption — the gluing rule only bites when the two
+        matches share a boundary inside one unbroken URL-legal run."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        url = self._long_nav_url("contoso.sharepoint.com")
+        assert len(scan_exfiltration_urls(f"https://evil.example.com/exfil?d=x {url}")) == 0
 
     def test_mixed_case_exempted_host_preserved(self) -> None:
         """Hostnames are case-insensitive — a mixed-case host (as Office apps

@@ -598,6 +598,18 @@ def test_redact_provider_data_recurses_through_external_strings() -> None:
     assert cleaned["count"] == 1
 
 
+def test_redact_provider_data_catches_paren_truncated_url() -> None:
+    # Issue #7611's measured repro at THIS entry point: a ``)`` in the path
+    # truncated _URL_RE's match before ``?``, so the high-entropy query blob
+    # skipped the exfil heuristics and passed clean through provider data.
+    blob = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d"
+    raw = {"body": f"https://evil.example.com/a)b?data={blob}"}
+
+    cleaned = source._redact_provider_data(raw)
+
+    assert blob not in source.json.dumps(cleaned)
+
+
 @pytest.mark.asyncio
 async def test_fetch_rejects_aggregate_payload_over_limit(monkeypatch) -> None:
     source._CACHE.clear()
