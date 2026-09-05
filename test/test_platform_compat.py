@@ -307,6 +307,67 @@ class TestRenameNoReplace:
             pc.rename_noreplace("source", "target", src_dir_fd=-1, dst_dir_fd=-1)
 
 
+def test_prepare_lock_file_seeds_windows_byte_range(tmp_path, monkeypatch):
+    lock = tmp_path / "prepared.lock"
+    fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        pc.prepare_lock_file(fd)
+        assert os.fstat(fd).st_size == 1
+        assert os.read(fd, 1) == b"\0"
+    finally:
+        os.close(fd)
+
+
+class TestRenameNoReplaceAdapter:
+    """Path-taking ``rename_no_replace`` built on the native no-replace seam."""
+
+    def test_unavailable_native_seam_fails_closed_as_enotsup(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "_RENAME_NOREPLACE_FN", None)
+        with pytest.raises(OSError) as exc_info:
+            pc.rename_no_replace("source", "destination")
+        assert exc_info.value.errno == errno.ENOTSUP
+
+    @pytest.mark.skipif(
+        not (pc.IS_WINDOWS or pc.RENAME_NOREPLACE_AVAILABLE),
+        reason="no native atomic no-replace rename on this host",
+    )
+    def test_renames_directory_when_destination_is_absent(self, tmp_path):
+        source = tmp_path / "source"
+        destination = tmp_path / "destination"
+        source.mkdir()
+        (source / "payload").write_text("original", encoding="utf-8")
+
+        pc.rename_no_replace(source, destination)
+
+        assert not source.exists()
+        assert (destination / "payload").read_text(encoding="utf-8") == "original"
+
+    @pytest.mark.skipif(
+        not (pc.IS_WINDOWS or pc.RENAME_NOREPLACE_AVAILABLE),
+        reason="no native atomic no-replace rename on this host",
+    )
+    @pytest.mark.parametrize("occupied", [False, True])
+    def test_refuses_existing_directory_without_nesting_or_replacing(self, tmp_path, occupied):
+        source = tmp_path / "source"
+        destination = tmp_path / "destination"
+        source.mkdir()
+        destination.mkdir()
+        (source / "payload").write_text("candidate", encoding="utf-8")
+        if occupied:
+            (destination / "live").write_text("existing", encoding="utf-8")
+
+        with pytest.raises(OSError) as exc_info:
+            pc.rename_no_replace(source, destination)
+
+        assert exc_info.value.errno in (errno.EEXIST, errno.ENOTEMPTY)
+        assert (source / "payload").read_text(encoding="utf-8") == "candidate"
+        assert not (destination / "source").exists()
+        if occupied:
+            assert (destination / "live").read_text(encoding="utf-8") == "existing"
+
+
 class TestProcessHelpers:
     def test_pid_exists_true_for_self(self):
         # The current process obviously exists — on POSIX via os.kill(0), on

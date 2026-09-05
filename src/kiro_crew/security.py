@@ -7655,6 +7655,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # files. The dashboard and workflow service open it directly and remain able
     # to create, list, update, and execute definitions.
     "workflow_library",
+    # Auto-skill approval moves candidate bytes here before validating them.
+    # The gateway opens this state directly, but agent file/shell tools must not
+    # enumerate or mutate a claim after validation and before publication.
+    "skills/auto/.private",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

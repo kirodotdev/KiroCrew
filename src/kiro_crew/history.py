@@ -1732,12 +1732,37 @@ class ConversationLog:
     def session_mtime(self, key: str) -> float | None:
         """Return the session file's mtime, or None if it can't be stat'd.
 
-        Advances on every real message :meth:`append` but is preserved across
-        metadata-only writes (see :func:`_restore_mtime`), so it is a faithful
-        "has this conversation changed?" signal — used as the cache-validity
-        signature for derived artifacts like on-demand session summaries.
+        Advances on real message :meth:`append` calls when the filesystem clock
+        can distinguish them, and is preserved across metadata-only writes (see
+        :func:`_restore_mtime`). It remains the session activity-order signal;
+        summary caches pair it with message-region size via
+        :meth:`session_signature` so a same-clock-tick append cannot leave stale
+        derived content looking fresh.
         """
         return _safe_mtime(self._path(key))
+
+    def session_signature(self, key: str) -> tuple[float, int] | None:
+        """Return ``(mtime, message_bytes)`` for summary-cache validation.
+
+        Some filesystems can report the same mtime for consecutive appends. The
+        message region still grows, while metadata-only rewrites may change the
+        first line without changing the conversation a summary describes. Read
+        the stat and metadata-line length from one open file description so an
+        atomic replacement cannot pair facts from different inodes.
+        """
+        try:
+            with self._path(key).open("rb") as session_file:
+                stat = os.fstat(session_file.fileno())
+                metadata_bytes = len(session_file.readline())
+        except OSError:
+            return None
+        return stat.st_mtime, max(0, stat.st_size - metadata_bytes)
+
+    @staticmethod
+    def _sidecar_file_signature_matches(data: dict, signature: tuple[float, int]) -> bool:
+        """Validate a sidecar's file signature, accepting legacy mtime-only data."""
+        mtime, size = signature
+        return data.get("sig") == mtime and ("size" not in data or data.get("size") == size)
 
     def _summary_cache_path(self, key: str) -> Path:
         """Sidecar path for a session's cached one-line summary."""
@@ -1749,19 +1774,19 @@ class ConversationLog:
         Summaries are cached in a sidecar file — never in the session JSONL —
         so summarizing a session never rewrites (and therefore never risks
         clobbering, via a read-modify-write race with :meth:`append`) its
-        conversation log. The cache is valid only while the session file's
-        mtime matches the signature recorded when the summary was generated;
-        any real append advances the mtime and invalidates it.
+        conversation log. Newly written sidecars match both mtime and size, so
+        even an append inside one filesystem timestamp tick invalidates them.
+        Legacy sidecars without ``size`` retain their prior mtime-only behavior.
         """
         try:
             data = json.loads(self._summary_cache_path(key).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         summary = data.get("summary")
-        sig = self.session_mtime(key)
+        signature = self.session_signature(key)
         if (
-            sig is not None
-            and data.get("sig") == sig
+            signature is not None
+            and self._sidecar_file_signature_matches(data, signature)
             and data.get("gen", 0) == self.rotation_generation(key)
             and isinstance(summary, str)
         ):
@@ -1769,14 +1794,20 @@ class ConversationLog:
         return None
 
     def set_cached_summary(
-        self, key: str, summary: str, sig: float, generation: int | None = None
+        self,
+        key: str,
+        summary: str,
+        sig: float,
+        generation: int | None = None,
+        size: int | None = None,
     ) -> None:
         """Persist a derived one-line *summary* to the sidecar cache.
 
-        Keyed by the session file's mtime *sig* so a later append invalidates
-        it. Atomic and side-effect-free with respect to the session JSONL —
-        no read-modify-write, hence no data-loss race with a concurrent
-        :meth:`append`.
+        Keyed by the session file's mtime *sig* and, for new callers, its
+        message-region byte *size*, so a later append invalidates it even when
+        the filesystem reports an unchanged mtime. Atomic and side-effect-free
+        with respect to the session JSONL — no read-modify-write, hence no
+        data-loss race with a concurrent :meth:`append`.
 
         *generation* is :meth:`rotation_generation` captured at the same moment
         as *sig*, and must come from the caller for the same reason *sig* does:
@@ -1787,16 +1818,14 @@ class ConversationLog:
         staleness the generation was added to catch. ``None`` reads it at write
         time, which is only safe when no snapshot preceded the call.
         """
-        atomic_write(
-            self._summary_cache_path(key),
-            json.dumps(
-                {
-                    "sig": sig,
-                    "gen": (self.rotation_generation(key) if generation is None else generation),
-                    "summary": summary,
-                }
-            ),
-        )
+        cache: dict[str, object] = {
+            "sig": sig,
+            "gen": (self.rotation_generation(key) if generation is None else generation),
+            "summary": summary,
+        }
+        if size is not None:
+            cache["size"] = size
+        atomic_write(self._summary_cache_path(key), json.dumps(cache))
 
     def _intent_summary_cache_path(self, key: str) -> Path:
         """Sidecar path for a session's cached intent-structured summary.
@@ -1811,10 +1840,10 @@ class ConversationLog:
     def get_cached_intent_summary(self, key: str) -> dict | None:
         """Return the cached intent summary payload for *key* if still valid.
 
-        Same mtime-signature contract as :meth:`get_cached_summary`: any real
-        append advances the session file's mtime and invalidates the cache,
-        while metadata-only rewrites preserve it. Returns the whole payload so
-        the caller can read ``generated_at`` for display.
+        Same composite-signature contract as :meth:`get_cached_summary`: any
+        real append changes mtime or size and invalidates the cache, while
+        metadata-only rewrites preserve both. Returns the whole payload so the
+        caller can read ``generated_at`` for display.
         """
         try:
             raw = self._intent_summary_cache_path(key).read_text(encoding="utf-8")
@@ -1823,8 +1852,8 @@ class ConversationLog:
             return None
         if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
             return None
-        sig = self.session_mtime(key)
-        if sig is None or data.get("sig") != sig:
+        signature = self.session_signature(key)
+        if signature is None or not self._sidecar_file_signature_matches(data, signature):
             return None
         if data.get("gen", 0) != self.rotation_generation(key):
             return None
@@ -1847,16 +1876,21 @@ class ConversationLog:
             return None, False
         if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
             return None, False
-        sig = self.session_mtime(key)
+        signature = self.session_signature(key)
         fresh = (
-            sig is not None
-            and data.get("sig") == sig
+            signature is not None
+            and self._sidecar_file_signature_matches(data, signature)
             and data.get("gen", 0) == self.rotation_generation(key)
         )
         return data, not fresh
 
     def set_cached_intent_summary(
-        self, key: str, payload: dict, sig: float, generation: int | None = None
+        self,
+        key: str,
+        payload: dict,
+        sig: float,
+        generation: int | None = None,
+        size: int | None = None,
     ) -> bool:
         """Persist a derived intent summary *payload* to its sidecar cache.
 
@@ -1865,14 +1899,14 @@ class ConversationLog:
         both invalidate every other derived cache and reorder ``list_sessions``).
 
         The write happens under ``_locked`` and only if the transcript still
-        exists with the *same* signature the generation started from. Generation
-        holds no lock while the model call is in flight (it can take tens of
-        seconds), so a permanent :meth:`delete_session` can complete in that
-        window -- removing the transcript AND this sidecar. An unconditional
-        write here would then recreate the sidecar, resurrecting deleted
-        conversation data after the user was told it was gone. The sig equality
-        check also drops a summary that a mid-generation append has already made
-        stale, rather than storing it as the latest word.
+        exists with the same mtime, optional byte size, and generation the
+        summary started from. Generation holds no lock while the model call is
+        in flight (it can take tens of seconds), so a permanent
+        :meth:`delete_session` can complete in that window -- removing the
+        transcript AND this sidecar. An unconditional write here would then
+        recreate the sidecar, resurrecting deleted conversation data after the
+        user was told it was gone. The composite equality check also drops a
+        summary that a same-tick append has already made stale.
 
         Returns True when the payload was written, False when it was refused
         (transcript deleted or changed, or the lock could not be acquired).
@@ -1881,27 +1915,26 @@ class ConversationLog:
         """
         try:
             with self._locked(key):
-                if _safe_mtime(self._path(key)) != sig:
+                current_signature = self.session_signature(key)
+                if current_signature is None or current_signature[0] != sig:
+                    return False
+                if size is not None and current_signature[1] != size:
                     return False
                 current_generation = self.rotation_generation(key)
                 if generation is not None and current_generation != generation:
                     # A rewrite landed while the model call was in flight. It
-                    # PRESERVED the mtime, so the check above cannot see it —
-                    # the generation is the only signal that the summary now
-                    # describes replaced content. Refuse for the same reason a
-                    # changed mtime is refused: storing it would record a known
-                    # stale payload as the latest word.
+                    # PRESERVED the mtime, so the file signature alone may not
+                    # see a same-size rewrite; the generation is the signal that
+                    # the summary now describes replaced content.
                     return False
-                atomic_write(
-                    self._intent_summary_cache_path(key),
-                    json.dumps(
-                        {
-                            **payload,
-                            "sig": sig,
-                            "gen": (current_generation if generation is None else generation),
-                        }
-                    ),
-                )
+                cache: dict[str, object] = {
+                    **payload,
+                    "sig": sig,
+                    "gen": (current_generation if generation is None else generation),
+                }
+                if size is not None:
+                    cache["size"] = size
+                atomic_write(self._intent_summary_cache_path(key), json.dumps(cache))
                 return True
         except HistoryLockTimeout:
             logger.warning("set_cached_intent_summary: lock timeout, not writing key=%s", key)

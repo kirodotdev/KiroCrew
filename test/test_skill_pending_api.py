@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -16,10 +17,11 @@ _OMITTED = object()
 class _Req:
     """Minimal aiohttp-request stand-in for handler unit tests."""
 
-    def __init__(self, loader, *, match=None, body=_OMITTED, query=None):
+    def __init__(self, loader, *, match=None, body=_OMITTED, query=None, method="GET"):
         state = SimpleNamespace(context_builder=SimpleNamespace(skills=loader))
         self.app = {"state": state}
         self.match_info = match or {}
+        self.method = method
         # `body or {}` would have turned a falsy-but-valid JSON body (`[]`, `0`,
         # `null`) into a dict inside the double — hiding exactly the non-object
         # bodies a handler has to survive. Only an OMITTED body defaults.
@@ -35,8 +37,8 @@ def _payload(resp):
 
 
 @pytest.fixture()
-def loader(tmp_path):
-    ld = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def loader():
+    ld = SkillsLoader(install_builtins=False)
     ld.stage_skill_candidate(
         "deploy-helper",
         description="deploy helper",
@@ -60,6 +62,46 @@ async def test_detail(loader):
     data = _payload(resp)
     assert data["name"] == "auto/deploy-helper"
     assert "go" in data["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "attribute", "body"),
+    [("PUT", "update_skill", {"content": "updated"}), ("DELETE", "delete_skill", {})],
+)
+async def test_skill_detail_mutations_run_off_event_loop(
+    loader, monkeypatch, method, attribute, body
+):
+    event_loop_thread = threading.get_ident()
+    mutation_threads: list[int] = []
+
+    def mutate(*args):
+        mutation_threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(loader, attribute, mutate)
+    resp = await H.api_skill_detail(
+        _Req(loader, match={"name": "auto/deploy-helper"}, body=body, method=method)
+    )
+
+    assert resp.status == 200
+    assert mutation_threads and mutation_threads[0] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_skill_create_runs_off_event_loop(loader, monkeypatch):
+    event_loop_thread = threading.get_ident()
+    mutation_threads: list[int] = []
+
+    def create(*args):
+        mutation_threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(loader, "create_skill", create)
+    resp = await H.api_skills_create(_Req(loader, body={"name": "new-skill", "content": "content"}))
+
+    assert resp.status == 200
+    assert mutation_threads and mutation_threads[0] != event_loop_thread
 
 
 @pytest.mark.asyncio

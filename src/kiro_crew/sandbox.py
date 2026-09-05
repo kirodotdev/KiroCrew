@@ -218,6 +218,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "ledger",
     "cron-history",
     "workflow_library",
+    # Auto-skill claim/lock state (atomic candidate promotion). Only the gateway's
+    # promotion machinery opens this tree; agent file/shell tools are already
+    # fenced off it, so OS-masking closes the sideways path to a claimed
+    # candidate between validation and publication.
+    "skills/auto/.private",
     "agentcore-inbound",
     "routing",
     "webhooks",
@@ -3172,6 +3177,29 @@ def main():
 
         # Bind-mount empty dirs over credential paths (per-dir tmpdir to
         # prevent content leaking across mounts via shared backing dir).
+        #
+        # Pre-create the auto-skill private root when absent so the isdir-
+        # guarded loop below masks it from the very FIRST spawn: the tree is
+        # otherwise first created by a later skill promotion, and a child
+        # spawned before that would see it unmasked once it appears. Running
+        # here (child setup) rather than at gateway boot keeps loader
+        # construction free of filesystem work and anchors the guarantee at
+        # the point it protects — spawn time. Scoped to this one leaf; the
+        # agent-writable ``auto`` component is refused when linked (without
+        # following it), an absent skills tree is never materialized, and any
+        # failure degrades to today's unmasked-if-absent behavior, which the
+        # in-process tool gate and use-time re-authentication already cover.
+        for d in SENSITIVE_DIRS:
+            if not d.endswith("skills/auto/.private") or os.path.lexists(d):
+                continue
+            _auto_dir = os.path.dirname(d)
+            _skills_dir = os.path.dirname(_auto_dir)
+            try:
+                if os.path.islink(_auto_dir) or not os.path.isdir(_skills_dir):
+                    continue
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                pass
         for d in SENSITIVE_DIRS:
             target = d.encode()
             if os.path.isdir(target):
