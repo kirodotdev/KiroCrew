@@ -2807,6 +2807,18 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
             )
 
 
+def _slot_present_and_ours(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
+    """Return True iff ``name`` still maps to THIS slot object.
+
+    Stricter than ``_slot_still_ours``, and the whole difference is the ABSENT key: there
+    "no other object owns it" is true while "this one does" is false. A PRE-POP failure may
+    only claim the close was refused when the slot is provably still listed -- an
+    overlapping close can pop the key before this one reaches its raise, and telling the
+    user it is "still open, retry" then aims the retry at whatever holds the key next.
+    """
+    return state._slots.get(name) is slot
+
+
 def _slot_still_ours(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
     """Return True iff no OTHER slot object has taken over ``name`` in ``_slots``.
 
@@ -4588,13 +4600,23 @@ class SlotCloseError(Exception):
     ``code`` is the machine-readable contract; ``message`` is advisory prose;
     ``status`` is 500 for every close failure (each leaves the tab open and
     every partial step rolled back — a state the user can see and retry).
+
+    ``definitive`` says the ORIGINAL slot is provably still there — the raise happened
+    before the pop, or the save-failure arm restored it — so a retry can only reach the
+    session the caller meant. It defaults to False because a HANDOVER, where the key was
+    re-minted onto a replacement while this close tore the original down, leaves the
+    outcome unknowable: the original is gone, nothing rolled back, and inviting a retry
+    would aim a second close at the replacement and discard its live turn.
     """
 
-    def __init__(self, message: str, code: str, status: int = 500) -> None:
+    def __init__(
+        self, message: str, code: str, status: int = 500, definitive: bool = False
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
         self.status = status
+        self.definitive = definitive
 
 
 async def close_slot(
@@ -4666,7 +4688,13 @@ async def close_slot(
         logger.error("Failed to retire nudge loop for slot %s, close aborted", name)
         _sync_dashboard_slots(state)
         state.push_slots_update()
-        raise SlotCloseError("failed to retire nudge loop", code="nudge_retire_failed")
+        raise SlotCloseError(
+            "failed to retire nudge loop",
+            code="nudge_retire_failed",
+            # Pre-pop is not enough: an overlapping close may have popped this key and a
+            # resume taken it over, so "still open, retry" would hit the replacement.
+            definitive=_slot_present_and_ours(state, name, slot),
+        )
     # Remove from the registry only AFTER the loop is retired, because the ORDER
     # is what decides whether a nudge landing in between is harmless or fatal.
     # Retiring takes the AutoNudge lock, so it awaits; a timer expiring inside
@@ -4708,7 +4736,11 @@ async def close_slot(
             logger.error("Slot-close hook for app %r failed on %r, close aborted", slot._app, name)
             _sync_dashboard_slots(state)
             state.push_slots_update()
-            raise SlotCloseError("failed to notify the app", code="app_close_hook_failed")
+            raise SlotCloseError(
+                "failed to notify the app",
+                code="app_close_hook_failed",
+                definitive=_slot_present_and_ours(state, name, slot),
+            )
         # The app hook awaits external work while the slot is still visible.
         # Re-arbitrate the nudge registry after it returns: an arm that committed
         # during that await must be retired before the synchronous pop below.
@@ -4732,7 +4764,11 @@ async def close_slot(
             logger.error("Late nudge retirement failed for slot %s; close aborted", name)
             _sync_dashboard_slots(state)
             state.push_slots_update()
-            raise SlotCloseError("failed to retire nudge loop", code="nudge_retire_failed")
+            raise SlotCloseError(
+                "failed to retire nudge loop",
+                code="nudge_retire_failed",
+                definitive=_slot_present_and_ours(state, name, slot),
+            )
         if late_retired_loop is not None:
             retired_loop = late_retired_loop
     if pre_pop_check is not None:
@@ -4937,7 +4973,9 @@ async def close_slot(
             )
         _sync_dashboard_slots(state)
         state.push_slots_update()
-        raise SlotCloseError("failed to save history", code="history_save_failed")
+        raise SlotCloseError(
+            "failed to save history", code="history_save_failed", definitive=restored
+        )
     else:
         # Through the shared postcondition rather than a bare discard: on the
         # ordinary close the key is gone and this drops the marker, and a recreate
@@ -5014,7 +5052,12 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         # gate able to verify the `code` statically (a `status=<expr>` would read
         # as an un-verifiable dynamic-status response). The pre-pop re-check that
         # raises other statuses is session-control's path, not this handler's.
-        return web.json_response({"error": exc.message, "code": exc.code}, status=500)
+        # The refused-vs-unknown answer the dashboard reads is forwarded from the
+        # exception's own `definitive` verdict, so it needs no copy of the code list.
+        return web.json_response(
+            {"error": exc.message, "code": exc.code, "definitive": exc.definitive},
+            status=500,
+        )
     return web.json_response({"ok": True})
 
 

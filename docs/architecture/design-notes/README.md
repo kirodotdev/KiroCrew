@@ -22,3 +22,4 @@ grows into a subsystem should become a spec under
 | [profiling.md](profiling.md) | The debug-only stack sampler and desktop app metrics. |
 | [tool-stall-watchdog-placement.md](tool-stall-watchdog-placement.md) | Which stall checks belong in the ACP read loop and which must be judged out of band. |
 | [memory-benchmarks.md](memory-benchmarks.md) | Measuring the memory layer against LongMemEval and LoCoMo, and why the retrieval ruler is deterministic. |
+| [slots-ordering-token.md](slots-ordering-token.md) | Planned: the two wire contracts that would let the client stop reconstructing slots ordering and close-failure determinism, and the code each one deletes. |

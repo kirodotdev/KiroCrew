@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
-import { deleteSlot, switchSlot } from '../store/chatSlice'
+import { closeSlotWithNotice, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../store/dashboardSlice'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
@@ -146,8 +146,12 @@ export function useSessionActions(mode?: string): SessionActions {
 
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
+  // A terminal close failure restores the row, which alone is indistinguishable
+  // from the flicker `closingSlots` removes — so say so.
   const close = useCallback((slotKey: string) => {
-    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) {
+      closeSlotWithNotice(dispatch, slotKey)
+    }
   }, [dispatch])
 
   return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }

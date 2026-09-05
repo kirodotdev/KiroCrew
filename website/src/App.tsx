@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from './store'
-import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode, updateSlot } from './store/dashboardSlice'
+import { sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode, updateSlot, fetchSlotsIfApplied } from './store/dashboardSlice'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from './lib/slotSwitch'
 import { performAgentSlotSwitch } from './lib/agentSwitch'
 // Side-effect: registers every built-in surface in the registry. MUST run
@@ -2563,12 +2563,11 @@ export default function App() {
   }, [location.pathname])
 
   useEffect(() => {
-    dispatch(fetchSlots()).then(action => {
+    // Skip entirely unless the read APPLIED: a refused list omits a session created
+    // mid-read, and at boot the store is no better, so either would delete live state.
+    void fetchSlotsIfApplied(dispatch, () => store.getState()).then(live => {
       // Run localStorage GC after we know which sessions are alive
-      if (fetchSlots.fulfilled.match(action)) {
-        const liveIds = new Set((action.payload as Array<{ key: string }>).map(s => s.key))
-        gcOrphanedStorage(liveIds)
-      }
+      if (live) gcOrphanedStorage(new Set(live.map(s => s.key)))
     })
     // The boot notifications fetch is owned by the WebSocket first-connect
     // handler (its snapshot is taken after socket registration, so nothing

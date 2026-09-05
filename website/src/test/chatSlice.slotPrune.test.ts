@@ -87,7 +87,7 @@ describe('chatSlice sseSlots reconciliation', () => {
     state = chatReducer(state, sseSlots([]))
     expect(Object.keys(state.slotMessages).sort()).toEqual(['chat-1', 'chat-2'])
 
-    const next = chatReducer(state, { type: fetchSlots.fulfilled.type, payload: [] })
+    const next = chatReducer(state, { type: fetchSlots.fulfilled.type, payload: [], meta: { appliedProvisional: true } })
 
     expect(Object.keys(next.slotMessages)).toEqual([])
     expect(next.slotHistory).toEqual([])
