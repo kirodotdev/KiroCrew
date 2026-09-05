@@ -19,6 +19,16 @@ per CLI invocation and per MCP backend process.
 `import kiro_crew.cli` in a fresh interpreter, none of those modules may be
 present in `sys.modules`, and every deferred dispatch import must resolve.
 
+Bare `kirocrew --version` (exactly one argv entry) is answered by pre-dispatch
+fast-path guards — `_bootstrap.main` (which then skips importing `cli` on the
+console-script path) and `__main__` (same for the `python -m` path, which also
+covers the desktop launchers) — printing `kirocrew <version>` and exiting 0.
+It is the one invocation that never reaches `cli.main()`: no platform boot, no
+sandbox hygiene, no project-dir resolution, no logging or data-home setup.
+Only the bare form fast-paths — `artifact show --version N` reuses the flag
+name for an artifact version int, so every other argv shape falls through to
+argparse unchanged.
+
 The entry point itself is not negotiable: all invocation forms
 (`kirocrew <sub>`, `python -m kiro_crew <sub>`, and the frozen desktop
 binary) land in `cli.main()`, whose prelude runs `boot_platform()`

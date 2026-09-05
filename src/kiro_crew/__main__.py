@@ -16,7 +16,9 @@ certs and every HTTPS connection fails with CERTIFICATE_VERIFY_FAILED.
 
 from __future__ import annotations
 
-from kiro_crew import platform_compat
+import sys
+
+from kiro_crew import __version__, platform_compat
 from kiro_crew._ssl_compat import _ensure_ssl_certs
 
 # Windows: force UTF-8 stdout/stderr before any non-ASCII output (no-op on POSIX).
@@ -24,6 +26,15 @@ platform_compat.ensure_utf8_console()
 _ensure_ssl_certs()
 
 if __name__ == "__main__":
+    # Fast-path for bare `--version` (`python -m kiro_crew --version`, which
+    # also covers the desktop launchers): skip importing `kiro_crew.cli`
+    # (~250ms). Mirrored by the `_bootstrap.main` guard for the console
+    # script; only the bare form fast-paths to preserve
+    # `artifact show --version N` semantics.
+    if len(sys.argv) == 2 and sys.argv[1] == "--version":
+        print(f"kirocrew {__version__}")
+        raise SystemExit(0)
+
     from kiro_crew.cli import main  # noqa: E402
 
     main()
