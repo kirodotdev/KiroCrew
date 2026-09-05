@@ -22,6 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from chat_test_helpers import _make_state
 
+from kiro_crew.dashboard import chat_regenerate
 from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
     api_chat_slot_regenerate,
@@ -419,6 +420,54 @@ async def test_edit_resend_requires_non_blank_content(state) -> None:
             resp = await client.post("/api/chat/slots/s1/edit-resend", json=body)
             assert resp.status == 400
             assert (await resp.json())["error"] == "content is required"
+
+
+@pytest.mark.asyncio
+async def test_edit_resend_rejects_a_non_string_content(state) -> None:
+    """A PRESENT non-string ``content`` has no ``.strip()``.
+
+    Without the type check this is an ``AttributeError`` -> 500 on a body a
+    caller can trivially send, so the failure is unreadable rather than a 400
+    naming the field. ``None`` stays out of it: an empty composer sends that and
+    must keep answering ``content_required``.
+    """
+    state.get_or_create_slot("s1")
+    async with _client(state) as client:
+        for bad in (123, True, {"text": "x"}, ["x"]):
+            resp = await client.post(
+                "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": bad}
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_content"
+        resp = await client.post(
+            "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": None}
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "content_required"
+
+
+@pytest.mark.asyncio
+async def test_edit_resend_rejects_an_oversize_content(state) -> None:
+    """The cap matches the sibling ``rewind``/``fork`` boundaries.
+
+    One edit of the same message must not be accepted by one endpoint and
+    refused by another, and the refusal must land BEFORE the destructive
+    boundary rather than after the native conversation is already discarded.
+    """
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "first")
+    slot.drain()
+    state.sessions.discard_conversation = AsyncMock(return_value=True)
+    async with _client(state) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/edit-resend",
+            json={"index": 0, "content": "x" * (chat_regenerate._MAX_EDIT_CONTENT_CHARS + 1)},
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "content_too_long"
+    # The refusal is pre-boundary: nothing was discarded and the window stands.
+    state.sessions.discard_conversation.assert_not_awaited()
+    assert [m["content"] for m in slot.messages] == ["first"]
 
 
 @pytest.mark.asyncio

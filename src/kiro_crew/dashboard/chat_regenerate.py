@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 _MAX_VARIANTS = 20
 
+# Longest replacement prompt edit-resend accepts, in characters. Named here
+# rather than inlined so the endpoint's cap is greppable; the value matches the
+# sibling boundaries (``chat_rewind``'s ``content`` and ``chat_fork``'s
+# ``prompt``), which is the point -- one edit of the same message must not be
+# accepted by one endpoint and refused by another.
+_MAX_EDIT_CONTENT_CHARS = 32_768
+
 # How many times the edit-resend cancellation path re-shields the in-flight
 # history rewrite before giving up on learning its outcome. Each retry absorbs
 # ONE further cancellation (a gateway shutdown landing on a handler already
@@ -286,10 +293,28 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
 
     index = body.get("index")
     ts = body.get("ts")
-    content = (body.get("content") or "").strip()
+    # A PRESENT non-string ``content`` (``{"content": 123}``) has no ``.strip()``,
+    # so it reached ``AttributeError`` -> 500 rather than a 400 the caller can
+    # read. Missing/null stays ``content_required`` below, which is what an empty
+    # composer sends. Both checks mirror the sibling ``rewind`` boundary, which
+    # already type-checks and length-caps its own ``content``.
+    raw_content = body.get("content")
+    if raw_content is not None and not isinstance(raw_content, str):
+        return web.json_response(
+            {"error": "content must be a string", "code": "invalid_content"}, status=400
+        )
+    content = (raw_content or "").strip()
     if not content:
         return web.json_response(
             {"error": "content is required", "code": "content_required"}, status=400
+        )
+    if len(content) > _MAX_EDIT_CONTENT_CHARS:
+        return web.json_response(
+            {
+                "error": f"content too long (max {_MAX_EDIT_CONTENT_CHARS} chars)",
+                "code": "content_too_long",
+            },
+            status=400,
         )
 
     async with slot._lock:
