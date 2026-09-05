@@ -13948,6 +13948,8 @@
       "member_count_many": "{{count}} membros",
       "member_count_one": "{{count}} membro",
       "member_count_other": "{{count}} membros",
+      "member_gone": "Exibindo {{shown}} — “{{name}}” não está mais na lista.",
+      "member_gone_roster": "“{{name}}” não está mais na lista.",
       "memory_shared_note": "Os membros compartilham atualmente uma única memória. O que você diz a um deles todos saberão.",
       "memory_store": "Armazenamento de memória",
       "model": "Modelo",

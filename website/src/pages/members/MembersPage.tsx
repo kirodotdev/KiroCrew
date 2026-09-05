@@ -18,9 +18,13 @@
  * POST /api/members/{slug}/thread). It is an invariant of every member
  * thread, so the UI does not announce it — there is no unpinned state to
  * contrast against.
+ *
+ * Which member is open rides the URL (`?member=<name>`), and the last one
+ * opened is remembered per browser: a visit that names no member lands on
+ * the remembered one (else the first row), never on the empty column.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Circle, Clock, ExternalLink, Pencil, UserPlus, Users, Webhook } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
@@ -45,10 +49,40 @@ import { loadColumnWidth } from '../../lib/columnWidth'
 import { compareText } from '../../i18n/format'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 
 /** The crew manager surface — the ONLY write path for member configuration.
  *  The explicit tab wins over CapabilitiesPage's remembered last tab. */
 const CREW_MANAGER_PATH = '/capabilities?tab=crews'
+
+/** The open member rides the URL (`?member=<name>`) so back/forward moves
+ *  between members and a link lands on one. The value is the exact crew
+ *  NAME, not the slug: the slug is lossy (see the header comment), and a
+ *  link that resolved `Oncall` to `oncall`'s thread would be the silent
+ *  misroute this page exists to prevent. */
+const MEMBER_PARAM = 'member'
+/** The last member opened, so returning to the page (or reloading) lands on
+ *  the conversation the user left rather than the empty column. Stored by
+ *  exact name for the same reason as the URL param. One key per origin is
+ *  the right scope: the roster is the gateway's global crew list, and
+ *  localStorage is already per-gateway. */
+const LAST_MEMBER_KEY = 'mc-members-last-member'
+
+/** Which member to open when the URL names none, or names one that is gone
+ *  (deleted or renamed since the link/memory was written): the remembered
+ *  member if it is still on the roster, else the first row in display order.
+ *  `undefined` only for an empty roster. Pure, so the three cases — default,
+ *  restore, stale fallback — are tested directly. */
+export function resolveDefaultMember(
+  remembered: string | null,
+  ordered: readonly MemberRosterRow[],
+): MemberRosterRow | undefined {
+  if (remembered) {
+    const hit = ordered.find((m) => m.name === remembered)
+    if (hit) return hit
+  }
+  return ordered[0]
+}
 
 /** Roster width bounds, persisted like the chat sidebar's (mc-sidebar-width). */
 const ROSTER_MIN = 200
@@ -89,11 +123,23 @@ const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROST
 export default function MembersPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const location = useLocation()
   const [members, setMembers] = useState<MemberRosterRow[]>([])
   const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState(false)
   // Identity is the exact crew name (unique in the registry); the slug is not.
   const [activeName, setActiveName] = useState<string>('')
+  // The URL is the one source of WHICH member is open; activeName follows it
+  // (sync effect below). Clicks write the URL, never activeName directly, so
+  // back/forward and a shallow link go through the same path as a click.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const urlMember = searchParams.get(MEMBER_PARAM) ?? ''
+  // Set when a URL NAMED a member that is gone: the user asked for someone
+  // specific, so the outcome is said out loud — above the fallback thread on
+  // md+ (`shown` = who opened instead), above the roster below md (`shown` is
+  // '' — no thread opened). The remembered-member fallback never sets it —
+  // there the user named nobody. Cleared once a different member opens.
+  const [gone, setGone] = useState<{ name: string; shown: string } | null>(null)
   // name -> slot key / name -> error, filled ONLY by the thread endpoint's
   // response. The roster's `bound`/`slot_key` are never trusted as mountable:
   // dm.json outlives the live slot (a restart drops an unmessaged slot while
@@ -173,14 +219,21 @@ export default function MembersPage() {
   // DetailPanel's own docked width animation on md+ (same breakpoint as the
   // width-gated drawerOpen initializer above).
   const isMobile = useIsMobile()
+  // Display order before the search filter — this is what "the first member"
+  // means for the default-open below, so a typed filter never changes which
+  // member a fresh visit lands on.
+  const orderedMembers = useMemo(
+    () =>
+      [...members].sort(
+        (a, b) =>
+          (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
+      ),
+    [members],
+  )
   const sortedMembers = useMemo(() => {
-    const ordered = [...members].sort(
-      (a, b) =>
-        (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
-    )
     const q = filter.trim().toLowerCase()
-    return q ? ordered.filter((m) => m.name.toLowerCase().includes(q)) : ordered
-  }, [members, filter])
+    return q ? orderedMembers.filter((m) => m.name.toLowerCase().includes(q)) : orderedMembers
+  }, [orderedMembers, filter])
   const activeSlot = active ? slots[active.name] ?? '' : ''
   const activeError = active ? errors[active.name] ?? '' : ''
 
@@ -345,9 +398,14 @@ export default function MembersPage() {
     [slots, unreadSlots],
   )
 
-  const openMember = useCallback(
+  // Open a member's thread and remember it as the last one opened. Called by
+  // the URL sync effect only (plus the same-member re-click below), so every
+  // way of arriving at a member — click, back/forward, shallow link, restore
+  // on return — runs one code path.
+  const activate = useCallback(
     (m: MemberRosterRow) => {
       setActiveName(m.name)
+      safeSetItem(LAST_MEMBER_KEY, m.name)
       setErrors((prev) => {
         if (!(m.name in prev)) return prev
         const next = { ...prev }
@@ -389,6 +447,74 @@ export default function MembersPage() {
     },
     [t],
   )
+
+  const openMember = useCallback(
+    (m: MemberRosterRow) => {
+      // Re-clicking the open member is the repair gesture (re-POST); the URL
+      // is unchanged so the sync effect would not fire — call through.
+      if (m.name === activeName) {
+        activate(m)
+        return
+      }
+      // A pushed entry per member, so back/forward walks the conversations.
+      // The state marks the entry as pushed FROM this page's roster, which is
+      // what lets the below-md back button pop instead of replace.
+      setSearchParams({ [MEMBER_PARAM]: m.name }, { state: { fromRoster: true } })
+    },
+    [activeName, activate, setSearchParams],
+  )
+
+  // URL -> open member. Once the roster is in: a URL that names a member
+  // opens it; a URL that names none (a fresh visit, the sidebar entry, a
+  // reload) is REPLACED with the remembered member, else the first row — so
+  // the page never lands on the empty column, and the URL always says what
+  // is on screen. A URL naming a member that is gone (deleted or renamed)
+  // takes the same fallback, with a one-line notice above the thread naming
+  // the swap — the user asked for someone specific, and a silently mounted
+  // other thread is the misroute this page exists to prevent. Below md the
+  // page is a two-level list->detail navigation: no `?member=` IS the
+  // roster, so no auto-open there (same rule as SidePanelLayout's remembered
+  // tab), and a gone member in the URL returns to the roster instead of
+  // bouncing the phone user into a different member's thread.
+  useEffect(() => {
+    if (!loaded || loadError) return
+    if (urlMember) {
+      const hit = members.find((m) => m.name === urlMember)
+      if (hit) {
+        if (hit.name !== activeName) activate(hit)
+        // The notice belongs to the member shown in place of the gone one;
+        // opening anyone else retires it. Functional updates throughout, and
+        // `gone` is NOT a dependency: the URL write below is a router
+        // transition, and a plain state write that re-armed this effect
+        // before the transition committed would re-issue both writes and
+        // keep interrupting the transition — the thread would never open.
+        setGone((prev) => (prev && prev.shown !== hit.name ? null : prev))
+        return
+      }
+    }
+    if (isMobile) {
+      if (urlMember) {
+        // No thread to fall back to below md — the roster is the answer, so
+        // say where the member went above the list (shown: '' marks the
+        // roster variant of the notice).
+        setGone((prev) =>
+          prev && prev.name === urlMember && prev.shown === '' ? prev : { name: urlMember, shown: '' },
+        )
+        setSearchParams({}, { replace: true })
+      } else if (activeName) setActiveName('')
+      return
+    }
+    const target = resolveDefaultMember(safeGetItem(LAST_MEMBER_KEY), orderedMembers)
+    if (!target) return
+    if (urlMember) {
+      setGone((prev) =>
+        prev && prev.name === urlMember && prev.shown === target.name
+          ? prev
+          : { name: urlMember, shown: target.name },
+      )
+    }
+    setSearchParams({ [MEMBER_PARAM]: target.name }, { replace: true })
+  }, [loaded, loadError, urlMember, members, orderedMembers, activeName, isMobile, activate, setSearchParams])
 
   return (
     // pb-2 on the root is the one shared bottom inset: the card columns and
@@ -444,6 +570,14 @@ export default function MembersPage() {
             data-testid="member-search"
           />
         </div>
+        {gone && gone.shown === '' && (
+          /* Below md a stale link lands on the roster; this is where the
+             answer to "where did they go" has to live. Same tone as the
+             thread-side notice. */
+          <div className="px-4 py-1.5 text-[13px] text-warn" role="status" data-testid="member-gone-roster-notice">
+            {t('pages.membersPage.member_gone_roster', { name: gone.name })}
+          </div>
+        )}
         <ul
           className="flex-1 overflow-y-auto scrollbar-none list-none m-0 px-2 pb-2"
           style={{ scrollbarWidth: 'none' }}
@@ -556,7 +690,15 @@ export default function MembersPage() {
           <>
             <header className="flex items-center gap-2.5 px-4 py-2 border-b border-border">
               <button
-                onClick={() => setActiveName('')}
+                // Back to the roster. When this entry was pushed from the
+                // roster on this page, pop it — the browser's own Back then
+                // lands on whatever preceded the roster, with no duplicate
+                // roster entry. A deep link (no such state) has no roster
+                // entry behind it, so drop the param in place instead.
+                onClick={() => {
+                  if ((location.state as { fromRoster?: boolean } | null)?.fromRoster) navigate(-1)
+                  else setSearchParams({}, { replace: true })
+                }}
                 className="md:hidden inline-flex items-center p-1 -ml-1 rounded hover:bg-accent/40"
                 aria-label={t('pages.membersPage.title')}
                 data-testid="member-back"
@@ -592,6 +734,15 @@ export default function MembersPage() {
                 <PanelRightSolid size={15} />
               </button>
             </header>
+            {gone && gone.shown === active.name && (
+              /* Decision-critical (the user is about to type into a thread they
+                 did not ask for), so it wears the warn tone at body size, not
+                 the drawer's muted timestamp style. A status, not an alert:
+                 the fallback did open something. */
+              <div className="px-4 py-2 text-[13px] text-warn" role="status" data-testid="member-gone-notice">
+                {t('pages.membersPage.member_gone', { name: gone.name, shown: gone.shown })}
+              </div>
+            )}
             {activeError && (
               <div className="px-4 py-2 text-xs text-danger" role="alert">
                 {activeError}

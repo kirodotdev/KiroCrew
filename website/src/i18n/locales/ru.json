@@ -14127,6 +14127,8 @@
       "member_count_many": "{{count}} участников",
       "member_count_one": "{{count}} участник",
       "member_count_other": "{{count}} участника",
+      "member_gone": "Показан {{shown}} — «{{name}}» больше нет в списке участников.",
+      "member_gone_roster": "«{{name}}» больше нет в списке участников.",
       "memory_shared_note": "Сейчас у участников общая память: то, что вы скажете одному, известно всем.",
       "memory_store": "Хранилище памяти",
       "model": "Модель",

@@ -13771,6 +13771,8 @@
       "inherited": "विरासत में मिला",
       "member_count_one": "{{count}} सदस्य",
       "member_count_other": "{{count}} सदस्य",
+      "member_gone": "{{shown}} दिखाया जा रहा है — '{{name}}' अब सदस्य सूची में नहीं है।",
+      "member_gone_roster": "'{{name}}' अब सदस्य सूची में नहीं है।",
       "memory_shared_note": "सदस्य वर्तमान में एक ही मेमोरी साझा करते हैं। एक सदस्य को बताई गई बात सभी को पता होती है।",
       "memory_store": "मेमोरी स्टोर",
       "model": "मॉडल",

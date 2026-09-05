@@ -6811,6 +6811,8 @@
       "inherited": "Inherited",
       "member_count_one": "{{count}} member",
       "member_count_other": "{{count}} members",
+      "member_gone": "Showing {{shown}} — '{{name}}' is no longer on the roster.",
+      "member_gone_roster": "'{{name}}' is no longer on the roster.",
       "memory_shared_note": "Members currently share one memory. What you tell one member is known to all of them.",
       "memory_store": "Memory store",
       "model": "Model",

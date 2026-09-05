@@ -13770,6 +13770,8 @@
       "inherited": "Geerbt",
       "member_count_one": "{{count}} Mitglied",
       "member_count_other": "{{count}} Mitglieder",
+      "member_gone": "{{shown}} wird angezeigt – „{{name}}“ steht nicht mehr auf der Liste.",
+      "member_gone_roster": "„{{name}}“ steht nicht mehr auf der Liste.",
       "memory_shared_note": "Mitglieder teilen sich derzeit ein Gedächtnis. Was du einem Mitglied sagst, wissen alle.",
       "memory_store": "Speicher",
       "model": "Modell",
