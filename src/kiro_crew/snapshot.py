@@ -2527,6 +2527,86 @@ def _notification_key(record: bytes, path: Path) -> tuple[Any, ...] | None:
     return ("raw", record if record.endswith(_TERMINATORS) else record + b"\n")
 
 
+def _open_notification_file(path: Path, flags: int, *, what: str) -> int:
+    """Open *path* exactly once and judge the DESCRIPTOR, never the name again.
+
+    The merge below used to resolve each name twice -- validate by name, then
+    re-open the same name to copy -- and ``open()`` follows a symlink at the
+    final component, so a swap between the two resolutions redirected the second
+    one (issue #8667). This helper is the single resolution, built from the
+    ``pinned_fs`` primitives rather than re-implementing them (review found the
+    first version carrying a private copy of the hardlink predicate, and two
+    copies of one security predicate drift independently):
+
+    * Where the platform can pin (``supports_pinned_walk``), the open goes
+      through ``pinned_fs.open_in_pinned_parent``: the parent chain is walked
+      component-by-component with ``O_NOFOLLOW`` from a caller-resolved root, so
+      an agent-writable ANCESTOR swapped for a link mid-walk is refused too --
+      the staging tree is exactly such a directory, and guarding only the final
+      component left that gap (``open_dir_pinned``'s own docstring records it).
+    * Elsewhere (Windows: no ``O_NOFOLLOW``, no ``dir_fd``),
+      ``pinned_fs.is_reparse_point`` is the by-name floor, exactly as
+      ``_backup_and_copy`` applies it. An ``lstat`` before the open compared
+      against a later ``fstat`` would NOT be a substitute: that is a
+      check-to-use window, the same mistake as trusting an intermediate name,
+      and ``pinned_fs`` records the identical finding for the pinned walk.
+
+    Flag by flag, because each is load-bearing:
+
+    * ``O_NOFOLLOW`` -- a symlink at the final component fails the open instead
+      of being followed; composed via ``getattr`` because Windows lacks it.
+    * ``O_NONBLOCK`` -- not belt-and-braces: without it, a name that became a
+      FIFO blocks the ``open`` forever with no writer ever coming, converting a
+      refused restore into a HUNG one. With it the open returns at once and the
+      ``fstat`` below refuses the descriptor.
+    * ``O_BINARY`` -- Windows-only; byte-exactness is this merge's contract.
+    * ``O_CLOEXEC`` -- house style, as in ``_dir_flags_nofollow``.
+
+    The judgement is on the descriptor, never a fresh by-name check: ``fstat``
+    + ``S_ISREG`` (FIFOs, devices, directories), then
+    ``pinned_fs.refuse_hardlink_alias`` -- a HARDLINK to a credential passes
+    both link screens (``O_NOFOLLOW`` has nothing to refuse and the alias IS a
+    regular file), so only the inode's link count can see it. That helper
+    CLOSES the descriptor itself before raising, which is why it sits outside
+    this function's own close-on-error arm. Refusals raise ``OSError`` so the
+    merge's abort posture (raise, never skip) is unchanged; the path is
+    embedded ``!r`` because an archive-derived name can carry ANSI controls and
+    the caller prints the exception.
+    """
+    flags = (
+        flags
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    if pinned_fs.supports_pinned_walk():
+        # Resolved by the caller ONCE, as pin_parent requires: resolving inside
+        # the walk would re-follow whatever an ancestor points at by now.
+        fd = pinned_fs.open_in_pinned_parent(
+            os.path.realpath(str(path.parent)),
+            path.name,
+            flags=flags,
+            mode=0o600,
+            what=what,
+            refusal=OSError,
+        )
+    else:
+        if pinned_fs.is_reparse_point(path):
+            raise OSError(f"refusing symlinked {what}: {str(path)!r}")
+        fd = os.open(path, flags)
+    try:
+        if not _stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{what} is not a regular file: {str(path)!r}")
+    except BaseException:
+        os.close(fd)
+        raise
+    # Closes *fd* itself before raising -- deliberately OUTSIDE the
+    # close-on-error arm above, per its documented contract.
+    pinned_fs.refuse_hardlink_alias(fd, what=what, name=str(path), refusal=OSError)
+    return fd
+
+
 def _merge_notifications(src_path: Path, dst_path: Path) -> None:
     """Append the snapshot's notification records to the live file, byte for byte.
 
@@ -2580,78 +2660,153 @@ def _merge_notifications(src_path: Path, dst_path: Path) -> None:
     record already in the destination gains one before anything is appended
     after it. Without that, two records glued into one line that parses as
     neither.
+
+    Each name is resolved exactly ONCE (issue #8667). The predecessor opened
+    ``src_path`` by name for the validation pass and again by name for the copy
+    loop, with nothing carrying identity between the two opens -- so a process
+    able to write the extracted staging tree (which an agent can, on a normal
+    install) could swap the name for a symlink in that window and have the copy
+    append the link TARGET's bytes into the live file that the dashboard serves.
+    The validation pass had vouched for a different file, so "append only
+    records that validated" became silently false. Now each side is opened once
+    through :func:`_open_notification_file` -- the descriptor is judged with
+    ``fstat``, validated, rewound, and reused -- so what was validated is, by
+    construction, what is read. The destination had the identical shape one
+    layer down (scan by name, re-open by name to append) and gets one
+    ``O_RDWR|O_APPEND`` descriptor for the same reason.
+
+    * A destination-scan failure is still a true no-op. The descriptor is opened
+      read-write up front -- that is what makes it one resolution -- but not a
+      byte is written to it until both scans have completed.
+    * The SOURCE is validated whole before anything is appended, so a
+      source-side refusal is also a no-op. Without that pass, a source whose
+      Nth record is undecodable had already appended N-1 records when it
+      aborted, and a retry re-appended every identity-less one of them, since a
+      row with no ``ts`` cannot be deduplicated. The cost is reading the source
+      twice -- through the same descriptor, rewound.
+    * A failure DURING the copy is the residual case, and its prefix stays:
+      rolling it back would be a second unvalidated write. What the held
+      descriptor removes is the NAME swap -- both passes read one pinned inode,
+      so no re-resolution can substitute a different file. It does not freeze
+      the inode's CONTENTS: a writer truncating or rewriting the file in place
+      between the passes can still make the copy see different bytes than the
+      validation did (up to and including zero imports), which lands here or in
+      the count, exactly like any other mid-copy I/O surprise.
     """
     existing: set[tuple[Any, ...]] = set()
     dst_unterminated = False
     try:
-        with open(dst_path, "rb") as f:
-            for record in strict_raw_records(f, dst_path, cap=_NOTIFICATION_RECORD_CAP):
-                key = _notification_key(record, dst_path)
-                if key is not None:
-                    existing.add(key)
-                dst_unterminated = not record.endswith(_TERMINATORS)
-    except (OSError, UnreadableRecord) as exc:
+        # One O_RDWR|O_APPEND descriptor for BOTH the scan and the append: the
+        # scan needs read access and re-opening the name for "ab" later would be
+        # the second resolution this function no longer performs. No O_CREAT --
+        # the caller only routes here when the live file exists, and the old
+        # scan's `open(dst_path, "rb")` aborted on a missing file too.
+        dst_fd = _open_notification_file(
+            dst_path, os.O_RDWR | os.O_APPEND, what="live notification file"
+        )
+    except OSError as exc:
         # No `_safe_name` here, deliberately: this path is the LIVE data home,
         # chosen by the operator, not a name that came out of an archive -- which
         # is the scope `_safe_name`'s own docstring states. The SOURCE prints do
         # wrap it; see the one below.
         print(f"  ⚠️  Could not read {dst_path}: {exc} — merge aborted")
         raise
-    # The ENTIRE source is validated before the destination is opened for append.
-    # Without this pass, a source whose Nth record is undecodable or over-cap has
-    # already appended N-1 records by the time it aborts -- and a retry
-    # re-appends every identity-less one of those, because a row with no ``ts``
-    # cannot be deduplicated by construction. Validating first makes the source
-    # side all-or-nothing in the ordinary case, so there is no prefix to
-    # duplicate.
     try:
-        with open(src_path, "rb") as f:
-            for record in strict_raw_records(f, src_path, cap=_NOTIFICATION_RECORD_CAP):
-                _notification_key(record, src_path)
-    except (OSError, UnreadableRecord) as exc:
-        # The PATH goes through `_safe_name` because a bundle chooses its own inner
-        # root, so an archive-derived path can carry ANSI controls -- and printing
-        # one raw lets a hostile archive move the cursor and overwrite lines right
-        # above the prompt where the operator decides whether to trust the restore.
-        #
-        # The EXCEPTION deliberately does NOT, and the invariant is worth stating
-        # because it is what makes the wrapper unnecessary rather than forgotten:
-        # both types this arm catches already render an embedded path with
-        # repr-style escaping -- `OSError.__str__` does it for its filename, and
-        # `jsonl_util` uses `{path!r}` for the reason its own comment gives.
-        # Measured: a control character in a directory name reaches neither
-        # exception's `str()` raw. Widening this `except` tuple means re-checking
-        # that, because a type formatting a path with `str()` would need the wrapper.
-        print(f"  ⚠️  Could not read {_safe_name(src_path)}: {exc} — merge aborted")
+        out = os.fdopen(dst_fd, "r+b")
+    except Exception:
+        os.close(dst_fd)
         raise
-    imported = 0
-    try:
-        with open(dst_path, "ab") as out, open(src_path, "rb") as f:
-            if dst_unterminated:
-                out.write(b"\n")
-            for record in strict_raw_records(f, src_path, cap=_NOTIFICATION_RECORD_CAP):
-                key = _notification_key(record, src_path)
-                # A `None` key means the record did not PARSE, so it may be a
-                # framing fragment rather than a record -- nothing it could be a
-                # duplicate OF. Both `existing.add` sites refuse `None`, which is
-                # what keeps it out of this membership test; an unconditional
-                # `key is not None` here would be dead, and a mutation proved it
-                # unobservable. A ts-less row that DOES parse is keyed on its raw
-                # bytes and deduplicates normally; see _notification_key for why
-                # raw and not stripped.
-                if key in existing:
-                    continue
-                out.write(record if record.endswith(_TERMINATORS) else record + b"\n")
+    with out:
+        try:
+            for record in strict_raw_records(out, dst_path, cap=_NOTIFICATION_RECORD_CAP):
+                key = _notification_key(record, dst_path)
                 if key is not None:
                     existing.add(key)
-                imported += 1
-    except (OSError, UnreadableRecord) as exc:
-        # Reached only when the source changed BETWEEN the validation pass and
-        # this one, so the prefix already appended stays: rolling it back would
-        # be a second unvalidated write. Names the count so an operator knows a
-        # prefix landed, and identity-less rows in it will re-append on a retry.
-        print(f"  ⚠️  Stopped merging {_safe_name(src_path)} after {imported} record(s): {exc}")
-        raise
+                dst_unterminated = not record.endswith(_TERMINATORS)
+        except (OSError, UnreadableRecord) as exc:
+            # Same no-wrap rationale as the open above: the live path is the
+            # operator's own, not archive-derived.
+            print(f"  ⚠️  Could not read {dst_path}: {exc} — merge aborted")
+            raise
+        # The ENTIRE source is validated before anything is appended. Without this
+        # pass, a source whose Nth record is undecodable or over-cap has already
+        # appended N-1 records by the time it aborts -- and a retry re-appends
+        # every identity-less one of those, because a row with no ``ts`` cannot be
+        # deduplicated by construction. Validating first makes the source side
+        # all-or-nothing in the ordinary case, so there is no prefix to duplicate.
+        try:
+            src_fd = _open_notification_file(
+                src_path, os.O_RDONLY, what="snapshot notification file"
+            )
+        except OSError as exc:
+            # The PATH goes through `_safe_name` because a bundle chooses its own
+            # inner root, so an archive-derived path can carry ANSI controls -- and
+            # printing one raw lets a hostile archive move the cursor and overwrite
+            # lines right above the prompt where the operator decides whether to
+            # trust the restore. The exception is safe to print raw:
+            # `_open_notification_file`'s own refusals embed the path with `!r`,
+            # and an `OSError` raised by the OS renders its filename repr-escaped.
+            print(f"  ⚠️  Could not read {_safe_name(src_path)}: {exc} — merge aborted")
+            raise
+        try:
+            f = os.fdopen(src_fd, "rb")
+        except Exception:
+            os.close(src_fd)
+            raise
+        with f:
+            try:
+                for record in strict_raw_records(f, src_path, cap=_NOTIFICATION_RECORD_CAP):
+                    _notification_key(record, src_path)
+            except (OSError, UnreadableRecord) as exc:
+                # The EXCEPTION deliberately skips `_safe_name`, and the invariant is
+                # worth stating because it is what makes the wrapper unnecessary
+                # rather than forgotten: both types this arm catches already render
+                # an embedded path with repr-style escaping -- `OSError.__str__` does
+                # it for its filename, and `jsonl_util` uses `{path!r}` for the
+                # reason its own comment gives. Measured: a control character in a
+                # directory name reaches neither exception's `str()` raw. Widening
+                # this `except` tuple means re-checking that, because a type
+                # formatting a path with `str()` would need the wrapper.
+                print(f"  ⚠️  Could not read {_safe_name(src_path)}: {exc} — merge aborted")
+                raise
+            imported = 0
+            try:
+                # The SAME descriptor the validation pass just read, rewound -- never
+                # a second `open(src_path)`: re-resolving the name here is the exact
+                # defect this function was rewritten to remove.
+                f.seek(0)
+                out.seek(0, os.SEEK_END)
+                if dst_unterminated:
+                    out.write(b"\n")
+                for record in strict_raw_records(f, src_path, cap=_NOTIFICATION_RECORD_CAP):
+                    key = _notification_key(record, src_path)
+                    # A `None` key means the record did not PARSE, so it may be a
+                    # framing fragment rather than a record -- nothing it could be a
+                    # duplicate OF. Both `existing.add` sites refuse `None`, which is
+                    # what keeps it out of this membership test; an unconditional
+                    # `key is not None` here would be dead, and a mutation proved it
+                    # unobservable. A ts-less row that DOES parse is keyed on its raw
+                    # bytes and deduplicates normally; see _notification_key for why
+                    # raw and not stripped.
+                    if key in existing:
+                        continue
+                    out.write(record if record.endswith(_TERMINATORS) else record + b"\n")
+                    if key is not None:
+                        existing.add(key)
+                    imported += 1
+                # Flushed INSIDE this handler so a delayed-writeback failure is
+                # reported as a stopped merge, exactly as the predecessor's
+                # with-block close was.
+                out.flush()
+            except (OSError, UnreadableRecord) as exc:
+                # The prefix already appended stays: rolling it back would be a
+                # second unvalidated write. Names the count so an operator knows a
+                # prefix landed, and identity-less rows in it will re-append on a
+                # retry.
+                print(
+                    f"  ⚠️  Stopped merging {_safe_name(src_path)} after {imported} record(s): {exc}"
+                )
+                raise
     print(f"  Notifications imported: {imported}")
 
 

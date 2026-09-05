@@ -1853,6 +1853,255 @@ class TestNotificationMergeWriteSideContract:
         assert dst.read_bytes() == self.LIVE, "the retry appended something"
 
 
+# ── Issue #8667: the merge must validate and copy the SAME inode, not the same
+# name twice ─────────────────────────────────────────────────────────────────
+
+
+class TestNotificationMergeResolvesEachNameOnce:
+    """One descriptor from validation through copy; a swapped name changes nothing.
+
+    ``_merge_notifications`` used to open ``src_path`` by NAME twice -- once to
+    validate, once to copy -- with nothing carrying identity between the two
+    opens. The staging tree is agent-writable on a normal install, so swapping
+    that name for a symlink in the window made the copy loop append the link
+    TARGET's bytes into the live ``notifications.jsonl`` while the validation
+    pass vouched for a different file. The destination had the identical shape
+    one layer down (scan by name, then re-open by name to append).
+
+    Every fixture here is a real link, FIFO, or rename on a real filesystem --
+    a monkeypatched ``open`` that pretends to be a symlink would route the merge
+    down a path the defect never took.
+    """
+
+    LIVE = b'{"ts":"2026-02-01T00:00:00Z","msg":"local"}\n'
+    GOOD = b'{"ts":"2026-03-01T00:00:00Z","msg":"snap"}\n'
+    # Valid UTF-8, not JSON: exactly the shape of a token/env file, and exactly
+    # what the unfixed copy loop appended UNCONDITIONALLY -- an unparseable
+    # record keeps no dedupe key, so nothing ever refused it.
+    SECRET = b"AWS_SECRET_STAND_IN=hunter2-not-a-notification\n"
+
+    def _files(self, tmp_path):
+        src = tmp_path / "snap-notifications.jsonl"
+        dst = tmp_path / "live-notifications.jsonl"
+        src.write_bytes(self.GOOD)
+        dst.write_bytes(self.LIVE)
+        secret = tmp_path / "secret.env"
+        secret.write_bytes(self.SECRET)
+        return src, dst, secret
+
+    @staticmethod
+    def _merge_in_thread(src, dst, timeout: float = 10.0) -> list[str]:
+        """Run the merge on a daemon thread so a hang FAILS instead of wedging pytest.
+
+        The FIFO cases below are "must not block forever" properties: before the
+        fix (or under a dropped ``O_NONBLOCK``) the open blocks with no writer
+        ever coming, and a test that simply calls the merge would hang the whole
+        suite rather than going red.
+        """
+        import threading
+
+        outcome: list[str] = []
+
+        def run() -> None:
+            try:
+                snapshot_mod._merge_notifications(src, dst)
+                outcome.append("returned")
+            except OSError:
+                outcome.append("raised")
+            except Exception as exc:  # noqa: BLE001 — name any unexpected type
+                outcome.append(f"raised {type(exc).__name__}")
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            outcome.append("hung")
+        return outcome
+
+    @requires_symlinks
+    def test_a_source_swapped_for_a_symlink_after_validation_is_not_followed(
+        self, tmp_path, monkeypatch
+    ):
+        """The exact defect: swap the name BETWEEN the two passes.
+
+        The swap is performed the moment the validation pass finishes reading
+        the source -- the third ``strict_raw_records`` call is the copy loop, so
+        completing the second one is the last instant before the window closed.
+        With the name resolved twice, the copy followed the link and the
+        target's bytes landed; with one descriptor, the swap is invisible.
+        """
+        src, dst, secret = self._files(tmp_path)
+        real = snapshot_mod.strict_raw_records
+        calls = {"n": 0}
+
+        def swapping(handle, path, **kwargs):
+            calls["n"] += 1
+            this_call = calls["n"]
+            yield from real(handle, path, **kwargs)
+            if this_call == 2:  # the source validation pass just completed
+                src.unlink()
+                src.symlink_to(secret)
+
+        monkeypatch.setattr(snapshot_mod, "strict_raw_records", swapping)
+        snapshot_mod._merge_notifications(src, dst)
+        after = dst.read_bytes()
+        assert self.SECRET not in after, "the copy loop followed a name swapped after validation"
+        assert after == self.LIVE + self.GOOD, "the archive's own validated bytes must land"
+
+    @requires_symlinks
+    def test_a_source_that_is_already_a_symlink_is_refused_at_the_open(self, tmp_path, capsys):
+        """No window needed: a link sitting at the name must never be followed.
+
+        The unfixed merge read straight through it twice and reported success.
+        A refused open surfaces as a REFUSAL -- raise plus the abort line -- not
+        as a silent skip that installs nothing.
+        """
+        src, dst, secret = self._files(tmp_path)
+        src.unlink()
+        src.symlink_to(secret)
+        before = dst.read_bytes()
+        with pytest.raises(OSError):
+            snapshot_mod._merge_notifications(src, dst)
+        assert dst.read_bytes() == before, "a refusal must be a no-op on the live file"
+        out = capsys.readouterr().out
+        assert "Notifications imported:" not in out, "reported success on a refused merge"
+        assert "merge aborted" in out
+
+    @requires_symlinks
+    def test_the_reparse_floor_refuses_a_linked_source_where_O_NOFOLLOW_is_absent(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Windows has no ``O_NOFOLLOW``; ``is_reparse_point`` is the floor there.
+
+        Simulated the way this suite already simulates that platform: delete the
+        flag, so ``getattr(os, "O_NOFOLLOW", 0)`` contributes nothing and the
+        by-name screen is the only thing standing between the link and the open.
+        Same floor as ``_backup_and_copy``.
+        """
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        src, dst, secret = self._files(tmp_path)
+        src.unlink()
+        src.symlink_to(secret)
+        before = dst.read_bytes()
+        with pytest.raises(OSError):
+            snapshot_mod._merge_notifications(src, dst)
+        assert dst.read_bytes() == before
+        assert self.SECRET not in dst.read_bytes()
+        assert "merge aborted" in capsys.readouterr().out
+
+    @requires_symlinks
+    def test_a_destination_that_is_a_symlink_is_refused_before_anything_is_written(self, tmp_path):
+        """The destination has the same two-resolution shape one layer down.
+
+        A link at the live name redirected the append at whatever it pointed
+        to. Smaller exposure -- the live name is the operator's own file, not an
+        archive-derived one -- but the same fix applies and is pinned the same
+        way.
+        """
+        src, dst, _ = self._files(tmp_path)
+        real_dst = tmp_path / "elsewhere.jsonl"
+        real_dst.write_bytes(self.LIVE)
+        dst.unlink()
+        dst.symlink_to(real_dst)
+        with pytest.raises(OSError):
+            snapshot_mod._merge_notifications(src, dst)
+        assert real_dst.read_bytes() == self.LIVE, "the append was redirected through the link"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are a POSIX fixture")
+    def test_a_fifo_at_the_source_name_fails_rather_than_hanging(self, tmp_path):
+        """What ``O_NONBLOCK`` buys, pinned so a later cleanup cannot drop it.
+
+        Opening a FIFO for reading with no writer blocks FOREVER without it --
+        converting a refused restore into a hung one. With it the open returns
+        at once and the ``fstat`` regular-file judgement refuses the descriptor.
+        """
+        src, dst, _ = self._files(tmp_path)
+        src.unlink()
+        os.mkfifo(src)
+        before = dst.read_bytes()
+        outcome = self._merge_in_thread(src, dst)
+        assert outcome == ["raised"], f"a FIFO source must refuse, not {outcome}"
+        assert dst.read_bytes() == before
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are a POSIX fixture")
+    def test_the_regular_file_judgement_is_on_the_descriptor_not_the_name(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``fstat`` judges the inode the merge HOLDS; a name re-check judges whatever
+        the name points at NOW.
+
+        The open pins a FIFO, then the name is swapped to a perfectly ordinary
+        regular file before any by-name re-check could run. The descriptor
+        judgement refuses with the named reason; an ``os.path.isfile(src_path)``
+        check would pass and hand the FIFO descriptor to the record reader.
+        ``pinned_fs.py`` records the identical finding for the pinned walk:
+        an ``lstat``-before-open compared against a later ``fstat`` is the same
+        check-to-use window wearing a different name.
+        """
+        src, dst, _ = self._files(tmp_path)
+        src.unlink()
+        os.mkfifo(src)
+        regular = tmp_path / "regular.jsonl"
+        regular.write_bytes(self.GOOD)
+        real_open = os.open
+
+        def swapping_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            try:
+                # Matched on the NAME: under the pinned-parent walk the final
+                # open receives the bare name relative to a dir_fd, not the
+                # full path, and the ancestor components must pass through.
+                if Path(path).name == src.name:
+                    os.replace(regular, src)
+            except TypeError:
+                pass  # non-path first argument; not this seam
+            return fd
+
+        monkeypatch.setattr(snapshot_mod.os, "open", swapping_open)
+        outcome = self._merge_in_thread(src, dst)
+        assert outcome == ["raised"], f"a non-regular descriptor must refuse, not {outcome}"
+        assert "not a regular file" in capsys.readouterr().out
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks are a POSIX fixture here")
+    def test_a_hardlinked_source_is_refused_on_the_descriptor(self, tmp_path, capsys):
+        """A hardlink defeats every link-shaped screen: ``O_NOFOLLOW`` has nothing to
+        refuse and ``S_ISREG`` is TRUE, because the alias IS the target's inode.
+
+        The descriptor judgement therefore also refuses ``st_nlink != 1`` -- the
+        exact predicate ``pinned_fs.copy_file_pinned`` applies for the same
+        reason (a path guard cannot see an alias; only the inode's link count
+        can). A staged name hardlinked to a credential must refuse, not deliver
+        the credential's bytes into the served feed.
+        """
+        src, dst, secret = self._files(tmp_path)
+        src.unlink()
+        os.link(secret, src)  # a HARDLINK, not a symlink: same inode, nlink == 2
+        before = dst.read_bytes()
+        with pytest.raises(OSError):
+            snapshot_mod._merge_notifications(src, dst)
+        assert dst.read_bytes() == before, "the hardlinked credential's bytes were delivered"
+        out = capsys.readouterr().out
+        assert "Notifications imported:" not in out
+        assert "merge aborted" in out
+
+    def test_a_valid_unswapped_merge_still_appends_exactly_what_it_validated(
+        self, tmp_path, capsys
+    ):
+        """The happy path is untouched: same records land, dedupe unchanged.
+
+        This is a change to HOW the files are reached, never to what is
+        admitted -- the record cap and the ``_notification_key`` predicate are
+        exactly as they were. A second run of the same import appends nothing.
+        """
+        src, dst, _ = self._files(tmp_path)
+        snapshot_mod._merge_notifications(src, dst)
+        assert dst.read_bytes() == self.LIVE + self.GOOD
+        assert "Notifications imported: 1" in capsys.readouterr().out
+        snapshot_mod._merge_notifications(src, dst)
+        assert dst.read_bytes() == self.LIVE + self.GOOD, "the re-run duplicated a record"
+        assert "Notifications imported: 0" in capsys.readouterr().out
+
+
 # ── Issue #8217: the restore status line must not claim success over a refused
 # cron merge ───────────────────────────────────────────────────────────────────
 
