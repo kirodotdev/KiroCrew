@@ -140,6 +140,7 @@ def _canonical(*, head_revision: str = "abc123") -> dict[str, object]:
         "unresolved_review_threads": 0,
         "review_threads_complete": True,
         "checks": {"failed": [], "passed": ["ci"], "pending": [], "unknown": []},
+        "checks_complete": True,
     }
 
 
@@ -177,7 +178,7 @@ class _Provider:
 
 def _state_and_slot():
     state = SimpleNamespace(
-        _slots={_BINDING: SimpleNamespace(workspace="default")},
+        _slots={_BINDING: SimpleNamespace(workspace="default", is_closing=False)},
         sessions=None,
         channel_transports={},
     )
@@ -292,7 +293,9 @@ async def test_babysit_unchanged_observations_probe_without_agent_turns(monitor_
     created = loop.monitor.created_ts
     provider = _Provider([_probe_result(MonitorObservationStatus.PENDING)])
     dispatch = AsyncMock()
-    controller = MonitorController(monitor_service, dispatch, provider=provider)
+    controller = MonitorController(
+        monitor_service, dispatch, providers={"github_pull_request": provider}
+    )
 
     first = await controller.tick(loop, now=created + 10)
     second = await controller.tick(loop, now=created + 310)
@@ -323,7 +326,9 @@ async def test_babysit_actionable_fingerprint_wakes_once_across_restart(monitor_
         ]
     )
     dispatch = AsyncMock(return_value=MonitorDispatchResult.DISPATCHED)
-    controller = MonitorController(monitor_service, dispatch, provider=provider)
+    controller = MonitorController(
+        monitor_service, dispatch, providers={"github_pull_request": provider}
+    )
     now = loop.monitor.created_ts + 10
 
     first = await controller.tick(loop, now=now)
@@ -352,7 +357,7 @@ async def test_babysit_actionable_fingerprint_wakes_once_across_restart(monitor_
         restarted_controller = MonitorController(
             restarted,
             restarted_dispatch,
-            provider=restarted_provider,
+            providers={"github_pull_request": restarted_provider},
         )
 
         decision = await restarted_controller.tick(restored, now=now + 2)
@@ -379,7 +384,9 @@ async def test_babysit_success_stops_without_an_agent_turn(monitor_service):
         ]
     )
     dispatch = AsyncMock()
-    controller = MonitorController(monitor_service, dispatch, provider=provider)
+    controller = MonitorController(
+        monitor_service, dispatch, providers={"github_pull_request": provider}
+    )
 
     decision = await controller.tick(loop, now=loop.monitor.created_ts + 10)
 
@@ -409,7 +416,9 @@ async def test_babysit_provider_block_is_safe_and_turn_free(monitor_service):
         ]
     )
     dispatch = AsyncMock()
-    controller = MonitorController(monitor_service, dispatch, provider=provider)
+    controller = MonitorController(
+        monitor_service, dispatch, providers={"github_pull_request": provider}
+    )
 
     decision = await controller.tick(loop, now=loop.monitor.created_ts + 10)
 
@@ -429,7 +438,9 @@ async def test_babysit_runtime_budget_stops_before_another_probe_or_turn(monitor
     assert loop is not None and loop.monitor is not None
     provider = _Provider([_probe_result(MonitorObservationStatus.ACTIONABLE)])
     dispatch = AsyncMock()
-    controller = MonitorController(monitor_service, dispatch, provider=provider)
+    controller = MonitorController(
+        monitor_service, dispatch, providers={"github_pull_request": provider}
+    )
 
     decision = await controller.tick(loop, now=loop.monitor.created_ts + 60)
 
@@ -452,7 +463,9 @@ async def test_babysit_busy_retry_stops_at_runtime_without_another_action_attemp
     assert loop is not None and loop.monitor is not None
     provider = _Provider([_probe_result(MonitorObservationStatus.ACTIONABLE)])
     dispatch = AsyncMock(return_value=MonitorDispatchResult.BUSY)
-    controller = MonitorController(monitor_service, dispatch, provider=provider)
+    controller = MonitorController(
+        monitor_service, dispatch, providers={"github_pull_request": provider}
+    )
 
     first = await controller.tick(loop, now=loop.monitor.created_ts + 10)
     expired = await controller.tick(loop, now=loop.monitor.created_ts + 25)
@@ -489,7 +502,9 @@ async def test_babysit_user_stop_uses_real_tool_and_retains_terminal_state(monit
     dispatch = AsyncMock(return_value=MonitorDispatchResult.DISPATCHED)
     loop = monitor_service.get_by_slot(_BINDING)
     assert loop is not None and loop.monitor is not None
-    controller = MonitorController(monitor_service, dispatch, provider=provider)
+    controller = MonitorController(
+        monitor_service, dispatch, providers={"github_pull_request": provider}
+    )
 
     decision = await controller.tick(loop, now=loop.monitor.stopped_at + 1)
 

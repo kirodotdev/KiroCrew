@@ -32,6 +32,9 @@ MAX_MONITOR_PROVIDER_ERRORS = 20
 MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS = 1_000
 MAX_MONITOR_STOP_REASON_CHARS = 500
 MAX_MONITOR_CHECK_NAMES = 8
+MAX_MONITOR_PROVIDER_CONCURRENCY = 4
+MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET = 100
+MAX_MONITOR_CHECK_IDENTITY_CHARS = 200
 # The normal turn ceiling is two hours. One extra minute lets the raw completion
 # callback win the timeout race while keeping missing evidence restart-durable
 # and bounded.
@@ -47,10 +50,18 @@ MONITOR_STOP_UNSUPPORTED_VERSION = "unsupported_monitor_version"
 MONITOR_STOP_USER = "user_stop"
 MONITOR_STOP_SESSION_UNAVAILABLE = "session_unavailable"
 MONITOR_STOP_SESSION_CLOSE = "session_close"
-PULL_REQUEST_MONITOR_KINDS = frozenset({"github_pull_request"})
-_GITHUB_OBSERVATION_FIELDS = (
+PULL_REQUEST_MONITOR_KINDS = frozenset(
+    {
+        "github_pull_request",
+        "gitlab_merge_request",
+        "azure_devops_pull_request",
+        "bitbucket_pull_request",
+    }
+)
+PULL_REQUEST_OBSERVATION_FIELDS = (
     "blocking_review",
     "checks",
+    "checks_complete",
     "draft",
     "head_revision",
     "kind",
@@ -61,17 +72,22 @@ _GITHUB_OBSERVATION_FIELDS = (
     "target",
     "unresolved_review_threads",
 )
-_GITHUB_CHECK_FIELDS = ("failed", "passed", "pending", "unknown")
-_GITHUB_BLOCKING_REVIEWS = {"unknown", "changes_requested", "unresolved_threads", "none"}
-_GITHUB_MERGEABILITY = {"conflicting", "behind", "blocked", "pending", "mergeable"}
-_GITHUB_REVIEW_DECISIONS = {
+PULL_REQUEST_CHECK_FIELDS = ("failed", "passed", "pending", "unknown")
+PULL_REQUEST_BLOCKING_REVIEWS = {
+    "unknown",
+    "changes_requested",
+    "unresolved_threads",
+    "none",
+}
+PULL_REQUEST_MERGEABILITY = {"conflicting", "behind", "blocked", "pending", "mergeable"}
+PULL_REQUEST_REVIEW_DECISIONS = {
     "none",
     "approved",
     "changes_requested",
     "review_required",
     "unknown",
 }
-_GITHUB_PULL_REQUEST_STATES = {"open", "closed", "merged", "unknown"}
+PULL_REQUEST_STATES = {"open", "closed", "merged", "unknown"}
 MONITOR_PUBLIC_FIELDS = (
     "version",
     "config_generation",
@@ -679,20 +695,31 @@ def monitor_state_to_dict(state: MonitorState) -> dict[str, object]:
     return payload
 
 
-def _public_github_observation(raw: dict[str, object]) -> dict[str, object]:
+def _public_pull_request_observation(
+    raw: dict[str, object],
+    *,
+    expected_kind: str,
+) -> dict[str, object]:
     """Project only the bounded canonical schema across the public boundary."""
     if not raw:
         return {}
     checks = raw.get("checks")
     if not isinstance(checks, dict):
         return {}
-    for field_name in _GITHUB_OBSERVATION_FIELDS:
+    for field_name in PULL_REQUEST_OBSERVATION_FIELDS:
         if field_name not in raw:
             return {}
-    for field_name in _GITHUB_CHECK_FIELDS:
+    for field_name in PULL_REQUEST_CHECK_FIELDS:
         values = checks.get(field_name)
-        if not isinstance(values, list) or any(
-            not isinstance(value, str) or not value for value in values
+        if (
+            not isinstance(values, list)
+            or any(
+                not isinstance(value, str)
+                or not value
+                or len(value) > MAX_MONITOR_CHECK_IDENTITY_CHARS
+                for value in values
+            )
+            or len(values) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
         ):
             return {}
     unresolved = raw.get("unresolved_review_threads")
@@ -701,7 +728,8 @@ def _public_github_observation(raw: dict[str, object]) -> dict[str, object]:
     review_decision = raw.get("review_decision")
     pull_request_state = raw.get("state")
     if (
-        raw.get("kind") != "github_pull_request"
+        raw.get("kind") != expected_kind
+        or expected_kind not in PULL_REQUEST_MONITOR_KINDS
         or not isinstance(raw.get("target"), str)
         or not raw.get("target")
         or not isinstance(raw.get("head_revision"), str)
@@ -711,17 +739,17 @@ def _public_github_observation(raw: dict[str, object]) -> dict[str, object]:
         or not isinstance(unresolved, int)
         or unresolved < 0
         or not isinstance(blocking_review, str)
-        or blocking_review not in _GITHUB_BLOCKING_REVIEWS
+        or blocking_review not in PULL_REQUEST_BLOCKING_REVIEWS
         or not isinstance(mergeability, str)
-        or mergeability not in _GITHUB_MERGEABILITY
+        or mergeability not in PULL_REQUEST_MERGEABILITY
         or not isinstance(review_decision, str)
-        or review_decision not in _GITHUB_REVIEW_DECISIONS
+        or review_decision not in PULL_REQUEST_REVIEW_DECISIONS
         or not isinstance(pull_request_state, str)
-        or pull_request_state not in _GITHUB_PULL_REQUEST_STATES
+        or pull_request_state not in PULL_REQUEST_STATES
     ):
         return {}
-    public = {key: deepcopy(raw[key]) for key in _GITHUB_OBSERVATION_FIELDS}
-    public["checks"] = {key: deepcopy(checks[key]) for key in _GITHUB_CHECK_FIELDS}
+    public = {key: deepcopy(raw[key]) for key in PULL_REQUEST_OBSERVATION_FIELDS}
+    public["checks"] = {key: deepcopy(checks[key]) for key in PULL_REQUEST_CHECK_FIELDS}
     return public
 
 
@@ -729,5 +757,8 @@ def monitor_state_public_dict(state: MonitorState) -> dict[str, object]:
     """Return the stable inspect/dashboard fields without persistence internals."""
     payload = {key: deepcopy(getattr(state, key)) for key in MONITOR_PUBLIC_FIELDS}
     payload["budgets"] = asdict(state.budgets)
-    payload["last_observation"] = _public_github_observation(state.last_observation)
+    payload["last_observation"] = _public_pull_request_observation(
+        state.last_observation,
+        expected_kind=state.kind,
+    )
     return payload

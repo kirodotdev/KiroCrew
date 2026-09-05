@@ -790,7 +790,9 @@ class TestCancellationKillsUpdaterChild:
         child leaves its members running and can leave communicate() waiting on
         pipes those survivors hold."""
         proc = MagicMock()
-        proc.pid = 4242
+        # No supported OS can allocate this PID, so the host process table cannot
+        # make the fake child look like it shares the test runner's process group.
+        proc.pid = 99_999_999_999
         proc.kill = MagicMock()
         proc.communicate = AsyncMock(return_value=(b"", b""))
         proc.stdout = _stream(b"")
@@ -799,7 +801,7 @@ class TestCancellationKillsUpdaterChild:
         with patch("kiro_crew.platform_compat.kill_process_tree_async", AsyncMock()) as tree:
             await _kill_and_reap(proc)
         tree.assert_awaited_once()
-        assert tree.await_args.args[0] == 4242
+        assert tree.await_args.args[0] == proc.pid
 
     @pytest.mark.asyncio
     async def test_kill_and_reap_bounds_the_reap(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -666,6 +666,8 @@ async def authorize_and_add_nudge(
         if slot_key not in state._slots:
             return _deny(f"unknown slot {slot_key}", 404)
         authorized_slot = state._slots.get(slot_key)
+        if authorized_slot is None:
+            return _deny(f"unknown slot {slot_key}", 404)
         slot_mode = str(getattr(authorized_slot, "mode", ""))
         if slot_mode in {"crew", "member"}:
             return _deny(f"{slot_mode}-mode sessions do not accept direct automation turns", 409)
@@ -676,6 +678,7 @@ async def authorize_and_add_nudge(
             current = state._slots.get(slot_key)
             return (
                 current is authorized_slot
+                and not authorized_slot.is_closing
                 and str(getattr(current, "mode", "")) not in {"crew", "member"}
                 and str(getattr(current, "memory_mode", "persistent")) == "persistent"
             )

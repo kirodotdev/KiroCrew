@@ -105,7 +105,7 @@ def _is_recognized_key(key: str) -> bool:
     the vault in this change: the global ``JIRA_API_TOKEN`` and the per-host
     ``JIRA_TOKEN_<HEX>`` tokens that ``_get_jira_auth`` reads vault-first.
 
-    Other ``_CREDENTIAL_KEYS`` (Slack, Discord, kiro-cli, …) are intentionally
+    Other ``CREDENTIAL_KEYS`` (Slack, Discord, kiro-cli, …) are intentionally
     NOT migrated: their consumers still read the literal ``.env`` value, so
     rewriting their line to a ``secret://`` reference would hand them the URI
     string instead of the secret and break auth. They migrate once their
@@ -196,7 +196,7 @@ def migrate_env_secrets(
     agent-influenced argument) can point the importer at an arbitrary file to
     read, nor at an arbitrary directory to write the vault key/entries into. For
     each line
-    whose key is recognized (:data:`_CREDENTIAL_KEYS` or a ``JIRA_TOKEN_<HEX>``)
+    whose key is recognized (:data:`CREDENTIAL_KEYS` or a ``JIRA_TOKEN_<HEX>``)
     and whose value is still plaintext, the value is stored in the vault under
     the same key and the line is queued for rewrite to ``KEY=secret://KEY``.
 
@@ -248,9 +248,9 @@ def migrate_env_secrets(
             continue
         # Runtime override wins — but ONLY for keys that load_credentials
         # actually overlays from the process environment. That overlay is scoped
-        # to _CREDENTIAL_KEYS, of which our recognized set contains exactly the
+        # to CREDENTIAL_KEYS, of which our recognized set contains exactly the
         # GLOBAL `JIRA_API_TOKEN`. The per-host `JIRA_TOKEN_<HEX>` keys are NOT
-        # in _CREDENTIAL_KEYS, so the environment does NOT override them at
+        # in CREDENTIAL_KEYS, so the environment does NOT override them at
         # runtime — Jira reads the .env/vault value. Skipping a per-host key just
         # because a same-named env var happens to exist would leave the stale
         # file token unmigrated while Jira keeps using it, so restrict the skip

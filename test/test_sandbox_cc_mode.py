@@ -331,9 +331,9 @@ class TestChannelCredentialIsolation:
         (``config.loader.inject_kiro_cli_api_key``) instead of letting it ride
         the inherited environ.
         """
-        from kiro_crew.config.loader import _CREDENTIAL_KEYS, CRED_KIRO_API_KEY
+        from kiro_crew.config.loader import CRED_KIRO_API_KEY, CREDENTIAL_KEYS
 
-        missing = set(_CREDENTIAL_KEYS) - set(_AGENT_DENIED_ENV_KEYS) - {CRED_KIRO_API_KEY}
+        missing = set(CREDENTIAL_KEYS) - set(_AGENT_DENIED_ENV_KEYS) - {CRED_KIRO_API_KEY}
         assert not missing, f"loader credential keys not in agent denylist: {sorted(missing)}"
         # The carve-out stays exactly one key wide and never joins the denylist:
         # a denied KIRO_API_KEY would strip the agent's own credential.

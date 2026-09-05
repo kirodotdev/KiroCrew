@@ -1,12 +1,12 @@
 ---
 title: Token-efficient monitors — probe first, wake on change
-status: draft
+status: in-progress
 author: kseam
 created: 2026-08-22
-last-audited: 2026-08-22
-audited-at: 6d3e30bbbd
+last-audited: 2026-09-03
+audited-at: 904da553781c4e376df1df98598068b6e0391cf3
 doc-pr:
-implementation-prs: []
+implementation-prs: [5180, 5181, 5182, 5183, 5184, 5185, 5186, 5305]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -22,16 +22,19 @@ The agent calls one session-scoped MCP tool to create the monitor. Kiro Crew the
 performs deterministic, inexpensive probes on schedule and wakes the session only
 when the observation is new and actionable.
 
-The first monitor watches a GitHub pull request until it is review-ready. It
-tracks checks, reviews, mergeability, and head revision without asking the model
-to rediscover unchanged state. The existing AutoNudge timer remains the durable
-scheduling primitive; a monitor controller adds domain state, fingerprints,
-budgets, terminal outcomes, and completed-turn accounting.
+The pull-request monitor watches a supported source-provider change until it is
+review-ready. The
+next provider extension applies the same contract to GitLab merge requests,
+Azure DevOps Services pull requests, and Bitbucket Cloud pull requests. Each
+adapter tracks checks, reviews, mergeability, and head revision without asking
+the model to rediscover unchanged state. The existing AutoNudge timer remains
+the durable scheduling primitive; a monitor controller adds domain state,
+fingerprints, budgets, terminal outcomes, and completed-turn accounting.
 
 This work lands as a stack. PR 0 is this RFC. PRs 1–6 introduce the durable model,
 correct accounting, a shadow-mode GitHub probe, the agent-facing tool, truthful
-dashboard controls, and finally removal of prompt-owned orchestration from the
-babysit skill.
+dashboard controls, and removal of prompt-owned orchestration from the babysit
+skill. PR 7 adds the three source-provider adapters behind the proven controller.
 
 ## Decision
 
@@ -57,6 +60,18 @@ fingerprint never wakes twice.
 
 The initial API also includes `monitor_update` and `monitor_stop`.
 `autonudge_stop` remains as a compatibility alias while legacy goal loops exist.
+The provider extension admits four explicit kinds with the same objective:
+
+```text
+github_pull_request
+gitlab_merge_request
+azure_devops_pull_request
+bitbucket_pull_request
+```
+
+The dashboard infers the kind from a validated target URL. Agent-facing MCP calls
+name the kind explicitly, and the authoritative applier rejects a kind/target
+mismatch rather than guessing across credential boundaries.
 
 ## Motivation
 
@@ -128,6 +143,8 @@ schedule.
 - Account for a wake at completed-turn time on every delivery surface.
 - Retain durable terminal outcomes for UI, metrics, and debugging.
 - Preserve legacy AutoNudge behavior during migration.
+- Apply the same zero-turn review-readiness contract to supported GitLab, Azure
+  DevOps, and Bitbucket targets.
 - Land in reviewable, independently useful stacked PRs.
 
 ## Non-goals
@@ -135,7 +152,10 @@ schedule.
 - Replacing cron or the generic AutoNudge timer.
 - Building a general workflow language.
 - Letting arbitrary shell commands act as probes.
-- Supporting every forge or arbitrary website in the first release.
+- Supporting every forge or arbitrary website.
+- Supporting Azure DevOps Server or Bitbucket Data Center in the provider
+  extension. GitLab self-managed remains limited to the existing exact-host
+  allowlist.
 - Running action turns in a new hidden session in the first release.
 - Automatically fixing every PR condition without an agent turn.
 - Removing legacy goal loops before the structured monitor path is proven.
@@ -210,7 +230,7 @@ invariants are not:
 No eager one-way migration rewrites existing `autonudge.json` records. Legacy
 records deserialize without a monitor payload, and new fields use safe defaults.
 
-### 3. Observation: small, canonical, and domain-owned
+### 3. Observation: small, canonical, and provider-owned
 
 The first probe supports `github_pull_request` with objective `review_ready`.
 It reads the minimum remote state necessary to classify the pull request:
@@ -229,7 +249,8 @@ typed classification record. For GitHub it contains only the monitor kind,
 normalized target, pull-request state, draft flag, head revision, mergeability,
 review decision, blocking-review state, review-thread completeness and unresolved
 count, plus the failed/passed/pending/unknown check-name buckets. The latest typed
-status, reason code, and sanitized summary live in adjacent dedicated fields. A
+status and reason code live in adjacent dedicated fields. Probe summaries are
+transient and are not persisted in the monitor record. A
 provider error advances those typed fields while retaining the last good canonical
 facts and fingerprint.
 
@@ -247,6 +268,108 @@ snapshot is still persisted for inspection.
 Raw logs are not embedded in the persisted observation or wake message. The
 action turn fetches them on demand only when the compact observation identifies a
 specific failing check.
+
+#### Provider-neutral readiness contract
+
+Every pull-request adapter returns the same bounded canonical facts:
+
+```text
+kind, target, state, draft, head_revision
+mergeability, review_decision, blocking_review
+review_threads_complete, unresolved_review_threads
+checks.failed, checks.passed, checks.pending, checks.unknown
+```
+
+The serialized field names remain compatible with the GitHub implementation;
+only the allowed `kind` and target identity expand. Provider-native payloads do
+not cross the adapter boundary. The public projection reconstructs this exact
+schema and drops unknown root or check fields before state reaches the agent or
+browser.
+Each check bucket retains at most 100 identities. Identities longer than 200
+characters receive a stable digest suffix, and overflow adds explicit incomplete
+evidence so the monitor cannot report review-ready from a truncated set.
+
+The controller selects an adapter from a closed registry keyed by monitor kind.
+The provider protocol returns a generic pull-request probe result containing the
+canonical facts and a `MonitorObservation`; it does not expose provider clients,
+credentials, or raw responses. The scheduler, decision engine, persistence,
+delivery, and accounting paths remain provider-independent.
+
+All adapters apply the same conservative decision precedence:
+
+1. merged is terminal success; closed or declined without merge is terminal
+   blocked;
+2. failed checks or policies, requested changes, unresolved blocking
+   discussions/tasks, conflicts, stale branches, and known merge blockers are
+   actionable;
+3. drafts, pending or unknown checks, incomplete review evidence, unmet review
+   requirements, and unknown mergeability are pending;
+4. an open target with complete evidence and no known blocker is review-ready.
+
+Known actionable facts win over simultaneous pending or unknown facts. The
+actionable fingerprint includes the head revision and known blocker identities,
+but excludes unrelated pending/unknown churn. The full allowlisted observation is
+still retained for inspection. A head revision change always changes the
+fingerprint and invalidates revision-specific evidence.
+
+#### Provider adapters and target boundaries
+
+The supported targets are deliberately closed:
+
+- GitHub: `https://github.com/OWNER/REPO/pull/NUMBER`, using the existing
+  hardened `gh` runner.
+- GitLab: `https://gitlab.com/GROUP/PROJECT/-/merge_requests/IID`, plus HTTPS
+  self-managed hosts already present in `dashboard.gitlab_hosts`, using
+  `glab --hostname` with the validated host pinned on every call.
+- Azure DevOps Services:
+  `https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/ID`, using a validated
+  absolute `az` binary and the pre-installed Azure DevOps CLI extension. Azure
+  DevOps Server URLs are refused.
+- Bitbucket Cloud:
+  `https://bitbucket.org/WORKSPACE/REPO/pull-requests/ID`, using bounded HTTPS
+  reads pinned to `api.bitbucket.org`. Bitbucket Data Center URLs are refused.
+
+Backend URL parsers reject userinfo, fragments, unexpected query parameters,
+invalid or non-positive ids, ambiguous path spellings, and hosts outside these
+exact boundaries. Alternate ports are rejected except for a self-managed GitLab
+`host:port` present exactly in `dashboard.gitlab_hosts`. The dashboard strips
+copied-link queries and fragments plus the common GitHub `/files`, GitLab `/diffs`,
+and Bitbucket `/diff` view suffixes before submitting the canonical provider URL.
+Canonical identities are built from the validated target, never from
+provider-echoed URLs or ids.
+
+GitLab reuses the repository's existing trusted-binary, minimal-environment,
+per-host credential, and self-managed-host authorization policy. Azure extends
+that trusted-binary policy to `az`, disables dynamic extension installation, and
+passes only Azure-scoped configuration/authentication variables; operators may
+authenticate with `az login` or the recognized `AZURE_DEVOPS_EXT_PAT` protected
+credential. Bitbucket reads public targets anonymously when possible and reads
+private targets with recognized `BITBUCKET_EMAIL` and `BITBUCKET_API_TOKEN`
+credentials from the protected credential store. Bitbucket authorization headers
+exist only inside the pinned HTTPS client; they never appear in argv, URLs, logs,
+monitor state, or wake messages.
+
+Every provider call has fixed time, response-size, pagination, and concurrency
+bounds. CLI output is drained under the transport byte ceiling rather than first
+being buffered in full; language-runtime injection variables are removed and the
+child starts outside the agent-controlled workspace. GitLab reads only the newest
+current-head pipeline in descending id order, so a successful retry supersedes an
+older failed run; discussion evidence reads at most two pages before remaining
+explicitly incomplete. Error mapping is shared: rate limits and transport failures retry without
+a model turn; authentication, authorization, not-found, malformed response, and
+setup failures use stable provider error categories and bounded terminal policy.
+Provider text is redacted before any diagnostic crosses the adapter.
+
+GitLab maps the latest current-head pipeline, approval state, unresolved discussions, and detailed
+merge status into the shared facts; `requested_changes` becomes the actionable shared
+`changes_requested` review decision. Azure maps pull-request status, source commit,
+policy evaluations, statuses, required-reviewer votes, and unresolved threads;
+optional zero-vote reviewers do not block readiness. Bitbucket maps lifecycle,
+source commit, reviewer-role participants/change requests, unresolved tasks,
+commit statuses, and conflict state. Missing evidence is `unknown` or incomplete,
+never silently passing. Azure status/policy display labels and Bitbucket status
+labels are provider-controlled, so adapters replace them with stable opaque
+identities before canonicalization or wake-envelope construction.
 
 ### 4. Decision: a pure policy before delivery
 
@@ -376,8 +499,8 @@ policy removes them. An outcome records:
 - success, blocked, budget, user stop, session close, or target unavailable;
 - stable machine-readable reason code;
 - concise human-readable detail;
-- last canonical observation and fingerprint, plus its dedicated typed status,
-  reason code, and sanitized summary;
+- last canonical observation and fingerprint, plus its dedicated typed status
+  and reason code;
 - probe count, wake count, completed agent turns, and token totals;
 - created, last-observed, and stopped timestamps.
 
@@ -401,13 +524,19 @@ concepts even while both use AutoNudge internally.
 For a structured monitor it shows target, objective, next probe, bounds, latest
 classification, usage, and terminal reason. Terminal records are read-only; the
 user explicitly restarts a monitor rather than reviving it through a generic Save
-action. The create form uses the same safe defaults and bounds as the MCP tool.
+action. The restart route verifies the exact terminal record and its configuration
+generation; the create form cannot replace an existing record. The create form
+uses the same safe defaults and bounds as the MCP tool. Session-close tombstones
+cannot be restarted because
+the close transaction may still roll them back to the active record it retired.
 Cold REST hydration never replaces a newer live record while its refetch is in
-flight or after that refetch fails.
+flight or after that refetch fails. Sparse non-target edits do not require the
+unchanged persisted target to parse successfully.
 
 Legacy “Set a goal” remains available during rollout with an explicit legacy
-label. Browser creation is create-only at the durable service boundary, so a
-stale empty read cannot replace an automation concurrently armed in another tab.
+label. Browser creation is create-only at the durable service boundary, so a stale
+empty read cannot replace an automation concurrently armed in another tab. The
+explicit restart route likewise refuses a stale terminal action.
 It no longer implies that an inactive capped loop completed successfully.
 
 ## Migration plan
@@ -610,6 +739,44 @@ Exit criteria:
 - Legacy prompt loops remain functional for unsupported targets and unobserved
   evidence until a separate removal decision is approved.
 
+### PR 7 — Add source-provider review-readiness adapters
+
+Suggested title: `feat: monitor pull requests across source providers`
+
+Primary areas:
+
+- provider-neutral probe result, readiness facts, classifier, and adapter
+  registry under `src/kiro_crew/monitoring/`;
+- GitLab, Azure DevOps Services, and Bitbucket Cloud target parsers and probes;
+- hardened provider execution, protected credentials, redaction, and security
+  posture registration;
+- MCP/REST validation, dashboard provider inference and presentation, and compact
+  babysit recipes;
+- provider fixtures, cross-provider controller contracts, frontend tests, and
+  routed specifications.
+
+Test-first sequence:
+
+1. Pin strict URL parsing and kind/target mismatch refusal for every provider.
+2. Pin provider-native fixtures into the same canonical facts and readiness
+   decisions, including mixed actionable and pending evidence.
+3. Prove response caps, pagination caps, host pinning, credential isolation,
+   redaction, and stable provider-error mapping.
+4. Prove every provider inherits no-change deduplication, head-change wakes,
+   restart recovery, completion accounting, and budget termination without a
+   provider-specific scheduler path.
+5. Pin MCP, REST, dashboard, and babysit behavior for all four kinds while
+   retaining legacy fallback for unsupported targets and objectives.
+
+Exit criteria:
+
+- Supported GitLab, Azure DevOps Services, and Bitbucket Cloud targets consume
+  zero model turns while unchanged, pending, retrying, successful, or terminal.
+- One new actionable fingerprint wakes the owning session at most once with the
+  same accounting and completion semantics as GitHub.
+- Missing provider tooling or credentials fails with a stable, inspectable setup
+  or authentication outcome and never falls back silently to full-turn polling.
+
 ## Backward compatibility and rollout
 
 - Existing AutoNudge JSON records remain valid and keep current semantics.
@@ -618,8 +785,9 @@ Exit criteria:
   `monitor_stop` so the intent and retained outcome are explicit.
 - New serialized fields are optional and versioned. Older records receive no
   implicit target or objective.
-- Structured monitors are initially limited to GitHub pull requests and the
-  `review_ready` objective.
+- The original structured monitor remains compatible with persisted
+  `github_pull_request` records. PR 7 adds three kinds without changing the
+  `review_ready` objective or monitor state version.
 - PR 3 is shadow-only. PR 4 enables action wakes after shadow metrics and test
   fixtures demonstrate stable classification.
 - The dashboard distinguishes both record types before the babysit skill defaults
@@ -632,10 +800,11 @@ Exit criteria:
 - MCP tools remain stateless and resolve the mutating session strictly.
 - The gateway applies existing ownership, routability, channel, and native-subagent
   restrictions before creating or changing a monitor.
-- GitHub credentials stay behind the provider boundary and are never persisted in
-  monitor state or injected into the transcript.
-- Targets are normalized and validated; the first implementation accepts only
-  GitHub pull-request identities, not arbitrary URLs or commands.
+- Provider credentials stay behind their adapter boundaries and are never
+  persisted in monitor state or injected into the transcript.
+- Targets are normalized and validated against the closed provider/host/path
+  matrix, and canonical URLs containing credential-shaped path text are rejected
+  before persistence; no adapter accepts arbitrary URLs or commands.
 - Provider output passes through existing secret redaction before persistence,
   logging, or delivery.
 - Canonical observations use an allowlist of small fields. Raw logs, diffs, review
@@ -686,6 +855,20 @@ Commands would make the feature generic quickly, but they create a background
 execution and credential boundary that is much larger than a typed provider
 adapter. The initial monitor is deliberately domain-specific.
 
+### Duplicate the GitHub adapter for every provider
+
+Separate provider classifiers would be locally simple but would let readiness
+precedence, fingerprint composition, error taxonomy, and public projection drift.
+Provider adapters normalize native state into one reviewed contract instead.
+
+### Replace every provider CLI with direct REST clients
+
+A uniform HTTP layer would require Kiro Crew to duplicate the established GitHub
+and GitLab login/configuration experience and hold more credential material. The
+extension reuses `gh` and `glab`, uses the supported Azure CLI authentication
+path, and adds a direct client only where Bitbucket Cloud has no established
+repository integration to reuse.
+
 ### Replace AutoNudge entirely
 
 The existing service already owns durable cadence, recovery, binding-aware
@@ -708,13 +891,13 @@ invariants:
 4. After the pull-request path is proven, should monitor actions move to a bounded
    companion session to further reduce transcript growth? Metrics from PRs 4–6
    should inform that decision.
-5. Which monitor kinds should follow next? Candidate kinds must have a small,
+5. Which non-review monitor kind should follow next? Candidates must have a small,
    deterministic observation and a terminal predicate; general web polling is not
-   implied.
+   implied by the source-provider extension.
 
 ## Provenance
 
-This RFC was audited against Kiro Crew commit `6d3e30bbbd`. The current behavior
+This RFC was audited against Kiro Crew commit `6ce882d5b`. The current behavior
 is distributed across the babysit skill, AutoNudge service, MCP control tools,
 session directive applier, dashboard and channel delivery paths, and dashboard
 goal-loop components. The implementation PRs must update the relevant system

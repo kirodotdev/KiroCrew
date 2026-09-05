@@ -6170,7 +6170,7 @@ class GatewayOrchestrator:
                 current_slot = dashboard_state.get_slot(loop.slot_key)
                 if (
                     current_slot is not turn_slot
-                    or getattr(turn_slot, "_closing", False)
+                    or turn_slot.is_closing
                     or str(getattr(turn_slot, "mode", "")) in {"crew", "member"}
                     or str(getattr(turn_slot, "memory_mode", "persistent")) != "persistent"
                 ):

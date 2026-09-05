@@ -260,7 +260,7 @@ def test_env_override_empty_does_not_skip(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_per_host_env_var_does_not_skip_migration(tmp_path: Path, monkeypatch) -> None:
-    """`load_credentials` overlays the env only for _CREDENTIAL_KEYS (the global
+    """`load_credentials` overlays the env only for CREDENTIAL_KEYS (the global
     JIRA_API_TOKEN), NOT per-host JIRA_TOKEN_<HEX> keys. So a same-named env var
     for a per-host key is NOT runtime-authoritative — Jira still reads the
     .env/vault value — and migration must NOT skip it (skipping would strand the

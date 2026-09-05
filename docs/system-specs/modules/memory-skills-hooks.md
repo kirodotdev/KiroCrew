@@ -922,15 +922,17 @@ requests, so ordinary requests reach the recipe without placing the whole body i
 every prompt. The base prompt points long-lived pull-request readiness requests to
 this skill and prefers the structured path whenever typed provider facts fully
 determine the objective.
-For a public GitHub pull request with the `review_ready` objective it gives the
-agent one exact bounded `monitor_watch` call and makes retained inspection state
-authoritative; its acknowledgement remains pending until the current turn ends,
-so agent inspection happens only at the start of a later user/wake turn. It also
-explains that reported-token enforcement may be incomplete while runtime and
-completed-turn limits remain hard fallbacks. It does not reproduce provider
-polling policy in the prompt. Its legacy `monitor_start` recipe is limited to
-unsupported targets and requires a positive cadence, cycle cap, and runtime
-bound while naming the full-turn/token cost and ordinary approval policy.
+For a supported GitHub, GitLab, Azure DevOps, or Bitbucket Cloud pull request
+with the `review_ready` objective it maps the canonical URL to one exact bounded
+`monitor_watch` call and makes retained inspection state authoritative; its
+acknowledgement remains pending until the current turn ends, so agent inspection
+happens only at the start of a later user/wake turn. It also explains that
+reported-token enforcement may be incomplete while runtime and completed-turn
+limits remain hard fallbacks. It does not reproduce provider polling policy in
+the prompt. Its legacy `monitor_start` recipe is limited to unsupported targets
+and requires a positive cadence, cycle cap, and runtime bound while naming the
+full-turn/token cost and ordinary approval policy. A supported provider's setup
+or authentication refusal never falls back to the costly legacy loop.
 
 **Loading:**
 1. **Always-on**: skills with `always: true` have full content injected every new session

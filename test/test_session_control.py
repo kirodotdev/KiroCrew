@@ -3909,6 +3909,7 @@ def test_close_slot_pre_pop_abort_rolls_back_and_does_not_pop(tmp_path):
 
     assert exc.value.code == "mirrored_target"
     assert slot.key in state._slots  # not popped
+    assert slot.is_closing is False  # failed close must not fence future monitor admission
     state.sessions.remove.assert_not_awaited()  # teardown never ran
 
 

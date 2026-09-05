@@ -3142,6 +3142,7 @@ class _ChatSlot:
         "_queue_repository",
         "_source_links_cache",
         "_source_links_revision",
+        "_closing",
         "key",
         "title",
         "agent",
@@ -3371,6 +3372,8 @@ class _ChatSlot:
         # (content revision, links) cache for the sidebar PR chips scan.
         self._source_links_revision = 0
         self._source_links_cache: tuple[tuple[int, int], list[dict]] | None = None
+        # Admission fence while slot deletion spans monitor retirement and history I/O.
+        self._closing = False
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self._task: asyncio.Task[Any] | None = None
         # Monotonic publication history for turn ownership. ``task`` returns to
@@ -4000,6 +4003,19 @@ class _ChatSlot:
         # "the agent is done and asked you something", and which entries a user
         # message may retire.
         self._question_pending: dict[str, dict] = {}
+
+    @property
+    def is_closing(self) -> bool:
+        """Whether slot teardown currently fences new monitor admission."""
+        return self._closing
+
+    def begin_close(self) -> None:
+        """Fence new monitor admission before teardown reaches its first await."""
+        self._closing = True
+
+    def cancel_close(self) -> None:
+        """Release the admission fence when teardown leaves this slot live."""
+        self._closing = False
 
     @property
     def _dirty(self) -> bool:

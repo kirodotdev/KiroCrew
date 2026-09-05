@@ -37,6 +37,46 @@ def test_monitor_watch_is_stateless_and_canonical(gateway_posts):
     assert gateway_posts == [("/api/session-directive", {"kind": "monitor_watch", "args": args})]
 
 
+@pytest.mark.parametrize(
+    ("kind", "target"),
+    [
+        ("gitlab_merge_request", "https://gitlab.com/acme/widgets/-/merge_requests/8"),
+        (
+            "azure_devops_pull_request",
+            "https://dev.azure.com/acme/project/_git/widgets/pullrequest/9",
+        ),
+        ("bitbucket_pull_request", "https://bitbucket.org/acme/widgets/pull-requests/10"),
+    ],
+)
+def test_monitor_watch_emits_each_supported_provider_kind(kind, target, gateway_posts):
+    with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"):
+        result = control.monitor_watch(
+            "monitor_watch",
+            {"kind": kind, "target": target, "objective": "review_ready"},
+        )
+
+    args = session_directive.decode(result, "monitor_watch")
+    assert args is not None
+    assert args["kind"] == kind
+    assert args["target"] == target
+
+
+def test_monitor_watch_rejects_kind_target_mismatch_before_emitting_directive(gateway_posts):
+    with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"):
+        result = control.monitor_watch(
+            "monitor_watch",
+            {
+                "kind": "bitbucket_pull_request",
+                "target": "https://github.com/acme/widgets/pull/7",
+                "objective": "review_ready",
+            },
+        )
+
+    assert result.startswith("Error:")
+    assert session_directive.decode(result, "monitor_watch") is None
+    assert gateway_posts == []
+
+
 def test_monitor_watch_rejects_native_subagent_binding(gateway_posts):
     with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="subagent:child"):
         result = control.monitor_watch(

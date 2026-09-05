@@ -129,6 +129,9 @@ export interface WorkflowDefinitionWrite {
 export type MonitorWrite = {
   slot_key?: string
   kind?: 'github_pull_request'
+    | 'gitlab_merge_request'
+    | 'azure_devops_pull_request'
+    | 'bitbucket_pull_request'
   objective?: 'review_ready'
   target?: string
   cadence_secs?: number

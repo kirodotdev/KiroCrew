@@ -293,6 +293,28 @@ def test_check_identity_is_redacted_before_it_enters_canonical_state() -> None:
     assert "id=secret" not in serialized
 
 
+def test_whitespace_only_check_degrades_to_unknown_without_failing_the_probe() -> None:
+    provider, _ = _provider(
+        _primary(
+            statusCheckRollup=[
+                {
+                    "__typename": "StatusContext",
+                    "context": " \t ",
+                    "state": "SUCCESS",
+                    "targetUrl": "https://github.com/owner/repo/statuses/sha",
+                }
+            ]
+        ),
+        _threads(),
+    )
+
+    result = provider.probe("https://github.com/owner/repo/pull/123")
+
+    assert result.observation.status is MonitorObservationStatus.PENDING
+    assert result.observation.reason_code == "checks_unknown"
+    assert result.canonical["checks"]["unknown"]
+
+
 def test_same_label_check_runs_remain_independent_without_order_affecting_fingerprint() -> None:
     """Display labels cannot prove that distinct workflow runs supersede each other."""
     older_failure = {

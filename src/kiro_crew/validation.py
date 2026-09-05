@@ -53,6 +53,7 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_TOKENS,
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
     MIN_MONITOR_CADENCE_SECS,
+    PULL_REQUEST_MONITOR_KINDS,
 )
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
 
@@ -1208,7 +1209,12 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
 MONITOR_WATCH_SCHEMA = ToolSchema(
     tool_name="monitor_watch",
     fields=[
-        FieldSpec("kind", str, required=True, allowed=frozenset({"github_pull_request"})),
+        FieldSpec(
+            "kind",
+            str,
+            required=True,
+            allowed=PULL_REQUEST_MONITOR_KINDS,
+        ),
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("objective", str, required=True, allowed=frozenset({"review_ready"})),
         FieldSpec(

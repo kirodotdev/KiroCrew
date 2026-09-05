@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew.autonudge import AutoNudgeService
+from kiro_crew.monitoring import controller as monitor_controller
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.controller import MonitorController, format_monitor_wake
 from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
@@ -73,6 +74,7 @@ def _result(
         "unresolved_review_threads": 0,
         "review_threads_complete": True,
         "checks": {"failed": [], "passed": ["ci"], "pending": [], "unknown": []},
+        "checks_complete": True,
     }
     error = (
         ProviderErrorKind.TRANSIENT if status is MonitorObservationStatus.PROVIDER_ERROR else None
@@ -103,8 +105,86 @@ async def _armed(tmp_path, *, result, dispatch, clock=lambda: 120.0):
         wake_instructions="Check the failed gate.",
         now=100.0,
     )
-    controller = MonitorController(service, dispatch, provider=_Provider(result), clock=clock)
+    controller = MonitorController(
+        service,
+        dispatch,
+        providers={"github_pull_request": _Provider(result)},
+        clock=clock,
+    )
     return service, loop, controller
+
+
+@pytest.mark.asyncio
+async def test_controller_selects_provider_by_persisted_monitor_kind(tmp_path):
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add_monitor(
+        slot_key="chat-1",
+        kind="gitlab_merge_request",
+        target="https://gitlab.com/acme/widgets/-/merge_requests/8",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(max_runtime_secs=600),
+        wake_instructions="",
+        now=100.0,
+    )
+    result = _result(MonitorObservationStatus.PENDING)
+    result.canonical["kind"] = "gitlab_merge_request"
+    result.canonical["target"] = "gitlab.com/acme/widgets!8"
+    provider = _Provider(result)
+    controller = MonitorController(
+        service,
+        AsyncMock(),
+        providers={"gitlab_merge_request": provider},
+    )
+
+    await controller.tick(loop, now=120.0)
+
+    assert provider.previous == [{}]
+    assert loop.monitor is not None
+    assert loop.monitor.last_observation["kind"] == "gitlab_merge_request"
+
+
+@pytest.mark.asyncio
+async def test_controller_applies_the_shared_provider_concurrency_gate(tmp_path, monkeypatch):
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add_monitor(
+        slot_key="chat-1",
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(max_runtime_secs=600),
+        wake_instructions="",
+        now=100.0,
+    )
+
+    class Gate:
+        bound = 0
+        entered = 0
+
+        async def __aenter__(self):
+            self.entered += 1
+
+        async def __aexit__(self, *_args):
+            return None
+
+    gate = Gate()
+
+    def semaphore(bound):
+        gate.bound = bound
+        return gate
+
+    monkeypatch.setattr(monitor_controller.asyncio, "Semaphore", semaphore)
+    controller = MonitorController(
+        service,
+        AsyncMock(),
+        providers={"github_pull_request": _Provider(_result(MonitorObservationStatus.PENDING))},
+    )
+
+    await controller.tick(loop, now=120.0)
+
+    assert gate.bound == 4
+    assert gate.entered == 1
 
 
 @pytest.mark.asyncio
@@ -214,7 +294,9 @@ async def test_unexpected_provider_failure_persists_retry_without_dispatch(tmp_p
         result=_result(MonitorObservationStatus.PENDING),
         dispatch=dispatched,
     )
-    controller = MonitorController(service, dispatched, provider=_RaisingProvider())
+    controller = MonitorController(
+        service, dispatched, providers={"github_pull_request": _RaisingProvider()}
+    )
 
     decision = await controller.tick(loop, now=120.0)
 
@@ -398,7 +480,12 @@ async def test_dispatched_wake_without_completion_expires_fail_closed(tmp_path):
         budgets=MonitorBudgets(max_runtime_secs=20_000),
         now=100.0,
     )
-    controller = MonitorController(service, dispatched, provider=provider, clock=lambda: 120.0)
+    controller = MonitorController(
+        service,
+        dispatched,
+        providers={"github_pull_request": provider},
+        clock=lambda: 120.0,
+    )
 
     await controller.tick(loop, now=120.0)
 
@@ -441,7 +528,7 @@ async def test_busy_delivery_retries_claim_without_reprobing(tmp_path):
         budgets=MonitorBudgets(max_runtime_secs=20_000),
         now=100.0,
     )
-    controller = MonitorController(service, dispatch, provider=provider)
+    controller = MonitorController(service, dispatch, providers={"github_pull_request": provider})
 
     await controller.tick(loop, now=120.0)
 
@@ -500,7 +587,9 @@ async def test_persisted_busy_claim_resumes_retry_after_restart_without_reprobe(
         budgets=MonitorBudgets(max_runtime_secs=20_000),
         now=100.0,
     )
-    controller = MonitorController(service, first_dispatch, provider=first_provider)
+    controller = MonitorController(
+        service, first_dispatch, providers={"github_pull_request": first_provider}
+    )
     await controller.tick(loop, now=120.0)
     retry_at = loop.next_due_ts
     service.stop()
@@ -522,7 +611,7 @@ async def test_persisted_busy_claim_resumes_retry_after_restart_without_reprobe(
     retry_controller = MonitorController(
         restarted,
         retry_dispatch,
-        provider=retry_provider,
+        providers={"github_pull_request": retry_provider},
     )
     await retry_controller.tick(restored, now=retry_at - 1)
     retry_dispatch.assert_not_awaited()
@@ -553,7 +642,7 @@ async def test_busy_delivery_retry_is_bounded_by_monitor_runtime(tmp_path):
         budgets=MonitorBudgets(max_runtime_secs=20),
         now=100.0,
     )
-    controller = MonitorController(service, dispatched, provider=provider)
+    controller = MonitorController(service, dispatched, providers={"github_pull_request": provider})
 
     first = await controller.tick(loop, now=110.0)
     expired = await controller.tick(loop, now=125.0)
@@ -911,7 +1000,7 @@ async def test_cadence_edits_during_busy_preserve_retry_and_runtime_bound(tmp_pa
         budgets=MonitorBudgets(max_runtime_secs=20),
         now=100.0,
     )
-    controller = MonitorController(service, dispatched, provider=provider)
+    controller = MonitorController(service, dispatched, providers={"github_pull_request": provider})
 
     await controller.tick(loop, now=110.0)
     retry_at = loop.next_due_ts
@@ -955,7 +1044,7 @@ async def test_busy_budget_stop_clears_late_acceptance_before_terminating(tmp_pa
     controller = MonitorController(
         service,
         AsyncMock(),
-        provider=_Provider(_result(MonitorObservationStatus.PENDING)),
+        providers={"github_pull_request": _Provider(_result(MonitorObservationStatus.PENDING))},
     )
 
     assert await controller.tick(loop, now=124.0) is MonitorDecision.NO_CHANGE
@@ -1012,7 +1101,7 @@ async def test_cadence_edits_during_dispatch_preserve_evidence_deadline(tmp_path
         budgets=MonitorBudgets(max_runtime_secs=20_000),
         now=100.0,
     )
-    controller = MonitorController(service, dispatched, provider=provider)
+    controller = MonitorController(service, dispatched, providers={"github_pull_request": provider})
 
     await controller.tick(loop, now=120.0)
     assert loop.monitor is not None
@@ -1116,10 +1205,9 @@ async def test_old_configuration_probe_cannot_apply_after_target_update(tmp_path
         result=_result(MonitorObservationStatus.PENDING),
         dispatch=dispatched,
     )
+    controller = MonitorController(service, dispatched, providers={"github_pull_request": provider})
     assert loop.monitor is not None
     loop.monitor.last_decision = MonitorDecision.NO_CHANGE
-    controller = MonitorController(service, dispatched, provider=provider)
-    assert loop.monitor is not None
     loop.monitor.last_observation_status = MonitorObservationStatus.PENDING
     loop.monitor.last_observation_reason_code = "checks_pending"
 
@@ -1251,7 +1339,7 @@ async def test_structured_timer_invokes_controller_without_legacy_cycle(tmp_path
         ticked.set()
 
     service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=on_tick)
-    controller = MonitorController(service, dispatched, provider=provider)
+    controller = MonitorController(service, dispatched, providers={"github_pull_request": provider})
     loop = await service.add_monitor(
         slot_key="chat-1",
         kind="github_pull_request",
@@ -1388,7 +1476,9 @@ async def test_busy_stop_clears_claim_and_allows_a_fresh_monitor(
     assert loop.monitor.agent_turns == 0
     assert loop.next_due_ts == loop.monitor.next_probe_at == 0.0
 
-    decision = await MonitorController(service, dispatched, provider=provider).tick(loop, now=180.0)
+    decision = await MonitorController(
+        service, dispatched, providers={"github_pull_request": provider}
+    ).tick(loop, now=180.0)
 
     assert decision is MonitorDecision.STOP_BLOCKED
     assert provider.previous == []
@@ -1472,6 +1562,8 @@ def test_monitor_wake_is_redacted_capped_and_canonical():
     assert "S" * 100 not in envelope
     assert "abc123" in envelope
     assert "raw" not in envelope.lower()
+    assert "pull request https://github.com/acme/widgets/pull/7" in envelope
+    assert "GitHub pull request" not in envelope
 
 
 def test_monitor_wake_reports_check_counts_without_provider_labels():

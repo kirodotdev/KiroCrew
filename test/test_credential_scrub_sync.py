@@ -1,6 +1,6 @@
 """KIRO_API_KEY credential-scrub coverage.
 
-The Docker entrypoint moves every ``_CREDENTIAL_KEYS`` entry from the process
+The Docker entrypoint moves every ``CREDENTIAL_KEYS`` entry from the process
 environment into the data home's ``.env`` (mode 600) so credentials never
 reside in a long-lived ``/proc/<pid>/environ``, and ``load_credentials()``
 refuses to re-inject them while ``_KIROCREW_CREDS_SCRUBBED=1``. ``KIRO_API_KEY``
@@ -27,8 +27,8 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.acp.client import _resolve_spawn_env
 from kiro_crew.config.loader import (
-    _CREDENTIAL_KEYS,
     CRED_KIRO_API_KEY,
+    CREDENTIAL_KEYS,
     inject_kiro_cli_api_key,
     read_env_file_credential,
     strip_kiro_cli_api_key,
@@ -47,7 +47,7 @@ async def _no_audit(**_kwargs: Any) -> None:
 
 
 class TestScrubListSync:
-    """docker/entrypoint.sh CRED_KEYS mirrors config/loader.py _CREDENTIAL_KEYS."""
+    """docker/entrypoint.sh CRED_KEYS mirrors config/loader.py CREDENTIAL_KEYS."""
 
     def test_entrypoint_and_loader_lists_are_identical(self) -> None:
         """Set equality both ways: a key scrubbed by the entrypoint that the
@@ -58,11 +58,11 @@ class TestScrubListSync:
         match = re.search(r'^CRED_KEYS="([^"]+)"', text, re.MULTILINE)
         assert match, "CRED_KEYS assignment not found in docker/entrypoint.sh"
         entrypoint_keys = set(match.group(1).split())
-        assert entrypoint_keys == set(_CREDENTIAL_KEYS)
+        assert entrypoint_keys == set(CREDENTIAL_KEYS)
 
     def test_kiro_api_key_is_in_both_lists(self) -> None:
         """The regression this file exists for, pinned by name."""
-        assert CRED_KIRO_API_KEY in _CREDENTIAL_KEYS
+        assert CRED_KIRO_API_KEY in CREDENTIAL_KEYS
         assert CRED_KIRO_API_KEY in _ENTRYPOINT.read_text(encoding="utf-8")
 
 

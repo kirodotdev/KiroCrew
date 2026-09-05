@@ -1107,11 +1107,18 @@ Structured creation is admitted only from dashboard, Slack, and Discord sessions
 the surfaces with typed wake dispatch and completion correlation. Webex retains
 finite legacy prompt loops but refuses `monitor_watch` at both the stateless tool
 and authoritative consumer boundaries.
-The legacy `monitor_start` descriptor routes public GitHub pull-request readiness
+The legacy `monitor_start` descriptor routes supported pull-request readiness
 through `monitor_watch` only when typed provider facts fully determine the
 objective. Objectives that require interpreting comments or advisory review
 evidence keep a finite legacy loop instead of claiming the structured probe
 observes those facts.
+
+`monitor_watch.kind` is the closed set `github_pull_request`,
+`gitlab_merge_request`, `azure_devops_pull_request`, and
+`bitbucket_pull_request`, all with the `review_ready` objective. Its target is a
+canonical provider URL and is parsed against that kind before a directive is
+emitted. A later target-only update is revalidated against the retained kind by
+the authoritative session consumer.
 
 ### The one allowed exception: caller-agnostic process caches
 

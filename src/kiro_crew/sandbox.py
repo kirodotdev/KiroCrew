@@ -1523,6 +1523,9 @@ _AGENT_DENIED_ENV_KEYS: list[str] = [
     "FEISHU_APP_SECRET",
     "JIRA_API_TOKEN",
     "JIRA_TOKEN_",
+    "AZURE_DEVOPS_EXT_PAT",
+    "BITBUCKET_EMAIL",
+    "BITBUCKET_API_TOKEN",
     "KIROCREW_OWNER_ID",
     # The central-governance fetch configuration — see
     # ``platform/policy_distribution.py``. The URL is listed as well as the header,

@@ -46,6 +46,7 @@ from kiro_crew.github_runner import (
 )
 from kiro_crew.github_runner import STRICT_PROVIDER_BIN_ENV as _STRICT_PROVIDER_BIN_ENV
 from kiro_crew.github_runner import (
+    gitlab_ambient_token_allowed,
     provider_executable_candidates,
 )
 from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
@@ -129,10 +130,6 @@ _DIRECT_FETCH_WAIT_SECS = 20.0
 # pull-request figures. TTL and entry count are shared with the PR cache.
 _ISSUE_CACHE_MAX_BYTES = 16 * 1024 * 1024
 _ISSUE_FETCH_RESERVATION_BYTES = 16 * 1024 * 1024
-_PROVIDER_EXECUTABLE_OVERRIDES = {
-    "gh": github_runner.GH_BIN_ENV,
-    "glab": "KIROCREW_GLAB_BIN",
-}
 # Provider commands are absolute. Keep PATH deterministic only for trusted
 # system helpers a provider may invoke; never inherit a workspace-controlled
 # PATH or search it for gh/glab.
@@ -309,7 +306,7 @@ def _resolve_provider_executable(executable: str) -> str:
     """Resolve gh/glab: explicit override, well-known install dirs, then PATH."""
     if executable not in _PROVIDER_EXECUTABLE_CANDIDATES:
         raise SourceProviderError("unsupported provider command")
-    override_name = _PROVIDER_EXECUTABLE_OVERRIDES[executable]
+    override_name = github_runner.PROVIDER_CLI_OVERRIDE_ENV[executable]
     override = os.environ.get(override_name)
     if override is not None:
         try:
@@ -1621,7 +1618,7 @@ async def _run_provider(
         raise
 
     allowed_env_keys = _PROVIDER_BASE_ENV_KEYS | _PROVIDER_AUTH_ENV_KEYS[executable]
-    if executable == "glab" and gitlab_host != "gitlab.com":
+    if executable == "glab" and not gitlab_ambient_token_allowed(gitlab_host):
         # GITLAB_TOKEN is a single ambient credential with no host binding, so
         # forwarding it while GITLAB_HOST points at a self-managed instance would
         # send a gitlab.com PAT (and every permission it carries) to that server.
