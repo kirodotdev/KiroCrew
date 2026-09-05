@@ -9,29 +9,35 @@ from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from typing import Any, Protocol
 
+from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES
 from kiro_crew.dashboard.state import MONITOR_WAKE_PREFIX
-from kiro_crew.monitoring.decision import monitor_budget_reason
-from kiro_crew.monitoring.github_pull_request import (
-    GitHubPullRequestProbeResult,
-    GitHubPullRequestProvider,
-)
+from kiro_crew.monitoring.azure_devops_pull_request import AzureDevOpsPullRequestProvider
+from kiro_crew.monitoring.bitbucket_pull_request import BitbucketPullRequestProvider
+from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProvider
+from kiro_crew.monitoring.gitlab_merge_request import GitLabMergeRequestProvider
 from kiro_crew.monitoring.models import (
+    MAX_MONITOR_PROVIDER_CONCURRENCY,
     MonitorDecision,
     MonitorDispatchResult,
-    MonitorObservation,
-    MonitorObservationStatus,
     MonitorState,
     ProviderErrorKind,
 )
+from kiro_crew.monitoring.pull_request import PullRequestProbeResult, provider_error_result
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 MONITOR_WAKE_MAX_CHARS = 4096
+_CHANNEL_SLOT_PREFIXES = tuple(f"{namespace}:" for namespace in CHANNEL_SESSION_NAMESPACES)
+# GitHub and GitLab monitors intentionally retain their existing ambient CLI
+# identity in channel sessions. Every other provider is denied gateway-owner
+# credentials unless it is explicitly added here with matching security docs.
+_CHANNEL_OWNER_CREDENTIAL_KINDS = frozenset({"github_pull_request", "gitlab_merge_request"})
 
 logger = logging.getLogger(__name__)
 
 
 class _Loop(Protocol):
     id: str
+    slot_key: str
     monitor: MonitorState | None
 
 
@@ -46,7 +52,7 @@ class _Service(Protocol):
     async def apply_monitor_probe(
         self,
         monitor_id: str,
-        result: GitHubPullRequestProbeResult,
+        result: PullRequestProbeResult,
         *,
         now: float,
         config_generation: int,
@@ -97,7 +103,8 @@ class _Provider(Protocol):
         raw_target: str,
         *,
         previous_observation: Mapping[str, object] | None = None,
-    ) -> GitHubPullRequestProbeResult: ...
+        use_owner_credentials: bool = True,
+    ) -> PullRequestProbeResult: ...
 
 
 MonitorDispatcher = Callable[[Any, str], Awaitable[MonitorDispatchResult]]
@@ -111,13 +118,21 @@ class MonitorController:
         service: _Service,
         dispatch: MonitorDispatcher,
         *,
-        provider: _Provider | None = None,
+        providers: Mapping[str, _Provider] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._service = service
         self._dispatch = dispatch
         self._clock = clock
-        self._provider = provider or GitHubPullRequestProvider()
+        self._provider_gate = asyncio.Semaphore(MAX_MONITOR_PROVIDER_CONCURRENCY)
+        self._providers = dict(providers or {})
+        if not self._providers:
+            self._providers = {
+                "github_pull_request": GitHubPullRequestProvider(),
+                "gitlab_merge_request": GitLabMergeRequestProvider(),
+                "azure_devops_pull_request": AzureDevOpsPullRequestProvider(),
+                "bitbucket_pull_request": BitbucketPullRequestProvider(),
+            }
 
     async def tick(self, loop: _Loop, *, now: float) -> MonitorDecision:
         state = getattr(loop, "monitor", None)
@@ -140,12 +155,7 @@ class MonitorController:
             if state.wake_delivery is MonitorDispatchResult.BUSY:
                 if now < state.next_probe_at:
                     return MonitorDecision.NO_CHANGE
-                if monitor_budget_reason(state, now=now):
-                    await self._service.record_monitor_dispatch_busy(
-                        loop.id,
-                        state.last_wake_fingerprint,
-                        now=now,
-                    )
+                if await self._service.stop_monitor_if_budget_exhausted(loop.id, now=now):
                     return MonitorDecision.STOP_BUDGET
                 return await self._dispatch_claimed(loop, state, now=now)
             if (
@@ -164,24 +174,29 @@ class MonitorController:
         config_generation = state.config_generation
         target = state.target
         previous_observation = deepcopy(state.last_observation)
-        try:
-            result = await asyncio.to_thread(
-                self._provider.probe,
-                target,
-                previous_observation=previous_observation,
+        provider = self._providers.get(state.kind)
+        if provider is None:
+            result = provider_error_result(ProviderErrorKind.SETUP, "provider_unsupported")
+            return await self._service.apply_monitor_probe(
+                loop.id,
+                result,
+                now=now,
+                config_generation=config_generation,
             )
+        try:
+            async with self._provider_gate:
+                channel_bound = loop.slot_key.startswith(_CHANNEL_SLOT_PREFIXES)
+                result = await asyncio.to_thread(
+                    provider.probe,
+                    target,
+                    previous_observation=previous_observation,
+                    use_owner_credentials=(
+                        not channel_bound or state.kind in _CHANNEL_OWNER_CREDENTIAL_KINDS
+                    ),
+                )
         except Exception:
             logger.exception("structured monitor provider raised unexpectedly")
-            result = GitHubPullRequestProbeResult(
-                response=None,
-                canonical={},
-                observation=MonitorObservation(
-                    "",
-                    MonitorObservationStatus.PROVIDER_ERROR,
-                    provider_error=ProviderErrorKind.TRANSIENT,
-                    reason_code="provider_transient",
-                ),
-            )
+            result = provider_error_result(ProviderErrorKind.TRANSIENT, "provider_transient")
         decision = await self._service.apply_monitor_probe(
             loop.id,
             result,
@@ -276,7 +291,7 @@ def format_monitor_wake(
     action = wake_instructions.strip() or "Inspect the changed facts and take the next safe action."
     envelope = (
         f"{MONITOR_WAKE_PREFIX}\n"
-        f"Monitor {monitor_id}: GitHub pull request {target}; objective: {objective}.\n"
+        f"Monitor {monitor_id}: pull request {target}; objective: {objective}.\n"
         f"Fingerprint: {fingerprint}. Classification: {reason_code or 'actionable'}.\n"
         f"Head: {head if isinstance(head, str) else 'unknown'}. "
         f"Changed: {'; '.join(changed) or 'canonical state changed'}.\n"

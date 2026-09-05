@@ -580,9 +580,9 @@ def _no_credential_env_residue():
     shape. Two linear environment scans per test also catch a dynamic key that
     did not exist at setup, without masking an unrelated environment change.
     """
-    from kiro_crew.config.loader import _CREDENTIAL_KEYS, _JIRA_TOKEN_RE
+    from kiro_crew.config.loader import _JIRA_TOKEN_RE, CREDENTIAL_KEYS
 
-    fixed = frozenset(_CREDENTIAL_KEYS)
+    fixed = frozenset(CREDENTIAL_KEYS)
 
     def _is_credential(key: str) -> bool:
         return key in fixed or _JIRA_TOKEN_RE.match(key) is not None

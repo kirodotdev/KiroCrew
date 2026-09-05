@@ -19,11 +19,21 @@ Structured watches can be created only from dashboard, Slack, and Discord
 sessions. On Webex, use the finite legacy path even for a supported pull request;
 Webex does not have structured wake delivery and completion correlation.
 
-## GitHub pull request: one bounded watch
+## Supported pull request: one bounded watch
 
-Call this once with the canonical pull-request URL when review readiness depends
-only on pull-request lifecycle, mergeability, review decision, unresolved review
-threads, and check conclusions:
+When review readiness depends only on the typed provider facts, choose the kind
+from the canonical URL. Do not invent a kind or translate one provider's URL into
+another provider's shape.
+
+| URL | `kind` |
+|---|---|
+| `https://github.com/OWNER/REPO/pull/NUMBER` | `github_pull_request` |
+| `https://gitlab.com/GROUP/REPO/-/merge_requests/NUMBER` | `gitlab_merge_request` |
+| `https://GITLAB_HOST/GROUP/REPO/-/merge_requests/NUMBER` | `gitlab_merge_request` when that exact self-managed host is configured |
+| `https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/NUMBER` | `azure_devops_pull_request` |
+| `https://bitbucket.org/WORKSPACE/REPO/pull-requests/NUMBER` | `bitbucket_pull_request` |
+
+Call once with the selected kind and unchanged canonical URL:
 
 ```text
 monitor_watch({
@@ -52,6 +62,10 @@ the session at most once with a compact, bounded summary. Only then fetch logs,
 comments, or diffs needed to act. The token cap applies only when the provider
 reports usage; `token_usage_known` exposes whether it did. Positive runtime and
 completed-turn caps remain hard fallbacks. Provider errors are also bounded.
+GitLab uses the installed `glab` credentials, Azure DevOps uses `az login` or the
+protected `AZURE_DEVOPS_EXT_PAT`, and Bitbucket may use the protected
+`BITBUCKET_EMAIL` plus `BITBUCKET_API_TOKEN`. A setup or authentication refusal is
+authoritative; do not replace it with a legacy full-turn loop.
 
 A terminal success uses zero model turns, so a structured watch does not create
 a final reporting turn. If the user requires a final report or notification even
@@ -64,9 +78,9 @@ read-only, so start an explicit new watch to restart. Use
 `monitor_stop({"reason": "User ended the watch."})` for a deliberate stop; the
 retained outcome is `user_stop`. `autonudge_stop` remains a compatibility alias.
 
-The GitHub provider does not observe generic issue or pull-request comments or
-advisory review findings that are not represented by a review thread or check
-conclusion. When the user's definition of readiness depends on that evidence,
+The typed providers do not observe generic issue or pull-request comments or
+advisory review findings that are not represented by their canonical review or
+check facts. When the user's definition of readiness depends on that evidence,
 call the finite legacy path directly. Do not ask `monitor_watch` to represent
 evidence its typed provider cannot observe.
 

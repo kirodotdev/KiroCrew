@@ -17,7 +17,7 @@ Paths below are relative to `src/kiro_crew/`.
 | Provider event kinds | `providers/base.py` | Re-exports the `EVENT_*` names from `acp/types.py`; that re-export is the seam providers code against, not a second definition. |
 | ACP client timeouts | `acp/client.py` | `_INIT_TIMEOUT`, `_DEFAULT_PROMPT_TIMEOUT`, `_READ_TIMEOUT`, `_STALE_TURN_TIMEOUT`, `_TOOL_STALL_TIMEOUT`, `_WAIT_RESPONSE_MAX_TIMEOUT`, `_SEL_AUDIT_TIMEOUT_SECONDS`. |
 | MCP protocol version | `mcp_shared.py` | The `initialize` reply's `protocolVersion` for the managed stdio servers. `mcp_cron.py` / `mcp_core.py` do not carry their own copy. |
-| Credential keys | `config/loader.py` | `CRED_*` env-var names plus the `_CREDENTIAL_KEYS` tuple. |
+| Credential keys | `config/loader.py` | `CRED_*` env-var names plus the `CREDENTIAL_KEYS` tuple. |
 | Dashboard port | `config/loader.py` | `_DEFAULT_PORT` (5476) and `DASHBOARD_PORT` (honors `KIROCREW_PORT`). `dashboard/origin.py` imports `_DEFAULT_PORT` rather than restating it. |
 | Hook results and event names | `hooks.py` | `HOOK_PASSTHROUGH` / `HOOK_REPLY` / `HOOK_MODIFY` / `HOOK_INJECT_CONTEXT`, the tool verdicts `TOOL_ALLOW` / `TOOL_AUTO_APPROVE` / `TOOL_DENY`, and `HOOK_EVENT_*` / `HOOK_EVENTS`. |
 | Memory paths and dir names | `memory.py` | `WORKSPACE_DIR_NAME`, `MEMORY_DIR_NAME`, `HISTORY_DIR_NAME`, `PREFERENCES_FILE`, `PROJECTS_FILE`. |

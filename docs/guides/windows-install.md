@@ -457,8 +457,9 @@ Two details are load-bearing rather than incidental:
 - **The child is created suspended.** A Job object cannot be an argv prefix, so
   unlike the cgroup wrapper it has to be attached to a live pid — and job
   membership covers a member's *future* descendants only. Attaching to an
-  already-running `kiro-cli` would leave a window in which it could spawn an MCP
-  server that escapes the ceiling. Both ACP spawn sites therefore pass
+  already-running child would leave a window in which it could spawn descendants
+  that escape the ceiling. Both ACP spawn sites and the source-monitor provider
+  CLI transport therefore pass
   `creationflags |= CREATE_SUSPENDED`, apply the job, then call
   `platform_compat.resume_process_main_thread`. A process created suspended has
   executed no instructions, so it provably has no descendants: the window is

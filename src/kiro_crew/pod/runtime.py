@@ -2323,15 +2323,24 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
     ``MICROSOFT_APP_TENANT_ID`` / ``FEISHU_APP_ID`` / ``FEISHU_APP_SECRET`` ends
     in ``_TOKEN``, so the generic suffix rule that catches every other channel's
     bot credential passes the Azure Bot secret and the Feishu app secret straight
-    through. ``AWS_*`` is kept on purpose (pods run agent turns), and the
-    ``_TOKEN`` scrub deliberately EXCLUDES ``AWS_`` so ``AWS_SESSION_TOKEN`` (temp
-    creds) survives intact — scrubbing it would leave half a credential and break
-    every AWS call. Config-level channel enables are additionally forced off by
-    ``sanitized_seed_config`` (defense-in-depth).
+    through. The loader's complete credential roster is then scrubbed except for
+    ``KIRO_API_KEY`` (the pod agent's model
+    credential) and ``KIROCREW_OWNER_ID`` (dashboard ownership, not a channel or
+    source-provider identity). Provider CLI config roots are redirected beneath
+    the pod home so ``gh``, ``glab`` and ``az`` cannot reuse the operator's persisted
+    login sessions through the deliberately inherited real ``HOME``. ``AWS_*``
+    is kept on purpose (pods run agent turns),
+    and the generic ``_TOKEN`` scrub deliberately excludes ``AWS_`` so
+    ``AWS_SESSION_TOKEN`` survives intact. Config-level channel enables are
+    additionally forced off by ``sanitized_seed_config`` (defense-in-depth).
     """
     env = {
         **os.environ,
         "HOME": os.environ.get("HOME", str(Path.home())),
+        "GH_CONFIG_DIR": str(home_dir / ".config" / "gh"),
+        "GLAB_CONFIG_DIR": str(home_dir / ".config" / "glab-cli"),
+        "AZURE_CONFIG_DIR": str(home_dir / ".azure"),
+        "AZURE_EXTENSION_DIR": str(home_dir / ".azure" / "cliextensions"),
         "KIROCREW_HOME": str(home_dir),
         "KIROCREW_PORT": str(port),
         "KIROCREW_PROJECT_DIR": str(checkout),
@@ -2397,8 +2406,13 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         or k.startswith("WECOM_")
         or k.startswith("MICROSOFT_APP_")
         or k.startswith("FEISHU_")
+        or k.startswith("JIRA_TOKEN_")
         or (k.endswith("_TOKEN") and not k.startswith("AWS_"))
     ]:
+        env.pop(key, None)
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, CRED_OWNER_ID, CREDENTIAL_KEYS
+
+    for key in set(CREDENTIAL_KEYS) - {CRED_KIRO_API_KEY, CRED_OWNER_ID}:
         env.pop(key, None)
     # Cross-plane guard: a gateway-descended caller inherits the LIVE
     # gateway's KIROCREW_BOUND_PORT (dashboard.server._export_bound_port).

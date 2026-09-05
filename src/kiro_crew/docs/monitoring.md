@@ -1,15 +1,25 @@
 # Monitor a pull request
 
-Use a pull-request monitor when you want Kiro Crew to keep checking a public
-GitHub pull request without spending a model turn on every poll. Kiro Crew wakes
-the owning conversation only when a new revision needs action.
+Use a pull-request monitor when you want Kiro Crew to keep checking a GitHub,
+GitLab, Azure DevOps, or Bitbucket Cloud pull request without spending a model
+turn on every poll. Kiro Crew wakes the owning conversation only when a new
+revision needs action.
 
 ## Before you start
 
-A structured monitor supports public `github.com` pull requests whose goal is
-`review_ready`. It checks pull-request state, mergeability, review decisions,
-unresolved review threads, and check conclusions. Start it from a dashboard,
-Slack, or Discord conversation.
+A structured monitor supports GitHub pull requests, GitLab merge requests,
+Azure DevOps Services pull requests, and Bitbucket Cloud pull requests for the
+`review_ready` objective. Self-managed GitLab hosts must be present in the
+operator's `dashboard.gitlab_hosts` allowlist; Azure DevOps Server and Bitbucket
+Data Center are not supported. Start the monitor from a dashboard, Slack, or
+Discord conversation.
+
+Channel-bound GitHub and GitLab monitors retain the existing authenticated `gh`
+and host-authorized `glab` behavior. They do not use the operator's protected
+Azure or Bitbucket credentials: Bitbucket Cloud can monitor a public pull request
+anonymously from a channel, while private Bitbucket pull requests and Azure DevOps
+pull requests that need operator authentication must be started from a dashboard
+conversation.
 
 Use a finite legacy loop instead when the decision depends on generic comments,
 advisory findings, another forge, a deployment, a ticket, or a custom objective.

@@ -2717,8 +2717,12 @@ class AutoNudgeService:
         state = loop.monitor
         if state is None:
             return
-        accepted = self._accepted_monitor_turns.get(loop.id) == state.last_wake_fingerprint
+        accepted = (
+            self._accepted_monitor_turns.get(loop.id) == state.last_wake_fingerprint
+            and state.wake_delivery is not MonitorDispatchResult.BUSY
+        )
         if not accepted:
+            self._accepted_monitor_turns.pop(loop.id, None)
             state.wake_in_flight = False
             state.wake_delivery = None
             state.completion_evidence_deadline = 0.0

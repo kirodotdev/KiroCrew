@@ -4604,6 +4604,21 @@ async def close_slot(
     *,
     pre_pop_check: Callable[[], None] | None = None,
 ) -> None:
+    """Close a slot while releasing its admission fence on every aborted path."""
+    try:
+        await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
+    finally:
+        if state.get_slot(name) is slot:
+            slot.cancel_close()
+
+
+async def _close_slot(
+    state: DashboardState,
+    slot: "_ChatSlot",
+    name: str,
+    *,
+    pre_pop_check: Callable[[], None] | None = None,
+) -> None:
     """Close (archive) one live slot the way the tab ✕ does: tombstone it, retire
     its auto-nudge loop, notify its owning app, persist it as closed, and tear
     down the per-tab session.
@@ -4648,6 +4663,10 @@ async def close_slot(
     # closed_at below — the save runs after the cancellation awaits, and
     # stamping save time would make channel activity landing in that window
     # compare as older than the close.
+    # Fence monitor admission for this exact slot generation before retirement:
+    # terminal replacement is otherwise allowed and could commit after this
+    # close observed the already-terminal record, leaving an active orphan.
+    slot.begin_close()
     closed_at = note_slot_closed(state, name)
     # Retire the auto-nudge loop BEFORE the awaits below, so no nudge can expire
     # into the session being closed and resurrect it. See
@@ -4894,6 +4913,8 @@ async def close_slot(
         # replacement that kept the key. This arm never reaches the discard below
         # the save, so it settles the marker itself.
         _resettle_restricted_key(state, name)
+        # Keep monitor admission fenced until every rollback await completes.
+        # ``close_slot`` releases the fence in its outer finally.
         # The close did not happen, so the loop retired for it must come back —
         # a restored session with no clock is an abandoned unattended worker.
         await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)

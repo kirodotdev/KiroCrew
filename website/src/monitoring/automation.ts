@@ -10,6 +10,60 @@ export const STRUCTURED_MONITOR_DEFAULTS = {
   maxProviderErrors: STRUCTURED_MONITOR_LIMITS.maxProviderErrors.defaultValue,
 } as const
 
+export type PullRequestMonitorKind =
+  | 'azure_devops_pull_request'
+  | 'bitbucket_pull_request'
+  | 'github_pull_request'
+  | 'gitlab_merge_request'
+
+export const PULL_REQUEST_MONITOR_KINDS = (
+  monitorContract.pullRequestMonitorKinds as PullRequestMonitorKind[]
+)
+
+export type NormalizedPullRequestMonitorTarget = {
+  kind: PullRequestMonitorKind
+  target: string
+}
+
+export function normalizePullRequestMonitorTarget(
+  target: string,
+): NormalizedPullRequestMonitorTarget | null {
+  let url: URL
+  try {
+    url = new URL(target)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:' || url.username || url.password) return null
+  const parts = url.pathname.split('/').filter(Boolean)
+  const canonical = (kind: PullRequestMonitorKind, canonicalParts: string[]) => ({
+    kind,
+    target: `${url.origin}/${canonicalParts.join('/')}`,
+  })
+  const githubParts = parts.at(-1) === 'files' ? parts.slice(0, -1) : parts
+  if (!url.port && ['github.com', 'www.github.com'].includes(url.hostname)
+    && githubParts.length === 4 && githubParts[2] === 'pull'
+    && /^[1-9]\d*$/.test(githubParts[3])) {
+    return canonical('github_pull_request', githubParts)
+  }
+  const gitlabParts = parts.at(-1) === 'diffs' ? parts.slice(0, -1) : parts
+  if (gitlabParts.length >= 5 && gitlabParts.at(-3) === '-'
+    && gitlabParts.at(-2) === 'merge_requests'
+    && /^[1-9]\d*$/.test(gitlabParts.at(-1) ?? '')) {
+    return canonical('gitlab_merge_request', gitlabParts)
+  }
+  if (url.hostname === 'dev.azure.com' && parts.length === 6 && parts[2] === '_git'
+    && !url.port && parts[4] === 'pullrequest' && /^[1-9]\d*$/.test(parts[5])) {
+    return canonical('azure_devops_pull_request', parts)
+  }
+  const bitbucketParts = parts.at(-1) === 'diff' ? parts.slice(0, -1) : parts
+  if (url.hostname === 'bitbucket.org' && !url.port && bitbucketParts.length === 4
+    && bitbucketParts[2] === 'pull-requests' && /^[1-9]\d*$/.test(bitbucketParts[3])) {
+    return canonical('bitbucket_pull_request', bitbucketParts)
+  }
+  return null
+}
+
 export type MonitorStatus =
   | 'arm_pending'
   | 'active'
@@ -53,7 +107,7 @@ export interface StructuredMonitor {
   active: boolean
   actionable: boolean
   version: number
-  monitorKind: 'github_pull_request' | string
+  monitorKind: PullRequestMonitorKind | string
   objective: 'review_ready' | string
   target: string
   cadenceSecs: number
@@ -329,7 +383,8 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
     id,
     slotKey,
     active,
-    actionable: monitor.stopped_reason !== 'invalid_monitor_record',
+    actionable: monitor.stopped_reason !== 'invalid_monitor_record'
+      && outcome !== 'session_close',
     version,
     monitorKind: text(monitor.kind),
     objective: text(monitor.objective),

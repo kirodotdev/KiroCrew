@@ -48,7 +48,7 @@ def _slot(key: str = "chat-1-1785", *, running: bool = False, in_stage: bool = F
     # Real _ChatSlot defaults this False; a bare MagicMock would return a truthy
     # Mock and trip the busy guard, so model the default explicitly.
     slot._in_stage_execution = in_stage
-    slot._closing = False
+    slot.is_closing = False
     slot.mode = ""
     slot.memory_mode = "persistent"
     return slot

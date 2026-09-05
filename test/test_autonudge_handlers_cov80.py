@@ -357,6 +357,7 @@ async def test_monitor_list_excludes_persistence_only_fields(
     loop.monitor.last_observation = {
         "blocking_review": "none",
         "checks": {"failed": [], "passed": [], "pending": [], "unknown": []},
+        "checks_complete": True,
         "draft": False,
         "head_revision": "abc123",
         "kind": "github_pull_request",
@@ -400,6 +401,110 @@ async def test_monitor_create_uses_bounded_defaults(monkeypatch: pytest.MonkeyPa
     assert kwargs["monitor"].budgets.max_tokens == 250_000
     assert kwargs["monitor"].budgets.max_provider_errors == 3
     assert kwargs["replace_existing"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_close_record_cannot_be_restarted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _monitor_loop()
+    assert loop.monitor is not None
+    loop.active = False
+    loop.monitor.outcome = MonitorOutcome.SESSION_CLOSE
+    _svc(monkeypatch, _FakeSvc([loop]))
+    authorize = AsyncMock()
+    monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
+
+    restart = await h.api_monitor_restart(
+        _mk(
+            "POST",
+            "/api/monitors/mon-1/restart",
+            match={"monitor_id": loop.id},
+        )
+    )
+
+    assert restart.status == 409
+    assert _body(restart)["code"] == "monitor_not_restartable"
+    authorize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_monitor_create_infers_the_provider_kind_from_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _svc(monkeypatch, _FakeSvc())
+    load_hosts = AsyncMock(return_value=frozenset())
+    monkeypatch.setattr(h, "ensure_gitlab_hosts_loaded", load_hosts, raising=False)
+    authorize = AsyncMock(return_value=(_monitor_loop("new-mon"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
+    request = _mk(
+        "POST",
+        "/api/monitors",
+        body={
+            "slot_key": "chat-1-111",
+            "target": "https://gitlab.com/acme/widgets/-/merge_requests/8",
+        },
+    )
+
+    response = await h.api_monitor_create(request)
+
+    assert response.status == 200
+    load_hosts.assert_awaited_once_with()
+    assert authorize.await_args.kwargs["monitor"].kind == "gitlab_merge_request"
+
+
+@pytest.mark.asyncio
+async def test_monitor_create_names_a_disallowed_gitlab_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _svc(monkeypatch, _FakeSvc())
+    monkeypatch.setattr(
+        h,
+        "ensure_gitlab_hosts_loaded",
+        AsyncMock(return_value=frozenset()),
+        raising=False,
+    )
+    request = _mk(
+        "POST",
+        "/api/monitors",
+        body={
+            "slot_key": "chat-1-111",
+            "kind": "gitlab_merge_request",
+            "target": "https://git.example/acme/widgets/-/merge_requests/8",
+        },
+    )
+
+    response = await h.api_monitor_create(request)
+
+    assert response.status == 400
+    assert _body(response)["code"] == "gitlab_host_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_monitor_create_names_an_invalid_pull_request_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _svc(monkeypatch, _FakeSvc())
+    monkeypatch.setattr(
+        h,
+        "ensure_gitlab_hosts_loaded",
+        AsyncMock(return_value=frozenset()),
+        raising=False,
+    )
+    request = _mk(
+        "POST",
+        "/api/monitors",
+        body={
+            "slot_key": "chat-1-111",
+            "kind": "azure_devops_pull_request",
+            "target": "https://dev.azure.com/acme/Bad~Project/_git/widgets/pullrequest/9",
+        },
+    )
+
+    response = await h.api_monitor_create(request)
+
+    assert response.status == 400
+    assert _body(response)["code"] == "invalid_pull_request_url"
 
 
 @pytest.mark.asyncio
@@ -544,6 +649,29 @@ async def test_monitor_update_sends_only_explicit_patch_fields(
 
     assert response.status == 200
     assert update.await_args.kwargs["patch"] == {"wake_instructions": "Check the failing jobs."}
+
+
+@pytest.mark.asyncio
+async def test_monitor_update_does_not_reparse_untouched_persisted_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _monitor_loop()
+    assert loop.monitor is not None
+    loop.monitor.target = "malformed persisted target"
+    _svc(monkeypatch, _FakeSvc([loop]))
+    update = AsyncMock(return_value=(loop, None, 200))
+    monkeypatch.setattr(h, "authorize_and_update_monitor", update)
+    request = _mk(
+        "PATCH",
+        "/api/monitors/mon-1",
+        match={"monitor_id": "mon-1"},
+        body={"cadence_secs": 600},
+    )
+
+    response = await h.api_monitor_update(request)
+
+    assert response.status == 200
+    assert update.await_args.kwargs["patch"] == {"cadence_secs": 600}
 
 
 @pytest.mark.asyncio

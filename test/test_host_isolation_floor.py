@@ -806,7 +806,7 @@ class TestDynamicCredentialEnvironmentIsRestored:
     """A dynamic per-host Jira token must not leak to the next test.
 
     ``load_credentials`` propagates ``JIRA_TOKEN_<HEX>`` keys even though they are
-    not members of the fixed ``_CREDENTIAL_KEYS`` tuple, so the floor's restore has
+    not members of the fixed ``CREDENTIAL_KEYS`` tuple, so the floor's restore has
     to recognise the dynamic shape too — a snapshot bounded to the fixed keys would
     pass over it. The restore under test is ``conftest._no_credential_env_residue``'s
     own teardown, driven directly (see ``_autouse_floor_generator``).

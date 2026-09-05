@@ -2,11 +2,39 @@ import { describe, expect, it } from 'vitest'
 import {
   deriveAutomationStatus,
   normalizeAutomationRecord,
+  normalizePullRequestMonitorTarget,
   type StructuredMonitor,
 } from '../monitoring/automation'
 import { canonicalGitHubObservation, structuredMonitorLoop as structuredLoop } from './monitorFixtures'
 
 describe('automation transport normalizer', () => {
+  it.each([
+    ['https://github.com/acme/widgets/pull/1', 'github_pull_request'],
+    ['https://gitlab.com/acme/widgets/-/merge_requests/2', 'gitlab_merge_request'],
+    ['https://git.example/acme/widgets/-/merge_requests/2', 'gitlab_merge_request'],
+    ['https://git.example:8443/acme/widgets/-/merge_requests/2', 'gitlab_merge_request'],
+    ['https://dev.azure.com/acme/project/_git/widgets/pullrequest/3', 'azure_devops_pull_request'],
+    ['https://bitbucket.org/acme/widgets/pull-requests/4', 'bitbucket_pull_request'],
+  ])('infers the structured provider kind for %s', (target, kind) => {
+    expect(normalizePullRequestMonitorTarget(target)?.kind).toBe(kind)
+  })
+
+  it.each([
+    ['https://github.com/acme/widgets/pull/1/files', 'github_pull_request'],
+    ['https://gitlab.com/acme/widgets/-/merge_requests/2/diffs', 'gitlab_merge_request'],
+    ['https://bitbucket.org/acme/widgets/pull-requests/4/diff', 'bitbucket_pull_request'],
+  ])('recognizes a common provider subtab URL for %s', (target, kind) => {
+    expect(normalizePullRequestMonitorTarget(target)?.kind).toBe(kind)
+  })
+
+  it.each([
+    'https://github.com:8443/acme/widgets/pull/1',
+    'https://dev.azure.com:8443/acme/project/_git/widgets/pullrequest/3',
+    'https://bitbucket.org:8443/acme/widgets/pull-requests/4',
+  ])('rejects a custom port outside the self-managed GitLab provider: %s', target => {
+    expect(normalizePullRequestMonitorTarget(target)).toBeNull()
+  })
+
   it('keeps legacy goal loops distinct and preserves zero as unlimited', () => {
     const record = normalizeAutomationRecord({
       id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
@@ -74,6 +102,31 @@ describe('automation transport normalizer', () => {
     expect(deriveAutomationStatus(invalidVersion!)).toBe('blocked')
   })
 
+  it('ignores unrendered canonical evidence from another provider kind', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      last_observation: {
+        ...canonicalGitHubObservation,
+        kind: 'gitlab_merge_request',
+      },
+    }))
+
+    expect(record).toMatchObject({ kind: 'structured_monitor', actionable: true })
+  })
+
+  it('ignores unrendered canonical check-name evidence beyond backend bounds', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      last_observation: {
+        ...canonicalGitHubObservation,
+        checks: {
+          ...canonicalGitHubObservation.checks,
+          passed: ['x'.repeat(201)],
+        },
+      },
+    }))
+
+    expect(record).toMatchObject({ kind: 'structured_monitor', actionable: true })
+  })
+
   it('fails closed instead of repairing non-positive structured limits', () => {
     const record = normalizeAutomationRecord(structuredLoop({
       budgets: {
@@ -105,6 +158,24 @@ describe('automation transport normalizer', () => {
       },
     })
     expect(deriveAutomationStatus(record!)).toBe('blocked')
+  })
+
+  it('keeps session-close tombstones non-actionable', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      active: false,
+      outcome: 'session_close',
+      stopped_reason: 'session_closed',
+    }))
+
+    expect(record).toMatchObject({
+      kind: 'structured_monitor',
+      active: false,
+      actionable: false,
+      terminal: {
+        outcome: 'session_close',
+        reason: 'session_closed',
+      },
+    })
   })
 
   it.each([
@@ -188,6 +259,21 @@ describe('automation transport normalizer', () => {
       kind: 'structured_monitor', actionable: true, active: true,
     })
     expect(JSON.stringify(record)).not.toContain('must-not-render')
+  })
+
+  it.each([
+    'gitlab_merge_request',
+    'azure_devops_pull_request',
+    'bitbucket_pull_request',
+  ])('accepts the exact shared observation for %s', monitorKind => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      kind: monitorKind,
+      last_observation: { ...canonicalGitHubObservation, kind: monitorKind },
+    }))
+
+    expect(record).toMatchObject({
+      kind: 'structured_monitor', actionable: true, monitorKind,
+    })
   })
 
   it.each([

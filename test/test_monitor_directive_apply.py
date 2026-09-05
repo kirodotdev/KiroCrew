@@ -184,15 +184,20 @@ async def test_refused_structured_monitor_stop_is_audited_as_denied(tmp_path):
 async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
     service = AutoNudgeService(base_dir=tmp_path)
     state = SimpleNamespace(
-        _slots={"chat-1": SimpleNamespace(workspace="default")},
+        _slots={"chat-1": SimpleNamespace(workspace="default", is_closing=False)},
         sessions=None,
         channel_transports={},
     )
     slot = SimpleNamespace(key="chat-1", _app="")
     audit = MagicMock()
+    load_hosts = AsyncMock(return_value=frozenset())
     with (
         patch("kiro_crew.autonudge.get_instance", return_value=service),
         patch("kiro_crew.autonudge_authz.sel", return_value=audit),
+        patch(
+            "kiro_crew.dashboard.handlers.source_providers.ensure_gitlab_hosts_loaded",
+            load_hosts,
+        ),
     ):
         created = await apply_session_directive(
             state,
@@ -251,6 +256,7 @@ async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
         assert loop.monitor.last_wake_fingerprint == ""
         assert loop.monitor.last_completion_fingerprint == ""
         assert loop.monitor.consecutive_provider_errors == 0
+        load_hosts.assert_awaited_once_with()
         stopped = await apply_session_directive(
             state,
             slot,
@@ -418,7 +424,7 @@ async def test_structured_fields_cannot_silently_patch_a_legacy_loop(tmp_path):
 async def test_monitor_watch_does_not_replace_a_legacy_loop(tmp_path):
     service = AutoNudgeService(base_dir=tmp_path)
     legacy = await service.add("chat-1", "legacy prompt", idle_secs=60)
-    slot = SimpleNamespace(key="chat-1", workspace="default", _app="")
+    slot = SimpleNamespace(key="chat-1", workspace="default", _app="", is_closing=False)
     state = SimpleNamespace(_slots={"chat-1": slot}, sessions=None, channel_transports={})
     with patch("kiro_crew.autonudge.get_instance", return_value=service):
         result = await apply_session_directive(
@@ -455,7 +461,7 @@ async def test_monitor_start_does_not_replace_a_structured_monitor(tmp_path):
         cadence_secs=60,
         budgets=MonitorBudgets(),
     )
-    slot = SimpleNamespace(key="chat-1", workspace="default", _app="")
+    slot = SimpleNamespace(key="chat-1", workspace="default", _app="", is_closing=False)
     state = SimpleNamespace(_slots={"chat-1": slot}, sessions=None, channel_transports={})
     with patch("kiro_crew.autonudge.get_instance", return_value=service):
         result = await apply_session_directive(
@@ -523,7 +529,11 @@ async def test_banner_cannot_silently_patch_a_structured_monitor(tmp_path):
         budgets=MonitorBudgets(),
     )
     state = SimpleNamespace(
-        _slots={"chat-1": SimpleNamespace(workspace="default", mode="", memory_mode="persistent")},
+        _slots={
+            "chat-1": SimpleNamespace(
+                workspace="default", mode="", memory_mode="persistent", is_closing=False
+            )
+        },
         sessions=None,
         channel_transports={},
     )

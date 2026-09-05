@@ -328,6 +328,19 @@ class TestWellknownWindowsDirs:
             os.path.join(root, "GitHub CLI", "bin"),
         )
 
+    def test_windows_keeps_azure_cli_install_path_nested(self, monkeypatch) -> None:
+        monkeypatch.setattr(runner.sys, "platform", "win32")
+        monkeypatch.setenv("ProgramFiles", r"C:\PF")
+        monkeypatch.delenv("ProgramW6432", raising=False)
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        root = r"C:\PF"
+        install_dir = os.path.join(root, "Microsoft SDKs", "Azure", "CLI2", "wbin")
+
+        assert runner._wellknown_windows_dirs("az") == (
+            install_dir,
+            os.path.join(install_dir, "bin"),
+        )
+
     def test_an_unset_root_is_skipped_rather_than_joined_as_empty(self, monkeypatch) -> None:
         monkeypatch.setattr(runner.sys, "platform", "win32")
         monkeypatch.delenv("ProgramFiles", raising=False)

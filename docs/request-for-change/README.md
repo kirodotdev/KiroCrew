@@ -18,7 +18,8 @@ were added
 not been re-audited since 2026-08-03. The durable-run-coordinator row was added
 2026-08-22 and the orchestrator-chat-sessions row was re-audited at
 `c4f253891`; the `rfc-token-efficient-monitors` row was added 2026-08-22 and
-verified against `6d3e30bbbd`. The `rfc-global-workflow-library` row was added
+re-audited 2026-09-03 against the complete active stack at `904da5537`. The
+`rfc-global-workflow-library` row was added
 2026-08-25 and audited against `749468d42`; its implementation exists only in
 the active detached worktree. The `rfc-agentcore-identity-gateway` row
 was added 2026-08-27. The `rfc-crew-agent-sdk-boundary` row was added 2026-08-28 and verified against `dc88f142b`. The `rfc-transcript-section-markers` row was added 2026-08-30 and verified against `202770d13`. The `rfc-mcp-lifecycle-event-log` row was added 2026-09-01 and verified against `1ee69f225`. The `rfc-session-tag-change-event` row was added 2026-09-02 and verified against `6581a04ee`. The `rfc-agent-config-mirror` row was added 2026-09-02 and verified against `f8b3203c0`.
@@ -48,7 +49,7 @@ was added 2026-08-27. The `rfc-crew-agent-sdk-boundary` row was added 2026-08-28
 | [rfc-app-sandbox-isolation.md](rfc-app-sandbox-isolation.md) | `draft` | Nothing. Apps still run in-process with full privileges (see `src/kiro_crew/docs/app-platform-trust-model.md`); no isolation code exists |
 | [rfc-issue-radar-dispatch.md](rfc-issue-radar-dispatch.md) | `draft` | Nothing. Issue Radar has Investigate and Review; no verb produces work, and issues carry no link to the change that resolves them |
 | [rfc-perpetual-agent.md](rfc-perpetual-agent.md) | `draft` | Nothing. Verified at `9ac3716a`: no schedule kind self-reschedules, and `binding_key_for` has no `cron:` branch |
-| [rfc-token-efficient-monitors.md](rfc-token-efficient-monitors.md) | `draft` | Nothing. Probe-first replacement for token-heavy babysit loops; implementation begins in a stacked series after this RFC |
+| [rfc-token-efficient-monitors.md](rfc-token-efficient-monitors.md) | `in-progress` | Nothing on main. The complete active eight-PR stack ([#5180](https://github.com/kirodotdev/KiroCrew/pull/5180) through [#5305](https://github.com/kirodotdev/KiroCrew/pull/5305)) implements the durable model, completed-turn accounting, provider probes, session-bound control tools, dashboard controls, bounded babysit routing, and GitHub/GitLab/Azure DevOps/Bitbucket review-readiness adapters. Re-audited at `904da5537` |
 | [rfc-tailnet-dashboard-access.md](rfc-tailnet-dashboard-access.md) | `partial` | Phase 1 landed ([#1761](https://github.com/kirodotdev/KiroCrew/pull/1761), `f8afcff7`) — reports the pin's real scope, does not fix it. Phases 2–4 unstarted; the pin repair is tracked as [#1762](https://github.com/kirodotdev/KiroCrew/issues/1762) |
 | [rfc-pluggable-model-providers.md](rfc-pluggable-model-providers.md) | `draft` | Nothing, by design. `agent.provider` is still fixed to `acp` and `AGENTS.md` lists "Other providers" under *Never re-add*. This document **recommends** supporting provider choice and asks the maintainers to amend that rule; it proposes no design, and an exploratory implementation is shelved pending the answer ([#1693](https://github.com/kirodotdev/KiroCrew/issues/1693)) |
 | [rfc-s3-backup.md](rfc-s3-backup.md) | `draft` | Nothing. Verified at `f4d3327a7`: `VALID_COMPONENTS` carries no session component and no code path writes crew state to a remote store |

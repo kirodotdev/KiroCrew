@@ -9,11 +9,13 @@
 # file non-text disables newline conversion entirely.
 *.pem -text
 
-# Screenshots and other PNG assets are binary even when their compressed prefix
-# happens not to contain a NUL byte. Git's heuristic otherwise renders some PNGs
+# Screenshots and other image assets are binary even when their compressed prefix
+# happens not to contain a NUL byte. Git's heuristic otherwise renders some images
 # as text and applies whitespace/newline checks to compressed image bytes.
 *.png binary
 *.gif binary
+*.jpg binary -diff
+*.jpeg binary -diff
 
 # Shell scripts and the data files they parse must keep LF on every checkout.
 # `core.autocrlf=true` is the Git-for-Windows default, so without this a Windows

@@ -1237,16 +1237,12 @@ class TestPodEnvCredentialScrub:
         credential and a pod runs agent turns, and ``KIROCREW_OWNER_ID`` is the pod
         dashboard's owner identity rather than a bot credential.
         """
-        from kiro_crew.config.loader import (
-            _CREDENTIAL_KEYS,
-            CRED_KIRO_API_KEY,
-            CRED_OWNER_ID,
-        )
+        from kiro_crew.config.loader import CRED_KIRO_API_KEY, CRED_OWNER_ID, CREDENTIAL_KEYS
 
-        for key in _CREDENTIAL_KEYS:
+        for key in CREDENTIAL_KEYS:
             monkeypatch.setenv(key, f"live-{key}")
         env = rt.build_pod_env(cfg, tmp_path / "home", 7999, tmp_path / "co")
-        survivors = set(_CREDENTIAL_KEYS) & set(env)
+        survivors = set(CREDENTIAL_KEYS) & set(env)
         assert survivors == {CRED_KIRO_API_KEY, CRED_OWNER_ID}
 
     @pytest.mark.parametrize("inherited", ["::1", "0.0.0.0", "192.168.1.5"])
@@ -1756,17 +1752,36 @@ class TestProvisionDependencyInstall:
 
 
 class TestPodEnv:
+    def test_redirects_provider_cli_credentials_into_pod_home(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        host_glab = tmp_path / "host" / ".config" / "glab-cli"
+        host_azure = tmp_path / "host" / ".azure"
+        monkeypatch.setenv("GH_CONFIG_DIR", str(tmp_path / "host" / ".config" / "gh"))
+        monkeypatch.setenv("GLAB_CONFIG_DIR", str(host_glab))
+        monkeypatch.setenv("AZURE_CONFIG_DIR", str(host_azure))
+        home = tmp_path / "pod-home"
+
+        env = rt.build_pod_env(cfg, home, 7999, tmp_path / "co")
+
+        assert env["GH_CONFIG_DIR"] == str(home / ".config" / "gh")
+        assert env["GLAB_CONFIG_DIR"] == str(home / ".config" / "glab-cli")
+        assert env["AZURE_CONFIG_DIR"] == str(home / ".azure")
+        assert env["AZURE_EXTENSION_DIR"] == str(home / ".azure" / "cliextensions")
+
     def test_scrubs_slack_and_nonaws_tokens_keeps_aws(
         self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-live-bot")
         monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-live")
         monkeypatch.setenv("GITHUB_TOKEN", "ghp-secret")
+        monkeypatch.setenv("JIRA_TOKEN_ABC123", "jira-secret")
         monkeypatch.setenv("AWS_REGION", "us-west-2")
         monkeypatch.setenv("AWS_SESSION_TOKEN", "sts-temp")
         env = rt.build_pod_env(cfg, tmp_path / "home", 7999, tmp_path / "co")
         assert "SLACK_BOT_TOKEN" not in env and "SLACK_APP_TOKEN" not in env
         assert "GITHUB_TOKEN" not in env  # non-AWS *_TOKEN scrubbed
+        assert "JIRA_TOKEN_ABC123" not in env
         # AWS_* kept (agent turns need it); AWS_SESSION_TOKEN must survive.
         assert env.get("AWS_REGION") == "us-west-2"
         assert env.get("AWS_SESSION_TOKEN") == "sts-temp"

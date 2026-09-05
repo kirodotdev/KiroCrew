@@ -1333,6 +1333,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # read, not an egress pass.
         "autonudge.py",
         "autonudge_authz.py",
+        # Inbound structured-monitor target validation. A canonical provider URL
+        # is rejected when its path contains credential-shaped text, before the
+        # target reaches persistence, inspection, or a wake envelope.
+        "monitoring/targets.py",
         # Gate-side log hygiene for a channel whose user identity IS a phone
         # number or an Apple Account email. ``redact_handle`` shortens a handle
         # before it reaches a gateway log line or a SEL ``caller`` field. None of
@@ -1607,6 +1611,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # credentials before they enter canonical monitor state. The controller's
         # later agent-session injection is the registered output boundary.
         "monitoring/github_pull_request.py",
+        "monitoring/pull_request.py",
         # Computer use: the redaction pass runs on third-party desktop content
         # (window titles, accessibility values) on its way INTO the model's
         # context, exactly like the MCP tool-result paths above. `policy.py` owns
