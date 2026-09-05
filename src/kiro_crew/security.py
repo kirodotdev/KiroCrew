@@ -8346,6 +8346,43 @@ _WRITE_CMDS = (
 _SCRIPT_OPEN = r"(?:python|ruby|perl)\S*\s.*open\s*\("
 
 
+def _shell_escape_tolerant(text: str) -> str:
+    """``re.escape`` *text*, but let an unquoted shell backslash still match.
+
+    An UNQUOTED backslash escapes the next character and is removed by the
+    shell, whatever that character is. Measured, not assumed::
+
+        cr\\ewhome   -> crewhome      (unquoted: the escape collapses)
+        "cr\\ewhome" -> cr\\ewhome    (double-quoted: backslash survives)
+        'cr\\ewhome' -> cr\\ewhome    (single-quoted: backslash survives)
+
+    So a command may spell a protected path with a backslash before ANY
+    character and still reach that exact file. Tolerating it only before
+    whitespace left every other position open: ``.../cr\\ewhome/...`` resolves to
+    ``.../crewhome/...`` on disk while a whitespace-only tolerance never matched
+    it. Accept an optional backslash before every character instead.
+
+    Whitespace additionally folds space and tab into one class. A path with a
+    space cannot appear bare in a command at all -- the shell requires it quoted
+    or escaped -- and a Windows profile directory routinely contains one
+    (``C:\\Users\\First Last``), so that spelling is ordinary rather than exotic.
+
+    OVER-matching by construction, in the fail-safe direction. The quoted
+    spellings above keep the backslash and therefore name a DIFFERENT path, but
+    this gate matches raw command text and cannot see quoting, so it fences them
+    too. Refusing a path that would not have resolved here is safe; missing one
+    that would is the bug being fixed. Segments never contain a separator (the
+    caller splits on ``[\\/]`` first), so this adds no separator ambiguity.
+    """
+    out = []
+    for ch in text:
+        # ``\\?`` -- one optional literal backslash. Written this way rather than
+        # ``(?:\\)?`` to keep the compiled pattern small: this runs once per
+        # character of every anchored root and remainder.
+        out.append(r"\\?" + (r"[ \t]" if ch in " \t" else re.escape(ch)))
+    return "".join(out)
+
+
 def _build_sensitive_regex() -> re.Pattern[str]:
     """Build a compiled regex matching bash reads OR writes of sensitive paths.
 
@@ -8735,6 +8772,164 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"(?:{win_home_alts}{win_gsep}(?:{win_agents_dir_alt})"
         rf"|{win_kiro_home_var}{win_gsep}(?:{agents_leaf_alt})){win_path_end}"
     )
+    # ── Resolved crew-home anchor (a non-default ``KIROCREW_HOME``) ──
+    # Every branch above anchors on a home SPELLING (``~`` / ``$HOME`` / a
+    # literal ``/home/<user>`` / ``%USERPROFILE%``) FOLLOWED BY a crew prefix
+    # (``.kiro/crew``, ``.kirocrew``). A custom ``KIROCREW_HOME`` install carries
+    # NEITHER: the file's real path is
+    # ``$KIROCREW_HOME/apps/ops-mission-control/data/rotation.yaml``, with no
+    # tilde and no crew prefix anywhere in it.
+    #
+    # The TOOL gate already follows the override —
+    # ``_home_dir_targets_uncached`` re-anchors every crew-prefixed entry under
+    # the resolved home for exactly this reason — so without this branch a
+    # write-protected file is fenced against the agent's file tools and reachable
+    # by a bash redirect naming the resolved path. That asymmetry is the bug:
+    # protected on one path only is not protected.
+    #
+    # ``_resolved_root_key`` is the SAME resolver the tool gate keys its target
+    # set on, so the two gates cannot drift apart, and it only reads and resolves
+    # the env var: none of ``config_dir()``'s start-of-process maintenance (mkdir,
+    # legacy migration, breadcrumb refresh, archive sweep) runs on this gate path.
+    # It returns ``None`` for a default home, which the branches above cover.
+    crew_home = _resolved_root_key().crew_home
+    resolved_crew_branch = ""
+    if crew_home:
+        # Anchor spelled with the generalized separator rather than
+        # ``re.escape``d verbatim: the resolved literal is all-backslash on
+        # Windows, while a command can carry either separator (git-bash and
+        # msys tooling routinely render the same root with ``/``). Segments go
+        # through ``_shell_escape_tolerant`` for the same class of reason -- an
+        # unquoted backslash escapes the NEXT character and is removed by the
+        # shell, so ``.../cr\\ewhome/...`` and ``.../First\\ Last/...`` both reach
+        # the very file this branch fences while a plain literal matches
+        # neither.
+        #
+        # The join is ``win_gsep`` (the canonical-no-op chain the fenced-dir
+        # branches above already use) plus a repeated-separator tolerance, NOT a
+        # bare separator. The ROOT is as spellable as the remainder:
+        # ``/tmp/./custom-home``, ``/tmp//custom-home`` and
+        # ``/tmp/x/../custom-home`` all name the same directory, the tool gate
+        # fences all of them because it RESOLVES, and an exact-literal root would
+        # fence none. Over-matching a path that ends elsewhere is the safe
+        # direction here -- the same trade ``win_gsep`` already documents.
+        #
+        # BOTH spellings of the override are anchored, not just the resolved
+        # one. A symlinked (or junctioned) ``KIROCREW_HOME`` names one directory
+        # under two paths: the LEXICAL one the operator configured -- which is
+        # what a command actually carries, because it is the one the operator
+        # knows -- and the RESOLVED real path ``_resolved_root_key`` returns.
+        # The tool gate follows both, because ``_candidate_forms`` expands a
+        # target into its resolved AND its lexical forms; a pattern anchored on
+        # the resolved path alone left the lexical spelling open, so an embedded
+        # ``python -c "open('<lexical>','w')"`` reached a write-protected leaf
+        # that the file tools refuse. The lexical form is normalized with the
+        # same ``abspath(expanduser(...))`` pair ``_resolved_root_key`` itself
+        # falls back to, so one set of rules spells both roots; when resolution
+        # is a no-op (no link anywhere in the path) the two collapse to a single
+        # alternative and the pattern is exactly what it was before.
+        crew_gsep = rf"{win_gsep}{win_sep}*"
+        crew_roots = [crew_home]
+        crew_override = os.environ.get("KIROCREW_HOME")
+        if crew_override:
+            crew_lexical = os.path.abspath(os.path.expanduser(crew_override))
+            if crew_lexical and crew_lexical not in crew_roots:
+                crew_roots.append(crew_lexical)
+        crew_anchor = "|".join(
+            crew_gsep.join(
+                _shell_escape_tolerant(part) for part in re.split(r"[\\/]", root)
+            )
+            for root in crew_roots
+        )
+        # The RESOLVED/LEXICAL literal roots above are what a command carries
+        # when the operator typed a path. But a command can also name the same
+        # directory through the ``KIROCREW_HOME`` environment variable itself,
+        # which every spawned shell inherits and expands to the protected tree.
+        # A literal-only anchor left ``> "$KIROCREW_HOME/security_policy.json"``,
+        # ``%KIROCREW_HOME%\...`` and ``$env:KIROCREW_HOME/...`` open, while the
+        # tool gate (which resolves ``$KIROCREW_HOME`` before applying the write
+        # fence) refuses the same file (found in review). This mirrors branch (8),
+        # which anchors the agents dir on the literal ``$KIRO_HOME`` spellings for
+        # the same reason ``KIRO_HOME`` relocates it.
+        #
+        # Every spelling is a WHOLE reference terminated by its own closer, so
+        # ``$KIROCREW_HOME_BACKUP`` (a different variable) cannot match: the bare
+        # ``$NAME`` form is followed by a separator, and the delimited forms
+        # (``${...}``, ``%...%``, ``!...!``, ``${env:...}``) consume their closer.
+        # This anchor carries NO ``crew_gsep`` of its own -- the anchor->remainder
+        # join below supplies the separator.
+        crew_var = "KIROCREW_HOME"
+        crew_var_anchor = "|".join(
+            [
+                # POSIX ``$KIROCREW_HOME`` (bare) -- boundary is the following
+                # separator, enforced by the anchor->remainder ``crew_gsep`` join.
+                rf"{re.escape('$')}{crew_var}(?=[\\/])",
+                # POSIX ``${KIROCREW_HOME}`` and modifier forms ``${KIROCREW_HOME%/}``.
+                # The character right after the name must be the closing ``}`` or
+                # a parameter-expansion operator (``:-#%/^,@*`` etc.), never a
+                # name continuation -- otherwise ``${KIROCREW_HOME_BACKUP}`` (a
+                # different variable) would match.
+                rf"{re.escape('$')}\{{{crew_var}(?![A-Za-z0-9_])[^}}]*\}}",
+                # cmd.exe ``%KIROCREW_HOME%`` with optional expansion modifiers.
+                rf"%{crew_var}(?::[^%\s]*)?%",
+                # cmd.exe delayed expansion ``!KIROCREW_HOME!``.
+                rf"!{crew_var}(?::[^!\s]*)?!",
+                # PowerShell ``$env:KIROCREW_HOME`` and ``${env:KIROCREW_HOME}``.
+                rf"{re.escape('$env:')}{crew_var}(?=[\\/])",
+                rf"{re.escape('${env:')}{crew_var}\}}",
+            ]
+        )
+        crew_anchor = f"{crew_anchor}|{crew_var_anchor}"
+        # Remainders are the crew-prefix-RELATIVE tails of both lists. Derived by
+        # stripping whichever prefix an entry carries, the same way
+        # ``_home_dir_targets_uncached`` derives its re-anchored targets, so a
+        # leaf added to either list is covered here without a second edit.
+        crew_remainders = sorted(
+            {
+                d[len(prefix) :].lstrip("/")
+                for d in _SENSITIVE_HOME_DIRS
+                for prefix in _CREW_HOME_PREFIXES
+                if d.startswith(prefix + "/")
+            }
+            | set(_WRITE_PROTECTED_BASH_LEAVES)
+        )
+        # The intra-remainder join is ``crew_gsep`` for the same reason the
+        # anchor and the anchor->remainder join are: ``apps//ops-mission-control``
+        # names the same directory as ``apps/ops-mission-control``, the tool
+        # gate fences both because it resolves, and a plain ``win_gsep`` join
+        # (no repeated-separator tolerance) left the doubled-separator spelling
+        # open between remainder segments only.
+        crew_remainder_pattern = "|".join(
+            crew_gsep.join(
+                _shell_escape_tolerant(part) for part in remainder.split("/")
+            )
+            for remainder in crew_remainders
+        )
+        # The right boundary is the SHARED ``path_end`` class (plus the
+        # Windows separator), not a bespoke terminator. A private closer here
+        # diverged from branch (3)'s and omitted the shell-operator class, so
+        # an operator glued straight onto the path (``.../rotation.yaml;id``,
+        # ``...|wc``) slipped the fence while the tool gate refused the same
+        # file (found in review). One terminator definition for every anchor
+        # branch means an operator added to ``path_end`` covers this branch
+        # without a second edit.
+        resolved_crew_path = (
+            rf"(?:{crew_anchor}){crew_gsep}(?:{crew_remainder_pattern})"
+            rf"(?:{win_sep}|{path_end})"
+        )
+        # The left boundary admits an ATTACHED short-option cluster between the
+        # token delimiter and the path. ``curl -o/custom/root/...`` glues the
+        # output path directly onto ``-o`` with no whitespace, quote, or ``=``
+        # in between, so a boundary of delimiter-then-path alone never saw it
+        # while the tool gate (which resolves the argument) refuses the same
+        # file. The option token must follow a real delimiter and start with
+        # ``-``, so a path that merely CONTAINS the root as a suffix
+        # (``/x/<root>/...``) still cannot match mid-path -- the negative
+        # controls in the parity tests pin both directions.
+        resolved_crew_branch = (
+            rf"|(?:^|[\s'\"=:,;])(?:--?[A-Za-z][\w-]*)?{resolved_crew_path}"
+        )
+
     # Bare path-SEGMENT match for the globally distinctive leaves. Both branches
     # above require a home anchor and a crew prefix, so both are defeated by a
     # single ``cd``; this one requires neither, which is the whole point — the
@@ -8811,6 +9006,12 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # only); tool-path reads stay allowed.
         rf"|(?:^|[\s'\"=:,;]){agents_write_path}"
         rf"|(?:^|[\s'\"=:,;]){win_agents_write_path}"
+        # (9) the SAME fenced dirs and write-protected leaves under a resolved
+        # non-default ``KIROCREW_HOME``, which carries neither a home spelling
+        # nor a crew prefix. Empty string when the home is the default one.
+        # Disjoint from (8): that branch fences ``~/.kiro/agents``, which
+        # ``KIRO_HOME`` relocates and ``KIROCREW_HOME`` does not.
+        f"{resolved_crew_branch}"
         # (10) whisper weight FILENAMES, also with no anchor, because the digest the
         # model store checks only binds the bytes if the name it then loads cannot be
         # rewritten by a ``cd``-relative command.
@@ -8820,14 +9021,38 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     )
 
 
-_SENSITIVE_RE: re.Pattern[str] | None = None
+# Compiled patterns per ``KIROCREW_HOME`` value. The pattern embeds the
+# RESOLVED crew home, so a process that changes ``KIROCREW_HOME`` (a test, an
+# embedder) must not keep matching against the previous one.
+#
+# Keyed on the RAW env var rather than on the resolved root: this is read on
+# every bash-gate call and resolving would put a ``Path.resolve()`` on that hot
+# path, whereas the raw value changes exactly when an override is selected or
+# dropped. The residual — a symlink UNDER the override repointed mid-process —
+# can only leave the resolved-literal branch naming the old location; it removes
+# no existing branch, so the home-spelling and bare-leaf strategies are
+# unaffected and the gate cannot fall below what it matched before.
+#
+# PER-KEY, not single-slot: a test suite (or embedder) flips the override and
+# restores it constantly, and a single-slot cache re-ran the ~30-70ms pattern
+# build on every flip — landing that cost inside whatever the NEXT caller
+# happened to be timing (the traversal perf budget, on CI). Distinct values a
+# real process sees number a handful, so a small bounded dict holds them all;
+# the bound only guards a pathological embedder that generates unbounded
+# distinct overrides, evicting oldest-inserted first.
+_SENSITIVE_RE_BY_HOME: dict[str | None, re.Pattern[str]] = {}
+_SENSITIVE_RE_MAX_KEYS = 8
 
 
 def _get_sensitive_re() -> re.Pattern[str]:
-    global _SENSITIVE_RE
-    if _SENSITIVE_RE is None:
-        _SENSITIVE_RE = _build_sensitive_regex()
-    return _SENSITIVE_RE
+    home_key = os.environ.get("KIROCREW_HOME")
+    pattern = _SENSITIVE_RE_BY_HOME.get(home_key)
+    if pattern is None:
+        pattern = _build_sensitive_regex()
+        if len(_SENSITIVE_RE_BY_HOME) >= _SENSITIVE_RE_MAX_KEYS:
+            _SENSITIVE_RE_BY_HOME.pop(next(iter(_SENSITIVE_RE_BY_HOME)))
+        _SENSITIVE_RE_BY_HOME[home_key] = pattern
+    return pattern
 
 
 # ── Bounded symlink resolution for the sensitive-path gates ──

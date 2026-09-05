@@ -282,7 +282,7 @@ def test_sensitive_anchor_has_no_leading_wildcard() -> None:
     # Count the BRANCH spelling (``rf"|`` prefix) so the explanatory comment in
     # `_build_sensitive_regex`, which quotes the anchor in prose, is not counted.
     branch_anchor = r"""rf"|(?:^|[\s'\"=:,;])"""
-    assert source.count(branch_anchor) == 11
+    assert source.count(branch_anchor) == 12
 
 
 def inspect_source(func: object) -> str:
