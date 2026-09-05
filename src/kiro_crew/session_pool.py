@@ -22,10 +22,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    # Type-only: importing providers.base from this leaf at runtime enters the
-    # providers -> acp package -> runtime -> session_pid -> providers cycle.
     from kiro_crew.providers.base import LLMProvider
 else:
+    # The aliases below subscript LLMProvider at module scope, so a name must
+    # exist at runtime; a real import would cross the agent-SDK boundary gate.
     LLMProvider = Any
 
 

@@ -1,28 +1,39 @@
 ---
 title: Crew Agent SDK Boundary — isolate the codebase from ACP, and name the host contract
-status: partial
-revision: v3
+status: partially-implemented
+revision: v4
 author: zejiangg, with Kiro
 created: 2026-08-28
 last-audited: 2026-09-05
-audited-at: 424efa423
+audited-at: 73d60a83d
 doc-pr:
-implementation-prs: []
+implementation-prs:
+  - "PR 1 — the boundary gate and its baseline: scripts/check_agent_sdk_boundary.py,
+    .github/agent-sdk-boundary-baseline.txt (seeded at 58 files / 107 edges),
+    src/kiro_crew/agent_sdk/, and the ci.yml wiring at :440-441"
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: Crew Agent SDK Boundary — isolate the codebase from ACP, and name the host contract
 
-- Status: draft — nothing proposed here has shipped. The migration is additive:
-  a new boundary package is introduced beside the current provider layer, and
-  consumers move behind it one wave at a time under a shrink-only ratchet.
-  Every question in §12 carries a disposition: the two that gated PR 2 and PR 4
-  are decided, and the rest record a conservative default plus the condition that
-  reopens it.
+- Status: partially implemented. **PR 1 has landed**: the shrink-only import
+  gate (`scripts/check_agent_sdk_boundary.py`), its baseline
+  (`.github/agent-sdk-boundary-baseline.txt`, seeded at **58 files / 107
+  edges**), the `ci.yml` wiring, and the `src/kiro_crew/agent_sdk/`
+  package — which already carries more than the layer docstring PR 1 proposed:
+  `drivers/acp.py`, `backend_install.py`, `backend_identity.py`,
+  `provider_identity.py` and `native_commands.py`. **Part of PR 4 has landed**
+  too, on this branch: the import cycle §2.4 exists to break is closed, and the
+  cycle v3 named was the wrong one. PRs 2, 3, 5 and 6 remain unstarted.
+  The migration is additive: the boundary package sits beside the current
+  provider layer and consumers move behind it one wave at a time under the
+  ratchet. Every question in §12 carries a disposition: the two that gated PR 2
+  and PR 4 are decided, and the rest record a conservative default plus the
+  condition that reopens it.
 - Author: zejiangg, with Kiro
 - Created: 2026-08-28
-- Audited against: `dc88f142b`
+- Audited against: `73d60a83d`
 - Related: `../system-specs/modules/agent-host-contract.md` (the host contract
   this document's §6 summarises),
   `../system-specs/modules/claude-code-provider.md`,
@@ -46,10 +57,13 @@ to a single driver behind it.
 Today there is a package named `kiro_crew.providers` that looks like this
 boundary and is not one. It re-exports ACP symbols rather than translating them,
 its "provider-agnostic" event type is the ACP event class under an alias
-(`src/kiro_crew/providers/base.py:30`), and 42 modules outside it import
-`kiro_crew.acp` directly rather than going through it. The consequence is that
-switching agent backends is not a driver swap; it is an edit across the whole
-tree.
+(`src/kiro_crew/providers/base.py:30`), and most modules outside it import
+`kiro_crew.acp` directly rather than going through it. PR 1's baseline seeded the
+census at **58 files / 107 edges** across the two forbidden roots; the live split
+is printed by the gate on every run, and
+`.github/agent-sdk-boundary-baseline.txt` is the per-file record. Do not read a
+count out of this document — §PR 5 says why. The consequence is that switching
+agent backends is not a driver swap; it is an edit across the whole tree.
 
 This RFC proposes three inversions, in order: the SDK owns the **types** that
 cross the boundary, the SDK owns the **process and session lifecycle**, and a
@@ -74,9 +88,12 @@ exposed a design flaw in an earlier draft of §5 (§5.3).
 
 ## 2. Motivation and current state
 
-Verified at `dc88f142b` on 2026-08-28. Counts below are from `src/kiro_crew`,
-excluding `src/kiro_crew/acp/` and `src/kiro_crew/providers/` themselves, and
-excluding `test/` unless stated.
+Re-verified at `73d60a83d` on 2026-09-05. Counts below are from
+`src/kiro_crew`, excluding `src/kiro_crew/acp/` and `src/kiro_crew/providers/`
+themselves, and excluding `test/` unless stated. For import edges the
+authoritative count is no longer an ad-hoc scan: it is
+`.github/agent-sdk-boundary-baseline.txt`, and the gate prints the live per-root
+split on every run.
 
 ### 2.1 The existing seam is an alias, not a translation
 
@@ -91,7 +108,7 @@ re-exports 13 `EVENT_*` constants from `kiro_crew.acp.types` unchanged, so the
 event vocabulary is ACP's vocabulary with a different import path. There are
 **466** `EVENT_*` / `STOP_REASON_*` usages outside the ACP package.
 
-`AcpEvent` (`src/kiro_crew/acp/types.py:725`) carries 30 fields. Roughly a third
+`AcpEvent` (`src/kiro_crew/acp/types.py`) carries 30 fields. Roughly a third
 are not domain facts:
 
 | Field | Why it should not cross a boundary |
@@ -117,22 +134,20 @@ that SDK surface instead of importing ACP's `TurnUsage` and constants directly.
 
 ### 2.2 The boundary is bypassed
 
-68 direct `kiro_crew.acp` import edges across 42 files. The heaviest:
+**58 files / 107 edges**, as seeded into
+`.github/agent-sdk-boundary-baseline.txt` by PR 1 across both forbidden roots
+(`kiro_crew.acp` and `kiro_crew.providers`).
 
-| File | Edges |
-|---|---|
-| `src/kiro_crew/session.py` | 10 |
-| `src/kiro_crew/subagent.py` | 5 |
-| `src/kiro_crew/llm_helpers.py` | 3 |
-| `src/kiro_crew/cli_doctor.py` | 3 |
-| `src/kiro_crew/workflows/service.py` | 2 |
-| `src/kiro_crew/slack/handler.py` | 2 |
-| `src/kiro_crew/session_pid.py` | 2 |
-| `src/kiro_crew/dashboard/chat_runner.py` | 2 |
-| `src/kiro_crew/dashboard/handlers/core.py` | 2 |
-| `src/kiro_crew/dashboard/handlers/agents.py` | 2 |
+An earlier revision printed a per-file table here. It is deleted rather than
+refreshed, for the reason §PR 5 gives about counts: every row was already wrong
+within days — `session.py` had grown from 10 to 12, `subagent.py` from 5 to 8,
+and `dashboard/handlers/core.py` and `handlers/agents.py` were no longer among
+the heaviest at all. Worse, the figure it opened with was the "68 edges across 42
+files" that §7's PR 1 paragraph explicitly disowns as a regex artifact, so the
+document contradicted itself two ways. The baseline is the per-file record and
+the gate prints the live per-root split; read either, not this paragraph.
 
-Several reach past the public surface entirely: `session.py` imports
+Several files reach past the public surface entirely: `session.py` imports
 `acp.session_handle._load_watchdog_settings`, `dashboard/session_memory.py`
 imports `acp.runtime._get_rss_tree_mb` and `_iter_descendant_pids`,
 `dashboard/stall_enrichment.py` imports `acp.liveness.socket_inodes` (a `/proc`
@@ -144,62 +159,141 @@ the shape the rest should have.
 
 ### 2.3 Backend identity is a string that everyone compares
 
-`ACP_BACKEND_KIRO = ""` / `ACP_BACKEND_KAS = "kas"` / `ACP_BACKEND_CLAUDE =
-"claude"` (`src/kiro_crew/acp/types.py:109-113`) are imported and compared
-directly in the dashboard turn loop (`chat_runner.py`), the platform default
-provider map (`platform/defaults.py`), the prerequisite gate
-(`dashboard/handlers/kiro_prerequisite.py`), and the prompt-context builder
-(`context.py`). Behaviour is gated by seven opt-in frozensets in the same file
-(`ACP_BACKENDS_SESSION_SHARING`, `_STEER`, `_INTERNAL_SANDBOX`, `_ACP_RUNTIME`,
-`_KIRO_IDENTITY_STORE`, …), so a consumer that wants to know "can this session be
-steered?" asks "is this backend in this set?" instead.
+**This subsection was structurally wrong in v3 and is rewritten.** It cited
+`acp/types.py` as the home of the backend constants and "seven opt-in
+frozensets in the same file". `acp/types.py` now holds **zero** of either. Every
+constant and every capability set lives in the leaf
+`src/kiro_crew/acp_backends.py` — `ACP_BACKEND_CLAUDE`,
+`ACP_BACKEND_KAS`, `ACP_BACKEND_CODEX`, `ACP_BACKEND_KIRO` — which `acp/types.py` re-exports, so existing call sites kept their
+import path while the definitions moved.
 
-One part of this is already fixed and PR 3 should build on it rather than redo it.
-`src/kiro_crew/acp_backends.py` is a deliberate leaf: it imports nothing from the
-ACP package, and it exists to own the selectable-backend list in one place,
-replacing three literals that had already drifted apart. It is not a boundary
-violation and the architecture test pins that — a prefix-match on `kiro_crew.acp`
-would flag it, which is why the gate matches on module boundaries instead. What
-§2.3 describes as unowned is the *comparison* behaviour: the constants and the
-seven frozensets in `acp/types.py`, which the leaf does not cover.
+That leaf has outgrown the job v3 credited it with. v3 called it a deliberate
+leaf owning the selectable-backend list, three drifted literals collapsed into
+one place, and said what it did *not* cover was the comparison behaviour. It
+covers that too now. At ~580 lines it holds:
+
+- **15** `ACP_BACKENDS_*` capability frozensets, not seven. Beyond the five v3
+  named: `_MEMBER_DISPATCH`, `_COMPACT`,
+  `_MODEL_VIA_CONFIG_OPTION`, `_EFFORT_VIA_CONFIG_OPTION`,
+  `_ADVERTISED_MODEL_SELECTION`, `_SEED_LOCAL_SETTINGS`,
+  `_KIRO_SLASH_COMMANDS`, `_MCP_CONFIG_HOT_RELOAD` and
+  `_SESSION_MCP_ARRAY`. Count them at the file; a number written here
+  rots, and this one already did.
+- A `Routing` enum naming the *mechanism* by which a harness is made to
+  ask before it runs a tool, with `UNVERIFIED` as an explicit "we do not know"
+  member so an unestablished harness cannot fall through to a permissive branch.
+- Two identity-keyed dispatch tables — `ACP_BACKEND_ROUTING` and
+  `ACP_BACKEND_PERMISSION_CONFIG` — read through `routing_for()` and `permission_config_for()`, both of which fail closed on
+  an id the table does not name.
+
+A second top-level policy module has joined it: `src/kiro_crew/acp_tool_gate.py`
+(383 lines), which decides whether a harness's routing counts as *enforced*
+(`ENFORCED_ROUTINGS`) and derives the credential directories an adapter's
+child must not be able to read. Like the leaf, it imports nothing from `acp/`;
+like the leaf, it sits outside `agent_sdk`.
+
+Neither module is a boundary violation, and the architecture test pins that: a
+prefix-match on `kiro_crew.acp` would flag `acp_backends`, which is why the gate
+matches on module boundaries instead.
+
+So the defect is narrower and more precise than v3 stated, and PR 3's job changes
+accordingly (§7). Two things remain wrong:
+
+1. **Consumers ask set membership, not a semantic capability.** A caller that
+   wants to know "can this session be steered?" still asks "is this backend in
+   `ACP_BACKENDS_STEER`?". The vocabulary has an owner; the question is still
+   spelled as identity, and §5.2 is the list of places it is asked.
+2. **Routing and permission dispatch are keyed on backend id.** `routing_for()`
+   and `permission_config_for()` are accessors over `dict[str, …]`, so adding a
+   harness is a table row plus whatever reads it. That is much better than an
+   `if/elif` chain — §2.7 credits it as the right shape arrived at independently
+   — but it is still an id lookup rather than a capability a driver declares.
+
+The consequence for scope: PR 3 no longer *builds* the capability mechanism. It
+consolidates this one into `agent_sdk` and closes those two gaps.
 
 ### 2.4 ACP lifecycle state lives outside the ACP package
 
-- `session.py:1108` `_warm_pool: asyncio.Queue[tuple[LLMProvider, float]]` — the
-  pre-spawned process pool.
-- `session.py:1136` `_bg_runtime: AcpRuntime | None` — a shared multiplexed
-  runtime.
-- `session.py:1153` `_subagent_runtimes: dict[str, AcpRuntime]` — per-parent
-  runtime map.
-- `session.py:1160-1162` `_rss_max_mb`, whose settings loader is imported from
-  *inside* the ACP package.
-- `session_pid.py` owns the whole PID lifecycle for agent processes, and the
-  import cycle already exists — but it runs the opposite way from what an earlier
-  draft of this section claimed, and the direction determines which phase can fix
-  it. `session_pid.py:311-312` and `:1888-1889` both carry
-  `# circular import: session_pid → acp.client → session → session_pid` above a
-  lazy `from kiro_crew.acp.client import _get_child_pids`. That is the cycle.
-  `acp/worker_pool.py:49`'s `try/except` around `register_protected_pid` /
-  `unregister_protected_pid` is **not** part of it: `session_pid.py` has no
-  module-level ACP import, so that edge is one-way, and the guard's own comment
-  says it exists so the engine stays importable standalone. It also catches
-  `Exception`, not `ImportError`.
-  The `:1888` copy sits inside `_kill_orphan_work_tree`, reached only from the
-  work-class orphan sweep — the half §12.1 deliberately leaves in place. And
-  `_kill_pid_tree` (`:300`), which holds the `:311` copy, is called from both
-  halves (`:475`, `:538`, `:907`), so the split has to place it rather than assume
-  it travels with one side.
+**Three of the four concerns v3 listed have since moved**, and `session.py` only
+forwards to them. The state is no longer where this subsection said it was:
 
-So the process supervision decision is currently made in **both** directions at
-once. No boundary can be drawn without settling it.
+- `_warm_pool` is a forwarding property at `session.py` onto
+  `session_pool.py`, which owns the pre-spawned process pool.
+- `_bg_runtime` and `_bg_runtime_lock` forward from `session.py`
+  onto `session_background.py`.
+- `_subagent_runtimes` forwards from `session.py` onto
+  `session_allocation.py`.
+- `_rss_max_mb` forwards from `session.py` onto `session_cleanup.py`. Its
+  settings loader is still imported from *inside* the ACP package.
+
+Those four are now a boundary question about where the SDK reads them, not a
+"lifecycle state lives in `SessionManager`" question. Only `session_pid.py`, which
+owns the whole PID lifecycle for agent processes, was genuinely ACP-owned — and
+the cycle v3 named there was the wrong cycle.
+
+**The cycle, corrected.** v3 asserted `session_pid → acp.client → session →
+session_pid`, evidenced by two lazy `from kiro_crew.acp.client import
+_get_child_pids` calls. Those calls are real — two sites in `session_pid.py`
+today — but a lazy in-function import
+runs after both modules are initialized, so it cannot close a loop at import time.
+The operative cycle ran through a **module-scope** import: `session_pid.py`
+imported `kiro_crew.providers.base` for one parameter annotation, giving
+
+```
+session_pid → providers.base → acp.types → acp/__init__ → acp.runtime → session_pid
+```
+
+and that one was fatal rather than cosmetic. `import kiro_crew.session_pid` as the
+first `kiro_crew` module raised `ImportError: cannot import name '_track_pid' from
+partially initialized module`. It also explains a pattern elsewhere: leaf modules
+carried `LLMProvider = Any` runtime stubs to stay out of it.
+
+**It is closed, on this branch** — the cheap half of PR 4, landed rather than
+proposed. The `providers.base` import at `session_pid.py` is **gone, not
+deferred.** Making it `TYPE_CHECKING`-only was the first attempt and the boundary
+gate refused it, correctly: a type-only import is still boundary knowledge by that
+gate's explicit design, and it offers no opt-out marker precisely so that "this
+consumer legitimately needs the layer" cannot be asserted. The refusal exposed a
+better answer. `_sync_kill_provider` reads three PRIVATE attributes through
+`getattr(..., None)` — `_client`, `_proc`, `_active_proc` — none of which the
+provider ABC declares, so `LLMProvider` never described that parameter. It is
+`object` now, the edge is deleted rather than exempted, and the baseline shrank
+from 107 edges to 106. The `LLMProvider = Any` runtime stubs whose only job was to
+dodge that cycle (`session_compaction.py`, `session_background.py`,
+`session_cleanup.py`) are deleted with it; and
+`test/test_agent_lifecycle_cycle.py` pins both halves in a fresh interpreter —
+`import kiro_crew.session_pid` standing alone, plus an assertion that the import
+leaks no ACP module into `sys.modules`. `session_allocation.py` and
+`session_pool.py` keep theirs, because each subscripts the name at module scope
+(`Callable[..., LLMProvider]`) — a runtime use that deferral does not reach — and
+their comments now give that reason rather than the closed cycle.
+
+`acp/worker_pool.py:49`'s `try/except` around `register_protected_pid` /
+`unregister_protected_pid` was never part of any cycle. The edge is one-way, the
+guard's own comment says it exists so the engine stays importable standalone, and
+it catches `Exception` rather than `ImportError` — so no exit criterion should be
+written against it, and deleting it is tidy-up.
+
+**What PR 4 still owes is ownership, not the import.** The two lazy
+`_get_child_pids` calls, `_kill_pid_tree`, and the `_MANAGED_AGENT_MARKERS`
+vocabulary are all consulted from the agent half *and* the work-class half, so the
+split has to place them rather than assume they travel with one side. The
+non-agent sweeps gate their kill sets *negatively* on that marker vocabulary and
+consume the protected set through `_collect_active_pids`, so a careless split
+makes the work-class sweep less safe, not merely less tidy.
+
+So the process supervision decision is still made in two places at once. The
+import cycle that made it urgent is gone; the ownership question is not.
 
 ### 2.5 What this costs, measured on KAS
 
-A second backend already exists and it is instructive that adding it did not
-require a driver — it required branches. `runtime.py` and `session_handle.py`
-carry explicit KAS arms, `session_handle.py` has five `_handle_kas_*` methods,
-and the dashboard, config loader and doctor each learned the new id. A third
-backend pays the same price again, in the same places.
+Two more backends already exist. KAS is the instructive one for this section:
+adding it did not require a driver — it required branches. `runtime.py` and
+`session_handle.py` carry explicit KAS arms, `session_handle.py` has five
+`_handle_kas_*` methods, and the dashboard, config loader and doctor each learned
+the new id. The fourth backend, Codex, landed after this census and did **not**
+pay that price in the same way; §2.7 records what it did instead, and which part
+of the cost survived.
 
 ### 2.6 What this costs, measured on a foreign host
 
@@ -218,7 +312,7 @@ kinds of undeclared hole:
 
 | Kind | Count | Failure mode when the companion omits it |
 |---|---|---|
-| `getattr`-by-name seams whose target the core never defines — `getattr(self, "_write_claude_local_settings", None)` (`acp/client.py:2742`, `:3351`) | 2 | Silent: no permission mode, and the context window collapses from 1M to 200K |
+| `getattr`-by-name seams whose target the core never defines — `getattr(self, "_write_claude_local_settings", None)` (`acp/client.py:2742`) | 2 | Silent: no permission mode, and the context window collapses from 1M to 200K |
 | Methods returning a neutral value purely so a companion can override them — `_session_mcp_servers() -> []` (`acp/client.py:2335-2346`) is the type case | 6 | Silent: a CC session gets **zero MCP tools**, as the docstring itself states |
 | `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`session.py:170`, `subagent.py:131`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
 | Defensive attribute probes across the provider boundary (`session_pid.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
@@ -243,6 +337,74 @@ materialized kiro agent spec (`acp/session_mcp.py`). The shape argument is
 untouched: both are still undeclared overridable methods rather than a typed
 extension point, which is what PR 3 lands.
 
+### 2.7 A fourth backend landed after this RFC was drafted
+
+§2.5 and §2.6 measure what a new backend costs. Codex is the third measurement in
+that series and the most informative, because it is the first backend added
+*after* the census above — so it is direct evidence on whether §2.3's and §2.5's
+cost claims still hold. They half hold.
+
+`ACP_BACKEND_CODEX = "codex"` (`acp_backends.py`) shipped in `d3e67b7e9`
+(*wire Codex in behind an enforced tool-permission route*, #7963) and is in both
+`ACP_BACKENDS_KNOWN` and `BASELINE_SELECTABLE_BACKENDS`, so a public build offers
+it and serves sessions on it today. Dashboard copy saying what a Codex install
+still cannot do followed in `6d1b51704` (#8684).
+
+**What it did right, and what that costs §2.5.** There is no `if/elif` chain. It
+added the `Routing` enum plus two identity→capability tables read through
+accessors that fail closed on an unknown id, and — the part worth copying —
+enforcement dispatches on the **mechanism**, not on the harness:
+`acp_tool_gate.ENFORCED_ROUTINGS` holds `Routing` members, so
+`routing_for(backend) in ENFORCED_ROUTINGS` is the entire test and a
+fifth harness inherits the decision by declaring a mechanism. That is the shape
+this RFC argues for, reached independently and before it. §2.5's "a third backend
+pays the same price again, in the same places" is therefore too pessimistic about
+the permission path — and §2.3's residual defect is exactly what is left over:
+the tables are keyed on id, and consumers still read set membership.
+
+**What it shows is still missing.** None of it is protocol coupling. All of it is
+host contract and declaration.
+
+- **It appeared in no bucket of the host contract.** Until this PR,
+  `docs/system-specs/modules/agent-host-contract.md` contained zero references to
+  codex. That spec's own new-provider checklist says *"Silence is not an answer"*
+  — and nothing enforced it. An undeclared host is precisely the failure §6 exists
+  to make impossible, and it happened while this RFC sat open, which is the
+  strongest argument in the document for §12.4 becoming code. The column and its
+  ratchet land with this revision; the ratchet is the part that generalises.
+- **Its capability gaps are frontend prose.** What a Codex install cannot do is
+  said in dashboard copy behind a plain `if (value === CODEX)` chain, with nothing
+  on the wire for the frontend to read. A capability the backend knows and the UI
+  re-derives by string compare is the §2.3 defect one layer further out, where no
+  Python-side gate can see it.
+- **Its sessions get an empty MCP array.** `_codex_session_mcp_servers()`
+  (`acp/client.py`) returns `[]`, so **nothing is projected** onto a codex
+  session — not a reduced set, and not Crew's own control plane. The only entries
+  it can carry are the shared MCP gateway's broker stubs, appended for every
+  backend alike and empty when that gateway is off, so with the gateway off the
+  session has no tools at all.
+  `providers/mirrors/`'s `NO_MIRROR` entry states this outright and calls it "a
+  real user-visible state". It is §2.6's `_session_mcp_servers() -> []` row
+  returning on a *selectable* provider, after the core had closed that hole for
+  CC — which is the evidence that a neutral-return override is a hole in the
+  contract and not a one-off.
+
+The enforcement that was missing is landing with this revision: the host-contract
+spec gains a Codex column and a parity test in the same PR as this document. The
+mechanism is the point, not the column — a bucket left silent should fail a test.
+
+Four places asserted the opposite of all this — that codex was a dormant seam no
+build offered — and each used that as the *justification* for supplying nothing:
+`acp_backends.py`'s comment on the id, `AcpClient._codex_session_mcp_servers`'s
+docstring, the "dormant seam" comment on the `_is_codex` spawn branch, and the
+`NO_MIRROR` rationale string in `providers/mirrors/registry.py`. A reader who
+believes any of them concludes the empty MCP array costs nobody anything. `main`
+rewrote the two comments in #8905 before this revision landed, together with the
+same retracted claim about the CC branch in `docs/system-specs/modules/providers.md`;
+this revision corrects the remaining two, and goes one step further on both — the
+docstring and the rationale also inferred "nothing is mounted" from "nothing is
+projected", which the shared MCP gateway's pooled stubs make false.
+
 ## 3. Goals
 
 1. Exactly one import path from application code to an agent backend:
@@ -253,8 +415,13 @@ extension point, which is what PR 3 lands.
 3. No consumer branches on a backend id. Consumers ask semantic capability
    questions, and where a backend *lacks* an operation they test for a protocol
    rather than reading a boolean (§5.3).
-4. Agent process and session lifecycle state has a single owner, and the
-   existing `session_pid` ↔ `worker_pool` cycle is gone.
+4. Agent process and session lifecycle state has a single owner, and
+   `session_pid.py` imports no `kiro_crew.acp` or `kiro_crew.providers` name at
+   module scope. There is no `session_pid` ↔ `worker_pool` cycle and never was
+   (§2.4); the real one ran `session_pid.py:28 → providers.base → acp.types →
+   acp/__init__ → acp.runtime → session_pid`, and it is closed. What remains of
+   this goal is ownership: the kill primitives shared by the agent and work-class
+   sweeps need a home.
 5. The host contract is written down, per provider, with "not supported" as a
    valid declaration that degrades a Crew surface rather than being assumed away.
 6. Adding a driver becomes: implement the protocols it can honour, declare a host
@@ -307,8 +474,15 @@ consumers        dashboard/  slack/  discord/  telegram/  messaging/
 If this goes red you introduced a boundary violation; fix the import direction,
 do not relax the rule.
 
-`kiro_crew.providers` becomes a thin deprecated shim during migration (§9) and is
-deleted at the end.
+`kiro_crew.providers` becomes a thin deprecated shim during migration (§9) and
+its **shim surface** is deleted at the end. Not the whole package: since v3,
+`src/kiro_crew/providers/mirrors/` has become a real and growing layer —
+`base.py`'s `AgentConfigMirror` with `Concern` / `Disposition` / `Ruling`,
+`registry.py`'s `MIRRORS` / `NO_MIRROR`, `claude_code.py`, and a `README.md` —
+with claude the only mirror and kiro, KAS and codex carrying explicit `NO_MIRROR`
+reasons. That is load-bearing code, not an alias, and deleting `kiro_crew.providers`
+wholesale would delete it. Where it lives after the boundary is drawn is an open
+question (§12.5), and PR 6's deletion is scoped accordingly.
 
 ### 5.2 The SDK owns the types
 
@@ -323,21 +497,20 @@ deleted at the end.
 | Collapse | `runtime_global`, `sub_session_id`, `mcp_identity_ambiguous` → one `attribution: ChildAttribution \| None` value object, non-`None` only on subagent-related events (decided, §12.2) |
 
 `AcpEvent` is not only fields. It also carries four derived `@property` members —
-`shell_command` (`acp/types.py:572`), `child_low_fidelity` (`:626`),
-`child_mcp_identity_trusted` (`:654`) and `child_unconditional_grant_eligible`
-(`:697`) — every one of which is read outside `acp/` on the permission path, and
+`shell_command` (`acp/types.py`), `child_low_fidelity`,
+`child_mcp_identity_trusted` and `child_unconditional_grant_eligible` — every one of which is read outside `acp/` on the permission path, and
 every one of which is computed from fields in the *Do not cross* row. They are
 therefore **first-class SDK members** on `AgentEvent`, computed by the driver from
 the ACP event before the raw fields are discarded, carrying their fail-closed
 semantics unchanged (`child_low_fidelity` returns `True` on any missing
-provenance, `types.py:643-651`; `hooks.py:536-543` denies a shell tool whose
-command could not be recovered).
+provenance, in the body at `types.py`; `hooks.py` denies a shell tool whose
+command could not be recovered). Both citations shifted with the `types.py`
+reflow — re-derive them rather than trusting a line number here.
 
 That is why the fourth row reads *do not cross **as fields***. It does not mean
 the values are unused: `raw_tool_params` is passed as a security-decision argument
 at 20 sites in 12 non-ACP files — `hooks.on_tool_call(raw_params=…)`
-(`chat_runner.py:6637`), `approval_command(raw_tool_params=…)`
-(`:7235`, `:7242`), and so on — so it crosses as an opaque `Mapping | None` for
+(`chat_runner.py:6637`), `approval_command(raw_tool_params=…)`, and so on — so it crosses as an opaque `Mapping | None` for
 the duration of PRs 2-5 and is deleted per-file by PR 5 alongside its last
 consumer. The other three are consumed by the driver only; their read count
 outside `acp/` is zero, which is exactly why an earlier draft missed that four
@@ -374,20 +547,36 @@ skills and agent packages — and the collision would be genuinely ambiguous.
 Each question is semantic, and each replaces a place that asks backend identity
 today:
 
+Every `acp/types.py:NNN` citation this table carried in v3 is dead: the sets
+moved to `acp_backends.py` (§2.3), and the table was also short — it named five of
+what are now 15 sets, so ten capability questions had no row. Both are fixed
+below. All `:NNN` references in the middle column are `acp_backends.py`.
+
 | Question | Asked today as |
 |---|---|
-| `can_steer` | `ACP_BACKENDS_STEER` membership (`acp/types.py:151`) |
-| `multiplexes_sessions` | `ACP_BACKENDS_ACP_RUNTIME` (`:180`) — **post-session only**; see the pre-session query below |
-| `shares_subagent_session` | `ACP_BACKENDS_SESSION_SHARING` (`:148`) — a *subset* of the above, which one boolean cannot express |
-| `self_sandboxes` | `ACP_BACKENDS_INTERNAL_SANDBOX` (`:167`) |
-| `recyclable_on_host_logout` | `ACP_BACKENDS_KIRO_IDENTITY_STORE` (`:196`) |
+| `can_steer` | `ACP_BACKENDS_STEER` membership |
+| `multiplexes_sessions` | `ACP_BACKENDS_ACP_RUNTIME` — **post-session only**; see the pre-session query below |
+| `shares_subagent_session` | `ACP_BACKENDS_SESSION_SHARING` — a *subset* of the above, which one boolean cannot express |
+| `self_sandboxes` | `ACP_BACKENDS_INTERNAL_SANDBOX` |
+| `recyclable_on_host_logout` | `ACP_BACKENDS_KIRO_IDENTITY_STORE` |
+| `dispatches_members` | `ACP_BACKENDS_MEMBER_DISPATCH` |
+| `can_compact` | `ACP_BACKENDS_COMPACT` |
+| `model_via_config_option` | `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` |
+| `effort_via_config_option` | `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` |
+| `advertises_model_selection` | `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` |
+| `seeds_local_settings` | `ACP_BACKENDS_SEED_LOCAL_SETTINGS` |
+| `native_slash_commands` (host half) | `ACP_BACKENDS_KIRO_SLASH_COMMANDS` |
+| `mcp_config_hot_reload` | `ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD` |
+| `injects_mcp_per_session` (wire half) | `ACP_BACKENDS_SESSION_MCP_ARRAY` |
+| `tool_routing_mechanism` | `routing_for()` over `ACP_BACKEND_ROUTING` — an id lookup, not a session value |
+| `permission_config_required` | `permission_config_for()` over `ACP_BACKEND_PERMISSION_CONFIG` |
 | `bills_host_credits` | `bills_kiro_credits` membership |
 | `reports_subagent_progress` | descriptor level |
 | `activates_agent_by_mode` | `acp/client.py:3521` `if self._is_kiro:` |
 | `native_slash_commands` | `providers/acp.py:1263` `if self.is_claude_backend:` |
 | `reports_compaction_status` | a comment at `providers/acp.py:1297-1306` |
 | `resume_needs_local_transcript` | `acp/client.py:3408` `if self._is_claude:` |
-| `injects_mcp_per_session` | `acp/client.py:3313` / `:3434` |
+| `injects_mcp_per_session` | `acp/client.py` |
 | `advertised_ids_comparable` | `acp/client.py:2438` `if self._is_kiro and self._model_is_unusable(...)` |
 | `substitutes_models_at_session_new` | `acp/client.py:3323` |
 | `can_reset_config_default` | `providers/acp.py:1139` |
@@ -400,21 +589,31 @@ Two of these deserve a note because an earlier draft got them wrong.
 the meaning: the set records an *authorization* — that a `kiro-cli logout` may
 retire this backend's live child — not ownership of a store. A CC session must
 never be recycled on a Kiro logout, so the polarity matters. And
-`shares_process` was one boolean over two sets that `acp/types.py:177-181`
-explicitly documents as a superset relation; it is split above.
+`shares_process` was one boolean over two sets that the comment above
+`ACP_BACKENDS_ACP_RUNTIME` (`acp_backends.py`, formerly cited as
+`acp/types.py:177-181`) documents as a superset relation; it is split above.
+
+The last two rows are not session values and cannot become ones without a
+decision. `Routing` and the two dispatch tables are *mechanism* facts keyed on
+backend id, and `acp_tool_gate.py` reads them from outside `agent_sdk`. Where they
+land is PR 3's to settle (§7).
 
 **Not every backend question is a session question, and one of these is not.**
 `SessionCapabilities` is read off a live session, which makes it the wrong home for
 a question asked in order to decide *how to build* that session.
-`ACP_BACKENDS_ACP_RUNTIME` is exactly that case: `session.py:399-400` computes
-`ACP_BACKENDS_ACP_RUNTIME & selectable_backends()` per call, and `:1398` and
-`:1610` consult it against the configured `agent.acp_backend` **string** to choose
+`ACP_BACKENDS_ACP_RUNTIME` is exactly that case: a helper in `session.py`
+(spelled `_bg_runtime_backends()` today) computes
+`ACP_BACKENDS_ACP_RUNTIME & selectable_backends()` per call, and its callers
+consult the result against the configured `agent.acp_backend` **string** to choose
 between the multiplexed-runtime path and the provider-backed `_Session` path
-serialized by `Semaphore(1)`. No value read off the session can answer it, because
+serialized by `Semaphore(1)`. v3 cited three fixed line numbers here
+(`session.py:399-400`); `#6921` and later splits moved them, and
+some reads now sit in `session_allocation.py` / `session_pool.py`, so PR 3 must
+re-derive the call sites rather than work from that list. No value read off the session can answer it, because
 the session does not exist yet.
 
 It is also not a boolean. The second operand, `selectable_backends()`
-(`acp_backends.py:87`), is a **deployment** fact resolved after module import when
+(`acp_backends.py`), is a **deployment** fact resolved after module import when
 an edition registers backends during boot — deliberately not frozen at import
 time. The intersection is the answer; collapsing it to one boolean reintroduces the
 "silently hands the capability to a third backend" failure the opt-in frozensets
@@ -440,9 +639,9 @@ every call site; and the fact being reported is about the deployment, not about 
 supervisor instance, so hanging it off the supervisor would imply per-instance
 variation that does not exist.
 
-`cli_doctor.py:30` and `:1993` compare `== ACP_BACKEND_KAS` against a config load
-with no session, and are the same pre-session shape. Both they and `session.py`'s
-three reads route through this function; §7 records which phase pays each off.
+`cli_doctor.py` compares `== ACP_BACKEND_KAS` against a config load with no
+session, and is the same pre-session shape. Both it and `session.py`'s reads route
+through this function; §7 records which phase pays each off.
 
 ### 5.3 The SDK surface: presence-tested role protocols, not a flat interface
 
@@ -534,8 +733,8 @@ would-be driver — so nothing outside loses access.
 ### 5.4 The supervisor owns process and session lifecycle
 
 Moved into the SDK: the warm pool (`session.py:1108`), the shared background
-runtime (`:1136`), the per-parent subagent runtime map (`:1153`), the RSS
-watchdog threshold and its settings loader (`:1162`), provider adoption
+runtime, the per-parent subagent runtime map, the RSS
+watchdog threshold and its settings loader, provider adoption
 (`session.py`), and agent-process PID tracking, sweeping and reaping (currently
 `session_pid.py`).
 
@@ -552,10 +751,10 @@ that edge is one-way and the guard exists for standalone importability (§2.4). 
 move must therefore place two pieces of shared surface: `_get_child_pids`, or a
 PID-enumeration primitive it can be replaced by, so `session_pid.py` retains no
 `kiro_crew.acp` import at any scope; and `_kill_pid_tree` (`session_pid.py:300`)
-plus the `_MANAGED_AGENT_MARKERS` vocabulary (`:229`), both of which are consulted
+plus the `_MANAGED_AGENT_MARKERS` vocabulary, both of which are consulted
 from the agent half and the work half. The non-agent sweeps gate their kill sets
-*negatively* on that marker vocabulary (`:1454`, `:1561`) and consume the protected
-set through `_collect_active_pids` (`:267`), so a careless split makes the
+*negatively* on that marker vocabulary and consume the protected
+set through `_collect_active_pids`, so a careless split makes the
 work-class sweep less safe, not merely less tidy.
 
 Deliberately *not* moved: `SessionManager`'s slot/transcript/channel
@@ -579,29 +778,44 @@ layout, agent format, session store, credential store, sandbox posture, MCP
 delivery channel, billing surface, permission engine, and the extra runtimes it
 cannot find for itself.
 
-The full contract, with all three backends side by side and every "must declare"
+The full contract, with all four backends side by side and every "must declare"
 line, is
 [`../system-specs/modules/agent-host-contract.md`](../system-specs/modules/agent-host-contract.md).
 This section states only its shape and the two conclusions that bind this RFC.
 
-### 6.1 Eight buckets, and who proves each one is provider-scoped
+That spec was written against three backends and Codex is absent from every one of
+its buckets (§2.7). It gains a Codex column and a parity test in the same PR as
+this revision — the test being the part that matters, since the spec's own rule is
+that silence is not an answer and nothing was enforcing it.
+
+### 6.1 Eight of the nine buckets, and who proves each one is provider-scoped
 
 | Bucket | The divergence that proves it is not universal | Proven by |
 |---|---|---|
-| 1 Agent definition and layout | Markdown-with-frontmatter in a different directory, no `--agent`, **no `set_mode` at all** | CC |
+| 1 Agent definition and layout | Markdown-with-frontmatter in a different directory, no `--agent`, **no `set_mode` at all**. Codex: no spec projection at all (`NO_MIRROR`), and model plus effort arrive as ACP session config options (`ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, `_EFFORT_VIA_CONFIG_OPTION`) rather than in a definition | CC, Codex |
 | 2 Session persistence | A foreign transcript store keyed by an encoded `realpath(cwd)`, a path-less `session/load`, in-band synchronous `/compact`, one session per process | CC |
 | 3 Identity and auth | Its own sign-in and its own credential command; a host logout must **not** retire its children | CC |
 | 4 Sandbox | No internal sandbox, so Crew's own wrap must stay — the one membership set that fails *open* | CC |
-| 5 MCP server injection | Reads no file; servers must ride `session/new` **and** `session/load`, in a different shape | CC |
+| 5 MCP server injection | Reads no file; servers must ride `session/new` **and** `session/load`, in a different shape. Codex: nothing is projected — `_codex_session_mcp_servers()` returns `[]`, so a session mounts zero tools (§2.7) | CC, Codex |
 | 6 Usage, billing, credits | Dollars per token instead of host credits | CC |
-| 7 Security and permission parity | A native permission engine upstream of and invisible to the host gate; a different option vocabulary with a real `reject`; auto mode as a per-session file | CC and KAS |
+| 7 Security and permission parity | A native permission engine upstream of and invisible to the host gate; a different option vocabulary with a real `reject`; auto mode as a per-session file. Codex: asks only under an applied `("mode", "read-only")` config option, with a residual read gap ACP v1 cannot close | CC and KAS, Codex |
 | 8 Auxiliary runtimes | A second native binary the adapter's own SDK will not find | CC |
+
+The table covers eight buckets, not the contract's nine: bucket 9 (tool-result
+marker fidelity) is absent because it is not proven by a *divergence* — it is the
+one bucket already enforced by a ratchet, so it needs no argument here.
+
+Codex's remaining buckets — 2, 3, 4, 6, 8 and 9 — are **unaudited**, and the
+contract's Codex column says so in each rather than implying the blanks are "same
+as Kiro". Filling them is the companion change named above.
 
 KAS diverges on agent projection, permission vocabulary, prompt resolution and
 MCP projection, but it is Kiro's own service and therefore shares the identity
 store, the runtime, steer and the model vocabulary. **CC is the column that
 matters**, and it is the reason this RFC treats the host contract as a first-class
-artifact rather than a footnote.
+artifact rather than a footnote. Codex is the column that proves the contract
+needs a *test*: it was added, shipped and made selectable without a single bucket
+being answered.
 
 ### 6.2 The parity rule
 
@@ -634,15 +848,20 @@ import boundary, not the host contract (§7).
 
 Each phase is independently shippable and independently abandonable.
 
-### PR 1 — declare the boundary and ratchet the inventory
+### PR 1 — declare the boundary and ratchet the inventory — **LANDED**
 
-Create `src/kiro_crew/agent_sdk/` with the layer docstring and nothing else.
-Add `scripts/check_agent_sdk_boundary.py` and
-`.github/agent-sdk-boundary-baseline.txt`, wire the gate into `ci.yml` beside the
-sibling baselined gates, and add the architecture test. No code moves. The
-host-contract spec already exists
-(`docs/system-specs/modules/agent-host-contract.md`), so PR 1 only keeps it
-reachable and in sync.
+Shipped as described, with one deviation worth recording. `ci.yml` runs
+`--test` and then the gate; `.github/agent-sdk-boundary-baseline.txt` was seeded
+at **58 files / 107 edges** across both roots; the architecture tests landed as
+four `test/test_agent_sdk_*.py` files.
+
+The deviation: PR 1 proposed `src/kiro_crew/agent_sdk/` with "the layer docstring
+and nothing else" and "no code moves". The package now also carries
+`drivers/acp.py`, `backend_install.py`, `backend_identity.py`,
+`provider_identity.py` and `native_commands.py`. That is not drift to be corrected
+— PR 2's work has partly started inside a package the gate already exempts — but
+it does mean the boundary's contents are no longer described by this plan, and
+PR 2's first job is to reconcile what is there with §5.2.
 
 **The gate watches two roots, not one.** `kiro_crew.acp` is the obvious one;
 `kiro_crew.providers` is the one that makes the number honest. `providers/base.py`
@@ -657,26 +876,28 @@ error exists to prevent. `--update-baseline` only lowers counts and deletes line
 An earlier draft of this section hardcoded "68 edges across 42 files"; that number
 came from a regex whose `kiro_crew\.acp` prefix also matched
 `kiro_crew.acp_backends`, a sibling leaf module that imports no ACP at all. The
-AST scan is authoritative, and the exit criteria below name the mechanism rather
-than a figure that rots.
+AST scan is authoritative, which is why §2.2 now points at the baseline instead of
+reprinting a table — v3 disowned the figure here and printed it there.
 
-- Exit: `--test` plants one probe per rule family (plain, module, relative,
+Exit criteria, as verified on the merged tree:
+
+- Verified: `--test` plants one probe per rule family (plain, module, relative,
   multi-line, `TYPE_CHECKING`-only, dynamic `import_module`, `__import__`, and the
   `providers` re-export channel) plus clean probes for the SDK, an unrelated
-  `kiro_crew` module, and the `acp_backends` prefix neighbour — and is run first
-  in the same CI step.
-- Exit: the gate exits 0 on the seeded tree, and non-zero when an import of
+  `kiro_crew` module, and the `acp_backends` prefix neighbour — and runs first in
+  the same CI step (`ci.yml`).
+- Verified: the gate exits 0 on the seeded tree, and non-zero when an import of
   either forbidden root is added to any file under `src/`.
-- Exit: the seeded baseline records what the scan finds, and the gate prints the
-  split per root so both halves of the migration are visible.
-- Exit: `--seed-baseline` refuses when the baseline already exists.
-- Exit: the architecture test pins the exempt set to exactly the three boundary
-  trees, fails when a baseline entry has been paid off but not pruned, and asserts
-  the scan visited a non-trivial number of consumer files so a broken walk cannot
-  read as a clean tree.
-- Exit: `./scripts/docs-lint.sh` passes and the host-contract spec is reachable
-  from `docs/system-specs/modules/README.md`.
-- Blocked on: nothing.
+- Verified: the seeded baseline records what the scan found — 58 files, 107 edges
+  — and the gate prints the split per root, so both halves of the migration are
+  visible on every run.
+- Verified: `--seed-baseline` refuses when the baseline already exists.
+- Verified: the architecture test pins the exempt set to exactly the three
+  boundary trees, fails when a baseline entry has been paid off but not pruned,
+  and asserts the scan visited a non-trivial number of consumer files so a broken
+  walk cannot read as a clean tree.
+- Verified: `./scripts/docs-lint.sh` passes and the host-contract spec is
+  reachable from `docs/system-specs/modules/README.md`.
 
 ### PR 2 — the SDK owns the types
 
@@ -762,34 +983,72 @@ belongs to PR 6, not here.
 - Blocked on: nothing. §12.2 settled the attribution shape (`ChildAttribution`
   value object).
 
-### PR 3 — capabilities and protocols replace backend ids
+### PR 3 — consolidate the capability mechanism into the SDK, and close its gaps
 
-`SessionCapabilities` on every session, and the presence-tested role protocols of
-§5.3 declared as `runtime_checkable`. This PR also lands the two promoted
-host-contract contracts: a declared per-session `mcp_servers` extension point on
-`SessionRequest`, replacing the `_session_mcp_servers()` override hole (the
-core now implements that method, so what PR 3 removes is the untyped override
-seam, not the behaviour), and `writes_own_transcripts` +
-`AgentSupervisor.cleanup_session` as the
-declared home of transcript ownership.
+**This phase was scoped as "build the capability mechanism". It is not that any
+more.** The mechanism exists (§2.3): `acp_backends.py` owns 15 `ACP_BACKENDS_*`
+frozensets, the `Routing` enum, `ACP_BACKEND_ROUTING`,
+`ACP_BACKEND_PERMISSION_CONFIG`, `routing_for()` and `permission_config_for()`;
+`acp_tool_gate.py` owns `ENFORCED_ROUTINGS` and the adapter credential mask. Both
+are leaves that import no ACP, and both sit **outside** `agent_sdk`. PR 3's job is
+to consolidate them behind the boundary and close the two gaps §2.3 names.
 
-Six of the seven `ACP_BACKENDS_*` frozensets stop being read outside the driver.
-The seventh, `ACP_BACKENDS_ACP_RUNTIME`, is asked **before a session exists** —
-`session.py:1398` and `:1610` consult it against a config string to choose which
-path builds the session — so no `SessionCapabilities` value can answer it. §5.2
-puts the pre-session half on the driver registry as
-`spawnable_multiplexed_selections() -> frozenset[str]`, and this PR routes
-`session.py`'s three reads and `cli_doctor.py`'s two through it. Rewriting the
-call sites to stop *dispatching* on the answer is PR 4's move; PR 3 only changes
-where the answer comes from, which is why the exits below record the two files as
-carried rather than clean.
+So this PR lands `SessionCapabilities` on every session and the presence-tested
+role protocols of §5.3 as `runtime_checkable` — but as a *translation* of an
+existing vocabulary, not a new one. Each of the 15 sets is either mapped to a
+semantic question on `SessionCapabilities`, mapped to a pre-session registry query
+(the `ACP_BACKENDS_ACP_RUNTIME` shape, below), or explicitly declared
+driver-internal. A set left unmapped is an unanswered question, not an omission to
+discover in PR 5.
 
-- Exit: zero `ACP_BACKEND_*` imports outside `acp/` and the driver, **except**
-  `session.py` and `cli_doctor.py`, which reach the answer through
-  `spawnable_multiplexed_selections()` and are recorded as carried — paid off in
-  PR 4 and PR 5 wave 4 respectively.
-- Exit: zero `== ACP_BACKEND_` comparisons in consumer code, except the two
-  carried sites above.
+`Routing`, the two dispatch tables and `acp_tool_gate.py` need a decision this PR
+cannot dodge, because they are the part that is keyed on backend id. Three options,
+in the order this RFC prefers them: move the tables into `agent_sdk` and have each
+driver declare its own routing mechanism; keep them where they are and have the SDK
+re-export the accessors, which leaves the id key intact; or leave `acp_tool_gate.py`
+out of the boundary entirely as a policy module above it. Pick one and record it —
+the current state, where a policy module reads a leaf's id tables and neither is
+inside the boundary, is not a resting place.
+
+It also lands the two promoted host-contract contracts: a declared per-session
+`mcp_servers` extension point on `SessionRequest`, replacing the
+`_session_mcp_servers()` override hole (the core now implements that method for
+CC, so what PR 3 removes is the untyped override seam, not the behaviour — and
+`_codex_session_mcp_servers()` returning `[]` is the same hole still open, §2.7),
+and `writes_own_transcripts` + `AgentSupervisor.cleanup_session` as the declared
+home of transcript ownership.
+
+`ACP_BACKENDS_ACP_RUNTIME` is asked **before a session exists**, against a config
+string, to choose which path builds the session — so no `SessionCapabilities` value
+can answer it. §5.2 puts the pre-session half on the driver registry as
+`spawnable_multiplexed_selections() -> frozenset[str]`, and this PR routes the
+`session.py`-side reads and `cli_doctor.py`'s through it. Those call sites moved
+with `#6921` and later splits, so PR 3 re-derives them rather than working from a
+line list. Rewriting them to stop *dispatching* on the answer is PR 4's move; PR 3
+only changes where the answer comes from, which is why the exits record those files
+as carried rather than clean.
+
+- Exit: `ACP_BACKEND_*` constants and `ACP_BACKENDS_*` sets are read only inside
+  `agent_sdk/` and whichever module PR 3's decision leaves owning the tables.
+  **The v3 exit — "zero `ACP_BACKEND_*` imports outside `acp/` and the driver" —
+  is deleted as vacuous:** the constants left `acp/` entirely, so a consumer
+  importing them from `acp_backends.py` satisfies it while changing nothing.
+- Exit: the six surviving identity checks outside the boundary are gone, each
+  replaced by a capability question, not relocated:
+  `config/loader.py` (`== ACP_BACKEND_CLAUDE` off a config load),
+  `dashboard/chat_handlers.py` (`provider.is_claude_backend`),
+  `dashboard/chat_runner.py` (`getattr(client, "is_claude_backend", False)`) and `is_claude_backend(client)`), and
+  `knowledge/llm_pool.py` — which reads `AcpClient`'s **private** `_is_claude`
+  from outside the package and is the sharpest of the six.
+- Exit: every one of the 15 `ACP_BACKENDS_*` sets has a recorded disposition —
+  semantic question, pre-session registry query, or driver-internal — and a test
+  fails when a new set is added without one.
+- Exit: `Routing` / `ACP_BACKEND_ROUTING` / `ACP_BACKEND_PERMISSION_CONFIG` have a
+  named home, and `acp_tool_gate.py`'s relationship to the boundary is stated
+  rather than incidental.
+- Exit: Codex is covered. `routing_for()` and `permission_config_for()` fail closed
+  today, so the capability translation must preserve that: an id the tables do not
+  name resolves to refuse, never to a neighbour's mechanism.
 - Exit: the pre-session multiplex query is reached only through
   `spawnable_multiplexed_selections()`, and no consumer computes
   `ACP_BACKENDS_ACP_RUNTIME & selectable_backends()` itself.
@@ -799,33 +1058,58 @@ carried rather than clean.
   spelling, so a second `not is_claude`-shaped inference cannot reappear.
 - Blocked on: PR 2.
 
-### PR 4 — the supervisor takes the lifecycle
+### PR 4 — the supervisor takes the lifecycle — **import cycle half LANDED**
 
-Warm pool, background runtime, per-parent runtime map, RSS watchdog, adoption,
-and agent-process PID tracking move into `agent_sdk`. `preflight()` lands here.
-This is also where `session.py` stops dispatching on the pre-session multiplex
-answer at all, because the construction choice moves with the pool.
+**The cheap half is done and this section is narrowed.** v3 scoped PR 4 as moving
+the warm pool, background runtime, per-parent runtime map, RSS watchdog, adoption
+and agent-process PID tracking into `agent_sdk`, and named the cycle it was
+breaking as `session_pid` ↔ `worker_pool`. Both were wrong (§2.4): three of the
+four lifecycle concerns already sit in neutral modules that `session.py` merely
+forwards to, and there is no `session_pid` ↔ `worker_pool` cycle. The real cycle
+was `session_pid.py:28 → providers.base → acp.types → acp/__init__ → acp.runtime
+→ session_pid`, it was a hard `ImportError` rather than a comment, and it is
+closed: that import is deleted outright — `_sync_kill_provider`'s parameter is
+`object`, since every read it makes is a `getattr` against a private attribute the
+ABC does not declare — `session_compaction.py`'s `LLMProvider = Any` stub is
+deleted, and `test/test_agent_lifecycle_cycle.py` pins it in a fresh interpreter.
+The baseline shrank 107 → 106 as a result, so this is recorded progress rather
+than an exemption.
 
-Breaking the cycle is the point, and the cycle is `session_pid → acp.client →
-session → session_pid` (§2.4). So this phase moves `_get_child_pids` — or replaces
-it with a PID-enumeration primitive the SDK owns — and places `_kill_pid_tree`
-plus `_MANAGED_AGENT_MARKERS`, both of which the work-class sweep also depends on.
-Deleting the `worker_pool.py:49` guard follows from the move; it is not the proof.
+What is left for PR 4 is ownership, which the cheap fix does not settle:
+`session_pid.py`'s agent half moves behind the supervisor, `preflight()` lands
+here, and `session.py` stops dispatching on the pre-session multiplex answer at
+all because the construction choice moves with the pool. The move must place
+`_get_child_pids` — or replace it with a PID-enumeration primitive the SDK owns —
+and place `_kill_pid_tree` plus `_MANAGED_AGENT_MARKERS`, both consulted by the
+work-class sweep as *safety* input, not merely as shared code.
 
-- Exit: `session.py` declares no `AcpRuntime`-typed attribute.
-- Exit: `session_pid.py` contains no `kiro_crew.acp` import at any scope,
-  including lazy in-function imports. This is the cycle criterion; it fails today.
-- Exit: `acp/worker_pool.py` contains no `from kiro_crew.session_pid import`.
-  (Stated without the `ImportError` wording: the guard catches `Exception`, so a
-  grep for `try/except ImportError` matches nothing and would pass vacuously.)
+- Exit: `session.py` declares no `AcpRuntime`-typed attribute, and the forwarding
+  properties onto `session_pool.py` / `session_background.py` /
+  `session_allocation.py` / `session_cleanup.py` either move with the pool or are
+  stated as staying, deliberately.
+- Exit: **`session_pid.py` imports no `kiro_crew.acp` or `kiro_crew.providers`
+  name at module scope, proven by `test/test_agent_lifecycle_cycle.py` — a
+  standalone import in a fresh interpreter plus a zero-leaked-ACP-modules
+  assertion — not by a grep.** This criterion is already met, and it replaces v3's,
+  which was factually wrong: deleting the two lazy `acp.client` imports would not
+  have closed the real cycle, because a lazy in-function import runs after both
+  modules are initialized.
+- Exit (tidy-up, not a cycle proof): `acp/worker_pool.py` contains no
+  `from kiro_crew.session_pid import`. v3 listed this as cycle evidence; the edge
+  is one-way and the guard exists for standalone importability (§2.4), so it
+  certifies nothing about the cycle and should not be read as doing so.
+- Exit: the remaining lazy `from kiro_crew.acp.client import _get_child_pids`
+  calls (`session_pid.py`) are gone — this is a *coupling* criterion
+  now, not the cycle criterion.
 - Exit: `dashboard/session_memory.py` imports no underscore-prefixed ACP names
   (`_get_rss_tree_mb`, `_iter_descendant_pids` today).
 - Exit: `dashboard/stall_enrichment.py` imports no `kiro_crew.acp` name at all.
   The underscore form of this criterion passes today — its only ACP import is
   `acp.liveness.socket_inodes` — so it certifies nothing; the `/proc` primitive has
   to move behind the SDK or into a shared module for this to go green.
-- Blocked on: PRs 2-3. §12.1 settled PID ownership on the supervisor, so this
-  phase is design-unblocked.
+- Blocked on: PRs 2-3 for the ownership move. §12.1 settled PID ownership on the
+  supervisor, so this phase is design-unblocked, and its import-cycle half has
+  already shipped independently of them.
 
 ### PR 5 — consumer migration waves
 
@@ -893,10 +1177,20 @@ hand-written baseline entry for it would fail
 `test_every_recorded_violation_still_exists` and be erased by
 `--update-baseline`.
 
-`kiro_crew.providers` is deleted, and with it the `providers/` entry in the gate's
-exempt set — the exemption was always temporary and the architecture test pins the
-set, so forgetting to remove it fails a test rather than silently widening the
-boundary.
+`kiro_crew.providers`'s **shim surface** is deleted — `base.py`'s aliases and
+`EVENT_*` re-exports, `acp.py`'s provider class and its `is_claude_backend` /
+`provider_label` helpers — and with it the `providers/` entry in the gate's exempt
+set. The exemption was always temporary and the architecture test pins the set, so
+forgetting to remove it fails a test rather than silently widening the boundary.
+
+**`providers/mirrors/` is not part of that deletion and PR 6 cannot start until it
+has a home.** It is a live agent-config projection layer, not a shim (§5.1), so
+there are only two honest orders: relocate it first — `agent_sdk/mirrors/` is the
+obvious candidate, since a mirror projects a spec for one host and that is driver
+work — or delete only the shim modules and leave `providers/` as a package whose
+sole remaining contents are mirrors, in which case the exempt set keeps a
+`providers/mirrors/` prefix and this PR's "reduced to two trees" claim is wrong as
+written. Decide in §12.5; do not let PR 6 discover it.
 
 The exempt set is reduced to **two** trees, `agent_sdk/` and `acp/`, not to one
 module. `acp/` stays exempt because 30 of its own internal imports across 8 files
@@ -908,13 +1202,15 @@ asserts `.is_dir()`.
 Specs updated in the same commit per `docs/README.md`.
 
 "Sealed" here means the **import** boundary. The host contract is not sealed by
-this PR and must not be described as such: four of its eight buckets still have no
+this PR and must not be described as such: four of its nine buckets still have no
 seam, and the spec doc names them.
 
 - Exit: `.github/agent-sdk-boundary-baseline.txt` is empty (header only), and the
-  gate's exempt set — `agent_sdk/` and `acp/` — is the only remaining
-  exemption, with the pinned exempt-set test updated to those two prefixes in
-  the same commit.
+  gate's exempt set is exactly the trees §12.5's mirrors decision leaves standing
+  — `agent_sdk/` and `acp/` if mirrors relocated, plus `providers/mirrors/` if it
+  did not — with the pinned exempt-set test updated in the same commit.
+- Exit: `providers/mirrors/` has a stated home and no code in it was deleted by
+  accident along with the shim.
 - Exit: no `request_id`, `options`, `raw_tool_params`, `tool_final`, `tool_kind` or
   `runtime_global` attribute survives on `AgentEvent`, and no deprecated property
   from PR 2 remains.
@@ -1055,6 +1351,10 @@ baseline has no history to protect, so deleting and re-seeding it is a correctio
 After PR 1 merges it does have history, and the guard is absolute — a path that
 appears later is a violation to route through `agent_sdk`, not a line to add.
 
+**That window is closed.** PR 1 landed with the baseline at 58 files / 107 edges,
+so the guard is now absolute with no exception, and the paragraph above is history
+rather than live guidance.
+
 **Seeding and updating are separate verbs.** `--update-baseline` can only lower
 counts and delete lines; it refuses to introduce a path. Creating the file at all
 requires `--seed-baseline`, which **refuses to run when the baseline already
@@ -1119,10 +1419,14 @@ An `ast`-based test in house style, modelled on
   keep working; only the Python import path moves.
 - **`LLMProvider` survives migration, and `AgentEvent` ships deprecation shims.**
   `kiro_crew.providers.base` becomes a deprecation shim re-exporting the SDK role
-  protocols, so PR 2 does not have to land with all 42 consumer files. That alone
+  protocols, so PR 2 does not have to land with every consumer file. That alone
   is not enough to make PR 2 additive: the five ACP-shaped fields PR 2 drops from
-  the event object are read at over 200 sites across 17 files
-  (`event.request_id` alone is 131 reads in 17 files). PR 2 therefore lands each
+  the event object are read at a large majority of the consumer files, led by
+  `event.request_id`. The figures v3 carried here — over 200 sites across 17
+  files, 131 `request_id` reads — were measured on `d7b7d65c3`, and the baseline
+  has grown from 68 to 107 edges since, so treat them as unverified and re-measure
+  inside PR 2. §PR 5's rule applies to this paragraph as much as to that one: the
+  scan is the source, not the prose. PR 2 therefore lands each
   dropped field as a read-only derived property on `AgentEvent` that raises
   `DeprecationWarning` — so every existing reader keeps working on the day PR 2
   merges. PR 5's waves delete each shim as they migrate its last reader, and PR 6
@@ -1170,8 +1474,10 @@ An `ast`-based test in house style, modelled on
    into a generic `AgentError` would silently un-gate those endpoints.
 7. **Logout authorization must not be inverted.** `recyclable_on_host_logout`
    replaces a set whose name suggests ownership but whose meaning is
-   authorization (`acp/types.py:182-196`). Getting the polarity wrong would let a
-   host logout retire a foreign backend's live child.
+   authorization — `ACP_BACKENDS_KIRO_IDENTITY_STORE`, at
+   `acp_backends.py` since the constants left `acp/types.py` (§2.3). Getting
+   the polarity wrong would let a host logout retire a foreign backend's live
+   child.
 8. **Sandbox delegation must stay fail-closed.** Every detection failure in
    `sandbox.py` resolves toward Crew's own sandbox. `self_sandboxes` must default
    to `False` for an unknown provider, matching `bills_kiro_credits`'s existing
@@ -1185,7 +1491,8 @@ An `ast`-based test in house style, modelled on
 ### 11.1 Evolve `kiro_crew.providers` in place
 
 Rejected. It is already positioned as the boundary and has not become one in
-practice: it re-exports rather than translates, and 42 modules bypass it. Fixing
+practice: it re-exports rather than translates, and most consumer modules bypass
+it — the baseline is the count. Fixing
 it in place means the same three inversions plus keeping a name whose current
 meaning is "ACP with an alias". A new package makes the rule statable — *this
 directory may import ACP, that one may not* — which is what the ratchet needs.
@@ -1197,8 +1504,8 @@ frozen data record with no adapter ABC, and the work actually done for a backend
 still lives in id-keyed `if/elif` chains — so adding an adapter means a
 descriptor row plus edits at several dispatch sites. Making that a real Protocol
 is worthwhile, but it is entirely **below** this boundary: it improves how the
-driver is organised internally and leaves all 466 event-vocabulary usages and 68
-import edges untouched. #6307 should land on its own merits; this RFC's Phase 1
+driver is organised internally and leaves the whole event vocabulary and every
+baselined import edge untouched. #6307 should land on its own merits; this RFC's Phase 1
 does not touch it.
 
 ### 11.3 Adopt `import-linter`
@@ -1211,13 +1518,13 @@ and keeps the gate runnable without an install step.
 
 ### 11.4 One big-bang boundary commit
 
-Rejected. It would touch 42 files across every subsystem in one unreviewable
-diff, and the two hardest decisions (§12.1, §12.2) would be settled implicitly
-inside it rather than answered first.
+Rejected. It would touch every baselined file across every subsystem in one
+unreviewable diff — 58 of them as PR 1 seeded it — and the two hardest decisions
+(§12.1, §12.2) would be settled implicitly inside it rather than answered first.
 
 ### 11.5 Abstract the whole host contract now
 
-Rejected for this RFC, on scope — with two exceptions. §6.3 covers eight buckets,
+Rejected for this RFC, on scope — with two exceptions. §6.3 covers eight of the nine buckets,
 four of which have no seam whatsoever. Bundling all of it would make the SDK
 boundary hostage to decisions about transcript formats and regex engines.
 Documenting the contract is what lets that work start independently, and is what
@@ -1262,7 +1569,8 @@ frozensets were introduced to remove. Presence-tested protocols cost one
 `isinstance` at each optional call site and make the absence type-checkable.
 
 The codebase already argues this against itself. The comment introducing
-`ACP_BACKENDS_ACP_RUNTIME` (`acp/types.py:175-181`) says the four sites meaning
+`ACP_BACKENDS_ACP_RUNTIME` (`acp_backends.py`, cited in v3 at its old
+`acp/types.py` address) says the four sites meaning
 "kiro or kas" say so positively "rather than as `not is_claude_backend` — an
 inference that silently captures every harness added later", and in the same
 breath records that the set is a **superset** of `ACP_BACKENDS_SESSION_SHARING`.
@@ -1310,20 +1618,29 @@ That inverts the ownership model: **Kiro Crew owns the OAuth chain end-to-end.**
 
 ## 12. Open questions
 
-All questions carry a disposition as of 2026-08-28. The two blockers are decided,
+All questions carry a disposition as of 2026-09-05. The two blockers are decided,
 so §12.1 no longer gates PR 4 and §12.2 no longer gates PR 2. The others were
 never blocking; each records a conservative default and the condition that
 reopens it.
 
 1. **Who owns agent-process supervision? — DECIDED: the supervisor.**
    `session_pid.py`'s agent-process half moves into `agent_sdk`; its non-agent
-   PID duties (MCP probes, cron scripts) stay where they are. The cycle this
-   settles is `session_pid → acp.client → session → session_pid`
-   (`session_pid.py:311`, `:1888`), so the move has to relocate `_get_child_pids`
-   and place `_kill_pid_tree` + `_MANAGED_AGENT_MARKERS`, which both halves use.
-   The `acp/worker_pool.py:49` guard is deleted as a consequence; it is a
-   one-way standalone-importability fallback, not the cycle, and it catches
-   `Exception` rather than `ImportError`.
+   PID duties (MCP probes, cron scripts) stay where they are. The decision stands;
+   **its justification named the wrong cycle and is corrected here.** v3 said the
+   cycle being settled was `session_pid → acp.client → session → session_pid`,
+   evidenced by two lazy `_get_child_pids` imports. A lazy in-function import
+   cannot close a loop at initialization time. The real cycle ran
+   `session_pid.py:28 → providers.base → acp.types → acp/__init__ → acp.runtime →
+   session_pid`, raised a hard `ImportError` on a standalone
+   `import kiro_crew.session_pid`, and **is already closed** by deleting that one
+   annotation-only import rather than deferring it (§2.4). So the cycle is no longer
+   an argument for this decision — the ownership question is the whole argument,
+   and the move still has to relocate `_get_child_pids` and place
+   `_kill_pid_tree` + `_MANAGED_AGENT_MARKERS`, which both halves use.
+   The `acp/worker_pool.py:49` guard is still in place and PR 4 will delete it as
+   a consequence of the move, not as a proof of the cycle: it is a one-way
+   standalone-importability fallback and it catches `Exception` rather than
+   `ImportError`. That clarification was right in v3 and still is.
    *Rationale:* the warm pool and background runtime move in PR 4 regardless,
    and kill authority has to travel with the pool it kills. The rejected
    alternative — SDK depends on `session_pid` — preserves the cycle and only
@@ -1332,18 +1649,18 @@ reopens it.
    tracking file format, in which case the file stays put and the supervisor
    writes through a narrow interface instead of owning it. **Note this condition
    is already partly met and PR 4 must plan for it:** the work-class sweeps gate
-   their kill sets negatively on `_MANAGED_AGENT_MARKERS` (`:1454`, `:1561`) and
-   the MCP sweep consumes the protected set through `_collect_active_pids`
-   (`:267`). That is shared *safety* input, not file format, so the decision
-   stands — but the split must preserve both, not discover them.
-   **PR 4 is unblocked.**
+   their kill sets negatively on `_MANAGED_AGENT_MARKERS` and the MCP sweep
+   consumes the protected set through `_collect_active_pids`. That is shared
+   *safety* input, not file format, so the decision stands — but the split must
+   preserve both, not discover them. (Line numbers in `session_pid.py` have moved
+   twice since v3 recorded them; re-derive.)
+   **PR 4 is unblocked, and its import-cycle half has landed.**
 
 2. **Does `AgentEvent` carry child attribution as an object, or flatten it? —
    DECIDED: a `ChildAttribution | None` value object,** non-`None` only on
    subagent-related events.
    Measured rather than assumed. Outside `acp/` and `providers/`, the three
-   fields have **10 references across 4 files**: `dashboard/chat_runner.py:6624`,
-   `:6743`, `:7820`; `subagent.py:1719`, `:1744`, `:6011`, `:6060`;
+   fields have **10 references across 4 files**: `dashboard/chat_runner.py:6624`; `subagent.py:1719`;
    `messaging/driver.py:468`; plus two comment lines. `mcp_identity_ambiguous`
    has **zero** external readers. The 466-usage figure in §2.1 counts the whole
    `EVENT_*` / `STOP_REASON_*` vocabulary; almost none of it reads attribution.
@@ -1361,8 +1678,10 @@ reopens it.
    (`multiplexes_sessions` versus `shares_subagent_session`) answers the
    consumer-facing question without exposing a runtime object.
    What an earlier draft of this item missed is that the *pre-session* half is not
-   a session question at all: `session.py:1398` and `:1610` ask it off a config
-   string to choose which path builds the session, and the answer is
+   a session question at all: `session.py`-side callers ask it off a config string
+   to choose which path builds the session — v3 named `:1398` and `:1610`, both
+   stale after the `#6921` splits, with some reads now in
+   `session_allocation.py` / `session_pool.py` — and the answer is
    `ACP_BACKENDS_ACP_RUNTIME & selectable_backends()` — a set, whose second
    operand is a deployment fact resolved during boot. §5.2 puts that on the driver
    registry as `spawnable_multiplexed_selections()`; a `SessionCapabilities` value
@@ -1373,23 +1692,33 @@ reopens it.
    produces the answer as a side effect of doing the move.
 
 4. **Should host-contract declarations become code? — DISPOSITION: yes,
-   eventually; not in this RFC.** The earlier draft deferred this on the grounds
+   eventually; not in this RFC. The condition that reopens it has now fired
+   once, and it was missed.** The earlier draft deferred this on the grounds
    that "with one provider it would be a table with one row." That rationale was
-   **wrong**: there are three backends, and the Claude Code row is complete. The
+   **wrong**: there are four backends, and the Claude Code row is complete. The
    trigger it named — a second driver being proposed — has effectively already
    fired, in another repository.
-   What changes now: PR 1's checklist is written against three columns rather
-   than one, and PR 3 lands the two declarations the boundary cannot do without
-   (per-session MCP injection, transcript ownership). A full `HostProfile` type
-   covering all eight buckets still waits, because four of them have no seam to
+   Then Codex landed, shipped, and became selectable **without answering a single
+   bucket** (§2.7). A prose checklist that says "silence is not an answer" and has
+   nothing enforcing it is the failure mode this question exists to prevent, and it
+   has now happened in-repo rather than hypothetically. That is evidence for "yes",
+   not against.
+   What changes now: the checklist is written against four columns rather than
+   one, the host-contract spec gains a Codex column and a parity test alongside
+   this revision, and PR 3 lands the two declarations the boundary cannot do
+   without (per-session MCP injection, transcript ownership). A full `HostProfile` type
+   covering all nine buckets still waits, because four of them have no seam to
    type against yet (§6.3) — typing an unsealed bucket would freeze the wrong
    shape.
    *Revisit if:* a driver is proposed inside this repository, at which point an
-   omitted declaration should fail at import rather than at runtime.
+   omitted declaration should fail at import rather than at runtime. Given Codex,
+   read that condition as met in spirit: the parity test is the interim
+   enforcement, and a `HostProfile` type is the eventual one.
 
-5. **Does the deprecated `providers` shim need a release window? —
-   DISPOSITION: check, then decide inside PR 6.** The question is not only about
-   external consumers. `from kiro_crew.providers` is a substantial minority of the
+5. **Does the deprecated `providers` shim need a release window, and where does
+   `providers/mirrors/` live? — DISPOSITION: three halves; the third is a
+   relocation decision, not a release-window one, and it gates PR 6.** The
+   question is not only about external consumers. `from kiro_crew.providers` is a substantial minority of the
    baseline — the gate prints the exact split on every run — and it pulls the role
    protocols (`LLMProvider`), the provider class (`AcpProvider`), the event type
    and `EVENT_*` constants that `providers/base.py` re-exports from ACP, plus
@@ -1402,13 +1731,28 @@ reopens it.
    which is why the gate watches both roots.
    So the in-repo half is PR 5's work, not a release-window question, and PR 6
    must not arrive with it outstanding.
-   What remains genuinely open is the *external* half: before PR 6 deletes
-   `kiro_crew.providers`, grep the internal companion and the app catalogue for
+   The second half, genuinely open, is *external*: before PR 6 deletes the shim
+   surface, grep the internal companion and the app catalogue for
    `kiro_crew.providers.base`. Zero hits → delete in PR 6. Any hit → one release
    window, and the shim carries its deprecation warning from PR 2 rather than
    PR 6.
-   *Not blocking* — the in-repo count is already tracked by the gate's per-root
-   split, and the external check is cheap and belongs to PR 6's own checklist.
+   **The third half is new since v3 and is not a release-window question at all.**
+   `src/kiro_crew/providers/mirrors/` did not exist when this item was written. It
+   is now a real agent-config projection layer — `base.py`'s `AgentConfigMirror`
+   with `Concern` / `Disposition` / `Ruling`, `registry.py`'s `MIRRORS` /
+   `NO_MIRROR`, `claude_code.py`, `README.md` — with claude the only mirror and
+   kiro, KAS and codex carrying explicit `NO_MIRROR` reasons, and KAS's own entry
+   says its projection is next in the stack. So the layer is *growing*, and
+   "delete `kiro_crew.providers`" as v3 wrote it would delete live code. It needs a
+   home named before PR 6 starts, and the choice is a real one: a mirror projects
+   an agent spec for one host, which is driver work and argues for
+   `agent_sdk/mirrors/`; but the mirrors also encode per-host *decisions* a driver
+   should not be free to restate, which argues for leaving them above the boundary
+   in a package of their own. Either answer is defensible; discovering the question
+   during PR 6 is not.
+   *Blocking for PR 6, not before.* The in-repo shim count is already tracked by
+   the gate's per-root split, the external check is cheap, and the mirrors decision
+   only has to be made by the time the deletion lands.
 
 6. **Is protocol-presence testing the right consumer ergonomic? —
    DISPOSITION: yes for optional *operations*, no for optional *facts*.**

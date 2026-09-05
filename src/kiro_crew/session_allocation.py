@@ -29,8 +29,8 @@ from kiro_crew.metrics.sessions import (
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
 else:
-    # Importing providers.base from this leaf enters providers -> acp.runtime ->
-    # session_pid -> providers when the module is imported standalone.
+    # ProviderFactory below subscripts LLMProvider at module scope, so a name must
+    # exist at runtime; a real import would cross the agent-SDK boundary gate.
     LLMProvider = Any
 
 

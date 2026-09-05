@@ -25,7 +25,6 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
-from kiro_crew.providers.base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -547,12 +546,23 @@ def _kill_confirmed_and_writeback(
     return orphan_killed
 
 
-def _sync_kill_provider(provider: LLMProvider) -> None:
+def _sync_kill_provider(provider: object) -> None:
     """Synchronously kill a provider's process.
 
     Used during CancelledError handling where async shutdown is unreliable
     (asyncio.shield + await raises CancelledError immediately, leaving
     shutdown fire-and-forget).  Falls back to SIGKILL if SIGTERM fails.
+
+    ``provider`` is deliberately ``object`` rather than ``LLMProvider``.  Every
+    read below goes through ``getattr(..., None)`` against a PRIVATE attribute
+    that the provider ABC does not declare, so the ABC never described this
+    parameter -- and importing it here for the annotation alone closed a cycle:
+    session_pid -> providers.base -> acp.types -> acp/__init__ -> acp.runtime ->
+    session_pid.  That cycle was fatal, not cosmetic: importing this module
+    first raised ``ImportError`` on ``_track_pid``.  It is why sibling
+    leaves carry ``LLMProvider = Any`` runtime stubs and why this module reaches
+    acp.client through function-local imports.  ``test_agent_lifecycle_cycle.py``
+    pins the absence; keep this leaf ignorant of the agent layer.
     """
     # ACP provider: long-lived process via client._pid
     client = getattr(provider, "_client", None)

@@ -3151,18 +3151,29 @@ class AcpClient:
     def _codex_session_mcp_servers(self) -> list:
         """MCP server array passed to a codex ``session/new`` / ``session/load``.
 
-        The codex twin of :meth:`_claude_session_mcp_servers`, still ``[]``: codex is
-        in ``ACP_BACKENDS_KNOWN`` but not in ``BASELINE_SELECTABLE_BACKENDS``, so no
-        public build offers it and there is no session to give tools to yet. The
-        registry in :mod:`kiro_crew.providers.mirrors` records that as codex's
-        declared state rather than leaving the omission unexplained; when an edition
-        registers a codex provider, the mirror it needs goes in that folder beside
-        claude's and this hook returns it.
+        The codex twin of :meth:`_claude_session_mcp_servers`, still ``[]`` -- and
+        codex IS in ``BASELINE_SELECTABLE_BACKENDS``, so this is a state a plain
+        public build reaches TODAY, not a dormant seam. Nothing is PROJECTED onto a
+        codex session: the only entries it gets are the pooled broker stubs
+        ``_pooled_mcp_servers`` appends for every backend alike, empty when the
+        shared gateway is off. So Crew's own control plane -- ``kirocrew-core``,
+        ``kirocrew-cron`` -- is never projected here, but it is NOT thereby absent:
+        a stub the overlay wrapped still mounts, which makes the gateway rather than
+        this hook the thing that decides. With the gateway off, a codex session has
+        no MCP tools at all.
 
-        An edition overriding this must drop any entry whose transport the adapter
-        does not advertise. codex-acp answers ``session/new`` with ``-32602`` for
-        an unsupported transport rather than skipping that one server, so a single
-        bad entry costs the whole session.
+        It stays ``[]`` because no projection has been written and the shape this
+        adapter accepts is unverified, NOT because nobody can reach it. The registry
+        in :mod:`kiro_crew.providers.mirrors` records that as codex's declared state
+        rather than leaving the omission unexplained; when the mirror is written it
+        goes in that folder beside claude's and this hook returns it.
+
+        Empty rather than guessed is the fail-safe direction, and the one
+        established constraint is why: codex-acp answers ``session/new`` with
+        ``-32602`` for a transport it does not advertise rather than skipping that
+        one server, so a single bad entry costs the whole session. An edition
+        overriding this must drop any entry whose transport the adapter does not
+        advertise.
         """
         return []
 
@@ -4370,8 +4381,10 @@ class AcpClient:
                 )
             argv: list[str] = claude_argv
         elif self._is_codex:
-            # Dormant seam — see method docstring. codex-acp takes no argv of its
-            # own: the adapter is spawned bare and driven entirely over the pipe,
+            # Selectable on a public build (BASELINE_SELECTABLE_BACKENDS), so this
+            # branch runs for real users; what is unwritten is the session MCP array
+            # (_codex_session_mcp_servers), not the spawn. codex-acp takes no argv of
+            # its own: the adapter is spawned bare and driven entirely over the pipe,
             # so unlike the kiro branch there is nothing to append. CODEX_PATH is
             # left exactly as the operator set it (the adapter ships its own Codex
             # binary; overriding it is an explicit choice, never a default).
