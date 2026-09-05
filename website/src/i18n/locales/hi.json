@@ -8508,7 +8508,9 @@
       "reverted": "रिवर्ट किया गया",
       "s_artifact": "का आर्टिफ़ैक्ट",
       "save": "सहेजें",
+      "save_conflict_changed_since_read": "लोड करने के बाद सामग्री बदल गई है — किसी अन्य विंडो, एजेंट या बाहरी संपादन से। ड्राफ़्ट सुरक्षित है; दोबारा सहेजने पर नई सामग्री अधिलेखित हो जाएगी।",
       "save_failed": "सहेजना विफल:",
+      "save_refused_content_changed": "सहेजना अस्वीकृत — सामग्री बदल गई है",
       "save_to_live_cmd_s_updates_the_live_state_withou": "लाइव में सहेजें (Cmd+S) — संस्करण बनाए बिना लाइव स्थिति अपडेट करता है",
       "saving": "सहेजा जा रहा है…",
       "session_title": "आर्टिफ़ैक्ट: {{name}}",
@@ -8538,6 +8540,7 @@
       "version": "संस्करण",
       "via_dashboard": "डैशबोर्ड के माध्यम से",
       "view_remote": "रिमोट देखें",
+      "view_the_newer_content": "नई सामग्री देखें",
       "your_current_edits_are_saved_as_a_version_first": "आपके वर्तमान संपादन पहले एक संस्करण के रूप में सहेजे जाते हैं, इसलिए कुछ भी नहीं खोता।"
     },
     "artifactPopoutFrame": {

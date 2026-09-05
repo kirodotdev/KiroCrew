@@ -1328,6 +1328,71 @@ class TestUpdate:
         assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_stale_token_returns_409_with_recovery_fields(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        # Optimistic-concurrency loss (#7751): a save carrying a token that
+        # no longer matches live content is refused with everything the
+        # client needs to refetch and re-base.
+        from kiro_crew.artifacts import _content_sha256
+
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_update(
+            _request(
+                body={"content": "v2", "expected_sha256": _content_sha256("stale base")},
+                match={"slug": "x"},
+            )
+        )
+        assert resp.status == 409
+        body = _json_body(resp)
+        assert body["current_sha256"] == _content_sha256("v1")
+        assert body["version"] == 1
+        assert "error" in body
+        # Refused before any write: content unchanged.
+        assert isolated_store.get("x").content == "v1"
+
+    @pytest.mark.asyncio
+    async def test_matching_token_saves_and_returns_fresh_token(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        from kiro_crew.artifacts import _content_sha256
+
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_update(
+            _request(
+                body={"content": "v2", "expected_sha256": _content_sha256("v1")},
+                match={"slug": "x"},
+            )
+        )
+        assert resp.status == 200
+        body = _json_body(resp)
+        assert body["content"] == "v2"
+        # The response carries the NEXT token so the client can keep saving.
+        assert body["content_sha256"] == _content_sha256("v2")
+
+    @pytest.mark.asyncio
+    async def test_malformed_token_returns_400_not_409(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        # A non-string token is a caller bug (400), not a phantom conflict.
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_update(
+            _request(body={"content": "v2", "expected_sha256": 123}, match={"slug": "x"})
+        )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_detail_response_includes_content_sha256(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        from kiro_crew.artifacts import _content_sha256
+
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_detail(_request(match={"slug": "x"}))
+        assert resp.status == 200
+        assert _json_body(resp)["content_sha256"] == _content_sha256("v1")
+
+    @pytest.mark.asyncio
     async def test_artifact_error_fallback_returns_500(
         self, isolated_store, patch_restricted, monkeypatch
     ) -> None:
@@ -1780,7 +1845,7 @@ class TestRelocate:
         assert resp.status == 200, _json_body(resp)
         # …and the store agrees, which is the whole point of one producer.
         assert isolated_store._try_read_source_path(str(target)) == "# hi"
-        assert isolated_store._try_write_source_path(str(target), "# edited") is True
+        assert isolated_store._try_write_source_path(str(target), "# edited") == "ok"
 
     @pytest.mark.asyncio
     async def test_configured_extra_root_allowed(

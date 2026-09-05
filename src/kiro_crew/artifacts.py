@@ -194,6 +194,28 @@ class ArtifactValidationError(ArtifactError):
     """Raised when a field fails validation (slug, tag, kind, content, etc.)."""
 
 
+class ArtifactConflictError(ArtifactError):
+    """Raised when an optimistic-concurrency content write loses the race.
+
+    ``update()`` raises this when the caller supplied ``expected_sha256`` and
+    the live content no longer hashes to it — someone else (another dashboard
+    window, an agent MCP edit, or an external write to a file-backed
+    artifact's ``source_path``) changed the content since the caller last
+    read it. Carries what the client needs to recover: the sha of the
+    content that is actually live now, and the current version, so it can
+    refetch and re-base instead of silently clobbering the other writer.
+
+    Mirrors the design of the publish layer's ``last_pushed_sha256`` /
+    ``expectedCurrentSha256`` guard (see :class:`ArtifactPublication`), which
+    applies the same optimistic-concurrency model to remote pushes.
+    """
+
+    def __init__(self, message: str, *, current_sha256: str, version: int) -> None:
+        super().__init__(message)
+        self.current_sha256 = current_sha256
+        self.version = version
+
+
 # ── Data model ────────────────────────────────────────────────────────────────
 
 
@@ -504,6 +526,15 @@ class Artifact:
         d = asdict(self)
         if not include_content:
             d.pop("content", None)
+        elif d.get("content") is not None:
+            # Optimistic-concurrency token: sha of the content as loaded
+            # (the live state for a current read, the snapshot for a
+            # versioned read). Computed on the RAW content, before the HTTP
+            # serializer's redaction pass — the store's conflict guard in
+            # ``update()`` hashes the raw bytes on disk, so a token derived
+            # from redacted text would never match and every guarded save
+            # would 409. Clients carry it back as ``expected_sha256``.
+            d["content_sha256"] = _content_sha256(d["content"])
         # slug_collided_with is an internal create-time signal read off the
         # attribute, never through this dict: a response that reports it composes
         # the key itself, and serializing it here would leak it into every later
@@ -523,6 +554,17 @@ class Artifact:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+def _content_sha256(text: str) -> str:
+    """SHA-256 hex digest of artifact content, the optimistic-concurrency token.
+
+    One producer for both sides of the compare: ``Artifact.to_dict`` hands it
+    to clients as ``content_sha256`` and ``ArtifactStore.update`` checks it
+    against ``expected_sha256``. Hash the exact string — no normalization —
+    so the token is bit-faithful to what the caller read.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _now_iso() -> str:
@@ -1557,12 +1599,36 @@ class ArtifactStore:
     def _try_read_source_path(self, source_path: str, source_root: str = "") -> str | None:
         """Read the source file for a file-backed artifact (live pointer).
 
+        Decoding wrapper over :meth:`_try_read_source_bytes` — see there for
+        the validation chain and failure semantics.
+        """
+        raw = self._try_read_source_bytes(source_path, source_root)
+        if raw is None:
+            return None
+        # errors='replace' keeps the artifact viewable even when the
+        # file contains malformed UTF-8 sequences. The byte-level
+        # truncation may chop a multi-byte character at the boundary;
+        # the replace handler emits U+FFFD for that case.
+        return raw.decode("utf-8", errors="replace")
+
+    def _try_read_source_bytes(self, source_path: str, source_root: str = "") -> bytes | None:
+        """Read a file-backed artifact's source as RAW bytes.
+
         Returns None on any failure (missing file, permission denied,
         sensitive path, outside allowed roots, oversize). Caller falls back
         to the artifact's own snapshot in that case so a missing/moved
         source doesn't break the artifact view — and MUST surface
         ``source_missing`` so that fallback isn't mistaken for a healthy,
         in-sync live pointer.
+
+        Split out from the decoding read because the optimistic-concurrency
+        guard needs BOTH representations of one read: the decoded text (what
+        clients see, what the token hashes) and the raw bytes (what the
+        mirror's compare-and-swap verifies at the descriptor). Deriving them
+        from separate reads — or hashing decoded text for the CAS — breaks on
+        any file whose bytes don't round-trip through UTF-8: the ``replace``
+        decode is lossy, so a decoded-text hash can never match the raw
+        bytes on disk and a guarded save would 409 forever.
 
         ``source_root`` is the artifact's recorded authorizing root; pass
         ``meta.source_root`` so a linked project file outside ``$HOME``
@@ -1632,22 +1698,30 @@ class ArtifactStore:
                 return None
             if len(raw) == MAX_CONTENT_BYTES:
                 logger.warning("source file %s hit MAX_CONTENT_BYTES; view is truncated", p)
-            # errors='replace' keeps the artifact viewable even when the
-            # file contains malformed UTF-8 sequences. The byte-level
-            # truncation may chop a multi-byte character at the boundary;
-            # the replace handler emits U+FFFD for that case.
-            return raw.decode("utf-8", errors="replace")
+            return raw
         except (OSError, ValueError) as exc:
             logger.warning("failed to read source_path %r: %s", source_path, exc)
             return None
 
-    def _try_write_source_path(self, source_path: str, content: str, source_root: str = "") -> bool:
+    def _try_write_source_path(
+        self,
+        source_path: str,
+        content: str,
+        source_root: str = "",
+        *,
+        base_hash: str | None = None,
+    ) -> str:
         """Write to the source file for a file-backed artifact.
 
-        Returns True on success, False if the path is unwritable. Caller
-        proceeds to update the artifact's own storage either way — the
-        snapshot remains authoritative even when the source can't be
-        kept in sync.
+        Returns ``"ok"`` on success and ``"refused"`` if the path is
+        unwritable. With ``base_hash`` set, the write becomes a
+        compare-and-swap through :func:`hooks.verified_replace_file_nolink`
+        — verification and replacement share one descriptor, so an external
+        writer landing between the caller's compare and this write answers
+        ``"conflict"`` (or ``"too_large"``) instead of being overwritten.
+        Without it, the caller proceeds to update the artifact's own storage
+        on refusal — the snapshot remains authoritative even when the source
+        can't be kept in sync.
 
         ``source_root`` mirrors the read side: the same recorded root that
         authorizes reads authorizes the write-back, so an edit to a linked
@@ -1659,9 +1733,9 @@ class ArtifactStore:
             # symlink to a sensitive file is arguably worse than reading.
             p = Path(source_path).expanduser().resolve()
             if not p.is_absolute():
-                return False
+                return "refused"
             if is_sensitive_path(str(p)):
-                return False
+                return "refused"
             # Root-confinement re-check (same set as _try_read_source_path, via
             # the single producer): a symlink swap after relocate must not allow
             # writes outside the allowed roots.
@@ -1675,13 +1749,13 @@ class ArtifactStore:
                     "source_path %r resolved outside allowed roots; refusing write",
                     source_path,
                 )
-                return False
+                return "refused"
             # Don't create the file if it never existed — that would be
             # surprising. The 'Add to artifacts' flow always saves an
             # existing file, so the file should exist.
             if not p.exists():
-                return False
-            # Write through the descriptor-pinned helper, not by name. The
+                return "refused"
+            # Write through the descriptor-pinned helpers, not by name. The
             # containment check above is on a RESOLVED path, so a symlink
             # swapped into the final component -- or into an ancestor directory
             # -- between that check and the open would land these bytes on a
@@ -1689,17 +1763,30 @@ class ArtifactStore:
             # worse than reading through one, so the same fd-pinned gate the
             # read side uses applies here: O_NOFOLLOW open first, then hardlink
             # / regular-file / real-path / sensitive checks on that descriptor.
+            if base_hash is not None:
+                verdict = hooks.verified_replace_file_nolink(
+                    str(p),
+                    content,
+                    base_hash,
+                    max_bytes=MAX_CONTENT_BYTES,
+                    within_root=str(containing),
+                )
+                if verdict != "ok":
+                    logger.warning(
+                        "source_path %r compare-and-swap answered %s", source_path, verdict
+                    )
+                return verdict
             if not hooks.safe_write_file_nolink(
                 str(p), content, within_root=str(containing)
             ):
                 logger.warning(
                     "source_path %r refused by the descriptor-pinned write gate", source_path
                 )
-                return False
-            return True
+                return "refused"
+            return "ok"
         except (OSError, ValueError) as exc:
             logger.warning("failed to write source_path %r: %s", source_path, exc)
-            return False
+            return "refused"
 
     def update(
         self,
@@ -1716,6 +1803,7 @@ class ArtifactStore:
         event_type: str | None = None,
         from_version: int | None = None,
         snapshot: bool = False,
+        expected_sha256: str | None = None,
     ) -> Artifact:
         """Update an artifact in place. Content writes always update the live
         state (source_path on disk for file-backed artifacts, current.html
@@ -1724,6 +1812,26 @@ class ArtifactStore:
         (the default), the save is silent — the version dropdown stays the
         same and no event is emitted (explicit-snapshot
         model).
+
+        ``expected_sha256`` is an opt-in optimistic-concurrency token: when
+        provided together with ``content``, the write only proceeds if the
+        CURRENT live content still hashes to it (read the same way ``get()``
+        reads, so for file-backed artifacts an external edit to
+        ``source_path`` also trips the guard). A mismatch raises
+        :class:`ArtifactConflictError` before anything is written. Omitted
+        (the default), behavior is unchanged — last write wins. The version
+        number cannot serve this purpose because silent saves mutate live
+        content without bumping it, and ``updated_at`` cannot because
+        metadata-only updates bump it; hence a content hash. The check lives
+        here, under ``self._lock`` and before any mutation, because a
+        handler-level compare would be TOCTOU-racy against a concurrent
+        writer. That lock is authoritative for chat-backed artifacts (every
+        current.html writer is store-mediated), but an EXTERNAL process can
+        write ``source_path`` at any time — so for guarded file-backed
+        writes the source mirror itself runs as a descriptor-pinned
+        compare-and-swap against the token, and a loss there also raises
+        :class:`ArtifactConflictError` before current.html or metadata are
+        touched.
 
         ``actor`` distinguishes lifecycle event types when a snapshot is
         taken: ``"user"`` (default) emits an ``edited`` event; ``"agent"``
@@ -1737,8 +1845,60 @@ class ArtifactStore:
         can show "Reverted to vN".
         """
         slug = _validate_slug(slug)
+        # Validate event_type BEFORE any side effect — including the guarded
+        # source-file mirror below, which writes the user's OWN file. Left
+        # where it historically sat (inside the snapshot branch), an invalid
+        # event_type raised after the mirror and current.html write, leaving
+        # a "failed" save partially applied. Validate first; commit second.
+        if event_type is not None and event_type not in ALLOWED_EVENT_TYPES:
+            raise ArtifactValidationError(
+                f"invalid event type {event_type!r}: "
+                f"must be one of {sorted(ALLOWED_EVENT_TYPES)}"
+            )
         with self._lock:
             art = self._load_meta(slug)
+            # Optimistic-concurrency guard — BEFORE any mutation, so a losing
+            # writer changes nothing. Only guards content writes: a rename or
+            # retag cannot clobber content, so a token must not block it.
+            if expected_sha256 is not None and content is not None:
+                # Read live content exactly the way get() reads it: the
+                # source file for a file-backed artifact (falling back to the
+                # snapshot when the source is missing/unreadable), current.html
+                # otherwise. For chat-backed artifacts this compare is
+                # authoritative (all writers hold self._lock); for file-backed
+                # it is the fast-fail — the mirror below re-verifies at the
+                # descriptor, closing the window an external writer has
+                # between this read and the write.
+                #
+                # ONE raw read yields BOTH representations: the decoded text
+                # (what clients see — the token hashes this) and the raw-byte
+                # hash (what the mirror's CAS verifies at the descriptor).
+                # Hashing decoded text for the CAS would 409 forever on any
+                # source whose bytes don't round-trip through UTF-8, since
+                # the ``replace`` decode is lossy.
+                source_base_hash: str | None = None
+                if art.source_path and not art.source_copy_only:
+                    raw_live = self._try_read_source_bytes(art.source_path, art.source_root)
+                    if raw_live is None:
+                        live = self._read_text(self._artifact_dir(slug) / "current.html")
+                    else:
+                        live = raw_live.decode("utf-8", errors="replace")
+                        source_base_hash = hashlib.sha256(raw_live).hexdigest()
+                else:
+                    live = self._read_text(self._artifact_dir(slug) / "current.html")
+                current_sha = _content_sha256(live)
+                if current_sha != expected_sha256:
+                    raise ArtifactConflictError(
+                        f"artifact {slug!r} content changed since it was read "
+                        f"(expected sha256 {expected_sha256[:12]}…, live is "
+                        f"{current_sha[:12]}…); refetch and re-base before saving",
+                        current_sha256=current_sha,
+                        version=art.version,
+                    )
+                # Kept for the compensation path below: if the guarded source
+                # mirror succeeds but the store's own write then fails, this
+                # is the content the source is restored to.
+                prior_source_content = live
             changed_content = False
             # True when this call READ art.content off source_path (snapshot path),
             # which makes writing it back unsafe -- see the snapshot branch below.
@@ -1784,9 +1944,9 @@ class ArtifactStore:
                 # A copy owns its bytes: re-reading the original here would
                 # overwrite the user's edits with the source file's content.
                 if art.source_path and not art.source_copy_only:
-                    live = self._try_read_source_path(art.source_path, art.source_root)
-                    if live is not None:
-                        art.content = live
+                    snap_live = self._try_read_source_path(art.source_path, art.source_root)
+                    if snap_live is not None:
+                        art.content = snap_live
                     else:
                         # Same dead-pointer flag as get(): a snapshot taken off
                         # the fallback must not look like it captured live state.
@@ -1830,35 +1990,119 @@ class ArtifactStore:
                         )
                         art.kind = detected
                 prev = self._artifact_dir(slug) / "current.html"
-                self._write_text(prev, live_content)
                 # Never mirror back for a copy — editing it must not rewrite
                 # the user's original file — and never for content this call
                 # just READ off that same file (see snapshot_derived above).
-                if art.source_path and not art.source_copy_only and not snapshot_derived:
-                    if not self._try_write_source_path(
-                        art.source_path, live_content, art.source_root
-                    ):
-                        # The mirror was REFUSED (read-only file, a concurrent save
-                        # that would have been clobbered, ownership we may not
-                        # reassign, a source too large to roll back, a path no
-                        # longer inside its authorizing root...). The user's edit is
-                        # already in current.html, but while this artifact still
-                        # claims to be a live pointer the next read prefers the
-                        # SOURCE -- which would serve the old text back and report
-                        # itself clean, silently discarding the edit.
-                        #
-                        # So the artifact takes ownership of its own copy. It keeps
-                        # source_path as provenance and stops pretending the file
-                        # tracks it. Persisted below with the rest of the metadata,
-                        # so the demotion survives a restart rather than being
-                        # re-attempted and re-lost on every save.
-                        logger.warning(
-                            "artifact %s could not mirror to %s; keeping the artifact's own "
-                            "copy authoritative (source_copy_only)",
-                            slug,
+                mirror_source = bool(
+                    art.source_path and not art.source_copy_only and not snapshot_derived
+                )
+                mirror_verdict = ""
+                if mirror_source and expected_sha256 is not None and content is not None:
+                    # Guarded write to a file-backed artifact: the mirror goes
+                    # FIRST, as a compare-and-swap against the raw-byte hash
+                    # captured by the guard above. The store lock only
+                    # excludes other store-mediated writers — an EXTERNAL
+                    # process can rewrite source_path between the guard's
+                    # compare and this mirror, and a plain write here would
+                    # overwrite it. The CAS shares one descriptor between
+                    # verification and replacement, so that window is closed
+                    # at the file itself.
+                    #
+                    # INVARIANT (settled after three review rounds on this
+                    # span): a guarded save either FULLY applies or changes
+                    # NOTHING. There is no third outcome — in particular the
+                    # unguarded path's demote-to-source_copy_only fallback
+                    # must not exist here, because demotion after a lost or
+                    # refused mirror would store the stale buffer in
+                    # current.html and silently detach the artifact from a
+                    # source that may carry someone else's newer content.
+                    # Every non-"ok" verdict therefore aborts with 409 before
+                    # current.html or metadata are touched, keeping the
+                    # losing writer side-effect-free.
+                    if source_base_hash is None:
+                        # The guard's read of the source failed moments ago
+                        # (compare ran against the snapshot fallback), so
+                        # there is no verified base to swap against. Refuse
+                        # rather than write unverified over a file we could
+                        # not read.
+                        mirror_verdict = "refused"
+                    else:
+                        mirror_verdict = self._try_write_source_path(
                             art.source_path,
+                            live_content,
+                            art.source_root,
+                            base_hash=source_base_hash,
                         )
-                        art.source_copy_only = True
+                    if mirror_verdict != "ok":
+                        live_now = self._try_read_source_path(art.source_path, art.source_root)
+                        if live_now is None:
+                            live_now = self._read_text(prev)
+                        if mirror_verdict in ("conflict", "too_large"):
+                            detail = (
+                                f"source file changed while saving ({mirror_verdict}); "
+                                f"refetch and re-base before saving"
+                            )
+                        else:
+                            detail = (
+                                "source file could not be safely replaced "
+                                f"({mirror_verdict}); nothing was saved"
+                            )
+                        raise ArtifactConflictError(
+                            f"artifact {slug!r}: {detail}",
+                            current_sha256=_content_sha256(live_now),
+                            version=art.version,
+                        )
+                    # The user's file now carries the new content but the
+                    # store has recorded nothing yet. If the store's own
+                    # cache write below fails, a "failed" save must not
+                    # stay half-applied to the user's file — compensate by
+                    # restoring the pre-save content, itself as a CAS
+                    # against what we just wrote so an even-newer external
+                    # write is never clobbered by the rollback. (The bytes on
+                    # disk are OUR utf-8 write, so the decoded-text hash of
+                    # live_content equals the raw hash here.) Best effort: a
+                    # rollback that loses ITS race leaves the newer external
+                    # content in place, which is correct.
+                    try:
+                        self._write_text(prev, live_content)
+                    except BaseException:
+                        self._try_write_source_path(
+                            art.source_path,
+                            prior_source_content,
+                            art.source_root,
+                            base_hash=_content_sha256(live_content),
+                        )
+                        raise
+                else:
+                    self._write_text(prev, live_content)
+                    if mirror_source:
+                        mirror_verdict = self._try_write_source_path(
+                            art.source_path, live_content, art.source_root
+                        )
+                # Reachable only from the UNGUARDED branch: the guarded path
+                # above raises on any non-"ok" verdict before getting here.
+                if mirror_source and mirror_verdict != "ok":
+                    # The mirror was REFUSED (read-only file, a concurrent save
+                    # that would have been clobbered, ownership we may not
+                    # reassign, a source too large to roll back, a path no
+                    # longer inside its authorizing root...). The user's edit is
+                    # already in current.html, but while this artifact still
+                    # claims to be a live pointer the next read prefers the
+                    # SOURCE -- which would serve the old text back and report
+                    # itself clean, silently discarding the edit.
+                    #
+                    # So the artifact takes ownership of its own copy. It keeps
+                    # source_path as provenance and stops pretending the file
+                    # tracks it. Persisted below with the rest of the metadata,
+                    # so the demotion survives a restart rather than being
+                    # re-attempted and re-lost on every save.
+                    logger.warning(
+                        "artifact %s could not mirror to %s; keeping the artifact's own "
+                        "copy authoritative (source_copy_only)",
+                        slug,
+                        art.source_path,
+                    )
+                    art.source_copy_only = True
                 # Content changed — re-validate comment anchors so threads
                 # whose quoted text no longer exists get flagged as orphaned
                 # (and restored if the text comes back, e.g. on a revert).
@@ -1867,16 +2111,10 @@ class ArtifactStore:
                 self._rescan_comment_anchors_locked(slug, live_content)
 
                 if snapshot:
-                    # Validate event_type BEFORE side effects.
-                    # Otherwise an invalid event_type raises after the
-                    # version bump and versions/v{N}.html write, leaving an
-                    # orphaned file on disk because _write_meta is never
-                    # reached. Validate first; commit second.
-                    if event_type is not None and event_type not in ALLOWED_EVENT_TYPES:
-                        raise ArtifactValidationError(
-                            f"invalid event type {event_type!r}: "
-                            f"must be one of {sorted(ALLOWED_EVENT_TYPES)}"
-                        )
+                    # event_type was validated at the TOP of this method,
+                    # before the source mirror and current.html writes — see
+                    # the comment there for why late validation partially
+                    # applied a failed save.
                     # Bump version + capture the new state under
                     # versions/v{N}.html so it's preserved in history.
                     art.version += 1

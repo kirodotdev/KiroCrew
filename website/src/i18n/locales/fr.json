@@ -8625,7 +8625,9 @@
       "reverted": "Restauré",
       "s_artifact": ": artefact",
       "save": "Enregistrer",
+      "save_conflict_changed_since_read": "Le contenu a changé depuis son chargement — une autre fenêtre, un agent ou une modification externe. Votre brouillon est conservé ; enregistrer à nouveau écrasera le contenu plus récent.",
       "save_failed": "Échec de l'enregistrement :",
+      "save_refused_content_changed": "Enregistrement refusé — le contenu a changé",
       "save_to_live_cmd_s_updates_the_live_state_withou": "Enregistrer en direct (Cmd+S) — met à jour l'état en direct sans créer de version",
       "saving": "Enregistrement…",
       "session_title": "Artefact : {{name}}",
@@ -8655,6 +8657,7 @@
       "version": "Version",
       "via_dashboard": "via le tableau de bord",
       "view_remote": "Voir la version distante",
+      "view_the_newer_content": "Voir le contenu plus récent",
       "your_current_edits_are_saved_as_a_version_first": "Vos modifications actuelles sont d'abord enregistrées comme version, afin que rien ne soit perdu."
     },
     "artifactPopoutFrame": {

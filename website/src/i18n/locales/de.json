@@ -8508,7 +8508,9 @@
       "reverted": "Zurückgesetzt",
       "s_artifact": "s Artefakt",
       "save": "Speichern",
+      "save_conflict_changed_since_read": "Der Inhalt hat sich seit dem Laden geändert – ein anderes Fenster, ein Agent oder eine externe Bearbeitung. Ihr Entwurf bleibt erhalten; erneutes Speichern überschreibt den neueren Inhalt.",
       "save_failed": "Speichern fehlgeschlagen:",
+      "save_refused_content_changed": "Speichern abgelehnt – Inhalt geändert",
       "save_to_live_cmd_s_updates_the_live_state_withou": "In den Live-Zustand speichern (Cmd+S) — aktualisiert den Live-Zustand ohne Versionierung",
       "saving": "Wird gespeichert…",
       "session_title": "Artefakt: {{name}}",
@@ -8538,6 +8540,7 @@
       "version": "Version",
       "via_dashboard": "über das Dashboard",
       "view_remote": "Remote anzeigen",
+      "view_the_newer_content": "Den neueren Inhalt ansehen",
       "your_current_edits_are_saved_as_a_version_first": "Ihre aktuellen Änderungen werden zuerst als Version gespeichert, sodass nichts verloren geht."
     },
     "artifactPopoutFrame": {

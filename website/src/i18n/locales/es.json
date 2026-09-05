@@ -8625,7 +8625,9 @@
       "reverted": "Revertido",
       "s_artifact": ": artefacto",
       "save": "Guardar",
+      "save_conflict_changed_since_read": "El contenido cambió desde que lo cargaste: otra ventana, un agente o una edición externa. Tu borrador se conserva; guardar de nuevo sobrescribirá el contenido más reciente.",
       "save_failed": "Error al guardar:",
+      "save_refused_content_changed": "Guardado rechazado: el contenido cambió",
       "save_to_live_cmd_s_updates_the_live_state_withou": "Guardar en la versión en vivo (Cmd+S) — actualiza el estado en vivo sin crear una versión",
       "saving": "Guardando…",
       "session_title": "Artefacto: {{name}}",
@@ -8655,6 +8657,7 @@
       "version": "Versión",
       "via_dashboard": "desde el panel",
       "view_remote": "Ver el remoto",
+      "view_the_newer_content": "Ver el contenido más reciente",
       "your_current_edits_are_saved_as_a_version_first": "Tus ediciones actuales se guardan primero como una versión, así que no se pierde nada."
     },
     "artifactPopoutFrame": {

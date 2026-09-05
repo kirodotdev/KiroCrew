@@ -8625,7 +8625,9 @@
       "reverted": "Ripristinato",
       "s_artifact": " - artefatto di",
       "save": "Salva",
+      "save_conflict_changed_since_read": "Il contenuto è cambiato da quando è stato caricato: un'altra finestra, un agente o una modifica esterna. La tua bozza è conservata; salvando di nuovo sovrascriverai il contenuto più recente.",
       "save_failed": "Salvataggio non riuscito:",
+      "save_refused_content_changed": "Salvataggio rifiutato: il contenuto è cambiato",
       "save_to_live_cmd_s_updates_the_live_state_withou": "Salva nello stato attivo (Cmd+S) — aggiorna lo stato attivo senza creare una versione",
       "saving": "Salvataggio…",
       "session_title": "Artefatto: {{name}}",
@@ -8655,6 +8657,7 @@
       "version": "Versione",
       "via_dashboard": "tramite la dashboard",
       "view_remote": "Visualizza il remoto",
+      "view_the_newer_content": "Vedi il contenuto più recente",
       "your_current_edits_are_saved_as_a_version_first": "Le tue modifiche attuali vengono salvate prima come versione, così non si perde nulla."
     },
     "artifactPopoutFrame": {
