@@ -104,7 +104,7 @@ describe('SlashCommandMenu offline fallback (blocked commands hidden)', () => {
   // would advertise a gesture the dashboard rejects (/tangent regressed this
   // way once), so pin its absence on the API-failure path where the fallback
   // is what the user actually sees.
-  const BLOCKED = ['/tangent', '/quit', '/exit', '/q', '/chat', '/paste', '/reply', '/editor']
+  const BLOCKED = ['/tangent', '/quit', '/exit', '/q', '/chat', '/paste', '/reply', '/editor', '/todos']
 
   it('renders no blocked command when the API query fails', async () => {
     mockApi.slashCommands.mockRejectedValue(new Error('offline'))
