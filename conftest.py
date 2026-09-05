@@ -1611,20 +1611,21 @@ _TMP_RESIDUE_ALLOWED_PREFIXES: tuple[str, ...] = (
     ".org.chromium.",
 )
 
-#: Make temp residue FAIL the run rather than warn.
+#: Make ALL temp residue fail the run rather than warning for leftover files.
 #:
-#: Off by default, and that is a staged rollout rather than a soft opinion. The guard
-#: found real residue on CI surfaces this host cannot reach, and the entries that remain
-#: after the exclusions above are single ``mkstemp`` FILES rather than the ``mkdtemp``
-#: directories the rule is written about -- one inode each, several of them created by
-#: production code a test merely reached. Failing the suite on that set today would block
-#: every unrelated change while the set is attributed, and a guard that blocks unrelated
-#: work is a guard somebody deletes.
+#: Directory residue is fatal by default on Linux and macOS: it is the recursively
+#: unbounded leak class this guard exists to stop. Windows retains the staged warning for
+#: directory residue too, because its full-suite shards still produce unattributed
+#: anonymous temporary directories -- enabling the same default there today would block
+#: unrelated changes; see ``_tmp_residue_is_windows``. Single ``mkstemp`` FILES stay
+#: warning-only on every platform -- one inode each, several created by production
+#: behaviour a test legitimately reaches.
 #:
 #: So: the residue is removed either way (which is the whole inode win), and it is
-#: REPORTED either way. Set this to make it fatal -- in a burn-down branch, or in CI once
-#: the remaining set is empty. Same shape as ``windows-expected-failures.txt``: a known
-#: set, visible, with a way to hold the line once it is closed.
+#: REPORTED either way. Set this to make it fatal on every platform -- in a burn-down
+#: branch, or once the remaining Windows set is attributed. Same shape as
+#: ``windows-expected-failures.txt``: a known set, visible, with a way to hold the line
+#: once it is closed.
 _TMP_RESIDUE_STRICT_ENV = "KIROCREW_TMP_RESIDUE_STRICT"
 
 
@@ -1689,8 +1690,10 @@ def _isolate_tempfile_base(tmp_path_factory):
     can both NAME it (residue is still a defect) and REMOVE it (so the accumulation stops
     regardless of whether anyone acts on the report).
 
-    The report WARNS by default and fails only under ``KIROCREW_TMP_RESIDUE_STRICT`` --
-    see ``_TMP_RESIDUE_STRICT_ENV`` for why that is a staged rollout and not a shrug.
+    Directory residue fails by default on Linux and macOS, while Windows retains a
+    staged warning until its existing anonymous directory leaks are attributed. File
+    residue warns by default on every platform. ``KIROCREW_TMP_RESIDUE_STRICT`` makes
+    every residue class fatal; see ``_TMP_RESIDUE_STRICT_ENV`` for the rollout rationale.
 
     Under ``-n auto`` each xdist worker is its own process, so each gets its own
     root and reports only its own leaks; the controller runs no tests and creates
@@ -1753,13 +1756,14 @@ def _isolate_tempfile_base(tmp_path_factory):
                 os.environ[name] = value
         per_test = bool(os.environ.get(_TMP_PER_TEST_ENV))
         leaked = _tmp_residue(base, per_test=per_test)
+        directory_leaks = _tmp_residue_directories(base, leaked)
         # Removed even when it is empty, and even when the report below raises:
         # leaving the root behind would itself be the accumulation this guards.
         _remove_tree(base)
         if not leaked:
             return
         report = _tmp_residue_report(base, leaked, per_test=per_test)
-        if os.environ.get(_TMP_RESIDUE_STRICT_ENV):
+        if _tmp_residue_is_fatal(directory_leaks, is_windows=_tmp_residue_is_windows()):
             raise AssertionError(report)
         warnings.warn(report, stacklevel=1)
 
@@ -1788,6 +1792,39 @@ def _tmp_residue(base: pathlib.Path, *, per_test: bool) -> list[str]:
         except OSError:
             continue
     return residue
+
+
+def _tmp_residue_directories(base: pathlib.Path, leaked: list[str]) -> list[str]:
+    """Return residue entries whose on-disk target is a directory."""
+    return [name for name in leaked if (base / name).is_dir()]
+
+
+def _tmp_residue_is_windows() -> bool:
+    """Whether this host is Windows, for staging the directory-residue default.
+
+    Mirrors the ``platform_compat_or_none()`` check ``pytest_collection_modifyitems``
+    already uses for ``windows-expected-failures.txt``: a partial checkout that cannot
+    import the package under test is not staging anything, so it is treated as not
+    Windows rather than raising here.
+    """
+    compat = platform_compat_or_none()
+    return bool(compat and compat.IS_WINDOWS)
+
+
+def _tmp_residue_is_fatal(directory_leaks: list[str], *, is_windows: bool) -> bool:
+    """Whether residue should fail the run rather than warn.
+
+    Directory residue is fatal on Linux and macOS by default -- it is the recursively
+    unbounded leak class this guard exists to stop. Windows keeps the staged warning for
+    directory residue until its existing anonymous leaks are attributed, unless
+    ``KIROCREW_TMP_RESIDUE_STRICT`` overrides the stage on every platform. Single-file
+    residue never makes this True on its own; the caller only reaches this function when
+    ``leaked`` is non-empty, and *directory_leaks* is the subset of that this function
+    actually branches on.
+    """
+    if os.environ.get(_TMP_RESIDUE_STRICT_ENV):
+        return True
+    return bool(directory_leaks) and not is_windows
 
 
 def _tmp_residue_report(base: pathlib.Path, leaked: list[str], *, per_test: bool) -> str:

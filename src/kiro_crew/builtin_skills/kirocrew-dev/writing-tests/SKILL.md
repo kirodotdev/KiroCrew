@@ -80,8 +80,10 @@ watches. The before/after example is in testing-conventions.md § Rules.
 
 `ignore_errors=True` also **hides** a cleanup that could not finish, so it is not proof
 of anything. The floor helps, but it is not your discipline: the rootdir conftest redirects
-`tempfile`'s base per run, removes it, and **reports** residue — as a warning today, fatal
-under `KIROCREW_TMP_RESIDUE_STRICT=1`. So a leak of yours will not necessarily turn CI red;
+`tempfile`'s base per run, removes it, and **reports** residue. Directory residue is fatal
+by default on Linux and macOS but staged as a warning on Windows; file residue warns by
+default everywhere. `KIROCREW_TMP_RESIDUE_STRICT=1` makes every class fatal. A directory
+leak of yours will therefore turn Linux and macOS CI red even without strict mode;
 clean up anyway. (Staged rollout and its owner: testing-conventions.md § Rules.)
 
 Why it earns a guard: `/tmp` is often a tmpfs with a fixed **inode** budget

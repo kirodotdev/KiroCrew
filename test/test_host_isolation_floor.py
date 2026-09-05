@@ -708,6 +708,37 @@ class TestTheTempResidueReport:
         then it protects nothing."""
         assert _root._tmp_residue(tmp_path / "does-not-exist", per_test=False) == []
 
+    def test_directory_residue_is_distinguished_from_single_files(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        (tmp_path / "tree").mkdir()
+        (tmp_path / "one.tmp").write_text("x")
+
+        leaked = _root._tmp_residue(tmp_path, per_test=False)
+        assert _root._tmp_residue_directories(tmp_path, leaked) == ["tree"]
+
+    def test_directory_residue_is_fatal_on_posix(self) -> None:
+        """The default floor: a leaked directory fails Linux and macOS runs."""
+        assert _root._tmp_residue_is_fatal(["tree"], is_windows=False) is True
+
+    def test_directory_residue_stays_a_warning_on_windows(self) -> None:
+        """Staged rollout: Windows keeps warning until its own leaks are attributed."""
+        assert _root._tmp_residue_is_fatal(["tree"], is_windows=True) is False
+
+    def test_file_only_residue_is_never_fatal_on_its_own(self) -> None:
+        """No directories leaked means nothing here has crossed the fatal line."""
+        assert _root._tmp_residue_is_fatal([], is_windows=False) is False
+        assert _root._tmp_residue_is_fatal([], is_windows=True) is False
+
+    def test_strict_env_makes_windows_fatal_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``KIROCREW_TMP_RESIDUE_STRICT`` overrides the Windows stage entirely."""
+        monkeypatch.setenv(_root._TMP_RESIDUE_STRICT_ENV, "1")
+
+        assert _root._tmp_residue_is_fatal([], is_windows=True) is True
+        assert _root._tmp_residue_is_fatal(["tree"], is_windows=True) is True
+
 
 # ── the process working directory ──────────────────────────────────────────
 

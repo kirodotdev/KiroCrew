@@ -432,17 +432,17 @@ which testpath asked for the workers.
   tmpfs cleared on reboot. That reliance is deliberate and is worth knowing if you own a
   long-lived CI host: it is bounded at one directory per killed run.
 
-  Reported, not yet fatal, and that split is a staged rollout rather than a soft opinion.
+  Directory residue is fatal by default on Linux and macOS. Windows retains a staged
+  warning for directory residue while its existing anonymous leaks are attributed;
+  file residue remains warning-only by default on every platform. This split is a staged
+  rollout rather than a soft opinion.
   Two classes under that root are deliberately **not** residue and are excluded by name:
   the computer-use screenshot spool, which production keeps as a persistent ring buffer,
   and the scratch that Chromium and the Playwright driver create because a child inherits
-  the redirected `TMPDIR`. What remains is a handful of single `mkstemp` **files**, some
-  of them written by production code a test merely reached — one inode each, not the
-  `mkdtemp` directories the rule is about. Failing the suite on that set today would
-  block every unrelated change while it is attributed, and a guard that blocks unrelated
-  work is a guard somebody deletes. Set `KIROCREW_TMP_RESIDUE_STRICT=1` to make it fatal,
-  which is how the remaining set gets burned down and how the line gets held afterwards —
-  the same shape as `windows-expected-failures.txt`.
+  the redirected `TMPDIR`. Set `KIROCREW_TMP_RESIDUE_STRICT=1` to make files fatal on all
+  platforms and directories fatal on Windows too. That strict mode is how the remaining
+  staged set gets burned down and how the line gets held afterwards — the same shape as
+  `windows-expected-failures.txt`.
 
   Why it is worth a guard rather than a convention: `/tmp` is commonly a tmpfs with a
   fixed **inode** budget (1,048,576 on the hosts this was measured on), and it returns
