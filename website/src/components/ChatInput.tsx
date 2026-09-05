@@ -21,6 +21,7 @@ import { ToolDetails } from '../pages/chat/ToolDetails'
 import { api, ApiError } from '../api/client'
 import { safeSetItem, safeGetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
+import { hasUnsentComposerWork, hasComposerTextOrFiles } from '../utils/composerWork'
 import { shallowEqual } from 'react-redux'
 import { motion, AnimatePresence } from 'framer-motion'
 import { sanitizeLlmOutput } from '../utils/sanitize'
@@ -42,6 +43,24 @@ import ContextBar, { contextTip, contextColor, composeContextReadout, contextPct
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer, { type PasteHoverHandle } from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
+import type { OptionAction } from '../app-sdk/protocol/options'
+
+/**
+ * Stable empty arrays for the follow-up bar's two halves. Module-level so the
+ * identity does not change per render: `FollowUpBar` is `memo()`d and derives its
+ * entrance animation from the option/action content, and a fresh `[]` each render
+ * would defeat the bail-out for a row that offers only the other half.
+ */
+const NO_FOLLOW_UP_OPTIONS: string[] = []
+
+/**
+ * Stand-in for `onSelect`, which `FollowUpBarProps` requires. Reached only when the
+ * bar renders for ACTIONS ALONE and the host supplied no select handler — and in that
+ * state `options` is empty, so no chip exists that could call it. A no-op rather than
+ * a throw: the point is that the shape typechecks, not that an unreachable path
+ * announces itself at runtime.
+ */
+const noFollowUpSelect = () => {}
 import { dispatchLightbox } from './MarkdownRenderer'
 import { IMG_EXT, buildFileLabels } from '../utils/fileTokens'
 import type { ResizeInfo } from '../utils/resizeImage'
@@ -597,6 +616,17 @@ interface ChatInputProps {
   /** Identity of the transcript row the follow-up options were derived from.
    *  Forwarded to FollowUpBar so a chip click carries the row it acted on. */
   followUpSourceKey?: string | null
+  /** Local UI actions (`[OPTION-ACTIONS:]`) from the same row as `followUpOptions`.
+   *  Rendered as chips AFTER the content chips; never composed into the input. */
+  followUpAction?: OptionAction | null
+  /** Click an action chip. The ONLY callback an action chip reaches — it must never
+   *  route through `onFollowUpSelect`/`onFollowUpSend`, which send text. Second arg
+   *  is `followUpSourceKey` as it was at click time, on the same contract as
+   *  `onFollowUpSelect`'s third arg. */
+  onFollowUpAction?: (action: OptionAction, sourceKeyAtClick?: string | null) => void | Promise<unknown>
+  /** The SLOT-wide unsent-work answer, resolved by the host each render so the chip greys
+   *  for the same states the dispatch refuses on. */
+  actionBlockedBySlot?: boolean
   /** Collapsed paste blocks backing `⌜🗒 Pasted …⌟` tokens in `value`. */
   pasteBlocks?: PasteBlock[]
   /** Replace the current list of paste blocks (add/remove). */
@@ -917,6 +947,9 @@ function ChatInput({
   quickSend,
   followUpLayout,
   followUpSourceKey,
+  followUpAction,
+  onFollowUpAction,
+  actionBlockedBySlot = false,
   pasteBlocks = [],
   onPasteBlocksChange,
   knowledgeChip,
@@ -1395,6 +1428,14 @@ function ChatInput({
   const sendFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
     if (!disabled) onFollowUpSend?.(text, sourceKeyAtClick)
   }, [disabled, onFollowUpSend])
+  // Content chips render on exactly the old condition — options present AND a select
+  // handler to receive them — so a host that supplies options without a handler still
+  // renders nothing, as before.
+  const hasFollowUpOptions = !!followUpOptions && followUpOptions.length > 0 && !!onFollowUpSelect
+  // Actions gate INDEPENDENTLY, which is the point: an `[OPTION-ACTIONS:]`-only row
+  // has no content options at all, so gating the bar on `followUpOptions` (as it was)
+  // would drop the zero-turn case entirely.
+  const hasFollowUpAction = !!followUpAction && !!onFollowUpAction
   const { botName } = useBranding()
   const isMobile = useIsMobile()
   const directFilePicker = isMobile || isTouchDevice()
@@ -2706,7 +2747,7 @@ function ChatInput({
    *  pending is a normal thing to want and hold mode stays available for it. A
    *  refs-only composer therefore keeps the hold bar while the send button is
    *  live, which is correct for both. */
-  const composerHasDraft = !!value.trim() || pendingFiles.length > 0
+  const composerHasDraft = hasComposerTextOrFiles({ text: value, files: pendingFiles })
   /**
    * Hold-to-talk mode: the textarea is swapped for a press-and-hold target and
    * the mic button becomes the switch between the two.
@@ -2989,8 +3030,59 @@ function ChatInput({
       {!showGhost && knowledgeChip}
 
       {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} />
+      {!showGhost && (hasFollowUpOptions || hasFollowUpAction) && (
+          <FollowUpBar
+            // Empty when the host supplied no select handler: with no content chips
+            // there is nothing that can reach `onSelect`, which is what makes the
+            // no-op below unreachable rather than merely unused.
+            options={hasFollowUpOptions ? followUpOptions! : NO_FOLLOW_UP_OPTIONS}
+            picked={followUpPicked ?? new Set()}
+            onSelect={onFollowUpSelect ?? noFollowUpSelect}
+            onSend={sendFollowUp}
+            quickSend={quickSend}
+            layout={followUpLayout}
+            sourceKey={followUpSourceKey}
+            action={hasFollowUpAction ? followUpAction : null}
+            onAction={onFollowUpAction}
+            actionBlockedBySlot={actionBlockedBySlot}
+            // BROADER than `composerHasDraft`, which excludes session refs on
+            // purpose: dictating over a pending ref is reasonable, because a ref
+            // is not text to read back. That reasoning does not transfer to a
+            // DESTRUCTIVE gate — the question here is "would tearing this pane
+            // down lose something the user staged", and a ref, a directory and a
+            // file are all yes. Built from `composerHasDraft` rather than beside
+            // it so the text/files rule has one definition.
+            // Every category stated by NAME. This was a positional vararg call, and
+            // that shape let a whole category go missing with no type error on a
+            // DESTRUCTIVE gate — which is how a knowledge selection (no token, so
+            // every text-derived term reads false) sailed through, and how the two
+            // hosts drifted to 2-arg and 5-arg calls of the same predicate.
+            //
+            // `knowledgeChip` is the only knowledge signal this component receives,
+            // and the host renders it if and only if a selection is pending, which
+            // the tests pin so the guard is not resting on an unasserted coupling.
+            composerHasUnsentWork={hasUnsentComposerWork({
+              text: value,
+              files: pendingFiles,
+              dirs: pendingDirs,
+              sessionRefs: pendingSessions,
+              pasteBlocks,
+              knowledge: !!knowledgeChip,
+              // The host already tells this component when an upload is in flight
+              // (it drives the spinner on the attach button), so the render-time
+              // gate closes on the same signal the settle-time recheck uses.
+              uploading,
+              // UNGATED capture, plus a transcription still resolving. `voiceRecording`
+              // is `owned && recording` and ownership lands only after the server
+              // handshake, so it reads false while real audio is already buffering —
+              // the cold window where the composer looks emptiest and a close silently
+              // drops the sentence the user is part-way through.
+              voiceCapture: !!voiceCaptureActive || voiceTranscribing,
+            })}
+            // Same signals, classified: an in-flight capture leaves the composer
+            // visibly empty, so unsent-draft copy would name an invisible draft.
+            composerCaptureInFlight={uploading || !!voiceCaptureActive || voiceTranscribing}
+          />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

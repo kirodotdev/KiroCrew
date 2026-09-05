@@ -404,10 +404,51 @@ class TestOnlyOneTrailerParseExists:
         return found
 
     def test_no_channel_hand_rolls_the_partial_marker_scan(self) -> None:
-        offenders = self._hits('rfind("[OPTIONS")') - self._ALLOWED_PARTIAL
+        """The pre-generalisation literal must not come back anywhere.
+
+        The scan used to be spelled ``rfind("[OPTIONS")`` in the allowed sites
+        themselves, so this check subtracted them. It no longer is: the scan now
+        iterates :data:`MARKER_PREFIXES`, because a second marker head was added
+        and a one-literal scan cannot see it. That makes the expected hit count
+        ZERO rather than "only the allowed sites", so the allow-list is gone from
+        this check on purpose -- a hit is a re-derivation wherever it appears,
+        including in the shared sites, where it would mean the generalisation was
+        reverted for one head.
+
+        Zero-hit checks cannot tell success from a broken grep, so non-vacuity is
+        established by ``test_the_ratchet_is_not_vacuous`` below, which anchors on
+        needles that MUST exist.
+        """
+        offenders = self._hits('rfind("[OPTION')
         assert not offenders, (
-            "these re-derive the unfinished-marker scan instead of passing "
-            f"hide_partial= to messaging.renderer.split_options_trailer: {sorted(offenders)}"
+            "these spell the unfinished-marker scan as a single literal, which "
+            "cannot see every marker head -- iterate constants.MARKER_PREFIXES, "
+            "or pass hide_partial= to messaging.renderer.split_options_trailer: "
+            f"{sorted(offenders)}"
+        )
+
+    def test_no_channel_iterates_the_marker_prefixes_itself(self) -> None:
+        """The generalised spelling is ratcheted exactly as the literal was.
+
+        Two sites are allowed because they answer a DIFFERENT question, the same
+        grounds on which ``slack/format.py`` is exempt from the choice-split check
+        below:
+
+        * ``slack/handler.py`` — ``_filter_options_brackets`` is a
+          character-by-character filter over a live stream, so it has no buffer to
+          run a regex against and must test the head as a string prefix.
+        * ``messaging/tables.py`` — classifies whether ONE line is a protocol
+          trailer rather than a GFM table row, so it needs a per-line
+          ``startswith``, not a scan for where an unfinished marker begins. It
+          consumes the shared tuple precisely so the heads live in one place; a
+          literal list there previously knew only ``"[OPTIONS"`` and let an action
+          marker's ``close=a | close=b`` body be absorbed as a table body row.
+        """
+        allowed = self._ALLOWED_PARTIAL | {"slack/handler.py", "messaging/tables.py"}
+        offenders = self._hits("MARKER_PREFIXES") - allowed
+        assert not offenders, (
+            "these re-derive the marker-head scan instead of passing hide_partial= "
+            f"to messaging.renderer.split_options_trailer: {sorted(offenders)}"
         )
 
     def test_only_the_shared_helper_and_slack_split_the_choice_group(self) -> None:
@@ -420,9 +461,72 @@ class TestOnlyOneTrailerParseExists:
         )
 
     def test_the_ratchet_is_not_vacuous(self) -> None:
-        """A grep that matches nothing would make both checks pass forever."""
-        assert "messaging/renderer.py" in self._hits('rfind("[OPTIONS")')
+        """A grep that matches nothing would make the checks above pass forever.
+
+        Anchored on the spelling the tree ACTUALLY uses. The previous anchor was
+        the ``rfind("[OPTIONS")`` literal; generalising the scan removed that
+        literal from every site, which took both ratchets vacuous in one commit
+        and is exactly the failure this test exists to catch.
+
+        Re-anchored a second time for the same reason: centralising the head scan
+        on ``constants.rfind_marker_head`` removed ``MARKER_PREFIXES`` from
+        ``messaging/renderer.py``, so anchoring on that name there went vacuous.
+        The helper's own name is what renderer.py now spells.
+        """
+        assert "constants.py" in self._hits("MARKER_PREFIXES")
+        assert "messaging/renderer.py" in self._hits("rfind_marker_head")
+        assert "messaging/tables.py" in self._hits("starts_with_marker_head")
         assert "messaging/renderer.py" in self._hits('group(1).split("|")')
+
+    def test_no_site_re_derives_a_case_sensitive_head_scan(self) -> None:
+        """The head scan must be CASE-AWARE, and only one place decides that.
+
+        The action patterns carry ``re.IGNORECASE`` while the content ones do not,
+        so a bare ``rfind``/``startswith`` on a head literal is wrong by
+        construction: it misses a mixed-case fragment that the parser WILL strip,
+        leaving raw protocol text sealed into a sent message. Both helpers live in
+        ``constants.py``; every other module must call one of them.
+
+        Parsed with ``ast``, NOT grepped. Two modules DESCRIBE this bug in a
+        docstring, quoting the very literal a substring scan looks for, so a grep
+        reports the documentation as the offender — a check that fires on its own
+        explanation. Only a real call node counts.
+        """
+        import ast
+        from pathlib import Path
+
+        import kiro_crew as pkg
+
+        root = Path(pkg.__file__).parent
+        offenders: set[str] = set()
+        for path in root.rglob("*.py"):
+            if "_vendor" in path.parts or "static" in path.parts:
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel == "constants.py":
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:  # pragma: no cover - not a defect of this ratchet
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr not in ("rfind", "find", "startswith"):
+                    continue
+                for arg in node.args:
+                    literals = arg.elts if isinstance(arg, (ast.Tuple, ast.List)) else [arg]
+                    for lit in literals:
+                        if (
+                            isinstance(lit, ast.Constant)
+                            and isinstance(lit.value, str)
+                            and lit.value.startswith("[OPTION")
+                        ):
+                            offenders.add(rel)
+        assert not offenders, (
+            "these scan for a marker head with a case-SENSITIVE match instead of "
+            f"calling constants.rfind_marker_head / starts_with_marker_head: {sorted(offenders)}"
+        )
 
 
 class TestRenderOptionsAsText:

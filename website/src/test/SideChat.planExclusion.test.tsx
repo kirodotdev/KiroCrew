@@ -108,3 +108,64 @@ describe('SideChat plan exclusion', () => {
     expect(api.sideTurn).not.toHaveBeenCalled()
   })
 })
+
+// An action-marked side answer carrying BOTH ordinary options and a close action, so
+// the pin below can tell "no chip for the action" from "no chips at all".
+const ACTION_TEXT =
+  'All done.\n\n[OPTIONS: Alpha | Beta]\n[OPTION-ACTIONS: close=Nothing else, close this session]'
+
+const ACTION_MESSAGES = [
+  { role: 'user' as const, content: 'anything else?', ts: '2026-05-21T00:00:00Z', run_id: 'r2' },
+  { role: 'assistant' as const, content: ACTION_TEXT, ts: '2026-05-21T00:00:01Z', run_id: 'r2' },
+]
+
+const asActionTranscript: ChatMessage[] = ACTION_MESSAGES.map(m => {
+  const role = m.role === 'user' ? 'user' : 'assistant'
+  return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts }
+})
+
+function actionStore() {
+  return createTestStore({
+    dashboard: dashInitial,
+    chat: {
+      ...initial,
+      activeSlot: SLOT,
+      slotSide: {
+        [SLOT]: {
+          messages: ACTION_MESSAGES,
+          lastRunId: 'r2',
+          pending: false,
+          streaming: false,
+          openedAtTurnCount: 0,
+          createdAt: '2026-05-21T00:00:00Z',
+        },
+      },
+    },
+  })
+}
+
+// Pins the action DROP at SideChat's destructure, sibling of the plan drop above: this
+// surface wires no `onAction`, so that label as a chip would only send the sentence.
+describe('SideChat action exclusion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('offers no chip for the action label, while ordinary options still render', () => {
+    // Premise pin: the rendered fixture MUST derive an action, or the absence below is
+    // about a label that was never offered and this test can never fail.
+    const derived = deriveFollowUpOptions(asActionTranscript, false)
+    expect(derived.followUpAction).not.toBeNull()
+    const actionLabel = derived.followUpAction!.label
+    expect(actionLabel.length).toBeGreaterThan(0)
+
+    renderWithProviders(<SideChat slot={SLOT} />, { store: actionStore() })
+
+    // Positive control: the bar DID render, so the absence is a fact about the action
+    // rather than about a fixture that produced no chips at all.
+    expect(screen.getByText('Alpha')).toBeInTheDocument()
+    expect(screen.queryByText(actionLabel)).toBeNull()
+    // And nothing closed the side buffer off the back of a label that is not shown.
+    expect(api.sideClose).not.toHaveBeenCalled()
+  })
+})

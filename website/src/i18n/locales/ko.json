@@ -5910,6 +5910,8 @@
       "yes_move_it": "이동"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "옵션이 선택되어 있는 동안에는 사용할 수 없습니다. 선택 항목은 입력란에 텍스트로 준비되어 있어 삭제됩니다",
+      "action_unavailable_while_the_composer_has_unsent": "입력창에 보내지 않은 텍스트나 첨부 파일이 있는 동안에는 사용할 수 없습니다. 닫으면 삭제됩니다",
       "click_to_add_to_input_double_click_to_select_and": "클릭하여 입력에 추가 (더블클릭하면 선택 후 전송)",
       "click_to_add_to_input_editable_before_sending": "클릭하여 입력에 추가 (전송 전에 수정 가능)",
       "click_to_add_to_selection": "클릭하여 선택에 추가",
@@ -5921,7 +5923,12 @@
       "scroll_suggestions_left": "제안을 왼쪽으로 스크롤",
       "scroll_suggestions_right": "제안을 오른쪽으로 스크롤",
       "send_now": "지금 전송",
-      "send_now_2": "지금 전송: {{option}}"
+      "send_now_2": "지금 전송: {{option}}",
+      "action_unavailable_short_options_selected": "사용할 수 없음 — 선택을 먼저 해제하세요",
+      "action_unavailable_short_unsent_draft": "사용할 수 없음 — 초안을 보내거나 지우세요",
+      "action_closes_this_session": "이 세션을 종료합니다 — {{label}}",
+      "action_unavailable_while_capture_in_flight": "녹음 또는 업로드가 진행 중일 때는 사용할 수 없습니다 — 닫으면 삭제됩니다",
+      "action_unavailable_short_capture_in_flight": "사용할 수 없음 — 녹음 또는 업로드가 진행 중입니다"
     },
     "followUpCard": {
       "add_to_this_session": "이 세션에 추가",
@@ -7757,7 +7764,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "채팅 패널",
-      "close_this_session": "이 세션을 닫으시겠습니까?",
       "cycle_agent": "에이전트 순환",
       "cycle_approval_mode": "승인 모드 순환",
       "cycle_model": "모델 순환",
@@ -7847,7 +7853,14 @@
       "reload_failed": "세션 다시 로드에 실패했습니다. 에이전트가 응답 중이거나 게이트웨이에 연결할 수 없습니다. 세션이 유휴 상태일 때 다시 시도하세요.",
       "reload_failed_subagents": "이 세션의 하위 에이전트가 아직 작업 중입니다. 완료된 후 다시 시도하세요.",
       "switch_to_autopilot_mode_future_messages_will_us": "오토파일럿 모드로 전환할까요? 이후 메시지는 오토파일럿 동작(계획 → 승인 → 실행)을 사용합니다.",
-      "switch_to_normal_chat_mode_future_messages_will": "일반 채팅 모드로 전환할까요? 이후 메시지는 표준 채팅 동작을 사용합니다."
+      "switch_to_normal_chat_mode_future_messages_will": "일반 채팅 모드로 전환할까요? 이후 메시지는 표준 채팅 동작을 사용합니다.",
+      "close_unsent_confirm": "{{base}}\n\n이 세션에 보내지 않은 작업이 있습니다. 초안, 첨부 파일 또는 아직 처리 중인 녹음이며, 사이드 패널이나 다른 창일 수 있습니다. 손실됩니다.",
+      "close_unsent_confirm_here": "{{base}}\n\n이 세션의 입력창에 보내지 않은 작업이 있습니다. 초안, 첨부 파일 또는 아직 처리 중인 녹음입니다. 손실됩니다.",
+      "close_unsent_confirm_window": "{{base}}\n\n이 세션에는 다른 창에 보내지 않은 작업이 있습니다. 초안, 첨부 파일 또는 아직 처리 중인 녹음입니다. 손실됩니다.",
+      "resume_replaces_this_tab": "이 세션을 열면 현재 탭이 닫힙니다.",
+      "resume_unsent_confirm_here": "{{base}}\n\n현재 탭의 입력창에 보내지 않은 내용이 있습니다. 초안, 첨부 파일 또는 처리 중인 녹음입니다. 사라집니다.",
+      "resume_unsent_confirm_window": "{{base}}\n\n다른 창에 현재 탭의 보내지 않은 내용이 있습니다. 초안, 첨부 파일 또는 처리 중인 녹음입니다. 사라집니다.",
+      "resume_unsent_confirm": "{{base}}\n\n현재 탭에 보내지 않은 내용이 있습니다. 초안, 첨부 파일 또는 처리 중인 녹음이며, 사이드 패널이나 다른 창에 있을 수 있습니다. 사라집니다."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "오디오 워크릿을 사용할 수 없습니다",
@@ -7864,6 +7877,17 @@
       "approval_required": "승인 필요",
       "tool_approval": "도구 승인: {{name}}",
       "unknown": "알 수 없음"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "턴이 실행 중이어서 세션이 열린 상태로 남았습니다 — 턴이 끝나면 다시 닫아 주세요.",
+      "close_not_recorded": "세션을 닫지 못했습니다 — 아직 열려 있습니다. 다시 시도해 주세요.",
+      "close_confirm": "이 세션을 닫으시겠습니까? ‘{{label}}’을 선택했습니다. 기록은 {{section}}에 남습니다.",
+      "close_requested": "종료를 요청했습니다 — {{label}}",
+      "close_aborted_unsent": "닫기를 취소했습니다. 이 세션에 보내지 않은 초안이 있습니다. 사이드 패널이나 다른 창일 수 있습니다. 보내거나 지운 뒤 다시 시도하세요.",
+      "close_aborted_unsent_here": "닫기를 취소했습니다. 이 세션에는 여기 사이드 패널에 보내지 않은 초안이 있습니다. 보내거나 지운 뒤 다시 시도하세요.",
+      "close_aborted_unsent_window": "닫기를 취소했습니다. 이 세션에는 다른 창에 보내지 않은 초안이 있습니다. 거기서 보내거나 지운 뒤 다시 시도하세요.",
+      "close_unbound_session": "닫기가 취소되었습니다. 이 세션을 기록할 수 없어 닫지 않았습니다. 다시 시도하거나 세션 메뉴에서 ‘{{action}}’을 사용하세요.",
+      "close_stale_row": "대화가 진행되어 이 세션은 열린 상태로 남았습니다. 세션 메뉴의 ‘{{action}}’을 사용하세요."
     }
   },
   "lib": {
@@ -9561,7 +9585,8 @@
       "workflow_running_other": "워크플로 {{count}}개 실행 중",
       "flat_view_hide_folders_in_board_columns": "플랫 보기 — 보드 열에서 폴더 숨기기",
       "show_folders_in_board_columns": "보드 열에서 폴더 표시",
-      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)",
+      "cleanup_unsent_confirm": "{{base}}?\n\n보내지 않은 내용이 사라집니다: ‘{{names}}’"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

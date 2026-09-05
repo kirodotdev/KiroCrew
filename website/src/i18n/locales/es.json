@@ -6100,6 +6100,8 @@
       "yes_move_it": "Mover"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "No disponible mientras haya opciones seleccionadas: están preparadas como texto en el redactor y esto las descartaría",
+      "action_unavailable_while_the_composer_has_unsent": "No disponible mientras el redactor tenga texto o archivos adjuntos sin enviar: al cerrar se descartarían",
       "click_to_add_to_input_double_click_to_select_and": "Clic para añadir a la entrada (doble clic para seleccionar y enviar)",
       "click_to_add_to_input_editable_before_sending": "Clic para añadir a la entrada (editable antes de enviar)",
       "click_to_add_to_selection": "Clic para añadir a la selección",
@@ -6111,7 +6113,12 @@
       "scroll_suggestions_left": "Desplazar las sugerencias a la izquierda",
       "scroll_suggestions_right": "Desplazar las sugerencias a la derecha",
       "send_now": "Enviar ahora",
-      "send_now_2": "Enviar ahora: {{option}}"
+      "send_now_2": "Enviar ahora: {{option}}",
+      "action_unavailable_short_options_selected": "No disponible — deselecciona tus opciones",
+      "action_unavailable_short_unsent_draft": "No disponible: envía o descarta tu borrador",
+      "action_closes_this_session": "Cierra esta sesión — {{label}}",
+      "action_unavailable_while_capture_in_flight": "No disponible mientras una grabación o subida sigue en curso — cerrar la descartaría",
+      "action_unavailable_short_capture_in_flight": "No disponible — una grabación o subida sigue en curso"
     },
     "followUpCard": {
       "add_to_this_session": "Añadir a esta sesión",
@@ -7969,7 +7976,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Panel de chats",
-      "close_this_session": "¿Cerrar esta sesión?",
       "cycle_agent": "Alternar agente",
       "cycle_approval_mode": "Alternar modo de aprobación",
       "cycle_model": "Alternar modelo",
@@ -8059,7 +8065,14 @@
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",
       "switch_to_autopilot_mode_future_messages_will_us": "¿Cambiar al modo piloto automático? Los mensajes siguientes usarán el comportamiento de piloto automático (planificar → aprobar → ejecutar).",
-      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar."
+      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar.",
+      "close_unsent_confirm": "{{base}}\n\nEsta sesión tiene contenido sin enviar: un borrador, un archivo adjunto o una grabación en curso, quizá en un panel lateral o en otra ventana. Se perderá.",
+      "close_unsent_confirm_here": "{{base}}\n\nEsta sesión tiene contenido sin enviar en el cuadro de texto: un borrador, un archivo adjunto o una grabación en curso. Se perderá.",
+      "close_unsent_confirm_window": "{{base}}\n\nEsta sesión tiene contenido sin enviar en otra ventana: un borrador, un archivo adjunto o una grabación en curso. Se perderá.",
+      "resume_replaces_this_tab": "Abrir esta sesión cierra la pestaña actual.",
+      "resume_unsent_confirm_here": "{{base}}\n\nLa pestaña actual tiene contenido sin enviar en el campo de texto: un borrador, un archivo adjunto o una grabación en curso. Se perderá.",
+      "resume_unsent_confirm_window": "{{base}}\n\nLa pestaña actual tiene contenido sin enviar en otra ventana: un borrador, un archivo adjunto o una grabación en curso. Se perderá.",
+      "resume_unsent_confirm": "{{base}}\n\nLa pestaña actual tiene contenido sin enviar: un borrador, un archivo adjunto o una grabación en curso, posiblemente en un panel lateral o en otra ventana. Se perderá."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet no disponible",
@@ -8076,6 +8089,17 @@
       "approval_required": "Se requiere aprobación",
       "tool_approval": "Aprobación de herramienta: {{name}}",
       "unknown": "Desconocido"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "Hay un turno en curso, así que la sesión sigue abierta: ciérrala de nuevo cuando termine el turno.",
+      "close_not_recorded": "No se pudo cerrar la sesión — sigue abierta. Inténtalo de nuevo.",
+      "close_confirm": "¿Cerrar esta sesión? Elegiste “{{label}}”. La transcripción queda en {{section}}.",
+      "close_requested": "Cierre solicitado — {{label}}",
+      "close_aborted_unsent": "Cierre cancelado: esta sesión tiene un borrador sin enviar, quizá en un panel lateral o en otra ventana. Envíalo o descártalo y vuelve a intentarlo.",
+      "close_aborted_unsent_here": "Cierre cancelado: esta sesión tiene un borrador sin enviar en un panel lateral de aquí. Envíalo o descártalo y vuelve a intentarlo.",
+      "close_aborted_unsent_window": "Cierre cancelado: esta sesión tiene un borrador sin enviar en otra ventana. Envíalo o descártalo allí y vuelve a intentarlo.",
+      "close_unbound_session": "Cierre cancelado: no se pudo registrar esta sesión, así que no se cerró. Inténtalo de nuevo o usa “{{action}}” en el menú de sesión.",
+      "close_stale_row": "La conversación avanzó, así que esta sesión siguió abierta: usa “{{action}}” en el menú de la sesión."
     }
   },
   "lib": {
@@ -9851,7 +9875,8 @@
       "workflow_running_other": "{{count}} flujos de trabajo en ejecución",
       "flat_view_hide_folders_in_board_columns": "Vista plana — ocultar carpetas en las columnas del tablero",
       "show_folders_in_board_columns": "Mostrar carpetas en las columnas del tablero",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Cambiar a vista plana (ocultar carpetas en las columnas del tablero)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Cambiar a vista plana (ocultar carpetas en las columnas del tablero)",
+      "cleanup_unsent_confirm": "{{base}}?\n\nSe perderá el contenido sin enviar en: “{{names}}”"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

@@ -138,6 +138,9 @@ describe('destructive confirmations are translated', () => {
     // commit cannot be recalled, so an operator reading it in English they do not speak is
     // being asked to authorize an irreversible remote change they cannot evaluate.
     'autoImprovement.commitConfirm',
+    // An unsent composer draft is the only copy of text the user typed, so approving its
+    // loss in a language they may not read is the same safety issue as approving a delete.
+    'hooks.useSessionActions.close_unsent_confirm',
   ]
 
   for (const { code } of NON_DEFAULT) {
@@ -170,6 +173,8 @@ describe('destructive confirmations are translated', () => {
  * be pinned here by hand (#5725; several entries below are exactly that).
  */
 export const QUOTED_OPERAND_CONFIRM_KEYS = [
+  // The operand is a SESSION TITLE, so an ordinary-word title would read as prose.
+  'pages.chatSidebar.cleanup_unsent_confirm', // session-title operand, quoted per locale
   'apps.awsControl.console.delete_confirm', // filename operand, quoted per locale
   'apps.awsControl.console.folder_delete_confirm', // folder-name operand, quoted per locale #4821
   'apps.awsControl.console.library_remove_confirm', // artifact-name operand, quoted per locale #6987
@@ -193,6 +198,9 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.appstore.trustAppModal.scope', // bare {{app}} #6016
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
+  // The one confirm whose operand is MODEL-authored: an `[OPTION-ACTIONS: close=…]`
+  // label is arbitrary prose, so an ordinary-word label is the hazard's worst case.
+  'hooks.useOptionActionDispatch.close_confirm',
   'pages.artifactDeployPage.destroy_confirm',
   'pages.artifactDeployPage.recall_confirm',
   'pages.artifactDeployPage.remove_profile_confirm',
@@ -223,6 +231,9 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
  */
 export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
   'count',
+  // Another catalogue sentence, not a user-supplied name: quoting it would put quotes
+  // around a whole question. Same class as `section` below.
+  'base',
   'lines',
   'verb',
   'number',
@@ -238,6 +249,9 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
   // Set once by the edition's composition root (i18next defaultVariables),
   // never user-supplied, so it cannot smuggle prose into a confirm sentence.
   'productName',
+  // A UI section's own translated header, read from the catalog. Same class as
+  // `productName`: app copy, never user-supplied, so quoting would only decorate it.
+  'section',
 ])
 
 /**

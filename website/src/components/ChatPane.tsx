@@ -30,10 +30,12 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
+import { optionsExcludingAction } from '../app-sdk/protocol/options'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { tryQuickSend } from '../lib/quickSend'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { sendTurn, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
+import { useOptionActionDispatch } from '../hooks/useOptionActionDispatch'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -175,9 +177,14 @@ export default function ChatPane({
   // for the same reason as ChatPage: both would offer the same choices, and
   // only the card can answer the blocked tool call.
   const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
-  const { followUpOptions, followUpIsPlan, followUpSourceKey } = useMemo(
+  const { followUpOptions: rawFollowUpOptions, followUpIsPlan, followUpSourceKey, followUpAction } = useMemo(
     () => deriveFollowUpOptions(allMessages, busy, !!pendingQuestion),
     [allMessages, busy, pendingQuestion],
+  )
+  // This pane RENDERS the action too, so it needs the same de-collision as ChatPage.
+  const followUpOptions = useMemo(
+    () => optionsExcludingAction(rawFollowUpOptions, followUpAction),
+    [rawFollowUpOptions, followUpAction],
   )
   // Visual-only highlight state; the composer text is the source of truth for
   // what gets sent. Cleared whenever the options list changes (new assistant
@@ -382,6 +389,41 @@ export default function ChatPane({
     if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     uploadMutation.mutate(files)
   }, [uploadMutation])
+
+  // Placed AFTER `uploadMutation` deliberately: the composer-work snapshot below
+  // reads `uploadMutation.isPending`, and a `const` cannot be read above its own
+  // declaration. The hook's outputs are consumed only in the JSX far below.
+  // ── Zero-turn option actions (`[OPTION-ACTIONS:]`) ────────────────────────
+  // The destructive close dispatch lives in ONE place (`useOptionActionDispatch`),
+  // which carries the whole derivation — breadcrumb-before-close, the
+  // `appended === true` gate, both staleness checks and the composer recheck.
+  // It used to be hand-mirrored here, and the copies had already drifted: this
+  // host's settle-time composer recheck counted 2 categories of staged work where
+  // ChatPage's counted 5, so one host closed over work the other refused to. This
+  // pane is wiring only now — slot, composer state, row identity.
+  const { dispatchFollowUpAction, slotBlocksAction } = useOptionActionDispatch({
+    resolveSlot: () => slotKey || null,
+    // Every field stated, including the ones this pane cannot stage. It has no
+    // knowledge picker, no dir tokens, no session refs and no paste blocks, and
+    // saying so explicitly is the point of the typed shape — an omission here is
+    // what let the drift above go unnoticed.
+    composerWork: {
+      text: input,
+      files: pendingFiles,
+      dirs: [],
+      sessionRefs: [],
+      pasteBlocks: [],
+      knowledge: false,
+      // `pendingFiles` is only written by the upload RESULT, so an upload in
+      // flight is committed work that leaves no trace in any other term.
+      uploading: uploadMutation.isPending,
+      // A pane has no mic: it passes no voice prop to ChatInput and holds no
+      // `useVoiceInput` session, so there is no capture here to lose. Stated
+      // rather than omitted — that is the whole point of the required fields.
+      voiceCapture: false,
+    },
+    sourceKey: followUpSourceKey,
+  })
 
   // Classify BEFORE acting (issue #743): a dropped folder inserts its path
   // into the composer as an `@path/` token instead of taking the upload
@@ -789,6 +831,15 @@ export default function ChatPane({
           followUpLayout={chatConfig.followUpLayout}
           quickSend={dashCfg?.quick_send}
           followUpSourceKey={followUpSourceKey}
+          followUpAction={followUpAction}
+          // Passed DIRECTLY, not wrapped: a `(a) => { void dispatch(a) }` wrapper
+          // returns undefined and the chip's duplicate-click guard releases the
+          // moment it sees a non-thenable, so the guard was defeated at the wiring
+          // and a double-click still wrote two breadcrumbs and two close requests.
+          // The prop is typed `=> void | Promise<unknown>` so the promise survives.
+          onFollowUpAction={dispatchFollowUpAction}
+          // Same question the click asks, so a refusal is VISIBLE before the click.
+          actionBlockedBySlot={slotBlocksAction()}
           onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
             // Mirrors ChatPage's wiring, plan branch included (#5893). Plan
             // options (Go / Go All / Cancel — the only labels the plan

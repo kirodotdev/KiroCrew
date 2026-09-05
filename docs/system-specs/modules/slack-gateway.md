@@ -358,6 +358,15 @@ Action IDs: `options_checkboxes` (toggle), `options_submit` (send). Checkbox `va
 
 Beyond the reply-finalization path in `handler.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
 
+### The marker family, and the streaming suppressor
+
+Three protocol markers share one grammar, defined once in `constants.py` and iterated via `MARKER_PREFIXES` rather than spelled as a literal at each site: `[OPTIONS: ...]` (content choices, rendered as checkboxes), `[OPTION-ACTIONS: close=<label>]` (a LOCAL dashboard UI action — Slack renders no button for it and strips it, because a click here could not be honoured), and `[STEERING ...]`. `"[OPTIONS"` is not a prefix of `"[OPTION-ACTIONS"` (they diverge at `S` vs `-`), so any scan naming only the first head misses the second silently.
+
+Two grammar properties differ from a naive reading and are pinned by tests:
+
+- **Casing is decided PER HEAD.** The action patterns carry `re.IGNORECASE`, so `[option-actions: ...]` IS a live marker that the parser strips; `[OPTIONS:` is deliberately case-SENSITIVE, a pre-existing divergence from the frontend that is recorded rather than widened. Every head scan therefore goes through `constants.rfind_marker_head` / `starts_with_marker_head`, never a bare `rfind`/`startswith`: a case-sensitive scan missed a mixed-case fragment that the parser would later strip, so the stream sealed raw protocol text into a message Slack cannot edit.
+- **The live-stream hold settles at end of line, not at the first `]`.** `settle_marker_hold` keeps a bracket run until the line ends, so a `]` inside a choice label no longer releases a partial marker as visible text. `_is_marker_candidate` decides what is still held, cased per head so the stream holds exactly the heads the batch parser will strip — holding more is not harmless caution: the final message comes from the case-sensitive `extract_options`, so an over-held run reappears as a visible pop-in of raw protocol text.
+
 ## Messaging Transport (`messaging.use_transport`)
 
 A channel-neutral dispatch path that replaces the native `handle_message` stream loop with a shared `SlackTransport → TurnDriver → SlackRenderer` pipeline. Gated by `messaging.use_transport` (`MessagingConfig`, default `True` in KiroCrew — the transport abstraction is the canonical path; set `false` to fall back to the legacy native handler — `config/loader.py`). When the flag is on, `events.py:_route_message` routes the message to `handle_message_transport`; when off, nothing in the live gateway path imports the transport (it is purely additive).

@@ -20,6 +20,8 @@ import { useAppApi } from './index'
 import type { ChatMessage } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { useSlotComposerRegistration } from '../hooks/useSlotComposerRegistration'
+import { useSlotDraftPersistence } from '../hooks/useSlotDraftPersistence'
 export interface ChatEmbedProps {
   slotKey: string
   agent?: string
@@ -128,16 +130,22 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
    *  need working plan chips, the parity option is wiring `usePlanActionMutation`
    *  plus a mode source into this file — a product decision, not an oversight.
    *  Pinned by the plan-exclusion test in src/test/ChatEmbed.test.tsx. */
-  const { followUpOptions } = useMemo(
-    () => deriveFollowUpOptions(messages, running),
-    [messages, running]
-  )
+  // `followUpAction` is DROPPED here: this host wires no `onAction`, so appending its
+  // label made a chip that SENDS the sentence — a turn, and no close.
+  const { followUpOptions } = useMemo(() => deriveFollowUpOptions(messages, running), [messages, running])
 
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file —
    *  see useComposerDraft's own docs. Picking a follow-up option edits the draft
    *  (matching every other surface) instead of sending immediately. */
   const { draft, setDraft, picked, toggleOption, composition, submitOnEnter } =
     useComposerDraft({ followUpOptions })
+
+  // Same reason the registration is not sufficient: the claim expires under a frozen
+  // window, so the draft has to exist somewhere another window can still read it.
+  const draftPersisted = useSlotDraftPersistence(slotKey || null, draft)
+  // Recoverable ONLY once that write lands: before it the short TTL leans on a persisted
+  // copy that does not exist yet, so a freeze inside the debounce loses the text.
+  useSlotComposerRegistration(() => slotKey || null, draft.trim().length > 0, draftPersisted)
 
   // startAtBottom follow is owned by useChatScrollFollow (attached below).
   // Non-startAtBottom embeds keep the message-arrival smooth scroll: it fires

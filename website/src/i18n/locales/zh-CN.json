@@ -5910,6 +5910,8 @@
       "yes_move_it": "移动"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "已选择选项时不可用：所选内容已作为文本暂存在输入框中，此操作会将其丢弃",
+      "action_unavailable_while_the_composer_has_unsent": "输入框中有未发送的文本或附件时不可用 — 关闭会将其丢弃",
       "click_to_add_to_input_double_click_to_select_and": "点击添加到输入框（双击以选择并发送）",
       "click_to_add_to_input_editable_before_sending": "点击添加到输入框（发送前可编辑）",
       "click_to_add_to_selection": "点击添加到所选内容",
@@ -5921,7 +5923,12 @@
       "scroll_suggestions_left": "向左滚动建议",
       "scroll_suggestions_right": "向右滚动建议",
       "send_now": "立即发送",
-      "send_now_2": "立即发送：{{option}}"
+      "send_now_2": "立即发送：{{option}}",
+      "action_unavailable_short_options_selected": "不可用 — 请先取消选择的选项",
+      "action_unavailable_short_unsent_draft": "不可用 — 请先发送或清除草稿",
+      "action_closes_this_session": "关闭此会话 — {{label}}",
+      "action_unavailable_while_capture_in_flight": "录音或上传仍在进行时不可用 — 关闭将丢弃它",
+      "action_unavailable_short_capture_in_flight": "不可用 — 录音或上传仍在进行"
     },
     "followUpCard": {
       "add_to_this_session": "添加到此会话",
@@ -7757,7 +7764,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "聊天面板",
-      "close_this_session": "关闭此会话？",
       "cycle_agent": "循环切换代理",
       "cycle_approval_mode": "循环切换审批模式",
       "cycle_model": "循环切换模型",
@@ -7847,7 +7853,14 @@
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
       "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
-      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
+      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。",
+      "close_unsent_confirm": "{{base}}\n\n此会话中有未发送的内容：草稿、附件或仍在处理的录音，可能在侧边面板或其他窗口中。它将丢失。",
+      "close_unsent_confirm_here": "{{base}}\n\n此会话输入框中有未发送内容：草稿、附件或仍在处理的录音。将会丢失。",
+      "close_unsent_confirm_window": "{{base}}\n\n此会话在其他窗口中有未发送的内容：草稿、附件或仍在处理的录音。它将丢失。",
+      "resume_replaces_this_tab": "打开此会话会关闭当前标签页。",
+      "resume_unsent_confirm_here": "{{base}}\n\n当前标签页输入框中有未发送内容——草稿、附件或仍在处理的录音。将会丢失。",
+      "resume_unsent_confirm_window": "{{base}}\n\n另一个窗口中有当前标签页的未发送内容——草稿、附件或仍在处理的录音。将会丢失。",
+      "resume_unsent_confirm": "{{base}}\n\n当前标签页有未发送的内容——草稿、附件或仍在处理的录音，可能在侧边栏或另一个窗口中。将会丢失。"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet 不可用",
@@ -7864,6 +7877,17 @@
       "approval_required": "需要审批",
       "tool_approval": "工具审批：{{name}}",
       "unknown": "未知"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "有一个轮次正在运行，因此会话仍处于打开状态 — 轮次结束后请再次关闭。",
+      "close_not_recorded": "未能关闭会话 — 会话仍处于打开状态。请重试。",
+      "close_confirm": "要关闭该会话吗？已选择“{{label}}”。记录会保留在{{section}}中。",
+      "close_requested": "已请求关闭 — {{label}}",
+      "close_aborted_unsent": "已取消关闭：此会话中有未发送的草稿，可能在侧边面板或其他窗口中。请发送或清除后重试。",
+      "close_aborted_unsent_here": "已取消关闭：此会话在这里的侧边面板中有未发送的草稿。请发送或清除后重试。",
+      "close_aborted_unsent_window": "已取消关闭：此会话在其他窗口中有未发送的草稿。请在那里发送或清除后重试。",
+      "close_unbound_session": "关闭已取消：无法记录此会话，因此未关闭。请重试，或使用会话菜单中的“{{action}}”。",
+      "close_stale_row": "对话已经继续，因此此会话仍处于打开状态，请使用会话菜单中的“{{action}}”。"
     }
   },
   "lib": {
@@ -9561,7 +9585,8 @@
       "workflow_running_other": "{{count}} 个工作流运行中",
       "flat_view_hide_folders_in_board_columns": "扁平视图 — 隐藏看板列中的文件夹",
       "show_folders_in_board_columns": "显示看板列中的文件夹",
-      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）"
+      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）",
+      "cleanup_unsent_confirm": "{{base}}？\n\n以下会话的未发送内容将会丢失：“{{names}}”"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

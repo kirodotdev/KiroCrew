@@ -1774,7 +1774,11 @@ class TestPureHelpers:
 
     def test_filter_options_brackets_drops_options_tag(self):
         hold, buf = h._filter_options_brackets("hi [OPTIONS: a | b] bye", "", "")
-        assert hold == "" and buf == "hi  bye"
+        # A marker candidate is now held past its `]` until the line ends, because a
+        # `]` can sit INSIDE an action label and cannot be judged final. So the
+        # visible outcome is buf PLUS the settled hold — unchanged at "hi  bye" —
+        # while `hold` alone is no longer empty at this point.
+        assert buf + h.settle_marker_hold(hold) == "hi  bye"
 
     def test_filter_options_brackets_keeps_other_brackets(self):
         _, buf = h._filter_options_brackets("see [1] here", "", "")

@@ -10,7 +10,7 @@ import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isReasoningBurst } from './groupDisplayItems'
 import { isDiffToolMessage } from './toolDiff'
-import { OPTION_MARKER_RE } from '../../app-sdk/protocol/optionMarker'
+import { stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 
@@ -92,12 +92,14 @@ const isRenderable = (it: TurnItem) =>
  * hand-back would otherwise be buried in the collapse pane. Surfacing each one
  * inline fixes that.
  *
- * OPTION_MARKER_RE is g-flagged and optionsMarker.ts forbids .test()/.exec() on
- * it (the lastIndex hazard); probe it via .replace(), exactly like
- * substantiveLength() below.
+ * Probed via `stripOptionMarkers`, which removes BOTH marker kinds. Keying on the
+ * content marker alone left an ACTION-only hand-back unrecognised, so the row it
+ * ends was buried in the collapse pane — the exact burial this predicate exists to
+ * prevent. That helper also keeps the g-flag `lastIndex` hazard inside the protocol
+ * module, so there is no `.test()`/`.exec()` footgun to remember here.
  */
 function hasOptionsMarker(text: string): boolean {
-  return text.replace(OPTION_MARKER_RE, '') !== text
+  return stripOptionMarkers(text) !== text
 }
 const isHandBack = (it: TurnItem) =>
   it.kind === 'single' && isConclusion(it) && hasOptionsMarker(it.msg.content)
@@ -187,9 +189,12 @@ const countCollapsedSteps = (segs: Seg[]): number =>
  *  value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 
-/** Strip OPTIONS/markdown formatting and return plain text content length */
+/** Strip BOTH marker kinds plus markdown formatting and return plain text length.
+ *  Both kinds, because this feeds the >= 50-char conclusion test: counting an action
+ *  marker's own label as substance is how a row whose only content is a marker reads
+ *  as a substantive conclusion. */
 function substantiveLength(text: string): number {
-  return text.replace(OPTION_MARKER_RE, '').replace(/[#*_`>\-|]/g, '').trim().length
+  return stripOptionMarkers(text).replace(/[#*_`>\-|]/g, '').trim().length
 }
 
 /**

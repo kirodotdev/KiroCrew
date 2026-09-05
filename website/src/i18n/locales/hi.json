@@ -6005,6 +6005,8 @@
       "yes_move_it": "ले जाएँ"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "जब तक विकल्प चुने हुए हैं तब तक उपलब्ध नहीं है: वे कंपोज़र में टेक्स्ट के रूप में तैयार हैं और यह उन्हें हटा देगा",
+      "action_unavailable_while_the_composer_has_unsent": "जब तक कंपोज़र में बिना भेजा गया टेक्स्ट या अटैचमेंट है तब तक अनुपलब्ध — बंद करने पर वे हट जाएंगे",
       "click_to_add_to_input_double_click_to_select_and": "इनपुट में जोड़ने के लिए क्लिक करें (चुनने और भेजने के लिए डबल-क्लिक करें)",
       "click_to_add_to_input_editable_before_sending": "इनपुट में जोड़ने के लिए क्लिक करें (भेजने से पहले संपादन योग्य)",
       "click_to_add_to_selection": "चयन में जोड़ने के लिए क्लिक करें",
@@ -6016,7 +6018,12 @@
       "scroll_suggestions_left": "सुझाव बाएँ स्क्रॉल करें",
       "scroll_suggestions_right": "सुझाव दाएँ स्क्रॉल करें",
       "send_now": "अभी भेजें",
-      "send_now_2": "अभी भेजो: {{option}}"
+      "send_now_2": "अभी भेजो: {{option}}",
+      "action_unavailable_short_options_selected": "उपलब्ध नहीं — पहले विकल्प हटाओ",
+      "action_unavailable_short_unsent_draft": "उपलब्ध नहीं — पहले ड्राफ़्ट भेजें या हटाएँ",
+      "action_closes_this_session": "यह सत्र बंद करता है — {{label}}",
+      "action_unavailable_while_capture_in_flight": "रिकॉर्डिंग या अपलोड चलने के दौरान उपलब्ध नहीं — बंद करने पर वह हट जाएगा",
+      "action_unavailable_short_capture_in_flight": "उपलब्ध नहीं — रिकॉर्डिंग या अपलोड अभी चल रहा है"
     },
     "followUpCard": {
       "add_to_this_session": "इस सत्र में जोड़ें",
@@ -7863,7 +7870,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "चैट पैनल",
-      "close_this_session": "यह सेशन बंद करें?",
       "cycle_agent": "एजेंट बदलते जाएँ",
       "cycle_approval_mode": "मंज़ूरी मोड बदलते जाएँ",
       "cycle_model": "मॉडल बदलते जाएँ",
@@ -7953,7 +7959,14 @@
       "reload_failed": "सत्र फिर से लोड नहीं हो सका। एजेंट व्यस्त हो सकता है या गेटवे उपलब्ध नहीं है; सत्र निष्क्रिय होने पर पुनः प्रयास करें।",
       "reload_failed_subagents": "इस सत्र पर उप-एजेंट अभी भी काम कर रहे हैं। उनके समाप्त होने पर पुनः प्रयास करें।",
       "switch_to_autopilot_mode_future_messages_will_us": "ऑटोपायलट मोड पर स्विच करें? आगे के संदेश ऑटोपायलट व्यवहार (योजना → अनुमोदन → निष्पादन) का उपयोग करेंगे।",
-      "switch_to_normal_chat_mode_future_messages_will": "सामान्य चैट मोड पर स्विच करें? आगे के संदेश मानक चैट व्यवहार का उपयोग करेंगे।"
+      "switch_to_normal_chat_mode_future_messages_will": "सामान्य चैट मोड पर स्विच करें? आगे के संदेश मानक चैट व्यवहार का उपयोग करेंगे।",
+      "close_unsent_confirm": "{{base}}\n\nइस सेशन में बिना भेजा काम है — एक ड्राफ़्ट, एक अटैचमेंट, या अभी चल रही रिकॉर्डिंग — संभवतः किसी साइड पैनल या दूसरी विंडो में। वह चला जाएगा।",
+      "close_unsent_confirm_here": "{{base}}\n\nइस सेशन में कंपोज़र में बिना भेजा काम है — एक ड्राफ़्ट, एक अटैचमेंट, या अभी चल रही रिकॉर्डिंग। वह चला जाएगा।",
+      "close_unsent_confirm_window": "{{base}}\n\nइस सेशन में दूसरी विंडो में बिना भेजा काम है — एक ड्राफ़्ट, एक अटैचमेंट, या अभी चल रही रिकॉर्डिंग। वह चला जाएगा।",
+      "resume_replaces_this_tab": "इस सेशन को खोलने पर मौजूदा टैब बंद हो जाएगा।",
+      "resume_unsent_confirm_here": "{{base}}\n\nमौजूदा टैब के इनपुट बॉक्स में बिना भेजी सामग्री है — एक ड्राफ़्ट, अटैचमेंट, या अभी चल रही रिकॉर्डिंग। यह खो जाएगी।",
+      "resume_unsent_confirm_window": "{{base}}\n\nकिसी दूसरी विंडो में मौजूदा टैब की बिना भेजी सामग्री है — एक ड्राफ़्ट, अटैचमेंट, या अभी चल रही रिकॉर्डिंग। यह खो जाएगी।",
+      "resume_unsent_confirm": "{{base}}\n\nमौजूदा टैब में बिना भेजी सामग्री है — एक ड्राफ़्ट, अटैचमेंट, या अभी चल रही रिकॉर्डिंग — संभवतः किसी साइड पैनल या दूसरी विंडो में। यह खो जाएगी।"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "ऑडियो वर्कलेट अनुपलब्ध",
@@ -7970,6 +7983,17 @@
       "approval_required": "स्वीकृति आवश्यक",
       "tool_approval": "टूल की मंज़ूरी: {{name}}",
       "unknown": "अज्ञात"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "एक टर्न चल रहा है, इसलिए सेशन खुला रह गया — टर्न पूरा होने पर फिर से बंद करें।",
+      "close_not_recorded": "सेशन बंद नहीं हो सका — यह अभी भी खुला है। फिर से कोशिश करें।",
+      "close_confirm": "यह सत्र बंद करना है? तुमने “{{label}}” चुना। ट्रांसक्रिप्ट {{section}} में रहेगा।",
+      "close_requested": "बंद करने का अनुरोध किया गया — {{label}}",
+      "close_aborted_unsent": "बंद करना रद्द किया गया — इस सेशन में एक बिना भेजा ड्राफ़्ट है, संभवतः किसी साइड पैनल या दूसरी विंडो में। उसे भेजें या हटाएँ, फिर दोबारा कोशिश करें।",
+      "close_aborted_unsent_here": "बंद करना रद्द किया गया — इस सेशन में यहाँ एक साइड पैनल में बिना भेजा ड्राफ़्ट है। उसे भेजें या हटाएँ, फिर दोबारा कोशिश करें।",
+      "close_aborted_unsent_window": "बंद करना रद्द किया गया — इस सेशन में दूसरी विंडो में बिना भेजा ड्राफ़्ट है। उसे वहाँ भेजें या हटाएँ, फिर दोबारा कोशिश करें।",
+      "close_unbound_session": "बंद करना रद्द — यह सेशन दर्ज नहीं हो सका, इसलिए बंद नहीं किया गया। दोबारा कोशिश करें, या सेशन मेन्यू में “{{action}}” का उपयोग करें।",
+      "close_stale_row": "बातचीत आगे बढ़ गई, इसलिए यह सत्र खुला रह गया — सत्र मेनू में “{{action}}” का उपयोग करें।"
     }
   },
   "lib": {
@@ -9706,7 +9730,8 @@
       "workflow_running_other": "{{count}} वर्कफ़्लो चल रहे हैं",
       "flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू — बोर्ड कॉलम में फ़ोल्डर छिपाएँ",
       "show_folders_in_board_columns": "बोर्ड कॉलम में फ़ोल्डर दिखाएँ",
-      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)",
+      "cleanup_unsent_confirm": "{{base}}?\n\nइनमें बिना भेजी सामग्री खो जाएगी: “{{names}}”"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

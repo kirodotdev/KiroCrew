@@ -99,5 +99,33 @@ export function useKnowledgeFetch(slotKey?: string | null) {
   const clearPending = useCallback(() => setPendingKnowledge(null), [])
   const clearResults = useCallback(() => { setSearchQuery(null); setQuery('') }, [])
 
-  return { results, query, loading, pendingKnowledge, searchKnowledge, inject, clearPending, clearResults }
+  /**
+   * COPY a retiring slot's pending selection onto the slot replacing it.
+   *
+   * A mode switch replaces the slot and deletes the old one, and this selection is not a
+   * draft bucket, so the migration that moves the drafts cannot see it. Read from the map
+   * OR from live state: whether the slot-change effect has already banked the outgoing
+   * value depends on whether React has processed the switch, and the caller cannot know.
+   *
+   * The source is LEFT IN PLACE, matching `copySlotEntry`: the delete can be rejected, and
+   * a slot that survives its own failed deletion must keep the selection it still owns.
+   * `dropCarriedKnowledge` removes it once the deletion has actually succeeded.
+   */
+  const carryPendingKnowledge = useCallback((from: string, to: string): boolean => {
+    if (!from || !to || from === to) return false
+    const banked = slotMapRef.current.get(from)
+    const carried = banked ?? (prevSlotRef.current === from ? pendingKnowledge : null)
+    if (!carried) return false
+    slotMapRef.current.set(to, carried)
+    if ((slotKey ?? null) === to) setPendingKnowledge(carried)
+    return true
+  }, [pendingKnowledge, slotKey])
+
+  /** Drop a retired slot's selection, once its deletion has actually succeeded. */
+  const dropCarriedKnowledge = useCallback((slot: string): void => {
+    if (!slot) return
+    slotMapRef.current.delete(slot)
+  }, [])
+
+  return { results, query, loading, pendingKnowledge, searchKnowledge, inject, clearPending, clearResults, carryPendingKnowledge, dropCarriedKnowledge }
 }

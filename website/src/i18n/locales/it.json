@@ -6100,6 +6100,8 @@
       "yes_move_it": "Sposta"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "Non disponibile finché sono selezionate delle opzioni: sono pronte come testo nell'area di scrittura e verrebbero scartate",
+      "action_unavailable_while_the_composer_has_unsent": "Non disponibile finché l'area di composizione contiene testo o allegati non inviati: chiudendo andrebbero perduti",
       "click_to_add_to_input_double_click_to_select_and": "Clicca per aggiungere all'input (doppio clic per selezionare e inviare)",
       "click_to_add_to_input_editable_before_sending": "Clicca per aggiungere all'input (modificabile prima dell'invio)",
       "click_to_add_to_selection": "Clicca per aggiungere alla selezione",
@@ -6111,7 +6113,12 @@
       "scroll_suggestions_left": "Scorri i suggerimenti a sinistra",
       "scroll_suggestions_right": "Scorri i suggerimenti a destra",
       "send_now": "Invia ora",
-      "send_now_2": "Invia ora: {{option}}"
+      "send_now_2": "Invia ora: {{option}}",
+      "action_unavailable_short_options_selected": "Non disponibile — deseleziona le opzioni",
+      "action_unavailable_short_unsent_draft": "Non disponibile — invia o elimina la bozza",
+      "action_closes_this_session": "Chiude questa sessione — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Non disponibile mentre una registrazione o un caricamento è ancora in corso — chiudere lo scarterebbe",
+      "action_unavailable_short_capture_in_flight": "Non disponibile — una registrazione o un caricamento è ancora in corso"
     },
     "followUpCard": {
       "add_to_this_session": "Aggiungi a questa sessione",
@@ -7969,7 +7976,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Pannello delle chat",
-      "close_this_session": "Chiudere questa sessione?",
       "cycle_agent": "Scorri gli agenti",
       "cycle_approval_mode": "Scorri le modalità di approvazione",
       "cycle_model": "Scorri i modelli",
@@ -8059,7 +8065,14 @@
       "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
       "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passare alla modalità pilota automatico? I messaggi successivi useranno il comportamento del pilota automatico (pianifica → approva → esegui).",
-      "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat."
+      "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat.",
+      "close_unsent_confirm": "{{base}}\n\nQuesta sessione ha contenuti non inviati: una bozza, un allegato o una registrazione ancora in corso, forse in un pannello laterale o in un'altra finestra. Andranno perduti.",
+      "close_unsent_confirm_here": "{{base}}\n\nQuesta sessione ha contenuti non inviati nell'area di scrittura: una bozza, un allegato o una registrazione ancora in corso. Andranno perduti.",
+      "close_unsent_confirm_window": "{{base}}\n\nQuesta sessione ha contenuti non inviati in un'altra finestra: una bozza, un allegato o una registrazione ancora in corso. Andranno perduti.",
+      "resume_replaces_this_tab": "Aprire questa sessione chiude la scheda attuale.",
+      "resume_unsent_confirm_here": "{{base}}\n\nLa scheda attuale contiene contenuti non inviati nel campo di testo: una bozza, un allegato o una registrazione ancora in corso. Andranno perduti.",
+      "resume_unsent_confirm_window": "{{base}}\n\nLa scheda attuale contiene contenuti non inviati in un'altra finestra: una bozza, un allegato o una registrazione ancora in corso. Andranno perduti.",
+      "resume_unsent_confirm": "{{base}}\n\nLa scheda attuale contiene contenuti non inviati: una bozza, un allegato o una registrazione ancora in corso, forse in un pannello laterale o in un'altra finestra. Andranno perduti."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet non disponibile",
@@ -8076,6 +8089,17 @@
       "approval_required": "Approvazione richiesta",
       "tool_approval": "Approvazione dello strumento: {{name}}",
       "unknown": "Sconosciuto"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "È in corso un turno, quindi la sessione è rimasta aperta — chiudila di nuovo quando il turno termina.",
+      "close_not_recorded": "Non è stato possibile chiudere la sessione — è ancora aperta. Riprova.",
+      "close_confirm": "Chiudere questa sessione? Hai scelto «{{label}}». La trascrizione resta in {{section}}.",
+      "close_requested": "Chiusura richiesta — {{label}}",
+      "close_aborted_unsent": "Chiusura annullata: questa sessione ha una bozza non inviata, forse in un pannello laterale o in un'altra finestra. Inviala o eliminala, poi riprova.",
+      "close_aborted_unsent_here": "Chiusura annullata: questa sessione ha una bozza non inviata in un pannello laterale qui. Inviala o eliminala, poi riprova.",
+      "close_aborted_unsent_window": "Chiusura annullata: questa sessione ha una bozza non inviata in un'altra finestra. Inviala o eliminala lì, poi riprova.",
+      "close_unbound_session": "Chiusura annullata: non è stato possibile registrare questa sessione, quindi non è stata chiusa. Riprova o usa «{{action}}» nel menu della sessione.",
+      "close_stale_row": "La conversazione è andata avanti, quindi questa sessione è rimasta aperta: usa «{{action}}» nel menu della sessione."
     }
   },
   "lib": {
@@ -9851,7 +9875,8 @@
       "workflow_running_other": "{{count}} flussi di lavoro in esecuzione",
       "flat_view_hide_folders_in_board_columns": "Vista piatta — nascondi le cartelle nelle colonne della bacheca",
       "show_folders_in_board_columns": "Mostra le cartelle nelle colonne della bacheca",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Passa alla vista piatta (nascondi le cartelle nelle colonne della bacheca)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Passa alla vista piatta (nascondi le cartelle nelle colonne della bacheca)",
+      "cleanup_unsent_confirm": "{{base}}?\n\nI contenuti non inviati andranno perduti in: «{{names}}»"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

@@ -36,6 +36,8 @@ from kiro_crew.constants import (
     OPTIONS_RE_LINE,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
+    match_action_markers,
+    strip_action_markers,
 )
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordinator
@@ -3028,6 +3030,15 @@ def build_tool_stall_recovery_prompt(
 # identically because they share this exact object.
 _OPTIONS_RE = OPTIONS_RE_LINE
 
+#: The action kinds the dashboard can actually dispatch. The frontend's enum is the
+#: authority (it is the only side that acts on one); this mirrors it so a marker
+#: naming an unknown action is not counted as choices on screen. Adding a member
+#: here without adding it there would restore exactly the bug this closes.
+#: A closed set of one is deliberate and safety-driven, not a placeholder for a
+#: roadmap: the value is that an unrecognised action is DROPPED rather than
+#: rendered, so do not read the enum shape as an intent to add more members.
+_KNOWN_OPTION_ACTIONS = frozenset({"close"})
+
 
 def _redact(text: str) -> str:
     """Sanitise LLM output before surfacing to dashboard."""
@@ -3043,6 +3054,76 @@ def _parse_options(text: str) -> list[str]:
         return []
     parts = [p.strip() for p in matches[-1].split("|")]
     return [p for p in parts if p]
+
+
+def _has_option_actions(text: str) -> bool:
+    """Whether *text* carries an ``[OPTION-ACTIONS:]`` marker.
+
+    Deliberately a BOOLEAN, not a list, and deliberately not folded into
+    :func:`_parse_options`. The two answers this module needs about a marker are
+    not the same answer, and one object cannot carry both:
+
+    * ``has_options`` is a STATUS fact — "are there choices on screen?" It gates
+      ``waiting_for_input`` (a row already showing choices must not also be
+      reported as idle-and-awaiting-a-prompt) and drives the sidebar's ``waiting``
+      lane. An action-only row genuinely has a button on screen, so this must be
+      True for it, or the row reads as unattended when it is in fact asking.
+    * ``options`` is a PAYLOAD — the actual choice strings, serialized by
+      :meth:`ChatSlot.to_dict` and consumed by channel button builders. An action
+      label must never appear there. Those builders would render a button that
+      cannot work: the ``close`` action is a LOCAL dashboard UI operation, so a
+      Slack or Discord button carrying its label would post a click no surface can
+      honour. Worse, the labels are free text and indistinguishable from content
+      choices once flattened into that list, so a click would be fed back into the
+      session as if the user had typed it.
+
+    Returning a bool rather than the parsed entries keeps that separation
+    structural instead of conventional: there is no list here for a future caller
+    to append to ``options`` by mistake. The action enum is parsed and dispatched
+    by the dashboard frontend, which is the only consumer that can act on it, so
+    the backend never needs the entries — only their presence.
+
+    "Presence" means a marker that will actually RENDER A CHIP, not merely a marker
+    that matches the grammar. The frontend drops an entry whose action is outside
+    the enum, whose label is empty, or that carries no ``=`` at all, so a marker
+    like ``[OPTION-ACTIONS: ]`` or ``[OPTION-ACTIONS: reboot=Now]`` yields nothing
+    on screen. Keying this on the regex alone reported such a row as having choices
+    and suppressed ``waiting_for_input``, so the session sat in the waiting lane
+    with no button to press and nothing asking for a turn — visible to the user as
+    a tab that looks answered and is not.
+
+    The LAST marker is the one validated, mirroring the frontend, which derives its
+    chips from the last marker only. An earlier valid marker followed by a broken
+    one renders nothing there, so it must not read as choices here either.
+
+    "Last" is taken over ``match_action_markers``, NOT over the raw pattern. The
+    action pattern scans independently of the content one, so a span nested inside an
+    unclosed marker head matches on its own even though no chip renders for it; taking
+    the raw last match counted that as choices and suppressed ``waiting_for_input``,
+    reproducing the same tab-looks-answered-and-is-not symptom described above by a
+    different route.
+    """
+    body: str | None = None
+    for match in match_action_markers(text):
+        body = match.group(1)
+    if body is None:
+        return False
+    return any(_is_renderable_action_entry(entry) for entry in body.split("|"))
+
+
+def _is_renderable_action_entry(entry: str) -> bool:
+    """Whether one ``<action>=<label>`` entry would produce a chip.
+
+    Mirrors the frontend parse deliberately and minimally: split on the FIRST
+    ``=`` (a label may contain more), case-fold the action, require it to be in the
+    enum, and require a non-empty label. The frontend is the authority — it is the
+    only side that dispatches — so this is a mirror, and _KNOWN_OPTION_ACTIONS is
+    the single place the two have to agree.
+    """
+    action, sep, label = entry.partition("=")
+    if not sep:
+        return False
+    return action.strip().lower() in _KNOWN_OPTION_ACTIONS and bool(label.strip())
 
 
 VALID_MEMORY_MODES = ("persistent", "incognito", "temporary")
@@ -4728,7 +4809,20 @@ class _ChatSlot:
             prompt_roles=_PROMPT_ROLES,
             redact=_redact,
             parse_options=_parse_options,
-            strip_options=lambda text: _OPTIONS_RE.sub("", text).strip(),
+            # A STATUS fact, kept separate from the options PAYLOAD: an
+            # action-only row has a button on screen but no channel-renderable
+            # choice, so it must raise `has_options` without contributing a
+            # label a Slack/Discord button builder would render.
+            has_option_actions=_has_option_actions,
+            # Strips BOTH markers. Only the one that matched would otherwise go,
+            # leaving the other's raw text as the prompt the user reads.
+            #
+            # Routed through ``strip_action_markers``, the PAIR of the matcher used by
+            # ``_has_option_actions``: a span nested inside an unclosed marker head is
+            # not a marker, so it must stay visible here for exactly the reason it
+            # raises no chip there. Stripping it while refusing to count it would
+            # delete the broken syntax that is the user's only cue a marker was meant.
+            strip_options=lambda text: strip_action_markers(_OPTIONS_RE.sub("", text)).strip(),
             parse_cls_meta=parse_cls_meta,
             is_turn_interrupted=is_turn_interrupted,
             is_system_notice=is_system_notice,
