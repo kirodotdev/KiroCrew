@@ -222,13 +222,19 @@ def _record_scrape_outcome(success: bool) -> None:
         )
 
 
-def _cache_without_scrape(api_usage: object, identity: dict[str, object]) -> None:
+def _cache_without_scrape(
+    api_usage: object, identity: dict[str, object], reason: str | None = None
+) -> None:
     """Cache the best available value when the scrape is not going to run.
 
     Degrades rather than erroring: keep a previously-good value (dimmed
     ``stale``) so the pill does not blink out, otherwise surface whatever
     partial fields the API did return alongside ``available: False`` — the
     frontend's existing signal to hide the pill instead of rendering blanks.
+    ``reason`` (when given) rides that unavailable marker so the frontend can
+    explain WHY instead of hiding silently: the opt-in scrape being off is a
+    permanent, user-addressable state (#7623), unlike a cold-start failure,
+    and hiding it left users with no hint that a knob exists.
 
     Preserving is gated on ``_same_identity``: with the scrape disabled, a
     plan-less API answer recurs every refresh forever, so an unguarded preserve
@@ -252,7 +258,10 @@ def _cache_without_scrape(api_usage: object, identity: dict[str, object]) -> Non
             else {}
         )
         partial.pop("_profile_arn", None)
-        _usage_cache = {**partial, "available": False}
+        unavailable: dict[str, object] = {**partial, "available": False}
+        if reason is not None:
+            unavailable["reason"] = reason
+        _usage_cache = unavailable
     _usage_cache_ts = time.time()
 
 
@@ -796,7 +805,7 @@ async def _fetch_usage_bg() -> None:
         # disabled or parked scrape costs nothing at all.
         if not await asyncio.to_thread(_text_scrape_enabled):
             _log_scrape_disabled_once()
-            _cache_without_scrape(api_usage, identity)
+            _cache_without_scrape(api_usage, identity, reason="scrape_disabled")
             return
         if _scrape_in_backoff():
             _cache_without_scrape(api_usage, identity)

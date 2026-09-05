@@ -2313,7 +2313,7 @@ export default function App() {
   // backend cache has not warmed yet" (null) apart from "the request failed"
   // (undefined) — both are falsy. Without it a failing endpoint renders as a
   // spinner that never resolves, since the 30s refetch keeps retrying forever.
-  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | null>({
+  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | 'scrape-disabled' | null>({
     queryKey: ['kiro-usage'],
     queryFn: () => api.sessionsUsage().then(d => {
       const u: KiroUsagePayload = d?.usage || {}
@@ -2385,8 +2385,15 @@ export default function App() {
       // Non-Kiro provider (kiro-cli absent) -> hide. API-key auth -> terminal
       // "not available for this auth type" (the pill and modal explain instead
       // of hiding, because for this account type the state is permanent, not a
-      // warming cache). Empty cache (Kiro warming) -> spinner.
-      if (u.available === false) return u.reason === 'api_key_auth' ? ('api-key' as const) : ('none' as const)
+      // warming cache). Scrape opt-in off with no API plan -> same treatment:
+      // permanent until the user flips dashboard.usage_text_scrape_enabled, so
+      // explain rather than hide (#7623 — hiding left no hint a knob exists).
+      // Empty cache (Kiro warming) -> spinner.
+      if (u.available === false) {
+        if (u.reason === 'api_key_auth') return 'api-key' as const
+        if (u.reason === 'scrape_disabled') return 'scrape-disabled' as const
+        return 'none' as const
+      }
       return null
     }),
     refetchInterval: 30_000,
@@ -3362,6 +3369,14 @@ export default function App() {
                 // flight), but the label says why, and clicking through opens
                 // the modal's fuller explanation.
                 segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_api_key')} aria-label={i18nT('app.kiro_credit_usage_api_key')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+              } else if (kiroUsageState === 'scrape-disabled') {
+                // The free usage API returned no plan and the billed /usage
+                // text scrape is opted out (its default). Permanent until the
+                // user flips dashboard.usage_text_scrape_enabled, so render
+                // the same terminal dash as 'api-key' with a label that names
+                // the knob — hiding the segment here left users of v0.1.3-era
+                // dashboards with a pill that silently vanished (#7623).
+                segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_scrape_disabled')} aria-label={i18nT('app.kiro_credit_usage_scrape_disabled')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
               } else if (!kiroUsageState) {
                 segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {

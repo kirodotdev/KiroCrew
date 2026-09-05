@@ -171,6 +171,23 @@ describe('KiroAccountModal', () => {
     expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument()
   })
 
+  it('explains the opted-out scrape and names the knob instead of a generic failure', async () => {
+    // 'scrape-disabled' is terminal until the user flips
+    // dashboard.usage_text_scrape_enabled (#7623): the free API returned no
+    // plan and the billed fallback is off by default. The panel must name the
+    // knob — a generic unavailable line reads as a transient error and gives
+    // the user nothing to act on (the v0.1.3→v0.4.1 "pill silently vanished"
+    // report was exactly this gap).
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="scrape-disabled" />)
+
+    expect(
+      await screen.findByText(/dashboard\.usage_text_scrape_enabled/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Credit usage unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByText('Checking account…')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument()
+  })
+
   it('calls onClose from the accessible close control', async () => {
     const onClose = vi.fn()
     renderWithProviders(

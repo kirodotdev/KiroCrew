@@ -1210,6 +1210,25 @@ class TestTextScrapeIsOptIn:
         assert "credits_plan" not in sessions_mod._usage_cache
 
     @pytest.mark.asyncio
+    async def test_disabled_marker_names_the_reason(self, monkeypatch):
+        # #7623: the opted-out scrape is a PERMANENT, user-addressable state, so
+        # the unavailable marker carries reason=scrape_disabled and the frontend
+        # renders an explanatory dash instead of hiding the pill silently.
+        monkeypatch.setattr(sessions_mod, "_text_scrape_enabled", lambda: False)
+        with patch("asyncio.create_subprocess_exec", self._spawn_mock(SAMPLE_USAGE.encode())):
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache.get("available") is False
+        assert sessions_mod._usage_cache.get("reason") == "scrape_disabled"
+
+    @pytest.mark.asyncio
+    async def test_no_kiro_bin_marker_stays_reason_free(self):
+        # The definitive kiro-cli-absent verdict must keep hiding the pill: a
+        # non-Kiro provider has no credits to explain, so no reason rides it.
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=None):
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache == {"available": False}
+
+    @pytest.mark.asyncio
     async def test_disabled_keeps_partial_api_fields(self, monkeypatch):
         # The API answered but carried no plan (e.g. plan name + reset date only).
         # Keep what it gave alongside the unavailable marker instead of discarding it.

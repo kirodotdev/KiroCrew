@@ -15,13 +15,16 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
 /**
  * What the modal can be handed: a reading, `null` while the gateway's usage
  * cache warms, `'none'` when the account has no credit plan, `'failed'` when
- * the fetch itself failed with nothing cached, or `'api-key'` when the account
+ * the fetch itself failed with nothing cached, `'api-key'` when the account
  * authenticates with an API key (usage needs an SSO/OIDC token that auth type
- * never has, so the state is terminal by construction). `null` is the ONLY
+ * never has, so the state is terminal by construction), or `'scrape-disabled'`
+ * when the free usage API returned no plan and the billed `/usage` text scrape
+ * is opted out (terminal until the user enables
+ * `dashboard.usage_text_scrape_enabled`). `null` is the ONLY
  * value that means "still loading" — the others have nothing more to wait for,
  * so spinning on them would repeat the defect this distinction exists to remove.
  */
-export type KiroAccountUsage = KiroCreditUsage | null | 'none' | 'failed' | 'api-key'
+export type KiroAccountUsage = KiroCreditUsage | null | 'none' | 'failed' | 'api-key' | 'scrape-disabled'
 
 /** True only for an actual reading, so the sentinels cannot reach a field access. */
 const isUsageReading = (usage: KiroAccountUsage): usage is KiroCreditUsage =>
@@ -237,7 +240,9 @@ function CreditUsage({ usage }: { usage: KiroAccountUsage }) {
         <AlertCircle className="lucide-inline shrink-0" />{' '}
         {i18nT(usage === 'api-key'
           ? 'components.kiroAccountModal.credit_usage_api_key_auth'
-          : 'components.kiroAccountModal.credit_usage_unavailable')}
+          : usage === 'scrape-disabled'
+            ? 'components.kiroAccountModal.credit_usage_scrape_disabled'
+            : 'components.kiroAccountModal.credit_usage_unavailable')}
       </div>
     )
   }
