@@ -3243,6 +3243,111 @@ class TestForkReviewersAreStageTwoOfFastGate:
         assert "never a security" in flat, name
 
 
+class TestLedgerWriterGateFailsClosed:
+    """Execute the ACTUAL ledger writer-gating permission read with ``gh`` stubbed.
+
+    An empty ``perm`` matches no ``case`` arm, so a permission read that FAILED
+    resolves its author to non-writer and drops that writer's disposition
+    records from the ledger -- the reviewer then re-litigates findings a
+    repository writer already ruled on, on a green run with no annotation.
+    """
+
+    DISPOSITION = (
+        '[{"body":"<!-- ai-review-disposition target=gpt head=abc -->",'
+        '"user":{"login":"someone"}}]'
+    )
+
+    def _writer_gate_block(self) -> str:
+        script = _step_script(_workflow("codex-review.yml"), "Write review prompt")
+        start = script.index('disp_authors="')
+        end = script.index('ledger_full="')
+        return script[start:end]
+
+    def _run_gate(self, tmp_path: Path, perm_mode: str):
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the writer gate is Bash; skip where Bash is absent")
+        attempts = tmp_path / "gh-attempts"
+        gh = tmp_path / "gh"
+        stub = f'#!/bin/sh\nprintf x >> "{attempts}"\n'
+        if perm_mode == "write":
+            stub += "printf 'write\\n'\n"
+        elif perm_mode == "notfound":
+            stub += 'echo "gh: Not Found (HTTP 404)" >&2\nexit 1\n'
+        else:
+            stub += 'echo "gh: Internal Server Error (HTTP 500)" >&2\nexit 1\n'
+        gh.write_text(stub, encoding="utf-8", newline="\n")
+        gh.chmod(0o755)
+        sleep_stub = tmp_path / "sleep"
+        sleep_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+        sleep_stub.chmod(0o755)
+        out_file = tmp_path / "writers.json"
+        script = (
+            f"comments_json='{self.DISPOSITION}'\n"
+            + self._writer_gate_block()
+            + f'\nprintf \'%s\' "$writers" > "{out_file}"\n'
+        )
+        result = subprocess.run(
+            [bash, "-e", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={
+                "PATH": _stub_path(tmp_path),
+                "GH_TOKEN": "",
+                "GITHUB_TOKEN": "",
+                "GH_CONFIG_DIR": str(tmp_path),
+                "LC_ALL": "C",
+                "REPO": "example/repo",
+                "PR": "1",
+                "TMPDIR": str(tmp_path),
+            },
+            cwd=tmp_path,
+        )
+        return result, attempts, out_file
+
+    def test_a_readable_writer_is_gated_in(self, tmp_path: Path):
+        result, attempts, out_file = self._run_gate(tmp_path, "write")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(out_file.read_text(encoding="utf-8")) == ["someone"]
+        assert attempts.read_text(encoding="utf-8") == "x"
+
+    def test_a_404_stays_a_legitimate_non_writer(self, tmp_path: Path):
+        # The API answering "not a collaborator" is a real negative: exclude the
+        # author, without a retry and without failing the step.
+        result, attempts, out_file = self._run_gate(tmp_path, "notfound")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(out_file.read_text(encoding="utf-8")) == []
+        assert attempts.read_text(encoding="utf-8") == "x"
+
+    def test_an_unreadable_permission_fails_closed(self, tmp_path: Path):
+        result, attempts, out_file = self._run_gate(tmp_path, "transient")
+        assert result.returncode != 0, "an unreadable permission passed as non-writer"
+        assert "::error::" in result.stdout
+        # Bounded: a permanently failing API must not hold the job open.
+        assert attempts.read_text(encoding="utf-8") == "xxx"
+        assert not out_file.exists(), "the ledger was gated on a permission never read"
+
+    def test_permission_read_no_longer_swallows_its_status(self):
+        block = "\n".join(
+            line
+            for line in self._writer_gate_block().splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "collaborators/$author/permission" in block
+        # The read spans a continuation line and its redirection sits on the
+        # SECOND one, so judge THAT line: a check scoped to the line naming the
+        # endpoint passes while the exit status is still swallowed.
+        redirection = _line_containing(block, "--jq '.permission'")
+        assert "2>/dev/null" not in redirection
+        assert "|| true" not in redirection
+        # An explicit 404 stays a legitimate negative, so it must be matched by
+        # name rather than folded into the unknown-failure arm.
+        assert "HTTP 404|Not Found" in block
+        assert "for attempt in 1 2 3; do" in block
+
+
 class TestProtectedCheckNameHasOnePublisherPerPrType:
     """A required review status must never be satisfied by the OTHER lane's run.
 
