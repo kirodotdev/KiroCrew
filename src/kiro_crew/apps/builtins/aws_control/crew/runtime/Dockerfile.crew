@@ -1,0 +1,52 @@
+# The crew layer: a thin, digest-pinned layer on the maintainer's base image.
+#
+# This file exists so that ONE artifact — the pushed crew image — pins both the
+# serving code (the base) and the crew content (the bundle). See
+# PACKAGING-CONTRACT.md: the bundle used to ride in S3 and nothing in the
+# container ever read it, so the deploy served a default agent while every gate
+# reported green. A layer of the running image cannot be absent, so the bundle
+# lives here instead.
+#
+# It COMPILES NOTHING and INSTALLS NOTHING. There is no RUN, no apt, no pip. If
+# the crew layer ever needed to install a package, the base image would be wrong
+# and that is a REPORT to the base-image (maintainer) track, never a fix here.
+#
+# Build context is the BUNDLE DIRECTORY (T1's `packaging.build` output). The four
+# explicit COPY sources below are the whole layout contract; a bundle missing any
+# of them fails the build here, which is the earliest place it can fail.
+
+# BASE is the maintainer's base image, pinned by digest (repo@sha256:...). It is
+# an ARG BEFORE FROM on purpose: that is the only way `FROM ${BASE}` resolves.
+# scripts/build_crew_image.sh always passes it; there is no sane default.
+ARG BASE
+FROM ${BASE}
+
+# Provenance travels with the image, not alongside it. These are the only inputs
+# the crew layer adds, and they are the answer to "which crew is this image".
+ARG CREW_NAME
+ARG BUNDLE_DIGEST
+ARG BUNDLE_VERSION=unknown
+ARG BUILT_AT=unknown
+
+# Read-only crew payload. The supervisor (T3) copies it into the data home before
+# the backend starts; nothing runs from /app/crew-bundle. Four explicit sources
+# so a missing manifest/agent/mcp is a hard build failure rather than a container
+# that boots with three files and a plausible-looking empty spot.
+#   manifest.json  {bundle_version, crew_name, created_at, digest}
+#   agent.json     the Kiro agent spec; "name" == crew_name
+#   mcp.json       MCP server config; may be {} but MUST exist
+#   skills/        skill directories; may be empty but MUST exist
+COPY manifest.json agent.json mcp.json /app/crew-bundle/
+COPY skills /app/crew-bundle/skills
+
+# OCI + Share My Crew labels. base.name carries the digest-pinned base ref, so
+# `docker inspect` on the crew image traces back to the exact base it was built
+# on; bundle-digest is the crew content's identity, echoed into the tag by the
+# build script so the two can never silently disagree.
+LABEL org.opencontainers.image.base.name="${BASE}" \
+      org.opencontainers.image.created="${BUILT_AT}" \
+      org.opencontainers.image.title="share-my-crew crew image" \
+      org.opencontainers.image.description="Maintainer base image plus one curated, digest-pinned crew bundle." \
+      dev.sharemycrew.crew-name="${CREW_NAME}" \
+      dev.sharemycrew.bundle-digest="${BUNDLE_DIGEST}" \
+      dev.sharemycrew.bundle-version="${BUNDLE_VERSION}"

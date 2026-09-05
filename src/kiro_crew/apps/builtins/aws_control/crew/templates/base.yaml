@@ -1,0 +1,552 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Share My Crew shared base (stack smc-base): private network, ECS cluster,
+  internal ALB, API Gateway VPC link V2 and the control REST API, one shared
+  artifacts bucket, and one shared task-execution role. One stack per account
+  and region; every crew stack (smc-crew-<crew>) deploys against its outputs.
+  No public endpoint of any kind.
+
+# ---------------------------------------------------------------------------
+# Ported from ../../share-my-crew/build/deploy/templates/base.yaml. Output and
+# resource names are aligned to deploy/CONTRACT.md, which is authoritative and
+# is consumed by the crew template and the driver in parallel. Where this file
+# had to diverge from the contract to be deployable, the divergence is called
+# out inline with "CONTRACT:".
+#
+# Verified facts encoded here (each one is otherwise a deploy cycle to
+# rediscover):
+#
+# * The VPC link is AWS::ApiGatewayV2::VpcLink even though this is a REST API.
+#   AWS extended VPC links V2 to REST APIs, which lets a REST API integrate with
+#   an ALB directly with no intermediary NLB. The crew integration targets the
+#   ALB LISTENER by ARN (Integration.IntegrationTarget), which is why this stack
+#   outputs AlbListenerArn and not the load-balancer ARN or DNS.
+# * The ALB is INTERNAL and its listener default is a fixed 404. The only route
+#   to it is the VPC link.
+# * Tasks run in PRIVATE subnets behind a NAT gateway; no task holds a public IP.
+# * The log group is declared here rather than left to the awslogs create-group
+#   option, which would survive delete-stack and keep billing.
+# * EmptyOnDelete on the repository so delete-stack does not fail on stored
+#   images.
+# ---------------------------------------------------------------------------
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    Description: CIDR for the private network this stack creates.
+
+  StageName:
+    Type: String
+    Default: prod
+    AllowedPattern: '^[a-zA-Z0-9_-]+$'
+    Description: >-
+      REST API stage name. The crew stack builds ControlBaseUrl from it, so a
+      non-default value must be passed to the crew stack too.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: >-
+      Container log retention. The default is never-expire, which bills
+      forever; a finite value is the safer default.
+
+Resources:
+
+  # --- network ------------------------------------------------------------
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+        - {Key: Name, Value: smc}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public subnets exist only to host the NAT gateway. Nothing is placed in them
+  # and no listener is exposed from them.
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 8, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: Name, Value: smc-public-a}
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 8, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: Name, Value: smc-public-b}
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 8, 8]]
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: Name, Value: smc-private-a}
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 8, 8]]
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: Name, Value: smc-private-b}
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable}
+
+  PublicSubnetBRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable}
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  # One NAT gateway, not one per AZ: halves the standing cost, and the tradeoff
+  # is explicit (losing that AZ costs the other AZ its outbound path).
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  # The container must reach the Kiro backend over the internet, so the private
+  # subnets need an outbound path.
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable}
+
+  PrivateSubnetBRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable}
+
+  # --- security groups ----------------------------------------------------
+
+  # The VPC link's own ENIs. This is the only thing allowed to reach the ALB.
+  VpcLinkSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: API Gateway VPC link ENIs
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          DestinationSecurityGroupId: !Ref AlbSecurityGroup
+          Description: To the internal ALB listener
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Internal ALB. Reachable only from the VPC link.
+      VpcId: !Ref Vpc
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+
+  AlbIngressFromVpcLink:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref VpcLinkSecurityGroup
+      # No apostrophe anywhere in a rule description: EC2 rejects the whole rule
+      # (accepted set is a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*).
+      Description: Only the API Gateway VPC link may reach this listener.
+
+  # NOTE: the per-crew task security group lives in the crew stack, which adds
+  # its own ingress from this ALB security group (base outputs AlbSecurityGroupId
+  # for exactly that). This ALB security group keeps the default allow-all egress;
+  # the real control is the task SG only accepting ingress from this SG on 8080.
+
+  # --- load balancer ------------------------------------------------------
+
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: smc
+      # Internal. The single most important line in the file.
+      Scheme: internal
+      Type: application
+      IpAddressType: ipv4
+      Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      LoadBalancerAttributes:
+        # Longer than the 5-minute API Gateway STREAM idle timeout so the ALB is
+        # never the component that drops a live SSE tail first.
+        - {Key: idle_timeout.timeout_seconds, Value: '400'}
+        - {Key: routing.http.drop_invalid_header_fields.enabled, Value: 'true'}
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+
+  # Default 404: a request for a crew that is not deployed gets a flat refusal
+  # rather than reaching whichever crew happens to be first.
+  AlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '404'
+            ContentType: application/json
+            MessageBody: '{"error":"no such crew"}'
+
+  # --- compute ------------------------------------------------------------
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: smc
+      ClusterSettings:
+        - {Name: containerInsights, Value: enabled}
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /smc
+      RetentionInDays: !Ref LogRetentionDays
+
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: smc
+      # Without this, delete-stack fails while any image remains.
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: IMMUTABLE
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+
+  # --- shared task-execution role -----------------------------------------
+
+  # CONTRACT: the contract makes ExecutionRoleArn a BASE output (one shared role
+  # for every crew), while the crew section says it may read "those two ARNs and
+  # nothing wider". A shared, crew-agnostic role cannot reference per-crew secret
+  # ARNs it has never seen, so it is scoped to the app's secret namespace
+  # (smc/*) instead of to two exact ARNs. The execution role only PULLS secrets
+  # for the ECS agent to inject; the container never assumes it, so this is a
+  # narrower blast radius than the per-crew TASK role (which is where the
+  # per-crew scoping that matters actually lives). If exact two-ARN scoping is
+  # required, the execution role must move into the crew stack and this output be
+  # dropped -- flagged in the report.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-app-secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:smc/*'
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+
+  # --- artifacts ----------------------------------------------------------
+
+  # One bucket, shared by every crew. Each crew is confined by its task role to
+  # its own prefix crews/<crew>/*, which is what makes prefix-scoped IAM load
+  # bearing rather than cosmetic. It now holds ONLY conversation backups
+  # (crews/<crew>/...): the crew bundle used to be uploaded here before the crew
+  # stack, but the bundle rides inside the crew image now, so nothing is uploaded
+  # here at deploy time -- the backup sidecar is the only writer, at runtime.
+  #
+  # CONTRACT: there is intentionally NO transcript-expiry lifecycle rule. The
+  # contract's single crew-first prefix (crews/<crew>/) puts the conversation
+  # backup and the code bundle under the same prefix, and an S3 lifecycle rule
+  # cannot wildcard the <crew> segment, so one base rule can neither target the
+  # transcripts of all crews nor spare the bundle. Transcript retention (ruled
+  # 30 days) therefore has no enforcement here -- flagged in the report as a
+  # contract issue to resolve (a fixed top-level transcript prefix, or
+  # sidecar-enforced retention).
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'smc-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      VersioningConfiguration: {Status: Enabled}
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-noncurrent
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: {DaysAfterInitiation: 7}
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+
+  # Refuse any request that is not TLS. A bundle is the crew's prompt and
+  # knowledge; a transcript is a customer conversation.
+  ArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArtifactsBucket.Arn
+              - !Sub '${ArtifactsBucket.Arn}/*'
+            Condition:
+              Bool: {'aws:SecureTransport': 'false'}
+
+  # --- API Gateway --------------------------------------------------------
+
+  # V2 link: what allows a REST API to target an ALB with no NLB.
+  VpcLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties:
+      Name: smc
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      SecurityGroupIds: [!Ref VpcLinkSecurityGroup]
+      Tags:
+        'kirocrew:managed': 'true'
+        'kirocrew:app': 'share-my-crew'
+
+  # The CONTROL API. Every method is AWS_IAM authorized: the owner's machine
+  # already holds AWS credentials, so SigV4 introduces no new secret to store.
+  ControlApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: smc-control
+      Description: Share My Crew control plane. IAM authorization on every method.
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+
+  # Crew stacks attach their <crew> subtree under this shared /c node.
+  #
+  # CONTRACT: the contract's base-output list names RestApiRootResourceId but not
+  # this /c resource. A crew stack cannot build /c/<crew> from the ROOT resource,
+  # because the second crew to create its own /c under root fails with a
+  # duplicate-path ConflictException. So the shared /c is created here and
+  # exported as CrewsResourceId, and the crew stack takes CrewsResourceId as a
+  # parameter. Flagged in the report: add CrewsResourceId to the base outputs and
+  # crew params; RestApiRootResourceId is exported (below) but the crew stack
+  # does not consume it.
+  CrewsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ControlApi
+      ParentId: !GetAtt ControlApi.RootResourceId
+      PathPart: c
+
+  # One method on the root, for a structural reason rather than to serve anyone.
+  # AWS::ApiGateway::Deployment REFUSES an API with no methods, and a Stage needs
+  # a Deployment, but every real method lives in a crew stack -- so the base
+  # stack could not stand up its own stage before the first crew existed. This
+  # method is AWS_IAM (no anonymous route), MOCK (touches no backend), and a flat
+  # empty-bodied 404 (discloses nothing). It matches only "/" and intercepts
+  # nothing in the crew subtree.
+  RootRefusalMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ControlApi
+      ResourceId: !GetAtt ControlApi.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: AWS_IAM
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 404}'
+        IntegrationResponses:
+          - StatusCode: '404'
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: '404'
+
+  ControlDeployment:
+    Type: AWS::ApiGateway::Deployment
+    # REQUIRED, not defensive. CloudFormation does not infer ordering from the
+    # RestApiId reference alone, so without this it can create the deployment
+    # before the method and fail with the very error the method exists to fix --
+    # intermittently, which is worse than always.
+    DependsOn: [RootRefusalMethod, CrewsResource]
+    Properties:
+      RestApiId: !Ref ControlApi
+      Description: Base deployment. Each crew stack requires a fresh create-deployment.
+
+  # CONTRACT trap #5/#11: NO DataTraceEnabled and NO execution LoggingLevel here.
+  # Execution logging writes full request and response bodies, which would put
+  # conversation content and any control header into CloudWatch. Only throttling
+  # ceilings are set. (Access logging is "wanted" per the contract but is not
+  # added here: to CloudWatch it requires the account-global API Gateway
+  # CloudWatch Logs role, which a teardown-to-zero stack should not own or
+  # clobber -- flagged in the report.)
+  ControlStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref ControlApi
+      DeploymentId: !Ref ControlDeployment
+      StageName: !Ref StageName
+      TracingEnabled: false
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingBurstLimit: 20
+          ThrottlingRateLimit: 10
+
+Outputs:
+  # --- exactly the names in deploy/CONTRACT.md ---------------------------
+  VpcId:
+    Value: !Ref Vpc
+    Export: {Name: smc-base-VpcId}
+  PrivateSubnetIds:
+    Value: !Join [',', [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+    Export: {Name: smc-base-PrivateSubnetIds}
+  ClusterArn:
+    Value: !GetAtt Cluster.Arn
+    Export: {Name: smc-base-ClusterArn}
+  AlbListenerArn:
+    Value: !Ref AlbListener
+    Export: {Name: smc-base-AlbListenerArn}
+  # The VPC-link integration needs the LOAD BALANCER, not its listener, as the
+  # routing target, and it needs the DNS name for the Uri that sets the Host
+  # header. Naming the listener as the target, or omitting the Uri, fails at
+  # deploy with "Invalid integration URI specified".
+  AlbArn:
+    Value: !Ref Alb
+    Export: {Name: smc-base-AlbArn}
+  AlbDnsName:
+    Value: !GetAtt Alb.DNSName
+    Export: {Name: smc-base-AlbDnsName}
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+    Export: {Name: smc-base-AlbSecurityGroupId}
+  LogGroupName:
+    Value: !Ref LogGroup
+    Export: {Name: smc-base-LogGroupName}
+  RestApiId:
+    Value: !Ref ControlApi
+    Export: {Name: smc-base-RestApiId}
+  RestApiRootResourceId:
+    # Exported to satisfy the contract's output list. The crew stack does NOT
+    # consume it (the root refusal method lives here); the crew needs
+    # CrewsResourceId below. See the report.
+    Value: !GetAtt ControlApi.RootResourceId
+    Export: {Name: smc-base-RestApiRootResourceId}
+  VpcLinkId:
+    Value: !Ref VpcLink
+    Export: {Name: smc-base-VpcLinkId}
+  BucketName:
+    Value: !Ref ArtifactsBucket
+    Export: {Name: smc-base-BucketName}
+  ExecutionRoleArn:
+    Value: !GetAtt ExecutionRole.Arn
+    Export: {Name: smc-base-ExecutionRoleArn}
+
+  # --- additions the crew stack genuinely needs (flagged for the contract) ---
+  CrewsResourceId:
+    Description: >-
+      The shared /c API Gateway resource. The crew stack attaches its <crew>
+      segment under this. NOT in the contract's output list yet -- see the report.
+    Value: !Ref CrewsResource
+    Export: {Name: smc-base-CrewsResourceId}
+  RepositoryUri:
+    Description: >-
+      ECR repository the image track pushes to. The contract's output list omits
+      it; kept because the image must have somewhere to live -- see the report.
+    Value: !GetAtt Repository.RepositoryUri
+    Export: {Name: smc-base-RepositoryUri}
+  ControlApiBaseUrl:
+    Description: SigV4-signed calls only. Not reachable without IAM credentials.
+    Value: !Sub 'https://${ControlApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'

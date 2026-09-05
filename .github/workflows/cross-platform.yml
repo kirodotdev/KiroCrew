@@ -11,8 +11,21 @@ name: Cross-Platform Portability
 #
 # Scope: `src/kiro_crew/**/*.py`, excluding the vendored tree (not ours to fix),
 # tests (they may legitimately assert POSIX behaviour behind a skip marker),
-# and `platform_compat.py` itself -- that module's whole job is to name the
-# os-specific primitives everything else routes through.
+# `platform_compat.py` itself -- that module's whole job is to name the
+# os-specific primitives everything else routes through -- and the AWS Control
+# crew's container runtime.
+#
+# That last exclusion is a different KIND of exclusion from the others, so it is
+# worth being explicit about. `aws_control/crew/runtime/` is not part of the
+# application that installs on a user's machine: it is the SOURCE OF A LINUX
+# CONTAINER IMAGE, built by that app's deploy driver and run on Fargate. Its
+# supervisor forks, signals a process group, and reads `/var/lib/kirocrew`,
+# because that is the correct way to supervise processes on the only platform it
+# will ever execute on. Making it Windows-portable would add branches for a
+# platform the image cannot run, and the `posix-only-approved` label is the wrong
+# instrument here: a label is per pull request, so every future change to the
+# container would have to re-apply it and a reviewer would have to re-decide the
+# same question. The path is the durable statement.
 #
 # The test exclusion has to be spelled out as a pathspec, not assumed from the
 # `test/` tree living outside `src/`: ~120 test modules ship INSIDE the package
@@ -62,6 +75,7 @@ jobs:
             ':(exclude)src/kiro_crew/_vendor/**' \
             ':(exclude)src/kiro_crew/platform_compat.py' \
             ':(exclude)src/kiro_crew/**/tests/**' \
+            ':(exclude)src/kiro_crew/apps/builtins/aws_control/crew/runtime/**' \
             2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
 
           if [ -z "$added" ]; then

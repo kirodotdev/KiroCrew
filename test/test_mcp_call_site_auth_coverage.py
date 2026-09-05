@@ -156,6 +156,34 @@ _KNOWN_UNRESOLVED = frozenset(
 # so the exception set stays visible rather than implied.
 _KNOWN_UNREACHABLE: frozenset[str] = frozenset()
 
+# Modules that mention the secret header but are NOT dashboard MCP callers, keyed
+# by exact ``src/kiro_crew``-relative path. This is the same sanctioned bargain
+# ``test_agent_home_isolation.py:_ALLOWED`` strikes: a separate process family
+# re-implements a shared rule, a capability guard flags the duplicate, and the
+# exemption is paid for by a pin that asserts the duplicate stays correct.
+#
+# ``aws_control/.../container/common/secret.py`` is the AWS Control crew
+# container's OWN header builder. The container runs as its own Linux-image
+# process where ``kiro_crew`` is not importable (see the CONTRACT in that tree
+# and the ``bundle.py`` exemption in ``test_agent_home_isolation.py``), so it
+# defines its own ``HEADER = "X-Internal-Secret"`` constant and its front process
+# forwards turns over ``httpx`` -- a transport this guard does not model and is
+# not written to govern (it resolves ``urllib`` ``Request`` and ``mcp_core``
+# helpers against the DASHBOARD allowlists). The module trips the capability
+# detector only because it spells the header as a constant used in a dict-literal
+# key, exactly the shape ``_sends_secret`` learned to catch for
+# ``computer_use/screencast.py``. It makes no transport call itself, so adding it
+# to ``_SOURCES`` would be vacuous -- the scan attributes zero ``/api`` sites to
+# it -- and would misfile a container module as a governed dashboard caller.
+# ``test_container_secret_module_is_a_pure_header_builder`` pins the two facts
+# that make the exemption honest: the module builds the header and performs no
+# HTTP itself, so it cannot become a hidden dashboard call site under the skip.
+_NOT_A_DASHBOARD_CALLER = frozenset(
+    {
+        "apps/builtins/aws_control/crew/runtime/container/common/secret.py",
+    }
+)
+
 
 def _normalise(path: str) -> str:
     """Drop any query string and collapse interpolated segments to the marker."""
@@ -685,6 +713,8 @@ class TestMcpCallSiteAuthCoverage:
             rel = path.relative_to(_SRC).as_posix()
             if path.resolve() in scanned:
                 continue
+            if rel in _NOT_A_DASHBOARD_CALLER:
+                continue
             if "/tests/" in f"/{rel}" or path.name.startswith("test_"):
                 continue
             text = path.read_text(encoding="utf-8")
@@ -726,4 +756,79 @@ class TestMcpCallSiteAuthCoverage:
             "module(s) reach the dashboard with the internal secret but are not "
             f"scanned by this guard, so their call sites are unchecked: "
             f"{unscanned}. Add them to _SOURCES."
+        )
+
+    def test_not_a_dashboard_caller_exemptions_still_trip_the_detector(self):
+        """The exemption may only shrink: a listed file must still LOOK like a
+        secret sender, or the entry is stale and hides nothing.
+
+        This is the ratchet half of the bargain. If a file drops the header, its
+        exemption is dead weight that would silence a genuinely new sender added
+        at the same path later, so it must be removed the moment it stops
+        matching -- exactly like ``_KNOWN_UNRESOLVED`` and ``_KNOWN_UNREACHABLE``.
+        """
+        stale: list[str] = []
+        for rel in sorted(_NOT_A_DASHBOARD_CALLER):
+            path = _SRC / rel
+            if not path.exists():
+                stale.append(f"{rel} (file gone)")
+                continue
+            text = path.read_text(encoding="utf-8")
+            if not _sends_secret(text, ast.parse(text)):
+                stale.append(f"{rel} (no longer sets {_SECRET_HEADER})")
+        assert not stale, (
+            "_NOT_A_DASHBOARD_CALLER entr(y/ies) no longer match the detector, so "
+            f"the exemption is stale and must be removed: {stale}"
+        )
+
+    def test_container_secret_module_is_a_pure_header_builder(self):
+        """Pay for the container ``secret.py`` exemption by pinning WHY it is safe.
+
+        The module is skipped because it is the AWS Control crew container's own
+        header builder, not a dashboard MCP caller -- but a skip that trusts prose
+        would hide the day someone adds an actual HTTP call to it. So assert the
+        two load-bearing facts directly: it builds the ``X-Internal-Secret``
+        header, and it performs NO transport of its own (no ``urllib``/``httpx``
+        request, no ``mcp_core`` helper). If either changes this fails, and the
+        exemption has to be re-justified or dropped.
+        """
+        rel = "apps/builtins/aws_control/crew/runtime/container/common/secret.py"
+        assert rel in _NOT_A_DASHBOARD_CALLER, "the exemption under test is gone"
+        src = _SRC / rel
+        text = src.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+
+        assert _sends_secret(text, tree), (
+            "container secret.py no longer builds the secret header, so this pin "
+            "guards nothing -- re-examine the exemption"
+        )
+
+        # No transport of any recognised shape: neither the dashboard helpers /
+        # urllib Request this guard models, nor the httpx client the container
+        # actually forwards over. A header builder calls none of them.
+        transport_callees = _TRANSPORT_HELPERS | {"Request"}
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = _plain_callee(node.func)
+            if callee in transport_callees:
+                offenders.append(callee or "<call>")
+            # httpx client verbs on any receiver: ``.post`` / ``.get`` / ``.stream``.
+            if isinstance(node.func, ast.Attribute) and node.func.attr in (
+                "post",
+                "get",
+                "stream",
+                "request",
+                "send",
+            ):
+                offenders.append(f".{node.func.attr}")
+        assert not offenders, (
+            "container secret.py now performs HTTP itself, so it is a real call "
+            f"site the guard cannot see through httpx: {sorted(set(offenders))}. "
+            "The pure-header-builder exemption no longer holds."
+        )
+        assert "httpx" not in text and "urllib" not in text, (
+            "container secret.py imported an HTTP client; it is no longer a pure "
+            "header builder and the exemption must be revisited"
         )

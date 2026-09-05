@@ -278,7 +278,34 @@ class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
         write guard is the one caller whose question is genuinely about the
         environment.
         """
-        allowed = {"kiro_crew/config/paths.py", "kiro_crew/agent.py"}
+        allowed = {
+            "kiro_crew/config/paths.py",
+            "kiro_crew/agent.py",
+            # The AWS Control crew's container is a legitimate third case, for the
+            # same reason ``agent.py`` is: its question is genuinely about the
+            # ENVIRONMENT, not about a test's pinned home. ``supervisor/bundle.py``
+            # installs the crew spec where kiro-cli reads it -- ``$KIRO_HOME`` else
+            # ``~/.kiro`` / ``agents`` -- which is deliberately NOT under the
+            # override-following data home (the backend is launched with
+            # ``KIROCREW_HOME`` but no ``KIRO_HOME``), so it must resolve the
+            # override-blind location exactly as this seam does. It cannot READ
+            # ``ambient_agents_dir()``: it runs as its own process inside a Linux
+            # image where ``kiro_crew`` is not importable (and importing that tree
+            # is itself forbidden -- ``test_spawn_audit.test_container_image_assets``
+            # ``_are_not_imported``), so it re-implements the rule as
+            # ``default_kiro_agents_dir()`` and only MENTIONS the name in its
+            # docstring while explaining the delegation. That sanctioned duplicate
+            # is already pinned against drift by
+            # ``test_agent_home_isolation.test_the_container_resolver_matches_kiro_home``
+            # -- the same bargain the two entries above are exempted under.
+            #
+            # Rewording the docstring would also silence this guard, and is the
+            # wrong fix: the detector here is a substring scan, but the file really
+            # does resolve the override-blind location, so dropping the name would
+            # leave a genuine member of the class this guard polices absent from its
+            # ledger. An entry that says so is the honest outcome.
+            "kiro_crew/apps/builtins/aws_control/crew/runtime/container/supervisor/bundle.py",
+        }
         callers = set()
         for path in sorted(_SRC.rglob("*.py")):
             if "_vendor" in path.parts:

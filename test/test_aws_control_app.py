@@ -54,6 +54,13 @@ P0_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/costs/{account}"),
     ("GET", "/library/{account}"),
     ("GET", "/backup/{account}"),
+    # The Crews pane. Read-only and consent-ungated (listing stacks and describing
+    # one service are free calls), but they belong in this table for the reason the
+    # header gives: the sibling gates below ITERATE it, so a route missing here
+    # ships without its disabled-app refusal and its non-owner refusal ever being
+    # proven. The inventory assertion catching this omission is that design working.
+    ("GET", "/crews/{account}"),
+    ("GET", "/crews/{account}/{crew}"),
     ("GET", "/shares"),
     ("GET", "/iam-policy"),
     ("POST", "/profiles/register"),

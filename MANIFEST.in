@@ -63,3 +63,16 @@ recursive-include src/kiro_crew/deploy/skills *
 # published Linux wheel ships a vendored llama_cpp that cannot load its own
 # shared library and in-process embeddings fail at gateway startup.
 recursive-include src/kiro_crew/_vendor/llama_cpp_libs *
+# The AWS Control crew deploy payload, also re-included AFTER the excludes.
+# `recursive-include src/kiro_crew/apps` further up takes only *.json and *.md,
+# which leaves out everything this tree is made of: the driver and its gate suite
+# (*.sh), the two CloudFormation templates (*.yaml), the Dockerfiles (no
+# extension), the container's requirements (*.txt), and the fixture .gitkeep
+# files. setup.cfg's package_data does not cover this lane -- `python -m build`
+# builds the wheel FROM the sdist, so a file absent here is absent from the wheel
+# whatever package_data says.
+#
+# Ordering is the whole fix, exactly as for the vendored libs above: appending a
+# new global-exclude below this line silently strips the payload back out.
+# test/test_aws_control_crew_payload.py asserts the order, not just the line.
+recursive-include src/kiro_crew/apps/builtins/aws_control/crew *

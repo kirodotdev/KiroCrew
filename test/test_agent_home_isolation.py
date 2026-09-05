@@ -12,6 +12,7 @@ paths that no longer existed.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -727,7 +728,22 @@ _LITERAL_RE = re.compile(r'"\.kiro"\s*/\s*"agents"' r"|[\"']\.kiro/agents")
 # for that entry, so it cannot reintroduce the reader/writer split-brain this
 # guard exists to catch; ``TestKiroAgentsDirWriteProtection`` pins the literal to
 # ``kiro_agents_dir()`` so drift still fails loudly.
-_ALLOWED = {"config/paths.py", "security.py"}
+_ALLOWED = {
+    "config/paths.py",
+    "security.py",
+    # The AWS Control crew's container is a third case, and a different kind. It
+    # runs as its own process inside a Linux image where ``kiro_crew`` is not
+    # importable, so ``supervisor/bundle.py`` re-implements this resolver instead
+    # of calling it -- the same constraint that made the front's slot-id guard a
+    # shape test rather than an import. The exempt file is that module's own TEST,
+    # which asserts what the re-implementation returns: it neither reads nor writes
+    # the directory, and a test forbidden from naming the expected path could not
+    # detect the drift this guard exists to catch.
+    # ``test_the_container_resolver_matches_kiro_home`` pins the duplicate to
+    # ``kiro_home()`` so it cannot drift silently -- the same bargain
+    # ``security.py`` gets above.
+    "apps/builtins/aws_control/crew/runtime/container_tests/test_supervisor_bundle.py",
+}
 
 
 def test_no_new_hardcoded_global_agents_dir():
@@ -756,11 +772,99 @@ def test_no_new_hardcoded_global_agents_dir():
     ), "hard-coded global agents dir — use kiro_agents_dir() instead:\n" + "\n".join(offenders)
 
 
-def test_repo_has_no_python_syntax_regression():
-    """Cheap compile-all so a rewrite typo fails here rather than at import."""
+def test_the_container_resolver_matches_kiro_home(tmp_path):
+    """The crew container re-implements ``kiro_home``; pin the duplicate to it.
+
+    ``supervisor/bundle.py`` cannot import ``kiro_crew``: it runs as its own
+    process inside a Linux image built from the crew source, where the package is
+    not on the path. So it re-derives ``$KIRO_HOME`` else ``~/.kiro``, then
+    ``/agents``. That is a sanctioned duplicate rather than an oversight, and the
+    price of the exemption above is this test -- two implementations of one rule
+    drift, and the drift here would be a container reading agent specs from a
+    directory nothing wrote.
+
+    Compared by BEHAVIOUR under both branches of the override rather than by
+    reading the source, because a copy that merely looks similar is what this is
+    meant to catch.
+    """
+    import os
+    import sys
+
+    from kiro_crew.config.paths import kiro_home
+
+    # Imported as ``container.supervisor.bundle``, the way the image does it: the
+    # module uses relative imports, so loading the file standalone fails. The build
+    # context is what sits on sys.path inside the container.
+    runtime = SRC / "apps/builtins/aws_control/crew/runtime"
+    added = str(runtime) not in sys.path
+    if added:
+        sys.path.append(str(runtime))
+    try:
+        from container.supervisor import bundle as mod
+    except Exception as exc:  # pragma: no cover - a real breakage, not a skip
+        raise AssertionError(
+            f"the container's bundle module no longer imports ({exc}); this pin "
+            "cannot verify the duplicate resolver"
+        ) from exc
+
+    saved = os.environ.get("KIRO_HOME")
+    try:
+        # Both sides are ``.resolve()``d before comparing. ``kiro_home()`` resolves
+        # and the container deliberately does not, so comparing raw values tests
+        # the spelling rather than the rule, and the spellings legitimately differ:
+        # on a machine whose home is a symlink one side collapses it, and on Windows
+        # the temp dir arrives as an 8.3 short name from one and long from the other
+        # (the first version of this test was green on Linux and red on Windows for
+        # exactly that reason). The invariant worth pinning is that the two
+        # DESIGNATE the same directory under both branches of the override.
+        os.environ.pop("KIRO_HOME", None)
+        assert (
+            mod.default_kiro_agents_dir().resolve() == (kiro_home() / "agents").resolve()
+        ), "the container resolver disagrees with kiro_home() with no override set"
+        # With an override: both must follow it, which is the whole point of the
+        # override existing and the half most likely to be dropped by a copy.
+        # The probe lives under ``tmp_path``, which pytest removes: an earlier
+        # version put a fixed directory in the system temp dir and left it there,
+        # which the repo's no-test-side-effects rule refuses. It must EXIST because
+        # ``.resolve()`` only normalises a Windows 8.3 short name for a path that
+        # is really on disk, and normalising is the whole point of resolving here.
+        probe = tmp_path / "kiro-home-probe"
+        probe.mkdir()
+        os.environ["KIRO_HOME"] = str(probe)
+        assert (
+            mod.default_kiro_agents_dir().resolve() == (kiro_home() / "agents").resolve()
+        ), "the container resolver ignores KIRO_HOME while kiro_home() honors it"
+    finally:
+        if saved is None:
+            os.environ.pop("KIRO_HOME", None)
+        else:
+            os.environ["KIRO_HOME"] = saved
+        # Leave sys.path as found: that directory carries a ``tests`` package, and
+        # leaving it behind is the collision that broke two Windows shards earlier.
+        if added and str(runtime) in sys.path:
+            sys.path.remove(str(runtime))
+
+
+def test_repo_has_no_python_syntax_regression(tmp_path):
+    """Cheap compile-all so a rewrite typo fails here rather than at import.
+
+    ``PYTHONPYCACHEPREFIX`` sends the CHILD's bytecode under ``tmp_path`` instead of
+    writing ``__pycache__`` throughout the checkout. Measured rather than assumed:
+    this test left 131 ``__pycache__`` directories in ``src/`` before the change and
+    34 after.
+
+    Those remaining 34 are NOT from this test -- they are pytest's own imports of the
+    modules under test, and a different test in this file leaves 37 by itself. So this
+    fixes the compileall child, which is what was reported, and does not claim to make
+    the run leave nothing behind; saying otherwise would be easy to check and wrong.
+    """
+    env = {**os.environ, "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache")}
     proc = subprocess.run(
         [sys.executable, "-m", "compileall", "-q", str(SRC)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        env=env,
+        cwd=tmp_path,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

@@ -67,6 +67,15 @@ scripts an agent runs in a shell, gated by the shell approval path, not
 subprocesses this package spawns; the gateway neither imports them (pinned by
 ``test_bundled_skill_assets_are_not_imported``) nor execs them (such an exec
 would be a spawn site in a non-exempt file, reviewed there).
+
+ALSO OUT OF SCOPE BY SHAPE: a container image's own source, under
+``apps/builtins/<app>/crew/runtime/**`` (see ``_is_container_image_asset``). It
+ships under the package because the deploy driver needs a docker build context
+on an installed copy, and its spawns happen inside the deployed container, in a
+different interpreter, from an argv baked into the image. No gateway call path
+reaches them, so there is nothing for the sandbox chokepoint to route; the
+premise that nothing imports the tree is pinned by
+``test_container_image_assets_are_not_imported``.
 """
 
 from __future__ import annotations
@@ -99,6 +108,33 @@ def _is_bundled_skill_asset(path: Path) -> bool:
     if "builtin_skills" in parts:
         return True
     return parts[:2] == ("apps", "builtins") and "skills" in parts[2:]
+
+
+def _is_container_image_asset(path: Path) -> bool:
+    """True for the source of a separate container image, not gateway code.
+
+    ``apps/builtins/<app>/crew/runtime/**`` is the build context of the Share My
+    Crew deployment image: a Dockerfile, a requirements file, and the ``container``
+    package that image runs as ``python -m container.supervisor``. It ships under
+    the package for one reason -- the deploy driver needs a build context on an
+    installed copy, not just in a checkout.
+
+    Its spawns are that image's own process management (the supervisor starts the
+    backend and the backup sidecar inside the container, from a fixed argv baked
+    into the image). They are not spawns THIS process makes, so the gateway's
+    sandbox chokepoint has nothing to route: there is no gateway call path that
+    reaches them. Routing them would also mean the container importing
+    ``kiro_crew.sandbox`` to fork inside a Fargate task that is forbidden an
+    unprivileged user namespace, which is the opposite of what that wrapper is
+    for.
+
+    The premise is that the gateway never imports this tree, and
+    ``test_container_image_assets_are_not_imported`` pins it. The tree has no
+    ``__init__.py`` above ``container/`` precisely so it cannot be imported by
+    package path even by accident.
+    """
+    parts = path.relative_to(_SRC_ROOT).parts
+    return parts[:2] == ("apps", "builtins") and parts[3:5] == ("crew", "runtime")
 
 
 # Attribute names that actually spawn a child process.
@@ -337,6 +373,33 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # covers. Fixed argv, no shell=True, no model-derived input -- the only
         # variables are a tmpdir path and a loop index.
         "apps/builtins/code_review_sage/tests/test_learning.py::test_concurrent_processes_both_land",
+        # TEST-ONLY, and the spawn IS the thing under test: the crew bundle
+        # curator's contract (PACKAGING-CONTRACT T1) is a COMMAND -- `python -m
+        # packaging.build ... ` printing `SMC_BUNDLE_JSON=<path>` as its last
+        # stdout line -- and the deploy driver invokes it exactly that way. An
+        # in-process call would prove the function works and leave the contract
+        # the driver actually depends on untested. Fixed argv (`sys.executable
+        # -m packaging.build`), no shell=True, cwd is the crew root (which is the
+        # driver's own cwd, and what makes this tree's `packaging` win over the
+        # PyPA distribution for that child), and every path argument is a
+        # tmp_path. Nothing here is agent-derived.
+        "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
+        "::test_cli_build_prints_bundle_json_last_line",
+        "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
+        "::test_cli_plan_writes_template_without_bundle",
+        # TEST-ONLY, and the spawn is the same fixed `sys.executable -m
+        # packaging.build` CLI invocation as its two siblings above — this one
+        # proves the COLD-CACHE property that the child writes no __pycache__
+        # beside the module it imports (nor into the real checkout). No
+        # shell=True; cwd is the test's own tmp_path; the module is made
+        # importable through PYTHONPATH pointing at a `tmp_path` copy of the
+        # package plus CREW_ROOT (via `_child_env`), and every path argument
+        # (--out, --source, the copy root) is a tmp_path. Nothing here is
+        # agent-derived. Sandbox-routing would defeat the test: it exists to
+        # observe where a real interpreter drops bytecode on a real cold cache,
+        # which a scrubbed-env/filesystem-scoped wrapper would move or forbid.
+        "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
+        "::test_cli_subprocess_leaves_no_pycache_in_the_source_tree",
         # auto-improvement: fixed `git`/`gh`/`ruff` argv against the OPERATOR-chosen
         # repository. Same class as code_reviewer/git.py and issue_radar's gh/glab
         # spawns: the repo is selected by the operator through the Connect endpoint,
@@ -1343,7 +1406,7 @@ def _collect_first_party_flag_sites() -> frozenset[str]:
     out: set[str] = set()
     for path in _SRC_ROOT.rglob("*.py"):
         rel = path.relative_to(_SRC_ROOT).as_posix()
-        if rel == "sandbox.py" or _is_bundled_skill_asset(path):
+        if rel == "sandbox.py" or _is_bundled_skill_asset(path) or _is_container_image_asset(path):
             continue
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, str(path))
@@ -1411,8 +1474,10 @@ def _collect_spawn_functions() -> dict[str, str]:
     out: dict[str, str] = {}
     for path in _SRC_ROOT.rglob("*.py"):
         # A skill's own helper scripts are not gateway runtime code paths --
-        # see ``_is_bundled_skill_asset`` for why they are out of scope.
-        if _is_bundled_skill_asset(path):
+        # see ``_is_bundled_skill_asset`` for why they are out of scope. A
+        # container image's own source is out of scope for the same reason --
+        # see ``_is_container_image_asset``.
+        if _is_bundled_skill_asset(path) or _is_container_image_asset(path):
             continue
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, str(path))
@@ -1690,6 +1755,89 @@ def test_bundled_skill_assets_are_not_imported():
         "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nEither move the "
         "shared logic into a real module under src/kiro_crew (where the spawn "
         "audit reviews it), or drop the import."
+    )
+
+
+def test_container_image_assets_are_not_imported():
+    """The container-image exemption is only honest while nothing imports the tree.
+
+    ``_is_container_image_asset`` takes ``apps/builtins/*/crew/runtime/**`` out of
+    the audit on the premise that it is the source of a SEPARATE image, run by a
+    different interpreter in a different process. The one way that premise fails
+    is an import: the tree's unrouted spawns would become gateway spawns while
+    staying invisible here.
+
+    Two spellings are forbidden, because the tree is reachable by two names. The
+    package path (``kiro_crew.apps.builtins.<app>.crew.runtime.container...``) is
+    the accidental one, and it is already blocked by there being no
+    ``__init__.py`` at ``crew/runtime/`` -- asserted below so that adding one is
+    a deliberate act with a test to answer to. The image's OWN spelling
+    (top-level ``container.*``, which is what /app on sys.path makes it inside
+    the image) is the dangerous one, because it resolves in any process that
+    puts ``crew/runtime`` on sys.path -- which the moved test suite does on
+    purpose, and the gateway must not.
+    """
+    assets = [p for p in _SRC_ROOT.rglob("*.py") if _is_container_image_asset(p)]
+    # Non-vacuity: a predicate matching nothing would pin nothing while passing,
+    # and would mean the exemption is dead config.
+    assert assets, "no container image assets found -- the exemption matches nothing"
+
+    runtime_roots = {_SRC_ROOT / Path(*p.relative_to(_SRC_ROOT).parts[:5]) for p in assets}
+    for root in runtime_roots:
+        assert not (root / "__init__.py").exists(), (
+            f"{root.relative_to(_SRC_ROOT)} has an __init__.py, which makes the "
+            "container image source importable by package path. It is a build "
+            "context, not a package."
+        )
+
+    forbidden = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).with_suffix("").as_posix().replace("/", ".")
+        for p in assets
+    }
+    forbidden |= {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).parent.as_posix().replace("/", ".") for p in assets
+    }
+    # The image's own top-level spelling, derived from the tree rather than
+    # hardcoded, so a second package under runtime/ is covered on arrival.
+    #
+    # Only the packages the IMAGE ships count. The Dockerfile copies `container/`
+    # and nothing else; the suite that tests it sits beside it under `tests`, a
+    # name other builtin apps legitimately use for their OWN test packages, so
+    # forbidding that string flags every one of them (it did -- three
+    # code_review_sage files import `tests.fixtures`).
+    forbidden |= {
+        d.name
+        for root in runtime_roots
+        for d in root.iterdir()
+        if d.is_dir() and (d / "__init__.py").exists() and d.name != "tests"
+    }
+    assert "container" in forbidden, (
+        "the image's own package name was not derived from the tree, so the "
+        "dangerous spelling is unchecked"
+    )
+
+    offenders: list[str] = []
+    for path in _SRC_ROOT.rglob("*.py"):
+        if _is_container_image_asset(path):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        rel = path.relative_to(_SRC_ROOT).as_posix()
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                names = [node.module]
+            for name in names:
+                if name in forbidden or name.split(".")[0] in forbidden:
+                    offenders.append(f"{rel}:{node.lineno} imports {name}")
+
+    assert not offenders, (
+        "Gateway code imports the container image source, which the spawn audit "
+        "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nThat code runs "
+        "inside a deployed container, not in this process. Move whatever is "
+        "shared into a real module under src/kiro_crew, where the audit reviews "
+        "its spawns."
     )
 
 

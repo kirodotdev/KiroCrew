@@ -75,6 +75,7 @@ from kiro_crew import aws_consent
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
 from kiro_crew.apps.builtins.aws_control.backend import costs as costs_mod
+from kiro_crew.apps.builtins.aws_control.backend import crews as crews_mod
 from kiro_crew.apps.builtins.aws_control.backend import library as library_mod
 from kiro_crew.apps.builtins.aws_control.backend import shares as shares_mod
 from kiro_crew.apps.builtins.aws_control.backend import storage as storage_mod
@@ -721,6 +722,56 @@ async def _handle_profiles_register(request: web.Request) -> web.Response:
 # --------------------------------------------------------------------------
 # Drive
 # --------------------------------------------------------------------------
+
+
+async def _handle_crews(request: web.Request) -> web.Response:
+    """Every deployed crew in the account.
+
+    No consent gate. ``GATED_SERVICES`` exists ahead of the first BILLABLE call,
+    and describe-stacks, describe-services and get-caller-identity are all free.
+    Deploying a crew is emphatically not free (a Fargate task runs until it is
+    stopped, behind an ALB, egressing through a NAT), so the mutation that creates
+    one needs its own gated service. Listing what already exists does not, and
+    adding a card the owner must dismiss to read their own inventory would train
+    them to click through consent cards.
+    """
+    target = await _account_target(request)
+    if isinstance(target, web.Response):
+        return target
+    account, profile, region = target
+    try:
+        inv = await asyncio.to_thread(crews_mod.list_crews, profile, region, account=account)
+    except crews_mod.AccountMismatch as exc:
+        # Not an AWS failure: the profile is pointing somewhere else, and reporting
+        # another account's crews here would be a disclosure, not an error.
+        return web.json_response({"error": str(exc), "code": "account_mismatch"}, status=409)
+    except AWSError as exc:
+        return _aws_failed(exc)
+    except RuntimeError as exc:
+        return web.json_response({"error": _safe_error(exc), "code": "aws_call_failed"}, status=502)
+    return web.json_response(crews_mod.to_json(inv))
+
+
+async def _handle_crew_detail(request: web.Request) -> web.Response:
+    """One crew, with the ECS service state the list view deliberately omits."""
+    target = await _account_target(request)
+    if isinstance(target, web.Response):
+        return target
+    account, profile, region = target
+    name = request.match_info.get("crew", "")
+    try:
+        found = await asyncio.to_thread(
+            crews_mod.describe_crew, profile, region, account=account, crew=name
+        )
+    except crews_mod.AccountMismatch as exc:
+        return web.json_response({"error": str(exc), "code": "account_mismatch"}, status=409)
+    except AWSError as exc:
+        return _aws_failed(exc)
+    except RuntimeError as exc:
+        return web.json_response({"error": _safe_error(exc), "code": "aws_call_failed"}, status=502)
+    if found is None:
+        return web.json_response({"error": "no such crew", "code": "crew_absent"}, status=404)
+    return web.json_response(crews_mod.crew_json(found))
 
 
 async def _handle_drive_status(request: web.Request) -> web.Response:
@@ -2037,6 +2088,8 @@ def register_routes(app: web.Application) -> None:
     # and a literal "available" would otherwise be captured as a profile name.
     r.add_get(f"{_BASE}/profiles/available", _guarded(_handle_profiles_available))
     r.add_get(f"{_BASE}/profiles/{{name}}/reconnect-plan", _guarded(_handle_reconnect_plan))
+    r.add_get(f"{_BASE}/crews/{{account}}", _guarded(_handle_crews))
+    r.add_get(f"{_BASE}/crews/{{account}}/{{crew}}", _guarded(_handle_crew_detail))
     r.add_get(f"{_BASE}/drive/{{account}}", _guarded(_handle_drive_status))
     r.add_get(f"{_BASE}/drive/{{account}}/list", _guarded(_handle_drive_list))
     r.add_get(f"{_BASE}/drive/{{account}}/download", _guarded(_handle_drive_download))

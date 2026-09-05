@@ -1,0 +1,551 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Share My Crew, one crew (stack smc-crew-<crew>). Task definition running the
+  single-container supervisor, service, target group, ALB path rule, per-crew
+  task role and this crew's API Gateway subtree. Deploys against smc-base's
+  outputs, passed in as parameters. Nothing here is publicly reachable.
+
+# ---------------------------------------------------------------------------
+# Ported from ../../share-my-crew/build/deploy/templates/crew.yaml and aligned
+# to deploy/CONTRACT.md. Base outputs arrive as PARAMETERS (not Fn::ImportValue),
+# per the contract. Divergences from the contract that were needed to deploy are
+# marked "CONTRACT:".
+#
+# ONE container, three processes (CONTRACT section 1): the container's entrypoint
+# is `python -m container.supervisor`, which starts the restore step, the
+# Kiro Crew backend, the front process and the backup sidecar as CHILD processes.
+# This template therefore declares ONE ContainerDefinition and does NOT override
+# its command; process ordering (restore-before-backend) belongs to the
+# supervisor, not to ECS dependsOn, which gates on container state and would
+# persist an empty conversation list if used for it.
+# ---------------------------------------------------------------------------
+
+Parameters:
+
+  # --- crew identity and image (CONTRACT crew parameters) -----------------
+  CrewName:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
+    Description: Crew name. Becomes the kirocrew:crew tag and the path segment.
+
+  ImageUri:
+    Type: String
+    AllowedPattern: '.+@sha256:[a-f0-9]{64}$'
+    Description: >-
+      Fully qualified image pinned by DIGEST, never a tag. A tag can be
+      repointed after the revision is registered, turning version history into a
+      record of names instead of contents. The pattern rejects a tag-based URI.
+      The crew content is baked INTO this image (a COPY layer), so this one digest
+      pins both the serving code and the crew bundle -- there is no separate bundle
+      artifact and no bundle parameter.
+
+  CpuArchitecture:
+    Type: String
+    Default: X86_64
+    AllowedValues: [X86_64, ARM64]
+    Description: >-
+      Must match the pushed image. Taken from THIS parameter into RuntimePlatform
+      below -- never hardcoded. A declared-but-unreferenced arch parameter is how
+      an X86_64 changeset was once accepted against a hardcoded ARM64 platform and
+      the tasks died with "exec format error". X86_64 is the default (what a
+      developer machine builds natively); ARM64 is ~20% cheaper on Fargate but
+      needs an arm64 builder.
+
+  TaskCpu:
+    Type: String
+    Default: '2048'
+    AllowedValues: ['1024', '2048', '4096', '8192']
+
+  TaskMemory:
+    Type: String
+    Default: '4096'
+    Description: MiB. 2048 CPU permits 4096-16384; 4096 CPU permits 8192-30720.
+
+  AllowUnsandboxedExec:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Whether the model subprocess may run without a sandbox. kiro-cli spawns it
+      inside an unprivileged user namespace, which Fargate does not permit, so
+      'false' means the container refuses to start on Fargate rather than reporting
+      healthy while every turn fails to spawn a worker. Has no template default so
+      the value is always explicit in the deploy; the driver sends 'true' unless
+      --require-sandbox is passed, and prints which it sent. It compounds with the
+      auto-approved tool policy the container runs with.
+
+  RoutePrefix:
+    Type: String
+    AllowedPattern: '^/.+'
+    Description: >-
+      External path prefix this crew is addressed at, e.g. /c/<crew>. Must start
+      with a slash (a bare word is refused, not repaired). The ALB routes by this
+      prefix and cannot rewrite a path, so it arrives at the container, which
+      serves under it and strips it when classifying control vs customer routes.
+
+  ApiKeySecretArn:
+    Type: String
+    Description: Secrets Manager ARN (no version suffix) holding KIRO_API_KEY.
+
+  ControlSecretArn:
+    Type: String
+    Description: Secrets Manager ARN (no version suffix) holding SMC_CONTROL_SECRET.
+
+  # --- base-stack outputs, passed in (CONTRACT) ---------------------------
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  ClusterArn:
+    Type: String
+  AlbListenerArn:
+    Type: String
+    Description: >-
+      The ALB LISTENER ARN. This is the listener-rule target only. The API Gateway
+      integration does NOT use it; that needs the load balancer itself, below.
+  AlbArn:
+    Type: String
+    Description: >-
+      The LOAD BALANCER ARN, used as Integration.IntegrationTarget. Naming the
+      listener here instead fails at deploy with "Invalid integration URI
+      specified".
+  AlbDnsName:
+    Type: String
+    Description: >-
+      The ALB's DNS name, used to build Integration.Uri. The Uri is not the
+      routing target -- it supplies the Host header -- but it is required, and
+      omitting it produces the same "Invalid integration URI specified" failure.
+  AlbSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: The base ALB security group; this crew's task SG accepts ingress from it.
+  LogGroupName:
+    Type: String
+  RestApiId:
+    Type: String
+  VpcLinkId:
+    Type: String
+  BucketName:
+    Type: String
+
+  Memory:
+    Type: String
+    Default: chatbot
+    AllowedValues: [chatbot, persistent]
+    Description: >-
+      What survives the task. chatbot keeps a conversation only while the task
+      serving it is alive: nothing is written to S3, the backup sidecar does not
+      run, and the task role is granted no S3 action at all, so a task
+      replacement (every deploy, a failed health check, a platform update) starts
+      every customer over. persistent restores the two authority files at boot
+      and fetches one transcript per turn, so a conversation survives a task
+      replacement. chatbot is the default because it is the mode with a deploy
+      gate proving its claim; persistent has never run on a real account.
+  TrustDomain:
+    Type: String
+    Default: ''
+    AllowedValues: ['', single-principal]
+    Description: >-
+      Required for persistent memory, and it exists because the isolation this
+      template can enforce is not the isolation an owner is likely to assume. The
+      task role is scoped to this crew's own S3 prefix, which separates one CREW
+      from another. It does not separate one CUSTOMER from another inside a crew:
+      every conversation this crew has ever served lives under that one prefix,
+      the container runs its backend with every tool auto-approved (an unattended
+      crew cannot stall on an approval nobody will see), and the conversation id
+      arrives in the request rather than being derived from the caller. So a turn
+      driven by one customer can name and read another's history. Setting
+      single-principal is the owner stating they accept that: every caller they
+      authorise shares one trust domain, because they are one tenant, or because
+      the owner's own authentication layer sits in front and scopes ids itself.
+      Leave it empty and persistent memory is refused rather than deployed on an
+      assumption nobody made explicitly. chatbot mode ignores this: it grants no
+      S3 action at all, so there is no shared prefix to reason about.
+  # --- additions the crew genuinely needs (flagged for the contract) ------
+  CrewsResourceId:
+    Type: String
+    Description: >-
+      The shared /c API Gateway resource id from the base stack. CONTRACT: this
+      is not yet in the contract's parameter list; the crew cannot build
+      /c/<crew> without it (see the report). RestApiRootResourceId is NOT needed
+      by the crew and is deliberately not declared.
+  ExecutionRoleArn:
+    Type: String
+    Description: Shared task-execution role from the base stack.
+  StageName:
+    Type: String
+    Default: prod
+    AllowedPattern: '^[a-zA-Z0-9_-]+$'
+    Description: >-
+      REST API stage name, only used to build ControlBaseUrl. Defaults to the
+      base default (prod); pass it if the base uses a different stage.
+  RulePriority:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 50000
+    Description: >-
+      ALB listener-rule priority. MUST be unique across every crew on the shared
+      listener -- a collision fails the stack. CONTRACT: not in the contract's
+      parameter list; the driver must supply a unique value per crew (the default
+      100 collides for a second crew). See the report.
+  DesiredCount:
+    Type: Number
+    Default: 1
+    AllowedValues: [0, 1]
+    Description: >-
+      0 stops the crew, 1 runs it. Values above 1 are REFUSED: the container's
+      per-conversation write lock is per-process, so a second task lets two turns
+      for one conversation race and a resume can silently drop a turn's context.
+      CONTRACT: not in the contract's parameter list; defaulted to 1 so the driver
+      need not pass it. See the report.
+
+# CloudFormation evaluates Rules BEFORE creating anything, so this refusal costs
+# nothing and cannot half-apply. It is here rather than only in the driver because
+# the template is what a console deploy, a pipeline, or a hand-rolled `deploy` call
+# reaches -- a check that lives only in our driver is a check those paths skip.
+Rules:
+  PersistentMemoryNeedsAnExplicitTrustDomain:
+    RuleCondition: !Equals [!Ref Memory, persistent]
+    Assertions:
+      - Assert: !Equals [!Ref TrustDomain, single-principal]
+        AssertDescription: >-
+          Memory=persistent requires TrustDomain=single-principal. Every
+          conversation this crew serves is stored under one S3 prefix the task role
+          can read, the backend auto-approves every tool, and the conversation id
+          comes from the request rather than the caller, so one customer's turn can
+          read another's history. Set TrustDomain=single-principal to state that
+          every caller you authorise is one tenant, or that your own authentication
+          layer scopes ids in front of the crew. Use Memory=chatbot if you cannot:
+          it grants no S3 action at all.
+
+Conditions:
+
+  # Read by the task role (whether any S3 statement exists at all) and by the
+  # bucket env var (whether the container is told where to sync). Both must agree:
+  # a container handed a bucket it has no permission on would fail every backup
+  # cycle rather than skip it, and a container granted S3 with no bucket
+  # configured would carry a permission it never uses.
+  PersistentMemory: !Equals [!Ref Memory, persistent]
+
+Resources:
+
+  # --- per-crew task security group ---------------------------------------
+
+  # CONTRACT: the base stack outputs AlbSecurityGroupId and each crew owns its own
+  # task SG here (rather than a shared one in the base), so a crew's tasks accept
+  # traffic only from the ALB and nothing else in the VPC.
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Crew tasks. Reachable only from the ALB on 8080.
+      VpcId: !Ref VpcId
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:crew', Value: !Ref CrewName}
+
+  TaskIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref AlbSecurityGroupId
+      # No apostrophe: EC2 rejects the whole rule otherwise.
+      Description: Port 8080 only, from the shared ALB, per the frozen contract.
+
+  # --- per-crew task role -------------------------------------------------
+
+  # The crew's own identity, scoped to its PREFIX and not to the bucket. The
+  # artifacts bucket is shared, so a bucket-wide grant would let this crew read
+  # every other crew's conversation backup.
+  #
+  # This S3 grant is the CONVERSATION-BACKUP scope, and ONLY that. The crew bundle
+  # used to live under crews/<crew>/bundle/... too, and this same statement granted
+  # its read; the bundle now rides inside the image, so there is no bundle read left
+  # here -- but the statement STAYS for a persistent crew, because crews/<crew>/* is
+  # also SMC_BACKUP_PREFIX (the backup sidecar reads and writes conversation
+  # transcripts here at runtime). Do not remove it when removing the bundle: it is a
+  # different path. No ecs / ecr / logs / secretsmanager action anywhere.
+  #
+  # In chatbot mode the role carries NO S3 statement at all. That is stronger than
+  # scoping the grant to the crew's own prefix: a permission that does not exist
+  # cannot be misused by a future code path, and it makes the mode auditable from
+  # the role rather than from the container's configuration.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies: !If
+        - PersistentMemory
+        - - PolicyName: own-prefix-only
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Sid: ReadWriteOwnPrefixOnly
+                  Effect: Allow
+                  # No s3:DeleteObject. Nothing in the container can delete: the
+                  # object store exposes put, get and list and no more, in all three
+                  # of its implementations, and that is deliberate -- the restore
+                  # path SKIPS objects it must not hold rather than removing them,
+                  # so the object stays in the bucket for a later on-demand fetch.
+                  # Granting a destructive action nothing calls only widens what a
+                  # customer-driven turn can reach: this container runs its backend
+                  # with every tool auto-approved, because an unattended crew cannot
+                  # stall on an approval nobody will see, so a permission that
+                  # exists is a permission a prompt can reach.
+                  #
+                  # This narrows the blast radius; it does NOT make the prefix
+                  # per-customer. Read access to the whole crew prefix remains, and
+                  # closing that needs a decision about how the owner's own
+                  # authentication identifies a customer -- see the PR discussion.
+                  Action: [s3:GetObject, s3:PutObject]
+                  Resource: !Sub 'arn:aws:s3:::${BucketName}/crews/${CrewName}/*'
+                - Sid: ListOwnPrefixOnly
+                  Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !Sub 'arn:aws:s3:::${BucketName}'
+                  Condition:
+                    StringLike:
+                      's3:prefix':
+                        - !Sub 'crews/${CrewName}/*'
+        # chatbot: no Policies key value at all. AWS::NoValue removes the property
+        # rather than attaching an empty list, which CloudFormation rejects.
+        - !Ref 'AWS::NoValue'
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:crew', Value: !Ref CrewName}
+
+  # --- task definition ----------------------------------------------------
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub 'smc-${CrewName}'
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref ExecutionRoleArn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      RuntimePlatform:
+        # From the parameter. Never hardcoded (trap #1).
+        CpuArchitecture: !Ref CpuArchitecture
+        OperatingSystemFamily: LINUX
+      EphemeralStorage:
+        # Minimum is 21, not 20.
+        SizeInGiB: 21
+      ContainerDefinitions:
+        - Name: crew
+          Image: !Ref ImageUri
+          Essential: true
+          StopTimeout: 120
+          PortMappings:
+            - {ContainerPort: 8080, Protocol: tcp}
+          # Plain environment: the SMC_* contract from container/common/config.py.
+          # SMC_CONFIG_DIR EQUALS SMC_DATA_HOME (not a config/ subdir): Kiro Crew
+          # writes session_map.json and open_slots.json at the home root, and the
+          # supervisor refuses to start if the two disagree.
+          Environment:
+            - {Name: KIROCREW_HOME, Value: /var/lib/kirocrew}
+            - {Name: SMC_DATA_HOME, Value: /var/lib/kirocrew}
+            - {Name: SMC_CONFIG_DIR, Value: /var/lib/kirocrew}
+            - {Name: SMC_BACKEND_RUN_DIR, Value: /var/lib/kirocrew/run}
+            - {Name: SMC_BACKEND_PORT, Value: '8765'}
+            - {Name: SMC_FRONT_PORT, Value: '8080'}
+            - {Name: SMC_ROUTE_PREFIX, Value: !Ref RoutePrefix}
+            - {Name: SMC_CREW_NAME, Value: !Ref CrewName}
+            # Empty in chatbot mode. container/common/config.py reads
+            # `os.environ.get("SMC_BACKUP_BUCKET") or None`, so an empty string is
+            # the same as unset: restore reports state=disabled, the sidecar does
+            # not run, and the per-turn fetch returns no_store. The variable is
+            # still PRESENT rather than removed, so the task definition shows which
+            # mode the crew is in instead of leaving it to be inferred.
+            - {Name: SMC_BACKUP_BUCKET, Value: !If [PersistentMemory, !Ref BucketName, '']}
+            # Just 'crews/', NOT 'crews/<crew>/': object_prefix() in
+            # container/backup/layout.py joins this prefix with SMC_CREW_NAME and
+            # appends the crew segment itself, so naming the crew here too writes
+            # every object to crews/<crew>/<crew>/... The intended layout is
+            # crews/<crew>/data/... which this value produces.
+            - {Name: SMC_BACKUP_PREFIX, Value: 'crews/'}
+            # Fargate does not permit an unprivileged user namespace: the container
+            # probes it by forking and calling os.unshare, and the kernel refuses.
+            # kiro-cli spawns the model subprocess inside one, so on Fargate the
+            # choice is unsandboxed execution or no service. The container will not
+            # assume that, so the decision is stated here, where a reader looks to
+            # find out what posture this deployment runs with.
+            - {Name: SMC_ALLOW_UNSANDBOXED_EXEC, Value: !Ref AllowUnsandboxedExec}
+            # The published image binds 0.0.0.0; overriding to loopback keeps the
+            # backend off the network -- the design's only trust boundary.
+            - {Name: KIROCREW_BIND, Value: 127.0.0.1}
+          # By reference only, never plaintext Environment: an environment value
+          # is readable through the control plane and in logs.
+          Secrets:
+            - {Name: KIRO_API_KEY, ValueFrom: !Ref ApiKeySecretArn}
+            - {Name: SMC_CONTROL_SECRET, ValueFrom: !Ref ControlSecretArn}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroupName
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: !Ref CrewName
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+        - {Key: 'kirocrew:crew', Value: !Ref CrewName}
+        # Provenance (crew name + bundle digest) now travels as OCI labels on the
+        # crew image itself (Dockerfile.crew), not as a bundle-key tag here.
+
+  # --- load balancer target ------------------------------------------------
+
+  # Name omitted deliberately: a target-group name maxes at 32 chars and
+  # 'smc-'+<crew> can exceed it, so CloudFormation generates a unique name and
+  # the service references it by ARN.
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8080
+      TargetType: ip
+      # The health check hits the container's bare /health on 8080 with NO route
+      # prefix, which is why that route stays registered alongside the prefixed
+      # one.
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: {HttpCode: '200'}
+      TargetGroupAttributes:
+        # Match StopTimeout rather than exceed it: the task is killed at 120s
+        # regardless, so a larger delay would imply a drain that does not happen.
+        - {Key: deregistration_delay.timeout_seconds, Value: '120'}
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+        - {Key: 'kirocrew:crew', Value: !Ref CrewName}
+
+  # Path routing lets many crews share one listener. Each crew owns RoutePrefix/*.
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref AlbListenerArn
+      Priority: !Ref RulePriority
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values: [!Sub '${RoutePrefix}/*']
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # --- service ------------------------------------------------------------
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: ListenerRule
+    Properties:
+      ServiceName: !Sub 'smc-${CrewName}'
+      Cluster: !Ref ClusterArn
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      DesiredCount: !Ref DesiredCount
+      PropagateTags: SERVICE
+      EnableExecuteCommand: false
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups: [!Ref TaskSecurityGroup]
+      LoadBalancers:
+        - ContainerName: crew
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+      # Long enough for the warm pool to boot before ECS starts judging health.
+      HealthCheckGracePeriodSeconds: 180
+      DeploymentConfiguration:
+        # 0/100 (trap #4): deliberate downtime. One gateway per data home is a
+        # correctness requirement; 100/200 would register the replacement before
+        # draining the old task, putting two tasks on one home transiently on
+        # every deploy and corrupting session_map.json. 100 caps the service at
+        # one task, so ECS must stop the old before starting the new.
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - {Key: 'kirocrew:managed', Value: 'true'}
+        - {Key: 'kirocrew:app', Value: 'share-my-crew'}
+        - {Key: 'kirocrew:crew', Value: !Ref CrewName}
+
+  # --- this crew's API Gateway subtree ------------------------------------
+
+  CrewResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApiId
+      ParentId: !Ref CrewsResourceId
+      PathPart: !Ref CrewName
+
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApiId
+      ParentId: !Ref CrewResource
+      PathPart: '{proxy+}'
+
+  ProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref ProxyResource
+      HttpMethod: ANY
+      # The primary access control. Without SigV4 from a principal in this
+      # account, nothing reaches the crew at all.
+      AuthorizationType: AWS_IAM
+      RequestParameters:
+        'method.request.path.proxy': true
+      Integration:
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        ConnectionType: VPC_LINK
+        ConnectionId: !Ref VpcLinkId
+        # Two values, and swapping their roles fails at deploy with "Invalid
+        # integration URI specified". IntegrationTarget is the routing target and
+        # must be the LOAD BALANCER's ARN, not its listener's. Uri is NOT the
+        # routing target: it supplies the Host header, and it is required even
+        # though the ALB listener rule is what actually selects the crew.
+        IntegrationTarget: !Ref AlbArn
+        Uri: !Sub 'http://${AlbDnsName}${RoutePrefix}/{proxy}'
+        # SSE. Plain buffering would turn a live transcript tail into a request
+        # that returns only when the conversation ends.
+        ResponseTransferMode: STREAM
+        RequestParameters:
+          'integration.request.path.proxy': 'method.request.path.proxy'
+        # CONTRACT: NO X-Control-Secret header is injected here. The contract
+        # provides no ControlSecretValue and treats the gateway header as a
+        # non-boundary (R3/trap #10: apigateway:GET would reveal a static header
+        # secret). SMC_CONTROL_SECRET reaches the container by the secrets block
+        # instead; the boundary is IAM authorization plus this API carrying no
+        # customer routes at all.
+
+Outputs:
+  # --- exactly the names in deploy/CONTRACT.md ---------------------------
+  ServiceArn:
+    Value: !Ref Service
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition
+  TargetGroupArn:
+    Value: !Ref TargetGroup
+  ControlBaseUrl:
+    Description: >-
+      The crew's control base URL. SigV4 required. The stage name is included
+      because a private integration serves the API under it.
+    Value: !Sub 'https://${RestApiId}.execute-api.${AWS::Region}.amazonaws.com/${StageName}${RoutePrefix}'

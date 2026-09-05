@@ -68,6 +68,30 @@ dev = [
     # runtime concern for the desktop bundle, NOT a core install_requires. Pinned to
     # the exact version the desktop matrix ships (packaging/build-desktop.sh).
     "imageio-ffmpeg==0.6.0",
+    # Test-only, NOT a runtime dependency, and the same shape as the three entries
+    # above. The AWS Control crew container's front process is a FastAPI app served
+    # by uvicorn, and its test suite ships with the image source under
+    # apps/builtins/aws_control/crew/runtime/container_tests/, which setup.cfg's testpaths
+    # collects. Without these, five of those files fail to IMPORT and this lane
+    # stops on a collection error; a module-level importorskip instead would turn
+    # the front process's whole trust boundary -- the crew-address refusal, the
+    # control-secret enforcement, the transcript fetch gate -- into a silent skip.
+    #
+    # They stay out of install_requires deliberately, which is what
+    # crew/runtime/container/requirements.txt asks for in as many words: the app's
+    # backend hooks are imported into the owner's gateway process, and a web
+    # framework there buys nothing. Pinned to the versions that requirements.txt
+    # installs into the image, so the tests exercise what the container runs.
+    "fastapi==0.115.6",
+    "uvicorn==0.34.0",
+    # httpx belongs to the same group and was MISSED when the other two were added,
+    # which is worth recording because of how it hid. The front's tests import httpx
+    # directly (its ASGI transport is how they drive the app without a socket), and
+    # a developer venv usually already has it, so the whole suite ran green locally
+    # while five files failed to import on a clean CI runner. The lesson is not
+    # "remember httpx": it is that a dependency added to this group needs the lane
+    # to be re-run somewhere WITHOUT it, because the local pass proves nothing.
+    "httpx==0.28.1",
 ]
 
 [tool.black]

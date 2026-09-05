@@ -3,7 +3,9 @@
  *
  * The drive IS the product, so its four sections (Files, Library, Backup,
  * Share links) are the app's own first-level navigation, laid out as a rail
- * beside the content pane. The account is a card at the top of that rail with
+ * beside the content pane. Crews - the gateways the owner deployed into this
+ * account as a service - sit in their own group below them, because they are not
+ * sections of that bucket. The account is a card at the top of that rail with
  * a switcher; account management and the money facts sink to the rail's foot
  * (Accounts & credentials, Usage & costs) the way settings do. Opening the app
  * lands on Files — the most used surface — with no account picking in the way.
@@ -22,7 +24,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Cloud, RefreshCw, ChevronDown, ChevronRight, ChevronsUpDown, Search, Check,
-  FolderClosed, Library, Archive, Share2, Users, Wallet,
+  FolderClosed, Library, Archive, Share2, Server, Users, Wallet,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
@@ -40,6 +42,7 @@ import { fmtBytes, fmtNumber } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
 import UsagePane, { ConnectionsSection, ReconnectAction, SetupCard } from './ConsoleView'
 import { DriveSectionView, LibrarySection, BackupSection, AccessSection } from './DrivePage'
+import { CrewsPane } from './CrewsPage'
 import { PaneHeader, AwsErrorNotice } from './shared'
 import type { AwsAccount, AccountHealth, DriveStatus } from './types'
 
@@ -63,9 +66,10 @@ function accountName(account: AwsAccount): string {
 
 /* ── the rail ────────────────────────────────────────────────────────────── */
 
-/** The panes the rail can show. The four drive sections lead; the two
- *  management panes sink to the rail's foot. */
-type RailPane = 'files' | 'library' | 'backup' | 'shares' | 'accounts' | 'usage'
+/** The panes the rail can show. The four drive sections lead, the deployed
+ *  crews sit on their own below them, and the two management panes sink to the
+ *  rail's foot. */
+type RailPane = 'files' | 'library' | 'backup' | 'shares' | 'crews' | 'accounts' | 'usage'
 
 /* Literal-key maps from pane → catalog key, so no i18nT() call assembles a key
  * by interpolation (dynamicKeys gate). The four drive panes reuse the section
@@ -76,6 +80,11 @@ const PANE_LABEL_KEY: Record<RailPane, string> = {
   library: 'apps.awsControl.console.section_library',
   backup: 'apps.awsControl.console.section_backup',
   shares: 'apps.awsControl.console.access_title',
+  // The rail says the short word - the reader is already inside the AWS app, so
+  // "Crews" cannot be read as the local agents there. The pane itself says
+  // "Remote crews", because a title travels (a screenshot, a link) and the
+  // Agents page calls its own local agents crews too.
+  crews: 'apps.awsControl.rail.crews',
   accounts: 'apps.awsControl.rail.accounts',
   usage: 'apps.awsControl.rail.usage',
 }
@@ -85,11 +94,23 @@ const PANE_ICON: Record<RailPane, LucideIcon> = {
   library: Library,
   backup: Archive,
   shares: Share2,
+  crews: Server,
   accounts: Users,
   usage: Wallet,
 }
 
 const DRIVE_PANES: RailPane[] = ['files', 'library', 'backup', 'shares']
+/**
+ * Crews sit in a group of their own, between the drive and the rail's foot.
+ *
+ * NOT a drive pane: Files, Library, Backup and Share links are four sections of
+ * ONE S3 bucket, and a crew is a CloudFormation stack running a container - it is
+ * not in that bucket and shares neither its usage counts nor its setup gate. Not
+ * a foot pane either: the foot is where the management surfaces sink (accounts,
+ * money), and a deployed crew is a thing the owner HAS in the account, not a
+ * setting.
+ */
+const CREW_PANES: RailPane[] = ['crews']
 const FOOT_PANES: RailPane[] = ['accounts', 'usage']
 
 /** One rail navigation item: icon, label, and an optional count on the right. */
@@ -726,7 +747,7 @@ function DrivePaneGate({ pane, account, drive, driveQ, children }: {
 
 /** The app's own base path; pane routes hang off it (/aws-control/usage). */
 const APP_PATH = '/aws-control'
-const ALL_PANES: RailPane[] = [...DRIVE_PANES, ...FOOT_PANES]
+const ALL_PANES: RailPane[] = [...DRIVE_PANES, ...CREW_PANES, ...FOOT_PANES]
 
 /**
  * The pane named by the URL, or null on the bare app path.
@@ -940,6 +961,9 @@ export default function AwsControlPage() {
           {() => <AccessSection account={id} />}
         </DrivePaneGate>
       )}
+      {/* Not gated on the drive: a crew is a stack, not an object in the
+          bucket, so it is listable on an account that has no drive at all. */}
+      {pane === 'crews' && <CrewsPane account={id} />}
       {pane === 'accounts' && (
         <AccountsPane accountsQ={accountsQ} selected={selected} onUse={useAccount} />
       )}
@@ -968,6 +992,15 @@ export default function AwsControlPage() {
             <div className="overflow-hidden rounded-lg border border-border bg-card divide-y divide-border">
               {DRIVE_PANES.map((p) => (
                 <RootListRow key={p} pane={p} count={paneCount(p)} onOpen={() => openPane(p)} />
+              ))}
+            </div>
+            {/* Its own group, for the same reason it is its own rail group: the
+                four rows above are one bucket, and a crew is not in it. No
+                count - the inventory is read when the pane opens, not on every
+                app load. */}
+            <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card divide-y divide-border">
+              {CREW_PANES.map((p) => (
+                <RootListRow key={p} pane={p} onOpen={() => openPane(p)} />
               ))}
             </div>
             <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card divide-y divide-border">
@@ -1036,6 +1069,15 @@ export default function AwsControlPage() {
         />
         {DRIVE_PANES.map((p) => (
           <RailItem key={p} pane={p} active={pane === p} onClick={() => openPane(p)} count={paneCount(p)} />
+        ))}
+        {/* A rule, not just a gap: the four items above are sections of one
+            bucket and this one is not, so the boundary has to be visible or the
+            rail reads as five equal drive sections. No count beside it - a
+            count would mean listing every stack on every app load, and the
+            listing is what opening the pane is for. */}
+        <div className="my-1 border-t border-border" />
+        {CREW_PANES.map((p) => (
+          <RailItem key={p} pane={p} active={pane === p} onClick={() => openPane(p)} />
         ))}
         <div className="flex-1" />
         {FOOT_PANES.map((p) => (
