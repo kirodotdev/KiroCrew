@@ -397,3 +397,87 @@ class TestThirdPartyCredentialsKeepTheirExistingTiering:
         for listing in (sandbox._STRICT_DIRS, sandbox._CC_DIRS, sandbox._STANDARD_DIRS):
             assert ".local/share/kiro-cli" not in listing
             assert ".local/share/amazon-q" not in listing
+
+
+class TestAppBackendOwnedLeaves:
+    """An app's OWN backend gets its state leaves back; nothing else changes (#8762).
+
+    The md-notebook leaves are masked to fence agent subprocesses, but the Notes
+    backend is itself a sandboxed spawn and is those files' only legitimate
+    reader/writer. Masking it from itself made every attach/clone fail on the
+    registry's final atomic rename. The spawn passes the resolved leaf paths as
+    ``extra_visible_dirs``; these tests pin that the exemption lifts exactly those
+    targets, on both platform builders, and that a default build keeps the mask.
+    """
+
+    LEAVES = (
+        "workspace/md-notebook/pat",
+        "workspace/md-notebook/vaults.json",
+        "workspace/md-notebook/settings.json",
+    )
+
+    def test_the_helper_resolves_both_home_spellings(self) -> None:
+        targets = sandbox.app_backend_visible_targets("md-notebook")
+
+        for prefix in _CREW_PREFIXES:
+            for leaf in self.LEAVES:
+                assert _crew_path(prefix, leaf) in targets
+
+    def test_an_app_with_no_owned_leaves_gets_no_exemption(self) -> None:
+        assert sandbox.app_backend_visible_targets("meetings") == ()
+        assert sandbox.app_backend_visible_targets("no-such-app") == ()
+
+    @_POSIX_ONLY
+    def test_linux_unhides_the_owned_leaves_for_this_spawn(self) -> None:
+        script = sandbox._build_launcher_script(
+            "standard", extra_visible_dirs=sandbox.app_backend_visible_targets("md-notebook")
+        )
+        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
+        assert match
+        hidden = set(json.loads(match.group(1)))
+
+        for prefix in _CREW_PREFIXES:
+            for leaf in self.LEAVES:
+                assert _crew_path(prefix, leaf) not in hidden, f"{leaf} still masked"
+
+    def test_macos_drops_every_rule_for_the_owned_leaves(self) -> None:
+        profile = sandbox._build_seatbelt_profile(
+            "standard", extra_visible_dirs=sandbox.app_backend_visible_targets("md-notebook")
+        )
+
+        for prefix in _CREW_PREFIXES:
+            for leaf in self.LEAVES:
+                target = _crew_path(prefix, leaf)
+                # Read AND write, because the EPERM the issue reports is the write
+                # side: the staged sibling temp is written fine and the rename onto
+                # the masked literal is what Seatbelt refuses.
+                assert f'"{target}"' not in profile, f"{leaf} still carries a deny rule"
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize("mode", _MODES)
+    @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
+    @pytest.mark.parametrize("leaf", LEAVES)
+    def test_a_default_build_keeps_the_mask(self, mode: str, prefix: str, leaf: str) -> None:
+        """No exemption without the spawn asking: agent subprocesses stay fenced."""
+        hidden, _readonly, files = _launcher_sets(mode)
+        target = _crew_path(prefix, leaf)
+
+        assert target in hidden
+        assert target in files
+
+    def test_the_backend_spawn_passes_the_owned_leaves(self) -> None:
+        """`apps/backend.py` must thread the helper's result into ``wrap_argv``.
+
+        Asserted structurally rather than by a full spawn, which needs a manifest, a
+        reserved port, and a live interpreter: the call site must derive its visible
+        set from the helper, keyed by the app being spawned — and only behind the
+        immutable-provenance gate, so a third-party install that claimed the builtin's
+        name cannot spawn with the builtin's credential leaves unmasked.
+        """
+        import inspect
+
+        from kiro_crew.apps import backend as backend_mod
+
+        src = inspect.getsource(backend_mod._start_app_backend_body)
+        assert "app_backend_visible_targets(app_name)" in src
+        assert "is_builtin_app(app_root=execution_path, app_name=app_name)" in src
