@@ -1737,7 +1737,9 @@
         "sweep_chunk_budget": 500,
         "embed_rate_limit": 120,
         "extraction_model": "",
-        "extraction_pool_size": 3
+        "extraction_pool_size": 3,
+        "extraction_effort": "",
+        "fetch_effort": ""
       }
     },
     {
@@ -1968,6 +1970,48 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
+    },
+    {
+      "path": "knowledge.extraction_effort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Extraction Effort",
+      "help": "Reasoning effort for the document-extraction LLM pool. Empty inherits the background-role effort (agent.role_efforts.background), then high. Only applies on reasoning-capable models.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultValue": ""
+    },
+    {
+      "path": "knowledge.fetch_effort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "URL Fetch Effort",
+      "help": "Reasoning effort for the Knowledge URL-fetch worker. Empty inherits the background-role effort (agent.role_efforts.background), then the provider/model default. Only applies on reasoning-capable models.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultValue": ""
     },
     {
       "path": "skills",

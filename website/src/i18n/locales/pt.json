@@ -10661,7 +10661,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Esforço de extração",
+        "fetch_effort_label": "Esforço de busca de URL",
+        "effort_hint": "Aplica-se apenas a modelos com raciocínio. \"Padrão\" herda seu esforço em segundo plano e, depois, recurra a alto para a extração (padrão do provedor para busca de URLs).",
+        "fetch_effort_hint": "Esforço do worker que lê URLs para a biblioteca de conhecimento. \"Padrão\" herda seu esforço em segundo plano.",
+        "pool_size_restart_hint": "Requer reinício para ter efeito."
       }
     },
     "localStorageDebug": {
@@ -12337,7 +12342,6 @@
         "failed_to_save_default_model": "Falha ao salvar o modelo padrão",
         "failed_to_save_default_reasoning_effort": "Falha ao salvar o esforço de raciocínio padrão",
         "failed_to_save_fallback_model": "Falha ao salvar o modelo de fallback",
-        "failed_to_save_knowledge_setting": "Falha ao salvar a configuração de conhecimento",
         "failed_to_save_profile": "Falha ao salvar o perfil",
         "failed_to_save_role_effort": "Falha ao salvar o esforço do papel",
         "failed_to_save_role_model": "Falha ao salvar o modelo do papel",

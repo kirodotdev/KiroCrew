@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useId, createContext, useContext } from 'r
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { EFFORT_LEVELS, effortLabel } from '../../lib/effort'
 import SimpleSelect from '../../components/SimpleSelect'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -11,6 +12,8 @@ const EMBED_RATE_MIN = 0
 const EMBED_RATE_MAX = 10000
 const EMBED_RATE_DEFAULT = 120
 
+// Mirrors EXTRACTION_POOL_SIZE_MIN/MAX + the default on the backend
+// (config/loader.py clamp and handlers/core.py _EDITABLE_CONFIG bounds).
 const POOL_SIZE_MIN = 1
 const POOL_SIZE_MAX = 10
 const POOL_SIZE_DEFAULT = 3
@@ -18,9 +21,14 @@ const POOL_SIZE_DEFAULT = 3
 /**
  * Knowledge Library settings tab — ingestion cost & performance controls.
  *
- * Fields: embedding rate limit, extraction model, extraction pool size.
- * Reads/writes via the same
- * PATCH /api/config/kirocrew endpoint as the Settings page.
+ * Fields: embedding rate limit, extraction model, extraction effort, URL
+ * fetch effort, extraction pool size. Effort here is NOT gated on a model
+ * pick: the pools gate per-worker against whatever model the backend serves,
+ * and an unsupported model simply keeps the provider default. '' on an effort
+ * selects inherits the Background Effort role policy (then each pool's
+ * default) — resolved server-side by llm_pool._get_workload_effort.
+ * Reads/writes via the same PATCH /api/config/kirocrew endpoint as the
+ * Settings page.
  */
 export function SettingsTab() {
   const qc = useQueryClient()
@@ -33,6 +41,8 @@ export function SettingsTab() {
       auto_ingest_artifacts?: boolean
       embed_rate_limit?: number
       extraction_model?: string
+      extraction_effort?: string
+      fetch_effort?: string
       extraction_pool_size?: number
     }
   }>({
@@ -68,12 +78,6 @@ export function SettingsTab() {
     }
   }, [cfgQ.data, cfg])
 
-  // ── Model dropdown ──
-  const availableModels = useAvailableModels()
-  const modelOptions = availableModels.map(m => m.name)
-  const currentModel = cfg?.extraction_model || 'auto'
-  if (!modelOptions.includes(currentModel)) modelOptions.unshift(currentModel)
-
   // ── Commit helpers ──
   function commitNumber(
     raw: string,
@@ -95,6 +99,21 @@ export function SettingsTab() {
     }
     patchMut.mutate({ path, value: n })
   }
+
+  // ── Model dropdown ──
+  const availableModels = useAvailableModels()
+  const modelOptions = availableModels.map(m => m.name)
+  const currentModel = cfg?.extraction_model || 'auto'
+  if (!modelOptions.includes(currentModel)) modelOptions.unshift(currentModel)
+
+  // ── Effort dropdowns ──
+  // Same workload-effort vocabulary as the Settings ▸ Chat role-effort rows;
+  // '' is the inherit option labelled 'Default' (effortLabel), matching
+  // the row hints. Index-paired labels: SimpleSelect matches by position.
+  // Strings, not the EFFORT_LEVELS literal union: cfg values come from a JSON
+  // payload and may hold anything.
+  const effortOptions: string[] = [...EFFORT_LEVELS]
+  const effortChoiceLabels = (): string[] => effortOptions.map(effortLabel)
 
   return (
     <div className="max-w-xl space-y-1 animate-rise">
@@ -168,6 +187,38 @@ export function SettingsTab() {
             value: v === 'auto' ? '' : v,
           })}
           aria-label={i18nT('pages.knowledge.settings.model_label')}
+          disabled={disabled}
+        />
+      </SettingRow>
+
+      {/* Extraction effort */}
+      <SettingRow
+        label={i18nT('pages.knowledge.settings.extraction_effort_label')}
+        description={i18nT('pages.knowledge.settings.effort_hint')}
+      >
+        <SimpleSelect
+          options={effortOptions}
+          optionLabels={effortChoiceLabels()}
+          value={cfg?.extraction_effort ?? ''}
+          onChange={v => patchMut.mutate({ path: 'knowledge.extraction_effort', value: v })}
+          aria-label={i18nT('pages.knowledge.settings.extraction_effort_label')}
+          triggerFallback={effortChoiceLabels()[effortOptions.indexOf(cfg?.extraction_effort ?? '')]}
+          disabled={disabled}
+        />
+      </SettingRow>
+
+      {/* URL fetch effort */}
+      <SettingRow
+        label={i18nT('pages.knowledge.settings.fetch_effort_label')}
+        description={i18nT('pages.knowledge.settings.fetch_effort_hint')}
+      >
+        <SimpleSelect
+          options={effortOptions}
+          optionLabels={effortChoiceLabels()}
+          value={cfg?.fetch_effort ?? ''}
+          onChange={v => patchMut.mutate({ path: 'knowledge.fetch_effort', value: v })}
+          aria-label={i18nT('pages.knowledge.settings.fetch_effort_label')}
+          triggerFallback={effortChoiceLabels()[effortOptions.indexOf(cfg?.fetch_effort ?? '')]}
           disabled={disabled}
         />
       </SettingRow>

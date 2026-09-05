@@ -1777,6 +1777,26 @@ class KnowledgeConfig:
             "a long-lived session. Requires restart to take effect.",
         ),
     )
+    extraction_effort: str = field(
+        default="",
+        metadata=_meta(
+            "Extraction Effort",
+            "Reasoning effort for the document-extraction LLM pool. Empty "
+            "inherits the background-role effort (agent.role_efforts.background), "
+            "then high. Only applies on reasoning-capable models.",
+            enum=["", *EFFORT_LEVELS],
+        ),
+    )
+    fetch_effort: str = field(
+        default="",
+        metadata=_meta(
+            "URL Fetch Effort",
+            "Reasoning effort for the Knowledge URL-fetch worker. Empty inherits "
+            "the background-role effort (agent.role_efforts.background), then the "
+            "provider/model default. Only applies on reasoning-capable models.",
+            enum=["", *EFFORT_LEVELS],
+        ),
+    )
 
 
 def _read_auto_add_documents(knowledge_data: dict) -> bool:

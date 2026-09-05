@@ -10355,7 +10355,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "抽出の effort",
+        "fetch_effort_label": "URL 取得の effort",
+        "effort_hint": "推論対応モデルでのみ適用されます。デフォルトはバックグラウンドの effort を引き継ぎ、抽出では high にフォールバックします（URL 取得はプロバイダーのデフォルト）。",
+        "fetch_effort_hint": "ナレッジライブラリのために URL を読み取るワーカーの effort。デフォルトはバックグラウンドの effort を引き継ぎます。",
+        "pool_size_restart_hint": "反映には再起動が必要です。"
       }
     },
     "localStorageDebug": {
@@ -12001,7 +12006,6 @@
         "failed_to_save_default_model": "デフォルトモデルを保存できませんでした",
         "failed_to_save_default_reasoning_effort": "デフォルト推論努力度を保存できませんでした",
         "failed_to_save_fallback_model": "フォールバックモデルを保存できませんでした",
-        "failed_to_save_knowledge_setting": "ナレッジ設定を保存できませんでした",
         "failed_to_save_profile": "プロフィールを保存できませんでした",
         "failed_to_save_role_effort": "役割ごとの推論強度を保存できませんでした",
         "failed_to_save_role_model": "役割ごとのモデルを保存できませんでした",

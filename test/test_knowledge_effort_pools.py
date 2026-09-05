@@ -19,11 +19,15 @@ class _FakePool:
         *,
         pool_size: int,
         effort: str | None = None,
-        use_config_pool_size: bool = True,
+        effort_key: str | None = None,
+        fallback_effort: str = "",
+        config_pool_size_key: str | None = None,
     ) -> None:
         self.pool_size = pool_size
         self.effort = effort
-        self.use_config_pool_size = use_config_pool_size
+        self.effort_key = effort_key
+        self.fallback_effort = fallback_effort
+        self.config_pool_size_key = config_pool_size_key
         self.shutdown = AsyncMock()
 
 
@@ -34,17 +38,49 @@ def store(tmp_path):
     value.close()
 
 
-def _config(background_effort: str | None = None):
+def _config(
+    extraction_effort: str = "",
+    fetch_effort: str = "",
+    background_effort: str | None = None,
+):
     cfg = KiroCrewConfig()
+    cfg.knowledge.extraction_effort = extraction_effort
+    cfg.knowledge.fetch_effort = fetch_effort
     if background_effort is not None:
         cfg.agent.role_efforts = {"background": background_effort}
     return cfg
 
 
 class TestKnowledgePoolSetup:
-    @pytest.mark.parametrize("background_effort", [None, "low"])
-    def test_setup_creates_isolated_extraction_and_fetch_pools(
-        self, monkeypatch, background_effort
+    """The resolution chain as wired in ``setup_knowledge_routes``.
+
+    Parametrized over (extraction_effort, fetch_effort, role background):
+    the pool's ``effort`` attr carries the RESOLVED level, not the raw key.
+    """
+
+    @pytest.mark.parametrize(
+        "extraction_effort,fetch_effort,background_effort,expected_extraction,expected_fetch",
+        [
+            # Default ("" everywhere, no role pin): extraction falls to the
+            # high last resort; fetch stays on the provider default.
+            ("", "", None, "high", None),
+            # An explicit extraction pin beats both the role policy and the
+            # fallback; fetch has no pin and inherits the same role effort.
+            ("low", "", "high", "low", "high"),
+            # No explicit pin: the background-role effort applies.
+            ("", "", "medium", "medium", "medium"),
+            # Explicit fetch pin on an otherwise default install.
+            ("", "low", None, "high", "low"),
+        ],
+    )
+    def test_setup_resolves_pool_efforts(
+        self,
+        monkeypatch,
+        extraction_effort,
+        fetch_effort,
+        background_effort,
+        expected_extraction,
+        expected_fetch,
     ):
         app = web.Application()
         app["state"] = SimpleNamespace(knowledge_store=object())
@@ -63,8 +99,13 @@ class TestKnowledgePoolSetup:
             return extractor
 
         monkeypatch.setattr(
-            kh.KiroCrewConfig, "load", lambda: _config(background_effort)
+            kh.KiroCrewConfig,
+            "load",
+            lambda: _config(extraction_effort, fetch_effort, background_effort),
         )
+        # The real LLMPool resolves the effort in start(); the handler passes
+        # the workload binding, so resolution is asserted against the binding
+        # plus (for the resolved level) through _get_workload_effort below.
         monkeypatch.setattr(kh, "LLMPool", _pool_factory)
         monkeypatch.setattr(kh, "EntityExtractor", _extractor_factory)
         monkeypatch.setattr(kh, "IngestionPipeline", lambda **kwargs: pipeline)
@@ -78,34 +119,57 @@ class TestKnowledgePoolSetup:
         assert len(pools) == 2
         extraction, fetch = pools
         assert extraction.pool_size == 3
-        assert extraction.effort == "high"
-        assert extraction.use_config_pool_size is False
+        assert extraction.effort_key == "extraction_effort"
+        assert extraction.fallback_effort == "high"
+        assert extraction.config_pool_size_key == "extraction_pool_size"
         assert fetch.pool_size == 1
-        assert fetch.effort is None
-        assert fetch.use_config_pool_size is False
+        assert fetch.effort_key == "fetch_effort"
+        assert fetch.fallback_effort == ""
+        assert fetch.config_pool_size_key is None
         assert extractor_calls[0]["pool"] is extraction
         assert app["knowledge_extraction_pool"] is extraction
         assert app["knowledge_fetch_pool"] is fetch
-        assert app["knowledge_llm_pool"] is extraction
+        assert "knowledge_llm_pool" not in app
+
+        # Resolve the chain exactly as LLMPool.start() would, and prove the
+        # operator pin wins over the old hard default. The role lookup reads
+        # config.json's raw JSON (a dict), so a None role pin means "absent".
+        from kiro_crew.knowledge.llm_pool import (
+            DEFAULT_EXTRACTION_EFFORT,
+            _get_workload_effort,
+        )
+
+        agent_section: dict = {}
+        if background_effort is not None:
+            agent_section["role_efforts"] = {"background": background_effort}
+        raw = {
+            "knowledge": {
+                "extraction_effort": extraction_effort,
+                "fetch_effort": fetch_effort,
+            },
+            "agent": agent_section,
+        }
+        assert (
+            _get_workload_effort(raw, "extraction_effort", DEFAULT_EXTRACTION_EFFORT)
+            == expected_extraction
+        )
+        assert _get_workload_effort(raw, "fetch_effort", "") == expected_fetch
 
 
 class TestKnowledgeFetchPoolWiring:
     @pytest.mark.asyncio
-    async def test_agent_sync_prefers_fetch_pool(self, store, monkeypatch):
+    async def test_agent_sync_uses_fetch_pool(self, store, monkeypatch):
         source_id = store.add_source(
             name="source",
             source_type="web",
             uri="https://example.com/source",
         )
-        extraction_pool = object()
         fetch_pool = object()
         app = web.Application()
         app["state"] = SimpleNamespace(knowledge_store=store)
         app["knowledge_pipeline"] = object()
         app["knowledge_sync"] = SimpleNamespace(get_connector=lambda _type: None)
-        app["knowledge_extraction_pool"] = extraction_pool
         app["knowledge_fetch_pool"] = fetch_pool
-        app["knowledge_llm_pool"] = extraction_pool
         app.router.add_post("/api/knowledge/sources/{id}/sync", kh.sync_source)
         observed: dict[str, object] = {}
         done = asyncio.Event()
@@ -124,16 +188,45 @@ class TestKnowledgeFetchPoolWiring:
 
         assert observed["pool"] is fetch_pool
 
+    @pytest.mark.asyncio
+    async def test_agent_sync_fails_loudly_without_fetch_pool(self, store, monkeypatch, caplog):
+        # The legacy knowledge_llm_pool fallback is gone: an app that never
+        # registered the fetch pool fails loudly (the handler raises, aiohttp
+        # answers 500) instead of silently running URL sync through the
+        # extraction pool.
+        source_id = store.add_source(
+            name="source",
+            source_type="web",
+            uri="https://example.com/source",
+        )
+        app = web.Application()
+        app["state"] = SimpleNamespace(knowledge_store=store)
+        app["knowledge_pipeline"] = object()
+        app["knowledge_sync"] = SimpleNamespace(get_connector=lambda _type: None)
+        app.router.add_post("/api/knowledge/sources/{id}/sync", kh.sync_source)
+        monkeypatch.setattr(kh, "_sel_log", lambda *args, **kwargs: None)
+        dispatched: list[object] = []
+
+        async def _fake_sync(source_id, url, name, store, pipeline, pool):
+            dispatched.append(pool)
+
+        monkeypatch.setattr(kh, "_background_agent_sync", _fake_sync)
+
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(f"/api/knowledge/sources/{source_id}/sync")
+
+        assert response.status >= 500
+        assert dispatched == []
+
 
 class TestKnowledgePoolCleanup:
     @pytest.mark.asyncio
     async def test_shutdowns_each_pool_once(self):
-        extraction = _FakePool(pool_size=3, effort="high")
+        extraction = _FakePool(pool_size=3)
         fetch = _FakePool(pool_size=1)
         app = web.Application()
         app["knowledge_extraction_pool"] = extraction
         app["knowledge_fetch_pool"] = fetch
-        app["knowledge_llm_pool"] = extraction
 
         await kh._shutdown_knowledge_pools(app)
 

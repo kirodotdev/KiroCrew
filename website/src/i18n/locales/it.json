@@ -10661,7 +10661,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Sforzo di estrazione",
+        "fetch_effort_label": "Sforzo recupero URL",
+        "effort_hint": "Si applica solo ai modelli con capacità di ragionamento. \"Predefinito\" eredita il tuo sforzo in background, poi ricade su alto per l'estrazione (predefinito del provider per il recupero URL).",
+        "fetch_effort_hint": "Sforzo del worker che legge gli URL per la libreria della conoscenza. \"Predefinito\" eredita il tuo sforzo in background.",
+        "pool_size_restart_hint": "Richiede un riavvio per avere effetto."
       }
     },
     "localStorageDebug": {
@@ -12337,7 +12342,6 @@
         "failed_to_save_default_model": "Impossibile salvare il modello predefinito",
         "failed_to_save_default_reasoning_effort": "Impossibile salvare lo sforzo di ragionamento predefinito",
         "failed_to_save_fallback_model": "Impossibile salvare il modello di riserva",
-        "failed_to_save_knowledge_setting": "Impossibile salvare l’impostazione delle conoscenze",
         "failed_to_save_profile": "Impossibile salvare il profilo",
         "failed_to_save_role_effort": "Impossibile salvare lo sforzo del ruolo",
         "failed_to_save_role_model": "Impossibile salvare il modello del ruolo",

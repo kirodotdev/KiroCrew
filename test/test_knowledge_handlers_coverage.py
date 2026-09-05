@@ -38,8 +38,7 @@ def store(tmp_path):
 class _FakeEmbedder:
     """Minimal stand-in for InProcessEmbedder (real model never loaded)."""
 
-    def __init__(self, *, available=True, vec=(0.1, 0.2, 0.3, 0.4),
-                 model="fake-embed:1"):
+    def __init__(self, *, available=True, vec=(0.1, 0.2, 0.3, 0.4), model="fake-embed:1"):
         self.model = model
         self.content_budget = 2000
         self._available = available
@@ -69,8 +68,7 @@ def _make_app(store, *, pipeline=None, embedder=None, watcher=None, pool=None):
         app["knowledge_embedder"] = embedder
     if watcher is not None:
         app["knowledge_watcher"] = watcher
-    app["knowledge_llm_pool"] = (
-        pool if pool is not None else MagicMock(shutdown=AsyncMock()))
+    app["knowledge_fetch_pool"] = pool if pool is not None else MagicMock(shutdown=AsyncMock())
     app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
 
     r = app.router
@@ -107,7 +105,8 @@ def _add_job(store, job_id="job-1", *, status="processing", source_id=None):
     store.db.execute(
         "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
         "VALUES (?, ?, ?, '2026-01-01T00:00:00', '2026-01-01T00:00:00')",
-        (job_id, source_id, status))
+        (job_id, source_id, status),
+    )
     store.db.commit()
     return job_id
 
@@ -192,7 +191,8 @@ class TestGetItem:
                 "INSERT INTO entity_relations "
                 "(id, source_id, target_id, relation_type, weight, created_at) "
                 "VALUES ('rel-x', ?, 'ghost', 'mentions', 1, '2026-01-01T00:00:00')",
-                (e1,))
+                (e1,),
+            )
             store.db.commit()
         finally:
             store.db.execute("PRAGMA foreign_keys = ON")
@@ -222,9 +222,11 @@ class TestUpdateItem:
     async def test_invalid_json_is_400(self, store):
         item_id = store.add_item("a", "body", "note")
         async with _client(_make_app(store)) as client:
-            resp = await client.patch(f"/api/knowledge/items/{item_id}",
-                                      data="not json",
-                                      headers={"Content-Type": "application/json"})
+            resp = await client.patch(
+                f"/api/knowledge/items/{item_id}",
+                data="not json",
+                headers={"Content-Type": "application/json"},
+            )
             assert resp.status == 400
             assert (await resp.json())["error"] == "invalid JSON"
 
@@ -232,8 +234,9 @@ class TestUpdateItem:
     async def test_no_allowed_field_is_400(self, store):
         item_id = store.add_item("a", "body", "note")
         async with _client(_make_app(store)) as client:
-            resp = await client.patch(f"/api/knowledge/items/{item_id}",
-                                      json={"content": "hijack", "id": "other"})
+            resp = await client.patch(
+                f"/api/knowledge/items/{item_id}", json={"content": "hijack", "id": "other"}
+            )
             assert resp.status == 400
             assert (await resp.json())["error"] == "no valid fields"
         # The disallowed keys were not written through.
@@ -245,7 +248,8 @@ class TestUpdateItem:
         async with _client(_make_app(store)) as client:
             resp = await client.patch(
                 f"/api/knowledge/items/{item_id}",
-                json={"title": "renamed", "tags": ["x"], "namespace": "work"})
+                json={"title": "renamed", "tags": ["x"], "namespace": "work"},
+            )
             assert resp.status == 200
             assert (await resp.json())["ok"] is True
         row = store.get_item(item_id)
@@ -304,8 +308,9 @@ class TestListEntities:
         store.add_entity("Zeta", "person")
         store.add_entity("Alpha", "project")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                "/api/knowledge/entities", params={"type": "project"})).json()
+            data = await (
+                await client.get("/api/knowledge/entities", params={"type": "project"})
+            ).json()
         assert [e["name"] for e in data] == ["Alpha"]
 
     @pytest.mark.asyncio
@@ -313,8 +318,7 @@ class TestListEntities:
         store.add_entity("Zeta", "person")
         store.add_entity("Alpha", "project")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                "/api/knowledge/entities", params={"q": "lph"})).json()
+            data = await (await client.get("/api/knowledge/entities", params={"q": "lph"})).json()
         assert [e["name"] for e in data] == ["Alpha"]
 
     @pytest.mark.asyncio
@@ -322,9 +326,9 @@ class TestListEntities:
         store.add_entity("Alpha", "project")
         store.add_entity("Alphabet", "person")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                "/api/knowledge/entities",
-                params={"q": "Alpha", "type": "person"})).json()
+            data = await (
+                await client.get("/api/knowledge/entities", params={"q": "Alpha", "type": "person"})
+            ).json()
         assert [e["name"] for e in data] == ["Alphabet"]
 
     @pytest.mark.asyncio
@@ -339,8 +343,7 @@ class TestListEntities:
         store.add_entity("Alpha", "project")
         store.add_entity("Zeta", "person")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                "/api/knowledge/entities", params={"limit": "0"})).json()
+            data = await (await client.get("/api/knowledge/entities", params={"limit": "0"})).json()
         # 0 (and any smaller value) clamps up to 1 rather than returning nothing.
         assert len(data) == 1
 
@@ -349,8 +352,7 @@ class TestGetEntityGraph:
     @pytest.mark.asyncio
     async def test_non_numeric_depth_is_400(self, store):
         async with _client(_make_app(store)) as client:
-            resp = await client.get("/api/knowledge/entities/x/graph",
-                                    params={"depth": "deep"})
+            resp = await client.get("/api/knowledge/entities/x/graph", params={"depth": "deep"})
             assert resp.status == 400
             assert (await resp.json())["error"] == "invalid depth"
 
@@ -367,8 +369,9 @@ class TestGetEntityGraph:
         e2 = store.add_entity("Bravo", "project")
         store.add_entity_relation(e1, e2, "works_on")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                f"/api/knowledge/entities/{e1}/graph", params={"depth": "1"})).json()
+            data = await (
+                await client.get(f"/api/knowledge/entities/{e1}/graph", params={"depth": "1"})
+            ).json()
         assert {n["id"] for n in data["nodes"]} == {e1, e2}
 
 
@@ -378,8 +381,7 @@ class TestGetEntityItems:
         store.add_item("Roadmap", "Alice owns the plan", "note")
         store.add_item("Unrelated", "nothing here", "note")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                "/api/knowledge/entities/by-name/Alice/items")).json()
+            data = await (await client.get("/api/knowledge/entities/by-name/Alice/items")).json()
         assert [i["title"] for i in data] == ["Roadmap"]
 
     @pytest.mark.asyncio
@@ -405,8 +407,7 @@ class TestGetRelatedItems:
     @pytest.mark.asyncio
     async def test_non_numeric_limit_is_400(self, store):
         async with _client(_make_app(store)) as client:
-            resp = await client.get("/api/knowledge/items/x/related",
-                                    params={"limit": "many"})
+            resp = await client.get("/api/knowledge/items/x/related", params={"limit": "many"})
             assert resp.status == 400
             assert (await resp.json())["error"] == "invalid limit"
 
@@ -423,8 +424,7 @@ class TestGetRelatedItems:
         store.add_mention(one, e1)
 
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                f"/api/knowledge/items/{base}/related")).json()
+            data = await (await client.get(f"/api/knowledge/items/{base}/related")).json()
 
         assert [i["id"] for i in data] == [two, one]
         assert data[0]["shared_entities"] == 2
@@ -462,8 +462,7 @@ class TestGetFullGraph:
         e2 = store.add_entity("Bravo", "project")
         store.add_entity_relation(e1, e2, "works_on")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                "/api/knowledge/graph", params={"limit": "1"})).json()
+            data = await (await client.get("/api/knowledge/graph", params={"limit": "1"})).json()
         assert len(data["nodes"]) == 1
         assert data["edges"] == []
 
@@ -484,12 +483,14 @@ class TestGetFullGraph:
             data = await (await client.get("/api/knowledge/graph")).json()
             assert {n["name"] for n in data["nodes"]} == {"Alice", "Bravo"}
             # Filter to source A: only Alice
-            data_a = await (await client.get(
-                "/api/knowledge/graph", params={"source_id": src_a})).json()
+            data_a = await (
+                await client.get("/api/knowledge/graph", params={"source_id": src_a})
+            ).json()
             assert {n["name"] for n in data_a["nodes"]} == {"Alice"}
             # Filter to source B: only Bravo
-            data_b = await (await client.get(
-                "/api/knowledge/graph", params={"source_id": src_b})).json()
+            data_b = await (
+                await client.get("/api/knowledge/graph", params={"source_id": src_b})
+            ).json()
             assert {n["name"] for n in data_b["nodes"]} == {"Bravo"}
 
     @pytest.mark.asyncio
@@ -497,8 +498,9 @@ class TestGetFullGraph:
         src = store.add_source("Empty", "local_folder", "/tmp/empty")
         store.add_entity("Orphan", "concept")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                "/api/knowledge/graph", params={"source_id": src})).json()
+            data = await (
+                await client.get("/api/knowledge/graph", params={"source_id": src})
+            ).json()
         assert data == {"nodes": [], "edges": []}
 
     @pytest.mark.asyncio
@@ -513,12 +515,14 @@ class TestGetFullGraph:
         store.add_mention(item, e1)
         async with _client(_make_app(store)) as client:
             # Filter by owner source: finds entity via items.source_id
-            data_a = await (await client.get(
-                "/api/knowledge/graph", params={"source_id": src_a})).json()
+            data_a = await (
+                await client.get("/api/knowledge/graph", params={"source_id": src_a})
+            ).json()
             assert {n["name"] for n in data_a["nodes"]} == {"Shared"}
             # Filter by location source: finds entity via source_locations
-            data_b = await (await client.get(
-                "/api/knowledge/graph", params={"source_id": src_b})).json()
+            data_b = await (
+                await client.get("/api/knowledge/graph", params={"source_id": src_b})
+            ).json()
             assert {n["name"] for n in data_b["nodes"]} == {"Shared"}
 
     @pytest.mark.asyncio
@@ -526,8 +530,9 @@ class TestGetFullGraph:
         # Edge case: source_id=","  should not crash (empty IN clause)
         store.add_entity("Node", "concept")
         async with _client(_make_app(store)) as client:
-            data = await (await client.get(
-                "/api/knowledge/graph", params={"source_id": ","})).json()
+            data = await (
+                await client.get("/api/knowledge/graph", params={"source_id": ","})
+            ).json()
         assert data == {"nodes": [], "edges": []}
 
 
@@ -611,8 +616,7 @@ class TestExport:
     async def test_export_all_sanitizes_namespace_into_filename(self, store):
         store.add_item("a", "body", "note", namespace="work")
         async with _client(_make_app(store)) as client:
-            resp = await client.get("/api/knowledge/export",
-                                    params={"namespace": "work/../etc"})
+            resp = await client.get("/api/knowledge/export", params={"namespace": "work/../etc"})
             disp = resp.headers["Content-Disposition"]
         # Path separators and dots-with-slashes cannot survive into the
         # suggested filename, so the download cannot escape its directory.
@@ -624,19 +628,35 @@ class TestImportBundle:
     @pytest.mark.asyncio
     async def test_invalid_json_is_400(self, store):
         async with _client(_make_app(store)) as client:
-            resp = await client.post("/api/knowledge/import", data="{oops",
-                                     headers={"Content-Type": "application/json"})
+            resp = await client.post(
+                "/api/knowledge/import", data="{oops", headers={"Content-Type": "application/json"}
+            )
             assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_imports_items_entities_and_relations(self, store):
         bundle = {
-            "items": [{"id": "i1", "title": "Imported", "content": "hello",
-                       "summary": "s", "item_type": "note"}],
-            "entities": [{"id": "e1", "name": "Alice", "entity_type": "person",
-                          "description": "d"}],
-            "relations": [{"id": "r1", "source_id": "e1", "target_id": "e1",
-                           "relation_type": "self", "description": "d"}],
+            "items": [
+                {
+                    "id": "i1",
+                    "title": "Imported",
+                    "content": "hello",
+                    "summary": "s",
+                    "item_type": "note",
+                }
+            ],
+            "entities": [
+                {"id": "e1", "name": "Alice", "entity_type": "person", "description": "d"}
+            ],
+            "relations": [
+                {
+                    "id": "r1",
+                    "source_id": "e1",
+                    "target_id": "e1",
+                    "relation_type": "self",
+                    "description": "d",
+                }
+            ],
         }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
@@ -653,10 +673,18 @@ class TestImportBundle:
         # UTF-8-encoded at SQLite bind time. The handler surfaces the store's
         # typed error as a 400, and the rejected row is not committed.
         sel_calls = []
-        monkeypatch.setattr(kh, "_sel_log",
-                            lambda tool, **kw: sel_calls.append((tool, kw)))
-        bundle = {"sources": [{"id": "s1", "name": "f", "source_type": "local_file",
-                               "uri": "/tmp/x.md", "properties": '{"x": "\ud800"}'}]}
+        monkeypatch.setattr(kh, "_sel_log", lambda tool, **kw: sel_calls.append((tool, kw)))
+        bundle = {
+            "sources": [
+                {
+                    "id": "s1",
+                    "name": "f",
+                    "source_type": "local_file",
+                    "uri": "/tmp/x.md",
+                    "properties": '{"x": "\ud800"}',
+                }
+            ]
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -665,8 +693,10 @@ class TestImportBundle:
         assert "sources.properties" in body["error"]
         assert store.db.execute("SELECT COUNT(*) AS c FROM sources").fetchone()["c"] == 0
         # The refusal of a cross-instance bundle is audited.
-        assert ("import", {"outcome": "rejected",
-                           "reason": "'sources.properties' must be valid UTF-8 text"}) in sel_calls
+        assert (
+            "import",
+            {"outcome": "rejected", "reason": "'sources.properties' must be valid UTF-8 text"},
+        ) in sel_calls
 
     @pytest.mark.asyncio
     async def test_missing_text_fields_coerce_to_empty_string(self, store):
@@ -687,8 +717,11 @@ class TestImportBundle:
     @pytest.mark.asyncio
     async def test_redacts_credentials_in_imported_content(self, store):
         secret = "AKIAIOSFODNN7EXAMPLE"
-        bundle = {"items": [{"id": "i1", "title": "t", "item_type": "note",
-                             "content": f"key {secret} here"}]}
+        bundle = {
+            "items": [
+                {"id": "i1", "title": "t", "item_type": "note", "content": f"key {secret} here"}
+            ]
+        }
         async with _client(_make_app(store)) as client:
             assert (await client.post("/api/knowledge/import", json=bundle)).status == 200
         content = store.db.execute("SELECT content FROM items").fetchone()["content"]
@@ -719,8 +752,11 @@ class TestImportBundle:
 
     @pytest.mark.asyncio
     async def test_bundle_violating_foreign_keys_is_400_not_500(self, store):
-        bundle = {"source_locations": [
-            {"id": "sl1", "item_id": "missing-item", "source_id": "missing-source"}]}
+        bundle = {
+            "source_locations": [
+                {"id": "sl1", "item_id": "missing-item", "source_id": "missing-source"}
+            ]
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -744,12 +780,15 @@ class TestImportBundle:
         assert body["code"] == "body_not_object"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bundle", [
-        {"items": [1]},
-        {"items": "not-a-list"},
-        {"entities": [None]},
-        {"relations": [["nested"]]},
-    ])
+    @pytest.mark.parametrize(
+        "bundle",
+        [
+            {"items": [1]},
+            {"items": "not-a-list"},
+            {"entities": [None]},
+            {"relations": [["nested"]]},
+        ],
+    )
     async def test_non_object_collection_items_is_400_not_500(self, store, bundle):
         # A well-formed top-level dict whose collection isn't a list-of-objects
         # still reaches the redaction loop's item.get(...) on a non-dict entry.
@@ -760,11 +799,14 @@ class TestImportBundle:
         assert body["code"] == "malformed_knowledge_bundle"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bundle", [
-        {"sources": [1]},
-        {"source_locations": ["x"]},
-        {"mentions": [42]},
-    ])
+    @pytest.mark.parametrize(
+        "bundle",
+        [
+            {"sources": [1]},
+            {"source_locations": ["x"]},
+            {"mentions": [42]},
+        ],
+    )
     async def test_non_object_source_collections_is_400_not_500(self, store, bundle):
         # sources/source_locations/mentions are never touched by the handler's
         # redaction loops (only items/entities/relations are), so a non-dict
@@ -778,13 +820,19 @@ class TestImportBundle:
         assert body["code"] == "malformed_knowledge_bundle"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bundle", [
-        {"items": [{"id": "i1", "item_type": "note", "title": [1, 2]}]},
-        {"items": [{"id": "i1", "item_type": "note", "content": {"a": 1}}]},
-        {"entities": [{"id": "e1", "entity_type": "person", "name": 5}]},
-        {"relations": [{"id": "r1", "source_id": "e1", "target_id": "e1",
-                        "relation_type": ["x"]}]},
-    ])
+    @pytest.mark.parametrize(
+        "bundle",
+        [
+            {"items": [{"id": "i1", "item_type": "note", "title": [1, 2]}]},
+            {"items": [{"id": "i1", "item_type": "note", "content": {"a": 1}}]},
+            {"entities": [{"id": "e1", "entity_type": "person", "name": 5}]},
+            {
+                "relations": [
+                    {"id": "r1", "source_id": "e1", "target_id": "e1", "relation_type": ["x"]}
+                ]
+            },
+        ],
+    )
     async def test_non_string_redacted_field_is_400_not_500(self, store, bundle):
         # Every field the redaction loops pass to _redact() has to be a
         # string or null -- _redact() forwards non-empty values straight into
@@ -800,8 +848,17 @@ class TestImportBundle:
         # Python ints have no size ceiling; SQLite's INTEGER column is 64-bit.
         # Binding an oversized value raises OverflowError at bind time inside
         # store.import_bundle(), which is neither a KeyError nor sqlite3.Error.
-        bundle = {"items": [{"id": "i1", "title": "t", "content": "c",
-                             "item_type": "note", "chunk_index": 10**101}]}
+        bundle = {
+            "items": [
+                {
+                    "id": "i1",
+                    "title": "t",
+                    "content": "c",
+                    "item_type": "note",
+                    "chunk_index": 10**101,
+                }
+            ]
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -815,8 +872,17 @@ class TestImportBundle:
         # through unparsed, but every consumer reads it back with
         # json.loads() -- a non-JSON string commits cleanly (200) and only
         # breaks a later, unrelated request (e.g. Sync).
-        bundle = {"sources": [{"id": "s1", "name": "n", "source_type": "local_file",
-                               "uri": "/tmp/x", "properties": "not-json"}]}
+        bundle = {
+            "sources": [
+                {
+                    "id": "s1",
+                    "name": "n",
+                    "source_type": "local_file",
+                    "uri": "/tmp/x",
+                    "properties": "not-json",
+                }
+            ]
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -829,8 +895,9 @@ class TestImportBundle:
         # entities.aliases has the same shape of bug, with a worse blast
         # radius: find_entity() parses every entity's aliases on every
         # lookup, so one malformed row poisons every subsequent call.
-        bundle = {"entities": [{"id": "e1", "name": "n", "entity_type": "person",
-                                "aliases": "not-json"}]}
+        bundle = {
+            "entities": [{"id": "e1", "name": "n", "entity_type": "person", "aliases": "not-json"}]
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -839,29 +906,45 @@ class TestImportBundle:
         assert store.db.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"] == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("props", [
-        pytest.param(1, id="int"),          # SQLite TEXT-coerces to "1"; readers json.loads -> not a dict
-        pytest.param([], id="list"),        # wrong container entirely
-        pytest.param({}, id="dict"),        # right shape but store expects the JSON *string*
-        pytest.param("", id="empty"),       # detail readers json.loads("") -> ValueError
-        pytest.param("[]", id="json-array"),  # valid JSON, wrong parsed shape (array, not object)
-        # Depth > the 3.10/3.11 recursion limit (1000) -> RecursionError there;
-        # platforms whose C-scanner limit is higher parse to end-of-input and
-        # raise ValueError instead -- either way the contract is a clean 400.
-        # Kept moderate: a huge depth (100k) actually stack-overflowed the
-        # Windows CI worker inside the C json scanner before the recursion
-        # guard could fire (2MB stack vs Linux's 8MB) -- the guard is what
-        # makes deep input raise instead of crash, and it isn't reachable
-        # arbitrarily far down the stack.
-        pytest.param("[" * 1500, id="deeply-nested"),
-    ])
+    @pytest.mark.parametrize(
+        "props",
+        [
+            pytest.param(
+                1, id="int"
+            ),  # SQLite TEXT-coerces to "1"; readers json.loads -> not a dict
+            pytest.param([], id="list"),  # wrong container entirely
+            pytest.param({}, id="dict"),  # right shape but store expects the JSON *string*
+            pytest.param("", id="empty"),  # detail readers json.loads("") -> ValueError
+            pytest.param(
+                "[]", id="json-array"
+            ),  # valid JSON, wrong parsed shape (array, not object)
+            # Depth > the 3.10/3.11 recursion limit (1000) -> RecursionError there;
+            # platforms whose C-scanner limit is higher parse to end-of-input and
+            # raise ValueError instead -- either way the contract is a clean 400.
+            # Kept moderate: a huge depth (100k) actually stack-overflowed the
+            # Windows CI worker inside the C json scanner before the recursion
+            # guard could fire (2MB stack vs Linux's 8MB) -- the guard is what
+            # makes deep input raise instead of crash, and it isn't reachable
+            # arbitrarily far down the stack.
+            pytest.param("[" * 1500, id="deeply-nested"),
+        ],
+    )
     async def test_source_with_non_object_properties_is_400_not_500(self, store, props):
         # The old guard (`isinstance(props, str) and props`) SKIPPED validation
         # for every non-string and for "", committing a row that only crashes a
         # later read (source detail handlers json.loads the raw column with no
         # empty guard).  Anything present must be a JSON *object string*.
-        bundle = {"sources": [{"id": "s1", "name": "n", "source_type": "local_file",
-                               "uri": "/tmp/x", "properties": props}]}
+        bundle = {
+            "sources": [
+                {
+                    "id": "s1",
+                    "name": "n",
+                    "source_type": "local_file",
+                    "uri": "/tmp/x",
+                    "properties": props,
+                }
+            ]
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -870,18 +953,28 @@ class TestImportBundle:
         assert store.db.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("aliases", [
-        pytest.param(5, id="int"),          # non-string: TEXT-coerces to "5"; find_entity json.loads -> not a list
-        pytest.param("[1]", id="non-string-elems"),  # find_entity calls a.lower() on each element -> crash
-        pytest.param("", id="empty"),       # empty string is not valid JSON
-        pytest.param("{}", id="json-object"),  # valid JSON, wrong parsed shape (object, not array)
-        pytest.param("[" * 1500, id="deeply-nested"),  # see properties note above
-    ])
+    @pytest.mark.parametrize(
+        "aliases",
+        [
+            pytest.param(
+                5, id="int"
+            ),  # non-string: TEXT-coerces to "5"; find_entity json.loads -> not a list
+            pytest.param(
+                "[1]", id="non-string-elems"
+            ),  # find_entity calls a.lower() on each element -> crash
+            pytest.param("", id="empty"),  # empty string is not valid JSON
+            pytest.param(
+                "{}", id="json-object"
+            ),  # valid JSON, wrong parsed shape (object, not array)
+            pytest.param("[" * 1500, id="deeply-nested"),  # see properties note above
+        ],
+    )
     async def test_entity_with_non_string_array_aliases_is_400_not_500(self, store, aliases):
         # Same class as properties above; aliases must additionally be an
         # array OF STRINGS because find_entity() lower()s each element.
-        bundle = {"entities": [{"id": "e1", "name": "n", "entity_type": "person",
-                                "aliases": aliases}]}
+        bundle = {
+            "entities": [{"id": "e1", "name": "n", "entity_type": "person", "aliases": aliases}]
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -890,21 +983,42 @@ class TestImportBundle:
         assert store.db.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"] == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("field_bundle", [
-        pytest.param({"sources": [{"id": "s1", "name": "n", "source_type": "local_file",
-                                   "uri": "/tmp/x", "properties": "@@boom@@"}]},
-                     id="properties"),
-        pytest.param({"entities": [{"id": "e1", "name": "n", "entity_type": "person",
-                                    "aliases": "@@boom@@"}]},
-                     id="aliases"),
-    ])
+    @pytest.mark.parametrize(
+        "field_bundle",
+        [
+            pytest.param(
+                {
+                    "sources": [
+                        {
+                            "id": "s1",
+                            "name": "n",
+                            "source_type": "local_file",
+                            "uri": "/tmp/x",
+                            "properties": "@@boom@@",
+                        }
+                    ]
+                },
+                id="properties",
+            ),
+            pytest.param(
+                {
+                    "entities": [
+                        {"id": "e1", "name": "n", "entity_type": "person", "aliases": "@@boom@@"}
+                    ]
+                },
+                id="aliases",
+            ),
+        ],
+    )
     async def test_recursion_error_during_validation_is_400_not_500(
-            self, store, monkeypatch, field_bundle):
+        self, store, monkeypatch, field_bundle
+    ):
         # Deterministic RecursionError discriminator: the depth at which the
         # platform's json C-scanner raises (vs parses) varies, so force the
         # error instead of gambling on real nesting.  The old guard caught only
         # ValueError, leaking RecursionError as an unhandled 500.
         from kiro_crew.dashboard.handlers import knowledge as knowledge_mod
+
         real_loads = knowledge_mod.json.loads
 
         def exploding_loads(s, *args, **kwargs):
@@ -926,10 +1040,18 @@ class TestImportBundle:
         # Absent/null falls through to the store's '{}'/'[]' defaults -- the
         # tightened validator must not reject the shapes export never writes
         # but hand-built bundles legitimately omit.
-        bundle = {"sources": [{"id": "s1", "name": "n", "source_type": "local_file",
-                               "uri": "/tmp/x", "properties": None}],
-                  "entities": [{"id": "e1", "name": "n", "entity_type": "person",
-                                "aliases": None}]}
+        bundle = {
+            "sources": [
+                {
+                    "id": "s1",
+                    "name": "n",
+                    "source_type": "local_file",
+                    "uri": "/tmp/x",
+                    "properties": None,
+                }
+            ],
+            "entities": [{"id": "e1", "name": "n", "entity_type": "person", "aliases": None}],
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 200
@@ -937,12 +1059,15 @@ class TestImportBundle:
         assert store.db.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"] == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("exc", [
-        pytest.param(sqlite3.OperationalError("database is locked"), id="locked-db"),
-        pytest.param(sqlite3.OperationalError("disk I/O error"), id="full-disk"),
-        pytest.param(sqlite3.InterfaceError("bad binding"), id="interface"),
-        pytest.param(sqlite3.InternalError("corrupt page"), id="internal"),
-    ])
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            pytest.param(sqlite3.OperationalError("database is locked"), id="locked-db"),
+            pytest.param(sqlite3.OperationalError("disk I/O error"), id="full-disk"),
+            pytest.param(sqlite3.InterfaceError("bad binding"), id="interface"),
+            pytest.param(sqlite3.InternalError("corrupt page"), id="internal"),
+        ],
+    )
     async def test_operational_store_failure_is_500_not_400(self, store, monkeypatch, exc):
         # A locked DB past busy_timeout or a full disk is not the client's
         # fault: 400 "malformed bundle" for a valid file sends the user off
@@ -950,9 +1075,9 @@ class TestImportBundle:
         # surface as a 5xx with a generic body.
         def exploding_import(bundle):
             raise exc
+
         monkeypatch.setattr(store, "import_bundle", exploding_import)
-        bundle = {"items": [{"id": "i1", "title": "t", "content": "c",
-                             "item_type": "note"}]}
+        bundle = {"items": [{"id": "i1", "title": "t", "content": "c", "item_type": "note"}]}
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 500
@@ -962,22 +1087,25 @@ class TestImportBundle:
         assert str(exc) not in body["error"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("exc", [
-        pytest.param(sqlite3.IntegrityError("FOREIGN KEY constraint failed"),
-                     id="integrity"),
-        pytest.param(sqlite3.ProgrammingError("Incorrect number of bindings"),
-                     id="programming"),
-        pytest.param(sqlite3.DataError("string or blob too big"), id="data"),
-    ])
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            pytest.param(sqlite3.IntegrityError("FOREIGN KEY constraint failed"), id="integrity"),
+            pytest.param(
+                sqlite3.ProgrammingError("Incorrect number of bindings"), id="programming"
+            ),
+            pytest.param(sqlite3.DataError("string or blob too big"), id="data"),
+        ],
+    )
     async def test_bad_bundle_store_failure_is_still_400(self, store, monkeypatch, exc):
         # The narrowed arm must keep classifying genuine bad-bundle failures
         # as 400 -- IntegrityError (constraints), ProgrammingError and
         # DataError (bad values reaching the SQL layer).
         def exploding_import(bundle):
             raise exc
+
         monkeypatch.setattr(store, "import_bundle", exploding_import)
-        bundle = {"items": [{"id": "i1", "title": "t", "content": "c",
-                             "item_type": "note"}]}
+        bundle = {"items": [{"id": "i1", "title": "t", "content": "c", "item_type": "note"}]}
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -990,8 +1118,11 @@ class TestImportBundle:
         # raw driver/exception text must never reach the client -- on either
         # the 400 arm (e2e via a real FK violation) or the 500 arm (covered
         # above).  Server-side logs keep the detail instead.
-        bundle = {"source_locations": [
-            {"id": "sl1", "item_id": "missing-item", "source_id": "missing-source"}]}
+        bundle = {
+            "source_locations": [
+                {"id": "sl1", "item_id": "missing-item", "source_id": "missing-source"}
+            ]
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -1010,8 +1141,13 @@ class TestGetEmbeddingStatus:
         store.add_item("a", "body", "note")
         async with _client(_make_app(store)) as client:
             data = await (await client.get("/api/knowledge/embedding/status")).json()
-        assert data == {"enabled": False, "available": False, "model": None,
-                        "total_items": 1, "embedded_items": 0}
+        assert data == {
+            "enabled": False,
+            "available": False,
+            "model": None,
+            "total_items": 1,
+            "embedded_items": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_reports_progress_with_embedder(self, store):
@@ -1033,11 +1169,10 @@ class TestRebuildEmbeddingsJob:
             return 5
 
         monkeypatch.setattr(f"{MODULE}.rebuild_embeddings", _fake_rebuild)
-        await kh._rebuild_embeddings_job(web.Application(), store,
-                                         _FakeEmbedder(), job_id)
+        await kh._rebuild_embeddings_job(web.Application(), store, _FakeEmbedder(), job_id)
         row = store.db.execute(
-            "SELECT status, items_processed FROM ingestion_jobs WHERE id = ?",
-            (job_id,)).fetchone()
+            "SELECT status, items_processed FROM ingestion_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
         assert row["status"] == "completed"
         assert row["items_processed"] == 5
 
@@ -1049,10 +1184,12 @@ class TestRebuildEmbeddingsJob:
             raise RuntimeError("embed exploded")
 
         monkeypatch.setattr(f"{MODULE}.rebuild_embeddings", _boom)
-        await kh._rebuild_embeddings_job(web.Application(), store,
-                                         _FakeEmbedder(), job_id, force=True)
+        await kh._rebuild_embeddings_job(
+            web.Application(), store, _FakeEmbedder(), job_id, force=True
+        )
         row = store.db.execute(
-            "SELECT status, error FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
+            "SELECT status, error FROM ingestion_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
         assert row["status"] == "failed"
         assert "embed exploded" in row["error"]
 
@@ -1067,10 +1204,10 @@ class TestRebuildEmbeddingsJob:
 
         monkeypatch.setattr(f"{MODULE}.rebuild_embeddings", _cancelled)
         with pytest.raises(asyncio.CancelledError):
-            await kh._rebuild_embeddings_job(web.Application(), store,
-                                             _FakeEmbedder(), job_id)
+            await kh._rebuild_embeddings_job(web.Application(), store, _FakeEmbedder(), job_id)
         row = store.db.execute(
-            "SELECT status FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
+            "SELECT status FROM ingestion_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
         assert row["status"] == "cancelled"
 
 
@@ -1100,7 +1237,8 @@ class TestBatchEmbedItems:
             data = await resp.json()
         assert (data["embedded"], data["total"], data["remaining"]) == (1, 1, 0)
         row = store.db.execute(
-            "SELECT embedding, embedding_sig FROM items WHERE id = ?", (i1,)).fetchone()
+            "SELECT embedding, embedding_sig FROM items WHERE id = ?", (i1,)
+        ).fetchone()
         assert row["embedding"] is not None
         assert row["embedding_sig"]
 
@@ -1109,8 +1247,7 @@ class TestBatchEmbedItems:
         store.add_item("a", "body a", "note")
         emb = _FakeEmbedder(vec=())
         async with _client(_make_app(store, embedder=emb)) as client:
-            data = await (await client.post(
-                "/api/knowledge/embedding/generate", json={})).json()
+            data = await (await client.post("/api/knowledge/embedding/generate", json={})).json()
         assert data["embedded"] == 0
         assert data["remaining"] == 1
 
@@ -1121,8 +1258,7 @@ class TestBatchEmbedItems:
         for i in range(51):
             store.add_item(f"item {i}", "body", "note")
         async with _client(_make_app(store, embedder=_FakeEmbedder())) as client:
-            data = await (await client.post(
-                "/api/knowledge/embedding/generate", json={})).json()
+            data = await (await client.post("/api/knowledge/embedding/generate", json={})).json()
         assert data["embedded"] == 51
         assert data["remaining"] == 0
 
@@ -1137,8 +1273,9 @@ class TestBatchEmbedItems:
         monkeypatch.setattr(f"{MODULE}._rebuild_embeddings_job", _fake_job)
         app = _make_app(store, embedder=_FakeEmbedder())
         async with _client(app) as client:
-            resp = await client.post("/api/knowledge/embedding/generate",
-                                     json={"rebuild": True, "force": True})
+            resp = await client.post(
+                "/api/knowledge/embedding/generate", json={"rebuild": True, "force": True}
+            )
             data = await resp.json()
             await asyncio.wait_for(ran.wait(), timeout=5)
         assert data == {"job_id": "new-job", "status": "processing"}
@@ -1148,17 +1285,20 @@ class TestBatchEmbedItems:
         _add_job(store, "in-flight", status="processing")
         monkeypatch.setattr(f"{MODULE}.start_rebuild_job", lambda _s: None)
         async with _client(_make_app(store, embedder=_FakeEmbedder())) as client:
-            data = await (await client.post("/api/knowledge/embedding/generate",
-                                            json={"rebuild": True})).json()
+            data = await (
+                await client.post("/api/knowledge/embedding/generate", json={"rebuild": True})
+            ).json()
         assert data == {"job_id": "in-flight", "status": "processing"}
 
     @pytest.mark.asyncio
     async def test_rebuild_claim_lost_without_visible_row_reports_null_job(
-            self, store, monkeypatch):
+        self, store, monkeypatch
+    ):
         monkeypatch.setattr(f"{MODULE}.start_rebuild_job", lambda _s: None)
         async with _client(_make_app(store, embedder=_FakeEmbedder())) as client:
-            data = await (await client.post("/api/knowledge/embedding/generate",
-                                            json={"rebuild": True})).json()
+            data = await (
+                await client.post("/api/knowledge/embedding/generate", json={"rebuild": True})
+            ).json()
         assert data == {"job_id": None, "status": "processing"}
 
 
@@ -1174,31 +1314,44 @@ def _patch_retriever(monkeypatch, results):
     monkeypatch.setattr(f"{MODULE}.run_in_embed_pool", _direct)
     monkeypatch.setattr(
         f"{MODULE}.HybridRetriever",
-        lambda *a, **kw: MagicMock(search=MagicMock(return_value=results)))
+        lambda *a, **kw: MagicMock(search=MagicMock(return_value=results)),
+    )
 
 
 class TestSearchForContext:
     @pytest.mark.asyncio
     async def test_missing_query_is_400(self, store):
         async with _client(_make_app(store)) as client:
-            resp = await client.get("/api/knowledge/search-for-context",
-                                    params={"q": "   "})
+            resp = await client.get("/api/knowledge/search-for-context", params={"q": "   "})
             assert resp.status == 400
             assert (await resp.json())["error"] == "q parameter required"
 
     @pytest.mark.asyncio
     async def test_builds_citation_cards(self, store, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{MODULE}.data_home", lambda: tmp_path)
-        _patch_retriever(monkeypatch, [{
-            "id": "i1", "title": "Design", "content": "abcd" * 10,
-            "source": "src", "source_type": "local_folder",
-            "source_name": "Notes", "source_uri": "/notes",
-            "file_path": "/notes/a.md", "section_title": "Intro",
-            "chunk_range": "1-2", "match_type": "vector", "summary": "sum",
-        }])
+        _patch_retriever(
+            monkeypatch,
+            [
+                {
+                    "id": "i1",
+                    "title": "Design",
+                    "content": "abcd" * 10,
+                    "source": "src",
+                    "source_type": "local_folder",
+                    "source_name": "Notes",
+                    "source_uri": "/notes",
+                    "file_path": "/notes/a.md",
+                    "section_title": "Intro",
+                    "chunk_range": "1-2",
+                    "match_type": "vector",
+                    "summary": "sum",
+                }
+            ],
+        )
         async with _client(_make_app(store)) as client:
-            data = await (await client.get("/api/knowledge/search-for-context",
-                                           params={"q": "design"})).json()
+            data = await (
+                await client.get("/api/knowledge/search-for-context", params={"q": "design"})
+            ).json()
         card = data["results"][0]
         assert card["title"] == "Design"
         assert card["match_type"] == "vector"
@@ -1208,13 +1361,13 @@ class TestSearchForContext:
         assert data["total_tokens"] == 10
 
     @pytest.mark.asyncio
-    async def test_untitled_and_default_match_type_fallbacks(self, store, monkeypatch,
-                                                             tmp_path):
+    async def test_untitled_and_default_match_type_fallbacks(self, store, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{MODULE}.data_home", lambda: tmp_path)
         _patch_retriever(monkeypatch, [{"id": "i1", "title": "", "content": "x"}])
         async with _client(_make_app(store)) as client:
-            data = await (await client.get("/api/knowledge/search-for-context",
-                                           params={"q": "x"})).json()
+            data = await (
+                await client.get("/api/knowledge/search-for-context", params={"q": "x"})
+            ).json()
         card = data["results"][0]
         assert card["title"] == "(untitled)"
         assert card["match_type"] == "keyword"
@@ -1223,18 +1376,22 @@ class TestSearchForContext:
         assert card["summary"] == "x"
 
     @pytest.mark.asyncio
-    async def test_config_budget_truncates_and_then_stops(self, store, monkeypatch,
-                                                          tmp_path):
-        (tmp_path / "config.json").write_text(json.dumps(
-            {"knowledge": {"fetch_top_n": 5, "fetch_max_tokens": 4}}))
+    async def test_config_budget_truncates_and_then_stops(self, store, monkeypatch, tmp_path):
+        (tmp_path / "config.json").write_text(
+            json.dumps({"knowledge": {"fetch_top_n": 5, "fetch_max_tokens": 4}})
+        )
         monkeypatch.setattr(f"{MODULE}.data_home", lambda: tmp_path)
-        _patch_retriever(monkeypatch, [
-            {"id": "i1", "title": "big", "content": "z" * 400},
-            {"id": "i2", "title": "dropped", "content": "y" * 400},
-        ])
+        _patch_retriever(
+            monkeypatch,
+            [
+                {"id": "i1", "title": "big", "content": "z" * 400},
+                {"id": "i2", "title": "dropped", "content": "y" * 400},
+            ],
+        )
         async with _client(_make_app(store)) as client:
-            data = await (await client.get("/api/knowledge/search-for-context",
-                                           params={"q": "z"})).json()
+            data = await (
+                await client.get("/api/knowledge/search-for-context", params={"q": "z"})
+            ).json()
         assert data["max_tokens"] == 4
         assert data["total_tokens"] == 4
         # First card is clipped to the budget; the second never gets a slot.
@@ -1242,20 +1399,19 @@ class TestSearchForContext:
         assert len(data["results"][0]["content"]) == 16
 
     @pytest.mark.asyncio
-    async def test_unreadable_config_falls_back_to_defaults(self, store, monkeypatch,
-                                                            tmp_path):
+    async def test_unreadable_config_falls_back_to_defaults(self, store, monkeypatch, tmp_path):
         (tmp_path / "config.json").write_text("{ not json")
         monkeypatch.setattr(f"{MODULE}.data_home", lambda: tmp_path)
         _patch_retriever(monkeypatch, [])
         async with _client(_make_app(store)) as client:
-            data = await (await client.get("/api/knowledge/search-for-context",
-                                           params={"q": "z"})).json()
+            data = await (
+                await client.get("/api/knowledge/search-for-context", params={"q": "z"})
+            ).json()
         assert data["max_tokens"] == kh.KNOWLEDGE_FETCH_MAX_TOKENS
         assert data["results"] == []
 
     @pytest.mark.asyncio
-    async def test_non_numeric_limit_falls_back_to_top_n(self, store, monkeypatch,
-                                                         tmp_path):
+    async def test_non_numeric_limit_falls_back_to_top_n(self, store, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{MODULE}.data_home", lambda: tmp_path)
         captured = {}
 
@@ -1264,17 +1420,21 @@ class TestSearchForContext:
             return []
 
         monkeypatch.setattr(f"{MODULE}.run_in_embed_pool", _direct)
-        monkeypatch.setattr(f"{MODULE}.HybridRetriever",
-                            lambda *a, **kw: MagicMock(search=MagicMock(return_value=[])))
+        monkeypatch.setattr(
+            f"{MODULE}.HybridRetriever",
+            lambda *a, **kw: MagicMock(search=MagicMock(return_value=[])),
+        )
         async with _client(_make_app(store)) as client:
-            resp = await client.get("/api/knowledge/search-for-context",
-                                    params={"q": "z", "limit": "lots"})
+            resp = await client.get(
+                "/api/knowledge/search-for-context", params={"q": "z", "limit": "lots"}
+            )
             assert resp.status == 200
         assert captured["limit"] == kh.KNOWLEDGE_FETCH_TOP_N
 
     @pytest.mark.asyncio
-    async def test_available_embedder_is_wired_into_the_retriever(self, store,
-                                                                  monkeypatch, tmp_path):
+    async def test_available_embedder_is_wired_into_the_retriever(
+        self, store, monkeypatch, tmp_path
+    ):
         monkeypatch.setattr(f"{MODULE}.data_home", lambda: tmp_path)
         seen = {}
 
@@ -1289,8 +1449,9 @@ class TestSearchForContext:
         monkeypatch.setattr(f"{MODULE}.HybridRetriever", _retriever)
         emb = _FakeEmbedder()
         async with _client(_make_app(store, embedder=emb)) as client:
-            assert (await client.get("/api/knowledge/search-for-context",
-                                     params={"q": "z"})).status == 200
+            assert (
+                await client.get("/api/knowledge/search-for-context", params={"q": "z"})
+            ).status == 200
         assert seen["embedder"] == emb.embed
 
     @pytest.mark.asyncio
@@ -1309,8 +1470,9 @@ class TestSearchForContext:
         monkeypatch.setattr(f"{MODULE}.HybridRetriever", _retriever)
         app = _make_app(store, embedder=_FakeEmbedder(available=False))
         async with _client(app) as client:
-            assert (await client.get("/api/knowledge/search-for-context",
-                                     params={"q": "z"})).status == 200
+            assert (
+                await client.get("/api/knowledge/search-for-context", params={"q": "z"})
+            ).status == 200
         assert seen["embedder"] is None
 
 
@@ -1328,8 +1490,9 @@ def _cfg(auto_add=True, auto_ingest=False, kinds=()):
 class TestAddAgentDocumentRoute:
     @pytest.mark.asyncio
     async def test_disabled_toggle_is_403(self, store, monkeypatch):
-        monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load",
-                            staticmethod(lambda: _cfg(auto_add=False)))
+        monkeypatch.setattr(
+            f"{MODULE}.KiroCrewConfig.load", staticmethod(lambda: _cfg(auto_add=False))
+        )
         async with _client(_make_app(store, pipeline=MagicMock())) as client:
             resp = await client.post("/api/knowledge/agent-document", json={})
             assert resp.status == 403
@@ -1347,34 +1510,39 @@ class TestAddAgentDocumentRoute:
     async def test_invalid_json_is_400(self, store, monkeypatch):
         monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
         async with _client(_make_app(store, pipeline=MagicMock())) as client:
-            resp = await client.post("/api/knowledge/agent-document", data="{",
-                                     headers={"Content-Type": "application/json"})
+            resp = await client.post(
+                "/api/knowledge/agent-document",
+                data="{",
+                headers={"Content-Type": "application/json"},
+            )
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_json"
 
     @pytest.mark.asyncio
     async def test_rejected_document_is_400(self, store, monkeypatch):
         monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
-        monkeypatch.setattr(f"{MODULE}.add_agent_document", AsyncMock(
-            return_value={"status": "error", "error": "too short"}))
+        monkeypatch.setattr(
+            f"{MODULE}.add_agent_document",
+            AsyncMock(return_value={"status": "error", "error": "too short"}),
+        )
         async with _client(_make_app(store, pipeline=MagicMock())) as client:
-            resp = await client.post("/api/knowledge/agent-document",
-                                     json={"title": "t", "content": "c"})
+            resp = await client.post(
+                "/api/knowledge/agent-document", json={"title": "t", "content": "c"}
+            )
             assert resp.status == 400
             body = await resp.json()
         assert (body["error"], body["code"]) == ("too short", "document_rejected")
 
     @pytest.mark.asyncio
-    async def test_accepted_document_returns_result_and_coerces_fields(
-            self, store, monkeypatch):
+    async def test_accepted_document_returns_result_and_coerces_fields(self, store, monkeypatch):
         monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
-        fake_add = AsyncMock(return_value={"status": "added", "title": "T",
-                                           "item_ids": ["i1"]})
+        fake_add = AsyncMock(return_value={"status": "added", "title": "T", "item_ids": ["i1"]})
         monkeypatch.setattr(f"{MODULE}.add_agent_document", fake_add)
         async with _client(_make_app(store, pipeline=MagicMock())) as client:
-            resp = await client.post("/api/knowledge/agent-document",
-                                     json={"title": "T", "content": "body",
-                                           "reason": None})
+            resp = await client.post(
+                "/api/knowledge/agent-document",
+                json={"title": "T", "content": "body", "reason": None},
+            )
             assert resp.status == 200
             assert (await resp.json())["status"] == "added"
         # None-valued optional fields arrive as empty strings, never as None.
@@ -1389,8 +1557,7 @@ class TestIngestText:
     @pytest.mark.asyncio
     async def test_unknown_source_is_404(self, store):
         async with _client(_make_app(store, pipeline=MagicMock())) as client:
-            resp = await client.post("/api/knowledge/sources/ghost/ingest-text",
-                                     json={"text": "x"})
+            resp = await client.post("/api/knowledge/sources/ghost/ingest-text", json={"text": "x"})
             assert resp.status == 404
             assert (await resp.json())["error"] == "source not found"
 
@@ -1398,24 +1565,27 @@ class TestIngestText:
     async def test_missing_pipeline_is_503(self, store):
         sid = store.add_source("s", "web", "https://example.com")
         async with _client(_make_app(store)) as client:
-            resp = await client.post(f"/api/knowledge/sources/{sid}/ingest-text",
-                                     json={"text": "x"})
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text", json={"text": "x"}
+            )
             assert resp.status == 503
 
     @pytest.mark.asyncio
     async def test_invalid_json_is_400(self, store):
         sid = store.add_source("s", "web", "https://example.com")
         async with _client(_make_app(store, pipeline=MagicMock())) as client:
-            resp = await client.post(f"/api/knowledge/sources/{sid}/ingest-text",
-                                     data="{", headers={"Content-Type": "application/json"})
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text",
+                data="{",
+                headers={"Content-Type": "application/json"},
+            )
             assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_empty_text_is_400(self, store):
         sid = store.add_source("s", "web", "https://example.com")
         async with _client(_make_app(store, pipeline=MagicMock())) as client:
-            resp = await client.post(f"/api/knowledge/sources/{sid}/ingest-text",
-                                     json={"text": ""})
+            resp = await client.post(f"/api/knowledge/sources/{sid}/ingest-text", json={"text": ""})
             assert resp.status == 400
             assert (await resp.json())["error"] == "no text provided"
 
@@ -1424,13 +1594,13 @@ class TestIngestText:
         sid = store.add_source("s", "web", "https://example.com")
         pipeline = MagicMock(ingest_file=AsyncMock(return_value="job-9"))
         async with _client(_make_app(store, pipeline=pipeline)) as client:
-            resp = await client.post(f"/api/knowledge/sources/{sid}/ingest-text",
-                                     json={"text": "hello", "name": "doc",
-                                           "namespace": "work"})
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text",
+                json={"text": "hello", "name": "doc", "namespace": "work"},
+            )
             assert resp.status == 200
             assert (await resp.json())["job_id"] == "job-9"
-        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?",
-                               (sid,)).fetchone()
+        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "synced"
         kwargs = pipeline.ingest_file.await_args.kwargs
         assert kwargs["original_name"] == "doc"
@@ -1443,8 +1613,9 @@ class TestIngestText:
         sid = store.add_source("s", "web", "https://example.com")
         pipeline = MagicMock(ingest_file=AsyncMock(side_effect=RuntimeError("boom")))
         async with _client(_make_app(store, pipeline=pipeline)) as client:
-            resp = await client.post(f"/api/knowledge/sources/{sid}/ingest-text",
-                                     json={"text": "hello"})
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text", json={"text": "hello"}
+            )
             assert resp.status == 500
             assert (await resp.json())["error"] == "internal server error"
         assert not Path(pipeline.ingest_file.await_args.args[0]).exists()
@@ -1467,12 +1638,14 @@ class TestDeleteSourceBranches:
         auto source a user had just deleted. Both discovery loops are gone, so a
         deletion is final on its own and recording it would be a write nothing reads.
         """
-        auto = store.add_source("auto", "local_folder", "/tmp/auto",
-                                properties={"auto_added": True})
+        auto = store.add_source(
+            "auto", "local_folder", "/tmp/auto", properties={"auto_added": True}
+        )
         manual = store.add_source("manual", "local_folder", "/tmp/manual")
         seen: list[tuple] = []
-        monkeypatch.setattr(store, "delete_source_cascade",
-                            lambda source_id: seen.append((source_id,)))
+        monkeypatch.setattr(
+            store, "delete_source_cascade", lambda source_id: seen.append((source_id,))
+        )
         async with _client(_make_app(store)) as client:
             for sid in (auto, manual):
                 resp = await client.delete(f"/api/knowledge/sources/{sid}")
@@ -1481,15 +1654,12 @@ class TestDeleteSourceBranches:
         # One positional argument each: the cascade has no dismissal parameter left
         # for a caller to pass, so neither row can be tombstoned by mistake.
         assert seen == [(auto,), (manual,)]
-        assert not store.db.execute(
-            "SELECT 1 FROM dismissed_auto_sources").fetchall()
+        assert not store.db.execute("SELECT 1 FROM dismissed_auto_sources").fetchall()
 
     @pytest.mark.asyncio
-    async def test_unreadable_properties_do_not_block_the_delete(self, store,
-                                                                 monkeypatch):
+    async def test_unreadable_properties_do_not_block_the_delete(self, store, monkeypatch):
         sid = store.add_source("odd", "local_folder", "/tmp/odd")
-        store.db.execute("UPDATE sources SET properties = ? WHERE id = ?",
-                         ("{not json", sid))
+        store.db.execute("UPDATE sources SET properties = ? WHERE id = ?", ("{not json", sid))
         store.db.commit()
         monkeypatch.setattr(store, "delete_source_cascade", lambda source_id: None)
         async with _client(_make_app(store)) as client:
@@ -1552,7 +1722,36 @@ class TestSyncSourceAgentBranch:
         async with _client(_make_app(store)) as client:
             resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
             assert resp.status == 503
-            assert (await resp.json())["error"] == "pipeline not configured"
+            body = await resp.json()
+            assert body["error"] == "pipeline not configured"
+            assert body["code"] == "pipeline_unavailable"
+            # The 503 must not leave the row wedged in 'syncing': a retry hits
+            # this same 503, not a 409 "already in progress".
+            status = store.db.execute(
+                "SELECT sync_status FROM sources WHERE id = ?", (sid,)
+            ).fetchone()["sync_status"]
+            assert status != "syncing"
+
+    @pytest.mark.asyncio
+    async def test_missing_fetch_pool_is_503_without_committing_syncing(self, store):
+        sid = store.add_source("s", "web", "https://e.test/a")
+        app = _make_app(store, pipeline=MagicMock())
+        del app["knowledge_fetch_pool"]
+        pool_error = "knowledge_fetch_pool is not configured on this application"
+        async with _client(app) as client:
+            resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
+            assert resp.status == 503
+            body = await resp.json()
+            assert body["error"] == pool_error
+            assert body["code"] == "knowledge_fetch_pool_unavailable"
+            # The check runs before the 'syncing' commit, so the row is not
+            # wedged: a retry gets the same 503 rather than a permanent 409.
+            status = store.db.execute(
+                "SELECT sync_status FROM sources WHERE id = ?", (sid,)
+            ).fetchone()["sync_status"]
+            assert status != "syncing"
+            retry = await client.post(f"/api/knowledge/sources/{sid}/sync")
+            assert retry.status == 503
 
     @pytest.mark.asyncio
     async def test_spawns_background_sync_and_tracks_the_task(self, store, monkeypatch):
@@ -1576,28 +1775,27 @@ class TestSyncSourceAgentBranch:
 
 class TestBackgroundAgentSync:
     @pytest.mark.asyncio
-    async def test_success_marks_source_synced_and_removes_temp_file(self, store,
-                                                                     monkeypatch):
+    async def test_success_marks_source_synced_and_removes_temp_file(self, store, monkeypatch):
         sid = store.add_source("s", "web", "https://example.com")
-        monkeypatch.setattr(f"{MODULE}.fetch_url_content",
-                            AsyncMock(return_value="fetched body"))
+        monkeypatch.setattr(f"{MODULE}.fetch_url_content", AsyncMock(return_value="fetched body"))
         pipeline = MagicMock(ingest_file=AsyncMock(return_value="j1"))
-        await kh._background_agent_sync(sid, "https://example.com", "S", store,
-                                        pipeline, MagicMock())
-        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?",
-                               (sid,)).fetchone()
+        await kh._background_agent_sync(
+            sid, "https://example.com", "S", store, pipeline, MagicMock()
+        )
+        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "synced"
         assert not Path(pipeline.ingest_file.await_args.args[0]).exists()
 
     @pytest.mark.asyncio
     async def test_fetch_failure_marks_source_error(self, store, monkeypatch):
         sid = store.add_source("s", "web", "https://example.com")
-        monkeypatch.setattr(f"{MODULE}.fetch_url_content",
-                            AsyncMock(side_effect=RuntimeError("offline")))
-        await kh._background_agent_sync(sid, "https://example.com", "S", store,
-                                        MagicMock(), MagicMock())
-        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?",
-                               (sid,)).fetchone()
+        monkeypatch.setattr(
+            f"{MODULE}.fetch_url_content", AsyncMock(side_effect=RuntimeError("offline"))
+        )
+        await kh._background_agent_sync(
+            sid, "https://example.com", "S", store, MagicMock(), MagicMock()
+        )
+        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "error"
 
 
@@ -1607,9 +1805,9 @@ class TestBackgroundAgentSync:
 class TestSelLog:
     def test_emits_a_namespaced_tool_event(self, monkeypatch):
         recorded = {}
-        monkeypatch.setattr(f"{MODULE}.sel",
-                            lambda: MagicMock(log_tool_invocation=lambda **kw:
-                                              recorded.update(kw)))
+        monkeypatch.setattr(
+            f"{MODULE}.sel", lambda: MagicMock(log_tool_invocation=lambda **kw: recorded.update(kw))
+        )
         kh._sel_log("item.update", item_id="i1")
         assert recorded["tool_name"] == "knowledge.item.update"
         assert recorded["outcome"] == "completed"
@@ -1617,9 +1815,9 @@ class TestSelLog:
 
     def test_outcome_can_be_overridden_and_leaves_resources_empty(self, monkeypatch):
         recorded = {}
-        monkeypatch.setattr(f"{MODULE}.sel",
-                            lambda: MagicMock(log_tool_invocation=lambda **kw:
-                                              recorded.update(kw)))
+        monkeypatch.setattr(
+            f"{MODULE}.sel", lambda: MagicMock(log_tool_invocation=lambda **kw: recorded.update(kw))
+        )
         kh._sel_log("batch_embed", outcome="cancelled")
         assert recorded["outcome"] == "cancelled"
         assert recorded["resources"] == ""
@@ -1627,8 +1825,9 @@ class TestSelLog:
 
 class TestCreateEmbedder:
     def test_reads_config_json_when_present(self, monkeypatch, tmp_path):
-        (tmp_path / "config.json").write_text(json.dumps(
-            {"knowledge": {"embed_content_budget": 77}}))
+        (tmp_path / "config.json").write_text(
+            json.dumps({"knowledge": {"embed_content_budget": 77}})
+        )
         monkeypatch.setattr(f"{MODULE}.config_dir", lambda: tmp_path)
         emb = kh._create_embedder(web.Application())
         assert emb.content_budget == 77
@@ -1645,8 +1844,7 @@ class TestCreateEmbedder:
 
 class TestStartWatcherAsync:
     @pytest.mark.asyncio
-    async def test_stops_previous_watcher_and_registers_the_new_one(self, store,
-                                                                    monkeypatch):
+    async def test_stops_previous_watcher_and_registers_the_new_one(self, store, monkeypatch):
         old = MagicMock(stop=AsyncMock())
         started = asyncio.Event()
 
@@ -1697,18 +1895,19 @@ class TestStartWatcherAsync:
 class TestStartArtifactIngestAsync:
     @pytest.mark.asyncio
     async def test_disabled_toggle_is_a_no_op(self, store, monkeypatch):
-        monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load",
-                            staticmethod(lambda: _cfg(auto_ingest=False)))
+        monkeypatch.setattr(
+            f"{MODULE}.KiroCrewConfig.load", staticmethod(lambda: _cfg(auto_ingest=False))
+        )
         app = _make_app(store, pipeline=MagicMock())
         await kh._start_artifact_ingest_async(app)
         assert "artifact_knowledge_sync" not in app
 
     @pytest.mark.asyncio
-    async def test_enabled_registers_change_listener_and_starts(self, store,
-                                                                monkeypatch):
+    async def test_enabled_registers_change_listener_and_starts(self, store, monkeypatch):
         monkeypatch.setattr(
             f"{MODULE}.KiroCrewConfig.load",
-            staticmethod(lambda: _cfg(auto_ingest=True, kinds=("webapp",))))
+            staticmethod(lambda: _cfg(auto_ingest=True, kinds=("webapp",))),
+        )
         art_store = MagicMock()
         monkeypatch.setattr(f"{MODULE}.get_default_store", lambda: art_store)
         made = {}
@@ -1732,8 +1931,7 @@ class TestStartArtifactIngestAsync:
 
 class TestSetupKnowledgeRoutes:
     @pytest.mark.asyncio
-    async def test_builds_pipeline_connectors_and_routes(self, store, monkeypatch,
-                                                         tmp_path):
+    async def test_builds_pipeline_connectors_and_routes(self, store, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{MODULE}.config_dir", lambda: tmp_path)
         app = web.Application()
         state = MagicMock()
@@ -1756,20 +1954,21 @@ class TestSetupKnowledgeRoutes:
             assert kh._start_watcher_async in app.on_startup
             assert kh._start_artifact_ingest_async in app.on_startup
 
-            paths = {r.resource.canonical for r in app.router.routes()
-                     if r.resource is not None}
-            for expected in ("/api/knowledge/items", "/api/knowledge/stats",
-                             "/api/knowledge/search-for-context",
-                             "/api/knowledge/embedding/generate",
-                             "/api/knowledge/agent-document"):
+            paths = {r.resource.canonical for r in app.router.routes() if r.resource is not None}
+            for expected in (
+                "/api/knowledge/items",
+                "/api/knowledge/stats",
+                "/api/knowledge/search-for-context",
+                "/api/knowledge/embedding/generate",
+                "/api/knowledge/agent-document",
+            ):
                 assert expected in paths
         finally:
             for callback in list(app.on_cleanup):
                 await callback(app)
 
     @pytest.mark.asyncio
-    async def test_second_call_keeps_the_existing_pipeline(self, store, monkeypatch,
-                                                           tmp_path):
+    async def test_second_call_keeps_the_existing_pipeline(self, store, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{MODULE}.config_dir", lambda: tmp_path)
         app = _make_app(store, pipeline=MagicMock())
         sentinel = app["knowledge_pipeline"]
@@ -1850,8 +2049,7 @@ class TestJsonObjectBodyGuard:
     async def test_file_state_non_object_body_is_400(self, store, endpoint, payload):
         sid = store.add_source("s", "local_folder", "/tmp/x")
         async with _client(_guard_app(store)) as client:
-            resp = await client.post(
-                f"/api/knowledge/sources/{sid}/files/{endpoint}", json=payload)
+            resp = await client.post(f"/api/knowledge/sources/{sid}/files/{endpoint}", json=payload)
             assert resp.status == 400
             assert (await resp.json())["code"] == "body_not_object"
 
@@ -1864,7 +2062,9 @@ class TestJsonObjectBodyGuard:
         async with _client(_guard_app(store)) as client:
             resp = await client.post(
                 f"/api/knowledge/sources/{sid}/files/{endpoint}",
-                data="not json", headers={"Content-Type": "application/json"})
+                data="not json",
+                headers={"Content-Type": "application/json"},
+            )
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_json"
 
@@ -1873,8 +2073,7 @@ class TestJsonObjectBodyGuard:
     async def test_ingest_text_non_object_body_is_400(self, store, payload):
         sid = store.add_source("s", "web", "https://example.com")
         async with _client(_guard_app(store, pipeline=MagicMock())) as client:
-            resp = await client.post(
-                f"/api/knowledge/sources/{sid}/ingest-text", json=payload)
+            resp = await client.post(f"/api/knowledge/sources/{sid}/ingest-text", json=payload)
             assert resp.status == 400
             assert (await resp.json())["code"] == "body_not_object"
 
@@ -1888,8 +2087,7 @@ class TestJsonObjectBodyGuard:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
-    async def test_agent_document_non_object_body_is_400(
-            self, store, monkeypatch, payload):
+    async def test_agent_document_non_object_body_is_400(self, store, monkeypatch, payload):
         monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
         async with _client(_guard_app(store, pipeline=MagicMock())) as client:
             resp = await client.post("/api/knowledge/agent-document", json=payload)
@@ -1909,7 +2107,9 @@ class TestJsonObjectBodyGuard:
         async with _client(_guard_app(store, embedder=_FakeEmbedder())) as client:
             resp = await client.post(
                 "/api/knowledge/embedding/generate",
-                data="{oops", headers={"Content-Type": "application/json"})
+                data="{oops",
+                headers={"Content-Type": "application/json"},
+            )
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_json"
 
@@ -1943,7 +2143,8 @@ class TestJsonObjectBodyGuard:
         async with _client(app) as client:
             for method, path in endpoints:
                 resp = await getattr(client, method)(
-                    path, data="{oops", headers={"Content-Type": "application/json"})
+                    path, data="{oops", headers={"Content-Type": "application/json"}
+                )
                 assert resp.status == 400, (path, resp.status)
                 assert (await resp.json())["code"] == "invalid_json", path
 
@@ -1963,8 +2164,10 @@ class TestJsonObjectBodyGuard:
         # mistake, not a 500.
         async with _client(_guard_app(store)) as client:
             resp = await client.post(
-                "/api/knowledge/sources", data=b'{"name": "x"}',
-                headers={"Content-Type": "application/json; charset=not-a-codec"})
+                "/api/knowledge/sources",
+                data=b'{"name": "x"}',
+                headers={"Content-Type": "application/json; charset=not-a-codec"},
+            )
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_json"
 
@@ -1978,14 +2181,16 @@ class TestJsonObjectBodyGuard:
         sid = store.add_source("s", "local_folder", "/tmp/x")
         store.db.execute(
             "INSERT INTO folder_file_state (source_id, file_path, last_seen, status) "
-            "VALUES (?, ?, '2026-01-01', 'failed')", (sid, "/tmp/x/a.md"))
+            "VALUES (?, ?, '2026-01-01', 'failed')",
+            (sid, "/tmp/x/a.md"),
+        )
         store.db.commit()
         async with _client(_guard_app(store)) as client:
             resp = await client.post(
-                f"/api/knowledge/sources/{sid}/files/retry",
-                json={"file_path": "/tmp/x/a.md"})
+                f"/api/knowledge/sources/{sid}/files/retry", json={"file_path": "/tmp/x/a.md"}
+            )
             assert resp.status == 200
             row = store.db.execute(
-                "SELECT status FROM folder_file_state WHERE source_id = ?",
-                (sid,)).fetchone()
+                "SELECT status FROM folder_file_state WHERE source_id = ?", (sid,)
+            ).fetchone()
             assert row["status"] == "pending"

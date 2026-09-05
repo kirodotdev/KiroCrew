@@ -10508,7 +10508,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "एक्सट्रैक्शन एफ़र्ट",
+        "fetch_effort_label": "URL फ़ेच एफ़र्ट",
+        "effort_hint": "केवल reasoning-सक्षम मॉडल पर लागू होता है। 'Default' चुनने पर Background Effort इनहेरिट होता है, फिर extraction के लिए high (URL fetch के लिए provider default) लागू होता है।",
+        "fetch_effort_hint": "Knowledge Library के लिए URLs पढ़ने वाले worker का effort। 'Default' चुनने पर Background Effort इनहेरिट होता है।",
+        "pool_size_restart_hint": "प्रभावी होने के लिए रीस्टार्ट आवश्यक है।"
       }
     },
     "localStorageDebug": {
@@ -12170,7 +12175,6 @@
         "failed_to_save_default_model": "डिफ़ॉल्ट मॉडल सहेजने में विफल",
         "failed_to_save_default_reasoning_effort": "डिफ़ॉल्ट रीज़निंग एफ़र्ट सहेजने में विफल",
         "failed_to_save_fallback_model": "फ़ॉलबैक मॉडल सहेजने में विफल",
-        "failed_to_save_knowledge_setting": "ज्ञान सेटिंग सहेजने में विफल",
         "failed_to_save_profile": "प्रोफ़ाइल सहेजने में विफल",
         "failed_to_save_role_effort": "रोल एफ़र्ट सहेजने में विफल",
         "failed_to_save_role_model": "रोल मॉडल सहेजने में विफल",

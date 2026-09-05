@@ -10355,7 +10355,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "提取投入",
+        "fetch_effort_label": "URL 抓取投入",
+        "effort_hint": "仅对支持推理的模型生效。“默认”会继承你的后台投入，提取时回退到 high（URL 抓取则用提供商默认值）。",
+        "fetch_effort_hint": "为知识库读取 URL 的工作进程的投入。“默认”会继承你的后台投入。",
+        "pool_size_restart_hint": "需要重启才能生效。"
       }
     },
     "localStorageDebug": {
@@ -12001,7 +12006,6 @@
         "failed_to_save_default_model": "保存默认模型失败",
         "failed_to_save_default_reasoning_effort": "保存默认推理强度失败",
         "failed_to_save_fallback_model": "无法保存回退模型",
-        "failed_to_save_knowledge_setting": "保存知识库设置失败",
         "failed_to_save_profile": "保存配置文件失败",
         "failed_to_save_role_effort": "保存角色推理强度失败",
         "failed_to_save_role_model": "保存角色模型失败",

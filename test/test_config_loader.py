@@ -3932,6 +3932,70 @@ class TestKnowledgeAutoIngest:
             assert key in _EDITABLE_CONFIG, key
 
 
+class TestKnowledgePoolEffortConfig:
+    """``knowledge.extraction_effort`` / ``knowledge.fetch_effort`` parsing.
+
+    Both are enum-typed with ``""`` meaning "inherit" — same spelling as
+    ``agent.reasoning_effort`` — so the loader coerces anything that is not a
+    concrete level to ``""`` instead of passing garbage to the pools.
+    """
+
+    def test_both_default_to_inherit(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.knowledge.extraction_effort == ""
+        assert cfg.knowledge.fetch_effort == ""
+
+    @pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
+    def test_valid_levels_round_trip(self, level: str) -> None:
+        cfg = _load_from_dict({"knowledge": {"extraction_effort": level, "fetch_effort": level}})
+        assert cfg.knowledge.extraction_effort == level
+        assert cfg.knowledge.fetch_effort == level
+
+    def test_empty_string_stays_inherit(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"extraction_effort": "", "fetch_effort": ""}})
+        assert cfg.knowledge.extraction_effort == ""
+        assert cfg.knowledge.fetch_effort == ""
+
+    @pytest.mark.parametrize("bad", ["ultra", "Auto", 7, True, None, ["low"]])
+    def test_junk_coerces_to_inherit(self, bad: object) -> None:
+        cfg = _load_from_dict({"knowledge": {"extraction_effort": bad, "fetch_effort": bad}})
+        assert cfg.knowledge.extraction_effort == ""
+        assert cfg.knowledge.fetch_effort == ""
+
+    def test_round_trip_via_to_dict(self) -> None:
+        data = _load_from_dict(
+            {"knowledge": {"extraction_effort": "low", "fetch_effort": "medium"}}
+        ).to_dict()
+        assert data["knowledge"]["extraction_effort"] == "low"
+        assert data["knowledge"]["fetch_effort"] == "medium"
+
+    def test_new_effort_keys_are_dashboard_editable_enums(self) -> None:
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+        for key in ("knowledge.extraction_effort", "knowledge.fetch_effort"):
+            spec = _EDITABLE_CONFIG.get(key)
+            assert spec is not None, key
+            assert spec["type"] == "enum", key
+            assert spec["values"] == [
+                "",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+            ], key
+
+    def test_patch_enum_gate_accepts_level_rejects_typo(self) -> None:
+        # The PATCH validation contract: a concrete level is accepted, a typo
+        # is rejected — spelled against the same _EDITABLE_CONFIG the handler
+        # reads, so this fails if the enum drifts from EFFORT_LEVELS.
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+        spec = _EDITABLE_CONFIG["knowledge.extraction_effort"]
+        assert "low" in spec["values"]
+        assert "ultra" not in spec["values"]
+
+
 class TestKnowledgePoolIdleTtl:
     """``knowledge.pool_idle_ttl_secs`` parsing: default, override, explicit 0,
     and rejection of negative / bool / typed-wrong values back to the default."""

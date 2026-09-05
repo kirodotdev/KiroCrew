@@ -10355,7 +10355,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "추론 노력(추출)",
+        "fetch_effort_label": "URL 가져오기 노력",
+        "effort_hint": "추론 지원 모델에만 적용됩니다. '기본'은 백그라운드 노력을 상속하며, 추출 시 high로 폴백합니다(URL 가져오기는 공급자 기본값).",
+        "fetch_effort_hint": "지식 라이브러리를 위해 URL을 읽는 워커의 노력입니다. '기본'은 백그라운드 노력을 상속합니다.",
+        "pool_size_restart_hint": "적용하려면 재시작이 필요합니다."
       }
     },
     "localStorageDebug": {
@@ -12001,7 +12006,6 @@
         "failed_to_save_default_model": "기본 모델을 저장하지 못했습니다",
         "failed_to_save_default_reasoning_effort": "기본 추론 강도를 저장하지 못했습니다",
         "failed_to_save_fallback_model": "폴백 모델을 저장하지 못했습니다",
-        "failed_to_save_knowledge_setting": "지식 설정을 저장하지 못했습니다",
         "failed_to_save_profile": "프로필을 저장하지 못했습니다",
         "failed_to_save_role_effort": "역할별 추론 강도를 저장하지 못했습니다",
         "failed_to_save_role_model": "역할별 모델을 저장하지 못했습니다",

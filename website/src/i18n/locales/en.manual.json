@@ -4036,7 +4036,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Extraction Effort",
+        "fetch_effort_label": "URL Fetch Effort",
+        "effort_hint": "Applies only on reasoning-capable models. 'Default' inherits your Background Effort, then falls back to high for extraction (provider default for URL fetch).",
+        "fetch_effort_hint": "Effort for the worker that reads URLs for the Knowledge Library. 'Default' inherits your Background Effort.",
+        "pool_size_restart_hint": "Requires restart to take effect."
       }
     },
     "libraryPage": {
@@ -4827,7 +4832,6 @@
         "somewhat": "Somewhat",
         "tail_preserve_end_final_summary": "Tail (preserve end / final summary)",
         "ux_designer": "UX Designer",
-        "failed_to_save_knowledge_setting": "Failed to save knowledge setting",
         "session_summaries": "Session summaries",
         "summarize_each_session_by_intent_in_the_right_pa": "Summarize each session by intent. Uses tokens on turns that change the session.",
         "failed_to_save_session_summaries": "Failed to save session summaries setting",

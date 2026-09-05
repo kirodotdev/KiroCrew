@@ -10508,7 +10508,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "এক্সট্রাকশন এফোর্ট",
+        "fetch_effort_label": "URL ফেচ এফোর্ট",
+        "effort_hint": "শুধু রিজনিং-সক্ষম মডেলে প্রযোজ্য। 'ডিফল্ট' আপনার ব্যাকগ্রাউন্ড এফোর্ট ইনহেরিট করে, তারপর এক্সট্রাকশনে high-এ ফল করে (URL ফেচে প্রোভাইডার ডিফল্ট)।",
+        "fetch_effort_hint": "নলেজ লাইব্রেরির জন্য URL পড়া ওয়ার্কারের এফোর্ট। 'ডিফল্ট' আপনার ব্যাকগ্রাউন্ড এফোর্ট ইনহেরিট করে।",
+        "pool_size_restart_hint": "কার্যকর হতে রিস্টার্ট প্রয়োজন।"
       }
     },
     "localStorageDebug": {
@@ -12170,7 +12175,6 @@
         "failed_to_save_default_model": "ডিফল্ট মডেল সেভ করা যায়নি",
         "failed_to_save_default_reasoning_effort": "ডিফল্ট রিজনিং এফোর্ট সেভ করা যায়নি",
         "failed_to_save_fallback_model": "ফলব্যাক মডেল সংরক্ষণ করা যায়নি",
-        "failed_to_save_knowledge_setting": "জ্ঞান সেটিং সংরক্ষণ ব্যর্থ হয়েছে",
         "failed_to_save_profile": "প্রোফাইল সেভ করা যায়নি",
         "failed_to_save_role_effort": "রোল এফোর্ট সংরক্ষণ ব্যর্থ হয়েছে",
         "failed_to_save_role_model": "রোল মডেল সংরক্ষণ ব্যর্থ হয়েছে",

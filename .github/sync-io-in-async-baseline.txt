@@ -16,5 +16,5 @@
 # See where the remaining calls are, worst files first (the work queue for the
 # cleanup tracked at #7019):
 #   python3 scripts/check_sync_io_in_async.py --report
-62 src/kiro_crew/dashboard/handlers/knowledge.py
+60 src/kiro_crew/dashboard/handlers/knowledge.py
 2 src/kiro_crew/knowledge/watcher.py

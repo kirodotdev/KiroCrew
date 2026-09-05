@@ -276,7 +276,6 @@ src/kiro_crew/knowledge/extractor.py
 src/kiro_crew/knowledge/folder_watcher.py
 src/kiro_crew/knowledge/ingestion.py
 src/kiro_crew/knowledge/kiroignore.py
-src/kiro_crew/knowledge/llm_pool.py
 src/kiro_crew/knowledge/readers.py
 src/kiro_crew/knowledge/retrieval.py
 src/kiro_crew/knowledge/spend.py
@@ -774,15 +773,12 @@ test/test_knowledge_artifact_ingest.py
 test/test_knowledge_budget.py
 test/test_knowledge_dedup.py
 test/test_knowledge_delete_off_loop.py
-test/test_knowledge_effort_pools.py
 test/test_knowledge_folder_cost_guards.py
-test/test_knowledge_handlers_coverage.py
 test/test_knowledge_ingest_guard.py
 test/test_knowledge_ingest_magic_byte.py
 test/test_knowledge_items_source_filter.py
 test/test_knowledge_kiroignore.py
 test/test_knowledge_source_spend.py
-test/test_knowledge_sync_local_file.py
 test/test_lazy_data_home_paths.py
 test/test_learn.py
 test/test_lesson_contradiction.py
@@ -792,7 +788,6 @@ test/test_link_dashboard.py
 test/test_link_unfurl.py
 test/test_live_target.py
 test/test_llm_helpers_tool_gate.py
-test/test_llm_pool.py
 test/test_local_gate.py
 test/test_loopback_proxy.py
 test/test_manifest_hooks.py

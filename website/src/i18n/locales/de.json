@@ -10508,7 +10508,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Extraktions-Aufwand",
+        "fetch_effort_label": "URL-Abruf-Aufwand",
+        "effort_hint": "Gilt nur für Modelle mit Reasoning-Fähigkeit. „Standard“ erbt Ihren Hintergrund-Aufwand und fällt bei der Extraktion auf „high“ zurück (beim URL-Abruf auf den Anbieter-Standard).",
+        "fetch_effort_hint": "Aufwand für den Worker, der URLs für die Wissensbibliothek liest. „Standard“ erbt Ihren Hintergrund-Aufwand.",
+        "pool_size_restart_hint": "Wird erst nach einem Neustart wirksam."
       }
     },
     "localStorageDebug": {
@@ -12169,7 +12174,6 @@
         "failed_to_save_default_model": "Standardmodell konnte nicht gespeichert werden",
         "failed_to_save_default_reasoning_effort": "Standard-Denkaufwand konnte nicht gespeichert werden",
         "failed_to_save_fallback_model": "Fallback-Modell konnte nicht gespeichert werden",
-        "failed_to_save_knowledge_setting": "Wissenseinstellung konnte nicht gespeichert werden",
         "failed_to_save_profile": "Profil konnte nicht gespeichert werden",
         "failed_to_save_role_effort": "Rollen-Aufwand konnte nicht gespeichert werden",
         "failed_to_save_role_model": "Rollenmodell konnte nicht gespeichert werden",

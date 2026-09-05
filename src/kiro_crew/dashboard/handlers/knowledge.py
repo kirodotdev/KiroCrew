@@ -1107,17 +1107,36 @@ async def sync_source(request: web.Request) -> web.Response:
     if source["sync_status"] == "syncing":
         return web.json_response({"error": "sync already in progress", "source_id": source_id}, status=409)
 
-    store.db.execute("UPDATE sources SET sync_status = 'syncing' WHERE id = ?", (source_id,))
-    store.db.commit()
-
+    # Both checks run BEFORE the 'syncing' status is committed: committing the
+    # status and then failing leaves the row stuck in 409-perpetuity on retry.
     pipeline = _pipeline(request)
     if not pipeline:
-        return web.json_response({"error": "pipeline not configured"}, status=503)
+        return web.json_response(
+            {"error": "pipeline not configured", "code": "pipeline_unavailable"},
+            status=503,
+        )
     pool = request.app.get("knowledge_fetch_pool")
     if pool is None:
-        # Compatibility for minimal callers that predate workload-isolated pools.
-        pool = request.app["knowledge_llm_pool"]
-    task = asyncio.create_task(_background_agent_sync(source_id, url, source["name"], store, pipeline, pool))
+        # Every production construction site sets knowledge_fetch_pool; a
+        # minimal/hand-built app missing it fails loudly rather than silently
+        # running URL sync through the extraction pool.
+        return web.json_response(
+            {
+                "error": "knowledge_fetch_pool is not configured on this application",
+                "code": "knowledge_fetch_pool_unavailable",
+            },
+            status=503,
+        )
+
+    await asyncio.to_thread(
+        lambda: store.db.execute(
+            "UPDATE sources SET sync_status = 'syncing' WHERE id = ?", (source_id,)
+        )
+    )
+    await asyncio.to_thread(lambda: store.db.commit())
+    task = asyncio.create_task(
+        _background_agent_sync(source_id, url, source["name"], store, pipeline, pool)
+    )
     app_tasks = request.app.setdefault("_bg_tasks", set())
     app_tasks.add(task)
     task.add_done_callback(app_tasks.discard)
@@ -1983,12 +2002,11 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
 
 
 async def _shutdown_knowledge_pools(app: web.Application) -> None:
-    """Shut down each workload pool once, including the legacy alias."""
+    """Shut down each workload pool once."""
     seen: set[int] = set()
     for key in (
         "knowledge_extraction_pool",
         "knowledge_fetch_pool",
-        "knowledge_llm_pool",
     ):
         pool = app.get(key)
         if pool is None or id(pool) in seen:
@@ -2007,12 +2025,13 @@ def setup_knowledge_routes(app: web.Application) -> None:
         cfg = KiroCrewConfig.load()
         extraction_pool = LLMPool(
             pool_size=cfg.knowledge.extraction_pool_size,
-            effort=DEFAULT_EXTRACTION_EFFORT,
-            use_config_pool_size=False,
+            effort_key="extraction_effort",
+            fallback_effort=DEFAULT_EXTRACTION_EFFORT,
+            config_pool_size_key="extraction_pool_size",
         )
         fetch_pool = LLMPool(
             pool_size=1,
-            use_config_pool_size=False,
+            effort_key="fetch_effort",
         )
         embedder = _create_embedder(app)
         pipeline = IngestionPipeline(
@@ -2024,9 +2043,6 @@ def setup_knowledge_routes(app: web.Application) -> None:
         )
         app["knowledge_extraction_pool"] = extraction_pool
         app["knowledge_fetch_pool"] = fetch_pool
-        # Keep the old key as an extraction-only compatibility alias. Production
-        # URL sync uses knowledge_fetch_pool above.
-        app["knowledge_llm_pool"] = extraction_pool
         app["knowledge_embedder"] = embedder
         connectors: dict[str, "BaseConnector"] = {}
         # Local folder connector (always available)

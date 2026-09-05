@@ -17,22 +17,35 @@ files / uploads / artifacts / URLs
 ### LLM worker-pool policy
 
 Knowledge ingestion and URL-content acquisition use separate long-lived worker
-pools. The extraction pool uses `knowledge.extraction_pool_size` and requests
-Knowledge-specific reasoning effort `high`; the URL-fetch pool has one worker and
-sends no explicit effort, so it retains the provider default. Both pools drive the
-same `kirocrew-knowledge` agent and preserve the existing model resolution:
-`knowledge.extraction_model` → `agent.model` → provider/`auto`.
+pools. The extraction pool uses `knowledge.extraction_pool_size` and the
+URL-fetch pool has one worker. Each pool's reasoning effort is
+operator-configurable and resolves through the same chain (`llm_pool._get_workload_effort`):
+`knowledge.extraction_effort` / `knowledge.fetch_effort` →
+`agent.role_efforts.background` → fallback (`DEFAULT_EXTRACTION_EFFORT` = `high`
+for extraction as the last resort; provider default for fetch). An invalid or
+typed-wrong key falls through to the role chain rather than the hard default, so
+a typo cannot silently raise cost. `""` on either key means inherit; the keys
+are dashboard-editable (`_EDITABLE_CONFIG` enums `["", *EFFORT_LEVELS]`), with
+the controls on the Knowledge tab's settings (model, both efforts, pool size —
+the pool size still requires a restart). Both pools drive the same
+`kirocrew-knowledge` agent
+and preserve the existing model resolution: `knowledge.extraction_model` →
+`agent.model` → provider/`auto`.
 
-The extraction effort is a Knowledge policy, independent of
-`agent.role_efforts.background`, which controls other background workers. For the
-Kiro ACP backend, the worker applies the requested level through the `/effort`
-command; Claude ACP uses its advertised session config option. Capability
-negotiation may select the highest supported level at or below `high`, while an
-unsupported model or rejected command falls back to provider default.
+For the Kiro ACP backend, the worker applies the resolved level through the
+`/effort` command, gated first by `model_supports_effort` on the client's model
+so an unsupported model (`auto`, non-reasoning families) skips the push with an
+INFO log instead of warning per spawn; Claude ACP keeps its
+`supports_config_option` gate and advertised-level descent (the shared ladder
+arithmetic lives in `effort.select_effort_level`). A rejected command still
+falls back to provider default.
 
 Separate pools make the different workload policies structural for long-lived
 sessions rather than relying on a worker being reused by only one workload by
-convention.
+convention. There is no `knowledge_llm_pool` compatibility alias and no
+`use_config_pool_size` flag: a pool binds an explicit
+`config_pool_size_key` (extraction only), so `knowledge.extraction_pool_size`
+cannot resize the fetch or auto_research pools.
 
 ## Role & boundary
 
@@ -295,7 +308,7 @@ user confirms, and no code path treats it as a bound.
 
 ## 3. LLMPool workers (`llm_pool.py`)
 
-Both entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch_url_content`) acquire workers from a shared `LLMPool` — a provider-agnostic, bounded pool (`DEFAULT_POOL_SIZE` = 3) of **long-lived** ACP workers. A `Worker` ABC has two concrete paths:
+Entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch_url_content`) acquire workers from **workload-isolated** `LLMPool` instances — provider-agnostic, bounded pools of **long-lived** ACP workers (the extraction pool sized by `knowledge.extraction_pool_size`, default `DEFAULT_POOL_SIZE` = 3; the fetch pool has one worker). A `Worker` ABC has two concrete paths:
 
 - **Default (kiro-cli)** — `AcpWorker` drives the `kirocrew-knowledge` agent over ACP (`AGENT_NAME`). That agent is installed by `agent.py:_install_knowledge_agent` (model `claude-haiku-4.5`, kirocrew-core tools only — no internal MCP wiring in the OSS fork).
 - **`agent.provider="claude_code"` (legacy seam)** — `CCWorker` drives a long-lived `claude` CLI subprocess over stream-json I/O (haiku model, `bypassPermissions`); URL-fetch tools are opt-in via `KIROCREW_KNOWLEDGE_FETCH_TOOLS`. KiroCrew's provider enum is `["acp"]`, so this branch is dormant in practice.

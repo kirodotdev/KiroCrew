@@ -10814,7 +10814,12 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Усилие извлечения",
+        "fetch_effort_label": "Усилие загрузки URL",
+        "effort_hint": "Применяется только к моделям с рассуждением. «По умолчанию» наследует фоновое усилие, затем для извлечения откатывается к high (для загрузки URL — значение провайдера).",
+        "fetch_effort_hint": "Усилие воркера, читающего URL для библиотеки знаний. «По умолчанию» наследует фоновое усилие.",
+        "pool_size_restart_hint": "Требуется перезапуск, чтобы вступило в силу."
       }
     },
     "localStorageDebug": {
@@ -12506,7 +12511,6 @@
         "failed_to_save_default_model": "Не удалось сохранить модель по умолчанию",
         "failed_to_save_default_reasoning_effort": "Не удалось сохранить уровень рассуждений по умолчанию",
         "failed_to_save_fallback_model": "Не удалось сохранить резервную модель",
-        "failed_to_save_knowledge_setting": "Не удалось сохранить настройку базы знаний",
         "failed_to_save_profile": "Не удалось сохранить профиль",
         "failed_to_save_role_effort": "Не удалось сохранить усилие роли",
         "failed_to_save_role_model": "Не удалось сохранить модель роли",
