@@ -25,6 +25,9 @@ Docs: 02_architecture.md §3, §4.2 (resume reads this), 10_roadmap M0
 from __future__ import annotations
 
 import json
+import locale
+import os
+import tempfile
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -95,18 +98,44 @@ class Archive:
 
     def _ensure_tsv(self) -> None:
         if not self.tsv.exists():
-            self.tsv.write_text("\t".join(CONTROL_COLUMNS) + "\n")
+            self.tsv.write_text("\t".join(CONTROL_COLUMNS) + "\n", encoding="utf-8")
+            return
+
+        raw = self.tsv.read_bytes()
+        try:
+            raw.decode("utf-8")
+            return
+        except UnicodeDecodeError as error:
+            # A crash can tear the final UTF-8 code point of an append. That is
+            # not evidence of a legacy-encoded archive: decoding the otherwise
+            # valid file as a single-byte code page would silently mojibake all
+            # earlier Unicode text. Preserve the bytes and fail closed instead.
+            if error.end == len(raw) and error.reason == "unexpected end of data":
+                raise
+            text = raw.decode(locale.getpreferredencoding(False))
+
+        fd, tmp_name = tempfile.mkstemp(dir=self.root, prefix=f".{self.tsv.name}.", suffix=".tmp")
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.tsv)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     # ── run metadata ────────────────────────────────────────────────────
 
     def write_meta(self, meta: dict) -> None:
-        self.meta_path.write_text(json.dumps(_jsonable(meta), indent=2))
+        self.meta_path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
 
     def read_meta(self) -> dict:
         if not self.meta_path.exists():
             return {}
         try:
-            return json.loads(self.meta_path.read_text())
+            return json.loads(self.meta_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return {}
 
@@ -123,9 +152,11 @@ class Archive:
         # copy would defeat its only purpose. Nothing here is served raw: the read side
         # (`backend/routes.py:_redact_for_display`) credential-scans before the diff
         # reaches a browser, and every push path scans before anything leaves the host.
-        diff_path.write_text(diff or "")  # lgtm[py/clear-text-storage-sensitive-data]
+        diff_path.write_text(
+            diff or "", encoding="utf-8"
+        )  # lgtm[py/clear-text-storage-sensitive-data]
         json_path.write_text(  # lgtm[py/clear-text-storage-sensitive-data]
-            json.dumps(_jsonable(detail), indent=2)
+            json.dumps(_jsonable(detail), indent=2), encoding="utf-8"
         )
         return diff_path.name
 
@@ -153,9 +184,9 @@ class Archive:
             return text.replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
         line = "\t".join(_cell(c) for c in CONTROL_COLUMNS)
-        with self.tsv.open("a") as f:
+        with self.tsv.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
-        with self.jsonl.open("a") as f:
+        with self.jsonl.open("a", encoding="utf-8") as f:
             # Local plaintext archive row — same reasoning as `save_candidate` above.
             f.write(json.dumps(_jsonable(row)) + "\n")  # lgtm[py/clear-text-storage-sensitive-data]
 
@@ -167,7 +198,7 @@ class Archive:
         n = 0
         if not self.jsonl.exists():
             return 0
-        for line in self.jsonl.read_text().splitlines():
+        for line in self.jsonl.read_text(encoding="utf-8").splitlines():
             try:
                 n = max(n, int(json.loads(line).get("cycle", 0)))
             except Exception:  # noqa: BLE001
@@ -179,7 +210,7 @@ class Archive:
         excluding kept ones — the proposer's memory of strong near-misses."""
         rows: list[dict] = []
         if self.jsonl.exists():
-            for line in self.jsonl.read_text().splitlines():
+            for line in self.jsonl.read_text(encoding="utf-8").splitlines():
                 try:
                     rows.append(json.loads(line))
                 except Exception:  # noqa: BLE001
@@ -202,5 +233,6 @@ class Archive:
 
     def write_drift(self, cycle: int, payload: dict) -> None:
         (self.drift_dir / f"rebest-{cycle}.json").write_text(
-            json.dumps(_jsonable({"cycle": cycle, "ts": time.time(), **payload}), indent=2)
+            json.dumps(_jsonable({"cycle": cycle, "ts": time.time(), **payload}), indent=2),
+            encoding="utf-8",
         )
