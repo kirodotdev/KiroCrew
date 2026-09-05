@@ -1174,11 +1174,27 @@ def _marker_bearing_text(payload: dict[str, Any], _max_nodes: int = 512) -> str 
 
     Keyed on the SENTINEL rather than on any envelope field name, because the
     field differs per backend and the sentinel is a fixed control token this
-    process emitted itself. Requires EXACTLY ONE match: zero means there is no
-    directive here and the caller should keep dumping the envelope, while two or
-    more means the frame is ambiguous about which string is the directive, and
-    guessing between them could apply the wrong payload. Bounded walk
-    (``_max_nodes``, depth 6) so a pathological envelope cannot spin here.
+    process emitted itself. Requires exactly one DISTINCT match: zero means
+    there is no directive here and the caller should keep dumping the envelope,
+    while two DIFFERENT marker-bearing strings mean the frame is ambiguous about
+    which one is the directive, and guessing between them could apply the wrong
+    payload. Bounded walk (``_max_nodes``, depth 6) so a pathological envelope
+    cannot spin here.
+
+    DISTINCT, not merely one occurrence, because a backend may COPY the whole
+    tool-result text into several envelope fields. KAS does exactly that --
+    ``{"response": <text>, "imageBase64Urls": [], "message": <same text>}`` --
+    so a single ``monitor_start`` directive arrived as two byte-identical hits
+    and this function refused as "ambiguous", which is what left the conductor's
+    patrol loop unarmed: the escaped marker was never repaired, ``peek`` could
+    name no selector, and the gateway-parked record was never claimed. Two
+    copies of one payload pose no choice, so there is nothing to guess: dedupe
+    by value and only refuse when the values genuinely DIFFER.
+
+    The chosen string must also carry exactly one sentinel. The caller's own
+    multi-marker refusal only guards its line-based recovery, so without this a
+    string holding two different directives would resolve here to whichever came
+    first -- the same wrong-payload guess, one level down.
     """
     hits: list[str] = []
     budget = [_max_nodes]
@@ -1188,7 +1204,7 @@ def _marker_bearing_text(payload: dict[str, Any], _max_nodes: int = 512) -> str 
             return
         budget[0] -= 1
         if isinstance(node, str):
-            if session_directive.has_marker(node):
+            if session_directive.has_marker(node) and node not in hits:
                 hits.append(node)
         elif isinstance(node, dict):
             for value in node.values():
@@ -1198,7 +1214,9 @@ def _marker_bearing_text(payload: dict[str, Any], _max_nodes: int = 512) -> str 
                 _walk(value, depth + 1)
 
     _walk(payload, 0)
-    return hits[0] if len(hits) == 1 else None
+    if len(hits) != 1 or hits[0].count(session_directive.SENTINEL) != 1:
+        return None
+    return hits[0]
 
 
 ELIDED_MARKER_VALUE = "[[directive marker emitted on its own line above]]"
@@ -1254,14 +1272,17 @@ def _repair_escaped_marker(text: str) -> str | None:
         return None
     if session_directive.peek(text) is not None:
         return None  # already readable -- nothing to repair
-    if text.count(session_directive.SENTINEL) > 1:
-        # Ambiguous: recovery (2) below reads the FIRST marker line, which would
-        # be a GUESS about which directive the frame meant. Applying the wrong
-        # directive is worse than applying none, and a real frame carries one
-        # marker (a second directive arrives under its own toolCallId), so refuse.
-        return None
 
     # (1) the entire text is a JSON dump.
+    #
+    # Tried BEFORE the multi-marker refusal below, because this recovery does not
+    # guess: it resolves the directive through the envelope's own structure, and
+    # ``_marker_bearing_text`` refuses any envelope whose marker-bearing strings
+    # actually differ. A backend that copies the result text into two fields
+    # therefore raises the whole-text sentinel count to 2 while naming exactly
+    # one payload -- and refusing that as "ambiguous" is what dropped every
+    # directive on KAS (a ``monitor_start`` acknowledged to the model, with no
+    # loop armed and nothing to inspect).
     try:
         outer = json.loads(text)
     except (ValueError, TypeError):
@@ -1278,6 +1299,15 @@ def _repair_escaped_marker(text: str) -> str | None:
             # marker is dropped from the transcript the user actually reads.
             siblings = json.dumps(_elide_marker_value(outer, inner), default=str)
             return siblings + "\n" + inner
+
+    if text.count(session_directive.SENTINEL) > 1:
+        # Ambiguous for the LINE-BASED recovery only: (2) below reads the FIRST
+        # marker line, which would be a GUESS about which directive the frame
+        # meant. Applying the wrong directive is worse than applying none, and a
+        # real frame carries one marker (a second directive arrives under its own
+        # toolCallId), so refuse rather than pick. Recovery (1) above is exempt
+        # because it makes no such choice -- see its comment.
+        return None
 
     # (2) The escaped dump is only PART of the text -- another output part, or a
     # line of prose, sits beside it -- so (1) cannot parse the whole thing. Undo

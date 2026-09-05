@@ -357,6 +357,71 @@ class TestSurvivesPreSerialisedResultText:
         assert out == "ok"
 
 
+class TestSurvivesADuplicatingResultEnvelope:
+    """The backend copies the whole result text into SEVERAL envelope fields.
+
+    KAS returns ``{"response": <text>, "imageBase64Urls": [], "message": <same
+    text>}``, so one directive arrives as two byte-identical marker-bearing
+    strings and the frame's whole-text sentinel count is 2. Both the ambiguity
+    refusal and ``_marker_bearing_text``'s single-match rule then declined, so no
+    selector could be read, the gateway-parked record was never claimed, and a
+    ``monitor_start`` the model had been told was requested armed no loop at all
+    (reproduced from a live ``kirocrew-conductor`` frame). Two copies of ONE
+    payload pose no choice, so there is nothing to guess between.
+    """
+
+    @staticmethod
+    def _kas(text: str) -> str:
+        """The live KAS envelope, pre-serialised as that backend hands it back."""
+        dumped = json.dumps({"response": text, "imageBase64Urls": [], "message": text})
+        assert dumped.count(sd.SENTINEL) == 2, "the duplication is the point"
+        assert sd.peek(dumped) is None, "and the selector does not survive the dump"
+        return dumped
+
+    def test_duplicated_directive_is_recovered(self):
+        repaired = _repair_escaped_marker(self._kas(_monitor()))
+        assert repaired is not None, "a duplicated copy is not an ambiguous frame"
+        assert sd.peek(repaired) == ("monitor_start", MONITOR_ARGS)
+
+    def test_duplicated_directive_is_recovered_through_the_runtime(self):
+        # The path the conductor session actually took: the parser must hand the
+        # consumer a frame whose selector reads, or nothing claims the record.
+        for label, update in {
+            "Json.stdout": _update(
+                rawOutput={"items": [{"Json": {"stdout": self._kas(_monitor())}}]}
+            ),
+            "Text": _update(rawOutput={"items": [{"Text": self._kas(_monitor())}]}),
+            "content block": _update(
+                content=[{"content": {"type": "text", "text": self._kas(_monitor())}}]
+            ),
+        }.items():
+            assert sd.peek(_runtime_output(update)) == ("monitor_start", MONITOR_ARGS), label
+
+    def test_two_different_directives_across_fields_are_still_refused(self):
+        # Deduping must key on the VALUE. Two fields carrying DIFFERENT payloads
+        # are a real choice, and picking either applies a directive the tool did
+        # not emit for this frame.
+        other = sd.encode("monitor_start", {**MONITOR_ARGS, "idle_secs": 900}, "Armed: 900s.")
+        frame = json.dumps({"response": _monitor(), "message": other})
+        assert _repair_escaped_marker(frame) is None
+
+    def test_one_field_holding_two_directives_is_refused(self):
+        # The caller's multi-marker refusal guards only its line-based recovery,
+        # so the envelope branch must reject a single string naming two
+        # directives itself -- otherwise it resolves to whichever came first.
+        other = sd.encode("monitor_start", {**MONITOR_ARGS, "idle_secs": 900}, "Armed: 900s.")
+        frame = json.dumps({"response": _monitor() + "\n" + other})
+        assert _repair_escaped_marker(frame) is None
+
+    def test_duplicated_frame_keeps_its_sibling_output(self):
+        # Recovery must not trade the rest of the frame for the marker.
+        frame = json.dumps({"response": _monitor(), "message": _monitor(), "note": CANARY})
+        repaired = _repair_escaped_marker(frame)
+        assert repaired is not None
+        assert sd.peek(repaired) == ("monitor_start", MONITOR_ARGS)
+        assert CANARY in repaired
+
+
 class TestSurvivesTheAcpClientParser:
     """``providers/acp.py``'s own builder, ``AcpClient._extract_tool_call_update``:
     a second, independent parser with the same envelope shapes and the same

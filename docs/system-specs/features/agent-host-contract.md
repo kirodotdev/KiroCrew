@@ -222,9 +222,12 @@ invented one.
 
 | | kiro-cli | KAS | CC |
 |---|---|---|---|
-| How a tool result arrives | `content[].content.text` blocks, or `rawOutput.items[].Text` / `.Json.stdout` | `content[].content.text` blocks, or a **flat `rawOutput` object with no `items`** (measured: `{output, exitCode, message}`, `{kind, retracted}`) — and an MCP result can arrive as an **already-serialised** JSON envelope under a key this repository does not recognise | `content[]` text blocks |
+| How a tool result arrives | `content[].content.text` blocks, or `rawOutput.items[].Text` / `.Json.stdout` | `content[].content.text` blocks, or a **flat `rawOutput` object with no `items`** (measured: `{output, exitCode, message}`, `{response, imageBase64Urls, message}`, `{kind, retracted}`) — and an MCP result can arrive as an **already-serialised** JSON envelope under a key this repository does not recognise | `content[]` text blocks |
 | Marker survives untouched | yes | **no** — the envelope reaches the consumer through `json.dumps`, which escapes every quote in it | yes |
 | Recovery | not needed | `acp/_dispatch._repair_escaped_marker`, run over the joined output before redaction and the head cut | not needed |
+| Same text in several fields | no | **yes** — `{response, …, message}` carries the result TWICE, so one directive raises the frame's marker count to 2 | no |
+
+Duplication is why the recovery deduplicates by VALUE rather than counting sentinels. The refusal to guess between two markers is real — applying the wrong directive is worse than applying none — but it must fire on two DIFFERENT payloads, not on one payload delivered twice. It fired on the duplicate, so `_repair_escaped_marker` returned nothing, `peek` could name no selector, and the gateway-parked record went unclaimed: every `monitor_start` from a KAS-backed session was acknowledged to the model and armed no loop. The envelope branch now takes the single DISTINCT marker-bearing string, and additionally requires that string to hold exactly one sentinel, because the whole-text refusal it runs ahead of is what used to cover the two-directives-in-one-field case.
 
 `rawOutput` is unstructured passthrough, so `items[]` is one producer's wrapper
 rather than a contract. `_build_tool_result_event` therefore serialises any other
