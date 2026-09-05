@@ -39,12 +39,15 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
 import stat as _stat
 from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Callable
+
+from kiro_crew.atomic_write import atomic_write, atomic_write_at
 
 __all__ = [
     "PUT_BACK_FAILED",
@@ -599,6 +602,130 @@ def copy_file_pinned(
                 os.close(fd)
             except OSError:
                 pass
+
+
+def write_file_pinned(
+    target: Path | str,
+    content: str,
+    *,
+    what: str,
+    mode: int = 0o600,
+    refusal: type[Exception] = OSError,
+) -> None:
+    """Publish *content* at *target* without ever following a planted link.
+
+    THE single no-follow file-publish path. Every by-name ``write_text`` /
+    ``open(..., "w")`` on an agent-influenced path is a truncation primitive
+    pointed at whatever the name currently resolves to: replace the target with a
+    symlink to a host file and the next publish truncates that file instead. The
+    same hole was closed once for a pod's SSO seeding and once for the systemd
+    unit files, in two separate hand-rolled copies -- so this exists to make the
+    third copy impossible rather than to add a fourth.
+
+    Three properties, and the middle one is the portable half:
+
+    * The PARENT is pinned through :func:`create_and_open_dir_pinned`, so no
+      ancestor is re-resolved by name between the check and the write, and the
+      write lands relative to that descriptor.
+    * The target is ``lstat``-ed THROUGH that descriptor and refused when it is a
+      symlink or not a regular file. ``os.stat(..., follow_symlinks=False)`` exists
+      on every platform Python supports, so this check holds even where
+      ``O_NOFOLLOW`` does not (see :func:`supports_pinned_walk`) -- which is what
+      keeps the guarantee real on Windows rather than silently platform-gated.
+    * The publish itself is ``atomic_write_at`` on the pinned descriptor, so the
+      mode is applied to the temp before the payload is reachable under the final
+      name and a reader never sees a partial file.
+
+    Residual, stated rather than implied: a same-UID process can still swap the
+    target between the ``lstat`` and the rename. Per the recorded pod threat model
+    a pod is operational isolation, not protection from arbitrary same-UID
+    processes; what this closes is the case where the ATTACKER-PLANTED name is
+    followed, which needs no race at all.
+
+    **What pinning means on Windows, decided rather than left to a crash.** The
+    pinned walk needs ``O_DIRECTORY``, ``O_NOFOLLOW`` and ``os.open`` in
+    ``os.supports_dir_fd`` -- exactly what :func:`supports_pinned_walk` probes, and
+    none of which Windows has (``atomic_write_at``'s own docstring records that a
+    pinned caller is on POSIX). So there the publish degrades to BY NAME, and the
+    degradation is bounded and named:
+
+    * KEPT everywhere: the ``lstat`` refusal of a symlink or non-regular target --
+      the leg that stops a PLANTED name from being followed, which is the attack
+      needing no race, and the everywhere-floor this function promises.
+    * LOST on Windows: ancestor pinning, so an ancestor swapped between the check
+      and the write is not caught. No supported configuration relies on it (pods
+      are systemd/launchd only), and the caller that publishes a pod's own
+      credential tree gates on ``supports_pinned_walk()`` and REFUSES rather than
+      degrades (``pod.runtime._seed_pod_os_home``).
+    """
+    target = Path(target)
+
+    def _refuse_if_unsafe(existing: os.stat_result | None) -> None:
+        if existing is None:
+            return
+        if stat.S_ISLNK(existing.st_mode):
+            raise refusal(f"refusing to write {what} {target}: it is a symbolic link")
+        if not stat.S_ISREG(existing.st_mode):
+            raise refusal(f"refusing to write {what} {target}: it is not a regular file")
+
+    if not supports_pinned_walk():
+        _refuse_if_unsafe(lstat_by_name(target))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(target, content, restrict_to_owner=True)
+        return
+    dir_fd = create_and_open_dir_pinned(target.parent, what=f"{what} directory", refusal=refusal)
+    try:
+        _refuse_if_unsafe(stat_at(dir_fd, target.name))
+        atomic_write_at(dir_fd, target.name, content, fsync=True, mode=mode)
+    finally:
+        os.close(dir_fd)
+
+
+def lstat_by_name(target: Path | str) -> os.stat_result | None:
+    """``lstat`` *target* by name, or ``None`` when it is not there.
+
+    The by-name counterpart to :func:`stat_at`, for the platforms with no
+    descriptor-relative stat. Never follows the final component, which is what
+    makes it the portable half of :func:`write_file_pinned`'s guarantee.
+    """
+    try:
+        return os.stat(target, follow_symlinks=False)
+    except OSError:
+        return None
+
+
+def unlink_pinned(target: Path | str, *, what: str) -> None:
+    """Remove *target* through a pinned parent descriptor. Missing is success.
+
+    The delete half of :func:`write_file_pinned`: an ``unlink`` by name resolves
+    its ancestors afresh, so a link planted at a parent aims the removal somewhere
+    else. Refuses nothing about the target's own type -- removing a link IS the
+    correct outcome here, and unlink never follows the final component anyway.
+    """
+    target = Path(target)
+    if not supports_pinned_walk() or os.unlink not in os.supports_dir_fd:
+        # No pinned walk here (Windows). Fall back to the by-name removal: unlink
+        # does not follow its FINAL component anywhere, so the residual is an
+        # ancestor swap -- and a pod cannot boot on this platform at all
+        # (systemd/launchd only), so no supported configuration relies on the
+        # pinned form. See write_file_pinned for the same decision stated in full.
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    try:
+        dir_fd = create_and_open_dir_pinned(
+            target.parent, what=f"{what} directory", refusal=OSError
+        )
+    except (OSError, ValueError):
+        return
+    try:
+        os.unlink(target.name, dir_fd=dir_fd)
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    finally:
+        os.close(dir_fd)
 
 
 def stat_at(dir_fd: int, name: str) -> os.stat_result | None:

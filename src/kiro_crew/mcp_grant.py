@@ -18,8 +18,10 @@ and each of the obvious alternatives is closed:
   that drift fail loudly.
 
 So the derivation lives here, where all callers reach it with an ordinary
-module-scope import. Dependencies are stdlib plus ``hooks`` for the audit, which
-every caller already imports — nothing here pulls the agent or ACP layers in.
+module-scope import. Dependencies are stdlib plus ``hooks`` for the audit and
+``config.paths`` for the pod-aware cache-directory resolution below (itself a
+leaf module, stdlib-only), which every caller already imports transitively —
+nothing here pulls the agent or ACP layers in.
 
 Nothing in this module OPENS a token file: the artifacts are stat-ed for
 presence and unlinked by name, so no credential material can enter the process
@@ -38,6 +40,7 @@ from stat import S_ISREG
 from urllib.parse import urlsplit
 
 from kiro_crew import hooks as _hooks
+from kiro_crew.config.paths import kiro_oauth_cache_home
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +58,27 @@ _GRANT_PRESENCE_READ_ID = "connections_mint.oauth_grant_presence"
 
 
 def kiro_oauth_cache_dir(*, home: Path | None = None) -> Path:
-    """The directory kiro-cli writes MCP OAuth artifacts into."""
-    return (home or Path.home()).joinpath(*_KIRO_OAUTH_CACHE_RELATIVE)
+    """The directory kiro-cli writes MCP OAuth artifacts into.
+
+    Every caller in this module -- ``grant_artifact_paths`` and, through it,
+    ``grant_presence``/``revoke_local_grant``/``grant_observed`` -- reaches this
+    function with no explicit ``home``, so the default resolution is the ONE
+    place all four callers (mint, status, disconnect, mcp_discovery's remote
+    probe) agree on where a pod's grants live. ``home`` stays an explicit
+    override for tests and any future caller that already holds a resolved
+    directory; it is never derived a second way elsewhere in this module.
+
+    Defaults through :func:`kiro_crew.config.paths.kiro_oauth_cache_home`
+    rather than a bare :func:`Path.home` call, so a
+    ``KIROCREW_OS_HOME``-scoped pod resolves its OWN grant tree here -- the
+    same tree its pod-spawned kiro-cli children's ``HOME`` is remapped to at
+    ACP spawn time (see ``acp/client.py`` / ``acp/runtime.py``). Without this,
+    a pod's gateway process would stat and unlink grants under the REAL host
+    home while its own kiro-cli children wrote them under the pod's remapped
+    one -- two derivations of "where do grants live" disagreeing with each
+    other, which is exactly the split this resolver exists to prevent.
+    """
+    return (home or kiro_oauth_cache_home()).joinpath(*_KIRO_OAUTH_CACHE_RELATIVE)
 
 
 def grant_key(mcp_url: str) -> str:

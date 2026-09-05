@@ -43,6 +43,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client import (
     OversizeLineUnrecoverable,
+    _apply_pod_home_remap,
     _drain_oversize_line,
     _get_start_time,
     _KiroExecutableTrustError,
@@ -70,6 +71,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
+    ACP_BACKENDS_POD_HOME_REMAP,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     METHOD_KAS_SESSION_DELETE,
@@ -1278,6 +1280,16 @@ class AcpRuntime:
         # credential-pointer/API-key resolution so no resolver can reintroduce a
         # denied variable; KIRO_API_KEY itself is intentionally not denied.
         env = scrub_agent_subprocess_env(env)
+        # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
+        # confined to the pod's tree instead of the real host's -- see
+        # acp.client._apply_pod_home_remap's docstring. No-op outside a pod and
+        # for every harness outside ACP_BACKENDS_POD_HOME_REMAP, which is its
+        # own membership set rather than a reuse of the internal-sandbox one:
+        # "carries its own OS sandbox" and "relocating HOME moves its
+        # credential store" are different questions (harness-parity H6).
+        env = _apply_pod_home_remap(
+            env, pod_home_remap=self._acp_backend in ACP_BACKENDS_POD_HOME_REMAP
+        )
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.

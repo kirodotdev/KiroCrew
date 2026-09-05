@@ -61,7 +61,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from kiro_crew.pod.config import PodConfig, environment_vars
+from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES, PodConfig, environment_vars
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
 
 # Reverse-DNS label namespace. One label per pod; the name has already been
@@ -184,6 +184,13 @@ def render_plist(cfg: PodConfig, name: str) -> dict[str, object]:
         "RunAtLoad": True,
         # Self-heal a crash but do not fight a deliberate `down`: launchd will
         # restart only on a non-zero exit, so `bootout` stays authoritative.
+        #
+        # LOAD-BEARING for the terminal-refusal guarantee, not just crash
+        # recovery: `launchd_exit_code` makes a refusal terminal by exiting 0,
+        # which only works because this policy is "restart on NON-ZERO". Changing
+        # it to `True`, or to a bare `KeepAlive: True` (restart unconditionally),
+        # silently turns every terminal refusal back into a 5s loop. Pinned by
+        # `test_the_keepalive_policy_the_terminal_exit_relies_on_is_pinned`.
         "KeepAlive": {"SuccessfulExit": False},
         # systemd's RestartSec=5. launchd's own default floor is 10s.
         "ThrottleInterval": 5,
@@ -198,6 +205,47 @@ def render_plist(cfg: PodConfig, name: str) -> dict[str, object]:
     # macOS cannot enforce the cgroup ceiling and a weaker key here would read as
     # if it could.
     return body
+
+
+def launchd_exit_code(code: int) -> int:
+    """Translate a ``boot`` exit code into one launchd will not restart-loop on.
+
+    **This is the launchd half of the terminal-refusal guarantee.** On systemd a
+    refusal that a retry cannot heal exits non-zero and the unit names those codes
+    in ``RestartPreventExitStatus``, so the unit goes ``failed`` and stays there.
+    launchd has **no per-exit-code exemption at all** -- its only restart
+    discriminator is the success/failure axis. From ``launchd.plist(5)`` on
+    ``KeepAlive``'s ``SuccessfulExit``:
+
+        If true, the job will be restarted as long as the program exits and with
+        an exit status of zero. If false, the job will be restarted in the
+        inverse condition.
+
+    This backend renders ``KeepAlive = {"SuccessfulExit": False}`` (see
+    :func:`render_plist`), i.e. **restart on NON-ZERO exit**. So the very thing
+    that makes the refusal terminal under systemd -- exiting 78 -- is what makes
+    it a loop here: launchd relaunches every ``ThrottleInterval`` (5s), re-runs
+    the identical refusal, and buries the ``FATAL`` line in the log file.
+
+    The fix therefore has to move the exit code, not the plist: a TERMINAL
+    refusal returns **0**, which is the one value ``SuccessfulExit: False`` does
+    not relaunch. Every other non-zero exit -- an ordinary crash, an unexpected
+    traceback -- is passed through untouched and still restarts, so crash recovery
+    is preserved. That is the whole mechanism, and it needs no new plist key,
+    which is why there is no launchd analogue of the systemd side's
+    ``_REQUIRED_DIRECTIVES`` upgrade check: the policy it relies on is the one
+    this backend has always rendered, and plists are re-rendered on every ``up``
+    (module docstring, point 1) so they cannot go stale in the first place.
+
+    The cost, stated rather than hidden: to ``launchctl`` a terminal refusal now
+    looks like a clean exit. :meth:`PodConfig.refusal_file` is what keeps it
+    legible -- ``boot`` writes it before returning, and the ``FATAL`` lines are
+    still in ``StandardErrorPath``. Callers that want the honest code (a human
+    running the internal verb by hand, the audit record) read ``boot``'s return
+    value, which is unchanged; only the process exit status handed to launchd is
+    translated.
+    """
+    return 0 if code in TERMINAL_BOOT_EXIT_CODES else code
 
 
 def write_plist(cfg: PodConfig, name: str) -> Path:

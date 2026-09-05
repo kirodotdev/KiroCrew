@@ -777,6 +777,58 @@ def _relocated_crew_targets(leaves: tuple[str, ...]) -> list[str]:
     return out
 
 
+def _pod_os_home_targets(dirs: tuple[str, ...]) -> list[str]:
+    """The sensitive-dir list re-anchored under a pod child's REMAPPED home.
+
+    Sibling of :func:`_relocated_crew_targets`, for the other root that moves.
+    ``acp.client._apply_pod_home_remap`` gives a pod's kiro-cli child a pod-owned
+    ``HOME`` (``KIROCREW_OS_HOME``) so its OAuth grants die with the pod, and
+    ``pod.runtime._seed_pod_os_home`` stages the host's SSO tokens into it. Those
+    are credentials, and every entry in the tier lists is ``$HOME``-relative joined
+    against ``Path.home()`` -- the GATEWAY's home -- so none of them named the
+    remapped tree and the seeded token sat in an UNMASKED location that the child's
+    own ``$HOME`` resolves to.
+
+    **Why this lives here rather than in the two ACP transports.** Both of them
+    build their sandbox BEFORE applying the remap, so feeding the paths in through
+    ``extra_hidden_dirs`` would need the call order changed in two places and the
+    path set restated in both -- two independent copies of one rule, which is the
+    duplication rounds 8 and 9 removed from the pinned-write path. Computing it
+    inside the mask builder instead makes the mask correct for EVERY caller
+    regardless of when the remap runs, and re-anchors whichever tier list the
+    caller's mode selected rather than a hand-copied subset of it.
+
+    Gated on ``KIROCREW_POD == "1"`` exactly as ``config.paths`` gates the
+    resolver, so a non-pod session's mask is byte-identical to before. Returns only
+    paths that DIFFER from the ``$HOME``-relative spelling, so the default layout
+    gains no duplicate rule.
+
+    ``normpath``, never ``realpath``, for the reason :func:`_relocated_crew_targets`
+    records: this runs on the event loop for every async spawn. Never raises -- an
+    unresolvable value yields nothing and the ``$HOME``-relative entries still apply.
+    """
+    if os.environ.get("KIROCREW_POD") != "1":
+        return []
+    os_home = os.environ.get("KIROCREW_OS_HOME")
+    if not os_home:
+        return []
+    try:
+        home_root = str(Path.home())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the home root for pod os-home masking", exc_info=True)
+        return []
+    out: list[str] = []
+    for leaf in dirs:
+        try:
+            relocated = os.path.normpath(os.path.join(os_home, leaf))
+            default = os.path.normpath(os.path.join(home_root, leaf))
+        except Exception:  # pragma: no cover - defensive
+            continue
+        if relocated != default:
+            out.append(relocated)
+    return out
+
+
 def _relocated_policy_cache_dirs() -> list[str]:
     """The governance cache's RESOLVED path, when it is not under ``$HOME``.
 
@@ -2800,6 +2852,11 @@ def _build_launcher_script(
         env_prefixes = env_prefixes + list(_PYTHON_ENV_PREFIXES)
     hide_ssh = sandbox_level == "strict"
     hidden_dirs = [os.path.join(home, d) for d in dirs]
+    # Re-anchor the SAME tier list under a pod child's remapped home. Must run here
+    # rather than at the ACP call sites: both transports freeze the sandbox before
+    # applying the remap, so a mask computed only against `home` left the pod's
+    # seeded SSO token readable at the path the child's own $HOME resolves to.
+    hidden_dirs.extend(_pod_os_home_targets(tuple(dirs)))
     hidden_dirs.extend(_relocated_policy_cache_dirs())
     hidden_dirs.extend(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
     hidden_dirs.extend(_voice_runtime_sandbox_paths())
@@ -3757,6 +3814,9 @@ def _build_seatbelt_profile(
     rules: list[str] = []
     for target in (
         [os.path.join(home, d) for d in dirs]
+        # Same reason as the launcher builder: a pod child's remapped home holds
+        # the seeded SSO token, and no $HOME-relative entry names that tree.
+        + _pod_os_home_targets(tuple(dirs))
         + _relocated_policy_cache_dirs()
         + _relocated_crew_targets(_CREW_HIDDEN_LEAVES)
         + list(_voice_runtime_sandbox_paths())

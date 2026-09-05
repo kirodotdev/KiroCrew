@@ -205,6 +205,42 @@ _ENV_DUMP_GREP_AWS_PATTERN = (
 # (``printenv | grep ...``) is ``_ENV_DUMP_GREP_AWS_PATTERN``'s job.
 _PRINTENV_AWS_SECRET_PATTERN = r"(?<![\w-])printenv(?!\w).*AWS_" + _AWS_SECRET_VAR_NAMES
 
+# ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` hold a PATH, not a
+# secret, so neither is scrubbed from an agent child's environment -- the AWS CLI
+# and every SDK read them directly.
+#
+# Two rules here previously denied RETRIEVAL of those two names: a shell
+# dereference (``$NAME``, ``${NAME}``, ``%NAME%``, ``!NAME!``, ``$env:NAME``) and
+# an inline-interpreter environment lookup (``os.environ['NAME']``). Both are
+# REMOVED, deliberately, and the reasoning is worth keeping because it
+# generalizes to any future "deny the variable name" proposal.
+#
+# They existed because ``acp.client._apply_pod_home_remap`` used to EXPORT both
+# names into a pod child, pinned at the real home, so that a pod agent turn could
+# still reach the operator's AWS profiles after ``HOME`` moved. That export made
+# each name an alias for a path the sensitive-path keystone fences, and since the
+# matchers here work on command TEXT with no variable expansion, the alias was
+# reachable while the literal path was refused.
+#
+# Three review rounds each closed one spelling of that retrieval -- the shell
+# sigils, then the interpreter lookup, then ``cp "$(printenv NAME)" x`` -- which
+# is the shape of a losing race: command substitution, ``eval``, indirect
+# expansion (``v=NAME; cat "${!v}"``), and a two-line helper script are all still
+# available, and no text matcher can see through them. The alias was deleted at
+# its source instead: the remap no longer exports either name. With nothing
+# manufacturing the alias, these rules guarded only an operator who set the
+# variable in their own environment -- their own named file, not an alias this
+# codebase created -- at the cost of implying a completeness the pattern class
+# cannot deliver. Partial coverage of an unbounded bypass space is worse than
+# none, because it reads as a fence.
+#
+# The floor for a path named through a variable remains what it always was:
+# ``redact_credentials`` on the output, plus the sensitive-path fence on every
+# LITERAL spelling (which now includes ``KIROCREW_OS_HOME`` as an alternate home
+# root). ``_AWS_SECRET_VAR_NAMES`` above still denies retrieval of the variables
+# that hold a SECRET rather than a path; that set is closed and enumerable, which
+# is why a name-based rule is defensible there and was not here.
+
 
 BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     DeniedCommandRule(
@@ -9142,11 +9178,25 @@ def _home_dir_targets_uncached(
     crew_home = resolved.crew_home
     kiro_home_override = resolved.kiro_home
     logical_home = resolved.logical_home
+    os_home = resolved.os_home
 
     def _anchor(root: str, d: str) -> str:
         return os.path.join(root, *d.split("/")).casefold()
 
     sensitive_targets: set[str] = {_anchor(home, d) for d in home_dirs}
+    # ``KIROCREW_OS_HOME`` is an ALTERNATE ``$HOME`` (see _resolved_root_key):
+    # a pod-spawned kiro-cli child runs with it as its literal HOME, so its
+    # credential store and the seeded host SSO tokens live under this root. Every
+    # entry re-anchors here -- the variable relocates the whole home, not just
+    # ``.aws`` -- so a secret cannot be moved out from under its own gate.
+    if os_home:
+        sensitive_targets |= {_anchor(os_home, d) for d in home_dirs}
+        try:
+            os_home_real = os.path.realpath(os_home)
+        except (OSError, ValueError):
+            os_home_real = os_home
+        if os_home_real.casefold() != os_home.casefold():
+            sensitive_targets |= {_anchor(os_home_real, d) for d in home_dirs}
     home_real = os.path.realpath(home)
     if home_real.casefold() != home.casefold():
         sensitive_targets |= {_anchor(home_real, d) for d in home_dirs}
@@ -9295,6 +9345,19 @@ class _ResolvedRoots(NamedTuple):
     claude_config_dir: str | None
     claude_home: str | None
     logical_home: str
+    # ``KIROCREW_OS_HOME`` is an ALTERNATE WHOLE ``$HOME``, not one adapter's
+    # credential leaf: ``pod.runtime.build_pod_env`` sets it and
+    # ``acp.client._apply_pod_home_remap`` makes it the literal ``HOME`` of a
+    # pod-spawned kiro-cli child, so that child's whole credential store -- and
+    # the host SSO tokens ``pod.runtime._seed_pod_os_home`` copies into it --
+    # live under this root. It is therefore anchored by re-anchoring EVERY
+    # ``home_dirs`` entry in ``_home_dir_targets_uncached``, rather than through
+    # ``_OVERRIDE_ANCHORED_LEAVES``, which maps one leaf to the roots its parent
+    # can move to. Without it the relocated tree sits at a path no matcher
+    # covers, so an agent inside a pod could read the operator's identity token
+    # at the pod-path spelling while the identical bytes at ``~/.aws`` are
+    # refused.
+    os_home: str | None
 
 
 #: Sensitive leaf → the override roots its parent directory can be moved to.
@@ -9362,6 +9425,22 @@ def _resolved_root_key() -> _ResolvedRoots:
     spelling, which must still hit a target or the gate fails OPEN on exactly
     the hosts where ``$HOME`` is a link.  Keyed here so an env change that
     moves the logical spelling invalidates the cache like any other anchor.
+
+    ``os_home`` is the resolved ``KIROCREW_OS_HOME`` override, or ``None`` when
+    unset. It is an ALTERNATE ``$HOME``: ``pod.runtime.build_pod_env`` sets it
+    and ``acp.client._apply_pod_home_remap`` makes it the literal ``HOME`` of a
+    pod-spawned kiro-cli child, so kiro-cli's own ``$HOME``-derived credential
+    store — and the host SSO tokens ``pod.runtime._seed_pod_os_home`` copies
+    into it — live under this root rather than under the real home. Anchoring
+    it here is what keeps that relocated tree fenced: without it, the seeded
+    copy of the operator's SSO bearer token sits at a path no matcher covers,
+    so an agent inside a pod could read the operator's identity token at the
+    pod-path spelling while the identical bytes at ``~/.aws`` are refused. Every
+    ``home_dirs`` entry is re-anchored under it, not merely ``.aws``, because
+    the variable relocates the whole home: the crew-home leaves, ``.ssh`` and
+    every other fenced entry move with it. Same reasoning as the
+    ``KIROCREW_HOME`` expansion below — an override must not move a secret out
+    from under its own gate.
     """
     logical_home = str(Path.home())
     try:
@@ -9376,6 +9455,7 @@ def _resolved_root_key() -> _ResolvedRoots:
         claude_config_dir=_resolved_env_root("CLAUDE_CONFIG_DIR"),
         claude_home=_resolved_env_root("CLAUDE_HOME"),
         logical_home=logical_home,
+        os_home=_resolved_env_root("KIROCREW_OS_HOME"),
     )
 
 

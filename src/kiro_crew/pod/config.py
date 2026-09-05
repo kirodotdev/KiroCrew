@@ -24,6 +24,31 @@ DEFAULT_BASE_PORT = 7810
 # systemd --user template unit. ``<prefix>@<wt>.service`` is one pod.
 DEFAULT_UNIT_PREFIX = "kirocrew-pod"
 
+#: Boot exit codes a RESTART CANNOT HEAL, so the unit must not retry them.
+#:
+#: The pod unit is ``Restart=on-failure`` + ``RestartSec=5``. Every refusal in
+#: :func:`kiro_crew.pod.runtime.boot` is a standing condition -- no pinned
+#: checkout, no venv, no built dist, the derived port IS the live plane, or a pod
+#: OS-home component that could not be verified -- so retrying re-runs the same
+#: refusal every 5 seconds, forever, and buries the FATAL line under repeats.
+#: ``pod/unit.py`` feeds these into ``RestartPreventExitStatus`` so the unit goes
+#: ``failed`` and STAYS there with the reason visible.
+#:
+#: Lives here rather than in ``runtime`` because ``runtime`` imports ``unit`` (so
+#: ``unit`` cannot import ``runtime`` back) while both already import this module
+#: -- one definition, no drift between the code that returns a value and the unit
+#: that exempts it.
+EXIT_PROVISIONING = 3
+EXIT_LIVE_PORT_COLLISION = 70
+#: A security invariant the pod could not establish (currently: the OS home whose
+#: components must all be link-checked before it becomes the child's ``HOME``).
+EXIT_REFUSED_UNRECOVERABLE = 78
+TERMINAL_BOOT_EXIT_CODES: tuple[int, ...] = (
+    EXIT_PROVISIONING,
+    EXIT_LIVE_PORT_COLLISION,
+    EXIT_REFUSED_UNRECOVERABLE,
+)
+
 
 def _env_path(key: str, default: Path) -> Path:
     val = os.environ.get(key)
@@ -154,3 +179,25 @@ class PodConfig:
     def env_file(self, name: str) -> Path:
         """Per-pod env file holding pinned ``CHECKOUT=`` / ``PORT=`` / ``SEED=``."""
         return self.pods_dir / f"{name}.env"
+
+    def refusal_file(self, name: str) -> Path:
+        """Where a TERMINAL boot refusal is recorded for pod *name*.
+
+        Host-side (beside the env file), deliberately NOT under
+        :meth:`home_dir`: the refusal this records is precisely "a component of
+        that tree could not be verified", so the tree is the wrong place to keep
+        the evidence -- and ``down`` nukes the home, which would erase it.
+
+        Exists because the two service managers make a refusal visible in
+        different amounts. systemd leaves the unit ``failed`` with the ``FATAL``
+        line in ``journalctl``. launchd has no journal and, under the exit-0
+        mechanism that stops its restart loop (see
+        :func:`kiro_crew.pod.launchd.launchd_exit_code`), a terminal refusal
+        looks like an ORDINARY CLEAN EXIT to ``launchctl``. This file is what
+        keeps it legible on both: ``kirocrew pod ls`` reads it through
+        :func:`kiro_crew.pod.cli._print_refusals` and reports the refusal as its
+        own section, so a refused pod does not silently drop out of the listing
+        for merely not running. The ``--json`` form of ``ls`` reports live pods
+        only and does not carry these records.
+        """
+        return self.pods_dir / f"{name}.refused"

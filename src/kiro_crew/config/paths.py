@@ -557,6 +557,54 @@ def kiro_sessions_dir() -> Path:
     return kiro_home() / "sessions" / "cli"
 
 
+def kiro_oauth_cache_home() -> Path:
+    """The OS-level home whose ``.aws/sso/cache`` kiro-cli's MCP OAuth grant pairs
+    resolve under, honoring a ``KIROCREW_OS_HOME`` override.
+
+    kiro-cli derives its MCP OAuth artifact directory from the process's real
+    ``$HOME`` (``mcp_grant.kiro_oauth_cache_dir()`` calls :func:`Path.home` by
+    default) -- unlike the agent-specs/sessions tree above, there is no
+    documented kiro-cli env var that relocates just this one subtree.
+    ``KIRO_HOME`` does not help either: it moves agents/prompts/skills/sessions,
+    not ``~/.aws``, which sits outside ``~/.kiro`` entirely.
+
+    ``KIROCREW_OS_HOME`` is therefore an override owned by Kiro Crew, consulted by
+    :func:`kiro_crew.mcp_grant.kiro_oauth_cache_dir` and set by
+    :func:`kiro_crew.pod.runtime.build_pod_env` to a pod-owned directory. Setting
+    it repoints where every ``mcp_grant`` caller (mint, status, disconnect,
+    mcp_discovery's remote probe) STATS and unlinks grant artifacts -- it does
+    NOT by itself repoint kiro-cli's own writes, which follow the CHILD
+    process's ``$HOME``. The two must be set together: the ACP spawn path
+    remaps a pod-spawned kiro-cli child's ``HOME`` to this same directory (see
+    ``acp/client.py`` and ``acp/runtime.py``), so kiro-cli's OWN writes and
+    every ``mcp_grant`` reader agree on one location -- the same "one resolver,
+    both sides read it" shape :func:`kiro_home` uses for agent specs.
+
+    Honoured ONLY when ``KIROCREW_POD`` is exactly ``"1"``, which is the same
+    gate the write side (``acp.client._apply_pod_home_remap``) applies. Reads and
+    writes must turn on together: an override honoured here but not there would
+    repoint grant READS while kiro-cli kept WRITING under the real home,
+    recreating precisely the read/write split this resolver exists to close.
+    ``build_pod_env`` is the only writer of either variable and sets both, so the
+    paired gate costs nothing and removes the asymmetry.
+
+    Rejects the same unsafe targets as :func:`kiro_home` (a filesystem/drive
+    root, or a known POSIX system directory), degrading to :func:`Path.home` so
+    a malformed override cannot scatter OAuth artifacts across ``/`` or
+    ``/usr``.
+    """
+    if os.environ.get("KIROCREW_POD") != "1":
+        return Path.home()
+    override = os.environ.get("KIROCREW_OS_HOME")
+    if not override:
+        return Path.home()
+    p = Path(override).expanduser().resolve()
+    if _is_unsafe_home(p):
+        logger.warning("KIROCREW_OS_HOME=%s is a system directory, ignoring", override)
+        return Path.home()
+    return p
+
+
 def isolated_agents_dir(data_home: Path) -> Path:
     """The dedicated agents dir an ISOLATED instance may own: ``<data home>/kiro/agents``.
 

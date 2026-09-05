@@ -79,6 +79,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
@@ -831,6 +832,115 @@ def _resolve_spawn_env(env: dict[str, str], *, kiro_api_key: bool = False) -> di
         inject_kiro_cli_api_key(env)
     else:
         strip_kiro_cli_api_key(env)
+    return env
+
+
+def _apply_pod_home_remap(env: dict[str, str], *, pod_home_remap: bool) -> dict[str, str]:
+    """Remap *env*'s ``HOME`` to the pod's own OAuth-grant tree, for a
+    pod-spawned kiro-cli child ONLY. Mutates *env* in place and returns it.
+
+    Gated on BOTH the pod marker (``KIROCREW_POD``, set by
+    ``pod.runtime.build_pod_env`` for the whole pod gateway) and
+    *pod_home_remap* (membership in ``ACP_BACKENDS_POD_HOME_REMAP`` --
+    harness-parity H6/H7, never a bare backend-name comparison), so this touches
+    nothing outside a pod and nothing for a harness whose credentials do not
+    follow ``$HOME``. That set is deliberately NOT
+    ``ACP_BACKENDS_INTERNAL_SANDBOX``: the two answer different questions --
+    "does this harness carry its own OS sandbox?" versus "does relocating this
+    harness's HOME move its credential store?" -- so reusing the sandbox set
+    would hand a harness added there for sandbox reasons credential-relocation
+    semantics it never opted into.
+
+    The marker is compared EXACTLY to ``"1"`` rather than tested for
+    truthiness. Every non-empty string is truthy in Python, so an inherited
+    ``KIROCREW_POD=false`` or ``KIROCREW_POD=0`` would otherwise remap ``HOME``
+    for a child that is not in a pod at all -- the inverse of what the value
+    says.
+
+    kiro-cli derives its MCP OAuth artifact directory
+    (``mcp_grant.kiro_oauth_cache_dir()``) from the SPAWNED PROCESS's real
+    ``$HOME`` -- there is no env var that
+    relocates just that one subtree (see ``config.paths.kiro_oauth_cache_home``
+    for why ``KIRO_HOME`` does not help either) -- so the only way to make
+    kiro-cli's OWN writes land in the pod's tree is to remap the child's
+    ``HOME`` at spawn time. ``KIROCREW_OS_HOME`` names the SAME directory
+    ``config.paths.kiro_oauth_cache_home()`` resolves for the pod's ``mcp_grant``
+    reads, which is what keeps kiro-cli's writer and every ``mcp_grant`` reader
+    looking at one tree instead of two independent derivations of "where do
+    grants live" (see ``mcp_grant.kiro_oauth_cache_dir``'s docstring for the
+    split this closes).
+
+    A remap absent ``KIROCREW_OS_HOME`` (the marker set with no pod-scoped
+    directory to point at -- a malformed pod env, or a caller that set the
+    marker without the directory) leaves ``env`` untouched: an unset ``HOME``
+    on a spawned child would break far more than OAuth grants, so the fail
+    mode here is "kiro-cli reads the real host home", the status quo, not a
+    broken spawn.
+
+    Three obligations come with moving ``HOME``, each closed here:
+
+    * kiro-cli's own sign-in must keep working. ``pod.runtime._seed_pod_os_home``
+      already staged the real host's single-file SSO tokens into this same
+      directory at pod boot (never the two-file MCP grant pairs, which the
+      seeding glob excludes by construction), so a kiro-cli process reading
+      ``$HOME/.aws/sso/cache`` for its OWN identity finds them there.
+    * ``USERPROFILE`` moves WITH ``HOME`` (Windows spelling of the same
+      concept) so a Windows pod does not read one remapped path and the other
+      unremapped.
+    * **AWS file-based credentials deliberately do NOT follow the child into the
+      pod.** ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` default to
+      ``$HOME/.aws/{config,credentials}`` when unset, so a remapped ``HOME``
+      sends the credential chain at the pod's own tree. An earlier revision
+      pinned both variables back to the REAL home so a pod agent turn could
+      still reach the operator's profiles. That pin is REMOVED, because naming
+      those files in the child environment is itself the leak: ``security.py``
+      matches command TEXT and performs no variable expansion, so the exported
+      name is a working alias for a path the sensitive-path fence refuses by
+      name -- and the alias is retrievable through an unbounded set of
+      spellings (``$VAR``, ``${VAR}``, ``%VAR%``, ``$env:VAR``,
+      ``os.environ['VAR']``, ``$(printenv VAR)``, ``eval``, indirect expansion,
+      a helper script). Three review rounds each closed one spelling; a text
+      matcher cannot close the class. Deleting the export deletes the alias,
+      which is the only fix that does not depend on out-matching command
+      substitution.
+
+      What this costs, stated rather than implied: **an ACP agent turn inside a
+      pod has no inherited AWS credentials on any path.** Both legs are closed,
+      and an earlier revision of this comment got the second one wrong:
+
+      * FILE credentials: removing the exports means ``~/.aws/{config,credentials}``
+        resolves under the remapped (empty) pod home, so a profile that lives only
+        in a file -- including a ``credential_process`` profile -- does not resolve.
+      * ENVIRONMENT credentials: ``sandbox.scrub_agent_subprocess_env`` scrubs
+        ``_SENSITIVE_ENV_PREFIXES``, which includes ``AWS_SECRET`` and
+        ``AWS_SESSION``, from every Kiro/ACP child. So ``AWS_SECRET_ACCESS_KEY``
+        and ``AWS_SESSION_TOKEN`` never reach the agent turn even when the
+        operator has them. ``AWS_ACCESS_KEY_ID`` survives (no ``AWS_ACCESS``
+        prefix), but a key id without its secret is not a credential.
+
+      This comment previously claimed "env-credentialed turns are unaffected",
+      pointing at ``build_pod_env`` keeping ``AWS_*``. That keep is real but it is
+      not the last word: ``build_pod_env`` shapes the pod GATEWAY's environment,
+      and the ACP child is scrubbed AFTER it, so the two statements are about
+      different processes. The corrected posture is strictly stronger than the one
+      claimed, and it is the intended one for a throwaway instance whose whole
+      purpose is to not hold machine-level credentials.
+
+      An operator who needs AWS from inside a pod therefore cannot get it by
+      exporting credentials into their shell; that is a deliberate property of the
+      agent-subprocess scrub, not something this function can or should undo.
+
+      An operator who sets either pointer variable in their OWN environment still
+      has it inherited (``build_pod_env`` keeps ``AWS_*``); that is their own named
+      file, not an alias this function manufactured.
+    """
+    if not pod_home_remap or env.get("KIROCREW_POD") != "1":
+        return env
+    os_home = env.get("KIROCREW_OS_HOME")
+    if not os_home:
+        return env
+    env["HOME"] = os_home
+    env["USERPROFILE"] = os_home
     return env
 
 
@@ -4135,6 +4245,18 @@ class AcpClient:
         # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
         # to the positively identified Kiro backend.
         env = scrub_agent_subprocess_env(env)
+        # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
+        # confined to the pod's tree instead of the real host's -- see
+        # _apply_pod_home_remap's docstring. No-op outside a pod
+        # (KIROCREW_POD is not exactly "1") and for every harness outside
+        # ACP_BACKENDS_POD_HOME_REMAP, which is deliberately its own set rather
+        # than the internal-sandbox one (H6). Kept AFTER
+        # scrub_agent_subprocess_env: neither HOME nor the AWS credential-file
+        # pointers are in that scrub's denied-prefix set, so ordering is not
+        # load-bearing here, but placing it beside every other
+        # identity-affecting mutation on this env keeps the sequence readable
+        # as one pass rather than two.
+        env = _apply_pod_home_remap(env, pod_home_remap=self.backend in ACP_BACKENDS_POD_HOME_REMAP)
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.

@@ -397,3 +397,105 @@ class TestThirdPartyCredentialsKeepTheirExistingTiering:
         for listing in (sandbox._STRICT_DIRS, sandbox._CC_DIRS, sandbox._STANDARD_DIRS):
             assert ".local/share/kiro-cli" not in listing
             assert ".local/share/amazon-q" not in listing
+
+
+class TestAPodChildsRemappedHomeIsMasked:
+    """Round 10 security fix. ``acp.client._apply_pod_home_remap`` gives a pod's
+    kiro-cli child a pod-owned ``HOME`` (``KIROCREW_OS_HOME``) and
+    ``pod.runtime._seed_pod_os_home`` stages the host's SSO tokens into it -- but
+    every entry in the tier lists is ``$HOME``-relative joined against the GATEWAY's
+    home, so none of them named the remapped tree.
+
+    Both ACP transports freeze their sandbox BEFORE applying the remap, so the mask
+    was computed against the original home and the child's own ``$HOME`` resolved to
+    an UNMASKED copy of the credential. Re-anchoring inside the mask builder (rather
+    than feeding ``extra_hidden_dirs`` from each transport) makes the mask correct
+    regardless of that call order, and covers both transports from one place."""
+
+    # The production helper builds each target with ``os.path.normpath(os.path.join(
+    # os_home, leaf))``, so an expected value spelled with a literal "/" matches only
+    # on POSIX -- on Windows the same call yields backslashes and the assertion failed
+    # on shard 3 even though the mask contained the right paths. Building the expected
+    # value through the SAME two calls is platform-correct by construction, and keeps
+    # the assertion an exact-membership check rather than a weaker substring test.
+    _OS_HOME = "/pods/x/os-home"
+
+    @staticmethod
+    def _expected(leaf: str) -> str:
+        return os.path.normpath(os.path.join(TestAPodChildsRemappedHomeIsMasked._OS_HOME, leaf))
+
+    def test_the_remapped_home_is_re_anchored_when_the_pod_marker_is_set(self, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        monkeypatch.setenv("KIROCREW_OS_HOME", self._OS_HOME)
+
+        out = sandbox._pod_os_home_targets((".aws", ".ssh"))
+
+        assert self._expected(".aws") in out
+        assert self._expected(".ssh") in out
+
+    def test_the_seeded_sso_token_directory_is_covered_in_every_tier_that_masks_it(
+        self, monkeypatch
+    ) -> None:
+        """The concrete credential: `_seed_pod_os_home` writes
+        `<os-home>/.aws/sso/cache/kiro-auth-token*.json`, so `.aws` under the
+        remapped root must be masked wherever `.aws` is masked at all.
+
+        `_STANDARD_DIRS` is deliberately EXCLUDED: standard mode leaves `.aws`
+        visible so `credential_process` can reach Bedrock auth (see the comment
+        above `_CC_DIRS`). That is a pre-existing product decision this fix does not
+        change -- re-anchoring only ever mirrors whatever the tier already masks, so
+        standard gains nothing and loses nothing. The reported attack was the STRICT
+        pod, which is covered."""
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        monkeypatch.setenv("KIROCREW_OS_HOME", self._OS_HOME)
+
+        for listing in (sandbox._STRICT_DIRS, sandbox._CC_DIRS):
+            assert ".aws" in listing, "the tier list no longer masks .aws at all"
+            out = sandbox._pod_os_home_targets(tuple(listing))
+            assert self._expected(".aws") in out
+        # And the exclusion is asserted rather than assumed, so a later change that
+        # starts masking .aws in standard mode surfaces here.
+        assert ".aws" not in sandbox._STANDARD_DIRS
+
+    def test_a_non_pod_session_mask_is_unchanged(self, monkeypatch) -> None:
+        """Gated on the pod marker exactly as ``config.paths`` gates the resolver, so
+        an ordinary session gains no rule."""
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
+        monkeypatch.setenv("KIROCREW_OS_HOME", "/pods/x/os-home")
+
+        assert sandbox._pod_os_home_targets((".aws",)) == []
+
+    def test_the_marker_must_be_exactly_one(self, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_POD", "false")
+        monkeypatch.setenv("KIROCREW_OS_HOME", "/pods/x/os-home")
+
+        assert sandbox._pod_os_home_targets((".aws",)) == []
+
+    def test_no_os_home_yields_nothing(self, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        monkeypatch.delenv("KIROCREW_OS_HOME", raising=False)
+
+        assert sandbox._pod_os_home_targets((".aws",)) == []
+
+    def test_a_remap_target_equal_to_the_real_home_adds_no_duplicate(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Mirrors ``_relocated_crew_targets``: only paths that DIFFER from the
+        ``$HOME``-relative spelling are returned."""
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_OS_HOME", str(tmp_path))
+
+        assert sandbox._pod_os_home_targets((".aws",)) == []
+
+    def test_both_mask_builders_consume_the_helper(self) -> None:
+        """One helper, both builders. The launcher script (Linux) and the seatbelt
+        profile (macOS) each join the tier list against ``home`` separately, so a
+        fix in only one of them would be silently platform-specific."""
+        import inspect
+
+        launcher = inspect.getsource(sandbox._build_launcher_script)
+        assert "_pod_os_home_targets(" in launcher
+        seatbelt = inspect.getsource(sandbox._build_seatbelt_profile)
+        assert "_pod_os_home_targets(" in seatbelt

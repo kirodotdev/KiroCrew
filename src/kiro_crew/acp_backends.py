@@ -370,6 +370,26 @@ ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
 # nest inside.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 
+# Backends whose pod-spawned child has its ambient ``HOME`` relocated onto the
+# pod's own tree, so the MCP OAuth grant artifacts the harness derives from
+# ``$HOME`` stay pod-scoped (``acp.client._apply_pod_home_remap``).
+#
+# Deliberately its OWN set rather than a reuse of
+# ``ACP_BACKENDS_INTERNAL_SANDBOX``, even though the membership is identical
+# today. The two answer different questions -- "does this harness carry its own
+# OS sandbox?" versus "does relocating this harness's HOME move its credential
+# store?" -- and conflating them means a harness added to the sandbox set for
+# sandbox reasons silently inherits credential-relocation semantics it never
+# opted into. That is the capability conflation harness-parity H6 exists to
+# prevent, so each membership stays an explicit decision.
+#
+# Only kiro-cli qualifies: it derives its OAuth artifact directory from ``$HOME``
+# with no env override for that subtree alone, which is what makes the remap the
+# only reachable lever. A harness that stores credentials elsewhere gains
+# nothing from the remap and would only lose its real-home state, so it must not
+# be added without checking where it actually reads credentials from.
+ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
+
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
 # (kiro-cli and KAS) whose single process hosts N sessions via demux.
 # claude-agent-acp runs one AcpClient per session and is NOT a

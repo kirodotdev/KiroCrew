@@ -48,7 +48,12 @@ from kiro_crew.platform_compat import (
 from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import unit as unit_mod
-from kiro_crew.pod.config import PodConfig
+from kiro_crew.pod.config import (
+    EXIT_PROVISIONING,
+    EXIT_REFUSED_UNRECOVERABLE,
+    TERMINAL_BOOT_EXIT_CODES,
+    PodConfig,
+)
 from kiro_crew.seed import SeedError
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -2328,11 +2333,28 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
     creds) survives intact — scrubbing it would leave half a credential and break
     every AWS call. Config-level channel enables are additionally forced off by
     ``sanitized_seed_config`` (defense-in-depth).
+
+    ``KIROCREW_OS_HOME`` points the pod's own :mod:`kiro_crew.mcp_grant` reads
+    (mint, status, disconnect, mcp_discovery's remote probe -- all resolved
+    through ``config.paths.kiro_oauth_cache_home``) at a dedicated
+    ``<home_dir>/os-home`` tree INSTEAD of the real host home. Without this a
+    pod's gateway process stats and unlinks MCP OAuth grant artifacts under the
+    REAL ``~/.aws/sso/cache`` -- so a Connections card in the pod reads
+    "Connected" from a grant the operator minted on the real machine, and a
+    grant minted inside the pod is a real, durable machine-level credential
+    that OUTLIVES ``pod down``. This directory is nested INSIDE ``home_dir`` so
+    ``cleanup_home``'s teardown reclaims it with everything else. It holds no
+    secret by itself -- see ``_seed_pod_os_home`` for what is staged into it,
+    and ``acp/client.py`` / ``acp/runtime.py`` for the matching ``HOME`` remap
+    on the pod's OWN kiro-cli children, which is what makes kiro-cli's writes
+    land in this same tree.
     """
+    os_home = home_dir / "os-home"
     env = {
         **os.environ,
         "HOME": os.environ.get("HOME", str(Path.home())),
         "KIROCREW_HOME": str(home_dir),
+        "KIROCREW_OS_HOME": str(os_home),
         "KIROCREW_PORT": str(port),
         "KIROCREW_PROJECT_DIR": str(checkout),
         # Declare pod identity. A pod is ephemeral by construction — `pod down`
@@ -2426,26 +2448,358 @@ def write_pod_config(home_dir: Path, seed: str) -> None:
     whose gateway cannot parse that flag does not get the guarantee: it keeps this
     seeded value and behaves exactly as it did before the flag existed. See ``boot``.
     """
-    home_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(home_dir, stat.S_IRWXU)  # 0o700 owner-only (mkdir mode is umask-masked)
+    _ensure_pod_dir(home_dir, what="pod home")
     # The pod's own workspace root (see build_pod_env's KIROCREW_WORKSPACE).
     # Created here so the gateway never falls back to the live workspace.
-    (home_dir / "workspace").mkdir(mode=0o700, exist_ok=True)
+    _ensure_pod_dir(home_dir / "workspace", what="pod workspace")
     dst_cfg = home_dir / "config.json"
+    # The create-only guard is an LSTAT, not ``exists()``. ``exists()`` follows a
+    # link, so a link planted at ``config.json`` pointing at any existing host file
+    # read as "already configured" and the pod booted on the attacker's file. A link
+    # here is refused outright rather than treated as either absent or present.
+    existing = os.stat(dst_cfg, follow_symlinks=False) if dst_cfg.is_symlink() else None
+    if existing is not None:
+        raise PodError(f"refusing to seed pod config: {dst_cfg} is a symbolic link")
     if dst_cfg.exists():
         return
     sanitized = sanitized_seed_config(Path(seed)) if seed else None
     cfg_data = sanitized if sanitized is not None else {"tunnel": {"enabled": False}}
-    # Create-only (the exists() guard above): lock the temp down before any
-    # token-bearing payload reaches the published name. write_text then chmod
-    # left the file at its inherited DACL until the chmod returned, and the
-    # chmod itself was a no-op on Windows. atomic_write encodes UTF-8; the
-    # previous write_text call did not pass encoding=.
+    # Create-only (the guard above): lock the temp down before any token-bearing
+    # payload reaches the published name. write_text then chmod left the file at its
+    # inherited DACL until the chmod returned, and the chmod itself was a no-op on
+    # Windows -- which is why this stays ``atomic_write(restrict_to_owner=True)``
+    # rather than moving to the pinned publisher: that helper applies a POSIX mode,
+    # and this file carries provider tokens on every platform. The link the pinned
+    # path would have refused is refused by the lstat above instead.
     atomic_write(
         dst_cfg,
         json.dumps(cfg_data, indent=2),
         restrict_to_owner=True,
     )
+
+
+# Glob for kiro-cli's single-file AWS SSO tokens under ``.aws/sso/cache`` --
+# deliberately NOT ``*.json``, which would also match the two-file
+# ``<sha256>.token.json`` / ``<sha256>.registration.json`` MCP OAuth grant
+# pairs :mod:`kiro_crew.mcp_grant` owns. Those pairs are per-server CREDENTIALS
+# a Connect click mints; copying one forward would let a pod boot already
+# "Connected" to a provider nobody consented to from inside it, and copying one
+# back at teardown would leave a real grant on the host after the pod that
+# minted it is gone. The SSO token filenames kiro-cli writes are fixed
+# (``kiro-auth-token.json`` for the IDE-flow token, `-cli` for the CLI-flow
+# one); the glob covers any future sibling with the same fixed prefix without
+# widening to catch the grant pairs, whose names are a computed sha256 with no
+# shared prefix.
+_SSO_TOKEN_GLOB = "kiro-auth-token*.json"
+
+
+def _refuse(cfg: PodConfig, name: str, code: int, reason: str) -> int:
+    """Print a FATAL for *reason*, record it, and return the terminal *code*.
+
+    Every terminal exit goes through here so the record and the exit cannot drift.
+    They did drift once: ``_run_internal`` prints "recorded at <path>" whenever it
+    translates a terminal code for launchd, but only the OS-home refusal wrote the
+    file, so the provisioning (3) and live-port (70) exits named a path that did
+    not exist (found in review). Those two are translated to 0 on macOS exactly
+    like 78 is, so they have the same legibility problem and need the same record.
+    """
+    print(f"FATAL: {reason}")
+    _record_refusal(cfg, name, reason)
+    return code
+
+
+def terminal_exit_code(cfg: PodConfig, name: str, code: int) -> int:
+    """The exit status to hand the SERVICE MANAGER for *code*.
+
+    The record-conditional wrapper around :func:`kiro_crew.pod.launchd.launchd_exit_code`,
+    and the ONLY translation callers should use. ``launchd_exit_code`` states the
+    platform semantics (launchd restarts on non-zero, so a terminal refusal has to
+    exit 0 or it loops every ``ThrottleInterval``); this adds the condition that
+    makes exiting 0 honest.
+
+    **Translating unconditionally was a real hole.** Exit 0 tells launchd the boot
+    ended cleanly, and the only thing that keeps a refusal legible after that is
+    the host-side note. If the note failed to land -- the write refused a planted
+    link, the directory was unusable, the disk was full -- then translating anyway
+    produces a pod that looks cleanly stopped with NO record anywhere of why, which
+    is strictly worse than the restart loop the translation exists to prevent. So a
+    terminal code is translated only when :func:`refusal_reason` confirms the record
+    is actually readable; otherwise the honest non-zero survives and launchd's
+    retry, noisy as it is, at least keeps the failure visible.
+
+    Non-terminal codes and 0 pass through untouched on every platform, so ordinary
+    crash recovery is unaffected.
+    """
+    if code not in TERMINAL_BOOT_EXIT_CODES:
+        return code
+    if not IS_MACOS:
+        # systemd exempts these codes via RestartPreventExitStatus, so the honest
+        # code is also the non-looping one there. Nothing to translate.
+        return code
+    if refusal_reason(cfg, name) is None:
+        print(
+            f"kirocrew-pod: keeping exit {code} — the refusal could not be recorded at "
+            f"{cfg.refusal_file(name)}, so exiting 0 would hide it entirely"
+        )
+        return code
+    return launchd.launchd_exit_code(code)
+
+
+def _close_fd(fd: int) -> None:
+    """Close *fd*, ignoring an already-closed descriptor."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _ensure_pod_dir(target: Path, *, what: str) -> None:
+    """Create-if-absent *target* as an owner-only directory, refusing planted links.
+
+    THE directory half of the boot path's write hardening, and the companion to
+    :func:`pinned_fs.write_file_pinned`. Returns nothing on purpose: an earlier
+    revision handed the caller a raw descriptor to ``fchmod``, which made the mode
+    the caller's problem and does not exist on the platform where ``fchmod`` is a
+    no-op. The mode is applied here, through the descriptor where there is one.
+
+    The ANCESTOR chain is created by name first, deliberately: ``pinned_fs``
+    creates only the final component, and the chain above a pod home is the pod
+    ROOT (``~/.kiro/crew/pods`` by default), which is host-owned state this module
+    already creates by name in two other places. What is agent-influenced is the
+    pod's own directory and everything under it, and that is what gets pinned.
+
+    Platform split matches :func:`pinned_fs.write_file_pinned` exactly -- pinned
+    create plus ``fchmod`` where :func:`pinned_fs.supports_pinned_walk` holds, and
+    elsewhere the ``lstat`` link refusal (the everywhere-floor) plus a by-name
+    ``mkdir``. Raises :class:`PodError` on a planted link or an unusable component;
+    ``boot`` converts that into a recorded terminal refusal.
+    """
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PodError(f"could not create the parent of {what} {target}: {exc}") from exc
+    if not pinned_fs.supports_pinned_walk():
+        existing = pinned_fs.lstat_by_name(target)
+        if existing is not None and stat.S_ISLNK(existing.st_mode):
+            raise PodError(f"refusing to use {what} {target}: it is a symbolic link")
+        try:
+            target.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(target, stat.S_IRWXU)
+        except OSError as exc:
+            raise PodError(f"could not prepare {what} {target}: {exc}") from exc
+        return
+    fd = pinned_fs.create_and_open_dir_pinned(target, what=what, refusal=PodError)
+    try:
+        os.fchmod(fd, stat.S_IRWXU)  # mkdir's mode is umask-masked; this is not
+    except OSError as exc:
+        raise PodError(f"could not tighten {what} {target}: {exc}") from exc
+    finally:
+        _close_fd(fd)
+
+
+def _record_refusal(cfg: PodConfig, name: str, reason: str) -> None:
+    """Record a TERMINAL boot refusal for *name* on the HOST side.
+
+    Best-effort by design: the refusal itself is already decided and printed, so a
+    failure to write the note must not turn into a second failure mode. What it
+    buys is legibility on macOS, where :func:`kiro_crew.pod.launchd.launchd_exit_code`
+    has to exit 0 to stop launchd's restart loop and the refusal would otherwise
+    be indistinguishable from a clean exit.
+
+    **Refuses to write outside the pod plane, regardless of caller.** The name is
+    re-validated here and the resulting path is proven to be a direct child of
+    ``cfg.pods_dir`` before anything is published. That is defense in depth, not the
+    primary control -- ``boot`` validates before entering its guarded region, so a
+    path-shaped name should never arrive -- but the primary control is one caller's
+    ordering and this is a property of the function. Without it, any future caller
+    that records before validating turns a best-effort note into an arbitrary host
+    write: ``pod _run /tmp/important`` would have atomically overwritten
+    ``/tmp/important.refused``. Same reasoning as ``cleanup_home``'s independent
+    name re-validation, and the same "protected on one path only is not protected"
+    rule this module states elsewhere.
+    """
+    try:
+        validate_name(name)
+    except PodError:
+        print(f"kirocrew-pod: refusing to record a refusal for invalid pod name {name!r}")
+        return
+    target = cfg.refusal_file(name)
+    try:
+        root = cfg.pods_dir.resolve()
+        if target.resolve().parent != root:
+            print(f"kirocrew-pod: refusing to write a refusal note outside {root}")
+            return
+    except OSError:
+        # Cannot prove the location, so do not write. A missing note costs
+        # legibility; an unproven one costs an arbitrary host file.
+        return
+    try:
+        pinned_fs.write_file_pinned(
+            target,
+            f"{reason}\n",
+            what="pod refusal note",
+            mode=0o600,
+            refusal=PodError,
+        )
+    except (OSError, PodError, ValueError):
+        pass
+
+
+def _clear_refusal(cfg: PodConfig, name: str) -> None:
+    """Drop a stale refusal note so it only ever describes the LAST boot."""
+    try:
+        pinned_fs.unlink_pinned(cfg.refusal_file(name), what="pod refusal note")
+    except (OSError, ValueError):
+        pass
+
+
+def refusal_reason(cfg: PodConfig, name: str) -> str | None:
+    """The recorded terminal-refusal reason for *name*, or None if its last boot
+    did not refuse. Unreadable is reported as refused-for-an-unknown-reason rather
+    than as clean -- the file existing is itself the signal."""
+    target = cfg.refusal_file(name)
+    try:
+        text = target.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "boot refused (reason file unreadable)"
+    return text or "boot refused (reason not recorded)"
+
+
+def _seed_pod_os_home(os_home: Path) -> None:
+    """Create-only: seed *os_home*'s ``.aws/sso/cache`` from the REAL host's.
+
+    This is what lets ``kiro-cli login`` sign in ONCE on the operator's real
+    machine and have every pod reuse that sign-in, while a pod's own MCP OAuth
+    grants stay confined to ``os_home`` -- see ``build_pod_env``'s
+    ``KIROCREW_OS_HOME`` docstring for the split this closes. Only the
+    single-file SSO tokens matching :data:`_SSO_TOKEN_GLOB` are copied; the
+    glob's own docstring is why the two-file MCP grant pairs never match it.
+
+    **Every component is created and opened through a PINNED no-follow
+    descriptor, never by name.** This function copies a HOST credential into a
+    tree under the pod root, and it runs again on every boot -- so a name-based
+    ``mkdir(parents=True)`` plus a by-name write would follow a symlink planted
+    at ``os-home`` (or at any component beneath it) and deposit the operator's
+    SSO token wherever that link pointed, including an agent-readable workspace.
+    ``pinned_fs.create_and_open_dir_pinned`` refuses a link at the component it
+    creates and pins the parent chain first, and ``pinned_fs.copy_file_pinned``
+    validates the descriptor it copies rather than the name, so the inode
+    written is the inode checked. This is the same discipline
+    ``seed_home_from_scenario`` in this module already applies to a seeded home.
+
+    Create-only and per-file: ``skip_existing`` leaves an existing destination
+    untouched (a pod that already signed in, or already refreshed its own token,
+    is not clobbered), and a missing or unreadable source token is skipped
+    rather than aborting the whole pod boot -- a signed-out host still boots a
+    pod that can prompt for sign-in inside it, which is strictly better than
+    refusing to boot at all. The staged token is forced to ``0o600`` and every
+    directory to ``0o700``, so a token never lands world-readable even if the
+    source file's own mode is looser.
+
+    **Raises PodError when the TREE ITSELF cannot be built through pinned
+    no-follow descriptors, and that refusal must abort the boot** (``boot`` does
+    exactly this). The two phases are deliberately NOT equally forgiving:
+
+    * Building the tree is MANDATORY. This directory becomes the pod child's
+      ``HOME`` (``build_pod_env`` exports it as ``KIROCREW_OS_HOME``,
+      ``acp.client._apply_pod_home_remap`` assigns it), so if a component is a
+      planted symlink the refusal here is the ONLY thing standing between the
+      pod's kiro-cli and the real host tree the link points at. An earlier
+      revision swallowed this refusal and booted anyway: nothing was written
+      through the link by THIS function, but the child then received the refused
+      path as its ``HOME`` and wrote its own MCP OAuth grants through the link --
+      turning the pod back into the machine-level grant writer this whole
+      mechanism exists to prevent. Skipping the seed is safe; booting on an
+      unverified ``HOME`` is not, so the two outcomes must not share a branch.
+    * Copying the tokens is BEST-EFFORT, unchanged. An unreadable host cache
+      (signed out, permission error, stalled mount) and an individual token that
+      cannot be copied both leave the pod booting signed-out.
+
+    Every component is chmodded to ``0o700`` rather than only the leaf, so no
+    level of the path this credential lands under is group- or world-writable --
+    that is the narrowest replacement window the pinned primitives allow. The
+    residual is a genuine TOCTOU: a same-UID process can still swap a component
+    between this function returning and the child's ``exec``. Per the recorded
+    threat model a pod is operational isolation, not protection from arbitrary
+    same-UID processes, so that window is documented rather than claimed closed;
+    closing it would require handing the child a descriptor instead of a path,
+    which the kiro-cli interface does not accept.
+    """
+    real_cache_dir = Path.home() / ".aws" / "sso" / "cache"
+    if not pinned_fs.supports_pinned_walk():
+        # No O_DIRECTORY/O_NOFOLLOW on this platform (Windows), so the tree
+        # cannot be built through pinned no-follow descriptors. REFUSE rather
+        # than fall back to a by-name copy: this moves a HOST credential, and an
+        # unpinned write is exactly the symlink-redirect the pinning exists to
+        # prevent. Refusing to SEED is not enough on its own, because the same
+        # unverified directory would still become the child's HOME -- so this is
+        # raised, not returned, and the boot stops. Pods are systemd --user
+        # (Linux) only, so no supported platform reaches this.
+        raise PodError(
+            f"pod OS home {os_home} needs O_DIRECTORY/O_NOFOLLOW descriptors to be "
+            "built safely and this platform provides none"
+        )
+    fds: list[int] = []
+    try:
+        # Each level is created through its PINNED parent, so a link planted at
+        # any component is refused instead of followed. Passing the full path
+        # per level is deliberate: create_and_open_dir_pinned pins the whole
+        # ancestor chain itself and creates only the final component.
+        try:
+            target = os_home
+            for label in ("os-home", ".aws", "sso", "cache"):
+                if label != "os-home":
+                    target = target / label
+                fds.append(
+                    pinned_fs.create_and_open_dir_pinned(
+                        target, what=f"pod OS home {label}", refusal=PodError
+                    )
+                )
+                # Tighten EVERY level, not just the leaf: a group-writable
+                # ancestor is a replacement window for the credential below it.
+                os.fchmod(fds[-1], stat.S_IRWXU)
+        except OSError as exc:
+            # ENOSPC/EACCES/EIO building the tree. The directory the child would
+            # receive as HOME does not exist or is not ours, so this is the same
+            # fail-closed case as a refused component, not a skippable seed.
+            raise PodError(f"could not build the pod OS home under {os_home}: {exc}") from exc
+        cache_fd = fds[-1]
+        # ---- BEST-EFFORT from here: the tree is sound, only the copy can fail.
+        # Every failure below leaves the pod booting signed-out, which is why none
+        # of them may escape as the PodError that aborts the boot.
+        try:
+            src_fd = pinned_fs.open_dir_pinned(
+                real_cache_dir, what="host SSO token cache", refusal=PodError
+            )
+        except (OSError, PodError):
+            # No readable host SSO cache (signed out, permission error, stalled
+            # mount): the pod still boots signed-out rather than not at all.
+            return
+        fds.append(src_fd)
+        try:
+            sources = sorted(real_cache_dir.glob(_SSO_TOKEN_GLOB))
+        except OSError:
+            # Enumeration itself denied (EACCES on the cache directory, stalled
+            # mount). Same class as an unreadable cache: nothing to stage, but the
+            # verified tree stands, so the pod boots signed-out.
+            return
+        for source in sources:
+            try:
+                pinned_fs.copy_file_pinned(
+                    str(source),
+                    dir_fd=src_fd,
+                    name=source.name,
+                    dst_dir_fd=cache_fd,
+                    dst_name=source.name,
+                    skip_existing=True,
+                    force_mode=0o600,
+                )
+            except OSError:
+                continue
+    finally:
+        pinned_fs.close_all(fds)
 
 
 def cleanup_home(cfg: PodConfig, name: str) -> int:
@@ -2777,32 +3131,85 @@ def target_supports_flag(checkout: Path, flag: str) -> bool:
 
 
 def boot(cfg: PodConfig, name: str) -> int:
-    """Boot the isolated gateway for pod *name*. Returns an exit code on failure;
-    on success it ``exec``s and does not return."""
+    """Boot the isolated gateway for pod *name*, converting EVERY refusal into a
+    recorded terminal exit. Returns an exit code on failure; on success it
+    ``exec``s and does not return.
+
+    **This wrapper is the class closure for "a refusal that escapes the boot path
+    with a non-terminal exit".** Three rounds fixed instances of it one at a time:
+    round 7 unified the explicit ``return`` sites through :func:`_refuse`, round 8
+    added an AST guard over those returns -- and round 9's finding walked straight
+    past both, because a ``raise PodError`` is neither a bare return nor visible to
+    a scan over returns. It escaped to the CLI's generic handler, which exits 1, a
+    code NOT in :data:`TERMINAL_BOOT_EXIT_CODES`, so systemd retried it and
+    launchd's KeepAlive restarted it every ``ThrottleInterval``: the exact
+    restart-loop the terminal-exit work exists to prevent, reached by the one shape
+    the guard did not cover.
+
+    Enumerating raises would not have closed it either. ``PodError`` is raised from
+    roughly forty sites under ``pod/``, many of them transitively reachable from
+    here (``validate_name``, ``read_env_file``, ``write_pod_config``,
+    ``seed_home_from_scenario``, ``_ensure_pod_dir``, the whole ``pinned_fs``
+    refusal surface), and any future one would join them silently. So the
+    conversion is structural instead: the body cannot raise ``PodError`` past this
+    frame, and a refusal added tomorrow is recorded and given a terminal code
+    without anyone remembering to route it.
+
+    ``execve`` replaces the process on the success path, so nothing after the body
+    can run and the wrapper costs the happy path nothing.
+
+    **Name validation happens BEFORE the guard, deliberately.** The wrapper records
+    every refusal it catches, and ``_record_refusal`` derives its path from *name* --
+    so catching a NAME-validation failure turned the refusal machinery into a
+    host-write primitive: ``pod _run /tmp/important`` would have written
+    ``/tmp/important.refused`` outside the pod plane. There is no legitimate pod to
+    record against when the name itself is rejected, so that failure exits with the
+    honest error and writes nothing. The guard therefore only ever sees a validated
+    name, which is also what lets ``_record_refusal`` treat a path-shaped name as
+    unreachable rather than merely unlikely.
+    """
+    try:
+        validate_name(name)
+    except PodError as exc:
+        # Outside the guard on purpose: see the docstring. No record is written --
+        # there is no pod this could be a refusal FOR.
+        print(f"FATAL: {exc}")
+        return EXIT_PROVISIONING
+    try:
+        return _boot_unguarded(cfg, name)
+    except PodError as exc:
+        # Already-recorded refusals return through _refuse and never arrive here;
+        # this is the escape hatch closing, so record and give it a terminal code.
+        return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
+
+
+def _boot_unguarded(cfg: PodConfig, name: str) -> int:
+    """The boot body. Call :func:`boot`, never this: a ``PodError`` raised here is
+    a refusal that must be recorded and given a terminal exit code, and only the
+    wrapper does that."""
     validate_name(name)
     env_data = read_env_file(cfg, name)
     checkout_str = env_data.get("CHECKOUT")
     if not checkout_str:
-        print(
-            f"FATAL: pod {name!r} has no pinned checkout — run "
-            f"`kirocrew pod up {name}` from inside a kirocrew checkout first"
+        return _refuse(
+            cfg,
+            name,
+            3,
+            f"pod {name!r} has no pinned checkout — run "
+            f"`kirocrew pod up {name}` from inside a kirocrew checkout first",
         )
-        return 3
     checkout = Path(checkout_str).expanduser()
     home_dir = cfg.home_dir(name)
     bin_path = prov.venv_bin(checkout)
 
     if not (bin_path.exists() and os.access(bin_path, os.X_OK)):
-        print(f"FATAL: no kirocrew venv at {bin_path} (provision {name} first)")
-        return 3
+        return _refuse(cfg, name, 3, f"no kirocrew venv at {bin_path} (provision {name} first)")
     if not (checkout / "src" / "kiro_crew" / "static" / "dist").is_dir():
-        print(f"FATAL: no built dist for {name} (build the worktree first)")
-        return 3
+        return _refuse(cfg, name, 3, f"no built dist for {name} (build the worktree first)")
 
     port = derive_port(cfg, name)
     if port == cfg.live_port:
-        print(f"FATAL: derived port is the live plane :{cfg.live_port} — refusing")
-        return 70
+        return _refuse(cfg, name, 70, f"derived port is the live plane :{cfg.live_port} — refusing")
 
     seed = env_data.get("SEED", "")
     approval = env_data.get("APPROVAL", "")
@@ -2839,8 +3246,7 @@ def boot(cfg: PodConfig, name: str) -> int:
         try:
             fresh = seed_home_from_scenario(cfg, name, scenario)
         except PodError as exc:
-            print(f"FATAL: {exc}")
-            return 3
+            return _refuse(cfg, name, 3, str(exc))
         print(
             f"kirocrew-pod: seeded home from scenario {scenario!r}"
             if fresh
@@ -2851,6 +3257,40 @@ def boot(cfg: PodConfig, name: str) -> int:
         # descriptor before their completion marker is published. Directory
         # seeds keep the existing config-only path.
         write_pod_config(home_dir, seed)
+    # Independent of the scenario/directory-seed split above: every pod, seeded
+    # or blank, gets its own OAuth-grant-cache home seeded from the real host's
+    # SSO tokens (see ``_seed_pod_os_home`` and ``build_pod_env``'s
+    # ``KIROCREW_OS_HOME`` docstring). Create-only per file, so re-running boot
+    # against an already-seeded home is a no-op.
+    #
+    # A REFUSAL here is fatal, not skippable. This directory becomes the pod
+    # child's ``HOME``; if a component is a planted symlink, booting anyway hands
+    # the pod's kiro-cli the real host tree and it writes machine-level grants
+    # through the link. Exit ``EXIT_REFUSED_UNRECOVERABLE`` so systemd does not
+    # restart into the same refusal every 5s -- see that constant.
+    try:
+        # ``create_and_open_dir_pinned`` pins the ANCESTOR chain and creates only
+        # the final component, so the pod home must already exist. It does on both
+        # branches above (``write_pod_config`` creates it; a scenario seed builds
+        # it), but pinning that here keeps a refusal meaning "a component was
+        # unsafe" rather than "a branch happened not to create the parent" -- and
+        # the create itself is pinned, so a link planted AT the pod home cannot
+        # redirect it.
+        _ensure_pod_dir(home_dir, what="pod home")
+        _seed_pod_os_home(home_dir / "os-home")
+    except PodError as exc:
+        return _refuse(
+            cfg,
+            name,
+            EXIT_REFUSED_UNRECOVERABLE,
+            f"{exc}. Refusing to boot without a verified pod OS home -- the pod's "
+            "kiro-cli would write OAuth grants outside the pod. Inspect "
+            f"{home_dir / 'os-home'} for a replaced component, then "
+            f"`kirocrew pod down {name}` and bring it up again.",
+        )
+    # Past every terminal refusal: clear any marker an earlier refused boot left,
+    # so the record means "the LAST boot refused" rather than "a boot once did".
+    _clear_refusal(cfg, name)
 
     print(f"kirocrew-pod: name={name} port={port} home={home_dir} checkout={checkout}")
 
