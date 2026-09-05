@@ -87,7 +87,6 @@ from kiro_crew.dashboard.chat_nav import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_orchestrator import (  # noqa: F401
     _build_stage_context,
-    _capture_stage_result,
     _previous_result_paths,
     _stage_loop,
     api_chat_plan_action,

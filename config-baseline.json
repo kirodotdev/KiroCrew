@@ -1224,7 +1224,8 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "stage_timeout_seconds": 1800
+        "stage_timeout_seconds": 1800,
+        "max_plan_duration_seconds": 7200
       }
     },
     {
@@ -1240,6 +1241,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1800
+    },
+    {
+      "path": "orchestrator.max_plan_duration_seconds",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max Plan Duration",
+      "help": "Ceiling for a WHOLE auto-run plan in seconds, checked at each stage boundary, with one warning at 75% of the budget. The per-stage timeout above multiplies by stage count, so without this a long plan can run unattended for hours. 0 disables. Default 2 h.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 7200
     },
     {
       "path": "messaging",
