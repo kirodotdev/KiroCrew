@@ -824,8 +824,9 @@ class WebexDispatcher:
 
         Deliberately not a dashboard-session picker: resuming one of those needs
         the durable resume-expectation store and an inbound path that resolves the
-        mirror binding, which is why ``supports_session_resume`` is Discord-only
-        and the capability ledger pins it that way.
+        mirror binding. Webex implements neither and therefore leaves
+        ``supports_session_resume`` false; Discord and Telegram are the shipped
+        transports that currently declare it.
         """
         if self.conv_log is None:
             await self._reply(inbound, "ℹ️ Conversation history is not available.")

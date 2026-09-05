@@ -321,6 +321,7 @@ class FakeSessions:
         self.queued: list = []
         self._gp = FakeProvider()
         self.mirror_links: dict[str, Any] = {}
+        self.inbound_keys: set[str] = set()
         self.mirror_opt_outs: set[str] = set()
         self.batch_depth = 0
         self.batched_writes: list[bool] = []
@@ -383,13 +384,32 @@ class FakeSessions:
         return -1
 
     def set_mirror_link(
-        self, key: str, link: Any, *, reason: str = UNBIND_REASON_UNSPECIFIED
+        self,
+        key: str,
+        link: Any,
+        *,
+        accepts_inbound: bool = False,
+        reason: str = UNBIND_REASON_UNSPECIFIED,
     ) -> None:
         self.batched_writes.append(self.batch_depth > 0)
         self.mirror_links[key] = link
+        if accepts_inbound:
+            self.inbound_keys.add(key)
+        else:
+            self.inbound_keys.discard(key)
 
     def get_mirror_link(self, key: str) -> Any:
         return self.mirror_links.get(key)
+
+    def find_mirror_sessions(self, link: Any, *, inbound_only: bool = False) -> list[str]:
+        return [
+            key
+            for key, candidate in self.mirror_links.items()
+            if candidate == link and (not inbound_only or key in self.inbound_keys)
+        ]
+
+    async def aflush(self) -> None:
+        return None
 
     @contextmanager
     def batched_save(self) -> Any:
@@ -411,6 +431,7 @@ class FakeSessions:
 
     def clear_mirror_link(self, key: str, *, reason: str = UNBIND_REASON_UNSPECIFIED) -> bool:
         self.batched_writes.append(self.batch_depth > 0)
+        self.inbound_keys.discard(key)
         return self.mirror_links.pop(key, None) is not None
 
     def clear_mirror_links_at(
@@ -418,6 +439,7 @@ class FakeSessions:
     ) -> list[str]:
         cleared = [key for key, candidate in self.mirror_links.items() if candidate == link]
         for key in cleared:
+            self.inbound_keys.discard(key)
             self.mirror_links.pop(key, None)
         return cleared
 

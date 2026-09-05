@@ -60,12 +60,14 @@ class TransportCapabilities:
       dashboard marks the binding as an INBOUND resume target
       (``accepts_inbound``), and therefore whether the slot row reports
       ``direction: both``. Only a transport whose inbound path actually resolves
-      the mirror binding may declare it: Discord's dispatcher looks the
-      conversation up (``DiscordSessionResume.resumed_session``), while Telegram
-      and the rest derive a session key from the route alone and never consult
-      the binding. Declaring it where it is not honoured makes the dashboard
-      promise a two-way link whose replies silently start a separate session —
-      which is exactly what this flag exists to prevent. Slack is out of scope
+      the mirror binding may declare it: Discord and Telegram both resolve the
+      conversation through their channel-specific session-resume adapters. The
+      remaining transports derive a session key from the route alone and never
+      consult the binding. Declaring it where it is not honoured makes the
+      dashboard promise a two-way link whose replies silently start a separate
+      session — which is exactly what this flag exists to prevent. The dashboard
+      then calls ``may_resume_from`` on the resolved target, so a capable transport
+      may still narrow inbound ownership per conversation. Slack is out of scope
       here: it routes inbound through its own ``_thread_to_session`` index and
       never sets the marker.
 
@@ -348,6 +350,16 @@ class MessagingTransport(ABC):
         whose principal is no longer on the roster.
         """
         return True
+
+    def may_resume_from(self, conversation_id: str, thread_id: str | None = None) -> bool:
+        """Whether this exact target may drive a dashboard session inbound.
+
+        The capability says the transport has a correct resolver; this hook applies
+        target- and roster-specific ownership policy after target resolution. The
+        default follows the capability. A transport with a stricter owner model
+        overrides synchronously and in memory, matching :meth:`may_send_to`.
+        """
+        return bool(self.capabilities.supports_session_resume)
 
     # -- Inbound adapter ----------------------------------------------------
     @abstractmethod

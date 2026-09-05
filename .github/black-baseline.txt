@@ -999,7 +999,6 @@ test/test_session_health.py
 test/test_session_keepalive.py
 test/test_session_map_locking.py
 test/test_session_map_migration.py
-test/test_session_map_mirror.py
 test/test_session_memory.py
 test/test_session_more_coverage.py
 test/test_session_mtime_ordering.py

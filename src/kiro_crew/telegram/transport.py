@@ -119,6 +119,9 @@ TELEGRAM_CAPABILITIES = TransportCapabilities(
     max_message_chars=TELEGRAM_CHUNK_LIMIT,
     max_buttons=25,
     supports_proactive_send=True,
+    # /session binds this exact Telegram DM back to a dashboard session, and
+    # every ordinary inbound message resolves that durable binding first.
+    supports_session_resume=True,
 )
 
 
@@ -322,6 +325,10 @@ class TelegramTransport(MessagingTransport):
                 is None
             )
         return conversation_id in self._allowed
+
+    def may_resume_from(self, conversation_id: str, thread_id: str | None = None) -> bool:
+        """Only one unambiguous owner DM may drive a dashboard session inbound."""
+        return thread_id is None and len(self._allowed) == 1 and conversation_id in self._allowed
 
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
