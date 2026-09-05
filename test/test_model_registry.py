@@ -449,19 +449,33 @@ class TestAdvertisedModelCache:
     test (it is process-wide runtime state, like ``_KIRO_WINDOWS``).
     """
 
-    def test_seed_falls_back_to_registry_on_cold_cache(self, monkeypatch):
+    def test_seed_is_empty_on_cold_cache_rather_than_registry_derived(self, monkeypatch):
+        # The seed is provider-advertised ONLY. Falling back to the static registry
+        # here is what pinned a served-but-unregistered model to the base window:
+        # the adapter merges availableModels union+dedup, so a registry list that
+        # has not caught up REPLACES the adapter's correct provider list with one
+        # carrying no [1m] id for that model. Seeding nothing leaves the adapter on
+        # its own list, so no registry edit is needed per new model per provider.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
-        # The registry allowlist, deduped so a base-window id never rides next to
-        # its 1M sibling (the pre-dedup list still shipped both).
-        assert mr.seed_available_models("claude_code") == mr._dedup_window_siblings(
-            mr.available_models("claude_code")
-        )
+        assert mr.seed_available_models("claude_code") == []
+        # The registry itself still answers the picker/window questions — only the
+        # seed path stopped reading it.
+        assert mr.available_models("claude_code")
 
     def test_seed_drops_base_window_sibling_of_a_1m_id(self, monkeypatch):
-        # The 4.8 fix: the registry emits both the [1m] and the 200K spelling of
-        # Opus 4.8; the seed must carry only the 1M one so the adapter cannot
-        # collapse a 4.8 pick to the base window.
-        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        # The 4.8 fix: when a backend advertises both the [1m] and the 200K
+        # spelling of Opus 4.8, the seed must carry only the 1M one so the adapter
+        # cannot collapse a 4.8 pick to the base window.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-opus-4-8[1m]",
+                    "global.anthropic.claude-opus-4-8",
+                ]
+            },
+        )
         seed = mr.seed_available_models("claude_code")
         assert "global.anthropic.claude-opus-4-8[1m]" in seed
         assert "global.anthropic.claude-opus-4-8" not in seed

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -27,10 +28,11 @@ import signal
 import stat
 import subprocess as subprocess_mod
 import sys
+import tempfile
 import time
 import uuid
 from collections import deque
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from pathlib import Path
 from typing import (
     Any,
@@ -44,6 +46,7 @@ from typing import (
 )
 
 from kiro_crew import acp_tool_gate, agent_scratch, model_registry, platform_compat
+from kiro_crew.acp import seed_provenance
 from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
     _kiro_tool_name,
@@ -136,6 +139,7 @@ from kiro_crew.acp.types import (
     model_registry_namespace,
 )
 from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import (
@@ -2685,6 +2689,13 @@ class AcpClient:
         # theirs. So the flag says "Crew created it" and this says "and it is still
         # Crew's content" -- the re-seed and the reset unlink both require BOTH.
         self._claude_settings_written: str | None = None
+        # Identity this client claims its seed under, in the durable record. Two
+        # keyless clients share the default work_dir, so a token is what keeps
+        # "Crew wrote it" from collapsing into "any Crew client may take it": the
+        # durable record is for adopting an ORPHAN, and a sibling still running in
+        # this process does not have one. Per instance and never reset -- a client
+        # that re-spawns is the same owner across spawns.
+        self._seed_owner = uuid.uuid4().hex
         # This session's translated ``mcpServers`` array, resolved once per spawn.
         # Held here so the shared session-params call site is a pure in-memory
         # read: the translation touches disk, and doing that AT the call site
@@ -3145,9 +3156,10 @@ class AcpClient:
         return self._work_dir / ".claude" / "settings.local.json"
 
     def _claude_settings_is_still_ours(self) -> bool:
-        """Whether settings.local.json still holds the bytes THIS session wrote.
+        """Whether settings.local.json still holds the bytes CREW wrote.
 
-        The second half of the ownership test (the first is having created it).
+        The second half of the ownership test (the first is having created it --
+        in this session, or in an earlier one per the durable record).
         A user can replace the file atomically after Crew's create, and the
         replacement is theirs: it must not be overwritten by a re-seed nor
         deleted on reset. An unreadable path answers "not ours" -- declining to
@@ -3165,26 +3177,127 @@ class AcpClient:
         past the payload it is comparing against. Every refusal answers "not
         ours", which leaves the file alone -- the safe direction.
         """
-        written = getattr(self, "_claude_settings_written", None)
-        if written is None:
+        return self._settings_path_holds(
+            self._claude_local_settings_path(), self._expected_settings_fingerprint()
+        )
+
+    @staticmethod
+    def _settings_path_holds(path: Path, expectation: tuple[int, str] | None) -> bool:
+        """Whether *path* still holds exactly the ``(size, sha256)`` in *expectation*.
+
+        Split out from :meth:`_claude_settings_is_still_ours` so the teardown
+        transaction can be a pure function of arguments captured before it starts.
+        It runs in a thread while the client clears its instance flags, so a version
+        that re-read ``self`` could decide ownership against state that changed
+        underneath it. ``None`` means Crew has no claim to check, which reads as
+        "not ours".
+        """
+        if expectation is None:
             return False
-        expected = written.encode("utf-8")
+        size, sha = expectation
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         try:
-            fd = os.open(self._claude_local_settings_path(), flags)
+            fd = os.open(path, flags)
         except OSError:
             return False
         try:
             st = os.fstat(fd)
             # A FIFO, device or directory is not Crew's file, and reading one is
             # the hazard. Size first: it settles a huge file without reading it.
-            if not stat.S_ISREG(st.st_mode) or st.st_size != len(expected):
+            if not stat.S_ISREG(st.st_mode) or st.st_size != size:
                 return False
-            return os.read(fd, len(expected) + 1) == expected
+            # ONE byte past the recorded length, so a file that grew between the
+            # fstat and the read is rejected on length rather than matching on a
+            # prefix hash. Bounded either way: a few hundred bytes, never the file.
+            chunk = os.read(fd, size + 1)
+            return len(chunk) == size and hashlib.sha256(chunk).hexdigest() == sha
         except OSError:
             return False
         finally:
             os.close(fd)
+
+    @staticmethod
+    def _claim_pathname_if_ours(path: Path, expectation: tuple[int, str] | None) -> Path | None:
+        """Atomically move *path* aside into a fresh name; return it IFF it is Crew's.
+
+        Closes the window between an ownership check and the delete or overwrite that
+        acts on it. ``_settings_path_holds`` verifies bytes by PATHNAME, but the delete
+        or re-seed then mutates that same pathname a moment later -- and a user who
+        atomically replaced the file in between would have their settings deleted or
+        clobbered. ``os.replace`` captures whatever is at the pathname in ONE atomic
+        step, so verifying the MOVED inode cannot then race: its bytes are fixed. A
+        match is Crew's own seed (the caller deletes or replaces the moved file); a
+        mismatch is a replacement that raced in, and it is put back untouched.
+
+        The capture destination is a FRESH name created by ``mkstemp`` (``O_EXCL``) in
+        the same directory, so it is a pathname this process just created and provably
+        did NOT pre-exist. A fixed sibling name (e.g. ``<name>.crew-gc``) could name a
+        file the project already owns, and ``os.replace`` onto it would clobber that
+        file atomically -- relocating the very data loss this helper prevents one
+        pathname over. ``os.replace`` onto our own fresh temp destroys only the empty
+        temp we just made.
+
+        ``None`` (nothing for the caller to mutate) when the path is gone, cannot be
+        moved, or holds a file that is not Crew's. A crash between the move and the
+        caller's follow-up leaves at most one such ``.crew-gc`` temp beside the target,
+        which the next session's fresh seed ignores.
+        """
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(path.parent), prefix=path.name + ".", suffix=".crew-gc"
+            )
+        except OSError:
+            return None
+        os.close(fd)
+        aside = Path(tmp_name)
+        try:
+            os.replace(path, aside)
+        except OSError:
+            # Nothing to capture (path gone, or it cannot be moved): drop the empty
+            # temp so a refusal never litters a stray file beside the target.
+            with suppress(OSError):
+                aside.unlink()
+            return None
+        if AcpClient._settings_path_holds(aside, expectation):
+            return aside
+        # Not Crew's after all (a replacement raced in, or a symlink O_NOFOLLOW
+        # rejected): restore it exactly as found and touch nothing.
+        try:
+            os.replace(aside, path)
+        except OSError:  # pragma: no cover - defensive; a racing writer took the name
+            logger.warning(
+                "could not restore %s after it proved not to be Crew's; it is at %s",
+                path,
+                aside.name,
+            )
+        return None
+
+    def _expected_settings_fingerprint(self) -> tuple[int, str] | None:
+        """``(size, sha256)`` of the seed Crew believes is at the settings path.
+
+        Session memory first -- authoritative for a file this client just wrote,
+        and available even when the sidecar could not be persisted -- then the
+        durable record in :mod:`kiro_crew.acp.seed_provenance`, which is what lets
+        a seed orphaned by a killed session (or written by an older Crew) still be
+        recognized as Crew's own instead of reading as a stranger's file forever.
+        Both sources prove the same thing the same way: the bytes on disk are the
+        bytes Crew wrote. Neither is a permission to touch an arbitrary path.
+
+        ``None`` means Crew has no claim to check, which callers read as "not
+        ours" -- including the case where the durable record belongs to a SIBLING
+        client still seeding this path in this process, since an orphan is what
+        the record is for. In-memory only, so this stays safe to call from the
+        event loop.
+        """
+        written = getattr(self, "_claude_settings_written", None)
+        if written is not None:
+            payload = written.encode("utf-8")
+            return len(payload), hashlib.sha256(payload).hexdigest()
+        # getattr for the same reason as _reset_state's: tests build clients
+        # without __init__, and a shared "" owner there is a consistent identity.
+        return seed_provenance.recorded(
+            self._claude_local_settings_path(), getattr(self, "_seed_owner", "")
+        )
 
     def _write_claude_local_settings(self) -> None:
         """Seed ``<work_dir>/.claude/settings.local.json`` for this session.
@@ -3204,22 +3317,37 @@ class AcpClient:
            spec's ``disabledTools`` cannot ride along in the ``mcpServers`` array,
            and silently dropping a restriction while forwarding the server it
            narrows would widen the tool surface.
-        3. ``availableModels`` plus the resolved ``model``. The adapter merges
+        3. ``availableModels`` plus the resolved ``model``, and ONLY once the
+           backend has actually advertised a list. The adapter merges
            ``availableModels`` union+dedup across every settings source, so a user
            ``~/.claude`` carrying ``['opus','sonnet']`` is enough to collapse a
-           versioned ``[1m]`` id (1M-token window) back to 200K. Writing the full
-           registry allowlist here makes the id resolve by exact match.
+           versioned ``[1m]`` id (1M-token window) back to 200K -- and a
+           registry-derived list seeded here does exactly the same thing to any
+           model the registry has not caught up on. So on a cold advertised-model
+           cache both keys are omitted (the adapter's own provider list is
+           already right) and the re-seed after this session's capture fills them
+           in. See :func:`~kiro_crew.model_registry.seed_available_models`.
 
         **Crew touches only the file it owns.** Ownership is not the path -- a
         path under a checked-out repository is not Crew's to claim -- it is having
-        CREATED the file in this session (``_claude_settings_authored``) AND the
-        bytes on disk still being the ones Crew wrote
-        (``_claude_settings_written``). Both hold: overwrite, which is what lets
-        the model-substitution re-seed change the resolved model instead of
-        re-sending byte-identical params and taking the same advisory again.
-        Either fails: leave the path entirely alone. Absent: create with
-        ``O_EXCL``, so a sibling session racing the same ``work_dir`` loses the
-        create rather than clobbering the winner.
+        CREATED the file (``_claude_settings_authored``, or the durable record in
+        :mod:`kiro_crew.acp.seed_provenance` for a seed an earlier session left
+        behind) AND the bytes on disk still being the ones Crew wrote. Both hold:
+        overwrite by STAGE AND RENAME, which is what lets the model-substitution
+        re-seed change the resolved model instead of re-sending byte-identical
+        params and taking the same advisory again, without a partial write ever
+        being observable at the path. Either fails: leave the path entirely alone.
+        Absent: create with ``O_EXCL``, so a sibling session racing the same
+        ``work_dir`` loses the create rather than clobbering the winner.
+
+        The durable half is what makes the ownership test survive the process. A
+        session killed before ``_reset_state`` leaves its seed on disk, and with a
+        session-scoped test only, every later session read that orphan as a
+        stranger's file and refused to touch it -- so the stale allowlist, stale
+        ``model`` and stale ``permissions.defaultMode`` became permanent, and no
+        amount of re-running Crew could repair them. Recognizing the orphan by
+        digest lets it be re-seeded (or removed on reset) while a genuinely
+        user-authored file is still left exactly as it was.
 
         That is what keeps this seam out of a user's project state: nothing here
         reads, merges into, rewrites or deletes a file Crew did not author, so
@@ -3274,19 +3402,63 @@ class AcpClient:
             )
             self._claude_settings_authored = False
             self._claude_settings_written = None
+            seed_provenance.forget(local_settings, self._seed_owner)
             return
+        # Set only when the live slot was taken from an ORPHAN below, so the write
+        # failure handler knows whether it owes a release().
+        adopted = False
         if not authored and local_settings.exists():
-            # Someone else's file: either the user's own project settings, or a
-            # live sibling session's seed (``work_dir`` is caller-supplied and
-            # every keyless client shares one default). Crew authors neither, so
-            # it touches neither.
-            logger.info(
-                "%s already exists; leaving it as the authoritative project settings. This "
-                "session therefore runs without Crew's availableModels allowlist and without "
-                "the permissions.deny rules from the agent spec.",
-                local_settings,
-            )
-            return
+            # The claim is part of the DECISION, not bookkeeping after it: ownership
+            # is read at a moment, so two clients starting together can both see the
+            # same orphan as adoptable. Only the one that wins the live slot rewrites
+            # it; the loser falls to the leave-it-alone branch below rather than
+            # writing its own permission mode over a session that is already using
+            # the file.
+            if self._claude_settings_is_still_ours() and seed_provenance.claim(
+                local_settings, self._seed_owner
+            ):
+                # Crew's OWN seed, orphaned: a previous session (or an older Crew)
+                # wrote exactly these bytes and never got to clean up -- a kill -9,
+                # a crash, an app replacement. Adopt it and fall through to the
+                # staged re-seed. Adoption is earned by the digest, not by the
+                # path: the durable record alone proves nothing, so a user's own
+                # file (or Crew's file after a user edit) still takes the
+                # leave-it-alone branch below.
+                #
+                # This is also the only way a stale permissions.defaultMode gets
+                # cleaned up. Previously such a file was frozen in place and the
+                # adapter kept reading it, so an inherited bypassPermissions
+                # outlived its session indefinitely; re-seeding overwrites the mode
+                # with THIS session's.
+                logger.info(
+                    "%s holds a settings seed Crew wrote in an earlier session; re-seeding it "
+                    "for this session instead of leaving stale model and permission settings "
+                    "in place.",
+                    local_settings,
+                )
+                # LOCAL only. The instance flag is what reset reads to decide
+                # whether to DELETE this path, and the durable record is what a
+                # later session reads to decide whether to adopt it, so neither
+                # moves until the re-seed below has actually landed: a claim taken
+                # here and a write that then failed would leave reset deleting a
+                # file whose bytes Crew never wrote. The live slot IS taken already
+                # -- ``claim`` above is the race arbiter and has to be -- so the
+                # write is wrapped below to hand it back if it does not land.
+                authored = True
+                adopted = True
+            else:
+                # Someone else's file: either the user's own project settings, or a
+                # live sibling session's seed (``work_dir`` is caller-supplied and
+                # every keyless client shares one default) -- including a sibling that
+                # won the same orphan a moment ago. Crew authors none of those, so it
+                # touches none of them.
+                logger.info(
+                    "%s already exists; leaving it as the authoritative project settings. This "
+                    "session therefore runs without Crew's availableModels allowlist and without "
+                    "the permissions.deny rules from the agent spec.",
+                    local_settings,
+                )
+                return
 
         data: dict[str, Any] = {}
         perms: dict[str, Any] = {}
@@ -3300,53 +3472,195 @@ class AcpClient:
         if perms:
             data["permissions"] = perms
         # Namespace-keyed (claude_code here), the registry index this backend's ids
-        # live in — see _model_registry_namespace. Provider-first: the ids the
-        # backend actually advertised (cached from a prior session/new) when the
-        # cache is warm, so the seed reflects what the account is served and a
-        # served-but-unregistered model gets its real window; the static registry
-        # allowlist is the cold-cache fallback (first-ever session), which is the
-        # exact list shipped before this cache existed.
+        # live in — see _model_registry_namespace. Provider-ONLY: the ids the
+        # backend actually advertised (cached from a prior session/new), so the seed
+        # reflects what the account is served and a served-but-unregistered model
+        # gets its real window. A cold cache returns nothing rather than falling
+        # back to the static registry, and the else branch below omits both model
+        # keys — the adapter's own provider list is already right, and a stale
+        # allowlist merged over it is not.
         allowlist = model_registry.seed_available_models(self._model_registry_namespace)
         if allowlist:
             data["availableModels"] = allowlist
+            # DEFAULT_MODEL ("auto") is not a provider id, and omitting the key is
+            # what lets the adapter pick the allowlist head. Written only ALONGSIDE
+            # the allowlist: a model key that names no entry in the list it ships
+            # with is the exact shape that resolves to the base window.
+            if self._model and self._model != DEFAULT_MODEL:
+                # Folded onto the advertised spelling HERE rather than trusting a
+                # caller to have folded self._model first. The re-seed runs beside
+                # the model-cache persist, which is BEFORE _apply_startup_model, so
+                # depending on that fold would be an ordering coupling between two
+                # distant steps -- and the failure it buys is silent (a bare id
+                # writes a model key that is not in the allowlist beside it, i.e.
+                # exactly the base-window bug this file exists to close). The
+                # allowlist above is non-empty here, so the cache is warm and the
+                # fold is the same one _apply_startup_model and set_model perform.
+                data["model"] = model_registry.resolve_wire_model_id(
+                    self._model, self._model_registry_namespace
+                )
         else:
-            # Only reachable with a corrupt/missing model registry (which the
-            # registry already warns about at import) AND a cold advertised-model
-            # cache. Without the allowlist the adapter can collapse the [1m] id to
-            # 200K, so say so here rather than degrade silently.
-            logger.warning(
-                "availableModels empty (corrupt/missing registry and cold advertised-model "
-                "cache?); settings.local.json written without an allowlist — the 1M-token "
-                "window may not resolve",
+            # Cold advertised-model cache -- the first session on this install,
+            # before any session/new has been captured. Both model keys are
+            # OMITTED rather than filled from the static registry, and that is the
+            # fix, not a degradation: the adapter merges availableModels
+            # union+dedup across settings sources, so a partial list here replaces
+            # a correct provider-derived one with a stale one, and a model id that
+            # matches nothing in it resolves to the base window. Writing neither
+            # key leaves the adapter on its own provider list, which already
+            # carries the versioned [1m] ids. This session's capture then warms the
+            # cache and the post-capture re-seed fills both keys in.
+            logger.info(
+                "advertised-model cache is cold; seeding %s without availableModels/model so "
+                "claude-agent-acp resolves the model from its own provider list. The re-seed "
+                "after this session's model capture fills both keys in.",
+                local_settings,
             )
-        # self._model is a resolved provider id; DEFAULT_MODEL ("auto") is not one,
-        # and omitting the key is what lets the adapter pick the allowlist head.
-        if self._model and self._model != DEFAULT_MODEL:
-            data["model"] = self._model
 
-        local_settings.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        # O_EXCL on the create is the whole ownership claim: if a sibling session
-        # (or the user) created the file between the check above and here, this
-        # raises rather than clobbering it. O_TRUNC is the re-seed, and it is
-        # reached only once BOTH ownership tests above passed, so the bytes it
-        # replaces are Crew's own. 0o600 either way -- Crew's own file.
-        flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        flags |= os.O_TRUNC if authored else os.O_EXCL
+        # An adoption already holds the path's live slot, because ``claim`` above
+        # has to be the race arbiter -- it cannot be deferred until after a
+        # successful write without letting two clients both decide the same orphan
+        # is theirs. So if the write does NOT land, the slot has to go back: a claim
+        # kept by a client that wrote nothing makes the orphan permanently
+        # unadoptable for the rest of the process (``recorded`` reports it as a live
+        # session's file), and an orphan that cannot be adopted cannot be repaired
+        # or deleted -- so a stale ``bypassPermissions`` in it would simply stay.
+        # BaseException, not Exception: a CancelledError or a KeyboardInterrupt
+        # through here wedges the slot exactly the same way. The record is left
+        # alone (``release``, not ``forget``): it is what keeps the path adoptable.
+        # The re-seed moves Crew's current file aside before overwriting, so this
+        # holds it for the ``except`` to restore if the write does not land.
+        reseed_aside: Path | None = None
         try:
-            fd = os.open(local_settings, flags, 0o600)
-        except FileExistsError:
-            logger.info("%s was created concurrently; leaving it alone", local_settings)
+            local_settings.parent.mkdir(parents=True, exist_ok=True)
+            # BYTES on both branches, never text mode: Python's text layer rewrites
+            # "\n" to "\r\n" on Windows, so the file on disk was LARGER than the
+            # payload and no longer the bytes this session recorded. The ownership
+            # check compares exact bytes, so that translation made every Windows
+            # session read as "not ours" -- the re-seed declined, reset never removed
+            # its own file, and the MCP array was withheld. 0o600 either way.
+            if authored:
+                # The re-seed of a file Crew owns, STAGED AND RENAMED rather than
+                # truncated in place. O_TRUNC destroyed the recorded bytes before the
+                # new ones landed, so a write that failed part-way (ENOSPC, EIO, a
+                # kill between truncate and write) left the adapter reading a
+                # truncated settings file AND a durable record whose digest matched
+                # nothing on disk -- unclaimable by every later session, which is the
+                # exact failure this module exists to remove. A temp + rename leaves
+                # the old, still-recorded bytes intact on failure, so the path is
+                # adopted again next time. The rename replaces a link at the leaf
+                # rather than refusing it (no O_NOFOLLOW to pass), which costs
+                # nothing here: this branch is reached only for a path whose bytes
+                # just matched Crew's record, i.e. one
+                # _claude_settings_is_still_ours() read as a REGULAR file a moment
+                # ago.
+                #
+                # INODE-PINNED: the ownership check above and this overwrite act on
+                # the same PATHNAME, and a user who atomically replaced the file in
+                # the gap would have their settings clobbered by the rename. Moving
+                # Crew's current file aside captures it in one atomic step; the write
+                # only proceeds when the MOVED inode is still Crew's, so a replacement
+                # that raced in is detected and left in place instead.
+                reseed_aside = self._claim_pathname_if_ours(
+                    local_settings, self._expected_settings_fingerprint()
+                )
+                if reseed_aside is None:
+                    logger.info(
+                        "%s was replaced just before the re-seed; leaving it in place and "
+                        "dropping Crew's claim rather than clobbering it. This session runs "
+                        "without Crew's availableModels allowlist and without the "
+                        "permissions.deny rules from the agent spec.",
+                        local_settings,
+                    )
+                    # Adopted this session -> only the live slot is ours to hand back;
+                    # a file Crew already owned but that is now the user's -> forget the
+                    # durable record too, exactly as the replaced-after-create branch does.
+                    if adopted:
+                        seed_provenance.release(local_settings, self._seed_owner)
+                    else:
+                        seed_provenance.forget(local_settings, self._seed_owner)
+                    self._claude_settings_authored = False
+                    self._claude_settings_written = None
+                    return
+                atomic_write(local_settings, payload.encode("utf-8"), mode=0o600)
+                # New payload is published; drop the moved old seed. Best-effort: a
+                # leftover ``.crew-gc`` is litter the next fresh seed ignores, not a
+                # reason to fail a write that already landed.
+                with suppress(OSError):
+                    reseed_aside.unlink(missing_ok=True)
+                reseed_aside = None
+            else:
+                # O_EXCL on the create is the whole ownership claim: if a sibling
+                # session (or the user) created the file between the check above and
+                # here, this raises rather than clobbering it. That is why the create
+                # keeps a direct open instead of joining the branch above --
+                # atomic_write publishes with a rename, which replaces whatever is at
+                # the name and so cannot arbitrate a create race at all.
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                try:
+                    fd = os.open(local_settings, flags, 0o600)
+                except FileExistsError:
+                    logger.info("%s was created concurrently; leaving it alone", local_settings)
+                    return
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(payload.encode("utf-8"))
+        except BaseException:
+            if reseed_aside is not None:
+                # The overwrite did not land after Crew's file was moved aside, so the
+                # pathname is empty and the recorded bytes are at ``reseed_aside``.
+                # Put them back so the path stays the adoptable orphan it was before.
+                with suppress(OSError):
+                    if local_settings.exists():
+                        reseed_aside.unlink(missing_ok=True)
+                    else:
+                        os.replace(reseed_aside, local_settings)
+            if adopted:
+                logger.info(
+                    "re-seed of the orphaned settings seed at %s did not land; releasing the "
+                    "claim so a later session can still adopt and repair it",
+                    local_settings,
+                )
+                seed_provenance.release(local_settings, self._seed_owner)
+            raise
+        # Durable half of the same claim, so the NEXT process can still recognize
+        # this file as Crew's after a kill that skips the reset path.
+        #
+        # NOT best-effort, and taken BEFORE the instance flags rather than after.
+        # An unrecorded seed is the one state nothing on the host can repair: this
+        # session would still unlink it, but a kill before teardown leaves a
+        # ``permissions.defaultMode`` the user never approved behind a file no later
+        # session is permitted to re-seed or remove, because ownership is the record.
+        # So if the grant cannot be made durable the seed is WITHDRAWN rather than
+        # left behind -- the session then runs on the adapter's own defaults, which
+        # is the same thing a cold advertised-model cache already does.
+        if not seed_provenance.record(local_settings, payload, self._seed_owner):
+            logger.warning(
+                "could not durably record Crew's claim on %s; removing the seed just written "
+                "rather than leaving a permission mode no later session is allowed to clean "
+                "up. This session runs without Crew's availableModels allowlist and without "
+                "the permissions.deny rules from the agent spec.",
+                local_settings,
+            )
+            # Safe to remove precisely because we are inside the branch that proved
+            # ownership a moment ago: either O_EXCL created the file, or its bytes
+            # matched Crew's record and this client holds the live claim.
+            with suppress(OSError):
+                local_settings.unlink(missing_ok=True)
+            if not seed_provenance.forget(local_settings, self._seed_owner):
+                # The sidecar is unwritable, which is why we are here at all. It
+                # still names the PREVIOUS digest, and the file it described is now
+                # gone, so ``_persist``'s prune drops the entry on the next
+                # successful write and nothing matches it in the meantime. Hand the
+                # live slot back so a replacement client in this process is not
+                # wedged behind a claim nobody is using.
+                seed_provenance.release(local_settings, self._seed_owner)
             return
-        # BINARY, not text mode: Python's text layer rewrites "\n" to "\r\n" on
-        # Windows, so the file on disk was LARGER than the payload and no longer the
-        # bytes this session recorded. The ownership check compares exact bytes, so
-        # that translation made every Windows session read as "not ours" -- the
-        # re-seed declined, reset never removed its own file, and the MCP array was
-        # withheld. Writing bytes keeps one canonical form on every platform.
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload.encode("utf-8"))
         # Only a file Crew created AND still owns is ever overwritten or removed.
+        # Set AFTER the write and after the durable record, so a failure in either
+        # propagates with the claim exactly as it was: an adoption leaves no instance
+        # flag for reset to act on, and a re-seed of Crew's own file leaves the
+        # record describing the bytes that are still on disk.
         self._claude_settings_authored = True
         self._claude_settings_written = payload
 
@@ -3619,7 +3933,18 @@ class AcpClient:
         An EXPLICIT switch is handled the opposite way in :meth:`set_model`:
         there the user asked for that exact model, and quietly running another
         one would be a lie.
+
+        The fold onto the advertised spelling happens HERE, not only at spawn: by
+        this point ``session/new`` has been captured, so the advertised-model cache
+        is warm even on the first-ever session -- whereas the spawn-time fold ran
+        against a cold cache and was a no-op, sending a bare id that resolves to
+        the base window. Same call as :meth:`set_model` uses, so an explicit switch
+        and a startup application agree on one exact spelling.
         """
+        if self._uses_advertised_model_selection:
+            self._model = model_registry.resolve_wire_model_id(
+                self._model, self._model_registry_namespace
+            )
         if not self._model or self._model == DEFAULT_MODEL:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
             return
@@ -3663,6 +3988,46 @@ class AcpClient:
                 {"sessionId": self._session_id, "modelId": self._model},
             )
         logger.info("ACP model: %s", self._model)
+
+    async def _reseed_after_capture(self) -> None:
+        """Re-seed settings.local.json once the backend's model list is known.
+
+        The spawn-time seed necessarily runs BEFORE ``session/new`` --
+        ``permissions.defaultMode`` and ``permissions.deny`` have to be on disk by
+        the time the adapter builds its ``SettingsManager``. That is exactly why it
+        cannot write the model keys on a first-ever session: the advertised-model
+        cache is still cold, and the only list available to it would be a guessed
+        one. So the model half of the seed lands here instead, once
+        ``_capture_available_models`` has warmed that cache — which is what makes
+        the file name a model actually IN the allowlist shipped beside it.
+
+        Before this step existed the seed was written once, before capture, and
+        never revisited: session 1 wrote a registry-derived list and session 2 (see
+        :mod:`kiro_crew.acp.seed_provenance`) was not even allowed to correct it.
+
+        **Called from the pre-existing ``_uses_advertised_model_selection`` branch
+        beside the model-cache persist, NOT from a step of its own.** Adding a step
+        to :meth:`_initialize_session` would put a new conditional and a new await
+        on the first-class Kiro construction path in service of an adapter, which
+        harness-parity H13 forbids however the predicate is spelled -- the test is
+        not whether the Kiro path still works, it is whether it changed at all.
+        Riding a branch that already exists changes no line Kiro executes, and it
+        is the honest home for the work besides: this method exists BECAUSE the
+        backend advertises its own model list, which is the very capability that
+        branch tests.
+
+        The two capability sets are independent opt-ins, though, so the seeding
+        half is tested here rather than assumed from the caller's gate.
+
+        Off-loop (touches disk), and a failure costs model fidelity, not the
+        session.
+        """
+        if not self._seeds_local_settings:
+            return
+        try:
+            await asyncio.to_thread(self._write_claude_local_settings)
+        except (OSError, ValueError, TypeError):
+            logger.warning("post-capture re-seed of settings.local.json failed", exc_info=True)
 
     async def set_config_option(self, config_id: str, value: str) -> None:
         """Set a session config option (e.g. effort level) via session/set_config_option."""
@@ -3885,6 +4250,11 @@ class AcpClient:
             await self._kill_process(force=True)
         finally:
             await self._discard_bound_workspace()
+            # A failed startup that already wrote the seed owns one too, and the
+            # session it belonged to is over -- so it is discarded on exactly the
+            # terms a graceful shutdown uses. In the `finally` for the same reason
+            # the caller puts `_reset_state` in one: this is the last chance.
+            await self._discard_claude_settings_seed()
 
     async def _to_thread_guarding_sandbox(
         self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any
@@ -3935,10 +4305,10 @@ class AcpClient:
             # prior session's _capture_available_models), so a model the static
             # registry does not carry still resolves to the versioned [1m] id the
             # backend serves rather than a bare form that collapses to the base
-            # window. Done here so BOTH the seed below and _apply_startup_model's
-            # set_model read the same id. No-op on a cold cache (first-ever
-            # session): the registry fallback in the seed still applies and this
-            # session's own capture warms the cache for the next one.
+            # window. Done here so the seed below carries the same id the wire
+            # will. No-op on a cold cache (first-ever session), which is why
+            # _apply_startup_model folds AGAIN after session/new has warmed the
+            # cache, and why the seed omits the model key entirely until then.
             self._model = model_registry.resolve_wire_model_id(
                 self._model, self._model_registry_namespace
             )
@@ -4507,6 +4877,139 @@ class AcpClient:
         retiring = getattr(self, "_liveness_oracle", None)
         self._liveness_oracle = retiring.fresh() if retiring is not None else LivenessOracle()
 
+    async def _discard_claude_settings_seed(self) -> None:
+        """Remove the ``settings.local.json`` THIS session seeded, off the loop.
+
+        So a permission mode never outlives its session and an inherited
+        ``bypassPermissions`` cannot persist after a crash. Only a file Crew
+        created AND still owns is removed: the writer declines a path that already
+        holds a foreign file, and the content check below covers the remaining
+        case -- a user replacing Crew's file atomically after the create, whose
+        replacement is theirs to keep (see ``_write_claude_local_settings``).
+
+        Async, because the disk half is blocking and this is teardown on the event
+        loop: the ownership hash, the durable revoke and the unlink all block, and a
+        heartbeat must not queue behind them. ``_reset_state`` keeps only the
+        in-memory ``release``.
+
+        **The whole disk half is ONE shielded thread, not a sequence of awaited
+        steps, and that is the cancellation contract.** Teardown runs on paths that
+        are themselves being cancelled -- a turn cancel, a session close, a
+        shutdown -- and a suspension point between the ownership check, the revoke
+        and the unlink meant a cancellation could land with the claim already
+        revoked and the file still on disk. That is the one state nothing can
+        repair: unrecorded bytes carrying a ``permissions.defaultMode`` that no
+        later session is permitted to touch. A thread cannot be interrupted
+        part-way, so the transaction has either not started or run to completion,
+        and ``asyncio.shield`` is what keeps a cancelled awaiter from abandoning it
+        before it is scheduled. Every caller pairs this with ``_reset_state`` in a
+        ``finally`` for the mirror-image reason: the in-memory reset must happen
+        even when the await is cancelled.
+        """
+        if not getattr(self, "_claude_settings_authored", False):
+            return
+        # Captured HERE, on the loop, so the transaction is a pure function of its
+        # arguments: the ``finally`` below may clear these flags while the thread is
+        # still running, and a transaction that re-read them could decide ownership
+        # against state that changed underneath it.
+        path = self._claude_local_settings_path()
+        owner = getattr(self, "_seed_owner", "")
+        payload = getattr(self, "_claude_settings_written", None)
+        expectation = self._expected_settings_fingerprint()
+        # A task rather than a bare coroutine: ``shield`` protects a future that
+        # already exists, and the point is that this one is scheduled and therefore
+        # WILL run even if the cancellation arrives before the first step. Needs no
+        # done-callback to consume an exception because the transaction contracts
+        # never to raise -- which is also what keeps a cancelled awaiter from
+        # leaving an unretrieved error behind.
+        settle = asyncio.ensure_future(
+            asyncio.to_thread(self._settle_claude_settings_seed, path, owner, payload, expectation)
+        )
+        try:
+            await asyncio.shield(settle)
+        finally:
+            self._claude_settings_authored = False
+            self._claude_settings_written = None
+
+    def _settle_claude_settings_seed(
+        self,
+        path: Path,
+        owner: str,
+        payload: str | None,
+        expectation: tuple[int, str] | None,
+    ) -> None:
+        """The seed's entire disk half, as one blocking transaction. Never raises.
+
+        **The pathname is claimed by an atomic move-aside, THEN revoked, THEN the
+        moved inode is deleted.** Verifying ownership by pathname and then unlinking
+        that pathname is a TOCTOU: a user who atomically replaced the file in the gap
+        (which this transaction widens, since the revoke now takes a cross-process
+        lock and writes) would have their settings deleted. ``_claim_pathname_if_ours``
+        closes it -- ``os.replace`` captures the file into ``aside`` in one step, and
+        only that fixed inode is ever deleted; a replacement that raced in is detected
+        and left in place. The revoke still happens BEFORE the delete: ``forget``
+        reports whether the sidecar on disk actually stopped naming the path, and
+        deleting first would let a failed sidecar write leave a record that outlives
+        its file, so the next process adopts, rewrites and deletes a byte-identical
+        copy the user had restored. On a failed revoke the moved file is restored
+        under its pathname, so a later session repairs the orphan.
+
+        Never raises, because the caller shields it: an exception here would reach
+        nobody but the "never retrieved" logger, and a half-settled transaction that
+        also lost its error is worse than one that logged and left the file owned.
+        """
+        try:
+            aside = self._claim_pathname_if_ours(path, expectation)
+            if aside is None:
+                logger.info(
+                    "%s no longer holds the bytes Crew wrote; leaving the replacement in "
+                    "place instead of deleting a file Crew does not own.",
+                    path,
+                )
+                return
+            # The file is now the moved inode ``aside`` and the pathname is free, so a
+            # user replacement racing in lands at a fresh ``path`` this never touches.
+            if not seed_provenance.forget(path, owner):
+                # Not revoked on disk, so the file must stay: a restart would still
+                # read Crew as its owner, and a later session repairs it. Restore it
+                # under the pathname and hand back the live claim.
+                logger.warning(
+                    "could not durably revoke Crew's claim on %s; restoring the file so a "
+                    "later session can re-seed or remove it rather than deleting it "
+                    "behind a revocation that never reached the disk",
+                    path,
+                )
+                try:
+                    os.replace(aside, path)
+                except OSError:  # pragma: no cover - defensive; a racing writer took the name
+                    logger.warning("could not restore %s; it is at %s", path, aside.name)
+                seed_provenance.release(path, owner)
+                return
+            try:
+                aside.unlink(missing_ok=True)
+            except OSError:
+                # Revoke landed but the moved inode will not delete. Put it back under
+                # the pathname and re-record, so the path is a repairable orphan rather
+                # than a frozen ``.crew-gc`` no session names.
+                logger.debug(
+                    "could not remove %s after session reset; re-recording Crew's claim so "
+                    "a later session can still re-seed or remove it",
+                    path,
+                    exc_info=True,
+                )
+                if payload is not None:
+                    restored = True
+                    try:
+                        os.replace(aside, path)
+                    except OSError:  # pragma: no cover - defensive
+                        restored = False
+                        logger.warning("could not restore %s; it is at %s", path, aside.name)
+                    if restored:
+                        seed_provenance.record(path, payload, owner)
+                        seed_provenance.release(path, owner)
+        except Exception:  # pragma: no cover - defensive; teardown must not raise
+            logger.debug("could not settle Crew's settings seed at %s", path, exc_info=True)
+
     def _reset_state(self) -> None:
         """Reset all session state (call after process is dead)."""
         if self._process:
@@ -4518,30 +5021,27 @@ class AcpClient:
                         pass
         # Clean up sandbox temp files (macOS seatbelt profile)
         self._discard_sandbox_cleanup()
-        # Remove the settings.local.json THIS session created, so a permission
-        # mode never outlives its session and an inherited bypassPermissions
-        # cannot persist after a crash. Only a file Crew created AND still owns is
-        # removed: the writer declines a path that already holds a foreign file,
-        # and the content check below covers the remaining case -- a user
-        # replacing Crew's file atomically after the create, whose replacement is
-        # theirs to keep (see _write_claude_local_settings). getattr: _reset_state
-        # runs on clients built without __init__ in tests.
+        # The settings.local.json THIS session seeded is removed by
+        # _discard_claude_settings_seed, which every caller awaits in the `try` of
+        # the `finally` that reaches here -- it is async because the ownership hash,
+        # the durable revoke and the unlink are all blocking, and this method is
+        # synchronous and runs on the event loop. That pairing also means this may
+        # run because the discard's await was CANCELLED: the flags below are already
+        # cleared by then, so this branch is skipped and the shielded transaction
+        # still finishes the disk half. getattr: _reset_state runs on clients built
+        # without __init__ in tests.
         if getattr(self, "_claude_settings_authored", False):
-            if self._claude_settings_is_still_ours():
-                try:
-                    self._claude_local_settings_path().unlink(missing_ok=True)
-                except OSError:
-                    logger.debug(
-                        "could not remove %s after session reset",
-                        self._claude_local_settings_path(),
-                        exc_info=True,
-                    )
-            else:
-                logger.info(
-                    "%s no longer holds the bytes Crew wrote; leaving the replacement in "
-                    "place instead of deleting a file Crew does not own.",
-                    self._claude_local_settings_path(),
-                )
+            # The seed itself is removed by ``_discard_claude_settings_seed``, which
+            # is awaited off the loop by every caller that reaches here. All this
+            # sync path does is hand back the LIVE claim, which is in-memory only
+            # and takes no lock -- so a client that is discarded without the async
+            # step (a test, or a future caller that forgets it) still cannot wedge
+            # the path behind a claim nobody is using: a replacement client in this
+            # process reads the seed as an adoptable orphan and repairs it. The
+            # durable record deliberately survives, because the file does.
+            seed_provenance.release(
+                self._claude_local_settings_path(), getattr(self, "_seed_owner", "")
+            )
             self._claude_settings_authored = False
             self._claude_settings_written = None
         # Drop the translated MCP array: the spec is read PER SPAWN, which is what
@@ -4843,6 +5343,7 @@ class AcpClient:
                         self._capture_available_models(load_resp)
                         if self._uses_advertised_model_selection:
                             await self._persist_advertised_models_if_changed()
+                            await self._reseed_after_capture()
                         self._store_session_config(load_resp)
                         logger.info("ACP session resumed: %s", resume_sid)
                 except (AcpError, AcpTimeoutError):
@@ -4867,6 +5368,7 @@ class AcpClient:
             self._capture_available_models(session_resp)
             if self._uses_advertised_model_selection:
                 await self._persist_advertised_models_if_changed()
+                await self._reseed_after_capture()
             self._store_session_config(session_resp)
             if not self._session_id:
                 # Both the initial attempt and the substitution retry failed to
@@ -4948,6 +5450,10 @@ class AcpClient:
         if acp_tool_gate.routing_for(self.backend) is acp_tool_gate.Routing.SESSION_CONFIG:
             await self._apply_session_permission_routing()
 
+        # (settings.local.json is re-seeded up in step 2/3, beside the model-cache
+        #  persist, rather than as a step of its own down here: see
+        #  _reseed_after_capture on why it rides an EXISTING adapter-only branch.)
+
         # Drain MCP server init notifications
         await self._drain_notifications()
 
@@ -4985,7 +5491,14 @@ class AcpClient:
                 try:
                     if self._process and self._process.returncode is not None:
                         await self._discard_bound_workspace()
-                        self._reset_state()
+                        # `finally`, because the discard is an await and this runs on
+                        # cancellable paths: the in-memory reset must land even when
+                        # the cancellation arrives during the seed's settle. The
+                        # settle itself is shielded, so it completes regardless.
+                        try:
+                            await self._discard_claude_settings_seed()
+                        finally:
+                            self._reset_state()
 
                     if not self._process:
                         await self._spawn()
@@ -5068,7 +5581,13 @@ class AcpClient:
             await self._kill_process(force=True)
         finally:
             await self._discard_bound_workspace()
-            self._reset_state()  # untracks all PIDs (root + children)
+            # `finally` for the same reason the kill above has one: `_reset_state`
+            # untracks the PIDs and must run even if the seed's await is cancelled.
+            # The settle is shielded, so the disk half completes either way.
+            try:
+                await self._discard_claude_settings_seed()
+            finally:
+                self._reset_state()  # untracks all PIDs (root + children)
 
     # ── JSON-RPC Transport ──
 

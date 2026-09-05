@@ -285,6 +285,21 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # gateway ensures the file exists at startup (see apply_dev_mode's
     # reconcile) because the Linux launcher can only seal an EXISTING target.
     "apps/.dev-grants.json",
+    # The settings-seed provenance record (``acp.seed_provenance``), an
+    # AUTHORIZATION record on the same footing as the dev-mode grants above: an
+    # entry in it is what lets Crew OVERWRITE and then DELETE
+    # ``<work_dir>/.claude/settings.local.json``, because a re-seed proceeds only
+    # when the file on disk still matches the recorded ``(size, sha256)``. A
+    # sandboxed process that can write it can enter a digest for a settings file
+    # the USER hand-wrote, and the next gateway start adopts that file, replaces
+    # its ``permissions.defaultMode`` with Crew's, and unlinks it on reset.
+    # READONLY rather than hidden because the write is the whole risk: the record
+    # holds no secret (work-dir paths and digests), so masking it would buy
+    # nothing and cost an operator the ability to see why a seed was adopted.
+    # Paired with the same leaf on ``security``'s write floors -- the deny rules
+    # fence how a command SPELLS this path, and the kernel denial is what still
+    # holds when a spelling is built at runtime (``$(printf ...)``).
+    "settings_seeds.json",
 )
 
 #: Crew-home leaves that MUST stay read-write for a sandboxed process. Every entry is
@@ -338,16 +353,24 @@ _CREW_READONLY_TARGETS: list[str] = _crew_home_entries(_CREW_READONLY_LEAVES)
 #:    * ``oauth_endpoints.json`` — ``security._validate_operator_oauth_entries``
 #:      extends trust by nothing for ``{}``;
 #:    * ``aws_service_consent.json`` — ``aws_consent._read_all`` returns ``{}`` for
-#:      both absent and empty, so every service stays unconfirmed.
+#:      both absent and empty, so every service stays unconfirmed;
+#:    * ``settings_seeds.json`` — ``acp.seed_provenance._load`` finds no ``seeds``
+#:      mapping in ``{}`` and returns having recorded nothing, so every settings
+#:      path reads as unowned. Identical to absent, and the leaf that most needs
+#:      materialising: it is written only once a claude-agent-acp session has
+#:      actually seeded a work dir, so on every install that has not it is exactly
+#:      the absent-and-therefore-writable name this list exists to close.
 #:
 #: 2. A STALE read of that empty document must fail toward refusal. The seal is a
 #:    bind mount, which pins the INODE for the sandbox's lifetime, while every
 #:    dashboard writer publishes through ``atomic_write`` (temp + rename), i.e. a NEW
 #:    inode. So a sandboxed reader keeps seeing the empty document even after the
-#:    operator writes the real one. For the three files above that freezes them at
-#:    "disabled" / "no consent" / "no extra endpoints" — narrower than the truth. The
-#:    empty ``profiles`` dir is exempt from the concern entirely: a directory bind
-#:    shows live contents, so a profile added later is visible.
+#:    operator writes the real one. For the three JSON files above that freezes them at
+#:    "disabled" / "no consent" / "no extra endpoints" — narrower than the truth, and
+#:    for ``settings_seeds.json`` at "Crew owns no settings file", so the writer takes
+#:    its leave-it-alone branch: the seed is not refreshed, and nothing is overwritten
+#:    or unlinked. The empty ``profiles`` dir is exempt from the concern entirely: a
+#:    directory bind shows live contents, so a profile added later is visible.
 #:
 #: DELIBERATELY EXCLUDED, and each for a different one of those two reasons:
 #:
@@ -383,6 +406,7 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # stays frozen at "no consent", which is narrower than the truth
     # (criterion 2).
     "file_delivery_consent.json",
+    "settings_seeds.json",
 )
 
 #: What a materialised ceiling holds — the empty JSON object every reader above
