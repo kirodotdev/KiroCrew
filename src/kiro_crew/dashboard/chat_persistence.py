@@ -2692,7 +2692,7 @@ def _save_slot_to_history(
             dropped_notes,
             note_auth_key,
         )
-    if not window:
+    if not window and not rewrite:
         if force or closed:
             # A FORCED (or closing) save of a message-less slot is a metadata
             # mutation (folder filing/unfiling, a tag assignment, a pin, a
