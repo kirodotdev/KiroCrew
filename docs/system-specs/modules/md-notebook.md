@@ -45,6 +45,43 @@ optional `subfolder` scope, plus `knowledge` and `knowledgeSourceId`. The `exter
 returned by `GET /api/vaults` is COMPUTED on read (`localPath` is outside `vaults/`) and
 never persisted.
 
+### These three leaves and the OS sandbox
+
+`pat`, `vaults.json`, and `settings.json` are named once, as
+`sandbox._MD_NOTEBOOK_OWN_STATE_LEAVES`, and spliced into `sandbox._CREW_HIDDEN_LEAVES`,
+so the OS sandbox bind-masks them for every sandboxed process; they are also on the
+agent-file-tool gate (`_SENSITIVE_HOME_DIRS`), so an agent cannot reach them through a
+file tool either. The one process that legitimately reads AND writes them is this backend,
+which is itself spawned inside the sandbox. Its registry write stages a sibling temp file
+and atomically renames it onto `vaults.json`, and the mask denies that rename with
+`EPERM`, so attach and clone would always fail and reads would silently return `[]`. To
+fix that, the app-backend spawn in `apps/backend.py` passes
+`sandbox.md_notebook_backend_visible_paths()` (the same leaves under both crew-home
+spellings and the relocated data home) as `extra_visible_dirs` for the md-notebook backend
+only. That cancels the mask for these three leaves for that one process, read+write.
+Unlike the policy cache, they are NOT sealed read-only, because the rename target has to
+be writable. Every other sandboxed process keeps the mask, and the agent-file-tool gate is
+untouched.
+
+The carve-out is the first `extra_visible_dirs` caller to grant WRITE, so the name alone
+does not earn it. `md-notebook` is not a reserved app id, so a user could install an app
+under it; if that install lands before builtin registration, registration stands down and
+the user's app becomes what `start_app_backend("md-notebook")` spawns, and handing that
+process write access to the real PAT and vault registry would leak a live GitHub token.
+The carve-out therefore requires
+`execution.is_builtin_app(app_name="md-notebook", app_root=execution_path)` — the same
+immutable package proof the third-party execution gate already ran on this argv: the
+shipped `app.json` must declare this exact name, and the path this spawn will execute must
+resolve inside that package. Nothing reachable from inside the sandbox can forge either
+half, and an unresolvable path denies.
+
+`installed.json` is deliberately NOT what the gate reads. Its fields are mutable, it is
+absent from `_CREW_HIDDEN_LEAVES`, and it lives in the app's own tree — so a sandboxed app
+backend can rewrite its own record. A predicate over `source`/`origin` (for example
+`manager.builtin_owns_installed`) would let a shadow app declare itself builtin-owned and
+collect the PAT on the operator's next enable, which is why `is_builtin_app`'s contract
+states outright that mutable `installed.json` fields are never provenance.
+
 ## Routes
 
 The gateway proxy preserves the `/api/` prefix, so the backend sees exactly the paths the

@@ -188,6 +188,36 @@ _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 # in none of them. Spelled here rather than imported so this low-level module keeps not
 # importing the 7k-line security module (the ``_POLICY_CACHE_LEAF`` convention above).
 
+#: App id of the Notes app, from ``apps/builtins/md_notebook/app.json``.
+#:
+#: Owned here because this module owns the carve-out the name selects: the three leaves
+#: below embed it, and :func:`md_notebook_backend_visible_paths` is scoped to exactly the
+#: backend spawned for this app. ``apps/backend.py`` imports it rather than restating the
+#: literal, so the gate and the paths it opens cannot come to name different apps.
+MD_NOTEBOOK_APP_NAME = "md-notebook"
+
+#: The md-notebook (Notes) app backend's OWN three state leaves.
+#:
+#: Unpacked into ``_CREW_HIDDEN_LEAVES`` below, so every OTHER sandboxed process has them
+#: bind-masked, and they are on ``security``'s agent-file-tool gate, so an agent cannot
+#: reach them through a file_read/file_write call either. The one process that
+#: legitimately reads AND writes them is the md-notebook backend itself: it is spawned
+#: inside the OS sandbox (``apps/backend.py``), and its registry write stages a sibling
+#: temp then atomically renames it onto ``vaults.json`` -- a rename the mask denies with
+#: EPERM. So the backend's own spawn passes these leaves as ``extra_visible_dirs`` (see
+#: :func:`md_notebook_backend_visible_paths`), which cancels the mask for THAT process
+#: only. Unlike the policy cache, they are NOT sealed read-only: the rename target must
+#: be writable.
+#:
+#: Named, and spliced into the hidden list rather than restated beside it, so the visible
+#: set the backend opens and the hidden set every other process sees have one source of
+#: truth and cannot drift apart in a later edit.
+_MD_NOTEBOOK_OWN_STATE_LEAVES: tuple[str, ...] = (
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/pat",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json",
+)
+
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # Channel credentials. Already file-masked in cc/strict via ``_CC_FILES``; listing
@@ -199,9 +229,9 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "apps/aws-control/data",
     "apps/meetings/data/edits",
     "whatsapp",
-    "workspace/md-notebook/pat",
-    "workspace/md-notebook/vaults.json",
-    "workspace/md-notebook/settings.json",
+    # ``workspace/md-notebook/{pat,vaults.json,settings.json}``: hidden here like the
+    # rest, and additionally re-opened for the Notes backend's own spawn alone.
+    *_MD_NOTEBOOK_OWN_STATE_LEAVES,
     # Browser session material. The extension token reaches the CLI through the
     # environment, never by ``open()``, so masking the file costs nothing; the other
     # four are retired leaves with no reader left in the tree. The LIVE browser paths
@@ -302,6 +332,28 @@ _CREW_SANDBOX_VISIBLE_LEAVES: tuple[str, ...] = (
 def _crew_home_entries(leaves: tuple[str, ...]) -> list[str]:
     """Expand *leaves* across both data-home spellings."""
     return [f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in leaves]
+
+
+def md_notebook_backend_visible_paths() -> tuple[str, ...]:
+    """Absolute paths of the md-notebook backend's own state leaves, every spelling.
+
+    Resolved the same way the hidden set is: joined under both ``_CREW_HOME_PREFIXES``
+    over ``$HOME``, plus :func:`_relocated_crew_targets` for a data home moved out from
+    under ``$HOME`` by ``KIROCREW_HOME``. ``apps/backend.py`` passes the result into
+    ``wrap_argv`` as ``extra_visible_dirs`` for the md-notebook spawn, so
+    ``_hidden_path_contains_visible_path`` cancels the bind mask for exactly these leaves
+    and only for that process. Deriving them from the same
+    ``_MD_NOTEBOOK_OWN_STATE_LEAVES`` the hidden list is spliced from is what keeps the
+    two sets matched, and keeps ``backend.py`` from restating the path logic.
+    """
+    home = str(Path.home())
+    paths = [
+        os.path.join(home, f"{prefix}/{leaf}")
+        for prefix in _CREW_HOME_PREFIXES
+        for leaf in _MD_NOTEBOOK_OWN_STATE_LEAVES
+    ]
+    paths.extend(_relocated_crew_targets(_MD_NOTEBOOK_OWN_STATE_LEAVES))
+    return tuple(dict.fromkeys(paths))
 
 
 #: Bind-masked in every mode.
