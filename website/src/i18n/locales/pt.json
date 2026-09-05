@@ -8190,7 +8190,9 @@
       "what_a_crew_starts_from_its_model_skills_tools_mc": "Com o que um agente começa: o modelo, as skills, as ferramentas, os servidores MCP e os limites de segurança",
       "when_nothing_names_a_template_use": "Quando nada indica um modelo, usar",
       "where_it_comes_from": "De onde ele vem",
-      "yes_delete_it": "Sim, excluir"
+      "yes_delete_it": "Sim, excluir",
+      "retry": "Tentar novamente",
+      "delete_unavailable_references_failed": "Não foi possível carregar a lista da equipe nem a configuração do modelo de fallback, então excluir este modelo fica indisponível até que carreguem."
     },
     "aidlc": {
       "dagView": {
@@ -8246,7 +8248,6 @@
       "after_installation_run": "Após a instalação, execute:",
       "api_access": "Acesso à API",
       "app_not_found": "App não encontrado",
-      "app_not_found_2": "Aplicativo \"{{name}}\" não encontrado",
       "apps": "Apps",
       "author": "Autor:",
       "back_to_apps": "Voltar para Apps",
@@ -8260,7 +8261,6 @@
       "details": "Detalhes",
       "disable": "Desativar",
       "disabled": "Desativado",
-      "dismiss_error": "Descartar erro",
       "doesnt_exist": "\"{{name}}\" não existe",
       "enable": "Ativar",
       "enabled": "Ativado",
@@ -8270,7 +8270,6 @@
       "features": "Funcionalidades",
       "use_cases": "Casos de uso",
       "configuration": "Configuração",
-      "fix_with_ai": "Corrigir com IA",
       "github_stars": "Estrelas do GitHub",
       "github_stars_2": "Estrelas do GitHub: {{value}}",
       "install": "Instalar",
@@ -8319,10 +8318,13 @@
       "v_2": "· v",
       "websocket_events": "Eventos WebSocket",
       "all_contributors": "Todos os contribuidores",
-      "contributors": "Contribuidores"
+      "contributors": "Contribuidores",
+      "retry": "Tentar novamente"
     },
     "appPage": {
-      "loading_app": "Carregando app…"
+      "loading_app": "Carregando app…",
+      "retry": "Tentar novamente",
+      "back_to_apps": "Voltar para Apps"
     },
     "appsPage": {
       "action_failed": "Falha ao {{action}} {{name}}",
@@ -8409,7 +8411,6 @@
       "access_reachable": ": acesso disponível",
       "account_12_digits_optional_iam_identity_style": "Conta (12 dígitos, opcional — no estilo iam-identity)",
       "active_deployments": "Implantações ativas",
-      "add_failed": "falha ao adicionar",
       "admin": "Admin",
       "also_create_in_aws_config": "Criar também no AWS config",
       "and_click": "e clique em",
@@ -8455,7 +8456,6 @@
       "details": "Detalhes",
       "dismiss": "Descartar",
       "e_g_my_sandbox": "ex.: my-sandbox",
-      "error": "Erro: {{error}}",
       "est_cost_not_a_bill": "Custo est. (não é uma fatura)",
       "estimated_total": "Total estimado —",
       "found_in_your_aws_config": "Encontrado no seu AWS config:",
@@ -8513,7 +8513,6 @@
       "register": "Registrar",
       "registered_profile": "Perfil '{{name}}' registrado.",
       "remove": "Remover",
-      "remove_failed": "falha ao remover",
       "remove_from_registry": "Remover {{name}} do registro",
       "remove_profile_confirm": "Remover “{{name}}” do registro? Seu ~/.aws/config NÃO é alterado.",
       "removed_from_registry_your_aws_config_is_untouche": "Removido do registro (o seu ~/.aws/config permanece intacto).",
@@ -8538,7 +8537,6 @@
       "unknown": "desconhecido",
       "unknown_2": "(desconhecido)",
       "unverified": "não verificado",
-      "update_failed": "falha ao atualizar",
       "us_west_2": "us-west-2",
       "v1_fails_with": "; a v1 falha com",
       "verified": "verificado",
@@ -8561,7 +8559,9 @@
       "destroy_title": "Destruir o site?",
       "destroy_button": "Destruir o site",
       "remove_profile_title": "Remover o perfil?",
-      "remove_profile_button": "Remover o perfil"
+      "remove_profile_button": "Remover o perfil",
+      "retry": "Tentar novamente",
+      "profile_errors_title": "Alguns perfis não puderam ser listados"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· uma versão mais recente está disponível na cópia remota",
@@ -8684,7 +8684,13 @@
       "your_current_edits_are_saved_as_a_version_first": "Suas edições atuais são salvas como uma versão primeiro, então nada é perdido.",
       "check_again": "Verificar novamente",
       "rechecking": "Verificando…",
-      "recheck_publication_notice": "Verificar novamente o estado desta publicação"
+      "recheck_publication_notice": "Verificar novamente o estado desta publicação",
+      "back_to_live": "Voltar para a versão atual",
+      "versions_failed_to_load": "Falha ao carregar as versões",
+      "comments_failed_to_load": "Falha ao carregar os comentários",
+      "comment_action_failed": "Falha na ação do comentário",
+      "activity_failed_to_load": "Falha ao carregar a atividade",
+      "sync_status_unavailable": "Status de sincronização indisponível"
     },
     "artifactPopoutFrame": {
       "artifact": "Artefato",
@@ -8722,7 +8728,6 @@
       "delete": "Excluir…",
       "deploying": "Implantando…",
       "drop_here_to_unfile": "— solte aqui para retirar da pasta",
-      "error": "Erro",
       "expired": "Expirado",
       "filter_artifacts": "Filtrar artefatos do {{provider}}…",
       "filter_by_kind": "Filtrar por tipo",
@@ -8800,7 +8805,8 @@
       "widgets_files_and_snippets_live_tracked_with_ver": "Widgets, arquivos e snippets — rastreados em tempo real com histórico de versões",
       "your_artifacts": "Seus artefatos",
       "local_preview": "Local preview",
-      "more_actions": "Mais ações"
+      "more_actions": "Mais ações",
+      "retry": "Tentar novamente"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Recursos do agente",
@@ -8853,7 +8859,6 @@
       "dismiss": "Dispensar",
       "e_g_investigate_gamma_deployment_failure": "ex.: Investigar falha de implantação em Gamma",
       "failed_to_add_agent": "Falha ao adicionar o agente",
-      "failed_to_clear_context_error": "Falha ao limpar o contexto: {{error}}",
       "failed_to_create_channel": "Falha ao criar o canal",
       "is_working": "está trabalhando…",
       "listen_all": "todas",
@@ -8869,7 +8874,6 @@
       "new_channel": "Novo canal",
       "new_channel_2": "Novo canal",
       "no_channels_yet": "Nenhum canal ainda",
-      "ok": "OK",
       "preset_custom_empty": "Personalizado (vazio)",
       "preset_incident_response": "Resposta a incidentes",
       "reply": "Responder",
@@ -8894,7 +8898,14 @@
       "this_will_reset_conversation_history_for_all_age": "Isto redefinirá o histórico de conversa de todos os agentes. As configurações são preservadas.",
       "thread": "Tópico",
       "topic": "Assunto",
-      "unknown_error": "erro desconhecido"
+      "failed_to_load_channels": "Falha ao carregar os canais",
+      "failed_to_load_presets": "Falha ao carregar as predefinições de equipe",
+      "failed_to_load_channel": "Falha ao carregar o canal",
+      "failed_to_send_message": "Falha ao enviar a mensagem",
+      "failed_to_dismiss_agent": "Falha ao dispensar o agente",
+      "failed_to_update_agent": "Falha ao atualizar o agente",
+      "failed_to_close_channel": "Falha ao fechar o canal",
+      "failed_to_clear_context": "Falha ao limpar o contexto"
     },
     "chat": {
       "activityViewer": {
@@ -9521,10 +9532,8 @@
       "could_not_switch_variant": "Não foi possível trocar de versão",
       "could_not_start_a_new_session": "Não foi possível iniciar uma nova sessão",
       "could_not_start_session_message_restored": "Não foi possível iniciar uma nova sessão: {{error}}. Sua mensagem foi restaurada — envie novamente para tentar de novo.",
-      "dismiss_error": "Descartar erro",
       "dismiss_upload_error": "Descartar erro de upload",
       "enter_split_view": "Entrar na visualização dividida",
-      "error_reading_file": "_Erro ao ler o arquivo_",
       "esc_to_dismiss": "Esc para descartar",
       "expand_knowledge_context": "Expandir o contexto de conhecimento",
       "failed_to_apply_plan": "Falha ao aplicar o plano",
@@ -9596,7 +9605,6 @@
       "tool_status_loaded": "Carregada nesta sessão",
       "type_to_filter": "Digite para filtrar…",
       "type_to_search_this_conversation": "Digite para buscar nesta conversa.",
-      "unable_to_read_file": "_Não foi possível ler o arquivo._",
       "unknown_error": "erro desconhecido",
       "upload_failed_check_file_type_and_size_max_50_mb": "Falha no envio — verifique o tipo e o tamanho do arquivo (máx. 50 MB)",
       "upload_failed_error": "Falha no envio: {{error}}",
@@ -9604,7 +9612,11 @@
       "worktree_creation_returned_no_path": "A criação da worktree não retornou nenhum caminho",
       "loading_earlier_messages": "Carregando mensagens anteriores…",
       "send_failed_with_error": "Falha ao enviar: {{error}}",
-      "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente."
+      "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
+      "could_not_read_file_reason": "Não foi possível ler {{path}} ({{reason}})",
+      "http_status": "HTTP {{status}}",
+      "could_not_rename_session": "Não foi possível renomear a sessão",
+      "could_not_generate_title": "Não foi possível gerar um título"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",
@@ -9851,7 +9863,11 @@
       "workflow_running_other": "{{count}} fluxos de trabalho em execução",
       "flat_view_hide_folders_in_board_columns": "Visão plana — ocultar pastas nas colunas do quadro",
       "show_folders_in_board_columns": "Mostrar pastas nas colunas do quadro",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Mudar para visão plana (ocultar pastas nas colunas do quadro)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Mudar para visão plana (ocultar pastas nas colunas do quadro)",
+      "folders_load_failed": "Não foi possível carregar as pastas",
+      "columns_load_failed": "Não foi possível carregar as colunas do quadro",
+      "folder_update_failed": "Falha ao atualizar a pasta",
+      "board_update_failed": "Falha ao atualizar o quadro"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",
@@ -10003,7 +10019,6 @@
       "disk": "Disco:",
       "disk_worktrees": "Disco (worktrees)",
       "dismiss": "Descartar",
-      "dismiss_provision_status": "Descartar status de provisionamento",
       "dismiss_sync_status": "Descartar status de sincronização",
       "each_row_below_is_a_git_worktree_discovered_from": "Cada linha abaixo é uma worktree git descoberta a partir do checkout principal. Use",
       "empty_worktree_cannot_be_undone": "Worktree vazia. Não pode ser desfeito.",
@@ -10200,7 +10215,8 @@
       "pod_home_disk": "Disco de homes de pods: {{value}}",
       "orphan_pods_label": "Homes de pods órfãos: {{value}}",
       "total_disk_used_by_running_pod_homes": "Disco total usado pelos homes de pods em execução",
-      "pod_homes_left_on_disk_with_no_live_pod": "Homes de pods deixados no disco sem um pod ativo"
+      "pod_homes_left_on_disk_with_no_live_pod": "Homes de pods deixados no disco sem um pod ativo",
+      "disk_usage_unavailable": "Uso de disco indisponível"
     },
     "developer": {
       "agentBackendTab": {
@@ -10309,7 +10325,6 @@
       "actions": "Ações",
       "bundled": "integrado",
       "cancel": "Cancelar",
-      "check_your_connection_or_configuration_and_try_a": "Verifique sua conexão ou configuração e tente novamente.",
       "click_again_to_confirm": "Clique novamente para confirmar",
       "command": "Comando",
       "config": "configuração",
@@ -10365,7 +10380,10 @@
       "user": "usuário",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
-      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills."
+      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
+      "retry": "Tentar novamente",
+      "show_last_error": "Mostrar o último erro de {{name}}",
+      "test_failed_for": "Falha no teste de {{name}}"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Um identificador único para este workspace. Agentes referenciam workspaces pelo nome.",

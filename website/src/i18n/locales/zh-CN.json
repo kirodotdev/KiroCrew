@@ -7976,7 +7976,9 @@
       "what_a_crew_starts_from_its_model_skills_tools_mc": "代理启动时用的东西 —— 模型、技能、工具、MCP 服务器和防护规则",
       "when_nothing_names_a_template_use": "当没有指定模板时，使用",
       "where_it_comes_from": "它来自哪里",
-      "yes_delete_it": "是的，删除它"
+      "yes_delete_it": "是的，删除它",
+      "retry": "重试",
+      "delete_unavailable_references_failed": "无法加载团队名册或回退模板设置，在它们加载完成前无法删除此模板。"
     },
     "aidlc": {
       "dagView": {
@@ -8032,7 +8034,6 @@
       "after_installation_run": "安装后运行：",
       "api_access": "API 访问",
       "app_not_found": "未找到应用",
-      "app_not_found_2": "未找到应用“{{name}}”",
       "apps": "应用",
       "author": "作者：",
       "back_to_apps": "返回应用",
@@ -8046,7 +8047,6 @@
       "details": "详情",
       "disable": "禁用",
       "disabled": "已禁用",
-      "dismiss_error": "忽略错误",
       "doesnt_exist": "“{{name}}”不存在",
       "enable": "启用",
       "enabled": "已启用",
@@ -8054,7 +8054,6 @@
       "failed_to_load_app": "加载应用失败",
       "failed_to_uninstall": "卸载失败",
       "features": "功能",
-      "fix_with_ai": "用 AI 修复",
       "github_stars": "GitHub 星标数",
       "github_stars_2": "GitHub 星标数：{{value}}",
       "install": "安装",
@@ -8103,10 +8102,13 @@
       "v_2": "· v",
       "websocket_events": "WebSocket 事件",
       "all_contributors": "所有贡献者",
-      "contributors": "贡献者"
+      "contributors": "贡献者",
+      "retry": "重试"
     },
     "appPage": {
-      "loading_app": "加载应用…"
+      "loading_app": "加载应用…",
+      "retry": "重试",
+      "back_to_apps": "返回应用"
     },
     "appsPage": {
       "action_failed": "{{action}} {{name}} 失败",
@@ -8179,7 +8181,6 @@
       "access_reachable": "：访问可达",
       "account_12_digits_optional_iam_identity_style": "账户（12 位数字，可选 — iam-identity 格式）",
       "active_deployments": "活跃部署",
-      "add_failed": "添加失败",
       "admin": "管理员",
       "also_create_in_aws_config": "同时在 AWS config 中创建",
       "and_click": "并点击",
@@ -8225,7 +8226,6 @@
       "details": "详情",
       "dismiss": "忽略",
       "e_g_my_sandbox": "例如 my-sandbox",
-      "error": "错误：{{error}}",
       "est_cost_not_a_bill": "预估费用（非账单）",
       "estimated_total": "预估总计 —",
       "found_in_your_aws_config": "在你的 AWS config 中找到：",
@@ -8283,7 +8283,6 @@
       "register": "注册",
       "registered_profile": "已注册配置文件“{{name}}”。",
       "remove": "移除",
-      "remove_failed": "移除失败",
       "remove_from_registry": "从注册表移除 {{name}}",
       "remove_profile_confirm": "将从注册表移除“{{name}}”。你的 ~/.aws/config 保持不变。",
       "removed_from_registry_your_aws_config_is_untouche": "已从注册表移除（你的 ~/.aws/config 保持不变）。",
@@ -8306,7 +8305,6 @@
       "unknown": "未知",
       "unknown_2": "（未知）",
       "unverified": "未验证",
-      "update_failed": "更新失败",
       "us_west_2": "us-west-2",
       "v1_fails_with": "；v1 会失败并报",
       "verified": "已验证",
@@ -8327,7 +8325,9 @@
       "destroy_title": "销毁站点？",
       "destroy_button": "销毁站点",
       "remove_profile_title": "移除配置文件？",
-      "remove_profile_button": "移除配置文件"
+      "remove_profile_button": "移除配置文件",
+      "retry": "重试",
+      "profile_errors_title": "部分配置文件无法列出"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· 远端副本中有更新的版本",
@@ -8450,7 +8450,13 @@
       "your_current_edits_are_saved_as_a_version_first": "你当前的修改会先保存为一个版本，因此不会丢失任何内容。",
       "check_again": "重新检查",
       "rechecking": "检查中…",
-      "recheck_publication_notice": "重新检查此发布的状态"
+      "recheck_publication_notice": "重新检查此发布的状态",
+      "back_to_live": "返回实时版本",
+      "versions_failed_to_load": "版本加载失败",
+      "comments_failed_to_load": "评论加载失败",
+      "comment_action_failed": "评论操作失败",
+      "activity_failed_to_load": "活动记录加载失败",
+      "sync_status_unavailable": "同步状态不可用"
     },
     "artifactPopoutFrame": {
       "artifact": "产物",
@@ -8486,7 +8492,6 @@
       "delete": "删除…",
       "deploying": "正在部署…",
       "drop_here_to_unfile": "— 拖到此处取消归档",
-      "error": "错误",
       "expired": "已过期",
       "filter_artifacts": "筛选 {{provider}} 产物…",
       "filter_by_kind": "按类型筛选",
@@ -8562,7 +8567,8 @@
       "widgets_files_and_snippets_live_tracked_with_ver": "小组件、文件和代码片段 — 实时跟踪并保留版本历史",
       "your_artifacts": "你的产物",
       "local_preview": "Local preview",
-      "more_actions": "更多操作"
+      "more_actions": "更多操作",
+      "retry": "重试"
     },
     "capabilitiesPage": {
       "agent_capabilities": "代理能力",
@@ -8611,7 +8617,6 @@
       "dismiss": "忽略",
       "e_g_investigate_gamma_deployment_failure": "例如：排查 Gamma 部署失败",
       "failed_to_add_agent": "添加代理失败",
-      "failed_to_clear_context_error": "清除上下文失败：{{error}}",
       "failed_to_create_channel": "创建频道失败",
       "is_working": "正在工作…",
       "listen_all": "全部",
@@ -8627,7 +8632,6 @@
       "new_channel": "新建频道",
       "new_channel_2": "新建频道",
       "no_channels_yet": "暂无频道",
-      "ok": "确定",
       "preset_custom_empty": "自定义（空）",
       "preset_incident_response": "事件响应",
       "reply": "回复",
@@ -8650,7 +8654,14 @@
       "this_will_reset_conversation_history_for_all_age": "会重置所有代理的会话历史。配置会保留。",
       "thread": "话题",
       "topic": "主题",
-      "unknown_error": "未知错误"
+      "failed_to_load_channels": "加载频道列表失败",
+      "failed_to_load_presets": "加载团队预设失败",
+      "failed_to_load_channel": "加载该频道失败",
+      "failed_to_send_message": "发送消息失败",
+      "failed_to_dismiss_agent": "移除代理失败",
+      "failed_to_update_agent": "更新代理失败",
+      "failed_to_close_channel": "关闭频道失败",
+      "failed_to_clear_context": "清除上下文失败"
     },
     "chat": {
       "activityViewer": {
@@ -9255,10 +9266,8 @@
       "could_not_switch_variant": "无法切换版本",
       "could_not_start_a_new_session": "无法启动新会话",
       "could_not_start_session_message_restored": "无法启动新会话：{{error}}。消息已恢复 — 再次发送即可重试。",
-      "dismiss_error": "忽略错误",
       "dismiss_upload_error": "忽略上传错误",
       "enter_split_view": "进入分屏视图",
-      "error_reading_file": "_读取文件出错_",
       "esc_to_dismiss": "按 Esc 关闭",
       "expand_knowledge_context": "展开知识上下文",
       "failed_to_apply_plan": "应用计划失败",
@@ -9328,7 +9337,6 @@
       "tool_status_loaded": "本会话已加载",
       "type_to_filter": "输入以筛选…",
       "type_to_search_this_conversation": "输入内容以搜索此对话。",
-      "unable_to_read_file": "_无法读取文件。_",
       "unknown_error": "未知错误",
       "upload_failed_check_file_type_and_size_max_50_mb": "上传失败 — 检查文件类型和大小（最大 50 MB）",
       "upload_failed_error": "上传失败：{{error}}",
@@ -9336,7 +9344,11 @@
       "worktree_creation_returned_no_path": "创建工作树未返回路径",
       "loading_earlier_messages": "正在加载较早的消息…",
       "send_failed_with_error": "发送失败：{{error}}",
-      "delivery_unconfirmed": "尚未确认送达——你的文字已放回输入框；再次发送前请先查看对话记录。"
+      "delivery_unconfirmed": "尚未确认送达——你的文字已放回输入框；再次发送前请先查看对话记录。",
+      "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
+      "http_status": "HTTP {{status}}",
+      "could_not_rename_session": "无法重命名会话",
+      "could_not_generate_title": "无法生成标题"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
@@ -9561,7 +9573,11 @@
       "workflow_running_other": "{{count}} 个工作流运行中",
       "flat_view_hide_folders_in_board_columns": "扁平视图 — 隐藏看板列中的文件夹",
       "show_folders_in_board_columns": "显示看板列中的文件夹",
-      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）"
+      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）",
+      "folders_load_failed": "无法加载文件夹",
+      "columns_load_failed": "无法加载看板列",
+      "folder_update_failed": "文件夹更新失败",
+      "board_update_failed": "看板更新失败"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -9711,7 +9727,6 @@
       "disk": "磁盘：",
       "disk_worktrees": "磁盘（工作树）",
       "dismiss": "忽略",
-      "dismiss_provision_status": "忽略预配状态",
       "dismiss_sync_status": "忽略同步状态",
       "each_row_below_is_a_git_worktree_discovered_from": "下面每一行都是从主检出中发现的 git 工作树。使用",
       "empty_worktree_cannot_be_undone": "空工作树。无法撤销。",
@@ -9908,7 +9923,8 @@
       "pod_home_disk": "Pod 主目录磁盘：{{value}}",
       "orphan_pods_label": "孤立 Pod 主目录：{{value}}",
       "total_disk_used_by_running_pod_homes": "运行中 Pod 主目录占用的磁盘总量",
-      "pod_homes_left_on_disk_with_no_live_pod": "磁盘上没有对应运行 Pod 的遗留主目录"
+      "pod_homes_left_on_disk_with_no_live_pod": "磁盘上没有对应运行 Pod 的遗留主目录",
+      "disk_usage_unavailable": "磁盘用量不可用"
     },
     "developer": {
       "agentBackendTab": {
@@ -10015,7 +10031,6 @@
       "actions": "操作",
       "bundled": "内置",
       "cancel": "取消",
-      "check_your_connection_or_configuration_and_try_a": "检查你的连接或配置后重试。",
       "click_again_to_confirm": "再次点击以确认",
       "command": "命令",
       "config": "配置文件",
@@ -10071,7 +10086,10 @@
       "user": "用户",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
-      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills."
+      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
+      "retry": "重试",
+      "show_last_error": "显示 {{name}} 的最近错误",
+      "test_failed_for": "{{name}} 测试失败"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "此工作区的唯一标识符。代理通过名称引用工作区。",

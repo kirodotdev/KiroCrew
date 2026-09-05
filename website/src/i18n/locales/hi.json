@@ -8083,7 +8083,9 @@
       "what_a_crew_starts_from_its_model_skills_tools_mc": "जिससे एजेंट शुरू होता है — उसका मॉडल, स्किल, टूल, MCP सर्वर और सुरक्षा नियम",
       "when_nothing_names_a_template_use": "जब कोई टेम्पलेट तय न हो, तब इस्तेमाल करो",
       "where_it_comes_from": "यह कहाँ से आया",
-      "yes_delete_it": "हाँ, हटा दो"
+      "yes_delete_it": "हाँ, हटा दो",
+      "retry": "फिर कोशिश करें",
+      "delete_unavailable_references_failed": "क्रू रोस्टर या फ़ॉलबैक-टेम्पलेट सेटिंग लोड नहीं हो सकी, इसलिए वे लोड होने तक यह टेम्पलेट हटाना उपलब्ध नहीं है।"
     },
     "aidlc": {
       "dagView": {
@@ -8140,7 +8142,6 @@
       "after_installation_run": "इंस्टॉलेशन के बाद, चलाएँ:",
       "api_access": "API एक्सेस",
       "app_not_found": "ऐप नहीं मिला",
-      "app_not_found_2": "ऐप \"{{name}}\" नहीं मिला",
       "apps": "ऐप्स",
       "author": "लेखक:",
       "back_to_apps": "ऐप्स पर वापस",
@@ -8154,7 +8155,6 @@
       "details": "विवरण",
       "disable": "अक्षम करें",
       "disabled": "अक्षम",
-      "dismiss_error": "त्रुटि खारिज करें",
       "doesnt_exist": "\"{{name}}\" मौजूद नहीं है",
       "enable": "सक्षम करें",
       "enabled": "सक्षम",
@@ -8162,7 +8162,6 @@
       "failed_to_load_app": "ऐप लोड नहीं हो सका",
       "failed_to_uninstall": "अनइंस्टॉल नहीं हो सका",
       "features": "विशेषताएँ",
-      "fix_with_ai": "AI से ठीक करें",
       "github_stars": "GitHub स्टार",
       "github_stars_2": "GitHub स्टार: {{value}}",
       "install": "इंस्टॉल करें",
@@ -8211,10 +8210,13 @@
       "v_2": "· v",
       "websocket_events": "WebSocket इवेंट",
       "all_contributors": "सभी योगदानकर्ता",
-      "contributors": "योगदानकर्ता"
+      "contributors": "योगदानकर्ता",
+      "retry": "फिर कोशिश करें"
     },
     "appPage": {
-      "loading_app": "ऐप लोड हो रहा है…"
+      "loading_app": "ऐप लोड हो रहा है…",
+      "retry": "फिर कोशिश करें",
+      "back_to_apps": "ऐप्स पर वापस"
     },
     "appsPage": {
       "action_failed": "{{name}} को {{action}} करने में विफल",
@@ -8294,7 +8296,6 @@
       "access_reachable": ": एक्सेस उपलब्ध है",
       "account_12_digits_optional_iam_identity_style": "खाता (12 अंक, वैकल्पिक — iam-identity-style)",
       "active_deployments": "सक्रिय डिप्लॉयमेंट",
-      "add_failed": "जोड़ना विफल",
       "admin": "Admin",
       "also_create_in_aws_config": "AWS config में भी बनाएँ",
       "and_click": "और क्लिक करें",
@@ -8340,7 +8341,6 @@
       "details": "विवरण",
       "dismiss": "खारिज करें",
       "e_g_my_sandbox": "उदा. my-sandbox",
-      "error": "त्रुटि: {{error}}",
       "est_cost_not_a_bill": "अनु. लागत (बिल नहीं)",
       "estimated_total": "अनुमानित कुल —",
       "found_in_your_aws_config": "आपके AWS config में मिला:",
@@ -8398,7 +8398,6 @@
       "register": "पंजीकृत करें",
       "registered_profile": "प्रोफ़ाइल '{{name}}' रजिस्टर की गई।",
       "remove": "हटाएँ",
-      "remove_failed": "हटाना विफल",
       "remove_from_registry": "{{name}} को रजिस्ट्री से हटाएँ",
       "remove_profile_confirm": "“{{name}}” को रजिस्ट्री से हटाएँ? तुम्हारी ~/.aws/config को छुआ नहीं जाएगा।",
       "removed_from_registry_your_aws_config_is_untouche": "रजिस्ट्री से हटा दिया गया (~/.aws/config अछूती रहती है)।",
@@ -8422,7 +8421,6 @@
       "unknown": "अज्ञात",
       "unknown_2": "(अज्ञात)",
       "unverified": "असत्यापित",
-      "update_failed": "अपडेट विफल",
       "us_west_2": "us-west-2",
       "v1_fails_with": "; v1 इस त्रुटि के साथ विफल होता है:",
       "verified": "सत्यापित",
@@ -8444,7 +8442,9 @@
       "destroy_title": "साइट नष्ट करें?",
       "destroy_button": "साइट नष्ट करें",
       "remove_profile_title": "प्रोफ़ाइल हटाएँ?",
-      "remove_profile_button": "प्रोफ़ाइल हटाएँ"
+      "remove_profile_button": "प्रोफ़ाइल हटाएँ",
+      "retry": "फिर कोशिश करें",
+      "profile_errors_title": "कुछ प्रोफ़ाइल सूचीबद्ध नहीं हो सकीं"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· रिमोट कॉपी में एक नया संस्करण उपलब्ध है",
@@ -8567,7 +8567,13 @@
       "publication_notice_generic": "यह लिंक अभी काम न कर सकता है।",
       "check_again": "फिर जाँचें",
       "rechecking": "जाँच हो रही है…",
-      "recheck_publication_notice": "इस प्रकाशन की स्थिति फिर जाँचें"
+      "recheck_publication_notice": "इस प्रकाशन की स्थिति फिर जाँचें",
+      "back_to_live": "लाइव पर वापस जाएँ",
+      "versions_failed_to_load": "संस्करण लोड करने में विफल",
+      "comments_failed_to_load": "टिप्पणियाँ लोड करने में विफल",
+      "comment_action_failed": "टिप्पणी कार्रवाई विफल",
+      "activity_failed_to_load": "गतिविधि लोड करने में विफल",
+      "sync_status_unavailable": "सिंक स्थिति उपलब्ध नहीं"
     },
     "artifactPopoutFrame": {
       "artifact": "आर्टिफ़ैक्ट",
@@ -8604,7 +8610,6 @@
       "delete": "हटाएँ…",
       "deploying": "डिप्लॉय हो रहा है…",
       "drop_here_to_unfile": "— फ़ोल्डर से बाहर करने के लिए यहाँ छोड़ें",
-      "error": "त्रुटि",
       "expired": "अवधि समाप्त",
       "filter_artifacts": "{{provider}} आर्टिफ़ैक्ट फ़िल्टर करें…",
       "filter_by_kind": "प्रकार से फ़िल्टर करें",
@@ -8681,7 +8686,8 @@
       "local_preview": "Local preview",
       "more_actions": "और कार्रवाइयां",
       "published_distribution_disabled": "प्रकाशित — डिलीवरी नेटवर्क निष्क्रिय",
-      "published_notice_generic": "प्रकाशित — लिंक अभी काम न कर सकता है"
+      "published_notice_generic": "प्रकाशित — लिंक अभी काम न कर सकता है",
+      "retry": "फिर कोशिश करें"
     },
     "capabilitiesPage": {
       "agent_capabilities": "एजेंट क्षमताएँ",
@@ -8732,7 +8738,6 @@
       "dismiss": "खारिज करें",
       "e_g_investigate_gamma_deployment_failure": "उदा. Gamma परिनियोजन विफलता की जाँच करें",
       "failed_to_add_agent": "एजेंट जोड़ा नहीं जा सका",
-      "failed_to_clear_context_error": "संदर्भ साफ़ नहीं हो सका: {{error}}",
       "failed_to_create_channel": "चैनल नहीं बन सका",
       "is_working": "काम कर रहा है…",
       "listen_all": "सभी",
@@ -8748,7 +8753,6 @@
       "new_channel": "नया चैनल",
       "new_channel_2": "नया चैनल",
       "no_channels_yet": "अभी कोई चैनल नहीं",
-      "ok": "ठीक है",
       "preset_custom_empty": "कस्टम (खाली)",
       "preset_incident_response": "इंसिडेंट रिस्पॉन्स",
       "reply": "उत्तर दें",
@@ -8772,7 +8776,14 @@
       "this_will_reset_conversation_history_for_all_age": "इससे सभी एजेंट का बातचीत इतिहास रीसेट हो जाएगा। कॉन्फ़िग सुरक्षित रहेंगे।",
       "thread": "थ्रेड",
       "topic": "विषय",
-      "unknown_error": "अज्ञात त्रुटि"
+      "failed_to_load_channels": "चैनल लोड करने में विफल",
+      "failed_to_load_presets": "टीम प्रीसेट लोड करने में विफल",
+      "failed_to_load_channel": "यह चैनल लोड करने में विफल",
+      "failed_to_send_message": "संदेश भेजने में विफल",
+      "failed_to_dismiss_agent": "एजेंट हटाने में विफल",
+      "failed_to_update_agent": "एजेंट अपडेट करने में विफल",
+      "failed_to_close_channel": "चैनल बंद करने में विफल",
+      "failed_to_clear_context": "संदर्भ साफ़ करने में विफल"
     },
     "chat": {
       "activityViewer": {
@@ -9388,10 +9399,8 @@
       "could_not_switch_variant": "संस्करण नहीं बदल सके",
       "could_not_start_a_new_session": "नया सेशन शुरू नहीं हो सका",
       "could_not_start_session_message_restored": "नया सत्र शुरू नहीं हो सका: {{error}}। तुम्हारा संदेश वापस ले आया गया — दोबारा कोशिश करने के लिए उसे फिर से भेजें।",
-      "dismiss_error": "त्रुटि खारिज करें",
       "dismiss_upload_error": "अपलोड त्रुटि खारिज करें",
       "enter_split_view": "स्प्लिट व्यू में जाएँ",
-      "error_reading_file": "_फ़ाइल पढ़ने में त्रुटि_",
       "esc_to_dismiss": "खारिज करने के लिए Esc",
       "expand_knowledge_context": "ज्ञान संदर्भ विस्तृत करें",
       "failed_to_apply_plan": "योजना लागू नहीं हो सकी",
@@ -9462,7 +9471,6 @@
       "tool_status_loaded": "इस सत्र में लोड किया गया",
       "type_to_filter": "फ़िल्टर करने के लिए टाइप करें…",
       "type_to_search_this_conversation": "इस बातचीत में खोजने के लिए टाइप करें।",
-      "unable_to_read_file": "_फ़ाइल पढ़ी नहीं जा सकी।_",
       "unknown_error": "अज्ञात त्रुटि",
       "upload_failed_check_file_type_and_size_max_50_mb": "अपलोड विफल — फ़ाइल का प्रकार और आकार जाँचें (अधिकतम 50 MB)",
       "upload_failed_error": "अपलोड विफल: {{error}}",
@@ -9470,7 +9478,11 @@
       "worktree_creation_returned_no_path": "वर्कट्री बनाने पर कोई पथ नहीं मिला",
       "loading_earlier_messages": "पुराने संदेश लोड हो रहे हैं…",
       "send_failed_with_error": "भेजना विफल: {{error}}",
-      "delivery_unconfirmed": "डिलीवरी की पुष्टि नहीं हुई — तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है; दोबारा भेजने से पहले बातचीत देखो।"
+      "delivery_unconfirmed": "डिलीवरी की पुष्टि नहीं हुई — तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है; दोबारा भेजने से पहले बातचीत देखो।",
+      "could_not_read_file_reason": "{{path}} पढ़ा नहीं जा सका ({{reason}})",
+      "http_status": "HTTP {{status}}",
+      "could_not_rename_session": "सत्र का नाम नहीं बदल सके",
+      "could_not_generate_title": "शीर्षक नहीं बना सके"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",
@@ -9706,7 +9718,11 @@
       "workflow_running_other": "{{count}} वर्कफ़्लो चल रहे हैं",
       "flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू — बोर्ड कॉलम में फ़ोल्डर छिपाएँ",
       "show_folders_in_board_columns": "बोर्ड कॉलम में फ़ोल्डर दिखाएँ",
-      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)",
+      "folders_load_failed": "फ़ोल्डर लोड नहीं हो सके",
+      "columns_load_failed": "बोर्ड कॉलम लोड नहीं हो सके",
+      "folder_update_failed": "फ़ोल्डर अपडेट विफल",
+      "board_update_failed": "बोर्ड अपडेट विफल"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
@@ -9857,7 +9873,6 @@
       "disk": "डिस्क:",
       "disk_worktrees": "डिस्क (वर्कट्री)",
       "dismiss": "खारिज करें",
-      "dismiss_provision_status": "प्रोविज़न स्थिति खारिज करें",
       "dismiss_sync_status": "सिंक स्थिति खारिज करें",
       "each_row_below_is_a_git_worktree_discovered_from": "नीचे दी गई हर पंक्ति main चेकआउट से मिली एक git वर्कट्री है। उपयोग करें",
       "empty_worktree_cannot_be_undone": "खाली वर्कट्री। इसे वापस नहीं लाया जा सकता।",
@@ -10054,7 +10069,8 @@
       "pod_home_disk": "पॉड-होम डिस्क: {{value}}",
       "orphan_pods_label": "अनाथ पॉड होम: {{value}}",
       "total_disk_used_by_running_pod_homes": "चल रहे पॉड होम द्वारा उपयोग की गई कुल डिस्क",
-      "pod_homes_left_on_disk_with_no_live_pod": "बिना किसी सक्रिय पॉड के डिस्क पर बचे पॉड होम"
+      "pod_homes_left_on_disk_with_no_live_pod": "बिना किसी सक्रिय पॉड के डिस्क पर बचे पॉड होम",
+      "disk_usage_unavailable": "डिस्क उपयोग उपलब्ध नहीं"
     },
     "developer": {
       "agentBackendTab": {
@@ -10162,7 +10178,6 @@
       "actions": "कार्रवाइयां",
       "bundled": "बंडल किया गया",
       "cancel": "रद्द करें",
-      "check_your_connection_or_configuration_and_try_a": "अपना कनेक्शन या कॉन्फ़िगरेशन जांचें और फिर कोशिश करें।",
       "click_again_to_confirm": "पुष्टि के लिए फिर क्लिक करें",
       "command": "कमांड",
       "config": "कॉन्फ़िग",
@@ -10218,7 +10233,10 @@
       "user": "उपयोगकर्ता",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
-      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills."
+      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
+      "retry": "फिर कोशिश करें",
+      "show_last_error": "{{name}} की पिछली त्रुटि दिखाएँ",
+      "test_failed_for": "{{name}} के लिए परीक्षण विफल"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "इस वर्कस्पेस के लिए एक अनूठा पहचानकर्ता। एजेंट वर्कस्पेस को नाम से संदर्भित करते हैं।",

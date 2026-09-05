@@ -2855,7 +2855,9 @@
       "consumption_for_current_billing_period": "{{provider}} consumption for the current billing period. Cached 10 min.",
       "context_window_usage_tip": "Live context window utilization per active {{label}} session. Custom agents show their configured model. Compaction triggers at 90%.",
       "default": "Default",
-      "delete_subagent": "Delete subagent {{id}}"
+      "delete_subagent": "Delete subagent {{id}}",
+      "retry": "Retry",
+      "delete_unavailable_references_failed": "Couldn't load the crew roster or the fallback-template setting, so deleting this template is unavailable until they load."
     },
     "aidlc": {
       "taskDetailPanel": {
@@ -2877,7 +2879,6 @@
       }
     },
     "appDetailPage": {
-      "app_not_found_2": "App \"{{name}}\" not found",
       "all_contributors": "All contributors",
       "contributors": "Contributors",
       "disabled": "Disabled",
@@ -2894,7 +2895,8 @@
       "install_failed": "Install failed",
       "installed_version": "Installed (v{{version}})",
       "removing": "Removing…",
-      "starting_install": "Starting install…"
+      "starting_install": "Starting install…",
+      "retry": "Retry"
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",
@@ -2928,14 +2930,12 @@
       "updating_progress": "Updating {{done}}/{{total}}…"
     },
     "artifactDeployPage": {
-      "add_failed": "add failed",
       "aws_profiles_count": "AWS Profiles ({{count}})",
       "created_and_registered_profile": "Created + registered profile '{{name}}'.",
       "deploy_artifact": "Deploy {{name}}",
       "deployments_count": "Deployments ({{count}})",
       "destroy_confirm": "DESTROY “{{name}}”? Permanently deletes bucket {{bucket}} and distribution {{distribution}}. Cannot be undone.",
       "destroying": "Destroying '{{name}}' (CloudFront disable can take 5–15 min).",
-      "error": "Error: {{error}}",
       "is_the_default_profile": "{{name}} is the default profile",
       "make_the_default_profile": "Make {{name}} the default profile",
       "pending_confirmations_count": "Pending confirmations ({{count}})",
@@ -2955,13 +2955,11 @@
       "recalled": "Recalled '{{name}}'.",
       "register": "Register",
       "registered_profile": "Registered profile '{{name}}'.",
-      "remove_failed": "remove failed",
       "remove_from_registry": "Remove {{name}} from registry",
       "remove_profile_confirm": "Remove “{{name}}” from the registry? Your ~/.aws/config is NOT touched.",
       "removed_from_registry_your_aws_config_is_untouche": "Removed from registry (your ~/.aws/config is untouched).",
       "unknown": "unknown",
       "unknown_2": "(unknown)",
-      "update_failed": "update failed",
       "public_by_link_warning": "Published URLs are public-by-link: anyone with the link can view the content — it is served on the public internet with no authentication.",
       "random_domain_note": "Content is served at a random *.cloudfront.net domain — don't publish anything you wouldn't put on the open internet.",
       "recall_title": "Recall site?",
@@ -2969,7 +2967,9 @@
       "destroy_title": "Destroy site?",
       "destroy_button": "Destroy site",
       "remove_profile_title": "Remove profile?",
-      "remove_profile_button": "Remove profile"
+      "remove_profile_button": "Remove profile",
+      "retry": "Retry",
+      "profile_errors_title": "Some profiles could not be listed"
     },
     "artifactDetailPage": {
       "agent_chat": "Agent chat",
@@ -3023,7 +3023,13 @@
       "toggle_agent_chat": "Toggle agent chat",
       "check_again": "Check again",
       "rechecking": "Checking…",
-      "recheck_publication_notice": "Re-check this publication's status"
+      "recheck_publication_notice": "Re-check this publication's status",
+      "back_to_live": "Back to Live",
+      "versions_failed_to_load": "Versions failed to load",
+      "comments_failed_to_load": "Comments failed to load",
+      "comment_action_failed": "Comment action failed",
+      "activity_failed_to_load": "Activity failed to load",
+      "sync_status_unavailable": "Sync status unavailable"
     },
     "artifactPopoutFrame": {
       "artifact": "Artifact",
@@ -3080,7 +3086,8 @@
       "table": "Table",
       "this_folder_is_empty_drag_artifacts_onto_it_to_f": "This folder is empty. Drag artifacts onto it to file them here.",
       "untitled_artifact_name": "Untitled",
-      "more_actions": "More actions"
+      "more_actions": "More actions",
+      "retry": "Retry"
     },
     "capabilitiesPage": {
       "crews_label": "Agents",
@@ -3109,12 +3116,10 @@
       "agent_joining_one": "{{count}} agent joining",
       "agent_joining_other": "{{count}} agents joining",
       "failed_to_add_agent": "Failed to add agent",
-      "failed_to_clear_context_error": "Failed to clear context: {{error}}",
       "failed_to_create_channel": "Failed to create channel",
       "is_working": "is working…",
       "reset_role_s_llm_session_the_channel_s_shared_me": "Reset {{role}}'s LLM session. The channel's shared message history is preserved.",
       "running_tool": "running tool…",
-      "unknown_error": "unknown error",
       "reply_2_one": "{{count}} reply",
       "reply_2_other": "{{count}} replies",
       "listen_all": "all",
@@ -3128,7 +3133,15 @@
       "state_listening": "listening",
       "state_pending": "pending",
       "state_running": "running",
-      "state_working": "working"
+      "state_working": "working",
+      "failed_to_load_channels": "Failed to load channels",
+      "failed_to_load_presets": "Failed to load team presets",
+      "failed_to_load_channel": "Failed to load channel",
+      "failed_to_send_message": "Failed to send message",
+      "failed_to_dismiss_agent": "Failed to dismiss agent",
+      "failed_to_update_agent": "Failed to update agent",
+      "failed_to_close_channel": "Failed to close channel",
+      "failed_to_clear_context": "Failed to clear context"
     },
     "chat": {
       "workflowRunCard": {
@@ -3477,7 +3490,6 @@
       "connection_error": "Connection error",
       "could_not_start_a_new_session": "Could not start a new session",
       "could_not_start_session_message_restored": "Could not start a new session: {{error}}. Your message was restored — send it again to retry.",
-      "error_reading_file": "_Error reading file_",
       "expand_knowledge_context": "Expand knowledge context",
       "file_not_found_on_disk_it_may_have_been_moved_or": "_File not found on disk. It may have been moved or deleted._",
       "file_too_large": "File too large: {{name}} (max 50 MB)",
@@ -3515,14 +3527,17 @@
       "tool_status_disabled": "Disabled",
       "tool_status_loaded": "Loaded this session",
       "type_to_search_this_conversation": "Type to search this conversation.",
-      "unable_to_read_file": "_Unable to read file._",
       "unknown_error": "unknown error",
       "upload_failed_check_file_type_and_size_max_50_mb": "Upload failed — check file type and size (max 50 MB)",
       "upload_failed_error": "Upload failed: {{error}}",
       "worktree_creation_returned_no_path": "Worktree creation returned no path",
       "loading_earlier_messages": "Loading earlier messages…",
       "send_failed_with_error": "Send failed: {{error}}",
-      "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again."
+      "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again.",
+      "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",
+      "http_status": "HTTP {{status}}",
+      "could_not_rename_session": "Couldn't rename the session",
+      "could_not_generate_title": "Couldn't generate a title"
     },
     "chatSidebar": {
       "answered_by": "answered by {{agent}}",
@@ -3630,7 +3645,11 @@
       "workflow_running_other": "{{count}} workflows running",
       "flat_view_hide_folders_in_board_columns": "Flat view — hide folders in the board columns",
       "show_folders_in_board_columns": "Show folders in the board columns",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Switch to flat view (hide folders in the board columns)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Switch to flat view (hide folders in the board columns)",
+      "folders_load_failed": "Could not load folders",
+      "columns_load_failed": "Could not load board columns",
+      "folder_update_failed": "Folder update failed",
+      "board_update_failed": "Board update failed"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
@@ -3839,7 +3858,8 @@
       "no_checkout_found": "No {{productName}} checkout found",
       "no_checkout_found_help": "Dev Fleet manages the git worktrees of a {{productName}} source checkout. None was found in your project directory, in the checkout serving this dashboard, or in the usual clone locations.",
       "no_checkout_found_env_example": "KIROCREW_DEVFLEET_REPO=/path/to/your/checkout",
-      "no_checkout_found_action": "Set the environment variable below, or add dev_fleet.repo_path to config.json in your {{productName}} data directory (~/.kiro/crew by default) to make it stick, then restart the gateway."
+      "no_checkout_found_action": "Set the environment variable below, or add dev_fleet.repo_path to config.json in your {{productName}} data directory (~/.kiro/crew by default) to make it stick, then restart the gateway.",
+      "disk_usage_unavailable": "Disk usage unavailable"
     },
     "developerPage": {
       "tabs": {
@@ -3930,7 +3950,10 @@
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
-      "test_failed": "Test failed"
+      "test_failed": "Test failed",
+      "retry": "Retry",
+      "show_last_error": "Show last error for {{name}}",
+      "test_failed_for": "Test failed for {{name}}"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "A unique identifier for this workspace. Agents reference workspaces by name.",
@@ -5547,6 +5570,10 @@
         "chat_on_a_crew": "Chat on a crew",
         "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet."
       }
+    },
+    "appPage": {
+      "retry": "Retry",
+      "back_to_apps": "Back to Apps"
     }
   },
   "privacyDisclosure": {

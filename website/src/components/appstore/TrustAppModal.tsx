@@ -23,6 +23,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Code2, GitBranch, Loader2, Server, ShieldAlert, Terminal } from 'lucide-react'
 
 import { api } from '../../api/client'
+import { isNotFoundError } from '../../api/apiError'
 import Modal from '../Modal'
 import ErrorNotice from '../ErrorNotice'
 import { Badge, Btn } from '../ui'
@@ -109,16 +110,6 @@ function errorCode(e: unknown): string | null {
  */
 export function isTrustDeniedError(e: unknown): boolean {
   return errorCode(e) === APP_EXECUTION_DENIED
-}
-
-/** Whether a rejection is specifically a 404 — proof the resource is absent.
- *
- *  Structural for the same reason `errorCode` is: page tests stub ApiError-SHAPED
- *  objects, so an `instanceof ApiError` check would read false for them and the
- *  absence proof would be lost exactly where it is asserted.
- */
-function isNotFound(e: unknown): boolean {
-  return !!e && typeof e === 'object' && (e as { status?: unknown }).status === 404
 }
 
 /**
@@ -240,7 +231,7 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
           // exists and works. Status read structurally, matching
           // `isTrustDeniedError` above: page tests stub ApiError-SHAPED objects
           // rather than real instances.
-          if (isNotFound(probe)) {
+          if (isNotFoundError(probe)) {
             try {
               await api.untrustApp(gate.app.name)
               rolledBack = true

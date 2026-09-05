@@ -119,11 +119,17 @@ Object.defineProperty(window, 'matchMedia', {
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
   })),
 })
-globalThis.fetch = vi.fn().mockResolvedValue({
+// The file-read stub. Re-installed in `beforeEach` below as well: the MSW
+// server in integration/setup.ts patches `globalThis.fetch` in `beforeAll`,
+// which runs AFTER this module-level assignment, so without the re-install the
+// read lands on the mock server's 501 catch-all — and a failed read no longer
+// opens a tab (it reports through the pane notice), so the panel never shows.
+const fileReadStub = () => vi.fn().mockResolvedValue({
   ok: true, status: 200,
   text: () => Promise.resolve('file content'),
   json: () => Promise.resolve({}),
 }) as never
+globalThis.fetch = fileReadStub()
 
 import ChatPage from '../pages/ChatPage'
 
@@ -181,6 +187,7 @@ const seedMessage = (store: ReturnType<typeof createTestStore>) => {
 describe('ChatPage – handleOpenDiff routes identical content to file viewer', () => {
   beforeEach(() => {
     Object.keys(apiMocks).forEach(k => delete apiMocks[k])
+    globalThis.fetch = fileReadStub()
   })
 
   it('routes original===modified to the file viewer (md-panel), not the diff panel', async () => {

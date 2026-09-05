@@ -340,29 +340,34 @@ describe('ChatPage row callbacks — fork', () => {
     expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 3, undefined, undefined, 'tail')
   })
 
-  it('reports a refused fork through an alert instead of switching sessions', async () => {
+  it('reports a refused fork through the in-page ErrorNotice instead of switching sessions', async () => {
     apiSpy('forkChatSlot').mockResolvedValue({ ok: false, error: 'slot is busy' })
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
-    await waitFor(() => expect(alertSpy).toHaveBeenCalled())
-    expect(String(alertSpy.mock.calls[0][0])).toContain('slot is busy')
+    // The surface is the shared ErrorNotice (role="alert" + agent hand-off),
+    // never a native alert(): the rule `errors-use-error-notice` forbids the
+    // browser dialog, which also carried no structured context to the agent.
+    const notice = await screen.findByTestId('action-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice.textContent).toContain('slot is busy')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
-  it('still alerts when the fork request throws, naming the real reason', async () => {
+  it('still reports when the fork request throws, naming the real reason', async () => {
     apiSpy('forkChatSlot').mockRejectedValue(new Error('network down'))
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
-    await waitFor(() => expect(alertSpy).toHaveBeenCalled())
-    const said = String(alertSpy.mock.calls[0][0])
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
     expect(said).toContain('Fork failed')
     // Flipped, as this assertion's previous form asked to be: it pinned the
     // reason being LOST — `unwrap()` rejects with a redux-toolkit
     // SerializedError (a PLAIN OBJECT), so the handler's `e instanceof Error`
     // test was false and the `String(e)` fallback rendered '[object Object]'.
     // The handler now reads the message through `utils/thunkError.errMessage`,
-    // which knows that shape, so the alert carries the real text.
+    // which knows that shape, so the notice carries the real text.
     expect(said).toContain('network down')
     expect(said).not.toContain('[object Object]')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -380,10 +385,10 @@ describe('ChatPage row callbacks — plan from here', () => {
     apiSpy('forkChatSlot').mockResolvedValue({ ok: false, error: 'no orchestrator agent' })
     await renderTurn()
     await act(async () => { await assistantProps!.onPlanFromHere!(2) })
-    await waitFor(() => expect(alertSpy).toHaveBeenCalled())
-    const said = String(alertSpy.mock.calls[0][0])
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
     expect(said).toContain('no orchestrator agent')
     expect(said).not.toContain('Fork failed')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
   it('surfaces a failed plan apply and resolves false', async () => {
@@ -392,7 +397,9 @@ describe('ChatPage row callbacks — plan from here', () => {
     let applied: boolean | undefined
     await act(async () => { applied = await assistantProps!.onApplyPlan!([]) })
     expect(applied).toBe(false)
-    expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to apply plan'))
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
+    expect(said).toContain('Failed to apply plan')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
   it('resolves true and leaves the page quiet when the plan is accepted', async () => {
@@ -411,7 +418,9 @@ describe('ChatPage row callbacks — plan from here', () => {
     let applied: boolean | undefined
     await act(async () => { applied = await assistantProps!.onApplyPlan!([]) })
     expect(applied).toBe(false)
-    expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to apply plan'))
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
+    expect(said).toContain('Failed to apply plan')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 })
 

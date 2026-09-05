@@ -7976,7 +7976,9 @@
       "what_a_crew_starts_from_its_model_skills_tools_mc": "에이전트의 출발점 — 모델, 스킬, 도구, MCP 서버, 가드레일",
       "when_nothing_names_a_template_use": "템플릿이 지정되지 않은 경우 사용",
       "where_it_comes_from": "출처",
-      "yes_delete_it": "예, 삭제합니다"
+      "yes_delete_it": "예, 삭제합니다",
+      "retry": "다시 시도",
+      "delete_unavailable_references_failed": "크루 명단이나 대체 템플릿 설정을 불러오지 못해, 불러올 때까지 이 템플릿을 삭제할 수 없습니다."
     },
     "aidlc": {
       "dagView": {
@@ -8032,7 +8034,6 @@
       "after_installation_run": "설치 후 실행:",
       "api_access": "API 액세스",
       "app_not_found": "앱을 찾을 수 없음",
-      "app_not_found_2": "앱 ‘{{name}}’을(를) 찾을 수 없습니다",
       "apps": "앱",
       "author": "작성자:",
       "back_to_apps": "앱으로 돌아가기",
@@ -8046,7 +8047,6 @@
       "details": "세부 정보",
       "disable": "사용 안 함",
       "disabled": "사용 안 함",
-      "dismiss_error": "오류 닫기",
       "doesnt_exist": "‘{{name}}’은(는) 존재하지 않습니다",
       "enable": "사용",
       "enabled": "사용 중",
@@ -8054,7 +8054,6 @@
       "failed_to_load_app": "앱을 불러오지 못했습니다",
       "failed_to_uninstall": "제거하지 못했습니다",
       "features": "기능",
-      "fix_with_ai": "AI로 수정",
       "github_stars": "GitHub 스타 수",
       "github_stars_2": "GitHub 스타 수: {{value}}",
       "install": "설치",
@@ -8103,10 +8102,13 @@
       "v_2": "· v",
       "websocket_events": "WebSocket 이벤트",
       "all_contributors": "모든 기여자",
-      "contributors": "기여자"
+      "contributors": "기여자",
+      "retry": "다시 시도"
     },
     "appPage": {
-      "loading_app": "앱을 불러오는 중…"
+      "loading_app": "앱을 불러오는 중…",
+      "retry": "다시 시도",
+      "back_to_apps": "앱으로 돌아가기"
     },
     "appsPage": {
       "action_failed": "{{name}} {{action}}에 실패했습니다",
@@ -8179,7 +8181,6 @@
       "access_reachable": ": 액세스 가능",
       "account_12_digits_optional_iam_identity_style": "계정 (12자리, 선택 — iam-identity-style)",
       "active_deployments": "활성 배포",
-      "add_failed": "추가 실패",
       "admin": "관리자",
       "also_create_in_aws_config": "AWS config에도 생성",
       "and_click": "그리고 클릭",
@@ -8225,7 +8226,6 @@
       "details": "세부 정보",
       "dismiss": "닫기",
       "e_g_my_sandbox": "예: my-sandbox",
-      "error": "오류: {{error}}",
       "est_cost_not_a_bill": "예상 비용 (청구서 아님)",
       "estimated_total": "예상 합계 —",
       "found_in_your_aws_config": "AWS config에서 찾음:",
@@ -8283,7 +8283,6 @@
       "register": "등록",
       "registered_profile": "프로필 ‘{{name}}’을(를) 등록했습니다.",
       "remove": "제거",
-      "remove_failed": "제거 실패",
       "remove_from_registry": "레지스트리에서 {{name}} 제거",
       "remove_profile_confirm": "레지스트리에서 ‘{{name}}’을(를) 제거합니다. ~/.aws/config는 변경되지 않습니다.",
       "removed_from_registry_your_aws_config_is_untouche": "레지스트리에서 제거되었습니다 (~/.aws/config는 변경되지 않습니다).",
@@ -8306,7 +8305,6 @@
       "unknown": "알 수 없음",
       "unknown_2": "(알 수 없음)",
       "unverified": "확인되지 않음",
-      "update_failed": "업데이트 실패",
       "us_west_2": "us-west-2",
       "v1_fails_with": "; v1은 다음으로 실패합니다",
       "verified": "확인됨",
@@ -8327,7 +8325,9 @@
       "destroy_title": "사이트를 파기하시겠습니까?",
       "destroy_button": "사이트 파기",
       "remove_profile_title": "프로필을 제거하시겠습니까?",
-      "remove_profile_button": "프로필 제거"
+      "remove_profile_button": "프로필 제거",
+      "retry": "다시 시도",
+      "profile_errors_title": "일부 프로필을 나열할 수 없습니다"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· 원격 사본에 더 새로운 버전이 있습니다",
@@ -8450,7 +8450,13 @@
       "your_current_edits_are_saved_as_a_version_first": "현재 편집 내용이 먼저 버전으로 저장되므로 잃는 것은 없습니다.",
       "check_again": "다시 확인",
       "rechecking": "확인 중…",
-      "recheck_publication_notice": "이 게시 상태를 다시 확인"
+      "recheck_publication_notice": "이 게시 상태를 다시 확인",
+      "back_to_live": "라이브로 돌아가기",
+      "versions_failed_to_load": "버전을 불러오지 못했습니다",
+      "comments_failed_to_load": "댓글을 불러오지 못했습니다",
+      "comment_action_failed": "댓글 작업 실패",
+      "activity_failed_to_load": "활동을 불러오지 못했습니다",
+      "sync_status_unavailable": "동기화 상태를 확인할 수 없습니다"
     },
     "artifactPopoutFrame": {
       "artifact": "아티팩트",
@@ -8486,7 +8492,6 @@
       "delete": "삭제…",
       "deploying": "배포 중…",
       "drop_here_to_unfile": "— 여기에 놓아 정리 해제",
-      "error": "오류",
       "expired": "만료됨",
       "filter_artifacts": "{{provider}} 아티팩트 필터…",
       "filter_by_kind": "종류로 필터",
@@ -8562,7 +8567,8 @@
       "widgets_files_and_snippets_live_tracked_with_ver": "위젯·파일·스니펫 — 버전 기록과 함께 실시간 추적",
       "your_artifacts": "내 아티팩트",
       "local_preview": "Local preview",
-      "more_actions": "추가 작업"
+      "more_actions": "추가 작업",
+      "retry": "다시 시도"
     },
     "capabilitiesPage": {
       "agent_capabilities": "에이전트 기능",
@@ -8611,7 +8617,6 @@
       "dismiss": "해제",
       "e_g_investigate_gamma_deployment_failure": "예: Gamma 배포 실패 조사",
       "failed_to_add_agent": "에이전트를 추가하지 못했습니다",
-      "failed_to_clear_context_error": "컨텍스트를 지우지 못했습니다: {{error}}",
       "failed_to_create_channel": "채널을 만들지 못했습니다",
       "is_working": "작업 중…",
       "listen_all": "전체",
@@ -8627,7 +8632,6 @@
       "new_channel": "새 채널",
       "new_channel_2": "새 채널",
       "no_channels_yet": "아직 채널이 없습니다",
-      "ok": "정상",
       "preset_custom_empty": "사용자 지정(비어 있음)",
       "preset_incident_response": "인시던트 대응",
       "reply": "답글",
@@ -8650,7 +8654,14 @@
       "this_will_reset_conversation_history_for_all_age": "모든 에이전트의 대화 기록이 초기화됩니다. 설정은 유지됩니다.",
       "thread": "스레드",
       "topic": "주제",
-      "unknown_error": "알 수 없는 오류"
+      "failed_to_load_channels": "채널을 불러오지 못했습니다",
+      "failed_to_load_presets": "팀 프리셋을 불러오지 못했습니다",
+      "failed_to_load_channel": "이 채널을 불러오지 못했습니다",
+      "failed_to_send_message": "메시지를 보내지 못했습니다",
+      "failed_to_dismiss_agent": "에이전트를 해제하지 못했습니다",
+      "failed_to_update_agent": "에이전트를 업데이트하지 못했습니다",
+      "failed_to_close_channel": "채널을 닫지 못했습니다",
+      "failed_to_clear_context": "컨텍스트를 지우지 못했습니다"
     },
     "chat": {
       "activityViewer": {
@@ -9255,10 +9266,8 @@
       "could_not_switch_variant": "버전을 전환할 수 없습니다",
       "could_not_start_a_new_session": "새 세션을 시작할 수 없습니다",
       "could_not_start_session_message_restored": "새 세션을 시작할 수 없습니다: {{error}}. 메시지는 복원되었습니다 — 다시 보내서 재시도하세요.",
-      "dismiss_error": "오류 닫기",
       "dismiss_upload_error": "업로드 오류 닫기",
       "enter_split_view": "분할 보기로 전환",
-      "error_reading_file": "_파일 읽기 오류_",
       "esc_to_dismiss": "Esc로 닫기",
       "expand_knowledge_context": "지식 컨텍스트 펼치기",
       "failed_to_apply_plan": "계획을 적용하지 못했습니다",
@@ -9328,7 +9337,6 @@
       "tool_status_loaded": "이 세션에서 로드됨",
       "type_to_filter": "입력해서 필터…",
       "type_to_search_this_conversation": "입력해서 이 대화를 검색합니다.",
-      "unable_to_read_file": "_파일을 읽을 수 없습니다._",
       "unknown_error": "알 수 없는 오류",
       "upload_failed_check_file_type_and_size_max_50_mb": "업로드에 실패했습니다 — 파일 형식과 크기를 확인하세요 (최대 50 MB)",
       "upload_failed_error": "업로드에 실패했습니다: {{error}}",
@@ -9336,7 +9344,11 @@
       "worktree_creation_returned_no_path": "워크트리 생성 결과에 경로가 없습니다",
       "loading_earlier_messages": "이전 메시지를 불러오는 중…",
       "send_failed_with_error": "전송 실패: {{error}}",
-      "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요."
+      "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
+      "could_not_read_file_reason": "{{path}}을(를) 읽을 수 없습니다 ({{reason}})",
+      "http_status": "HTTP {{status}}",
+      "could_not_rename_session": "세션 이름을 바꿀 수 없습니다",
+      "could_not_generate_title": "제목을 생성할 수 없습니다"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",
@@ -9561,7 +9573,11 @@
       "workflow_running_other": "워크플로 {{count}}개 실행 중",
       "flat_view_hide_folders_in_board_columns": "플랫 보기 — 보드 열에서 폴더 숨기기",
       "show_folders_in_board_columns": "보드 열에서 폴더 표시",
-      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)",
+      "folders_load_failed": "폴더를 불러올 수 없습니다",
+      "columns_load_failed": "보드 열을 불러올 수 없습니다",
+      "folder_update_failed": "폴더 업데이트 실패",
+      "board_update_failed": "보드 업데이트 실패"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -9711,7 +9727,6 @@
       "disk": "디스크:",
       "disk_worktrees": "디스크(워크트리)",
       "dismiss": "닫기",
-      "dismiss_provision_status": "프로비저닝 상태 닫기",
       "dismiss_sync_status": "동기화 상태 닫기",
       "each_row_below_is_a_git_worktree_discovered_from": "아래 각 행은 main 체크아웃에서 탐색된 Git 워크트리입니다. 사용",
       "empty_worktree_cannot_be_undone": "빈 워크트리입니다. 되돌릴 수 없습니다.",
@@ -9908,7 +9923,8 @@
       "pod_home_disk": "파드 홈 디스크: {{value}}",
       "orphan_pods_label": "고아 파드 홈: {{value}}",
       "total_disk_used_by_running_pod_homes": "실행 중인 파드 홈이 사용하는 총 디스크",
-      "pod_homes_left_on_disk_with_no_live_pod": "활성 파드 없이 디스크에 남은 파드 홈"
+      "pod_homes_left_on_disk_with_no_live_pod": "활성 파드 없이 디스크에 남은 파드 홈",
+      "disk_usage_unavailable": "디스크 사용량을 확인할 수 없습니다"
     },
     "developer": {
       "agentBackendTab": {
@@ -10015,7 +10031,6 @@
       "actions": "작업",
       "bundled": "번들 제공",
       "cancel": "취소",
-      "check_your_connection_or_configuration_and_try_a": "연결 또는 설정을 확인하고 다시 시도하세요.",
       "click_again_to_confirm": "다시 클릭하여 확인",
       "command": "명령",
       "config": "설정",
@@ -10071,7 +10086,10 @@
       "user": "사용자",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
-      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills."
+      "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
+      "retry": "다시 시도",
+      "show_last_error": "{{name}}의 마지막 오류 표시",
+      "test_failed_for": "{{name}} 테스트 실패"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "이 워크스페이스의 고유 식별자입니다. 에이전트는 이름으로 워크스페이스를 참조합니다.",

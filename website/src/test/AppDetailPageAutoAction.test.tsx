@@ -69,7 +69,7 @@ describe('AppDetailPage — auto-action deep links', () => {
     vi.clearAllMocks()
     system.mockResolvedValue({ hostname: '' })
     installFromRegistryStream.mockResolvedValue({ ok: true })
-    getApp.mockRejectedValue(new Error('not installed'))
+    getApp.mockRejectedValue(Object.assign(new Error('not installed'), { status: 404 }))
     listRegistry.mockResolvedValue({ apps: [REGISTRY_APP], serverPlatform: { os: 'darwin', arch: 'arm64' } })
   })
 
@@ -151,12 +151,12 @@ describe('AppDetailPage — auto-action deep links', () => {
     expect(updateApp).not.toHaveBeenCalled()
   })
 
-  it('dispatches update when the detail fetch fails and a catalog row supplies a non-string source', async () => {
+  it('dispatches update when there is no installed record and a catalog row supplies a non-string source', async () => {
     // With no installed record, the page spreads the CATALOG row into its app
     // object. registry.py copies index keys verbatim for a row it has not
     // installed, so `source` can be an object; an unguarded startsWith throws
     // inside this effect and Sync never dispatches at all.
-    getApp.mockRejectedValue(new Error('detail fetch failed'))
+    getApp.mockRejectedValue(Object.assign(new Error('not installed'), { status: 404 }))
     listRegistry.mockResolvedValue({
       apps: [{
         ...REGISTRY_APP, installed: true, installedVersion: '1.1.0',

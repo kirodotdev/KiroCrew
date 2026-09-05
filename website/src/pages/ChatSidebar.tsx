@@ -24,6 +24,7 @@ import { sseSlotTitle, setSidebarOrder } from '../store/dashboardSlice'
 import { useDigitModifierHeld, jumpLabelFor, IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { ApiError } from '../api/apiError'
+import { errMessage } from '../utils/thunkError'
 import { findReport, type ErrorReport } from '../utils/errorReport'
 import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
@@ -2480,6 +2481,20 @@ function ChatSidebar({
 
   // Sidebar-only state
   const [seedError, setSeedError] = useState('')
+  // Shared failure line for the board's column mutations (delete / reorder /
+  // add-after / card drop) — one state, because they all edit the same strip and
+  // a second banner per verb would stack. Server-side inputs only, so a failed
+  // write leaves nothing to re-enter; the caches are re-synced alongside.
+  const [boardError, setBoardError] = useState('')
+  // Same shape for the folder mutations (create / delete / update): the optimistic
+  // update already rolls the cache back, but a rolled-back rename with no message
+  // reads as a dead click.
+  const [folderActionError, setFolderActionError] = useState('')
+  // A failed "New chat" (any local variant) used to be a silent no-op: the
+  // react-query rejection was swallowed and nothing rendered. Mirrors
+  // remoteCrewError below, but lives above the list rather than in the menu,
+  // because the plain entries close the menu on select.
+  const [newChatError, setNewChatError] = useState('')
   // Inline failure reason for "New chat on crew" — a crew create can 502 and
   // leave nothing behind, so its reason is shown in the submenu rather than lost.
   const [remoteCrewError, setRemoteCrewError] = useState('')
@@ -3367,7 +3382,7 @@ function ChatSidebar({
   // real data lands — hydration is not user movement. isSuccess (not
   // isFetched, which is also true after a FAILED first fetch) stays false
   // through an error window until the websocket seed or a retry backfills.
-  const { data: folders = [], isSuccess: foldersLoaded } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
+  const { data: folders = [], isSuccess: foldersLoaded, isError: foldersFailed, error: foldersError, refetch: refetchFolders } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
 
   // Tags via React Query (dynamic vocabulary, defaults seeded server-side).
   // `tagsData` stays undefined until the query resolves — FolderConfigModal
@@ -3423,7 +3438,7 @@ function ChatSidebar({
     [tagFilterRows, activeTagIds],
   )
   // Sidebar column layout (flat list; empty = legacy single-lane UX)
-  const { data: rawColumns = [] } = useQuery<TagColumn[]>({ queryKey: ['tag-columns'], queryFn: () => api.tagColumns() })
+  const { data: rawColumns = [], isError: columnsFailed, error: columnsError, refetch: refetchColumns } = useQuery<TagColumn[]>({ queryKey: ['tag-columns'], queryFn: () => api.tagColumns() })
   const [tagColumnsEnabled, setTagColumnsEnabled] = useState(() => loadChatConfig().tagColumnsEnabled)
   useEffect(() => {
     const onChange = () => setTagColumnsEnabled(loadChatConfig().tagColumnsEnabled)
@@ -3503,6 +3518,8 @@ function ChatSidebar({
   }, [columnEditId, popoverPos])
 
 
+  /** One reader for every board write: the rejections are ApiErrors or plain
+   *  Errors, and the strip's banner shows whichever message they carry. */
   const updateColumnMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: { name?: string; tag_ids?: string[]; mode?: TagColumnMode; order?: number; include_untagged?: boolean } }) => api.updateTagColumn(id, body),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tag-columns'] }),
@@ -3511,7 +3528,8 @@ function ChatSidebar({
     // was deleted from another window while this popover's cache was stale.
     // Re-sync both caches so the popover redraws from reality (the stale tag
     // disappears) rather than leaving a selection that looks applied but isn't.
-    onError: () => {
+    onError: (e) => {
+      setBoardError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')))
       queryClient.invalidateQueries({ queryKey: ['chat-tags'] })
       queryClient.invalidateQueries({ queryKey: ['tag-columns'] })
     },
@@ -3519,10 +3537,12 @@ function ChatSidebar({
   const deleteColumnMutation = useMutation({
     mutationFn: (id: string) => api.deleteTagColumn(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tag-columns'] }),
+    onError: (e) => setBoardError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const reorderColumnsMutation = useMutation({
     mutationFn: (ids: string[]) => api.reorderTagColumns(ids),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tag-columns'] }),
+    onError: (e) => setBoardError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const addColumnAfterMutation = useMutation({
     mutationFn: async (afterColId: string) => {
@@ -3535,10 +3555,17 @@ function ChatSidebar({
       await api.reorderTagColumns(uniqIds)
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tag-columns'] }),
+    // The create may have landed before the reorder failed: re-sync so the new
+    // lane shows where the server put it rather than nowhere.
+    onError: (e) => {
+      setBoardError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')))
+      queryClient.invalidateQueries({ queryKey: ['tag-columns'] })
+    },
   })
   const dropSlotMutation = useMutation({
     mutationFn: ({ slot, columnId }: { slot: string; columnId: string }) => api.dropSlotToColumn(slot, columnId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-slots'] }),
+    onError: (e) => setBoardError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   /** Lanes the board does not have yet. Drives the seeding write and the menu
    *  affordance, so the offer to add lanes appears exactly when there is
@@ -4314,10 +4341,12 @@ function ChatSidebar({
         tags: v.tags && v.tags.length > 0 ? v.tags : undefined,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
+    onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const deleteFolderMutation = useMutation({
     mutationFn: (id: string) => api.deleteChatFolder(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
+    onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const updateFolderMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: object; onCommitted?: () => void }) => api.updateChatFolder(id, body),
@@ -4341,7 +4370,10 @@ function ChatSidebar({
     // rationale as ArtifactsPage's updateFolderMut — the drag-undo offer this
     // PR arms observes the cache, so a rollback that momentarily rewrites an
     // UNRELATED folder move would retire that move's valid offer.
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
+      // The rollback below restores the cache; this names the failure so the
+      // rename / collapse / move that just snapped back is not read as a dead click.
+      setFolderActionError((errMessage(err) || i18nT('components.errorBoundary.something_went_wrong')))
       if (!ctx?.before) return
       const { id, body, before } = ctx
       queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old => (old ?? []).map(f => {
@@ -4868,11 +4900,22 @@ function ChatSidebar({
   }, [createChatInFolderMutation, folders, updateFolderMutation])
 
   // Create autopilot session mutation (consistent with useMutation pattern)
+  //
+  // Every local create below reports through `newChatError`. `createSlot(...)
+  // .unwrap()` rejects with RTK's SerializedError — a PLAIN object carrying
+  // `message`, not an Error instance — so the reader accepts both shapes (same
+  // reasoning as createRemoteChatMutation's onError further down). Falls back to
+  // a fixed sentence rather than rendering nothing: an empty message would make
+  // the failed click a silent no-op again, which is the defect being fixed.
+  // `errMessage` already reads the RTK SerializedError a rejected thunk carries.
+  const onNewChatError = (err: unknown) => setNewChatError(errMessage(err) || i18nT('pages.chatSidebar.folder_create_failed'))
   const createAutopilotMutation = useMutation({
     mutationFn: () => {
+      setNewChatError('')
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'orchestrator' })).unwrap()
     },
     onSuccess: focusComposer,
+    onError: onNewChatError,
   })
 
   // Crew Mode: multi-topic chat — the agent runs only in sub-sessions
@@ -4889,18 +4932,22 @@ function ChatSidebar({
   const remoteCrewChatPreview = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
   const createCrewMutation = useMutation({
     mutationFn: () => {
+      setNewChatError('')
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'crew' })).unwrap()
     },
     onSuccess: focusComposer,
+    onError: onNewChatError,
   })
 
   // Create default chat session mutation
   const createChatMutation = useMutation({
     mutationFn: () => {
+      setNewChatError('')
       const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: effectiveMode })).unwrap()
     },
     onSuccess: focusComposer,
+    onError: onNewChatError,
   })
 
   // Create a PLAIN chat, ignoring the `defaultAutopilot` preference.
@@ -4970,8 +5017,12 @@ function ChatSidebar({
   })
 
   const createPlainChatMutation = useMutation({
-    mutationFn: () => dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '' })).unwrap(),
+    mutationFn: () => {
+      setNewChatError('')
+      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '' })).unwrap()
+    },
     onSuccess: focusComposer,
+    onError: onNewChatError,
   })
 
   // Create an ephemeral chat — incognito (memory reads, no writes) or temporary
@@ -4980,8 +5031,12 @@ function ChatSidebar({
   // the `defaultAutopilot` preference would hand an autopilot session to
   // someone who came to this submenu to choose something else.
   const createEphemeralChatMutation = useMutation({
-    mutationFn: (memoryMode: 'incognito' | 'temporary') => dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '', memory_mode: memoryMode })).unwrap(),
+    mutationFn: (memoryMode: 'incognito' | 'temporary') => {
+      setNewChatError('')
+      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '', memory_mode: memoryMode })).unwrap()
+    },
     onSuccess: focusComposer,
+    onError: onNewChatError,
   })
 
   // Session colors
@@ -5975,7 +6030,15 @@ function ChatSidebar({
               {cleanupPreviewLoading
                 ? i18nT('pages.chatSidebar.checking')
                 : cleanupPreviewError
-                  ? <>{i18nT('pages.chatSidebar.failed_to_load_preview')} <button className="text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => queryClient.invalidateQueries({ queryKey: ['cleanup-preview'] })}>{i18nT('pages.chatSidebar.retry')}</button></>
+                  ? (
+                    // Read failure inside a confirm dialog with no draft: nothing to
+                    // lose, so the hand-off is on. Retry stays a separate button
+                    // rather than being the error surface itself.
+                    <span className="inline-flex items-center gap-2 flex-wrap">
+                      <ErrorNotice message={i18nT('pages.chatSidebar.failed_to_load_preview')} variant="inline" askAgent testId="cleanup-preview-error" />
+                      <button className="text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => queryClient.invalidateQueries({ queryKey: ['cleanup-preview'] })}>{i18nT('pages.chatSidebar.retry')}</button>
+                    </span>
+                  )
                   : noStale
                     ? i18nT('pages.chatSidebar.no_inactive_sessions_to_archive')
                     : cleanupPreview != null && <>
@@ -5998,8 +6061,12 @@ function ChatSidebar({
                       </>
               }
             </div>
+            {/* Archive inputs are server-side (the days window is a persisted
+                pick, not a draft), so nothing is lost by handing off. Its own
+                line, above the Cancel/Archive pair: a third control in that row
+                would break max-two-buttons-per-row. */}
+            <ErrorNotice message={cleanupError} askAgent className="mb-2" testId="cleanup-error" />
             <div className="flex items-center gap-2 justify-end">
-              {cleanupError && <span className="text-[11px] text-danger flex-1">{cleanupError}</span>}
               <Btn className="text-[12px] px-3 py-1" onClick={() => setCleanupOpen(false)}>{i18nT('pages.chatSidebar.cancel')}</Btn>
               <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={archivable.length === 0 || cleanupMutation.isPending || cleanupPreviewLoading} onClick={() => {
                 setCleanupError('')
@@ -6031,7 +6098,8 @@ function ChatSidebar({
             </label>
           )}
           <div className="flex items-center gap-2 justify-end">
-            {bulkModelError && <span className="text-[11px] text-danger flex-1">{bulkModelError}</span>}
+            {/* No hand-off: chosen bulkModel/skipRunning selection is unsaved */}
+            <ErrorNotice message={bulkModelError} variant="inline" className="flex-1" testId="bulk-model-error" />
             <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') }}>{i18nT('pages.chatSidebar.cancel')}</Btn>
             <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={!bulkModel || bulkAffectedCount === 0 || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModel, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : i18nT('pages.chatSidebar.switch_session', { count: bulkAffectedCount })}</Btn>
           </div>
@@ -6536,24 +6604,81 @@ function ChatSidebar({
         /* Outside the layout branches on purpose. A TOTAL seed failure leaves
          * zero columns, so the board branch never renders — a banner inside it
          * would be invisible in exactly the case it exists for, while the
-         * toggle has already flipped and the user is looking at a list. */
-        <div
-          data-testid="lane-seed-error"
-          role="status"
-          className="mx-2 mt-2 px-2.5 py-1.5 rounded-md border text-[12px] shrink-0"
-          style={{ borderColor: 'var(--warn)', color: 'var(--warn)' }}
-        >
-          {i18nT('pages.chatSidebar.lane_seed_failed')}
-          <button
-            type="button"
-            className="ml-2 underline bg-transparent border-none cursor-pointer p-0"
-            style={{ color: 'var(--warn)' }}
-            onClick={() => { setSeedError(''); seedStateLanesMutation.mutate() }}
-          >
-            {i18nT('pages.chatSidebar.lane_seed_retry')}
-          </button>
+         * toggle has already flipped and the user is looking at a list.
+         * askAgent: the seed writes derived lanes, no draft in the sidebar.
+         * Retry is a separate button, not the notice itself. */
+        <div className="mx-2 mt-2 flex flex-col gap-1 shrink-0">
+          <ErrorNotice
+            title={i18nT('pages.chatSidebar.lane_seed_failed')}
+            message={seedError}
+            askAgent
+            onDismiss={() => setSeedError('')}
+            testId="lane-seed-error"
+          />
+          <div>
+            <button
+              type="button"
+              className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer p-0"
+              onClick={() => { setSeedError(''); seedStateLanesMutation.mutate() }}
+            >
+              {i18nT('pages.chatSidebar.lane_seed_retry')}
+            </button>
+          </div>
         </div>
       )}
+      {/* Read failures for the two lists this pane is built from. Same placement
+       *  rationale as the seed banner: a failed folders query means no folder
+       *  tree, a failed columns query means no board, so neither branch can host
+       *  its own notice. Both are pure reads — askAgent on, Retry via refetch. */}
+      {foldersFailed && (
+        <div className="mx-2 mt-2 flex flex-col gap-1 shrink-0">
+          <ErrorNotice
+            title={i18nT('pages.chatSidebar.folders_load_failed')}
+            message={(errMessage(foldersError) || i18nT('components.errorBoundary.something_went_wrong'))}
+            askAgent
+            testId="chat-folders-error"
+          />
+          <div>
+            <button type="button" className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer p-0" onClick={() => void refetchFolders()}>
+              {i18nT('pages.chatSidebar.retry')}
+            </button>
+          </div>
+        </div>
+      )}
+      {columnsFailed && (
+        <div className="mx-2 mt-2 flex flex-col gap-1 shrink-0">
+          <ErrorNotice
+            title={i18nT('pages.chatSidebar.columns_load_failed')}
+            message={(errMessage(columnsError) || i18nT('components.errorBoundary.something_went_wrong'))}
+            askAgent
+            testId="tag-columns-error"
+          />
+          <div>
+            <button type="button" className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer p-0" onClick={() => void refetchColumns()}>
+              {i18nT('pages.chatSidebar.retry')}
+            </button>
+          </div>
+        </div>
+      )}
+      {/* Folder writes (create / delete / update) and local "New chat" creates.
+       *  Inputs are already persisted or were never typed (a create menu pick),
+       *  so the hand-off loses nothing. Dismissable: the failure is a moment, not
+       *  a state — the caches have already been re-synced. */}
+      <ErrorNotice
+        title={i18nT('pages.chatSidebar.folder_update_failed')}
+        message={folderActionError}
+        askAgent
+        onDismiss={() => setFolderActionError('')}
+        className="mx-2 mt-2 shrink-0"
+        testId="folder-action-error"
+      />
+      <ErrorNotice
+        message={newChatError}
+        askAgent
+        onDismiss={() => setNewChatError('')}
+        className="mx-2 mt-2 shrink-0"
+        testId="new-chat-error"
+      />
       <LayoutGroup id="chat-slots">
         {flatLaneActive ? (
           // Flat view: every chat exploded out of its folder into one lane.
@@ -6743,6 +6868,17 @@ function ChatSidebar({
            *  With folders shown, the column alive and the folder present, the
            *  column's own mount wins and this line is false. */}
           {folderCreateError && (flatView || !folderCreateError.columnId || !orderedColumns.some(c => c.id === folderCreateError.columnId) || folderCreateMountAbsent(folderCreateError.folderId)) && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
+          {/* Board writes (delete / reorder / add-after / card drop) report here,
+           *  above the strip. Column payloads are server-side, so nothing can be
+           *  lost by handing off; the caches were re-synced in the onError. */}
+          <ErrorNotice
+            title={i18nT('pages.chatSidebar.board_update_failed')}
+            message={boardError}
+            askAgent
+            onDismiss={() => setBoardError('')}
+            className="mx-2 mt-2 shrink-0"
+            testId="board-error"
+          />
           <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-2 p-2" data-testid="column-strip">
             {orderedColumns.map((col, colIdx) => {
               const colSlots = filteredSlots.filter(s => columnMatches(col, s))

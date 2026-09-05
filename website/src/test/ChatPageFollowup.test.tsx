@@ -50,6 +50,11 @@ vi.mock('../api/client', () => ({
     setSlotFolder: vi.fn().mockResolvedValue({ ok: true }),
     chatSlotProject: vi.fn().mockResolvedValue({ ok: true }),
     createWorktree: vi.fn().mockResolvedValue({ ok: true, path: '/repo-wt-limits', branch: 'followup/add-rate-limits' }),
+    // The sidebar's folder and board-column reads now report a failure through
+    // an ErrorNotice (with a Retry button); an absent mock reads as a failure,
+    // so answer them so the notice does not compete with the assertions below.
+    chatFolders: vi.fn().mockResolvedValue([]),
+    tagColumns: vi.fn().mockResolvedValue([]),
   },
   SEARCH_MIN_CHARS: 2,
 }))

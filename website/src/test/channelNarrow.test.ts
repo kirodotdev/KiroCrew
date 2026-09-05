@@ -146,7 +146,9 @@ describe('ChannelPage narrow viewport', () => {
     expect(s).toMatch(/onClose=\{\(\) => setThreadId\(null\)\}/)
     expect(s, 'closing must not destroy the reply being written')
       .not.toMatch(/setThreadId\(null\); if \(id\) discardThreadDraft/)
-    expect(s).toMatch(/await sendMessage\(threadInput, threadId\)\s*\n\s*discardThreadDraft\(threadId\)/)
+    // The draft is discarded only when the send actually landed: a rejected
+    // post keeps the reply in the composer and reports through ErrorNotice.
+    expect(s).toMatch(/if \(await sendMessage\(threadInput, threadId\)\) discardThreadDraft\(threadId\)/)
   })
 
   it('clears overlay state when the channel changes', async () => {

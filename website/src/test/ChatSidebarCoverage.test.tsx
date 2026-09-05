@@ -401,7 +401,11 @@ describe('ChatSidebar — header menu view + tag entries', () => {
     fireEvent.click(await screen.findByText('Switch to board view'))
     const banner = await screen.findByTestId('lane-seed-error')
     expect(banner.textContent).toContain('Could not add the automatic columns')
-    expect(banner.textContent).toContain('Try again')
+    expect(banner.textContent).toContain('persist failed')
+    // The notice is the shared ErrorNotice (hand-off inside); the retry is a
+    // separate control beside it, not text inside the banner.
+    expect(within(banner).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   })
 
   it('gives back the pre-board width when switching to list view', async () => {
