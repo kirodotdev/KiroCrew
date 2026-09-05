@@ -47,6 +47,7 @@ def _run(snippet: str) -> subprocess.CompletedProcess:
         [sys.executable, "-c", _BLOCK_CRYPTOGRAPHY + textwrap.dedent(snippet)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
