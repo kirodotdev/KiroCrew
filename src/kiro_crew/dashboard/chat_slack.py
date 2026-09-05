@@ -26,6 +26,7 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_owner_keys_snapshot,
     slot_history_key,
 )
+from kiro_crew.dashboard.slack_egress import OFFERED_ACTIVATIONS
 from kiro_crew.dashboard.state import DashboardState, _log_task_exception
 from kiro_crew.messaging.link import SLACK_NAMESPACE
 from kiro_crew.platform.context import redact_via_context
@@ -688,7 +689,7 @@ async def list_slack_channels(state: DashboardState) -> list[dict]:
             if not name:
                 unresolved.append(cid)
     for cid, cc in cfg.slack_channels.items():
-        if cid not in seen and cc.activation in ("always", "mention", "observe"):
+        if cid not in seen and cc.activation in OFFERED_ACTIVATIONS:
             channels.append({"id": cid, "name": cid})  # placeholder — resolved below
             seen.add(cid)
             unresolved.append(cid)

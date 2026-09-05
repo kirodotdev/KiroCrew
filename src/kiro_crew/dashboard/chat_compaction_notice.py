@@ -30,11 +30,11 @@ import asyncio
 import logging
 from typing import Any
 
+from kiro_crew.dashboard.slack_egress import channel_egress_permitted
 from kiro_crew.messaging.link import SLACK_NAMESPACE, channel_namespace_of
-from kiro_crew.platform.context import PlatformCompositionError
-from kiro_crew.platform.governance_profiles import vet_and_audit
 
 logger = logging.getLogger(__name__)
+
 
 #: Notices are plain text: a channel session may be read on a client with no
 #: markdown rendering, and the dashboard's own notice copy does not transfer
@@ -86,45 +86,23 @@ async def deliver_channel_compaction_notice(
     await _deliver_via_transport(state, key, pct, success=success)
 
 
-def _channel_egress_permitted(session_key: str, channel_type: str) -> bool:
-    """Vet an outbound notice against the ``channels`` governance scope.
-
-    The non-Slack leg inherits this from ``_resolve_channel_target``. Slack is
-    deliberately absent from ``channel_transports`` and so never reaches that
-    ladder, which would leave its notice as the one unvetted, unaudited egress
-    in this module. Fail-closed: a degraded evaluation denies rather than
-    degrading to permit, matching the ladder and the other ``channels``-scope
-    gates. ``vet_and_audit`` records a SEL decision for both grant and denial.
-
-    Synchronous by design — callers run it through ``asyncio.to_thread`` because
-    the gate reads the profile directory.
-    """
-    try:
-        decision = vet_and_audit(
-            "channels",
-            channel_type,
-            session_key=session_key,
-            tool_name="chat.compaction_notice",
-            fail_closed=True,
-        )
-    except PlatformCompositionError:
-        # An invalid governance ceiling is not an ordinary skip: the ladder
-        # deliberately re-raises rather than degrading, and so does this gate.
-        raise
-    except Exception:
-        logger.debug(
-            "compact notice: governance check failed for %s; denying (fail-closed)",
-            session_key,
-            exc_info=True,
-        )
-        return False
-    # Default False: a Decision without ``permitted`` is an unusable answer from
-    # a gate and must not read as permission.
-    return bool(getattr(decision, "permitted", False))
-
-
 async def _deliver_slack(state: Any, key: str, text: str) -> None:
-    """Post into the Slack thread the session is bound to."""
+    """Post into the Slack thread the session is bound to.
+
+    Vetted by the shared ``channel_egress_permitted`` gate and NOT by the full
+    hardened chain, deliberately. Adopting the chain here would widen this
+    surface's refusal set -- a notice would newly be refused when no authority
+    names the recipient, or on a mid-send rebind -- and that is a behaviour
+    change to a surface this change does not otherwise need to touch. It belongs
+    in its own change, where the widened refusal is the subject under review
+    rather than a rider, alongside the three other proactive sends
+    ``_deliver_slack_governed``'s docstring defers for the same reason.
+
+    So this keeps the pre-existing posture: governance-vetted, audited, and
+    sending on the link it read. The gate is the EXTRACTED shared one rather
+    than a local copy, which is the part worth keeping -- a duplicated
+    fail-closed gate is how the two copies drift.
+    """
     client = getattr(state, "slack_client", None)
     sessions = getattr(state, "sessions", None)
     if client is None or sessions is None:
@@ -138,7 +116,9 @@ async def _deliver_slack(state: Any, key: str, text: str) -> None:
         return
     # Off-loop: the gate walks the profile directory (iterdir + stat, with a
     # possible reload), which is unbounded on slow or networked storage.
-    if not await asyncio.to_thread(_channel_egress_permitted, key, SLACK_NAMESPACE):
+    if not await asyncio.to_thread(
+        channel_egress_permitted, key, SLACK_NAMESPACE, tool_name="chat.compaction_notice"
+    ):
         return
     try:
         # thread_ts is optional: a session bound to a channel without a thread
@@ -158,24 +138,39 @@ async def _deliver_via_transport(state: Any, key: str, pct: float, *, success: b
     sessions = getattr(state, "sessions", None)
     if sessions is None:
         return
-    # ORIGIN then MIRROR, the same ladder every other proactive leg walks
-    # (``GatewayOrchestrator._channel_reply_link``). Origin alone is written by
-    # exactly one channel — Discord's resume path — so a notice for a Telegram or
-    # WeCom conversation, which binds a MIRROR on its first turn, was computed and
-    # then dropped on the `link is None` return below. The conversation got
-    # summarized silently, and on a compaction FAILURE the operator never saw the
-    # "run /compact or /new" line that is the whole point of the notice.
-    link = None
-    for getter in (sessions.get_origin_link, sessions.get_mirror_link):
-        try:
-            link = getter(key)
-        except Exception:
-            logger.debug("compact notice: link lookup failed for %s", key, exc_info=True)
-            return
-        if link is not None:
-            break
-    if link is None:
+    # ORIGIN then MIRROR, through the ONE spelling of that ladder rather than a
+    # third hand-written copy of it. Origin alone is written by exactly one
+    # channel -- Discord's resume path -- so a notice for a Telegram or WeCom
+    # conversation, which binds a MIRROR on its first turn, would be computed and
+    # then dropped; the conversation gets summarized silently, and on a compaction
+    # FAILURE the operator never sees the "run /compact or /new" line that is the
+    # whole point of the notice.
+    #
+    # ``skip_paused`` is passed EXPLICITLY even though False is the default,
+    # because the pause posture is the thing that diverges between callers and a
+    # default read from elsewhere hides it. A notice is pause-BLIND on purpose: a
+    # paused mirror still stops receiving turns, and the compaction that just
+    # happened is precisely what the operator needs told about. Only the note
+    # mirror opts into skipping, where a paused row means the user asked for
+    # silence on that conversation.
+    #
+    # LAZY BECAUSE HOISTING RAISES AT IMPORT TIME: module scope here fails with
+    # `ImportError: cannot import name 'DashboardState' from partially initialized
+    # module 'kiro_crew.dashboard.state'`, via handlers.messaging ->
+    # dashboard/handlers/__init__.py -> handlers_system -> dashboard.state. The
+    # `top-level-imports` rule exempts a circular import. Measuring this needs the
+    # HOIST direction -- importing handlers.messaging first succeeds, so a probe that
+    # way reports no cycle and proves nothing.
+    from kiro_crew.dashboard.handlers.messaging import snapshot_channel_link
+
+    try:
+        snapshot = snapshot_channel_link(state, key, skip_paused=False)
+    except Exception:
+        logger.debug("compact notice: link lookup failed for %s", key, exc_info=True)
         return
+    if snapshot is None:
+        return
+    link, _is_origin = snapshot
     # Lazy: chat_runner imports state at module scope, so a top-level import
     # here would close the cycle.
     from kiro_crew.dashboard.chat_runner import _resolve_channel_target

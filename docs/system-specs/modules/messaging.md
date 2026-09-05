@@ -725,12 +725,61 @@ Four properties are load-bearing:
   caller never named, which is worse than not delivering it.
 - **Failure is reported, not absorbed.** Every refusal — no link, a link on
   another transport, a governance denial, an unregistered transport, one that
-  cannot send proactively, a transport error — returns `False`, is audited with
+  cannot send proactively, a transport error, a binding that MOVED between
+  authorization and the send, or one that moved between chunks of a multi-part
+  message — returns False, is audited with
   its reason, and surfaces as HTTP 502 `channel_delivery_failed`. The bell is not
   a substitute for the surface the user is reading, so a notification-only
   outcome must not read as success. `delivered_to` gained a fourth value,
   `"channel"`, for the same reason: without it a successful Telegram send still
   reported the "reached the dashboard notification only" warning.
+- **`_deliver_to_channel` answers WHETHER it delivered**, and logs which row the
+  ladder selected rather than returning it. The ladder chooses between the origin
+  and mirror rows and a `skip_paused` caller can have the paused one skipped, so
+  the row that was picked is not derivable by the caller — a caller that re-read
+  the link to label the result named the paused origin while the ladder had
+  selected the active mirror. That is why no caller may name the selection; it is
+  also why none needs it back, so the helper logs it at the one place that knows
+  it instead of widening its return for a value only a log line read.
+- **A caller that delivers from a background task passes the binding it was
+  AUTHORED for.** `authored_link` seeds the revalidation; without it the helper
+  compares against its own ladder walk, which for a deferred caller happens after
+  any rebind and therefore reads the replacement as if it were the original. A
+  mismatch is a refusal, never a retarget. `snapshot_channel_link` produces that
+  value through the SAME pause-aware ladder the send walks, so the two agree by
+  construction.
+
+  **Deferred, and owned by one document rather than restated here.** The same
+  resolve-then-send shape survives at seven sites across five symbols, each
+  resolving a link, awaiting, then sending on the value captured before that await
+  with no re-walk. Four direct Slack senders likewise still bypass the
+  `channel_egress_permitted` gate, and `upload_destination._slack_egress_permitted`
+  is a third copy of that gate. Adopting the hardened chain at any of them widens
+  that site's refusal set, which is a behaviour change to a surface this change does
+  not otherwise touch, so each belongs in a change where that tightening is the
+  subject under review. All three lists are enumerated once, by symbol, in
+  `docs/request-for-change/rfc-proactive-slack-egress-consolidation.md`.
+
+  **The one site that does NOT wait for its own change, and why.** The shared
+  helper's pre-existing inline caller is `api_send_message`, so making the mid-send
+  re-ask unconditional tightens an LLM-facing tool from inside a note feature. That
+  is the same class of rider the paragraph above defers seven times, and it lands
+  here for a reason the deferred sites do not share: the seven are SEPARATE
+  senders, each adoptable on its own, while this one is the same function body. The
+  alternatives were a caller-gating flag, which adds a permission-shaped parameter
+  whose only correct value is on, or leaving the inline caller on the old path,
+  which keeps the hole open for the highest-consequence caller while closing it for
+  a background note. The widening is exactly one new refusal: continuing a
+  multi-part send into a destination unlinked after part 1.
+
+  **The per-chunk cost is accepted, not overlooked.** Because the re-ask is
+  unconditional, every chunk after the first costs a ladder re-walk plus an
+  off-loop governance resolve, so a long `send_message` multiplies profile-store
+  reads by chunk count and gets measurably slower where that store is on slow or
+  networked storage. That is the price of the refusal above being real rather than
+  advisory, and it is bounded per chunk rather than per byte. If it ever needs
+  reducing, the resolve is the part to cache within one message; the re-ask is not,
+  because the value it re-reads is exactly what can change mid-send.
 - **The caller does not get to name the conversation.** A cron's destination
   comes from its job's stored `session_key` (gateway-owned scheduler state);
   every other caller is identified by the `X-Session-Key` header, which
@@ -1628,7 +1677,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **Runtime identity follows the current turn**: every channel dispatcher passes its trusted transport name as `runtime_source` to `ContextBuilder.build_message`; the shared `drive_turn` pipeline uses `ChannelTurn.channel_type`. A cross-surface resume keeps its original stable session key for conversation continuity, but `[RUNTIME]` names the interface carrying the current message. Follow-up turns refresh the marker because the one-time session context may describe an earlier surface.
 - **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, Weixin, or Feishu-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
 - **An owner notification is not Slack-only**: `dashboard/server.py::_dm_owner` prefers the owner's Slack DM and falls back to registered channel transports (`_notify_owner_channels`). It used to no-op entirely without Slack, so an expiring unattended grant was invisible on a Teams-only, Discord-only or Telegram-only install — silence about a security grant lapsing is exactly what the notice exists to prevent. Fallback, not addition: an operator with Slack gets one notice, not one per channel. Reachability is the transport's OWN answer, so this can only reach a destination that channel already authorized. **And a channel must be able to NAME the owner: exactly one configured target, or nothing.** The notice carries the operator's own security state, while an allow-list is a list of people permitted to talk to the agent — not a claim that any one of them is the operator. With several configured targets there is no unambiguous owner, and sending to the first reachable one hands one allow-listed human another's auto-approve state; the count is over ALL configured targets, because a three-person allow-list with one learned route is still a guess. Same premise as `/sessions`' owner-only rule. Per-identity authority within an allow-list would let this deliver on a multi-person install; it does not exist yet on any channel.
-- **The proactive PRODUCERS started Slack-shaped, and the parity claim tracks how far that has moved**: `api_send_message` (the LLM-facing `send_message` tool) began with exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` still posts to the Slack upload route. The tool's own explicit addressing now exists for every registered channel and does consult `state.channel_transports`: `channel_type` (+ optional `target_id`) for the conversation the session belongs to, and `session="<channel>"` for that channel's configured owner. See § Proactive sends. What remains Slack-only is the shape of `channel`/`user`/`thread_ts`/`unfurl_*`, whose allow-list, threading and unfurl semantics are Slack concepts, and `file_send`'s upload route. A cron result also still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`).
+- **The proactive PRODUCERS started Slack-shaped, and the parity claim tracks how far that has moved**: `api_send_message` (the LLM-facing `send_message` tool) began with exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` still posts to the Slack upload route. The tool's own explicit addressing now exists for every registered channel and does consult `state.channel_transports`: `channel_type` (+ optional `target_id`) for the conversation the session belongs to, and `session="<channel>"` for that channel's configured owner. See § Proactive sends. What remains Slack-only is the shape of `channel`/`user`/`thread_ts`/`unfurl_*`, whose allow-list, threading and unfurl semantics are Slack concepts, and `file_send`'s upload route. A cron result also still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`). **The `/note` channel mirror joins that producer set on its own terms**: `dashboard/chat_note_mirror.py` runs two legs — a hardened Slack send and the governed transport ladder — so a note reaches a Telegram- or Discord-bound session without a `/link` mirror standing in for explicit addressing. It is dispatched in the background and reports nothing, so it widens the producer set without widening `send_message`'s contract.
 - **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram exposes configured DMs; Webex exposes configured DMs plus, when `webex.allow_group_rooms` is on, each space in `webex.allowed_room_ids` as a `room:` target — and `resolve_configured_target` re-validates a `room:` id against BOTH the switch and the list, because an advertised target id travels through the browser and the LLM (it is the `target_id` an MCP send may name) and the config can narrow after one was minted; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom advertises its allow-listed userids plus, under its allow-all policy, the peers it has learned — each either offered or listed with a reason, because `aibot_send_msg` needs no token but the platform only delivers into a conversation the user has already written to. Feishu destinations are visible but unavailable because replies are anchored to an inbound message (no proactive DM in v1).
 - **Configured-target egress is governed at every yield boundary**: the dashboard mirror-link endpoint enters the shared fail-closed `channels` governance ladder before resolving an opaque target (resolution may itself open a remote DM), rechecks before the initial link message, and rechecks before each historical-context message. A profile that narrows after transport startup therefore stops both target resolution and all subsequent sends.
 - **`/link` and `/unlink` are one pair with one location**: `rebind_conversation_location` claims what `release_conversation_location` frees, and both take the channel's single `_origin_mirror_link()` value — the release matches an occupied location by VALUE, so a second spelling of "this conversation" lets it miss the binding the bind wrote. Inside the rebind the **claim goes first**: `batched_save` writes on the way out even when the block raises, so an opt-out withdrawal ordered ahead of a refused claim would persist for a link that never happened and silently turn mirroring back on.

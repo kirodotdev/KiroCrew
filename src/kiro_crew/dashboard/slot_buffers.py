@@ -193,6 +193,18 @@ class SlotBufferCoordinator:
                 slot._deferred_notes[:0] = held[index:]
                 raise
             written += 1
+            # BOTH halves are committed now, which is the whole reason the mirror waits
+            # for the flush: at POST it would assert content the session never received.
+            mirror = note.get("mirror")
+            if mirror is not None:
+                try:
+                    mirror()
+                except Exception:
+                    # Never load-bearing: the note is written either way, and the
+                    # suffix-restore above must not fire for a delivery failure.
+                    logger.warning(
+                        "held note mirror dispatch failed for slot %s", slot.key, exc_info=True
+                    )
         return written
 
     @staticmethod

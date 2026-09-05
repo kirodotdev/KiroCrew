@@ -528,6 +528,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "egress boundary, so its content is re-scanned before reaching the browser.",
     ),
     (
+        "Background note channel delivery",
+        "dashboard/chat_note_mirror.py",
+        "The visible line of a `/note` as it is pushed OUT to the Slack thread or "
+        "non-Slack channel a session is bound to. A distinct egress boundary from the "
+        "transcript append that precedes it: the transcript pass is a literal scan, so "
+        "a markdown-collapse credential (`AKIA**...**`, which a client reassembles "
+        "whole on screen) survives it, and the note body is caller-controlled — a "
+        "cron or app posts it. So the rendered text is re-scanned through the "
+        "DISPLAY-form floor (`redact_for_display` over the platform-aware "
+        "`redact_via_context`) immediately before it reaches a transport, matching the "
+        "cross-surface reply leg's own chokepoint.",
+    ),
+    (
         "Session history (JSONL)",
         "history.py",
         "Redacted before persistence, so a leaked credential is not written to disk "
