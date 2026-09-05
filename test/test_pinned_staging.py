@@ -223,6 +223,80 @@ def test_a_single_link_regular_file_still_copies_with_mode_and_mtime(tmp_path: P
     assert dst.stat().st_mtime_ns == src.stat().st_mtime_ns
 
 
+def test_an_oversize_source_is_refused_before_the_destination_exists(tmp_path: Path) -> None:
+    """GPT review r12: a ceiling checked only AFTER a copy lets the copy itself
+    exhaust the destination volume. The fstat pre-check refuses first -- and
+    fstat reports a sparse file's LOGICAL size, so a swapped-in sparse giant is
+    refused with zero bytes written and no destination entry at all."""
+    src = tmp_path / "huge.bin"
+    src.write_bytes(b"x" * 64)
+    dst = tmp_path / "copied.bin"
+    reasons: list[tuple[str, str]] = []
+
+    copied = pinned_fs.copy_file_pinned(
+        str(src), str(dst), max_bytes=16, on_skip=lambda r, p: reasons.append((r, p))
+    )
+
+    assert copied is False
+    assert reasons and reasons[0][0] == pinned_fs.SKIP_TOO_LARGE
+    assert not dst.exists(), "the pre-check must fire before the destination is created"
+
+
+def test_a_source_grown_after_fstat_aborts_at_the_first_excess_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one case the fstat pre-check cannot see: bytes appended between the
+    fstat and the read. The copy loop is bounded, so the excess aborts the copy
+    and empties what was written through the descriptor."""
+    src = tmp_path / "growing.bin"
+    src.write_bytes(b"x" * 64)
+    dst = tmp_path / "copied.bin"
+    reasons: list[tuple[str, str]] = []
+
+    real_fstat = os.fstat
+
+    def lying_fstat(fd: int) -> os.stat_result:
+        st = real_fstat(fd)
+        if st.st_size == 64:  # only our source; every other caller sees the truth
+            return os.stat_result(
+                (
+                    st.st_mode,
+                    st.st_ino,
+                    st.st_dev,
+                    st.st_nlink,
+                    st.st_uid,
+                    st.st_gid,
+                    8,
+                    st.st_atime,
+                    st.st_mtime,
+                    st.st_ctime,
+                )
+            )
+        return st
+
+    monkeypatch.setattr(os, "fstat", lying_fstat)
+    copied = pinned_fs.copy_file_pinned(
+        str(src), str(dst), max_bytes=16, on_skip=lambda r, p: reasons.append((r, p))
+    )
+    monkeypatch.undo()
+
+    assert copied is False
+    assert reasons and reasons[0][0] == pinned_fs.SKIP_TOO_LARGE
+    # The destination entry exists (created before the loop) but holds no bytes:
+    # the partial content was emptied through the descriptor.
+    assert dst.stat().st_size == 0
+
+
+def test_the_ceiling_does_not_refuse_a_source_at_exactly_the_limit(tmp_path: Path) -> None:
+    """Boundary: max_bytes is a ceiling, not an exclusive bound."""
+    src = tmp_path / "exact.bin"
+    src.write_bytes(b"x" * 16)
+    dst = tmp_path / "copied.bin"
+
+    assert pinned_fs.copy_file_pinned(str(src), str(dst), max_bytes=16) is True
+    assert dst.read_bytes() == b"x" * 16
+
+
 # ── The restore side ─────────────────────────────────────────────────────────
 
 

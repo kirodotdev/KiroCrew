@@ -1226,6 +1226,21 @@ def _load_stt_config() -> Any:
     return KiroCrewConfig.load().stt
 
 
+def load_stt_config() -> Any:
+    """One STT configuration snapshot, for callers that must not re-read it.
+
+    Every function here that takes an ``stt_config`` parameter re-loads the
+    configuration when handed None. That is right for a single call, and wrong
+    for a SEQUENCE whose answers must agree: a readiness check, a duration-cap
+    answer, and the transcription itself each re-reading the file can straddle an
+    operator changing the provider in Settings, so the gate evaluates one
+    provider's rules and the decode runs under another's. A caller doing several
+    of those calls loads ONE snapshot here and passes it to each. BLOCKING
+    (reads config); call off the event loop.
+    """
+    return _load_stt_config()
+
+
 def _is_sensitive_audio_path(audio_path: str) -> bool:
     """Run the filesystem-resolving sensitive-path guard off the event loop."""
     from kiro_crew.security import is_sensitive_path
@@ -1556,6 +1571,120 @@ _WAV_SUFFIXES = (".wav", ".wave")
 #: pathological input (a multi-hour recording, a corrupt container ffmpeg decodes
 #: forever), not to limit a real voice memo, which is seconds to minutes long.
 _MAX_AUDIO_SECS = 3600
+
+
+def batch_duration_cap_secs(stt_config=None) -> int | None:  # type: ignore[no-untyped-def]
+    """The longest recording the ACTIVE provider transcribes whole, or None.
+
+    Only the local recogniser truncates: both of its decode paths stop at
+    ``_MAX_AUDIO_SECS`` (the WAV reader caps ``readframes``, the ffmpeg transcode
+    passes ``-t``), and neither reports that it did. AWS Transcribe refuses an
+    oversized payload outright (a loud ``None``) and Apple's framework reads the
+    file it is given, so for those providers there is no silent ceiling to guard.
+    Callers that must not dispatch a truncated transcript — the meetings import
+    route — ask here which ceiling applies and refuse longer input BEFORE
+    transcribing. BLOCKING when *stt_config* is None (reads config).
+    """
+    if stt_config is None:
+        stt_config = _load_stt_config()
+    if stt_config.provider in ("transcribe", "apple"):
+        return None
+    return _MAX_AUDIO_SECS
+
+
+def _wav_duration_secs(audio_path: str) -> float | None:
+    """Exact duration from a WAV header, or None when it is not a readable WAV.
+
+    Header math only — no sample data is read — so this works for any rate or
+    width, including files :func:`_pcm_from_wav` would hand to ffmpeg. BLOCKING.
+    """
+    try:
+        with wave.open(audio_path, "rb") as wav:
+            rate = wav.getframerate()
+            if rate <= 0:
+                return None
+            return wav.getnframes() / rate
+    except (OSError, EOFError, wave.Error):
+        return None
+
+
+_PROGRESS_OUT_TIME_RE = re.compile(rb"^out_time_us=(\d+)", re.MULTILINE)
+
+
+async def audio_exceeds_secs(
+    audio_path: str, max_secs: int, *, timeout_secs: int = 300
+) -> bool | None:
+    """Whether the recording at *audio_path* is longer than *max_secs*.
+
+    True/False when the answer is known, None when it cannot be determined.
+
+    WAV files are answered exactly from the header. Everything else is answered
+    by the same decoder that will transcribe it: a null decode bounded at
+    ``max_secs`` plus one second (``-t``), reading the decoded timestamp from
+    ffmpeg's ``-progress`` stream. Decoding — not metadata — is deliberate: the
+    dashboard's own recordings are MediaRecorder webm, whose header carries no
+    duration at all, so a metadata probe would answer None for exactly the files
+    users are most likely to import. The ``-t`` bound keeps the probe's cost
+    proportional to the cap, not to the file.
+
+    A None is honest, not fail-open in disguise, ONLY while the caller gives the
+    probe at least the timeout the transcode itself will get (callers with an
+    ``stt_config`` in hand pass ``stt_config.timeout_secs``; the default matches
+    the config default). The probe decodes at most ``max_secs + 1`` seconds — a
+    strict subset of the transcode's work — so under an aligned budget every
+    None cause leads to a loud downstream failure: an undecodable file fails the
+    transcode the same way, and a host slow enough to time the probe out times
+    the strictly-larger transcode out too. A SHORTER probe budget would reopen
+    the gap where the probe gives up but the transcode "succeeds" truncated —
+    silent data loss on exactly the over-cap files this guard exists to catch.
+    """
+    duration = await asyncio.to_thread(_wav_duration_secs, audio_path)
+    if duration is not None:
+        return duration > max_secs
+    ffmpeg_bin = await _resolve_ffmpeg_for_execution()
+    if not ffmpeg_bin:
+        return None
+    try:
+        proc = await _create_ffmpeg_subprocess(
+            ffmpeg_bin,
+            "-v",
+            "error",
+            "-nostdin",
+            "-progress",
+            "pipe:1",
+            "-i",
+            audio_path,
+            "-vn",
+            # One second PAST the cap: the probe only needs to know whether the
+            # recording crosses it, so decoding further would be pure waste.
+            "-t",
+            str(max_secs + 1),
+            "-f",
+            "null",
+            "-",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:
+        logger.exception("Could not run ffmpeg (%s) to probe %s", ffmpeg_bin, audio_path)
+        return None
+    try:
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+    except asyncio.TimeoutError:
+        await _kill_and_reap(proc)
+        logger.error("ffmpeg duration probe of %s timed out after %ds", audio_path, timeout_secs)
+        return None
+    except BaseException:
+        # CancelledError is a BaseException; stop AND reap the child so an
+        # abandoned request does not leak a decoder process.
+        await _kill_and_reap(proc)
+        raise
+    if proc.returncode != 0:
+        return None
+    matches = _PROGRESS_OUT_TIME_RE.findall(stdout or b"")
+    if not matches:
+        return None
+    return int(matches[-1]) / 1_000_000 > max_secs
 
 
 def _whisper_language(language_code: str) -> str:

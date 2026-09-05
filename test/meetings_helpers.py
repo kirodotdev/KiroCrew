@@ -35,7 +35,9 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
-from kiro_crew.apps.builtins.meetings.backend.routes import _common, register_routes
+from kiro_crew.apps.builtins.meetings.backend.routes import _common
+from kiro_crew.apps.builtins.meetings.backend.routes import audio_import as _audio_import
+from kiro_crew.apps.builtins.meetings.backend.routes import register_routes
 
 
 @pytest.fixture(name="root")
@@ -51,9 +53,11 @@ def reset_module_state_fixture():
     """No test may leak the active meeting or the dictionary into the next one."""
     _common.ACTIVE.clear()
     sess.shared_dictionary().load_terms([])
+    _audio_import._imports_in_flight.clear()
     yield
     _common.ACTIVE.clear()
     sess.shared_dictionary().load_terms([])
+    _audio_import._imports_in_flight.clear()
 
 
 @pytest.fixture(name="enabled")

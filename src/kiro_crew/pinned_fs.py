@@ -102,6 +102,7 @@ class PinnedPathRefusal(Exception):
 SKIP_SYMLINK = "symlink"
 SKIP_VANISHED = "vanished"
 SKIP_NOT_REGULAR = "not_regular"
+SKIP_TOO_LARGE = "too_large"
 
 #: ``(reason_code, by_name_path)``. The path is for the message only -- it is never
 #: re-opened, because re-opening it is the bug this module exists to prevent.
@@ -445,11 +446,22 @@ def copy_file_pinned(
     dst_name: str | None = None,
     skip_existing: bool = False,
     force_mode: int | None = None,
+    max_bytes: int | None = None,
     on_skip: SkipReporter = _noop_skip,
 ) -> bool:
     """Copy one file's bytes from a descriptor pinned to a validated inode.
 
     Returns True when bytes were copied, False when the source was skipped.
+
+    ``max_bytes`` is a size ceiling enforced INSIDE the copy, not after it: the
+    ``fstat`` size is checked before the destination is even created (a sparse
+    file's logical size is what ``fstat`` reports, so a swapped-in sparse giant
+    is refused before a byte lands), and the write loop aborts after the first
+    excess byte for a source that grows between the ``fstat`` and the read.
+    Both refusals report ``SKIP_TOO_LARGE`` and truncate whatever was written
+    through the destination descriptor -- a ceiling checked only after the copy
+    would let the copy itself exhaust the destination volume on the way to the
+    rejection.
 
     ``shutil.copy2`` cannot be used on a user-writable tree: it dereferences a
     hardlink into innocent-looking regular bytes, and a later tar-level hardlink
@@ -507,6 +519,13 @@ def copy_file_pinned(
         if not _stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
             on_skip(SKIP_NOT_REGULAR, by_name)
             return False
+        if max_bytes is not None and st.st_size > max_bytes:
+            # BEFORE the destination is created: ``fstat`` reports a sparse
+            # file's LOGICAL size, so the swapped-in sparse giant is refused
+            # here with zero bytes written. The in-loop bound below covers the
+            # one case this cannot -- a source that grows after this fstat.
+            on_skip(SKIP_TOO_LARGE, by_name)
+            return False
         # The bytes are written to the FINAL name, opened O_CREAT|O_EXCL, and no name is
         # resolved again afterwards. Three designs have now been tried on these lines and
         # this is the only one that satisfies this module's own central rule -- once a
@@ -558,13 +577,43 @@ def copy_file_pinned(
         # earlier form unlinked first and left the fragment exactly where cleanup was meant
         # to remove it, which my own Windows shard caught.
         try:
+            exceeded = False
             with os.fdopen(fd, "rb") as fsrc:
                 fd = -1  # ownership passed to the file object
                 # fdopen takes ownership and closes what it is given, so it gets a
                 # duplicate: dst_fd itself has to outlive the write for the two
                 # descriptor-based metadata calls below.
                 with os.fdopen(os.dup(dst_fd), "wb") as fdst:
-                    shutil.copyfileobj(fsrc, fdst)
+                    if max_bytes is None:
+                        shutil.copyfileobj(fsrc, fdst)
+                    else:
+                        # Enforced WHILE copying: the fstat pre-check above cannot
+                        # see a source that grows after it, and only aborting on
+                        # the first excess byte keeps the copy itself from
+                        # exhausting the destination volume on the way to a
+                        # rejection.
+                        remaining = max_bytes
+                        while True:
+                            chunk = fsrc.read(min(1024 * 1024, remaining + 1))
+                            if not chunk:
+                                break
+                            if len(chunk) > remaining:
+                                exceeded = True
+                                break
+                            fdst.write(chunk)
+                            remaining -= len(chunk)
+            if exceeded:
+                # AFTER the dup'd writer has closed (its buffer flushes on close,
+                # so truncating first would let the flush write stale bytes
+                # back). Same rule as the failure path below: the partial
+                # content is emptied through the descriptor we hold (O_EXCL
+                # proves the entry is ours), never by name.
+                try:
+                    os.ftruncate(dst_fd, 0)
+                except OSError:
+                    pass
+                on_skip(SKIP_TOO_LARGE, by_name)
+                return False
             _apply_metadata(
                 dst_fd,
                 st,

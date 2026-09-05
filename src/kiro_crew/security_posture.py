@@ -1674,6 +1674,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/meetings/backend/domain/translate.py",
         "apps/builtins/meetings/backend/providers/calendar.py",
         "apps/builtins/meetings/backend/providers/tasks.py",
+        # `_common.dispatch_line` is the transcript-ingress boundary every producer
+        # (speech, the broadcast bar, an audio import) redacts through — inbound
+        # scrubbing before the line reaches disk and the agents, same
+        # classification as its siblings below.
+        "apps/builtins/meetings/backend/routes/_common.py",
         "apps/builtins/meetings/backend/routes/agents.py",
         "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
         "apps/builtins/meetings/backend/routes/tasks.py",

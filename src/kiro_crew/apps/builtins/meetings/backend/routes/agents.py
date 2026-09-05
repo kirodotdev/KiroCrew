@@ -26,6 +26,7 @@ from kiro_crew.apps.builtins.meetings.backend.routes._common import (
     BadRequest,
     audit,
     data_root,
+    dispatch_line,
     field_bool,
     field_str,
     json_body,
@@ -291,7 +292,8 @@ async def handle_mute_agent(request: web.Request) -> web.Response:
     #
     # The lock belongs HERE, on the one unlocked writer, rather than on the reader:
     # both the live fan-out and the initialization hold read this set after their
-    # own `_record_line` await, so guarding a single dispatch branch would close one
+    # own transcript-append await inside `_common.dispatch_line`, so guarding a
+    # single dispatch branch would close one
     # window and leave its twin open. Every other writer already holds this lock
     # (`handle_toggle_agent` takes it, and `add_agent` runs inside it).
     #
@@ -309,35 +311,6 @@ async def handle_mute_agent(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "muted_agents": meta["muted_agents"]})
 
 
-async def _record_line(
-    meeting_id: str, text: str, is_chat: bool, root: Any
-) -> tuple[str, dict[str, str]]:
-    """Redact one inbound line, append it to the transcript, build the agent line.
-
-    Shared by the live fan-out and the initialization hold so the two cannot
-    drift. The transcript append happens at ARRIVAL for both, which is what keeps
-    the durable record in spoken order and complete even when the hold later
-    overflows — the overflow then costs the agents some context, never the user
-    their transcript.
-
-    Raises :class:`BadRequest` (413) when the transcript ceiling is reached, so a
-    held line is size-checked on exactly the same terms as a live one.
-    """
-    transcript_text = redact(text)
-    source = k.TRANSCRIPT_SOURCE_TYPED if is_chat else k.TRANSCRIPT_SOURCE_SPEECH
-    segment = await asyncio.to_thread(
-        store.append_transcript, meeting_id, transcript_text, source, root
-    )
-    if segment is None:
-        raise BadRequest(
-            "meeting transcript is too large",
-            status=413,
-            code="transcript_too_large",
-        )
-    line = f"{k.CHAT_PREFIX} {transcript_text}" if is_chat else transcript_text
-    return line, segment
-
-
 async def handle_dispatch_text(request: web.Request) -> web.Response:
     """Broadcast one line to every unmuted agent.
 
@@ -352,62 +325,16 @@ async def handle_dispatch_text(request: web.Request) -> web.Response:
     text = field_str(body, "text", required=True, max_len=k.MAX_TRANSCRIPT_CHARS)
     is_chat = field_bool(body, "chat", default=False)
 
-    # The transcript append creates its parent directory when needed. Keep the
-    # live-session check, append, and fan-out in the lifecycle transaction so a
-    # concurrent stop followed by deletion cannot remove the meeting while this
-    # request is awaiting disk IO and then have the append recreate an orphan.
-    expired_session: sess.MeetingSession | None = None
-    async with DISPATCH_LOCK:
-        session = ACTIVE.get_for_dispatch(meeting_id)
-        if session is None:
-            # Direct fan-out is shut. Agent INITIALIZATION is the one reason to hold
-            # the line rather than refuse it (issue #4610) — a stopping, reviewing or
-            # expired meeting has nowhere to put it and still answers 409, which is
-            # the gate issue #1981 added and this must not widen.
-            starting = ACTIVE.get_for_buffering(meeting_id)
-            if starting is None:
-                return web.json_response(
-                    {"error": "no active meeting", "code": "no_active_meeting"}, status=409
-                )
-            line, segment = await _record_line(meeting_id, text, is_chat, data_root(request))
-            if not starting.buffer_during_init(line):
-                logger.warning(
-                    "meetings: init hold for %r is full at %d line(s); "
-                    "dropped the oldest and will mark the gap on drain",
-                    meeting_id,
-                    k.MAX_INIT_BUFFER_LINES,
-                )
-            # Same shape as a live dispatch that reached nobody. The hold needs no
-            # flag of its own: no client reads one, and the line is in the durable
-            # transcript either way, so `dispatched: 0` is already the whole answer
-            # to "did this land with an agent yet".
-            return web.json_response(
-                {"ok": True, "dispatched": 0, "text": line, "segment": segment}
-            )
-        if session.expired:
-            # Close admission before the slow drain. A later request can then fail
-            # promptly instead of waiting behind agent IO, while the lifecycle lock
-            # below still serializes the actual teardown with start/stop/delete.
-            ACTIVE.suspend_dispatches(session)
-            expired_session = session
-        else:
-            line, segment = await _record_line(meeting_id, text, is_chat, data_root(request))
-            accepted = session.broadcast(line)
-
-    if expired_session is not None:
-        async with START_LOCK:
-            if ACTIVE.get(meeting_id) is expired_session:
-                # Drain, not cancel: a long meeting whose next line arrives after the
-                # session lapsed still has whatever was queued when it went quiet.
-                await ACTIVE.drain_and_clear()
-                await asyncio.to_thread(sess.end_meeting_meta, meeting_id, data_root(request))
-        return web.json_response(
-            {
-                "error": "meeting session expired",
-                "code": "meeting_session_expired",
-            },
-            status=410,
-        )
+    # The admission transaction (live-session check, transcript append, fan-out,
+    # and the expiry side effects) is shared with the audio-import producer — see
+    # `_common.dispatch_line`. Only THIS producer opts into the initialization
+    # hold: a line of live speech arriving while the agents are still starting is
+    # wanted and is buffered (issue #4610), whereas a file import has no business
+    # trickling into a hold buffer — it is refused whole and retried.
+    source = k.TRANSCRIPT_SOURCE_TYPED if is_chat else k.TRANSCRIPT_SOURCE_SPEECH
+    segment, accepted, line = await dispatch_line(
+        request, meeting_id, text, source, chat=is_chat, hold_during_init=True
+    )
     return web.json_response({"ok": True, "dispatched": accepted, "text": line, "segment": segment})
 
 
