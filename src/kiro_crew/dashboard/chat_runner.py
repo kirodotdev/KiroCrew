@@ -4436,13 +4436,20 @@ def _settle_consumed_steers(
     """
     if not slot._pending_steers:
         return
-    # settle_all_on_empty preserves this path's long-standing behaviour on an
-    # empty echo. The /side sidecar deliberately chose the opposite (an empty
-    # echo is no evidence, so keep entries pending and let the requeue show a
-    # cancellable card); whether the main chat should follow is a separate
-    # change, because its requeue is not exercised here.
+    # An empty echo is no evidence of consumption (``steer_settle`` says so in
+    # as many words), so nothing settles and every entry stays pending. ``_requeue_unconsumed_steers`` -- wired into
+    # ``_run_chat``'s outer finally, so it runs on every turn-exit path --
+    # degrades a pending entry to a queue card at the head of the queue. The
+    # cost is a duplicate: on a backend that injected the steer but echoed no
+    # text, the steer runs again -- usually immediately, since the turn-exit
+    # drain starts the next queued turn -- but it runs VISIBLY, as its own turn
+    # in the transcript (and holds as a cancellable card when the drain is
+    # withheld, e.g. sign-in required), unlike the silent loss that sweeping
+    # the list on no evidence produces. Every sibling call site (the
+    # ``_refusal_notices`` settle in the same event branch, and the ``/side``
+    # sidecar) settles nothing on an empty echo too.
     previous = list(slot._pending_steers)
-    remaining = settle_consumed_steers(previous, snapshot, settle_all_on_empty=True)
+    remaining = settle_consumed_steers(previous, snapshot)
     settled_count = len(previous) - len(remaining)
     logger.debug(
         "Steer consumed for slot %s (%d settled, %d still pending)",
@@ -4451,14 +4458,12 @@ def _settle_consumed_steers(
         len(remaining),
     )
     if state is not None and snapshot.strip():
-        # Promote ONLY on an echo that carried evidence. `settle_all_on_empty=True`
-        # makes an EMPTY echo clear the pending list -- this path's long-standing
-        # behaviour, which suppresses the requeue -- but an empty echo is no
-        # evidence of consumption at all (``steer_settle`` says so in as many
-        # words). Writing `consumed` on it would put the PR's own defect back:
-        # the row, the transcript and the history would all assert an injection
-        # nothing confirmed. Left `written`, which is what is actually known.
-        #
+        # Promote ONLY on an echo that carried evidence. An empty echo settles
+        # nothing, so the multiset difference below is empty and promotes
+        # nothing even without this guard -- it stays as an explicit
+        # fail-closed gate, mirroring ``chat_delivery``'s positive-evidence
+        # discipline, so a future change to the settle rules cannot make an
+        # evidence-free frame promote a row.
         # Promote exactly the entries this echo accounted for. Computed as a
         # multiset difference against `remaining` so a duplicate identical steer
         # that stayed pending does not get its row promoted by its twin's echo.
@@ -9072,11 +9077,11 @@ async def _run_chat(
             elif event.kind == EVENT_STEER_CONSUMED:
                 _settle_consumed_steers(slot, event.text or "", state)
                 if _refusal_notices:
-                    # Same echo, same parser as the user-steer ledger, but
-                    # settle_all_on_empty stays False here: an empty echo is no
-                    # evidence, and treating it as delivery would drop the
-                    # fallback continuation and leave the model holding
-                    # kiro-cli's "User denied tool execution" uncorrected.
+                    # Same echo, same parser as the user-steer ledger: an
+                    # empty echo is no evidence, and treating it as delivery
+                    # would drop the fallback continuation and leave the model
+                    # holding kiro-cli's "User denied tool execution"
+                    # uncorrected.
                     _still_pending = settle_consumed_steers(_refusal_notices, event.text or "")
                     _refusal_notices_settled += len(_refusal_notices) - len(_still_pending)
                     _refusal_notices[:] = _still_pending

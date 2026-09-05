@@ -456,15 +456,14 @@ async def steer_into_running_turn(
     # RPC: delivered and live, with no consumption echo yet, so `written`.
     #
     # Gone means SOME remover took it during the await, and absence alone does not
-    # say which -- that is the whole difficulty. AT LEAST TWO can: the settle path
-    # promoting an entry a non-empty echo accounted for, and the
-    # `settle_all_on_empty` sweep clearing the pending list on an EMPTY echo, which
-    # is no evidence of consumption at all. After the fact the two removals are
-    # indistinguishable here, so inferring `consumed` from absence persisted a
-    # success badge on a frame that proved nothing -- terminal and never corrected,
-    # which is the exact claim this change exists to stop. An earlier version of
-    # this comment asserted that every other remover had returned above; it had not,
-    # and that sentence is why the bug read as correct.
+    # say which -- that is the whole difficulty. The settle path promotes an entry
+    # a non-empty echo accounted for, and a remover that takes entries WITHOUT
+    # such evidence (an empty-echo sweep, should any caller ever select one) looks
+    # identical here after the fact. So inferring `consumed` from absence persisted
+    # a success badge on a frame that proved nothing -- terminal and never
+    # corrected, which is the exact claim this change exists to stop. An earlier
+    # version of this comment asserted that every other remover had returned
+    # above; it had not, and that sentence is why the bug read as correct.
     #
     # So the state comes from POSITIVE evidence: the settle path records the delivery
     # ids a non-empty echo accounted for, and only a recorded id yields `consumed`.
