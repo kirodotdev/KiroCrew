@@ -1369,3 +1369,119 @@ class TestDeniedSpecEnvKeys:
         assert "KIROCREW_CLI" not in env_mod.sanitize_spec_env(
             [(k, v) for k, v in env.items()]
         )
+
+
+class TestKnownKiroCliDirsIsPureInItsHome:
+    """``known_kiro_cli_dirs`` must derive every home-relative entry from its ARGUMENT.
+
+    ``augmented_path`` falls back to a live ``os.path.expanduser("~")`` when its
+    ``home`` keyword is omitted. The win32 branch of ``known_kiro_cli_dirs``
+    forwards it; the POSIX branch did not, so one call returned a list mixing two
+    accounts -- ``.local/bin`` and ``.cargo/bin`` from the caller's ``home``, and
+    the ``{home}``-templated extras plus the Node/mise bin dirs from whichever
+    account owns the process.
+
+    That breaks the property ``acp/client.py``'s spawn resolver depends on: it
+    pins one ``(platform, home, environ)`` reading and passes it to BOTH the
+    resolve and the "kiro-cli not found (searched ...)" diagnostic, so that the
+    directories named are the directories walked. With a live re-read in the
+    middle, the two can disagree -- which is the split-read class #5048 and #6986
+    fixed at the call sites, surviving one level down.
+    """
+
+    @staticmethod
+    def _asked_home(tmp_path):
+        return tmp_path / "asked-home"
+
+    def test_posix_dirs_never_mention_the_process_home(self, tmp_path, monkeypatch):
+        from kiro_crew.kiro_cli import known_kiro_cli_dirs
+
+        process_home = tmp_path / "process-home"
+        asked = self._asked_home(tmp_path)
+        monkeypatch.setenv("HOME", str(process_home))
+        monkeypatch.setenv("USERPROFILE", str(process_home))
+        monkeypatch.setattr(env_mod.os.path, "expanduser", lambda _p: str(process_home))
+        env_mod._node_all_bin_dirs.cache_clear()
+
+        dirs = known_kiro_cli_dirs("linux", asked, {"PATH": "/usr/bin"})
+
+        leaked = [d for d in dirs if str(process_home) in d]
+        assert not leaked, (
+            "these entries came from the process home, not the home this call was "
+            f"given: {leaked}"
+        )
+        # The control: the asked-for home IS represented, so the assertion above
+        # cannot pass by the function returning nothing home-relative at all.
+        assert any(str(asked) in d for d in dirs)
+
+    def test_the_templated_extras_follow_the_asked_home(self, tmp_path, monkeypatch):
+        """Names the specific entries, so a partial fix cannot pass.
+
+        ``.local/bin`` alone is not evidence -- the POSIX branch builds that one
+        from ``home`` directly and it was always correct. The ``augmented_path``
+        extras are the ones that were being taken from the wrong account.
+        """
+        from kiro_crew.kiro_cli import known_kiro_cli_dirs
+
+        process_home = tmp_path / "process-home"
+        asked = self._asked_home(tmp_path)
+        monkeypatch.setattr(env_mod.os.path, "expanduser", lambda _p: str(process_home))
+        env_mod._node_all_bin_dirs.cache_clear()
+
+        dirs = known_kiro_cli_dirs("linux", asked, {"PATH": "/usr/bin"})
+        normalized = [d.replace("/", os.sep) for d in dirs]
+        for leaf in (".toolbox", ".npm-packages", ".volta"):
+            owning = [d for d in normalized if f"{os.sep}{leaf}{os.sep}" in d]
+            assert owning, f"no {leaf} entry was produced at all"
+            for entry in owning:
+                assert entry.startswith(str(asked)), (
+                    f"{leaf} was derived from {entry!r}, not from the home this "
+                    f"call was given ({str(asked)!r})"
+                )
+
+    def test_win32_branch_still_pins_its_home(self, tmp_path, monkeypatch):
+        """The branch that was already correct must stay correct.
+
+        This is the control that shows the fix mirrors an existing convention
+        rather than inventing one.
+        """
+        from kiro_crew.kiro_cli import known_kiro_cli_dirs
+
+        process_home = tmp_path / "process-home"
+        asked = self._asked_home(tmp_path)
+        monkeypatch.setattr(env_mod.os.path, "expanduser", lambda _p: str(process_home))
+        env_mod._node_all_bin_dirs.cache_clear()
+
+        dirs = known_kiro_cli_dirs(
+            "win32",
+            asked,
+            {"PATH": "C:/bin", "LOCALAPPDATA": "C:/la", "ProgramFiles": "C:/pf"},
+        )
+        assert not [d for d in dirs if str(process_home) in d]
+
+    def test_two_calls_with_the_same_arguments_agree_across_a_home_change(
+        self, tmp_path, monkeypatch
+    ):
+        """The property the ACP diagnostic actually needs, stated directly.
+
+        The resolver pins ``(platform, home, environ)`` once and uses it for both
+        the search and the message. If the process home moves between the two
+        calls, a live re-read makes them disagree and the message names
+        directories that were never walked.
+        """
+        from kiro_crew.kiro_cli import known_kiro_cli_dirs
+
+        asked = self._asked_home(tmp_path)
+        monkeypatch.setattr(env_mod.os.path, "expanduser", lambda _p: str(tmp_path / "home-a"))
+        env_mod._node_all_bin_dirs.cache_clear()
+        first = known_kiro_cli_dirs("linux", asked, {"PATH": "/usr/bin"})
+
+        monkeypatch.setattr(env_mod.os.path, "expanduser", lambda _p: str(tmp_path / "home-b"))
+        env_mod._node_all_bin_dirs.cache_clear()
+        second = known_kiro_cli_dirs("linux", asked, {"PATH": "/usr/bin"})
+
+        assert first == second, (
+            "the same arguments produced different search directories after the "
+            "process home moved, so a reported search path can disagree with the "
+            "search that ran"
+        )
