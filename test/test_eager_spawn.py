@@ -517,8 +517,8 @@ class TestProjectSetWiring:
         app.router.add_post("/api/chat/slots/{slot}/agent", api_chat_slot_agent)
         with (
             patch(
-                "kiro_crew.dashboard.chat_handlers._reset_slot_session",
-                new=AsyncMock(),
+                "kiro_crew.dashboard.chat_handlers._reset_slot_session_or_warn",
+                new=AsyncMock(return_value=True),
             ),
             patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop", new=AsyncMock()),
             patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn") as sched,
