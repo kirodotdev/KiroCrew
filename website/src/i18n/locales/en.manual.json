@@ -5535,6 +5535,21 @@
       "preferences": "Preferences",
       "system": "System"
     },
+    "secrets": {
+      "managed_title": "Managed secrets",
+      "managed_description": "Credentials {{productName}} recognizes and uses automatically.",
+      "jira_api_token_label": "Jira API token",
+      "jira_api_token_description": "Authenticates Jira issue lookups for the configured instance.",
+      "jira_host_token_label": "Jira host API token",
+      "jira_host_token_description": "Authenticates Jira issue lookups for one configured host.",
+      "wakatime_api_key_label": "WakaTime API key",
+      "wakatime_api_key_description": "Authenticates coding-activity sync when WakaTime is enabled.",
+      "other_stored_title": "Other stored secrets",
+      "other_stored_description": "Used only when a configuration or MCP server references the exact name.",
+      "configure": "Configure",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-..."
+    },
     "tabs": {
       "about": {
         "description": "Version, update channel, check for updates, and license",

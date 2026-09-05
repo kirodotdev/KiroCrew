@@ -15,15 +15,12 @@ from __future__ import annotations
 
 import logging
 
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import CRED_WAKATIME_API_KEY, KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.secrets.vault import SecretVault
 from kiro_crew.wakatime.client import DEFAULT_API_BASE, WakaTimeClient
 
 logger = logging.getLogger(__name__)
-
-# Credential name in the vault (the dashboard secrets store).
-WAKATIME_API_KEY = "WAKATIME_API_KEY"
 
 
 def resolve_api_key() -> str:
@@ -33,7 +30,7 @@ def resolve_api_key() -> str:
     off) rather than raising.
     """
     try:
-        secret = SecretVault(config_dir()).get(WAKATIME_API_KEY)
+        secret = SecretVault(config_dir()).get(CRED_WAKATIME_API_KEY)
     except Exception:
         return ""
     if secret is None:

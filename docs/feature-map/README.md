@@ -198,7 +198,7 @@ is `/settings/<key>`. Panels live in `pages/settings/`.
 | `instances` | Remote Kiro Crew instances to connect to | `RemoteCrewPanel.tsx`, `InstancesPanel.tsx` | `handlers_instances.py`, `handlers_cloud.py` | `GET,POST /api/instances`, `POST /api/instances/{id}/connect`, `GET /api/cloud/preflight` |
 | `privacy` | Telemetry disclosure and opt-out | `PrivacyPanel.tsx` | `handlers/telemetry.py` | `GET /api/telemetry/collection`, `GET /api/telemetry/beacon` |
 | `security` | Denied commands, sensitive paths, approval posture | `SecurityPanel.tsx`, `PostureDisclosure.tsx` | `handlers/security.py`, `handlers/tailnet.py` | `GET /api/security/denied-commands`, `PATCH .../builtins/{id}`, `POST .../user` |
-| `secrets` | Stored credentials the agent may use | `SecretsPanel.tsx` | `handlers/secrets.py` | `GET,POST /api/secrets`, `DELETE /api/secrets/{name}` |
+| `secrets` | Managed integration credentials plus other encrypted vault entries | `SecretsPanel.tsx` | `handlers/secrets.py` | `GET,POST /api/secrets`, `DELETE /api/secrets/{name}` |
 | `developer` | Pointer into the developer surfaces | `DeveloperPanel.tsx` | — | — |
 | `releases` | Release channel, update check, changelog | `ReleasesPanel.tsx` | `handlers/updates.py` | `GET /api/update/check`, `POST /api/update`, `GET /api/changelog`, `GET /api/releases` |
 | `about` | Version, build, diagnostics bundle | `AboutPanel.tsx`, `ReportProblemCard.tsx` | `handlers/diagnostics.py`, `handlers/feedback.py` | `POST /api/diagnostics/collect`, `GET /api/diagnostics/download/{filename}` |

@@ -31,7 +31,14 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import github_runner, platform_compat
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_env_file_credential
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    config_dir,
+    jira_global_token_applicable,
+    jira_host_token_name,
+    normalize_jira_host,
+    read_env_file_credential,
+)
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 
 # Validation policy, well-known install dirs, and the strict-mode toggle are
@@ -3232,17 +3239,14 @@ def _get_jira_auth(host: str) -> tuple[str, str] | None:
         creds = cfg.load_credentials()
     except Exception as exc:
         raise ValueError(f"jira_config_error: Could not load Jira configuration: {exc}") from exc
-    normalized = host.lower().removesuffix(":443")
+    normalized = normalize_jira_host(host)
     for entry in entries:
-        entry_host = entry.host.strip().lower().removesuffix(":443")
+        entry_host = normalize_jira_host(entry.host)
         if entry_host == normalized:
-            # Per-host token: JIRA_TOKEN_<host_key> takes precedence.
-            # Global JIRA_API_TOKEN fallback is only permitted when a single
-            # host is configured — prevents cross-host credential leakage.
-            # Injective host-to-key: hex-encode the normalized host to avoid
-            # collisions (e.g. jira-a.x.com vs jira.a-x.com).
-            host_key = entry_host.encode().hex().upper()
-            per_host_name = f"JIRA_TOKEN_{host_key}"
+            # Per-host token takes precedence. The shared helper owns the
+            # collision-free normalization and hex transform used by every
+            # producer/consumer of this key.
+            per_host_name = jira_host_token_name(entry_host)
             # Resolution order: the encrypted vault first (the successor store,
             # populated by `kirocrew secrets import`), then the legacy .env /
             # environment value so existing installs keep working unchanged.
@@ -3277,7 +3281,7 @@ def _get_jira_auth(host: str) -> tuple[str, str] | None:
             # as authoritative). `read_env_file_credential` blocks on I/O but
             # `_get_jira_auth` is called via `asyncio.to_thread` so that is safe.
             token = _resolve_jira_token_from_vault(per_host_name)
-            if not token and len(entries) == 1:
+            if not token and jira_global_token_applicable(len(entries)):
                 # A `secret://` value is a vault REFERENCE, not a raw token.
                 # After `secrets import --apply` the `.env` line becomes
                 # `JIRA_API_TOKEN=secret://JIRA_API_TOKEN`, and `load_credentials`
@@ -3302,7 +3306,7 @@ def _get_jira_auth(host: str) -> tuple[str, str] | None:
             if not token:
                 _c = creds.get(per_host_name, "")
                 token = _c if not _is_secret_ref(_c) else ""
-            if not token and len(entries) == 1:
+            if not token and jira_global_token_applicable(len(entries)):
                 _c = creds.get("JIRA_API_TOKEN", "")
                 token = _c if not _is_secret_ref(_c) else ""
             if not token:
@@ -4384,11 +4388,11 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
     # the event loop. Same discipline as _load_source_link_settings in this file.
     auth_pair = await asyncio.to_thread(_get_jira_auth, ref.host)
     if auth_pair is None:
-        host_key = ref.host.lower().removesuffix(":443").encode().hex().upper()
+        per_host_name = jira_host_token_name(ref.host)
         raise ValueError(
             "jira_no_credentials: No Jira credentials configured for "
             f"{ref.host}. Add a jira_auth entry to config.json and set "
-            f"JIRA_API_TOKEN (or JIRA_TOKEN_{host_key} for multi-host) "
+            f"JIRA_API_TOKEN (or {per_host_name} for multi-host) "
             "in your .env file."
         )
     email, token = auth_pair

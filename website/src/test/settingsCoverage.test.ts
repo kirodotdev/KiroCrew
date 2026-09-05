@@ -191,7 +191,7 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'non-URL sub-tab a deep link cannot mount',
   },
   'SecretsPanel.tsx': {
-    counts: { input: 2 },
+    counts: { Input: 3 },
     reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
   },
   'SecurityPanel.tsx': {

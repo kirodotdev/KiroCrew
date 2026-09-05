@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { SettingsSection, SettingsCard } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Btn } from '../../components/ui'
+import { Btn, IconButton, Input, PanelSectionHeader } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -47,8 +47,15 @@ const post = (url: string, body?: object) =>
 const del = (url: string) =>
   fetch(url, { method: 'DELETE', headers: { ..._sk } })
 
+interface ManagedSecret {
+  name: string
+  kind: string
+  host?: string
+}
+
 interface SecretsListResponse {
   names: string[]
+  managed: ManagedSecret[]
 }
 
 export function SecretsPanel() {
@@ -56,9 +63,10 @@ export function SecretsPanel() {
   const [showAdd, setShowAdd] = useState(false)
   const [newName, setNewName] = useState('')
   const [newValue, setNewValue] = useState('')
+  const [managedEditName, setManagedEditName] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
-  const { data, isLoading } = useQuery<SecretsListResponse>({
+  const { data, isLoading, isError, error } = useQuery<SecretsListResponse>({
     queryKey: ['secrets'],
     queryFn: () => get('/api/secrets').then(j),
   })
@@ -71,6 +79,7 @@ export function SecretsPanel() {
       setShowAdd(false)
       setNewName('')
       setNewValue('')
+      setManagedEditName(null)
     },
   })
 
@@ -83,6 +92,10 @@ export function SecretsPanel() {
   })
 
   const names = data?.names ?? []
+  const managed = data?.managed ?? []
+  const storedNames = new Set(names)
+  const managedNames = new Set(managed.map(secret => secret.name))
+  const otherNames = names.filter(name => !managedNames.has(name))
 
   const handleAdd = () => {
     if (newName.trim() && newValue) {
@@ -90,132 +103,313 @@ export function SecretsPanel() {
     }
   }
 
+  const openAdd = (managedName: string | null = null) => {
+    setMutation.reset()
+    setManagedEditName(managedName)
+    setNewName(managedName ?? '')
+    setNewValue('')
+    setShowAdd(true)
+  }
+
+  const cancelAdd = () => {
+    setShowAdd(false)
+    setNewName('')
+    setNewValue('')
+    setManagedEditName(null)
+    setMutation.reset()
+  }
+
+  const managedCopy = (kind: string) => {
+    if (kind === 'wakatime_api_key') {
+      return {
+        label: i18nT('settings.secrets.wakatime_api_key_label'),
+        description: i18nT('settings.secrets.wakatime_api_key_description'),
+      }
+    }
+    if (kind === 'jira_host_token') {
+      return {
+        label: i18nT('settings.secrets.jira_host_token_label'),
+        description: i18nT('settings.secrets.jira_host_token_description'),
+      }
+    }
+    if (kind === 'jira_api_token') {
+      return {
+        label: i18nT('settings.secrets.jira_api_token_label'),
+        description: i18nT('settings.secrets.jira_api_token_description'),
+      }
+    }
+    return null
+  }
+
+  const requestDelete = (name: string) => {
+    // Never reset a pending mutation: switching rows during an in-flight
+    // DELETE would clear its gate and permit a duplicate whose delayed first
+    // request could erase a re-saved value.
+    if (deleteMutation.isPending) return
+    deleteMutation.reset()
+    setDeleteConfirm(name)
+  }
+
   return (
     <SettingsSection title={i18nT('settings.secrets.title')}>
       <SettingsCard>
-        <p className="text-sm text-muted mb-4">
+        <p className="text-sm text-muted mb-5">
           {i18nT('settings.secrets.description')}
         </p>
 
-        {isLoading && <p className="text-sm text-muted">{i18nT('settings.secrets.loading')}</p>}
+        {/* No hand-off while the add form holds an unsaved secret draft. */}
+        {isError ? (
+          <ErrorNotice
+            askAgent={!showAdd}
+            message={(error as Error)?.message || i18nT('api.client.unexpected_server_response')}
+          />
+        ) : isLoading ? (
+          <p className="text-sm text-muted">{i18nT('settings.secrets.loading')}</p>
+        ) : (
+          <>
+            {managed.length === 0 && otherNames.length === 0 && !showAdd && (
+              <p className="text-sm text-muted italic">
+                {i18nT('settings.secrets.no_secrets')}
+              </p>
+            )}
 
-        {!isLoading && names.length === 0 && !showAdd && (
-          <p className="text-sm text-muted italic">
-            {i18nT('settings.secrets.no_secrets')}
-          </p>
-        )}
-
-        {names.length > 0 && (
-          <div className="space-y-2 mb-4">
-            {names.map(name => (
-              <div
-                key={name}
-                className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between p-2 rounded bg-bg-elevated"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <KeyRound size={14} className="text-muted shrink-0" />
-                  <span className="text-sm font-mono truncate">{name}</span>
-                  <span className="text-xs text-muted shrink-0">••••••••</span>
-                </div>
-                {deleteConfirm === name ? (
-                  <div className="flex flex-col items-start gap-1 md:items-end">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs text-warn">{i18nT('settings.secrets.delete_confirm')}</span>
-                      <Btn danger onClick={() => deleteMutation.mutate(name)} disabled={deleteMutation.isPending || setMutation.isPending}>
-                        {i18nT('settings.secrets.delete')}
-                      </Btn>
-                      <Btn disabled={deleteMutation.isPending} onClick={() => { setDeleteConfirm(null); deleteMutation.reset() }}>
-                        {i18nT('settings.secrets.cancel')}
-                      </Btn>
+            {managed.length > 0 && (
+              <div className="space-y-3 mb-5">
+              <PanelSectionHeader
+                label={i18nT('settings.secrets.managed_title')}
+              />
+              <p className="text-sm text-muted">
+                {i18nT('settings.secrets.managed_description')}
+              </p>
+              <div className="space-y-2">
+                {managed.map(secret => {
+                  const copy = managedCopy(secret.kind)
+                  const configured = storedNames.has(secret.name)
+                  return (
+                    <div
+                      key={secret.name}
+                      className="flex flex-col gap-3 rounded bg-bg-elevated p-3 md:flex-row md:items-center md:justify-between"
+                    >
+                      <div className="flex min-w-0 items-start gap-2">
+                        <KeyRound className="lucide-inline mt-0.5 shrink-0 text-muted" aria-hidden />
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-semibold text-text-strong">
+                            {copy?.label ?? secret.name}
+                          </div>
+                          {copy?.description && (
+                            <div className="text-[12px] text-muted">{copy.description}</div>
+                          )}
+                          {secret.host && (
+                            <code className="mt-1 block truncate text-[12px] text-text-strong">
+                              {secret.host}
+                            </code>
+                          )}
+                          <code className="mt-1 block truncate text-[12px] text-muted">{secret.name}</code>
+                        </div>
+                      </div>
+                      {managedEditName === secret.name ? (
+                        <div className="flex w-full max-w-md flex-col gap-2 md:w-auto">
+                          <Input
+                            type="password"
+                            value={newValue}
+                            onChange={e => setNewValue(e.target.value)}
+                            aria-label={i18nT('settings.secrets.secret_value_aria')}
+                            className="font-mono"
+                            autoFocus
+                          />
+                          <div className="flex gap-2 self-end">
+                            <Btn primary onClick={handleAdd} disabled={!newValue || setMutation.isPending}>
+                              {setMutation.isPending
+                                ? i18nT('settings.secrets.saving')
+                                : i18nT('settings.secrets.save')}
+                            </Btn>
+                            <Btn disabled={setMutation.isPending} onClick={cancelAdd}>
+                              {i18nT('settings.secrets.cancel')}
+                            </Btn>
+                          </div>
+                          {/* No hand-off: navigation would discard the unsaved secret draft. */}
+                          {setMutation.isError && (
+                            <ErrorNotice
+                              variant="inline"
+                              message={i18nT('settings.secrets.save_error', {
+                                error: (setMutation.error as Error).message,
+                              })}
+                            />
+                          )}
+                        </div>
+                      ) : deleteConfirm === secret.name ? (
+                        <div className="flex flex-col items-start gap-1 md:items-end">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-[13px] text-warn">{i18nT('settings.secrets.delete_confirm')}</span>
+                            <Btn danger onClick={() => deleteMutation.mutate(secret.name)} disabled={deleteMutation.isPending || setMutation.isPending}>
+                              {i18nT('settings.secrets.delete')}
+                            </Btn>
+                            <Btn disabled={deleteMutation.isPending} onClick={() => { setDeleteConfirm(null); deleteMutation.reset() }}>
+                              {i18nT('settings.secrets.cancel')}
+                            </Btn>
+                          </div>
+                          {/* No hand-off while the add form holds an unsaved secret draft. */}
+                          {deleteMutation.isError && (
+                            <ErrorNotice
+                              variant="inline"
+                              askAgent={!showAdd}
+                              message={i18nT('settings.secrets.delete_error', {
+                                error: (deleteMutation.error as Error).message,
+                              })}
+                            />
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 self-end md:self-auto">
+                          {configured && (
+                            <span className="shrink-0 text-[13px] text-muted">••••••••</span>
+                          )}
+                          {!showAdd && (
+                            <Btn onClick={() => openAdd(secret.name)} disabled={setMutation.isPending || deleteMutation.isPending}>
+                              {configured
+                                ? i18nT('components.secretField.replace')
+                                : i18nT('settings.secrets.configure')}
+                            </Btn>
+                          )}
+                          {configured && (
+                            <IconButton
+                              variant="danger"
+                              onClick={() => requestDelete(secret.name)}
+                              disabled={deleteMutation.isPending}
+                              aria-label={i18nT('settings.secrets.delete_secret_name', { name: secret.name })}
+                            >
+                              <Trash2 className="lucide-inline" aria-hidden />
+                            </IconButton>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    {deleteMutation.isError && (
-                      <ErrorNotice
-                        variant="inline"
-                        message={i18nT('settings.secrets.delete_error', {
-                          error: (deleteMutation.error as Error).message,
-                        })}
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => {
-                      // Never reset a PENDING mutation: switching rows during an
-                      // in-flight DELETE would clear its gating state and permit
-                      // a duplicate whose delayed original could erase a
-                      // re-saved value. The other reset sites are unreachable
-                      // mid-flight (both Cancels are disabled while pending).
-                      if (deleteMutation.isPending) return
-                      deleteMutation.reset()
-                      setDeleteConfirm(name)
-                    }}
-                    className="p-1 rounded hover:bg-bg-hover text-muted hover:text-warn disabled:opacity-30 disabled:cursor-not-allowed"
-                    disabled={deleteMutation.isPending}
-                    aria-label={i18nT('settings.secrets.delete_secret_name', { name })}
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  )
+                })}
+              </div>
+              </div>
+            )}
+
+            {otherNames.length > 0 && (
+              <div className="space-y-3">
+              <PanelSectionHeader
+                label={i18nT('settings.secrets.other_stored_title')}
+                count={otherNames.length}
+              />
+              <p className="text-sm text-muted">
+                {i18nT('settings.secrets.other_stored_description')}
+              </p>
+
+              {otherNames.length > 0 && (
+                <div className="space-y-2">
+                  {otherNames.map(name => (
+                    <div
+                      key={name}
+                      className="flex flex-col gap-2 rounded bg-bg-elevated p-2 md:flex-row md:items-center md:justify-between"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <KeyRound className="lucide-inline shrink-0 text-muted" aria-hidden />
+                        <span className="truncate font-mono text-sm">{name}</span>
+                        <span className="shrink-0 text-[13px] text-muted">••••••••</span>
+                      </div>
+                      {deleteConfirm === name ? (
+                        <div className="flex flex-col items-start gap-1 md:items-end">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-[13px] text-warn">{i18nT('settings.secrets.delete_confirm')}</span>
+                            <Btn danger onClick={() => deleteMutation.mutate(name)} disabled={deleteMutation.isPending || setMutation.isPending}>
+                              {i18nT('settings.secrets.delete')}
+                            </Btn>
+                            <Btn disabled={deleteMutation.isPending} onClick={() => { setDeleteConfirm(null); deleteMutation.reset() }}>
+                              {i18nT('settings.secrets.cancel')}
+                            </Btn>
+                          </div>
+                          {/* No hand-off while the add form holds an unsaved secret draft. */}
+                          {deleteMutation.isError && (
+                            <ErrorNotice
+                              variant="inline"
+                              askAgent={!showAdd}
+                              message={i18nT('settings.secrets.delete_error', {
+                                error: (deleteMutation.error as Error).message,
+                              })}
+                            />
+                          )}
+                        </div>
+                      ) : (
+                        <IconButton
+                          variant="danger"
+                          onClick={() => requestDelete(name)}
+                          disabled={deleteMutation.isPending}
+                          aria-label={i18nT('settings.secrets.delete_secret_name', { name })}
+                          className="self-end md:self-auto"
+                        >
+                          <Trash2 className="lucide-inline" aria-hidden />
+                        </IconButton>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              </div>
+            )}
+
+            {showAdd && managedEditName === null ? (
+              <div className="mt-4 space-y-3 rounded border border-border p-3">
+                <div>
+                  <span className="mb-1 block text-[13px] font-medium text-muted">
+                    {i18nT('settings.secrets.name_label')}
+                  </span>
+                  <Input
+                    id="secret-name-input"
+                    type="text"
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    placeholder={i18nT('settings.secrets.name_placeholder')}
+                    className="font-mono"
+                    aria-label={i18nT('settings.secrets.secret_name_aria')}
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[13px] font-medium text-muted" htmlFor="secret-value-input">
+                    {i18nT('settings.secrets.value_label')}
+                  </label>
+                  <Input
+                    id="secret-value-input"
+                    type="password"
+                    value={newValue}
+                    onChange={e => setNewValue(e.target.value)}
+                    placeholder={i18nT('settings.secrets.value_placeholder')}
+                    className="font-mono"
+                    aria-label={i18nT('settings.secrets.secret_value_aria')}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Btn primary onClick={handleAdd} disabled={!newName.trim() || !newValue || setMutation.isPending || deleteMutation.isPending}>
+                    {setMutation.isPending
+                      ? i18nT('settings.secrets.saving')
+                      : i18nT('settings.secrets.save')}
+                  </Btn>
+                  <Btn disabled={setMutation.isPending} onClick={cancelAdd}>
+                    {i18nT('settings.secrets.cancel')}
+                  </Btn>
+                </div>
+                {/* No ask-agent hand-off: navigation would discard the unsaved value. */}
+                {setMutation.isError && (
+                  <ErrorNotice
+                    variant="inline"
+                    message={i18nT('settings.secrets.save_error', {
+                      error: (setMutation.error as Error).message,
+                    })}
+                  />
                 )}
               </div>
-            ))}
-          </div>
-        )}
-
-        {showAdd ? (
-          <div className="space-y-3 border border-border rounded p-3">
-            <div>
-              <label className="text-xs font-medium text-muted block mb-1" htmlFor="secret-name-input">
-                {i18nT('settings.secrets.name_label')}
-                <input
-                  id="secret-name-input"
-                  type="text"
-                  value={newName}
-                  onChange={e => setNewName(e.target.value)}
-                  placeholder="MY_API_KEY"
-                  className="w-full px-2 py-1.5 text-sm rounded border border-border bg-bg-elevated text-text-strong mt-1 font-normal"
-                  aria-label={i18nT('settings.secrets.secret_name_aria')}
-                  autoFocus
-                />
-              </label>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted block mb-1" htmlFor="secret-value-input">
-                {i18nT('settings.secrets.value_label')}
-                <input
-                  id="secret-value-input"
-                  type="password"
-                  value={newValue}
-                  onChange={e => setNewValue(e.target.value)}
-                  placeholder="sk-..."
-                  className="w-full px-2 py-1.5 text-sm rounded border border-border bg-bg-elevated text-text-strong mt-1 font-normal"
-                  aria-label={i18nT('settings.secrets.secret_value_aria')}
-                />
-              </label>
-            </div>
-            <div className="flex gap-2">
-              <Btn primary onClick={handleAdd} disabled={!newName.trim() || !newValue || setMutation.isPending || deleteMutation.isPending}>
-                {setMutation.isPending
-                  ? i18nT('settings.secrets.saving')
-                  : i18nT('settings.secrets.save')}
+            ) : !showAdd ? (
+              <Btn onClick={() => openAdd()} className="mt-4">
+                <Plus className="lucide-inline mr-1" aria-hidden />
+                {i18nT('settings.secrets.add_secret')}
               </Btn>
-              <Btn disabled={setMutation.isPending} onClick={() => { setShowAdd(false); setNewName(''); setNewValue(''); setMutation.reset() }}>
-                {i18nT('settings.secrets.cancel')}
-              </Btn>
-            </div>
-            {setMutation.isError && (
-              <ErrorNotice
-                variant="inline"
-                message={i18nT('settings.secrets.save_error', {
-                  error: (setMutation.error as Error).message,
-                })}
-              />
-            )}
-          </div>
-        ) : (
-          <Btn onClick={() => { setMutation.reset(); setShowAdd(true) }} className="mt-2">
-            <Plus size={14} className="mr-1" />
-            {i18nT('settings.secrets.add_secret')}
-          </Btn>
+            ) : null}
+          </>
         )}
       </SettingsCard>
     </SettingsSection>

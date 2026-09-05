@@ -155,6 +155,28 @@ At spawn the gateway resolves `secret://MY_MCP_SECRET` from the vault.  If the
 named secret does not exist, the server fails to start rather than launching
 with a missing credential.
 
+### Managed secrets in Settings
+
+`GET /api/secrets` returns every stored name plus a `managed` catalog. A managed
+entry contains `name` and a stable machine-readable `kind`; per-host entries
+also include the normalized non-secret `host` so the dashboard can identify the
+row. Secret values remain write-only and configured state is derived from membership in the
+response's existing `names` list. `WAKATIME_API_KEY` is advertised only
+when `config.wakatime.enabled` is true, matching the client-construction gate. With exactly
+one raw configured Jira entry, the global `JIRA_API_TOKEN` slot is advertised.
+With multiple entries, only each normalized host's exact `JIRA_TOKEN_<HEX>` slot
+is advertised; duplicate normalized hosts produce one display row but still
+count as multiple runtime entries, so they never accidentally enable the global
+fallback. For a single host, an already-stored per-host token remains visible
+because the runtime gives it precedence.
+
+The catalog is deliberately based on **actual vault consumers**, not the broader
+set of credential names accepted from `.env`. Most channel credentials still
+read literal environment/config values, so storing a same-named vault entry does
+not make those channels consume it. An unrecognized vault name remains listed
+and fully manageable; it is never hidden or reclassified merely because it looks
+credential-like.
+
 ### Migrating existing plaintext secrets
 
 If you already keep the Jira API token as a plaintext `KEY=VALUE` line in the

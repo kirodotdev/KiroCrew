@@ -13,11 +13,13 @@ import { SecretsPanel } from './SecretsPanel'
  * the re-render they cause.
  */
 type FetchCall = { url: string; method: string; body?: unknown; headers?: Record<string, string> }
+type ManagedSecret = { name: string; kind: 'jira_api_token' | 'jira_host_token'; host?: string }
 
 let calls: FetchCall[] = []
 
-/** Names the list endpoint returns; mutated between the initial GET and the refetch. */
+/** Names and managed catalog entries returned by the list endpoint. */
 let listNames: string[] = []
+let listManaged: ManagedSecret[] = []
 
 /** When set, the next `/api/secrets` GET rejects — drives the error path. */
 let listShouldFail = false
@@ -49,7 +51,7 @@ function installFetch() {
       return Promise.resolve({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ names: listNames }),
+        json: () => Promise.resolve({ names: listNames, managed: listManaged }),
       } as Response)
     }
     // POST /api/secrets and DELETE /api/secrets/:name both just acknowledge.
@@ -82,6 +84,7 @@ function mount() {
 beforeEach(() => {
   calls = []
   listNames = []
+  listManaged = []
   listShouldFail = false
   localStorage.setItem('kiro_crew_token', 'test-token')
   installFetch()
@@ -129,12 +132,88 @@ describe('SecretsPanel', () => {
     expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
   })
 
+
+  it('renders managed Jira credentials separately from other stored names', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN', 'WEATHER_API_KEY']
+    listManaged = [
+      { name: 'JIRA_API_TOKEN', kind: 'jira_api_token' },
+    ]
+    mount()
+
+    expect(await screen.findByText('Managed secrets')).toBeInTheDocument()
+    expect(screen.getByText('Jira API token')).toBeInTheDocument()
+    expect(screen.getByText(/Authenticates Jira issue lookups/)).toBeInTheDocument()
+    expect(screen.getByText('JIRA_API_TOKEN')).toBeInTheDocument()
+    expect(screen.getByText('Other stored secrets')).toBeInTheDocument()
+    expect(screen.getByText('WEATHER_API_KEY')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace' })).toBeInTheDocument()
+    expect(screen.queryByText('test-value-123')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    expect(screen.queryByRole('button', { name: 'Replace' })).not.toBeInTheDocument()
+  })
+
+  it('configures an unset managed credential without asking for its key name', async () => {
+    const user = userEvent.setup()
+    listManaged = [
+      { name: 'JIRA_API_TOKEN', kind: 'jira_api_token' },
+    ]
+    mount()
+    await screen.findByText('Jira API token')
+
+    await user.click(screen.getByRole('button', { name: 'Configure' }))
+
+    expect(screen.queryByLabelText('Secret name')).not.toBeInTheDocument()
+    expect(screen.getAllByText('JIRA_API_TOKEN')).toHaveLength(1)
+    await user.type(screen.getByLabelText('Secret value'), 'jira-token-value')
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [
+      { name: 'JIRA_API_TOKEN', kind: 'jira_api_token' },
+    ]
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.method === 'POST')
+      expect(post?.body).toEqual({ name: 'JIRA_API_TOKEN', value: 'jira-token-value' })
+    })
+  })
+
+  it('labels configured per-host Jira tokens as managed credentials', async () => {
+    listNames = ['JIRA_TOKEN_6578616D706C652E636F6D']
+    listManaged = [
+      {
+        name: 'JIRA_TOKEN_6578616D706C652E636F6D',
+        kind: 'jira_host_token',
+        host: 'example.com',
+      },
+    ]
+    mount()
+
+    expect(await screen.findByText('Jira host API token')).toBeInTheDocument()
+    expect(screen.getByText(/one configured host/)).toBeInTheDocument()
+    expect(screen.getByText('example.com')).toBeInTheDocument()
+    expect(screen.getByText('JIRA_TOKEN_6578616D706C652E636F6D')).toBeInTheDocument()
+  })
+
   it('sends the session key header on the list request', async () => {
     mount()
     await screen.findByText('No secrets stored yet.')
 
     const listCall = calls.find(c => c.method === 'GET')
     expect(listCall?.url).toBe('/api/secrets')
+  })
+
+  it('renders the vault-only WakaTime credential as managed without an empty Other section', async () => {
+    listManaged = [
+      { name: 'WAKATIME_API_KEY', kind: 'wakatime_api_key' },
+    ]
+    mount()
+
+    expect(await screen.findByText('WakaTime API key')).toBeInTheDocument()
+    expect(screen.getByText(/coding-activity sync/)).toBeInTheDocument()
+    expect(screen.queryByText('Other stored secrets')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Configure' })).toBeInTheDocument()
   })
 
   it('opens the add form and keeps Save disabled until both fields are filled', async () => {
@@ -245,14 +324,13 @@ describe('SecretsPanel', () => {
     expect(calls.some(c => c.method === 'DELETE')).toBe(false)
   })
 
-  it('renders the empty state rather than crashing when the list request fails', async () => {
+  it('shows an actionable error when the list request fails', async () => {
     listShouldFail = true
     mount()
 
-    // `names` falls back to [] on error, so the panel degrades to the empty state
-    // instead of throwing — the Add path stays reachable.
-    expect(await screen.findByText('No secrets stored yet.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add secret' })).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('boom')
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
   })
 })
 
@@ -346,9 +424,9 @@ describe('SecretsPanel error handling', () => {
     )
     mount()
 
-    // The list query rejects, so the panel shows the empty state. The assertion
-    // that matters is that a non-OK status did NOT resolve as data.
-    expect(await screen.findByText('No secrets stored yet.')).toBeInTheDocument()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('HTTP 400: Secret name must be a string')
+    expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
   })
 
   it('rejects a non-OK response whose body is not JSON', async () => {
@@ -364,9 +442,9 @@ describe('SecretsPanel error handling', () => {
     )
     mount()
 
-    // The detail-extraction `catch` must swallow the parse failure and still
-    // throw on the status, not leak a SyntaxError.
-    expect(await screen.findByText('No secrets stored yet.')).toBeInTheDocument()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('HTTP 502')
+    expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
   })
 })
 
@@ -621,6 +699,40 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
     expect(alert).toHaveTextContent('Could not delete secret')
     expect(alert).toHaveTextContent('500')
     expect(alert).toHaveTextContent('boom')
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('does not offer delete-error handoff while the add form holds a draft', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        if ((init?.method ?? 'GET') === 'DELETE') {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () => Promise.resolve({ error: 'boom' }),
+          } as Response)
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ names: ['MY_API_KEY'], managed: [] }),
+        } as Response)
+      }),
+    )
+    mount()
+    await screen.findByText('MY_API_KEY')
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    await user.type(screen.getByLabelText('Secret name'), 'UNSAVED_KEY')
+    await user.type(screen.getByLabelText('Secret value'), 'unsaved-value')
+    await user.click(screen.getByRole('button', { name: 'Delete secret MY_API_KEY' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    await screen.findByRole('alert')
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Secret value')).toHaveValue('unsaved-value')
   })
 
   /**
