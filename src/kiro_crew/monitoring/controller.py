@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from typing import Any, Protocol
 
+from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES
 from kiro_crew.dashboard.state import MONITOR_WAKE_PREFIX
 from kiro_crew.monitoring.azure_devops_pull_request import AzureDevOpsPullRequestProvider
 from kiro_crew.monitoring.bitbucket_pull_request import BitbucketPullRequestProvider
@@ -25,12 +26,18 @@ from kiro_crew.monitoring.pull_request import PullRequestProbeResult, provider_e
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 MONITOR_WAKE_MAX_CHARS = 4096
+_CHANNEL_SLOT_PREFIXES = tuple(f"{namespace}:" for namespace in CHANNEL_SESSION_NAMESPACES)
+# GitHub and GitLab monitors intentionally retain their existing ambient CLI
+# identity in channel sessions. Every other provider is denied gateway-owner
+# credentials unless it is explicitly added here with matching security docs.
+_CHANNEL_OWNER_CREDENTIAL_KINDS = frozenset({"github_pull_request", "gitlab_merge_request"})
 
 logger = logging.getLogger(__name__)
 
 
 class _Loop(Protocol):
     id: str
+    slot_key: str
     monitor: MonitorState | None
 
 
@@ -96,6 +103,7 @@ class _Provider(Protocol):
         raw_target: str,
         *,
         previous_observation: Mapping[str, object] | None = None,
+        use_owner_credentials: bool = True,
     ) -> PullRequestProbeResult: ...
 
 
@@ -177,10 +185,14 @@ class MonitorController:
             )
         try:
             async with self._provider_gate:
+                channel_bound = loop.slot_key.startswith(_CHANNEL_SLOT_PREFIXES)
                 result = await asyncio.to_thread(
                     provider.probe,
                     target,
                     previous_observation=previous_observation,
+                    use_owner_credentials=(
+                        not channel_bound or state.kind in _CHANNEL_OWNER_CREDENTIAL_KINDS
+                    ),
                 )
         except Exception:
             logger.exception("structured monitor provider raised unexpectedly")

@@ -4681,7 +4681,6 @@ async def _close_slot(
         # the same way a failed history save does — the tab stays open and driven,
         # which is a state the user can see and retry, unlike a closed tab that
         # quietly wakes up later.
-        slot.cancel_close()
         await _restore_slot_nudge_loop(exc.loop, lambda: state.get_slot(name) is slot)
         logger.error("Failed to retire nudge loop for slot %s, close aborted", name)
         _sync_dashboard_slots(state)
@@ -4724,7 +4723,6 @@ async def _close_slot(
         if not await notify_slot_closed(slot._app, name):
             # The app could not record the dismissal. Refuse the close rather
             # than leave a worker running behind a tab the user believes is gone.
-            slot.cancel_close()
             await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
             logger.error("Slot-close hook for app %r failed on %r, close aborted", slot._app, name)
             _sync_dashboard_slots(state)
@@ -4738,7 +4736,6 @@ async def _close_slot(
         try:
             late_retired_loop = await _retire_slot_nudge_loop(name)
         except _NudgeRetireFailed as exc:
-            slot.cancel_close()
             await _restore_slot_nudge_loop(exc.loop, lambda: state.get_slot(name) is slot)
             from kiro_crew.apps.teardown import (
                 notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
@@ -4769,7 +4766,6 @@ async def _close_slot(
         try:
             pre_pop_check()
         except SlotCloseError:
-            slot.cancel_close()
             await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
             if slot._app:
                 from kiro_crew.apps.teardown import (

@@ -46,12 +46,13 @@ class BitbucketPullRequestProvider:
         raw_target: str,
         *,
         previous_observation: Mapping[str, object] | None = None,
+        use_owner_credentials: bool = True,
     ) -> PullRequestProbeResult:
         try:
             target = parse_bitbucket_pull_request_target(raw_target)
             credentials = (
                 None
-                if self._fetch is not None
+                if self._fetch is not None or not use_owner_credentials
                 else KiroCrewConfig.load().load_credentials(propagate=False)
             )
 

@@ -379,9 +379,11 @@ async def test_an_app_that_cannot_be_told_aborts_the_close(tmp_path, monkeypatch
     operational, which is a state the user can see and retry.
     """
     state = _state_with_slot(tmp_path)
-    state._slots[NAME]._app = "issue-radar"
+    slot = state._slots[NAME]
+    slot._app = "issue-radar"
     svc = await _service(tmp_path, monkeypatch)
     await svc.add(NAME, "check the PR", idle_secs=300, max_cycles=24)
+    original_restore = handlers._restore_slot_nudge_loop
 
     saved: list[bool] = []
 
@@ -391,8 +393,13 @@ async def test_an_app_that_cannot_be_told_aborts_the_close(tmp_path, monkeypatch
     async def _hook_fails(_app: str, _slot_key: str) -> bool:
         return False
 
+    async def _restore(retired_loop, admission_check) -> None:
+        assert slot.is_closing is True, "monitor admission reopened before rollback completed"
+        await original_restore(retired_loop, admission_check)
+
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
     monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_closed", _hook_fails)
+    monkeypatch.setattr(handlers, "_restore_slot_nudge_loop", _restore)
 
     resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
 

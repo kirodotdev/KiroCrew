@@ -30,14 +30,28 @@ class _Provider:
     def __init__(self, result: GitHubPullRequestProbeResult) -> None:
         self.result = result
         self.previous: list[dict[str, object]] = []
+        self.owner_credential_permissions: list[bool] = []
 
-    def probe(self, target: str, *, previous_observation=None):
+    def probe(
+        self,
+        target: str,
+        *,
+        previous_observation=None,
+        use_owner_credentials: bool = True,
+    ):
         self.previous.append(deepcopy(previous_observation or {}))
+        self.owner_credential_permissions.append(use_owner_credentials)
         return self.result
 
 
 class _RaisingProvider:
-    def probe(self, target: str, *, previous_observation=None):
+    def probe(
+        self,
+        target: str,
+        *,
+        previous_observation=None,
+        use_owner_credentials: bool = True,
+    ):
         raise RuntimeError("provider bug")
 
 
@@ -48,7 +62,13 @@ class _BlockingProvider:
         self.release = threading.Event()
         self.targets: list[str] = []
 
-    def probe(self, target: str, *, previous_observation=None):
+    def probe(
+        self,
+        target: str,
+        *,
+        previous_observation=None,
+        use_owner_credentials: bool = True,
+    ):
         self.targets.append(target)
         self.entered.set()
         if not self.release.wait(timeout=2):
@@ -142,6 +162,47 @@ async def test_controller_selects_provider_by_persisted_monitor_kind(tmp_path):
     assert provider.previous == [{}]
     assert loop.monitor is not None
     assert loop.monitor.last_observation["kind"] == "gitlab_merge_request"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("slot_key", "kind", "expected_permission"),
+    [
+        ("chat-1", "bitbucket_pull_request", True),
+        ("slack:171234.500", "bitbucket_pull_request", False),
+        ("slack:171234.500", "github_pull_request", True),
+    ],
+)
+async def test_controller_denies_owner_provider_credentials_to_channel_loops(
+    tmp_path,
+    slot_key,
+    kind,
+    expected_permission,
+):
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add_monitor(
+        slot_key=slot_key,
+        kind=kind,
+        target="https://bitbucket.org/acme/widgets/pull-requests/10",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(max_runtime_secs=600),
+        wake_instructions="",
+        now=100.0,
+    )
+    result = _result(MonitorObservationStatus.PENDING)
+    result.canonical["kind"] = kind
+    result.canonical["target"] = "bitbucket.org/acme/widgets#10"
+    provider = _Provider(result)
+    controller = MonitorController(
+        service,
+        AsyncMock(),
+        providers={kind: provider},
+    )
+
+    await controller.tick(loop, now=120.0)
+
+    assert provider.owner_credential_permissions == [expected_permission]
 
 
 @pytest.mark.asyncio

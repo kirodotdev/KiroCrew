@@ -20,6 +20,7 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_CHECK_IDENTITY_CHARS,
     ProviderErrorKind,
 )
+from kiro_crew.monitoring.provider_cli import audit_provider_cli_denied
 from kiro_crew.monitoring.pull_request import (
     PullRequestCheck,
     PullRequestFacts,
@@ -129,10 +130,17 @@ class GitHubPullRequestProvider:
         raw_target: str,
         *,
         previous_observation: Mapping[str, object] | None = None,
+        use_owner_credentials: bool = True,
     ) -> GitHubPullRequestProbeResult:
         """Return one canonical review-ready observation."""
         try:
             target = parse_github_pull_request_target(raw_target)
+            if not use_owner_credentials:
+                audit_provider_cli_denied("gh")
+                return _provider_error(
+                    ProviderErrorKind.AUTHORIZATION,
+                    "provider_authorization",
+                )
             gh = self._resolver()
             primary = self._runner(
                 [gh, "pr", "view", target.url, "--json", _PR_FIELDS],

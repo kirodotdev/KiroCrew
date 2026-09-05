@@ -1573,6 +1573,15 @@ HTTPS Authorization header and are never placed in argv, monitor state, logs, or
 browser payloads. Azure DevOps Server and Bitbucket Data Center URLs fail before
 credentials or network access.
 
+The controller passes credential authority through the provider protocol on every
+probe. Dashboard-bound monitors receive it. Channel-bound GitHub and GitLab
+monitors explicitly retain the established authenticated `gh` and host-authorized
+`glab` behavior; this is an allowlist, so an added provider gets no channel access
+to gateway-owner credentials by default. Channel-bound Azure probes record a
+credential-free `denied` SEL event and return authorization failure before reading
+the credential store or Azure CLI state. Channel-bound Bitbucket probes never read
+the credential store and use anonymous HTTPS, which limits them to public targets.
+
 Pod environments scrub the loader's complete credential roster, including the
 Azure DevOps and Bitbucket source-provider credentials, before an isolated gateway
 or arbitrary `pod exec` command can inherit it. The only roster exceptions are

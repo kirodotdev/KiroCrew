@@ -62,12 +62,19 @@ class GitLabMergeRequestProvider:
         raw_target: str,
         *,
         previous_observation: Mapping[str, object] | None = None,
+        use_owner_credentials: bool = True,
     ) -> PullRequestProbeResult:
         try:
             target = parse_gitlab_merge_request_target(
                 raw_target,
                 gitlab_hosts=self._gitlab_hosts(),
             )
+            if self._fetch is None and not use_owner_credentials:
+                audit_provider_cli_denied("glab")
+                return provider_error_result(
+                    ProviderErrorKind.AUTHORIZATION,
+                    "provider_authorization",
+                )
 
             def fetch(resource: str) -> object:
                 if self._fetch is not None:
