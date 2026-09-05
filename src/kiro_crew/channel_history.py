@@ -69,6 +69,10 @@ class ChannelHistory:
         self._channels: dict[str, deque[HistoryEntry]] = {}
         self._observe_channels: set[str] = set()  # channels with deeper buffer
         self._user_names: dict[str, str] = {}  # user_id -> display name cache
+        # Appends since this channel's file was last compacted. The file is an
+        # append log while the deque is a fixed window, so without this the two
+        # diverge without bound between compactions.
+        self._appends_since_compact: dict[str, int] = {}
 
     def set_user_name(self, user_id: str, name: str) -> None:
         """Cache a display name for a user ID."""
@@ -93,6 +97,9 @@ class ChannelHistory:
     def unset_observe(self, channel_id: str) -> None:
         """Disable observe mode for a channel (revert to default buffer)."""
         self._observe_channels.discard(channel_id)
+        # The file is removed below, so the count against it is meaningless; drop
+        # it rather than let one int per channel ever observed outlive the file.
+        self._appends_since_compact.pop(channel_id, None)
         buf = self._channels.get(channel_id)
         if buf is not None and buf.maxlen != self._max_entries:
             new_buf: deque[HistoryEntry] = deque(buf, maxlen=self._max_entries)
@@ -243,6 +250,21 @@ class ChannelHistory:
                 f.write(line + "\n")
         except OSError:
             logger.warning("Failed to append to history file %s", path, exc_info=True)
+            return
+        # Fold the append log back onto the window it feeds. ``_load_observe``
+        # reads every line into a ``maxlen=observe_max_entries`` deque, so a
+        # record past the newest ``observe_max_entries`` is parsed and then
+        # immediately evicted — it costs disk and load time and can never reach
+        # a caller. Compacting once per cap's worth of appends keeps the file
+        # under twice the cap while charging one rewrite per that many messages,
+        # rather than a read-and-rewrite on every message. The TTL-triggered
+        # compaction in ``_load_observe`` stays: it bounds by age, this by count.
+        count = self._appends_since_compact.get(channel_id, 0) + 1
+        if count >= self._observe_max_entries:
+            self._compact(channel_id)
+            self._appends_since_compact[channel_id] = 0
+        else:
+            self._appends_since_compact[channel_id] = count
 
     def _load_observe(self, channel_id: str) -> None:
         """Load persisted observe history from disk into the in-memory deque.
@@ -308,9 +330,15 @@ class ChannelHistory:
 
         logger.info("Loaded %d entries for channel %s from disk", len(entries), channel_id)
 
-        # Lazy compaction: rewrite file without expired entries
-        if had_expired:
+        # Lazy compaction: drop expired entries, and fold a file that already
+        # holds more than the window back onto it. The count arm matters on its
+        # own — a file written before the append path bounded it, or one filled
+        # faster than the TTL retires anything, has nothing expired to trigger
+        # the first arm while still carrying records the deque above just threw
+        # away.
+        if had_expired or len(entries) > self._observe_max_entries:
             self._compact(channel_id)
+        self._appends_since_compact[channel_id] = 0
 
     def _compact(self, channel_id: str) -> None:
         """Rewrite the JSONL file with only the current in-memory entries."""
