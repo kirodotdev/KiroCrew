@@ -34,6 +34,8 @@ from kiro_crew.cron import (
     CronStoreBusy,
     CronStoreUnreadable,
     compute_next_run_ts,
+    cron_job_id_from_session_key,
+    cron_session_key_is_stable,
     format_schedule,
     get_local_tz,
     is_valid_skip_date,
@@ -1653,8 +1655,31 @@ def _not_found(job_id: str) -> str:
     Shared by all three refusal branches -- no such id, a row owned by another
     session, a row owning no session -- so none of them is an existence oracle for
     the others. The ``Error:`` prefix is the tool contract's failure marker.
+
+    The two sentences after the marker are addressed to the MODEL reading this, and
+    neither narrows the ambiguity above: they hold verbatim in all three branches,
+    so the string stays one string and discloses nothing it did not before.
+
+    They are here because the vague wording has a failure mode of its own. An agent
+    told only "job not found" reasonably concludes the job is gone and reports THAT
+    to whoever asked -- a fluent, plausible answer that happens to be false, and one
+    the caller cannot distinguish from a true one. Saying outright that this answer
+    is not evidence of absence is the only place that inference can be intercepted.
+    The recovery command is named for the same reason: ``cron adopt`` shipped in
+    #4660 precisely to un-strand these rows, and a caller who never sees it named
+    has no way to reach it from inside the product. It is phrased as something to
+    ASK THE USER for, not to run: ``security.py``'s ``self-protection-cron-adopt``
+    rule denies that command to the agent so a session cannot assign itself
+    ownership of a scheduled job, so an instruction to run it would dead-end at
+    that gate and read as a malfunction.
     """
-    return f"Error: job not found: {job_id}"
+    return (
+        f"Error: job not found: {job_id}. This is the same answer whether no such "
+        f"job exists or one exists that this session does not own, so do not report "
+        f"it as proof the job is gone. `kirocrew cron list` shows every job with its "
+        f"owner; if the job should belong to this session, ask the user to run "
+        f"`kirocrew cron adopt {job_id} --session-of <session>`."
+    )
 
 
 def _unowned_row_refusal(job_id: str) -> str:
@@ -1765,13 +1790,132 @@ def _check_cron_job_ownership(svc: "CronService", job_id: str) -> str | None:
 #: because an identified session is not necessarily the operator, and "N jobs
 #: exist that you may not see" discloses the admin surface's volume to exactly
 #: that principal. Naming the two surfaces that CAN reach those rows discloses
-#: nothing further: both already require the operator's own machine.
+#: nothing further: both already require the operator's own machine, and
+#: ``cron adopt`` is a verb on one of them rather than a third surface.
+#:
+#: The "do not report that no cron jobs exist" clause is addressed to the MODEL,
+#: and it is load-bearing for a caller this sentence otherwise misleads. A
+#: sub-agent asked to review the schedule is scoped to its OWN key, so it reaches
+#: this string legitimately and can relay "there are no cron jobs" upward without
+#: any error having occurred -- a wrong answer that is indistinguishable from a
+#: right one, since the parent has no view of what was filtered. Withholding the
+#: count is still right; leaving the caller to infer absence from the silence was
+#: not.
+#:
+#: ``cron adopt`` is named as something to ASK THE USER for. The agent cannot run
+#: it: ``security.py``'s ``self-protection-cron-adopt`` rule denies the command so
+#: a session cannot assign itself ownership of a scheduled job. Coaching the model
+#: to run it would send it into that gate; coaching it to relay the command points
+#: the text and the deny rule the same way.
 _SCOPED_EMPTY = (
-    "No cron jobs owned by this session. Jobs owned by another session, or "
-    "created without one (the CLI and the onboarding importer), are outside "
-    "this session's scope and are not listed here. Manage those with "
-    "`kirocrew cron list` or on the dashboard Schedule page."
+    "No cron jobs owned by this session. This is NOT an empty registry, so do not "
+    "report that no cron jobs exist: jobs owned by another session, or created "
+    "without one (the CLI and the onboarding importer), are outside this session's "
+    "scope and are not listed here. `kirocrew cron list` and the dashboard Schedule "
+    "page show every job with its owner; to bring one into this session's scope for "
+    "good, ask the user to run `kirocrew cron adopt <job_id> --session-of <session>`."
 )
+
+
+def _owner_unusable_caveat(svc: "CronService", session_key: str, job_id: str) -> str:
+    """Why the row just written may already be unmanageable, or ``""``.
+
+    ``cron_add`` stamps the CALLER's key as the owner and every mutating tool then
+    demands an exact match, so a caller whose own key does not outlive the job has
+    just written a row only ``kirocrew cron adopt`` can rescue. Both branches below
+    succeed today and report a bare success, which is the defect: the loss is
+    silent at the one moment the caller still has the id in front of it and could
+    act.
+
+    A WARNING appended to a success, deliberately, not a refusal. A sub-agent
+    scheduling a job nobody ever pauses is a working flow -- only management is
+    lost, never execution -- so refusing would break callers who are getting
+    exactly what they asked for, to protect them from a cost they may not be
+    paying. Naming the consequence costs those callers one sentence and tells the
+    ones who DID intend to manage the job what to do while it is still cheap.
+
+    Every ``cron adopt`` reference here is addressed to the USER, in the same
+    ``Tell the user:`` register the success string already uses. That is not a
+    style choice: ``security.py``'s ``self-protection-cron-adopt`` rule denies the
+    command to the agent outright, precisely so a session cannot assign itself
+    ownership of a scheduled job. An instruction telling the model to RUN it would
+    dead-end at that gate and read as a malfunction, so the model is told to relay
+    it instead -- the human is the only principal who can execute the remedy, and
+    the deny rule and this text now point the same way.
+
+    Neither branch is reachable from the surfaces that already work: a chat tab is
+    ``dashboard:<slot>`` and a durable cron is ``cron:<job_id>``, and both outlive
+    the jobs they create.
+    """
+    if session_key.startswith("subagent:"):
+        return (
+            " Note: the owner recorded is this sub-agent's conversation. The parent "
+            "session cannot present that key, so the parent cannot pause, resume, or "
+            "remove this job -- not eventually, but starting now -- and the key stops "
+            "resolving at all once the conversation is released or reaped. Tell the "
+            "user: either have the parent create the job, or run `kirocrew cron adopt "
+            f"{job_id} --session-of <parent session>` to transfer it."
+        )
+    # Asked of the JOB RECORD, never of the key's shape. Two different minting
+    # paths produce a three-segment ``cron:`` key -- an ephemeral per-fire run id
+    # and a DURABLE per-agent name for an agent_sequence job -- so counting
+    # separators warns the multi-agent case wrongly. See
+    # cron.cron_session_key_is_stable, which lives next to both mint sites.
+    caller_job_id = cron_job_id_from_session_key(session_key)
+    if not caller_job_id:
+        return ""
+    caller_job = svc.get_job(caller_job_id)
+    # No record means no evidence, so say nothing: a warning we cannot substantiate
+    # is the exact failure this branch was rewritten to remove.
+    if caller_job is None or cron_session_key_is_stable(caller_job):
+        return ""
+    return (
+        " Note: the cron creating this job runs with persistent_session disabled, "
+        "so its session key carries a fresh per-run id and will never match again. "
+        "The owner recorded here is already unusable -- this cron will not "
+        "recognise the job on its next run. Tell the user to run `kirocrew cron "
+        f"adopt {job_id} --session-of <session>` if anything should manage it later."
+    )
+
+
+def _ephemeral_authority_caveat(persistent: bool, is_agent_job: bool, sequence_len: int) -> str:
+    """Warn when the job BEING created or updated is the one that loses authority.
+
+    Distinct from :func:`_owner_unusable_caveat`, which is about the caller. Here
+    the caller may be perfectly durable while the job it is writing is not:
+    ``persistent_session=False`` gives each run a fresh ``cron:<id>:<run_id>`` key
+    (``cron.build_cron_session_context``), so that job can never satisfy an
+    ownership check on a later run -- including against jobs it created itself on
+    an earlier one.
+
+    Two exemptions, both because the flag cannot produce the bad state:
+
+    * NOT an agent job. A script cron is launched with
+      ``KIROCREW_SESSION_KEY=cron:<job_id>`` unconditionally and a command cron
+      issues no MCP call at all.
+    * ``agent_sequence`` longer than one. That path mints a stable
+      ``cron:<job_id>:<agent>`` key and ignores ``persistent_session``, so the
+      warning would be false -- the same conflation
+      :func:`cron.cron_session_key_is_stable` exists to prevent.
+
+    Applied at ``cron_update`` as well as ``cron_add``: the flag is writable on
+    both, so warning only at creation would leave the identical state reachable
+    through a bare ``Updated job:``.
+
+    The argument reads as a context-management knob -- whether a run sees the
+    previous run's transcript -- and nothing at the call site suggests it also
+    revokes the job's authority over the scheduler. That gap is why this is worth
+    a sentence rather than a docs line.
+    """
+    if persistent or not is_agent_job or sequence_len > 1:
+        return ""
+    return (
+        " Note: persistent_session is false, so every run of this job gets a fresh "
+        "session key. It will not be able to pause, resume, or remove any cron job, "
+        "including ones it creates itself, because the ownership check needs the "
+        "same key to come back on a later run. Leave persistent_session at its "
+        "default if this job is meant to manage other jobs."
+    )
 
 
 def _owned_by(jobs: list[CronJob], session_key: str) -> list[CronJob]:
@@ -1969,7 +2113,27 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             source="mcp",
             resources=f"job_id={job.id}",
         )
-        return f"Added job: {job.id} ({job.name}) [{sched_str}]. Tell the user: scheduled for {sched_str}."
+        # Appended to the SUCCESS, after the id exists so both caveats can name it.
+        # Not folded into the audit row above: call_tool_with_logging already records
+        # this invocation against the calling session, and a caveat is advice to the
+        # caller rather than a decision with an effect (cf. _audit_list_scope).
+        #
+        # Every input is read from ``args``, the way persistent_session and
+        # command/script above are, so this site depends on the stored row for
+        # nothing but ``job.id`` -- which the success string already used. Reading
+        # ``job.agent_sequence`` back instead bought nothing (this tool has no
+        # agent_sequence argument, so the field is always empty here) and coupled
+        # the caveat to the whole returned object. ``args`` also keeps the answer
+        # correct by construction if the argument is ever added to the schema.
+        caveats = _owner_unusable_caveat(svc, session_key, job.id) + _ephemeral_authority_caveat(
+            persistent_session if isinstance(persistent_session, bool) else True,
+            not (command or script),
+            len(args.get("agent_sequence") or []),
+        )
+        return (
+            f"Added job: {job.id} ({job.name}) [{sched_str}]. "
+            f"Tell the user: scheduled for {sched_str}.{caveats}"
+        )
 
     if name == "cron_update":
         jid = args["job_id"]
@@ -2059,7 +2223,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             resources=f"job_id={jid}",
         )
         sched_str = format_schedule(updated.schedule)
-        return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]"
+        # Read from the SAVED row, not from ``args``: an update that leaves
+        # persistent_session alone must still warn if the job is already in that
+        # state and this call turned it into an agent job, and the flag is writable
+        # here exactly as it is on cron_add -- warning only at creation would leave
+        # the identical no-authority state reachable through a bare "Updated job:".
+        caveat = _ephemeral_authority_caveat(
+            updated.persistent_session,
+            not (updated.command or updated.script),
+            len(updated.agent_sequence),
+        )
+        return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]{caveat}"
 
     if name == "cron_remove":
         jid = args["job_id"]

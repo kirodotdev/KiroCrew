@@ -833,6 +833,46 @@ def build_cron_session_context(job: CronJob) -> tuple[str, str]:
     return f"cron:{job.id}:{run_id}", job.message
 
 
+def cron_job_id_from_session_key(session_key: str) -> str:
+    """The job id inside a ``cron:`` session key, or ``""`` for any other key.
+
+    Every shape this repository mints is ``cron:<job_id>`` with an OPTIONAL third
+    segment, and a job id is ``uuid4().hex[:8]`` so it never contains a colon --
+    which is what makes taking the second segment exact rather than a guess.
+    """
+    if not session_key.startswith("cron:"):
+        return ""
+    return session_key.split(":")[1] if len(session_key.split(":")) > 1 else ""
+
+
+def cron_session_key_is_stable(job: CronJob) -> bool:
+    """Whether every run of *job* presents the SAME session key.
+
+    Lives beside :func:`build_cron_session_context` because it is the inverse of
+    that function's branch, and a predicate that can silently disagree with the
+    code that mints the key is worse than no predicate: it fails QUIET, as a
+    warning that stops firing or one that fires on the wrong job.
+
+    Two minting paths feed this, which is the whole reason callers must not infer
+    the answer from the key's shape:
+
+    * :func:`build_cron_session_context` -- ``cron:<job_id>`` when
+      ``persistent_session``, else ``cron:<job_id>:<run_id>`` with a fresh
+      ``uuid4`` per fire, so the three-segment form there is EPHEMERAL.
+    * the sequential-agent path in the Slack gateway -- ``cron:<job_id>:<agent>``
+      whenever ``agent_sequence`` holds more than one agent. It builds the key
+      directly rather than calling the function above, and an agent NAME is
+      stable, so the three-segment form there is DURABLE.
+
+    So the two forms are indistinguishable by separator count, and only the job
+    record separates them. The sequential path ignores ``persistent_session``
+    entirely, which is why it is checked second rather than combined.
+    """
+    if len(job.agent_sequence) > 1:
+        return True
+    return job.persistent_session
+
+
 # ── Cron expression matching (via croniter) ──
 
 
