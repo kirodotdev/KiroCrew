@@ -9,7 +9,7 @@ import RunInTerminalBtn from '../components/RunInTerminalBtn'
 //
 // A click does not run anything on its own — it opens a confirmation dialog
 // showing the exact command, and only the dialog's Run button dispatches.
-let requests: { code: string; reqId: string }[] = []
+let requests: { code: string; reqId: string; lang?: string }[] = []
 function onReq(e: Event) { requests.push((e as CustomEvent).detail) }
 function replyLast(ok: boolean) {
   const last = requests[requests.length - 1]
@@ -60,6 +60,13 @@ describe('RunInTerminalBtn', () => {
     clickAndConfirm()
     expect(requests).toHaveLength(1)
     expect(requests[0].code).toBe('echo hello')
+  })
+
+  it('carries the fence language in the run request', () => {
+    renderWithProviders(<RunInTerminalBtn code="set greeting hello" lang="fish" />)
+    clickAndConfirm()
+    expect(requests).toHaveLength(1)
+    expect(requests[0].lang).toBe('fish')
   })
 
   it('does not run when the dialog is cancelled', () => {

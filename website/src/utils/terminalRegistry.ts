@@ -41,6 +41,34 @@ export function getTerminalCwd(sessionId: string): string | undefined {
   return cwds.get(sessionId)
 }
 
+/* ── Per-session launched shell (absolute path, reported by the backend in the
+ * `ready` frame). The client mints session ids and opens the socket without
+ * asking what will be spawned, so this is the only place it learns which shell
+ * will interpret the bytes it writes. Read imperatively at hand-off time, same
+ * as `cwds`. */
+const shells = new Map<string, string>()
+/* ── Per-session map of fence-nameable shell name -> ABSOLUTE path, as the
+ * backend resolved it on this host. A snippet handed to another shell must name
+ * an absolute path: a bare name would be resolved again in the terminal's
+ * project cwd, where a relative PATH entry could supply a planted binary. */
+const fenceShells = new Map<string, Record<string, string>>()
+
+/** Absolute path of the shell a session actually launched, if the backend has
+ *  reported one. Undefined until the `ready` frame arrives, and on a gateway
+ *  that does not report it -- callers must treat undefined as "unknown" and
+ *  not guess. */
+export function getTerminalShell(sessionId: string): string | undefined {
+  return shells.get(sessionId)
+}
+
+/** Fence-nameable shells the backend resolved on this host, name -> absolute
+ *  path. Empty until the `ready` frame arrives, and on a gateway that does not
+ *  report them -- a shell missing from this map is one the caller must not try
+ *  to invoke. */
+export function getTerminalFenceShells(sessionId: string): Record<string, string> {
+  return fenceShells.get(sessionId) ?? {}
+}
+
 function setSessionTitle(sessionId: string, title: string) {
   if (titles.get(sessionId) === title) return
   titles.set(sessionId, title)
@@ -330,7 +358,16 @@ function connect(sessionId: string, c: Conn) {
     if (typeof ev.data === 'string') {
       try {
         const m = JSON.parse(ev.data)
-        if (m && m.type === 'ready') registerTerminalWs(sessionId, ws)
+        if (m && m.type === 'ready') {
+          // Record the shell BEFORE registering: registerTerminalWs drains the
+          // ready listeners synchronously, and Run-in-terminal's listener reads
+          // the shell to decide how to hand over the snippet.
+          if (typeof m.shell === 'string' && m.shell) shells.set(sessionId, m.shell)
+          if (m.fence_shells && typeof m.fence_shells === 'object') {
+            fenceShells.set(sessionId, m.fence_shells as Record<string, string>)
+          }
+          registerTerminalWs(sessionId, ws)
+        }
         if (m && m.type === 'title' && typeof m.text === 'string') setSessionTitle(sessionId, m.text)
         if (m && m.type === 'cwd' && typeof m.path === 'string') cwds.set(sessionId, m.path)
       } catch { /* ignore non-JSON control frames */ }
@@ -391,6 +428,8 @@ export function disposeTerminalConnection(sessionId: string): void {
   titles.delete(sessionId)
   titleListeners.delete(sessionId)
   cwds.delete(sessionId)
+  shells.delete(sessionId)
+  fenceShells.delete(sessionId)
   statusListeners.delete(sessionId)
   // Drop any pending onTerminalReady callbacks. They're normally drained by
   // registerTerminalWs when the socket opens; if the tab is closed before the

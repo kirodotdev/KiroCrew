@@ -42,7 +42,8 @@ import {
 } from '../store/chatSlice'
 import { confirmedDelivered, readSendReceipt } from '../utils/sendDelivery'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
-import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
+import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
+import { runInTerminalText } from '../utils/fenceShell'
 import { addTab as addDockTerminal } from '../hooks/useBottomTerminal'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle, triggerRefresh, updateSlot } from '../store/dashboardSlice'
@@ -5916,6 +5917,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const detail = (e as CustomEvent).detail || {}
       const code: string = detail.code
       const reqId: string = detail.reqId
+      const lang: string | undefined = typeof detail.lang === 'string' ? detail.lang : undefined
       if (typeof code !== 'string' || !code) return
       const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
       let settled = false
@@ -5925,7 +5927,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
       }
       if (!sessionId) { emit(false); return }
-      const unsub = onTerminalReady(sessionId, () => { emit(sendToTerminalSession(sessionId, code)) })
+      // The shell is known only once `ready` has arrived, which is exactly when
+      // this fires — so read it here, not at dispatch time.
+      const unsub = onTerminalReady(sessionId, () => {
+        const text = runInTerminalText(
+          code, lang, getTerminalShell(sessionId), getTerminalFenceShells(sessionId),
+        )
+        emit(sendToTerminalSession(sessionId, text))
+      })
       // Give the PTY time to connect; if it never does, report failure.
       setTimeout(() => { unsub(); emit(false) }, 6000)
     }

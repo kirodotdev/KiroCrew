@@ -10,6 +10,8 @@
  * that exemption narrow and auditable — the page itself stays fully translated.
  */
 
+import { posixSingleQuote } from '../../utils/posixQuote'
+
 /** Wrap a value for safe use as a POSIX shell single-quoted word.
  *
  *  These snippets are meant to be copied and RUN, and the values interpolated
@@ -21,10 +23,9 @@
  *
  *  The POSIX idiom is to end the quote, emit an escaped quote, and reopen:
  *  `it's` becomes `'it'\''s'`. There is no way to escape `'` inside single
- *  quotes, so this is the only correct form. */
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`
-}
+ *  quotes, so this is the only correct form. Lives in `utils/posixQuote` because
+ *  Run-in-terminal needs the same idiom for an unrelated reason. */
+const shellQuote = posixSingleQuote
 
 /** The gateway's own origin, taken from the endpoint URL.
  *

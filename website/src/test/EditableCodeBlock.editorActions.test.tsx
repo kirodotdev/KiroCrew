@@ -164,4 +164,20 @@ describe('EditableCodeBlock run-in-terminal action', () => {
     render(<EditableCodeBlock code="ls -la" lang="bash" complete />)
     expect(screen.queryByLabelText('Run in terminal')).toBeNull()
   })
+
+  it('forwards the fence language with the run request', () => {
+    setTerminalEnabledFlag(true)
+    const seen: { code?: string; lang?: string }[] = []
+    const onReq = (e: Event) => seen.push((e as CustomEvent).detail)
+    window.addEventListener('mc:run-in-terminal', onReq)
+    try {
+      render(<EditableCodeBlock code="set greeting hello" lang="fish" complete />)
+      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: /^Run( anyway)?$/ }))
+      expect(seen).toHaveLength(1)
+      expect(seen[0].lang).toBe('fish')
+    } finally {
+      window.removeEventListener('mc:run-in-terminal', onReq)
+    }
+  })
 })

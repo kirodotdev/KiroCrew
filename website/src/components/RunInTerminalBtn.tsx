@@ -19,9 +19,21 @@ function stripPromptChars(code: string): string {
  *
  * Every click opens a confirmation dialog first. The code block clips long lines
  * (the <pre> scrolls horizontally), so the visible text is not necessarily the
- * whole command — the dialog shows the exact string that will run, wrapped.
+ * whole command — the dialog shows the exact snippet that will be run, wrapped.
+ *
+ * `lang` is the fence language the mount site already matched against
+ * SHELL_LANGS to decide this button renders at all. It travels with the
+ * request because the tag names the shell the snippet was written for, and a
+ * consumer that only receives `code` cannot tell fish from bash.
+ *
+ * The dialog shows the SNIPPET, which is every character that will execute. On
+ * the one path where the fence names a shell incompatible with the terminal's,
+ * the handler delegates it to that shell (`'/usr/bin/fish' -c '<snippet>'`), so
+ * the line in the scrollback carries that prefix. The delegation cannot be
+ * decided here: which shell is running is only known once the terminal has
+ * opened, which happens after this dialog is confirmed.
  */
-export default function RunInTerminalBtn({ code }: { code: string }) {
+export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: string }) {
   const [status, setStatus] = useState<'idle' | 'sent' | 'error'>('idle')
   const [pending, setPending] = useState<{ command: string; warnReason: string } | null>(null)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -56,8 +68,8 @@ export default function RunInTerminalBtn({ code }: { code: string }) {
       clearTimeout(resultTimerRef.current)
       resultUnsubRef.current = null
     }
-    window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: cleaned, reqId } }))
-  }, [flash])
+    window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: cleaned, reqId, lang } }))
+  }, [flash, lang])
 
   const askToRun = useCallback(() => {
     const cleaned = stripPromptChars(code)

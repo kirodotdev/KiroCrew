@@ -25,6 +25,8 @@ import {
   useTerminalEnabled,
   useTerminalTitle,
   getTerminalCwd,
+  getTerminalShell,
+  getTerminalFenceShells,
   registerTerminalWs,
   unregisterTerminalWs,
   getTerminalWs,
@@ -182,6 +184,68 @@ describe('terminalRegistry', () => {
       openSocket(id)
       unregisterTerminalWs(id)
       expect(getTerminalWs(id)).toBeNull()
+    })
+  })
+
+  describe('getTerminalShell', () => {
+    it('records the shell the backend reports in its ready frame', () => {
+      const id = session('shell-report')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      expect(getTerminalShell(id)).toBeUndefined()
+      act(() => { ws.simulateJson({ type: 'ready', shell: '/usr/bin/fish' }) })
+      expect(getTerminalShell(id)).toBe('/usr/bin/fish')
+    })
+
+    it('stays unknown when the ready frame reports no shell', () => {
+      const id = session('shell-absent')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      act(() => { ws.simulateJson({ type: 'ready' }) })
+      expect(getTerminalShell(id)).toBeUndefined()
+    })
+
+    it('has the shell recorded before ready listeners run', () => {
+      const id = session('shell-order')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      // Run-in-terminal reads the shell from inside its ready callback, so a
+      // shell recorded after the drain would arrive too late to be used.
+      let seenFromListener: string | undefined = 'listener did not run'
+      onTerminalReady(id, () => { seenFromListener = getTerminalShell(id) })
+      act(() => { ws.simulateJson({ type: 'ready', shell: '/usr/bin/zsh' }) })
+      expect(seenFromListener).toBe('/usr/bin/zsh')
+    })
+
+    it('records the fence-shell paths the backend resolved', () => {
+      const id = session('fence-shells')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      expect(getTerminalFenceShells(id)).toEqual({})
+      act(() => {
+        ws.simulateJson({
+          type: 'ready',
+          shell: '/usr/bin/bash',
+          fence_shells: { bash: '/usr/bin/bash', fish: '/usr/bin/fish' },
+        })
+      })
+      expect(getTerminalFenceShells(id)).toEqual({
+        bash: '/usr/bin/bash',
+        fish: '/usr/bin/fish',
+      })
+    })
+
+    it('reports no fence shells when the ready frame carries none', () => {
+      const id = session('fence-shells-absent')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      act(() => { ws.simulateJson({ type: 'ready', shell: '/usr/bin/bash' }) })
+      expect(getTerminalFenceShells(id)).toEqual({})
     })
   })
 

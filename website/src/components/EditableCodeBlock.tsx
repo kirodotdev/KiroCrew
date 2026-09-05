@@ -48,7 +48,7 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
 
   const headerActions = complete ? (
     <>
-      {showRunBtn && <RunInTerminalBtn code={code} />}
+      {showRunBtn && <RunInTerminalBtn code={code} lang={lang} />}
       <button
         aria-label={i18nT('components.monacoCodeBlock.edit_code_block')}
         title={i18nT('components.monacoCodeBlock.edit_code_block')}
