@@ -4571,8 +4571,8 @@ class TestNestedPayloadExtractionIsLinear:
         # (3x for a 2x input) so scheduler noise on a shared runner cannot red it,
         # while a quadratic scan's 4x cannot pass.
         assert large < small * 3, f"{small:.4f}s -> {large:.4f}s looks super-linear"
-        # ...and the absolute floor: the quadratic took ~13 s at this size.
-        assert large < 1.0, f"16k tokens took {large:.3f}s"
+        # No absolute cap: coverage tracing on the backend jobs prices line
+        # events, not algorithmic cost (#8630 precedent); the ratio is the guard.
 
     def test_a_long_double_dash_run_is_also_linear(self):
         """The ``--`` skip after a command flag was a THIRD forward walk, and fixing
@@ -4592,7 +4592,8 @@ class TestNestedPayloadExtractionIsLinear:
         elapsed(500)
         small, large = elapsed(4000), elapsed(8000)
         assert large < small * 3, f"{small:.4f}s -> {large:.4f}s looks super-linear"
-        assert large < 1.0, f"8k+8k tokens took {large:.3f}s"
+        # No absolute cap: coverage tracing on the backend jobs prices line
+        # events, not algorithmic cost (#8630 precedent); the ratio is the guard.
 
     def test_the_stop_predicates_match_the_handling(self):
         """The precomputed index and the branch taken at that index are two places
