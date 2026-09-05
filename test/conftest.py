@@ -98,6 +98,19 @@ requires_symlinks = pytest.mark.skipif(
     reason="creating a symlink needs SeCreateSymbolicLinkPrivilege on Windows",
 )
 
+# Captured at import, BEFORE any test can monkeypatch the constant away: tests that
+# simulate the flag's absence must not be confused with a platform that truly lacks it.
+_HAS_O_NOFOLLOW = bool(getattr(os, "O_NOFOLLOW", 0))
+
+requires_o_nofollow = pytest.mark.skipif(
+    not _HAS_O_NOFOLLOW,
+    reason=(
+        "notification import refuses outright without O_NOFOLLOW, because a by-name "
+        "reparse check followed by a by-name open is a check-to-open window; the "
+        "refusal itself is covered by TestNotificationCopyRefusalWithoutONofollow"
+    ),
+)
+
 
 def _find_posix_test_shell() -> str | None:
     """Return a real POSIX shell without mistaking Windows' WSL launcher for one."""
