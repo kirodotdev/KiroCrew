@@ -470,13 +470,36 @@ absent. Phase 1.5 checks them against the diff.
 
 1. **Problem / Motivation** — the concrete symptom, or the gap for a feature.
 2. **Why it matters** — impact if left unfixed.
-3. **What changed (motivation → approach → change)** — symptom → root cause → the specific change, so the reader sees *why this is the right fix*.
+3. **What changed (motivation → approach → change)** — symptom → root cause → the specific change, so the reader sees *why this is the right fix*. Three short paragraphs at most — one per arrow. Write it in the register below.
 4. **Tests** — what was added/updated and what each locks in.
 5. **Manual verification** — steps done/needed, or "N/A — unit coverage sufficient" with a one-line why.
 6. **Screenshots / video — MANDATORY for any user-visible UI change.** See below.
 7. **Issue link** — a real closing keyword. See below.
 
 Omit a section only when truly not applicable, and say so.
+
+### Writing register — Age 10
+
+Every prose section above is written at the **Age 10 row of the `explain-for`
+skill**: everyday words, plain cause and effect, one idea per sentence. A reviewer
+must get the point in one pass without decoding it. This sets the *register*, never
+the depth — the facts stay complete and technically exact.
+
+- **One idea per sentence, point first.** Do not chain clauses with `so that`,
+  `which means`, `thereby` or `hence`. Short sentences, in order.
+- **A term stays only when it IS the fact.** Keep identifiers, file paths, error
+  strings, function and flag names verbatim. Cut decorative jargon
+  (`orchestrate`, `surface`, `leverage`, `holistic`, `non-trivial`).
+- **Name the thing, then what it does.** `_reconcile_adopted() re-checks drift
+  every 300s`, not `a reconciliation cadence is introduced at the adoption layer`.
+- **Three paragraphs, not a report.** No nested bullets, no numbered findings, no
+  per-file walkthrough inside a section. Evidence and history belong in the review
+  thread, not the body.
+- **Say the effect in user words.** What a person sees now that they did not see
+  before, or stops seeing. Not "improves robustness".
+
+Rewrite check before opening the PR: read section 3 once, out loud. If any
+sentence needs a second read to find its point, rewrite that sentence.
 
 ### Screenshots
 
