@@ -28,6 +28,15 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility facade
 
+# ``_validated_stt_custom_url`` / ``_validated_stt_custom_sha256`` are reached
+# through the module instead of being added to the ``config.sections`` import
+# block further down. That block is a FROZEN snapshot of the names this module
+# re-exported before the config split, pinned by
+# test_loader_reexports_historical_snapshot_by_identity: a new helper added to it
+# becomes a new public alias of a module internal rather than a pre-split name.
+# Both are only ever called below, so the module reference leaves the loader's
+# namespace unchanged.
+import kiro_crew.config.sections as _sections
 from kiro_crew import __version__, model_registry, platform_compat, windows_acl
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
 
@@ -53,12 +62,6 @@ from kiro_crew.computer_use.types import MAX_TEXT_LIMIT as _CU_MAX_TEXT_LIMIT
 from kiro_crew.computer_use.types import MAX_TREE_DEPTH_LIMIT as _CU_MAX_TREE_DEPTH
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
-
-# Post-split section internals are reached through the module: the name-level
-# `from kiro_crew.config.sections import (...)` block below is a FROZEN
-# pre-split snapshot (test_config_module_boundaries pins it), so a coercer added
-# after the split must not join it.
-from kiro_crew.config import sections as _sections
 
 # Pure path primitives live in the leaf module ``config.paths`` (stdlib-only,
 # no ``kiro_crew`` imports) so the modules that only need ``config_dir()`` can
@@ -3285,7 +3288,17 @@ class KiroCrewConfig:
             stt=SttConfig(
                 enabled=_safe_bool(stt_data.get("enabled"), True),
                 provider=_validated_stt_provider(stt_data.get("provider", STT_PROVIDER_LOCAL)),
-                model=_validated_stt_model(stt_data.get("model", _STT_DEFAULT_MODEL)),
+                model=_validated_stt_model(
+                    stt_data.get("model", _STT_DEFAULT_MODEL),
+                    custom_url=stt_data.get("custom_model_url", ""),
+                    custom_sha256=stt_data.get("custom_model_sha256", ""),
+                ),
+                custom_model_url=_sections._validated_stt_custom_url(
+                    stt_data.get("custom_model_url", "")
+                ),
+                custom_model_sha256=_sections._validated_stt_custom_sha256(
+                    stt_data.get("custom_model_sha256", "")
+                ),
                 language_code=stt_data.get("language_code", "en-US"),
                 streaming=_safe_bool(stt_data.get("streaming"), True),
                 silence_ms=_safe_int(

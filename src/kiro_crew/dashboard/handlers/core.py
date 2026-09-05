@@ -55,6 +55,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers._shared import (
+    _owner_denial_response,
     _pip_install_channel_available,
     pip_extra_install_command,
 )
@@ -614,39 +615,130 @@ def _spawn_stt_background(coro: Coroutine[Any, Any, Any]) -> None:
     task.add_done_callback(_stt_background_tasks.discard)
 
 
-def _deny_app_token(request: web.Request, operation: str) -> web.Response | None:
-    """Refuse an app token on the dashboard-only STT endpoints. 403 or None.
+async def _audit_stt_refusal(request: web.Request, operation: str, error: str) -> None:
+    """Record a refused STT capability in SEL. Best-effort, never raises.
 
-    ``request["user"]`` is truthy for an app token too, so a cookie check alone
-    does not separate a browser from an app that declared this path in its
-    manifest's ``permissions.api``. These endpoints start a model download and
-    warm a resident model inside the gateway, which is operator setup rather than
-    something an app earns by naming a path. The live transcription surfaces
-    (``/api/ws/stt``, ``POST /api/stt/transcribe``) are deliberately NOT gated
-    this way: shipped apps reach them on an app token.
+    An unwrapped SEL failure here would replace the intended 403 with a 500, which
+    is the one outcome a refusal must never turn into.
 
-    An absent ``app`` key is refused along with a non-empty one, so an
-    unauthenticated route can only ever fail closed here.
+    Off the loop, and awaited rather than detached. The first ``sel()`` in a
+    gateway's life CONSTRUCTS the singleton, and that constructor reads the HMAC
+    key, the chain tip and the live-file identity from disk (``sel.py``
+    ``_load_or_create_hmac_key`` / ``_read_last_hash`` / ``_live_identity``), so a
+    refusal that is the first audited event would do that file I/O on the event
+    loop and stall every other request and heartbeat behind it. Awaited, not
+    fire-and-forget, so the audit is on disk's queue before the 403 leaves --
+    a denial that outruns its own audit record is not audited.
     """
-    if request.get("app") == "":
-        return None
-    # Best-effort: an unwrapped SEL failure here would replace the intended 403
-    # with a 500, which is the one outcome a refusal must never turn into.
-    try:
+
+    def _write() -> None:
         _sel().log_api_access(
             caller=str(request.get("app") or request.get("user") or "unknown"),
             operation=operation,
             outcome="denied",
             source="dashboard",
             resources=request.path,
-            error="dashboard user required",
+            error=error,
         )
+
+    try:
+        await asyncio.to_thread(_write)
     except Exception:
         logger.warning("SEL logging failed for %s", operation, exc_info=True)
+
+
+async def _refuse_app_token(request: web.Request, operation: str) -> web.Response:
+    """The audited 403 an app token gets on a dashboard-only capability."""
+    await _audit_stt_refusal(request, operation, "dashboard user required")
     return web.json_response(
         {"error": "dashboard user required", "code": _CODE_DASHBOARD_USER_REQUIRED},
         status=403,
     )
+
+
+async def _deny_app_token(request: web.Request, operation: str) -> web.Response | None:
+    """Refuse an app token on the dashboard-only STT endpoints. 403 or None.
+
+    These endpoints start a model download and warm a resident model inside the
+    gateway, which is operator setup rather than something an app earns by naming
+    a path. The live transcription surfaces (``/api/ws/stt``, ``POST
+    /api/stt/transcribe``) are deliberately NOT gated this way: shipped apps reach
+    them on an app token.
+
+    Whole-handler. The per-FIELD sibling is
+    :func:`_deny_non_owner_stt_custom_model`, for the config endpoint that an app
+    may legitimately reach for everything except the custom model.
+
+    An absent ``app`` key is refused along with a non-empty one, so an
+    unauthenticated route can only ever fail closed here.
+    """
+    if request.get("app") == "":
+        return None
+    return await _refuse_app_token(request, operation)
+
+
+async def _deny_non_owner_stt_custom_model(request: web.Request, body: dict) -> web.Response | None:
+    """Refuse a non-owner caller the custom-model fields of ``PUT /api/config/stt``.
+
+    ``PUT /api/config/stt`` is app-reachable as a whole, so this is per-field
+    rather than the blanket :func:`_deny_app_token` that ``stt.status``,
+    ``stt.prepare`` and ``stt.prewarm`` use. Those three are denied because they
+    fetch weights and load them into the gateway. The custom-model pair reaches
+    exactly that outcome by a longer road: it names a URL the gateway will fetch,
+    verify against a digest THE SAME CALLER supplied, and load — and the
+    transcription surfaces that trigger the load are deliberately app-reachable.
+    So a caller allowed to write these fields would obtain the download those three
+    refuse it, pointed at a URL of its own choosing. That is a hole through the
+    side door, and it is the whole reason this exists.
+
+    The bar is the OWNER dashboard (``is_owner_dashboard_request``), not merely a
+    caller holding a non-app token. An allow-listed messaging user who runs
+    ``!dashboard`` is minted a dashboard session too, and its app claim is ``""``
+    just like the operator's: "not an app" and "the operator" are different
+    questions, and only the second one may aim a download. Same predicate, and
+    same denial tail, as every other owner-only mutation in the dashboard.
+
+    Scope, and why each half is drawn where it is:
+
+    - ``custom_model_url`` / ``custom_model_sha256`` are refused on PRESENCE.
+      The GET omits them for everyone but the owner, so no other caller has a
+      legitimate source for either value and none can be round-tripping one it
+      was served.
+    - ``model`` is refused on PRESENCE of ``custom`` too, unconditionally, NOT
+      only when it would change the selection. An earlier version compared
+      against ``cfg.stt.model`` to let a caller harmlessly write back a ``custom``
+      already in force. That comparison cannot be made safely here: ``cfg`` is
+      read by the caller BEFORE the shared config lock, so a non-owner who reads
+      "custom is already active" and then writes inside the lock re-activates a
+      custom model the owner had just turned off. The round-trip that carve-out
+      protected is a convenience; the race it opened is an authorization bypass,
+      so the convenience loses.
+
+    403 rather than dropping the fields quietly, because a 200 would tell the
+    caller its custom model had been stored.
+    """
+    # Non-dict bodies never reach here: the caller 400s them before this gate, so
+    # every membership test below is well-defined. Presence is checked FIRST so an
+    # ordinary write (language, toggles) is untouched for every caller this gate
+    # does not concern.
+    if not (
+        body.get("model") == stt_models.CUSTOM_MODEL
+        or "custom_model_url" in body
+        or "custom_model_sha256" in body
+    ):
+        return None
+    # Imported in the body, as `require_owner_dashboard_request` does: importing
+    # `source_providers` at module scope pulls chat-state helpers that reach back
+    # into sibling handler modules.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if is_owner_dashboard_request(request):
+        return None
+    # Domain audit stays here under this endpoint's own operation name; only the
+    # denial TAIL is shared, so a session that predates the configured owner gets
+    # the standard 401 relabel instead of a 403 it cannot act on.
+    await _audit_stt_refusal(request, "stt.custom_model", "non-owner identity rejected")
+    return _owner_denial_response(request, "the custom speech model is owner-only")
 
 
 def _stt_positive_int(body: dict, key: str, *, minimum: int, maximum: int) -> int | None:
@@ -673,6 +765,21 @@ async def api_stt_config(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        # Every field read below is a membership test followed by a subscript, and
+        # a JSON array satisfies `"model" in body` while `body["model"]` raises
+        # TypeError — a 500 out of a partial-update endpoint, and out of the
+        # security gate on the next line. Refused once here rather than type-tested
+        # at each of the fifteen fields, matching the sibling theme handler above.
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": "request body must be an object", "code": "body_not_object"}, status=400
+            )
+        # Before the lock and before any write: the custom-model fields are the one
+        # part of this endpoint a non-owner caller may not touch. See
+        # `_deny_non_owner_stt_custom_model` for why they and not the rest.
+        denied = await _deny_non_owner_stt_custom_model(request, body)
+        if denied is not None:
+            return denied
         path = config_path()
         from kiro_crew.agent import _atomic_json_write  # noqa: F811
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
@@ -713,9 +820,26 @@ async def api_stt_config(request: web.Request) -> web.Response:
             if (
                 "model" in body
                 and isinstance(body["model"], str)
-                and body["model"] in _STT_MODEL_SIZES
+                and (body["model"] in _STT_MODEL_SIZES or body["model"] == stt_models.CUSTOM_MODEL)
             ):
                 stt_section["model"] = body["model"]
+            # Accepted independently of `model` so the pair can be filled in BEFORE
+            # `custom` is selected: the config loader degrades a `custom` selection
+            # with no usable pair back to the default model, so writing the two in
+            # the other order would store a selection that reads back as `base`.
+            # Validated with the same helpers the loader uses, so a value this
+            # endpoint accepts is one the loader will keep.
+            if "custom_model_url" in body:
+                custom_url = stt_models.valid_custom_url(body["custom_model_url"])
+                # An explicit empty string clears the setting, which is how a user
+                # goes back to a catalog model. A malformed non-empty value is
+                # skipped like any other wrong-typed field rather than clearing it.
+                if custom_url or body["custom_model_url"] == "":
+                    stt_section["custom_model_url"] = custom_url
+            if "custom_model_sha256" in body:
+                custom_digest = stt_models.valid_custom_sha256(body["custom_model_sha256"])
+                if custom_digest or body["custom_model_sha256"] == "":
+                    stt_section["custom_model_sha256"] = custom_digest
             if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
                 stt_section["transcribe_region"] = body["transcribe_region"]
             if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
@@ -761,6 +885,13 @@ async def api_stt_config(request: web.Request) -> web.Response:
         cfg = KiroCrewConfig.load()
 
     provider = cfg.stt.provider
+    # Who this response is being assembled for. The custom-model pair below is the
+    # owner's alone, on the same predicate that gates writing it, so the GET cannot
+    # serve a value the PUT would refuse. Local import for the reason given in
+    # `_deny_non_owner_stt_custom_model`.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    owner_request = is_owner_dashboard_request(request)
     # Every probe below touches the filesystem or imports an optional extra, so
     # none of them belongs on the event loop, and they ride one thread rather than
     # several: _stt_prereq_commands resolves ffmpeg and Homebrew, the
@@ -795,6 +926,21 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "enabled": cfg.stt.enabled,
             "provider": provider,
             "model": cfg.stt.model,
+            # The custom-model pair, so the panel can show what is configured and
+            # edit it. Served to the OWNER dashboard alone, the same bar that
+            # `_deny_non_owner_stt_custom_model` puts on writing them: serving them
+            # to a caller that may not write them would hand it the exact values to
+            # echo back, and nothing else does anything with a model URL it cannot
+            # change. Neither is a secret to the OWNER — a model URL is a public
+            # download and a sha256 is a digest they chose themselves.
+            **(
+                {
+                    "custom_model_url": cfg.stt.custom_model_url,
+                    "custom_model_sha256": cfg.stt.custom_model_sha256,
+                }
+                if owner_request
+                else {}
+            ),
             "available": available,
             "streaming": cfg.stt.streaming,
             "endpointing": cfg.stt.endpointing,
@@ -847,7 +993,7 @@ async def api_stt_status(request: web.Request) -> web.Response:
     resident right now, and the live progress of a transfer started by
     ``POST /api/stt/prepare``.
     """
-    denied = _deny_app_token(request, "stt.status")
+    denied = await _deny_app_token(request, "stt.status")
     if denied is not None:
         return denied
     cfg = KiroCrewConfig.load()
@@ -866,6 +1012,20 @@ async def api_stt_status(request: web.Request) -> web.Response:
             {"name": m.name, "size_bytes": m.size_bytes, "present": stt_models.is_present(m)}
             for m in stt_models.CATALOG
         ]
+        if model.name == stt_models.CUSTOM_MODEL:
+            # Appended rather than being a catalog row, because a custom model is
+            # configuration and not a published artifact. It still has to appear
+            # here: this list is what renders the picker's presence line and its
+            # "download it now" button, and without a row the panel would report the
+            # selected model as absent forever. Last, because the list is ordered by
+            # download size and this one has none to sort by.
+            catalog.append(
+                {
+                    "name": model.name,
+                    "size_bytes": model.size_bytes,
+                    "present": stt_models.is_present(model),
+                }
+            )
         ensure_ffmpeg_in_path()
         # Resolved on the same thread as the rest: it lists a store directory and,
         # when a candidate is there, hashes up to 80 MB to authenticate it.
@@ -925,10 +1085,12 @@ async def api_stt_prepare(request: web.Request) -> web.Response:
 
     An optional ``{"model": name}`` body fetches a model the operator has not
     saved yet, so the picker can offer the weights BEFORE the selection is
-    committed. Only catalog names reach the network: an unknown one resolves to
-    the default with a logged reason, the same as the configured value does.
+    committed. Only a catalog name or the configured custom model reaches the
+    network: an unknown one resolves to the default with a logged reason, the same
+    as the configured value does, and ``custom`` resolves to the URL and digest
+    already in config rather than to anything in this request.
     """
-    denied = _deny_app_token(request, "stt.prepare")
+    denied = await _deny_app_token(request, "stt.prepare")
     if denied is not None:
         return denied
     cfg = KiroCrewConfig.load()
@@ -982,7 +1144,7 @@ async def api_stt_ffmpeg_download(request: web.Request) -> web.Response:
     never looks anywhere else, and so a fetch there would spend the operator's
     bandwidth on a file nothing can use.
     """
-    denied = _deny_app_token(request, "stt.ffmpeg_download")
+    denied = await _deny_app_token(request, "stt.ffmpeg_download")
     if denied is not None:
         return denied
     auto_fetch = _ffmpeg_auto_fetch()
@@ -1016,7 +1178,7 @@ async def api_stt_prewarm(request: web.Request) -> web.Response:
     7.4 s) and the first decode after any load allocates its graph (154-528 ms), so
     both are paid while the user is still speaking instead of after.
     """
-    denied = _deny_app_token(request, "stt.prewarm")
+    denied = await _deny_app_token(request, "stt.prewarm")
     if denied is not None:
         return denied
     cfg = KiroCrewConfig.load()

@@ -53,8 +53,12 @@ from kiro_crew.stt.limits import DEFAULT_IDLE_EVICT_SECS as _STT_DEFAULT_IDLE_EV
 from kiro_crew.stt.limits import DEFAULT_PARTIAL_INTERVAL_MS as _STT_DEFAULT_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import DEFAULT_SILENCE_MS as _STT_DEFAULT_SILENCE_MS
 from kiro_crew.stt.models import CATALOG as _STT_CATALOG
+from kiro_crew.stt.models import CUSTOM_MODEL as _STT_CUSTOM_MODEL
 from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 from kiro_crew.stt.models import resolve as _resolve_stt_model
+from kiro_crew.stt.models import valid_custom_sha256 as _valid_stt_custom_sha256
+from kiro_crew.stt.models import valid_custom_url as _valid_stt_custom_url
+from kiro_crew.url_redaction import redact_model_url as _redact_stt_url
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -3622,8 +3626,10 @@ _RETIRED_STT_PROVIDERS = ("whisper", "mlx", "parakeet", "faster")
 
 #: Model names accepted for ``stt.model``, derived from the catalog that owns the
 #: download and its sha256 pin rather than restated here. Restating it is how the
-#: advertised menu comes to offer a model that cannot be fetched.
-_VALID_STT_MODELS = tuple(m.name for m in _STT_CATALOG)
+#: advertised menu comes to offer a model that cannot be fetched. ``custom`` is
+#: appended because it names no catalog row: it selects the URL and digest in
+#: ``custom_model_url`` / ``custom_model_sha256`` instead.
+_VALID_STT_MODELS = tuple(m.name for m in _STT_CATALOG) + (_STT_CUSTOM_MODEL,)
 
 
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
@@ -3688,20 +3694,82 @@ def _validated_stt_provider(value: object) -> str:
     return STT_PROVIDER_LOCAL
 
 
-def _validated_stt_model(value: object) -> str:
-    """Return the catalog name *value* selects, falling back to the default.
+def _validated_stt_model(
+    value: object,
+    *,
+    custom_url: object = "",
+    custom_sha256: object = "",
+) -> str:
+    """Return the model name *value* selects, falling back to the default.
 
     Canonicalized here rather than passed through, so every consumer sees a name
-    that names a real catalog entry: the model becomes a filename under the
-    models directory, and an arbitrary string must not reach a path. ``resolve``
-    also maps the names older configuration used onto their current entries, so a
-    stored ``turbo`` keeps the model it asked for instead of silently moving to
-    the default.
+    that names a real model: the name becomes a filename under the models
+    directory, and an arbitrary string must not reach a path. ``resolve`` also maps
+    the names older configuration used onto their current entries, so a stored
+    ``turbo`` keeps the model it asked for instead of silently moving to the
+    default.
+
+    ``custom`` is the one name ``resolve`` is NOT asked about, and that is
+    load-bearing rather than an optimisation: resolving it reads configuration for
+    the URL and digest, and this function runs *during* a configuration load. It is
+    validated from the sibling values the caller passes instead, which is also the
+    only place they are available before the dataclass exists. A half-configured
+    custom model degrades to the default with a warning, exactly like an unknown
+    name — a voice session must never be failed by the setting that selected it.
     """
     if not isinstance(value, str) or not value:
         logger.warning("Non-string STT model %r; using %r", value, _STT_DEFAULT_MODEL)
         return _STT_DEFAULT_MODEL
+    if value == _STT_CUSTOM_MODEL:
+        if _valid_stt_custom_url(custom_url) and _valid_stt_custom_sha256(custom_sha256):
+            return _STT_CUSTOM_MODEL
+        logger.warning(
+            "stt.model is %r but stt.custom_model_url (https) and "
+            "stt.custom_model_sha256 (64 hex characters) are not both set; using %r",
+            _STT_CUSTOM_MODEL,
+            _STT_DEFAULT_MODEL,
+        )
+        return _STT_DEFAULT_MODEL
     return _resolve_stt_model(value).name
+
+
+def _validated_stt_custom_url(value: object) -> str:
+    """Return a usable ``stt.custom_model_url``, else ``""``.
+
+    Stored as validated rather than raw so what is read back is what is in force —
+    the same contract the millisecond bounds keep. A rejected value is dropped, not
+    corrected: there is no near-miss reading of a model URL, and a value that is not
+    a well-formed https address is refused HERE so it can never reach a request (see
+    :func:`kiro_crew.stt.models.valid_custom_url`).
+
+    The rejected value is REDACTED before it is named. A `%r` here published a
+    credential-bearing URL — userinfo, a tokenised path, or a pre-signed query —
+    into the log, and rejection is precisely when that happened, so the diagnostic
+    was the leak. See :func:`kiro_crew.url_redaction.redact_model_url`.
+    """
+    url = _valid_stt_custom_url(value)
+    if not url and value:
+        logger.warning(
+            "Ignoring stt.custom_model_url %s: it must be a well-formed https:// URL",
+            _redact_stt_url(value),
+        )
+    return url
+
+
+def _validated_stt_custom_sha256(value: object) -> str:
+    """Return a usable ``stt.custom_model_sha256``, else ``""``.
+
+    The digest is the entire trust anchor for a custom model, so a malformed one is
+    dropped rather than stored: keeping it would make ``stt.model = "custom"`` look
+    configured while every download it started was guaranteed to fail verification.
+    """
+    digest = _valid_stt_custom_sha256(value)
+    if not digest and value:
+        logger.warning(
+            "Ignoring stt.custom_model_sha256 %r: it must be 64 hexadecimal characters",
+            value,
+        )
+    return digest
 
 
 _VALID_COMPLETION_KEEP = ("head", "tail", "both")
@@ -4022,8 +4090,41 @@ class SttConfig:
             "Which speech model the local provider downloads and runs. Bigger is "
             "more accurate and a longer first-time download: `tiny` on a machine "
             "short of memory, `base` for everyone, `small` when accents or jargon "
-            "are being misheard, `large-v3-turbo` for the best accuracy available.",
+            "are being misheard, `large-v3-turbo` for the best accuracy available. "
+            "`custom` runs the whisper.cpp model at `custom_model_url` instead, "
+            "verified against `custom_model_sha256`.",
             enum=list(_VALID_STT_MODELS),
+        ),
+    )
+    custom_model_url: str = field(
+        default="",
+        metadata=_meta(
+            "Custom Model URL",
+            "HTTPS URL of a whisper.cpp ggml model to run INSTEAD of a catalog "
+            "model, used when `model` is `custom`. The download is verified against "
+            "`custom_model_sha256` before anything is stored, and re-verified on "
+            "every load, so a mirror can serve the bytes but cannot substitute "
+            "them. Both this and the digest must be set; otherwise `custom` "
+            "degrades to the default model with a warning.",
+            # A model URL is a CREDENTIAL-BEARING field: `https://user:token@host/x`
+            # and a pre-signed `…?X-Amz-Signature=…` are both legitimate ways to
+            # serve a private model, and both survive `valid_custom_url`. Without
+            # this flag `_masked_config_dict` returns it verbatim from the
+            # un-owner-gated `GET /api/config/kirocrew`, which is exactly the leak
+            # the owner gate on the STT routes and `redact_model_url` exist to stop.
+            # The owner still reads the real value via owner-gated `GET /api/stt/status`.
+            sensitive=True,
+        ),
+    )
+    custom_model_sha256: str = field(
+        default="",
+        metadata=_meta(
+            "Custom Model SHA-256",
+            "The 64-character hex sha256 of the file at `custom_model_url`. This is "
+            "the whole trust anchor for a custom model: nothing is written to the "
+            "models directory unless the digest computed while downloading matches "
+            "it. Get it with `shasum -a 256 <file>` (or `Get-FileHash` on Windows) "
+            "from a copy you trust.",
         ),
     )
     language_code: str = field(

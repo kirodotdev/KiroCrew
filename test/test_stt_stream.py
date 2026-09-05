@@ -893,6 +893,8 @@ class TestConfigPutRoundTrip:
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
+        # The config endpoint resolves owner identity from `app["state"]`.
+        app["state"] = SimpleNamespace(owner_id="owner-1")
         app.router.add_get("/api/config/stt", handlers.api_stt_config)
         app.router.add_put("/api/config/stt", handlers.api_stt_config)
 
@@ -932,6 +934,8 @@ class TestConfigPutRoundTrip:
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
+        # The config endpoint resolves owner identity from `app["state"]`.
+        app["state"] = SimpleNamespace(owner_id="owner-1")
         app.router.add_put("/api/config/stt", handlers.api_stt_config)
 
         async with TestClient(TestServer(app)) as client:
@@ -971,6 +975,8 @@ class TestConfigPutRoundTrip:
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
+        # The config endpoint resolves owner identity from `app["state"]`.
+        app["state"] = SimpleNamespace(owner_id="owner-1")
         app.router.add_get("/api/config/stt", handlers.api_stt_config)
         app.router.add_put("/api/config/stt", handlers.api_stt_config)
 
@@ -1040,6 +1046,8 @@ class TestSttLanguageCodes:
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
+        # The config endpoint resolves owner identity from `app["state"]`.
+        app["state"] = SimpleNamespace(owner_id="owner-1")
         app.router.add_get("/api/config/stt", handlers.api_stt_config)
         app.router.add_put("/api/config/stt", handlers.api_stt_config)
 

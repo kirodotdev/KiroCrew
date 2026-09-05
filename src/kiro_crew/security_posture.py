@@ -1222,6 +1222,27 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "peer's bytes become this dashboard's transcript re-applies the "
         "credential + exfiltration-URL chain itself, before any broadcast.",
     ),
+    (
+        "Custom whisper model refusals",
+        "stt/models.py",
+        "The text of a refused custom-model download, which reaches TWO surfaces: a "
+        "`logger` line (durable, and served to the dashboard by `GET /api/logs`) and "
+        "the `error` field of `ModelStore.status`, which Settings > Voice reads back "
+        "over `GET /api/stt/status`. The URL is operator-configured and can carry a "
+        "credential in four places a bare `%r` published verbatim -- `userinfo`, a "
+        "tokenised path segment, and the signature of a pre-signed URL, which is a "
+        "bearer credential living in the query or the fragment -- and the refusal "
+        "paths are exactly where that bites, so the shared "
+        "`url_redaction.redact_model_url` rebuilds the value from `urlsplit` "
+        "components at the source, before either boundary. It runs only that "
+        "structural reduction, not the credential scanner: reducing to "
+        "`scheme://host[:port]` outright is stronger here than matching a pattern "
+        "over a string the far end chose, and it never raises, so a "
+        "`ModelDownloadError` stays a deliberate refusal instead of becoming a "
+        "traceback. The transport seam (`_urlopen`) re-raises every exception with "
+        "the address redacted too, because an exception's own text is not one of "
+        "this module's messages -- `http.client.InvalidURL` quotes the whole URL.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -1255,6 +1276,24 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # hygiene so a response echoing a credential or exfiltration URL cannot
         # leak into the log ring / /api/logs stream; not an egress boundary.
         "task_planner.py",
+        # Same shape, one layer earlier -- at configuration-read time rather than
+        # at a boundary: `_validated_stt_custom_url` redacts a rejected
+        # `stt.custom_model_url` before the warning that says the value was
+        # dropped names it. A rejected model URL is exactly the one that can carry
+        # `userinfo` or a pre-signed signature, so the diagnostic itself was the
+        # leak; scrubbing it keeps a credential out of the log ring / /api/logs
+        # stream. Not an egress boundary -- the validator stores `""` and returns
+        # nothing else, so no surface can read the raw value back. The refusals
+        # that DO reach a human are `stt/models.py`, the registered sink.
+        "config/sections.py",
+        # The shared model-URL redactor itself -- one pure function reducing a URL to
+        # `scheme://host[:port]`, with no caller and no output of its own. It exists
+        # because this reduction had been written four times and the copies had
+        # drifted apart on whether the PATH is a credential (it can be); the modules
+        # that CALL it are classified on their own -- `stt/models.py` above as a
+        # registered sink, `embeddings.py`, `cli_doctor.py` and `config/sections.py`
+        # here as log-side hygiene.
+        "url_redaction.py",
         # Capture-side, not egress: the per-session MCP report scrubs a server
         # name and a failing server's startup error as it RECORDS them, so a
         # credential never enters the accumulator at all. Deliberately earlier

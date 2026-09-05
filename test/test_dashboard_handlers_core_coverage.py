@@ -20,6 +20,7 @@ import json
 import os
 import platform
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -69,7 +70,16 @@ def _req(
     req.app = app if app is not None else {}
     req.match_info = match_info or {}
     claims: dict = {"user": user, "app": app_token}
+    # The auth predicates read a claim three ways -- ``.get``, ``in`` and ``[]`` --
+    # so all three answer from one dict instead of returning default MagicMocks.
+    # ``None`` means the claim is ABSENT (no auth middleware ran), which is a
+    # different thing from present-and-empty and is what
+    # ``is_owner_dashboard_request`` distinguishes, so it is omitted from the two
+    # membership views while ``.get`` still answers None for it.
+    published = {key: value for key, value in claims.items() if value is not None}
     req.get = lambda key, default=None: claims.get(key, default)
+    req.__contains__.side_effect = lambda key: key in published
+    req.__getitem__.side_effect = lambda key: published[key]
     return req
 
 
@@ -625,6 +635,10 @@ class TestPipInstallChannel:
 
 def _stt_app() -> web.Application:
     app = web.Application()
+    # The GET resolves whether the caller is the owner, which reads
+    # ``app["state"].owner_id``. A TestServer request carries no auth claim, so it
+    # is never the owner -- the state only has to exist.
+    app["state"] = SimpleNamespace(owner_id="owner-1")
     app.router.add_route("*", "/api/config/stt", core_mod.api_stt_config)
     return app
 
@@ -881,6 +895,302 @@ class TestSttConfigEndpoint:
         assert body["silence_ms"] >= MIN_SILENCE_MS
         assert isinstance(body["partial_interval_ms"], int)
         assert isinstance(body["idle_evict_secs"], int)
+
+
+class TestSttConfigCustomModelBoundary:
+    """``PUT /api/config/stt``: only the OWNER may configure a custom model.
+
+    ``stt.status`` / ``stt.prepare`` / ``stt.prewarm`` are denied to an app token
+    outright because they fetch weights and load them into the gateway. The
+    custom-model pair arrives at the same outcome by a longer road: it names a URL
+    the gateway will fetch, verify against a digest THE SAME CALLER supplied, and
+    load — and the transcription surfaces that trigger the load are deliberately
+    app-reachable. So a caller able to write these three fields obtains the
+    download the other three refuse it, aimed wherever it likes.
+
+    "Not an app token" is the wrong bar, and pinning that is the point of the
+    non-owner cases below: an allow-listed messaging user who runs ``!dashboard``
+    is minted a dashboard session whose app claim is ``""`` exactly like the
+    operator's. The gate is ``is_owner_dashboard_request``.
+
+    The refusal is per-FIELD, not the whole endpoint: any caller may legitimately
+    hold ``config.stt`` for the language and the toggles. Both halves of that are
+    pinned here, because a gate that also blocked the ordinary fields would be a
+    silent regression for shipped apps and for a second dashboard session alike.
+    """
+
+    _URL = "https://models.example/ggml-my-model.bin"
+    _DIGEST = "a" * 64
+    _OWNER = "owner-1"
+    _OTHER_DASHBOARD = "messaging-user"
+
+    @pytest.fixture(autouse=True)
+    def _quiet_probes(self, monkeypatch):
+        monkeypatch.setattr(core_mod, "_stt_prereq_commands", lambda _p: [])
+        monkeypatch.setattr(core_mod, "is_available", lambda _cfg: False)
+
+    @classmethod
+    def _identity(cls, *, app_token: str | None = "", user: str | None = None) -> dict:
+        """The request kwargs for ONE caller identity, defaulting to the owner.
+
+        ``is_owner_dashboard_request`` compares the caller subject against
+        ``request.app["state"].owner_id``, so the state carries a configured owner
+        and every case says who is calling: the owner, another dashboard session
+        (same empty app claim, different subject), or an app token.
+        """
+        return {
+            "app": {"state": SimpleNamespace(owner_id=cls._OWNER)},
+            "user": cls._OWNER if user is None else user,
+            "app_token": app_token,
+        }
+
+    @classmethod
+    def _put(cls, body: object, **identity) -> web.Request:
+        """A ``PUT`` carrying *body* and one explicit caller identity.
+
+        The handler is called directly rather than through ``TestClient``: the app
+        claim and the caller subject are published by auth middleware that a bare
+        test server does not run, and they are the whole input under test here.
+        """
+        req = _json_req(body, **cls._identity(**identity))
+        req.method = "PUT"
+        return req
+
+    @classmethod
+    def _get(cls, **identity) -> web.Request:
+        req = _req(**cls._identity(**identity))
+        req.method = "GET"
+        return req
+
+    @staticmethod
+    def _stored(path: Path) -> dict:
+        return json.loads(path.read_text(encoding="utf-8")).get("stt", {})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"model": stt_models.CUSTOM_MODEL},
+            {"custom_model_url": _URL},
+            {"custom_model_sha256": _DIGEST},
+            {
+                "model": stt_models.CUSTOM_MODEL,
+                "custom_model_url": _URL,
+                "custom_model_sha256": _DIGEST,
+            },
+        ],
+    )
+    async def test_an_app_token_cannot_configure_a_custom_model(
+        self, seeded_config, fake_sel, body: dict
+    ) -> None:
+        resp = await core_mod.api_stt_config(self._put(body, app_token="meetings"))
+
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "owner_only"
+        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
+        # Refused BEFORE the write, so nothing from the body reached the file.
+        assert self._stored(seeded_config) == {}
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_audit_does_not_run_sel_on_the_event_loop(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """The audit's SEL write lands in a worker thread, not on the loop.
+
+        The first ``sel()`` of a gateway's life CONSTRUCTS the singleton, and that
+        constructor reads the HMAC key, the chain tip and the live-file identity
+        from disk. Called straight from this ``async def`` handler that file I/O
+        sits on the event loop, so one refused PUT on a fresh gateway stalls every
+        other request and heartbeat behind it.
+
+        Pinned by thread identity rather than by timing: a wall-clock assertion
+        would be flaky, whereas "which thread was the recorder called on" is the
+        exact property ``asyncio.to_thread`` provides and a direct call cannot.
+        """
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+        fake_sel.log_api_access.side_effect = lambda **_kw: seen.append(threading.get_ident())
+
+        resp = await core_mod.api_stt_config(
+            self._put({"custom_model_url": self._URL}, user=self._OTHER_DASHBOARD)
+        )
+
+        assert resp.status == 403
+        # The audit still happened -- moving it off the loop must not lose it.
+        assert seen, "the refusal was not audited"
+        assert seen[0] != loop_thread
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"model": stt_models.CUSTOM_MODEL},
+            {"custom_model_url": _URL},
+            {"custom_model_sha256": _DIGEST},
+            {
+                "model": stt_models.CUSTOM_MODEL,
+                "custom_model_url": _URL,
+                "custom_model_sha256": _DIGEST,
+            },
+        ],
+    )
+    async def test_a_non_owner_dashboard_token_cannot_configure_a_custom_model(
+        self, seeded_config, fake_sel, body: dict
+    ) -> None:
+        """The case an "is it an app token?" check lets through.
+
+        An allow-listed messaging user who runs ``!dashboard`` receives a dashboard
+        token: app claim ``""``, subject their own, not the owner's. They may not
+        aim the gateway's downloader, so the empty app claim alone must not clear
+        this gate.
+        """
+        resp = await core_mod.api_stt_config(self._put(body, user=self._OTHER_DASHBOARD))
+
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "owner_only"
+        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
+        assert self._stored(seeded_config) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_request_with_no_app_claim_at_all_is_refused(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """Fail closed: an absent claim means no auth middleware published one, so
+        it is refused alongside a non-empty one rather than read as the owner."""
+        resp = await core_mod.api_stt_config(
+            self._put({"custom_model_url": self._URL}, app_token=None)
+        )
+        assert resp.status == 403
+        assert self._stored(seeded_config) == {}
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_still_writes_the_ordinary_stt_fields(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """The other half of the contract. This endpoint is app-reachable, and only
+        the custom-model fields are withheld."""
+        resp = await core_mod.api_stt_config(
+            self._put({"language_code": "fr-FR", "endpointing": False}, app_token="meetings")
+        )
+
+        assert resp.status == 200
+        stored = self._stored(seeded_config)
+        assert stored["language_code"] == "fr-FR"
+        assert stored["endpointing"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_non_owner_dashboard_token_still_writes_the_ordinary_stt_fields(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """Narrowing the custom-model pair to the owner must not narrow the rest:
+        a second dashboard session keeps its language and toggles."""
+        resp = await core_mod.api_stt_config(
+            self._put({"language_code": "de-DE", "streaming": False}, user=self._OTHER_DASHBOARD)
+        )
+
+        assert resp.status == 200
+        stored = self._stored(seeded_config)
+        assert stored["language_code"] == "de-DE"
+        assert stored["streaming"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_cannot_write_back_a_custom_selection_already_in_force(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """Refused on PRESENCE, not on whether it changes anything.
+
+        An earlier version allowed this as a harmless no-op. It is not one: the
+        handler reads its config BEFORE taking the write lock, so "custom is
+        already active" can be stale by the time the write lands — the owner
+        switches to a catalog model in between and the app's write puts custom
+        back. Refusing every `model: custom` from a non-owner closes that race.
+        """
+        _seed_stt(
+            seeded_config,
+            model=stt_models.CUSTOM_MODEL,
+            custom_model_url=self._URL,
+            custom_model_sha256=self._DIGEST,
+        )
+
+        resp = await core_mod.api_stt_config(
+            self._put({"model": stt_models.CUSTOM_MODEL}, app_token="meetings")
+        )
+
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            ["custom_model_url"],
+            "custom_model_url",
+            7,
+            None,
+        ],
+        ids=["array", "string", "number", "null"],
+    )
+    async def test_a_non_object_body_is_refused_before_any_field_is_read(
+        self, body, seeded_config, fake_sel
+    ) -> None:
+        """400, not 500, on every JSON body that is not an object.
+
+        The array is the one that bites: it satisfies every `"field" in body`
+        membership test and then raises TypeError on the subscript, so the
+        endpoint answered a malformed request with a 500 — from inside the
+        security gate that runs first. The scalars reach the same subscript by a
+        shorter road. Refused once, before any field is read.
+        """
+        resp = await core_mod.api_stt_config(self._put(body))
+
+        assert resp.status == 400
+        assert self._stored(seeded_config) == {}
+
+    @pytest.mark.asyncio
+    async def test_the_owner_configures_a_custom_model_normally(self, seeded_config) -> None:
+        """The capability itself is unchanged for the operator; only its caller is
+        narrowed. Without this the gates above would pass over a dead feature."""
+        resp = await core_mod.api_stt_config(
+            self._put(
+                {
+                    "model": stt_models.CUSTOM_MODEL,
+                    "custom_model_url": self._URL,
+                    "custom_model_sha256": self._DIGEST,
+                }
+            )
+        )
+
+        assert resp.status == 200
+        stored = self._stored(seeded_config)
+        assert stored["model"] == stt_models.CUSTOM_MODEL
+        assert stored["custom_model_url"] == self._URL
+        assert stored["custom_model_sha256"] == self._DIGEST
+
+    @pytest.mark.asyncio
+    async def test_the_get_serves_the_pair_to_the_owner_alone(self, seeded_config) -> None:
+        """Serving the pair to a caller that may not write it would hand it the
+        exact values to echo back, and nothing but the owner does anything with a
+        model URL it cannot change."""
+        _seed_stt(
+            seeded_config,
+            model=stt_models.CUSTOM_MODEL,
+            custom_model_url=self._URL,
+            custom_model_sha256=self._DIGEST,
+        )
+
+        owner = json.loads((await core_mod.api_stt_config(self._get())).body)
+        assert owner["custom_model_url"] == self._URL
+        assert owner["custom_model_sha256"] == self._DIGEST
+
+        for withheld in (
+            self._get(user=self._OTHER_DASHBOARD),
+            self._get(app_token="meetings"),
+            self._get(app_token=None),
+        ):
+            body = json.loads((await core_mod.api_stt_config(withheld)).body)
+            assert "custom_model_url" not in body
+            assert "custom_model_sha256" not in body
+            # Still a usable settings payload for everything the caller IS entitled to.
+            assert body["language_code"] == owner["language_code"]
 
 
 # ── STT status / prepare / prewarm ──────────────────────────────────────

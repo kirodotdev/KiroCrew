@@ -54,6 +54,8 @@ interface SttConfig {
   dictation_panel?: boolean
   transcribe_region?: string
   transcribe_profile?: string
+  custom_model_url?: string
+  custom_model_sha256?: string
   language_code?: string
   providers?: string[]
   streaming_providers?: string[]
@@ -143,6 +145,18 @@ const DOWNLOAD_STEP_FAILED = 'failed'
 const FFMPEG_STAGE_RUNNING = 'downloading'
 const FFMPEG_STAGE_FAILED = 'failed'
 const FFMPEG_AUTO_FETCH_AVAILABLE = 'available'
+
+/**
+ * The `stt.model` value that selects the user's own weights instead of a catalog
+ * row, mirroring `stt.models.CUSTOM_MODEL`.
+ *
+ * A literal here rather than a served field, unlike the catalog itself: the
+ * catalog's CONTENTS are the backend's to change, but this sentinel is a wire
+ * constant on the same footing as `DOWNLOAD_STEP_RUNNING` above. The option it
+ * adds is safe to hardcode for the same reason — it names no artifact, so it
+ * cannot go stale against what the gateway can fetch.
+ */
+const CUSTOM_MODEL = 'custom'
 
 /**
  * How often the status endpoint is re-read while a model transfer runs.
@@ -410,6 +424,21 @@ export default function SttSettings({ cardIndex }: {
   const [err, setErr] = useState('')
   const [localProfile, setLocalProfile] = useState('')
   const [localRegion, setLocalRegion] = useState('')
+  const [localCustomUrl, setLocalCustomUrl] = useState('')
+  const [localCustomSha, setLocalCustomSha] = useState('')
+  // Whether the custom URL/digest rows are open. Local state and not derived from
+  // `stt.model`, because the two cannot be set in one step: the gateway degrades a
+  // `custom` selection with no usable pair back to the default model, so the select
+  // snaps back to `base` and the rows the user needs would close under them.
+  const [customOpen, setCustomOpen] = useState(false)
+  // Whether a custom model is what the user currently WANTS, which is a different
+  // question from `stt.model` and cannot be read off it: a `custom` selection with
+  // an unusable pair is served back as the default model, so the one field that
+  // would say "custom" says "base" in exactly the state that needs explaining.
+  // Distinct from `customOpen` too — the rows stay open after a switch back to a
+  // catalog model so configured weights can be corrected or cleared, but the
+  // intent behind them does not survive that switch.
+  const [customIntended, setCustomIntended] = useState(false)
 
   // Microphone input-device picker (browser-local; persisted in localStorage,
   // applied via getUserMedia constraints). Device labels are blank until the
@@ -466,13 +495,35 @@ export default function SttSettings({ cardIndex }: {
       initRef.current = true
       setLocalProfile(sttQ.data.transcribe_profile || '')
       setLocalRegion(sttQ.data.transcribe_region || '')
+      setLocalCustomUrl(sttQ.data.custom_model_url || '')
+      setLocalCustomSha(sttQ.data.custom_model_sha256 || '')
+      // Already-configured weights keep their rows open, so what is in force is
+      // visible without hunting for the option that reveals it.
+      if (sttQ.data.custom_model_url || sttQ.data.model === CUSTOM_MODEL) setCustomOpen(true)
+      // Intent survives a reload in exactly two shapes the served config can prove:
+      // custom is in force, or HALF a pair is stored. A half pair is a custom model
+      // someone started and did not finish, which is the state whose selection
+      // silently degraded. A COMPLETE pair with a catalog model in force is NOT
+      // intent — that is a deliberate switch back, and telling that user "both are
+      // needed" would be false.
+      const halfPair =
+        Boolean(sttQ.data.custom_model_url) !== Boolean(sttQ.data.custom_model_sha256)
+      if (sttQ.data.model === CUSTOM_MODEL || halfPair) setCustomIntended(true)
     }
   }, [sttQ.data])
 
   const mut = useMutation({
     mutationFn: (patch: Partial<SttConfig>) => api.saveSttConfig(patch),
-    onSuccess: data => {
+    onSuccess: (data, patch) => {
       qc.setQueryData(['sttConfig'], data)
+      // A custom URL or digest that does not validate is dropped by the backend
+      // and answered without it, so the row has to be re-read from that answer
+      // or it keeps displaying a value that is not in force -- and a filled row
+      // is also what silences the incomplete-pair line below.
+      // Only the rows this patch carried are resynced: a sibling row the user is
+      // still typing into must not be cleared by another row's save.
+      if ('custom_model_url' in patch) setLocalCustomUrl(data.custom_model_url || '')
+      if ('custom_model_sha256' in patch) setLocalCustomSha(data.custom_model_sha256 || '')
       // Provider, model and enablement all change what the availability probe
       // answers, so the status card would otherwise keep describing the previous
       // selection until something else happened to refetch it.
@@ -651,17 +702,71 @@ export default function SttSettings({ cardIndex }: {
                 the sizes and the set of models are the backend's to change, and a
                 hardcoded copy here would offer a model the gateway cannot load.
                 The size rides in the option label so the download cost is visible
-                BEFORE the click that commits to it. */}
+                BEFORE the click that commits to it. `custom` is appended because
+                it is not a catalog artifact — it selects the URL and digest in the
+                two rows below. */}
             <SettingsSelect
               label={i18nT('pages.settings.sttSettings.model')}
               description={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')}
               value={stt.model}
-              options={models.map(m => m.name)}
-              optionLabels={models.map(m => i18nT('pages.settings.sttSettings.model_option', { name: m.name, size: fmtBytes(m.size_bytes) }))}
-              onChange={v => set({ model: v })}
+              options={[...models.filter(m => m.name !== CUSTOM_MODEL).map(m => m.name), CUSTOM_MODEL]}
+              optionLabels={[
+                ...models
+                  .filter(m => m.name !== CUSTOM_MODEL)
+                  .map(m => i18nT('pages.settings.sttSettings.model_option', { name: m.name, size: fmtBytes(m.size_bytes) })),
+                i18nT('pages.settings.sttSettings.model_option_custom'),
+              ]}
+              onChange={v => {
+                // Opening the rows is not undone by picking a catalog model again:
+                // configured weights stay visible so they can be corrected or
+                // cleared rather than silently remaining in config.
+                if (v === CUSTOM_MODEL) setCustomOpen(true)
+                setCustomIntended(v === CUSTOM_MODEL)
+                set({ model: v })
+              }}
               disabled={saving}
               configKey="stt.model"
             />
+            {customOpen && (
+              <>
+                {/* Committed on blur, like the AWS rows, because both halves have to
+                    land before `custom` resolves to anything: saving per keystroke
+                    would write a URL with no digest on the way to a complete pair. */}
+                <SettingsInput
+                  label={i18nT('pages.settings.sttSettings.custom_model_url')}
+                  description={i18nT('pages.settings.sttSettings.https_url_of_a_whisper_cpp_ggml_model_to_run_ins')}
+                  value={localCustomUrl}
+                  onChange={setLocalCustomUrl}
+                  onBlur={() => set({ custom_model_url: localCustomUrl.trim() })}
+                  placeholder="https://example.com/ggml-my-model.bin"
+                  disabled={saving}
+                  configKey="stt.custom_model_url"
+                />
+                <SettingsInput
+                  label={i18nT('pages.settings.sttSettings.custom_model_sha256')}
+                  description={i18nT('pages.settings.sttSettings.the_64_character_hex_sha256_of_that_file_nothing')}
+                  value={localCustomSha}
+                  onChange={setLocalCustomSha}
+                  onBlur={() => set({ custom_model_sha256: localCustomSha.trim() })}
+                  disabled={saving}
+                  configKey="stt.custom_model_sha256"
+                />
+                {/* Fires exactly when a custom model is what the user wants and the
+                    pair cannot deliver one. The earlier condition — a non-custom
+                    `stt.model` plus EITHER field filled — was backwards twice: it
+                    stayed silent on the empty first-run selection, which is the one
+                    case it exists to explain, and it asserted "both are needed"
+                    over a COMPLETE pair whenever a catalog model was reselected,
+                    where it was simply untrue and persisted across reloads.
+                    Trimmed, because trimmed is what `set` sends on blur, so
+                    whitespace is not a filled field. */}
+                {customIntended && (!localCustomUrl.trim() || !localCustomSha.trim()) && (
+                  <p className="text-[12px] text-muted -mt-1 mb-1">
+                    {i18nT('pages.settings.sttSettings.custom_model_incomplete')}
+                  </p>
+                )}
+              </>
+            )}
             {downloading && download ? (
               <ModelDownloadProgress download={download} />
             ) : selectedModel?.present ? (
@@ -674,7 +779,12 @@ export default function SttSettings({ cardIndex }: {
               // multi-hundred-megabyte transfer is indistinguishable from a hang.
               <div className="-mt-1 mb-1 flex flex-col gap-1.5 items-start">
                 <p className="text-[12px] text-muted">
-                  {i18nT('pages.settings.sttSettings.model_download_prompt', { size: fmtBytes(selectedModel.size_bytes) })}
+                  {/* A custom model has no published size, so the version of this
+                      sentence that quotes one would render "0 B" and read as a
+                      free download. */}
+                  {selectedModel.size_bytes > 0
+                    ? i18nT('pages.settings.sttSettings.model_download_prompt', { size: fmtBytes(selectedModel.size_bytes) })
+                    : i18nT('pages.settings.sttSettings.model_download_prompt_unsized')}
                 </p>
                 <Btn onClick={() => prepareMut.mutate(selectedModel.name)} disabled={prepareMut.isPending}>
                   <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_model')}

@@ -55,6 +55,7 @@ from kiro_crew.config.loader import config_path
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.security import is_sensitive_path
+from kiro_crew.url_redaction import redact_model_url
 
 logger = logging.getLogger(__name__)
 
@@ -2023,23 +2024,6 @@ def _resolve_model_url() -> str:
             "the override and using the CDN default",
         )
     return _DEFAULT_MODEL_URL
-
-
-def redact_model_url(url: str) -> str:
-    """Return *url* safe for logs/terminal: strip userinfo, query, fragment.
-
-    A private-mirror override may carry credentials in userinfo or a signed
-    query string (e.g. presigned URLs). Only scheme + host + path are ever
-    logged or printed; the full URL is used exclusively for the request.
-    """
-    try:
-        parts = urllib.parse.urlsplit(url)
-        host = parts.hostname or ""
-        if parts.port:
-            host = f"{host}:{parts.port}"
-        return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
-    except Exception:
-        return "<unparseable-url>"
 
 
 class ModelDownloadManager:

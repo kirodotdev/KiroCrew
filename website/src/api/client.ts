@@ -2932,6 +2932,8 @@ export const api = {
     dictation_panel?: boolean
     transcribe_region?: string
     transcribe_profile?: string
+    custom_model_url?: string
+    custom_model_sha256?: string
     language_code?: string
   }) => put('/api/config/stt', body).then(j),
   // Recogniser availability plus the model catalog and the progress of any

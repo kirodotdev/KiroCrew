@@ -1713,6 +1713,26 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.custom-model-sha-256",
+    "label": "Custom model SHA-256",
+    "labelKey": "pages.settings.sttSettings.custom_model_sha256",
+    "description": "The 64-character hex SHA-256 of that file. Nothing is stored unless the download matches it, and it is checked again on every load.",
+    "tab": "voice",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "stt.custom_model_sha256"
+  },
+  {
+    "id": "voice.custom-model-url",
+    "label": "Custom model URL",
+    "labelKey": "pages.settings.sttSettings.custom_model_url",
+    "description": "HTTPS URL of a whisper.cpp ggml model to run instead of one from the list above.",
+    "tab": "voice",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "stt.custom_model_url"
+  },
+  {
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
     "labelKey": "pages.settings.sttSettings.dictation_panel",
