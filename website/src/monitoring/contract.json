@@ -8,7 +8,12 @@
     "maxProviderErrors": { "minimum": 1, "maximum": 20, "defaultValue": 3 },
     "wakeInstructions": { "maximumLength": 1000 }
   },
-  "pullRequestMonitorKinds": ["github_pull_request"],
+  "pullRequestMonitorKinds": [
+    "azure_devops_pull_request",
+    "bitbucket_pull_request",
+    "github_pull_request",
+    "gitlab_merge_request"
+  ],
   "enums": {
     "wakeDelivery": ["dispatched", "busy", "unavailable"],
     "lastCompletionDisposition": ["success", "failure", "cancellation", "approval_stall"],

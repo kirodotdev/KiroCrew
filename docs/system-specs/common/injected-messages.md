@@ -53,7 +53,7 @@ Discord pass those exact bytes through:
 
 ```
 [Monitor wake]
-Monitor <id>: GitHub pull request <target>; objective: review_ready.
+Monitor <id>: pull request <target>; objective: review_ready.
 Fingerprint: <fingerprint>. Classification: <reason code>.
 Head: <revision>. Changed: <allowlisted canonical facts>.
 Next action: <bounded instructions>.

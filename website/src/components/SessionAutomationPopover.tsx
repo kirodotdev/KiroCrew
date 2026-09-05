@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Activity, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
 import { useIsFetching, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api, type MonitorWrite } from '../api/client'
+import { api, ApiError, type MonitorWrite } from '../api/client'
 import {
   deriveAutomationStatus,
   MONITOR_STATUS_KEYS,
+  normalizePullRequestMonitorTarget,
   normalizeAutomationRecord,
   STRUCTURED_MONITOR_DEFAULTS,
   STRUCTURED_MONITOR_LIMITS,
@@ -60,6 +61,29 @@ type Mutation = ({ captured: AutomationRecord | null; slotKey: string; editorKey
   | { action: 'clear'; id: string }
   | { action: 'restart'; id: string }
 ))
+
+function monitorRequestError(failure: unknown): string {
+  if (!(failure instanceof ApiError) || failure.status !== 400) {
+    return i18nT('components.sessionAutomationPopover.request_failed')
+  }
+  let code = ''
+  try {
+    const body = JSON.parse(failure.body) as unknown
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      const rawCode = (body as Record<string, unknown>).code
+      code = typeof rawCode === 'string' ? rawCode : ''
+    }
+  } catch {
+    return i18nT('components.sessionAutomationPopover.request_failed')
+  }
+  if (code === 'gitlab_host_not_allowed') {
+    return i18nT('components.sessionAutomationPopover.gitlab_host_not_allowed')
+  }
+  if (code === 'invalid_pull_request_url') {
+    return i18nT('components.sessionAutomationPopover.invalid_pull_request_url')
+  }
+  return i18nT('components.sessionAutomationPopover.request_failed')
+}
 
 const defaults = (): Draft => ({
   target: '',
@@ -209,9 +233,9 @@ export default function SessionAutomationPopover({
     },
     onSuccess: (result, request) => {
       const next = normalizeAutomationRecord(result.monitor)
-      if (request.captured !== null
-        && automationRef.current === request.captured
-        && next?.kind === 'structured_monitor') {
+      const current = automationRef.current
+      const responseIsCurrent = request.captured !== null && current === request.captured
+      if (responseIsCurrent && next?.kind === 'structured_monitor') {
         onChange(next)
       }
       // Refetch remains authoritative. Only an existing captured identity can
@@ -230,11 +254,11 @@ export default function SessionAutomationPopover({
       })
       if (slotKeyRef.current === request.slotKey) onOpenChange(false)
     },
-    onError: (_error, request) => {
+    onError: (failure, request) => {
       setErrorsByEditor(current => ({
         ...current,
         [request.editorKey]: {
-          request: i18nT('components.sessionAutomationPopover.request_failed'),
+          request: monitorRequestError(failure),
         },
       }))
     },
@@ -260,6 +284,7 @@ export default function SessionAutomationPopover({
   const busy = mutation.isPending && mutation.variables?.editorKey === editorKey
   const draft = editor.draft
   const hasDirtyFields = Object.keys(editor.dirty).length > 0
+  const editedMonitor = monitor
 
   function requestOpenChange(nextOpen: boolean) {
     if (!nextOpen && busy) return
@@ -287,8 +312,8 @@ export default function SessionAutomationPopover({
 
   function writeMonitor() {
     if (sessionModeUnsupported) return
-    if (!monitor && !creationReady) return
-    if (monitor && !hasDirtyFields) return
+    if (!editedMonitor && !creationReady) return
+    if (editedMonitor && !hasDirtyFields) return
     const cadence = boundedInteger(draft.cadence, STRUCTURED_MONITOR_LIMITS.cadenceSecs)
     const runtime = boundedInteger(draft.runtime, STRUCTURED_MONITOR_LIMITS.maxRuntimeSecs)
     const turns = boundedInteger(draft.turns, STRUCTURED_MONITOR_LIMITS.maxAgentTurns)
@@ -298,13 +323,22 @@ export default function SessionAutomationPopover({
       STRUCTURED_MONITOR_LIMITS.maxProviderErrors,
     )
     const nextErrors: FormErrors = {}
-    const validates = (field: keyof Draft) => !monitor || !!editor.dirty[field]
+    const validates = (field: keyof Draft) => !editedMonitor || !!editor.dirty[field]
     const rangeError = (limits: { minimum: number; maximum: number }) => i18nT(
       'components.sessionAutomationPopover.limit_range',
       { min: fmtNumber(limits.minimum), max: fmtNumber(limits.maximum) },
     )
     if (validates('target') && !draft.target.trim()) {
       nextErrors.target = i18nT('components.sessionAutomationPopover.enter_pull_request_url')
+    }
+    const normalizedTarget = normalizePullRequestMonitorTarget(draft.target.trim())
+    if (validates('target') && draft.target.trim() && !normalizedTarget) {
+      nextErrors.target = i18nT('components.sessionAutomationPopover.invalid_pull_request_url')
+    } else if (validates('target') && editedMonitor && normalizedTarget
+      && normalizedTarget.kind !== editedMonitor.monitorKind) {
+      nextErrors.target = i18nT(
+        'components.sessionAutomationPopover.provider_change_requires_new_monitor',
+      )
     }
     if (validates('cadence') && cadence === null) {
       nextErrors.cadence = rangeError(STRUCTURED_MONITOR_LIMITS.cadenceSecs)
@@ -336,21 +370,21 @@ export default function SessionAutomationPopover({
       return
     }
     setErrorsByEditor(current => ({ ...current, [editorKey]: {} }))
-    const createPayload = {
-      kind: 'github_pull_request' as const,
-      objective: 'review_ready' as const,
-      target: draft.target.trim(),
-      cadence_secs: cadence!,
-      max_runtime_secs: runtime!,
-      max_agent_turns: turns!,
-      max_tokens: tokens!,
-      max_provider_errors: providerErrors!,
-      wake_instructions: draft.wakeInstructions.trim(),
-    }
-    if (!monitor) {
+    if (!editedMonitor) {
       mutation.mutate({
         action: 'create',
-        payload: { ...createPayload, slot_key: slotKey },
+        payload: {
+          slot_key: slotKey,
+          kind: normalizedTarget!.kind,
+          objective: 'review_ready',
+          target: normalizedTarget!.target,
+          cadence_secs: cadence!,
+          max_runtime_secs: runtime!,
+          max_agent_turns: turns!,
+          max_tokens: tokens!,
+          max_provider_errors: providerErrors!,
+          wake_instructions: draft.wakeInstructions.trim(),
+        },
         captured: automation,
         slotKey,
         editorKey,
@@ -358,19 +392,19 @@ export default function SessionAutomationPopover({
       return
     }
     const payload: MonitorWrite = {}
-    if (editor.dirty.target) payload.target = createPayload.target
-    if (editor.dirty.cadence) payload.cadence_secs = createPayload.cadence_secs
-    if (editor.dirty.runtime) payload.max_runtime_secs = createPayload.max_runtime_secs
-    if (editor.dirty.turns) payload.max_agent_turns = createPayload.max_agent_turns
-    if (editor.dirty.tokens) payload.max_tokens = createPayload.max_tokens
+    if (editor.dirty.target) payload.target = normalizedTarget!.target
+    if (editor.dirty.cadence) payload.cadence_secs = cadence!
+    if (editor.dirty.runtime) payload.max_runtime_secs = runtime!
+    if (editor.dirty.turns) payload.max_agent_turns = turns!
+    if (editor.dirty.tokens) payload.max_tokens = tokens!
     if (editor.dirty.providerErrors) {
-      payload.max_provider_errors = createPayload.max_provider_errors
+      payload.max_provider_errors = providerErrors!
     }
     if (editor.dirty.wakeInstructions) {
-      payload.wake_instructions = createPayload.wake_instructions
+      payload.wake_instructions = draft.wakeInstructions.trim()
     }
     mutation.mutate({
-      action: 'update', id: monitor.id, payload, captured: automation, slotKey, editorKey,
+      action: 'update', id: editedMonitor.id, payload, captured: automation, slotKey, editorKey,
     })
   }
 
@@ -526,8 +560,11 @@ export default function SessionAutomationPopover({
                 placeholder={i18nT('components.sessionAutomationPopover.pull_request_url_placeholder')}
                 aria-labelledby={`${id}-target-label`}
                 aria-invalid={!!errors.target}
-                aria-describedby={errors.target ? `${id}-target-error` : undefined}
+                aria-describedby={`${id}-target-help${errors.target ? ` ${id}-target-error` : ''}`}
               />
+              <p id={`${id}-target-help`} className="text-[11px] text-muted">
+                {i18nT('components.sessionAutomationPopover.supported_source_providers')}
+              </p>
               <FieldError id={`${id}-target-error`} message={errors.target} />
             </div>
             <div className="grid grid-cols-1 min-[390px]:grid-cols-2 gap-3">

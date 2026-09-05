@@ -755,6 +755,8 @@ async def _structured_monitor_update(
     state: Any, svc: Any, loop: Any, patch: dict[str, Any], *, initiator: str = ""
 ) -> str:
     from kiro_crew.autonudge_authz import authorize_and_update_monitor
+    from kiro_crew.dashboard.handlers.source_providers import ensure_gitlab_hosts_loaded
+    from kiro_crew.monitoring.targets import normalize_pull_request_target
 
     # ``banner`` is a message-loop-only field (a structured monitor shows its
     # objective as the transcript row), so it belongs with the legacy fields the
@@ -771,7 +773,15 @@ async def _structured_monitor_update(
         raise _DirectiveDenied("No structured monitor on this session to update.")
     structured: dict[str, Any] = {}
     if "target" in patch:
-        structured["target"] = str(patch["target"])
+        try:
+            gitlab_hosts = await ensure_gitlab_hosts_loaded()
+            structured["target"] = normalize_pull_request_target(
+                monitor_state.kind,
+                str(patch["target"]),
+                gitlab_hosts=tuple(gitlab_hosts),
+            )
+        except ValueError as exc:
+            raise _DirectiveDenied(str(exc)) from exc
     if "objective" in patch:
         structured["objective"] = str(patch["objective"])
     if "idle_secs" in patch:

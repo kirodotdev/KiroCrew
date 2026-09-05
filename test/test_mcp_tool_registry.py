@@ -70,7 +70,7 @@ def test_legacy_monitor_descriptors_route_structured_watches_correctly() -> None
     start = descriptors["monitor_start"].lower()
     assert "unsupported" in start
     assert "monitor_watch" in start
-    assert "github" in start
+    assert "supported pull-request" in start
 
     stop = descriptors["autonudge_stop"].lower()
     assert "structured" in stop

@@ -38,6 +38,18 @@ from dataclasses import dataclass
 #: The structured monitor a caller arms through ``monitor_watch``. Its subject is a
 #: public GitHub pull request and its objective is review readiness.
 GITHUB_PULL_REQUEST = "github_pull_request"
+GITLAB_MERGE_REQUEST = "gitlab_merge_request"
+AZURE_DEVOPS_PULL_REQUEST = "azure_devops_pull_request"
+BITBUCKET_PULL_REQUEST = "bitbucket_pull_request"
+
+PULL_REQUEST_MONITOR_KINDS = frozenset(
+    {
+        GITHUB_PULL_REQUEST,
+        GITLAB_MERGE_REQUEST,
+        AZURE_DEVOPS_PULL_REQUEST,
+        BITBUCKET_PULL_REQUEST,
+    }
+)
 
 #: The observation-gated babysit watch. Armed only INTERNALLY, from a loop's own
 #: message text via ``probes.targets.infer``, never by a caller naming it, which is
@@ -83,6 +95,24 @@ class MonitorKind:
 _KINDS: dict[str, MonitorKind] = {
     GITHUB_PULL_REQUEST: MonitorKind(
         name=GITHUB_PULL_REQUEST,
+        objectives=frozenset({REVIEW_READY}),
+        publicly_armable=True,
+        supports_shadow=True,
+    ),
+    GITLAB_MERGE_REQUEST: MonitorKind(
+        name=GITLAB_MERGE_REQUEST,
+        objectives=frozenset({REVIEW_READY}),
+        publicly_armable=True,
+        supports_shadow=True,
+    ),
+    AZURE_DEVOPS_PULL_REQUEST: MonitorKind(
+        name=AZURE_DEVOPS_PULL_REQUEST,
+        objectives=frozenset({REVIEW_READY}),
+        publicly_armable=True,
+        supports_shadow=True,
+    ),
+    BITBUCKET_PULL_REQUEST: MonitorKind(
+        name=BITBUCKET_PULL_REQUEST,
         objectives=frozenset({REVIEW_READY}),
         publicly_armable=True,
         supports_shadow=True,

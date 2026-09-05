@@ -331,6 +331,26 @@ class TestLoadCredentialsEnvPropagation:
     """load_credentials() seeds os.environ so spawned children inherit creds
     even when their view of ~/.kirocrew/.env is bind-mounted empty."""
 
+    def test_unknown_key_warning_does_not_log_credential_identifiers(
+        self, tmp_path: object, monkeypatch, caplog
+    ) -> None:
+        from pathlib import Path
+
+        from kiro_crew.config import loader as loader_mod
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        env_file = Path(str(tmp_path)) / ".env"
+        env_file.write_text("KC_UNKNOWN_SETTING=value\n")
+        env_file.chmod(0o600)
+        monkeypatch.setattr(loader_mod, "_warned_env_keys", set())
+
+        with patch("kiro_crew.config.loader.env_path", return_value=env_file):
+            KiroCrewConfig.__new__(KiroCrewConfig).load_credentials(propagate=False)
+
+        assert "KC_UNKNOWN_SETTING" in caplog.text
+        assert "FEISHU_APP_SECRET" not in caplog.text
+        assert "MICROSOFT_APP_PASSWORD" not in caplog.text
+
     def test_env_seeded_from_file(self, tmp_path: object, monkeypatch) -> None:
         import os
         from pathlib import Path
@@ -355,6 +375,27 @@ class TestLoadCredentialsEnvPropagation:
         assert os.environ.get("SLACK_BOT_TOKEN") == "xoxb-test"
         assert os.environ.get("SLACK_APP_TOKEN") == "xapp-test"
         assert os.environ.get("KIROCREW_OWNER_ID") == "U123"
+
+    def test_non_propagating_read_keeps_credentials_out_of_environ(
+        self, tmp_path: object, monkeypatch
+    ) -> None:
+        import os
+        from pathlib import Path
+
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.delenv("AZURE_DEVOPS_EXT_PAT", raising=False)
+        tmp = Path(str(tmp_path))
+        env_file = tmp / ".env"
+        env_file.write_text("AZURE_DEVOPS_EXT_PAT=probe-token\n")
+        env_file.chmod(0o600)
+
+        with patch("kiro_crew.config.loader.env_path", return_value=env_file):
+            cfg = KiroCrewConfig.__new__(KiroCrewConfig)
+            creds = cfg.load_credentials(propagate=False)
+
+        assert creds["AZURE_DEVOPS_EXT_PAT"] == "probe-token"
+        assert "AZURE_DEVOPS_EXT_PAT" not in os.environ
 
     def test_existing_env_value_preserved(self, tmp_path: object, monkeypatch) -> None:
         """setdefault() must not clobber a value the caller set explicitly
@@ -444,20 +485,20 @@ class TestLoadCredentialsEnvPropagation:
     def test_scrubbed_marker_withholds_every_credential_key(
         self, tmp_path: object, monkeypatch
     ) -> None:
-        """The skip covers the full _CREDENTIAL_KEYS tuple, not just the subset
+        """The skip covers the full CREDENTIAL_KEYS tuple, not just the subset
         the entrypoint scrubs today — withholding is the safe direction."""
         import os
         from pathlib import Path
 
-        from kiro_crew.config.loader import _CREDENTIAL_KEYS, KiroCrewConfig
+        from kiro_crew.config.loader import CREDENTIAL_KEYS, KiroCrewConfig
 
         monkeypatch.setenv("_KIROCREW_CREDS_SCRUBBED", "1")
-        for key in _CREDENTIAL_KEYS:
+        for key in CREDENTIAL_KEYS:
             monkeypatch.delenv(key, raising=False)
 
         # Hardcoded literal so no expression derived from the credential-key
         # tuple flows into a file write; the assertion below keeps the fixture
-        # from drifting out of sync with _CREDENTIAL_KEYS.
+        # from drifting out of sync with CREDENTIAL_KEYS.
         fixture_keys = (
             "SLACK_APP_TOKEN",
             "SLACK_BOT_TOKEN",
@@ -474,9 +515,12 @@ class TestLoadCredentialsEnvPropagation:
             "FEISHU_APP_ID",
             "FEISHU_APP_SECRET",
             "JIRA_API_TOKEN",
+            "AZURE_DEVOPS_EXT_PAT",
+            "BITBUCKET_EMAIL",
+            "BITBUCKET_API_TOKEN",
             "KIRO_API_KEY",
         )
-        assert set(fixture_keys) == set(_CREDENTIAL_KEYS)
+        assert set(fixture_keys) == set(CREDENTIAL_KEYS)
 
         tmp = Path(str(tmp_path))
         env_file = tmp / ".env"
@@ -487,7 +531,7 @@ class TestLoadCredentialsEnvPropagation:
             cfg = KiroCrewConfig.__new__(KiroCrewConfig)
             cfg.load_credentials()
 
-        for key in _CREDENTIAL_KEYS:
+        for key in CREDENTIAL_KEYS:
             assert key not in os.environ
 
 

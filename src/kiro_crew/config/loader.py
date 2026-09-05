@@ -396,6 +396,9 @@ CRED_FEISHU_APP_ID = "FEISHU_APP_ID"  # Feishu custom-app id (developer console)
 CRED_FEISHU_APP_SECRET = "FEISHU_APP_SECRET"
 CRED_JIRA_API_TOKEN = "JIRA_API_TOKEN"  # Jira Cloud/Server API token (resolved from .env)
 CRED_WAKATIME_API_KEY = "WAKATIME_API_KEY"  # vault-only; never loaded from .env
+CRED_AZURE_DEVOPS_EXT_PAT = "AZURE_DEVOPS_EXT_PAT"
+CRED_BITBUCKET_EMAIL = "BITBUCKET_EMAIL"
+CRED_BITBUCKET_API_TOKEN = "BITBUCKET_API_TOKEN"
 MANAGED_VAULT_FIXED_CONSUMERS = {
     CRED_JIRA_API_TOKEN: "jira_api_token",
     CRED_WAKATIME_API_KEY: "wakatime_api_key",
@@ -406,7 +409,7 @@ MANAGED_VAULT_FIXED_CONSUMERS = {
 # the spawn paths re-inject it from the .env file after the Docker entrypoint
 # scrubs it out of the gateway's /proc/<pid>/environ.
 CRED_KIRO_API_KEY = "KIRO_API_KEY"
-_CREDENTIAL_KEYS = (
+CREDENTIAL_KEYS = (
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
     CRED_OWNER_ID,
@@ -422,6 +425,9 @@ _CREDENTIAL_KEYS = (
     CRED_FEISHU_APP_ID,
     CRED_FEISHU_APP_SECRET,
     CRED_JIRA_API_TOKEN,
+    CRED_AZURE_DEVOPS_EXT_PAT,
+    CRED_BITBUCKET_EMAIL,
+    CRED_BITBUCKET_API_TOKEN,
     CRED_KIRO_API_KEY,
 )
 
@@ -2000,7 +2006,7 @@ def read_env_file_credential(key: str, env_file: Path | None = None) -> str:
 def inject_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str, str]:
     """Ensure *env* carries kiro-cli's own model credential (``KIRO_API_KEY``).
 
-    The Docker entrypoint scrubs :data:`_CREDENTIAL_KEYS` out of the gateway's
+    The Docker entrypoint scrubs :data:`CREDENTIAL_KEYS` out of the gateway's
     process environment into the data home's ``.env`` (mode 600) so they never
     reside in a long-lived ``/proc/<pid>/environ``. Every other credential is
     consumed in-process from :meth:`KiroCrewConfig.load_credentials`, but this
@@ -4976,7 +4982,7 @@ class KiroCrewConfig:
                 return ad.get("model") or ""
         return ""
 
-    def load_credentials(self) -> dict[str, str]:
+    def load_credentials(self, *, propagate: bool = True) -> dict[str, str]:
         """Load credentials from ~/.kiro/crew/.env and environment variables.
 
         .env format: KEY=VALUE (one per line, # comments, no quotes required).
@@ -5015,19 +5021,19 @@ class KiroCrewConfig:
             # settings), but the warning makes the behavior visible rather than
             # silently surprising.  The encrypted vault (PR 1+) will provide a
             # proper agent-isolated path for secrets.
-            unknown = set(creds) - set(_CREDENTIAL_KEYS) - _warned_env_keys
+            unknown = set(creds) - set(CREDENTIAL_KEYS) - _warned_env_keys
             if unknown:
                 _warned_env_keys.update(unknown)
                 for uk in sorted(unknown):
                     logger.warning(
                         "Unknown key %s in .env is not a recognised credential"
                         " -- it will propagate to child processes but is NOT"
-                        " agent-isolated. Recognised keys: %s",
+                        " agent-isolated. Supported credential keys are listed"
+                        " in Settings.",
                         uk,
-                        ", ".join(sorted(_CREDENTIAL_KEYS)),
                     )
 
-        for key in _CREDENTIAL_KEYS:
+        for key in CREDENTIAL_KEYS:
             val = os.environ.get(key)
             if val:
                 creds[key] = val
@@ -5042,19 +5048,20 @@ class KiroCrewConfig:
         # credentials from the process environ (setting _KIROCREW_CREDS_SCRUBBED=1),
         # re-injecting them here would leak into /proc/<pid>/environ — the exact
         # attack surface the entrypoint closed. The scrub covers only credential
-        # keys, so the skip is scoped to _CREDENTIAL_KEYS: every other .env entry
+        # keys, so the skip is scoped to CREDENTIAL_KEYS: every other .env entry
         # (operator-added settings such as proxy or feature variables) still
         # propagates so children behave identically in and out of Docker.
         # Children that need the withheld credentials get them via their own
         # .env read or via an explicit env= kwarg on Popen (the sandbox and ACP
         # spawners already do this).
-        scrubbed = bool(os.environ.get("_KIROCREW_CREDS_SCRUBBED"))
-        for k, v in creds.items():
-            if not v:
-                continue
-            if scrubbed and (k in _CREDENTIAL_KEYS or _JIRA_TOKEN_RE.match(k)):
-                continue
-            os.environ.setdefault(k, v)
+        if propagate:
+            scrubbed = bool(os.environ.get("_KIROCREW_CREDS_SCRUBBED"))
+            for k, v in creds.items():
+                if not v:
+                    continue
+                if scrubbed and (k in CREDENTIAL_KEYS or _JIRA_TOKEN_RE.match(k)):
+                    continue
+                os.environ.setdefault(k, v)
 
         return creds
 

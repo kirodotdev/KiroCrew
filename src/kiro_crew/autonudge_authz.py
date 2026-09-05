@@ -809,6 +809,8 @@ async def authorize_and_add_nudge(
         if slot_key not in state._slots:
             return _deny(f"unknown slot {slot_key}", 404)
         authorized_slot = state._slots.get(slot_key)
+        if authorized_slot is None:
+            return _deny(f"unknown slot {slot_key}", 404)
         slot_mode = str(getattr(authorized_slot, "mode", ""))
         if slot_mode in _EXTERNAL_ARM_REFUSED_MODES:
             # Crew/member slots refuse an arm from OUTSIDE the session (a cron,

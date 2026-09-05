@@ -26,7 +26,7 @@ On Webex, use the finite legacy path even for a supported pull request.
 | Work | Driver |
 |---|---|
 | User is waiting, total work under 30 minutes | Bounded in-turn `wait` + poll |
-| One public GitHub PR, readiness decided entirely by typed provider facts | `monitor_watch` |
+| One supported pull request, readiness decided by typed provider facts | `monitor_watch` |
 | Generic comments/advisory findings, or a required final report or notification | Finite `monitor_start` with `gate=false` |
 | Act on a schedule, multiple subjects, unsupported ticket or deployment | Finite `monitor_start` |
 | Fresh-session work needing no approval-bound tools | `cron_add` |
@@ -39,15 +39,26 @@ recording `last_status: ok`; heartbeat's allowlist has no shell or push.
 The bundled `pr_watch.py` script remains for existing jobs only; do not copy or
 register it for new babysit work. Use one session-owned driver, not two watchers.
 
-### Structured GitHub watch
+### Structured pull-request watch
 
 Use this only for pull-request lifecycle, mergeability, review decision,
-unresolved review threads and check conclusions:
+canonical review facts and check conclusions. Choose the kind from the canonical
+URL; do not translate one provider's URL into another provider's shape.
+
+| URL | `kind` |
+|---|---|
+| `https://github.com/OWNER/REPO/pull/NUMBER` | `github_pull_request` |
+| `https://gitlab.com/GROUP/REPO/-/merge_requests/NUMBER` | `gitlab_merge_request` |
+| `https://GITLAB_HOST/GROUP/REPO/-/merge_requests/NUMBER` | `gitlab_merge_request` when that exact self-managed host is configured |
+| `https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/NUMBER` | `azure_devops_pull_request` |
+| `https://bitbucket.org/WORKSPACE/REPO/pull-requests/NUMBER` | `bitbucket_pull_request` |
+
+Call once with the selected kind and unchanged canonical URL:
 
 ```
-monitor_watch(kind="github_pull_request", target=<full PR URL>,
-              objective="review_ready", interval_secs=300,
-              max_runtime_secs=14400, wake_instructions=<actions and exit>)
+monitor_watch(kind=<kind>, target=<full PR URL>, objective="review_ready",
+              interval_secs=300, max_runtime_secs=14400,
+              wake_instructions=<actions and exit>)
 ```
 
 Inspect the schema for positive `max_agent_turns`, `max_tokens` and
@@ -56,7 +67,11 @@ spend no agent turn; a new actionable fingerprint wakes the owning session at
 most once with a bounded summary. Fetch logs, comments or diffs only when needed
 on that wake. The token cap applies only when usage is reported;
 `token_usage_known` exposes that gap, while runtime and completed-turn caps
-remain hard fallbacks. Provider errors are bounded too.
+remain hard fallbacks. Provider errors are bounded too. GitLab uses installed
+`glab` credentials, Azure DevOps uses `az login` or the protected
+`AZURE_DEVOPS_EXT_PAT`, and Bitbucket may use the protected `BITBUCKET_EMAIL`
+plus `BITBUCKET_API_TOKEN`. A setup or authentication refusal is authoritative;
+do not replace it with a legacy full-turn loop.
 
 The reply is a pending application request, not proof that the monitor armed.
 END THE TURN so the owning session can apply it. The operator can confirm it in
@@ -68,10 +83,10 @@ A terminal success uses zero model turns, so a structured watch does not create
 a final reporting turn. If the user requires a final report or notification even
 when no action is needed, use the finite legacy path.
 
-The provider does not observe generic issue/pull-request comments or advisory
-review findings outside review threads and check conclusions. When readiness
-depends on those, call the finite legacy path directly with `gate=false`;
-a typed fingerprint cannot stand in for missing evidence.
+Typed providers do not observe generic issue or pull-request comments, or
+advisory findings outside their canonical review and check facts. When readiness
+depends on those, call the finite legacy path directly with `gate=false`; a
+typed fingerprint cannot stand in for missing evidence.
 
 Use `monitor_update` without an id for cadence, positive budgets or
 `wake_instructions`: these preserve the comparison baseline. Changing `target`

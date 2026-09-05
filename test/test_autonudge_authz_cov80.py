@@ -171,7 +171,7 @@ async def test_add_requires_both_slot_key_and_message(audits: list[dict]) -> Non
     svc = RecordingSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="   ",
         source="dashboard",
@@ -185,7 +185,9 @@ async def test_add_rejects_dashboard_modes_without_direct_turn_ingress(
     audits: list[dict], mode: str
 ) -> None:
     svc = RecordingSvc()
-    slot = SimpleNamespace(workspace="default", mode=mode, memory_mode="persistent")
+    slot = SimpleNamespace(
+        workspace="default", mode=mode, memory_mode="persistent", is_closing=False
+    )
 
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
@@ -205,7 +207,7 @@ async def test_add_rejects_restricted_dashboard_sessions(
     audits: list[dict], memory_mode: str
 ) -> None:
     svc = RecordingSvc()
-    slot = SimpleNamespace(workspace="default", mode="", memory_mode=memory_mode)
+    slot = SimpleNamespace(workspace="default", mode="", memory_mode=memory_mode, is_closing=False)
 
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
@@ -224,7 +226,7 @@ async def test_dashboard_admission_rechecks_mode_and_memory_boundary(
     audits: list[dict], tmp_path: Path
 ) -> None:
     svc = RecordingSvc()
-    slot = SimpleNamespace(workspace="default", mode="", memory_mode="persistent")
+    slot = SimpleNamespace(workspace="default", mode="", memory_mode="persistent", is_closing=False)
     state = _state(slots={"chat-1-1": slot})
 
     loop, error, status = await authorize_and_add_nudge(
@@ -250,7 +252,7 @@ async def test_add_rejects_a_non_integer_runtime_budget(audits: list[dict]) -> N
     svc = RecordingSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         max_runtime_secs="not-a-number",  # type: ignore[arg-type]
@@ -490,7 +492,7 @@ async def test_add_rejects_a_sensitive_stop_sentinel_path(audits: list[dict]) ->
     svc = RecordingSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         stop_sentinel_path=str(Path.home() / ".ssh" / "id_rsa"),
@@ -529,7 +531,9 @@ async def test_add_audits_then_reraises_a_service_failure(audits: list[dict]) ->
     with pytest.raises(OSError, match="store wedged"):
         await authorize_and_add_nudge(
             svc=svc,
-            state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+            state=_state(
+                slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}
+            ),
             slot_key="chat-1-1",
             message="watch",
             stop_sentinel_path=str(Path.home() / "nonsense-sentinel-xyz"),
@@ -549,7 +553,7 @@ async def test_add_monitor_returns_conflict_when_a_wake_is_inflight(
 
     loop, error, status = await authorize_and_add_nudge(
         svc=ConflictingSvc(),
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         source="dashboard",
@@ -672,7 +676,7 @@ async def test_add_monitor_rejects_redaction_expansion_over_limit(
 
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         source="dashboard",
@@ -711,7 +715,7 @@ async def test_add_monitor_conflict_preserves_existing_legacy_stop_sentinel(
 
     loop, error, status = await authorize_and_add_nudge(
         svc=ConflictingSvc(),
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         source="dashboard",
@@ -742,7 +746,7 @@ async def test_add_monitor_forwards_conditional_restart_identity(
 
     loop, error, status = await authorize_and_add_nudge(
         svc=RecordingMonitorSvc(),
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         source="dashboard",
@@ -776,7 +780,7 @@ async def test_legacy_add_cannot_replace_a_structured_wake_in_flight(
 
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="legacy replacement",
         source="dashboard",
@@ -793,7 +797,7 @@ async def test_legacy_create_only_reaches_the_service_lock(audits: list[dict]) -
 
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="legacy fallback",
         source="dashboard",

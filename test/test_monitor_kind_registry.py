@@ -12,6 +12,7 @@ import pytest
 
 from kiro_crew.monitoring import registry
 from kiro_crew.monitoring.registry import (
+    PULL_REQUEST_MONITOR_KINDS,
     GH_PR,
     GITHUB_PULL_REQUEST,
     REVIEW_READY,
@@ -24,16 +25,11 @@ from kiro_crew.monitoring.registry import (
 )
 
 
-class TestTheEntryAllowlistsAreUnchanged:
-    """The four boundaries must expose exactly what they hardcoded before.
-
-    This is the behaviour lock for this change: the registry replaces four literal
-    allowlists, and replacing them is only safe if what a caller may ask for is
-    identical.
-    """
+class TestTheEntryAllowlistsShareOneAuthority:
+    """Every public boundary must derive the provider-kind vocabulary from data."""
 
     def test_the_publicly_armable_kind_set_is_the_one_the_schema_hardcoded(self) -> None:
-        assert publicly_armable_kinds() == frozenset({GITHUB_PULL_REQUEST})
+        assert publicly_armable_kinds() == PULL_REQUEST_MONITOR_KINDS
 
     def test_the_publicly_armable_objective_set_is_the_one_the_schema_hardcoded(self) -> None:
         assert publicly_armable_objectives() == frozenset({REVIEW_READY})
@@ -42,7 +38,7 @@ class TestTheEntryAllowlistsAreUnchanged:
         from kiro_crew.validation import MONITOR_WATCH_SCHEMA
 
         allowed = {field.name: field.allowed for field in MONITOR_WATCH_SCHEMA.fields}
-        assert allowed["kind"] == frozenset({GITHUB_PULL_REQUEST})
+        assert allowed["kind"] == PULL_REQUEST_MONITOR_KINDS
         assert allowed["objective"] == frozenset({REVIEW_READY})
 
 

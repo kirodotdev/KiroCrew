@@ -47,9 +47,9 @@ export const CHUNK_BUDGETS = {
   // recent catalog increments included in this measurement; Dev Fleet's
   // per-pod system readout then adds its own strings across the same 12
   // catalogs on top of that baseline. The Drive gallery's keys across 13
-  // catalogs and this branch's structured-monitor and session-mode additions
-  // ride inside the headroom that measurement already left, so this branch
-  // does not move the ceiling.
+  // catalogs and this stack's structured-monitor, session-mode, and
+  // source-provider additions ride inside the headroom that measurement already
+  // left, so this stack does not move the ceiling.
   // Re-measured 2026-09-06: main @ 3a6478967 alone builds the chunk at
   // 10,700,930 B (10450 KB) against the 10490 KB ceiling -- 0.4% headroom, so
   // any feature PR shipping a normal set of keys across the 13 catalogs fails

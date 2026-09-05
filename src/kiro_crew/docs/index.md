@@ -28,7 +28,7 @@ index, first-time setup, and connecting messaging channels.
 | Capability | Description |
 |------------|-------------|
 | [Cron Jobs](cron-and-scheduling.md) | Schedule recurring tasks, e.g. "every weekday at 9am give me a pipeline briefing" |
-| [Monitoring](monitoring.md) | Watch a public GitHub pull request with zero-turn unchanged probes and bounded action wakes |
+| [Monitoring](monitoring.md) | Watch pull requests across supported source providers with zero-turn unchanged probes and bounded action wakes |
 | [Subagents](subagents.md) | Spawn parallel background workers for fan-out research and multi-package work |
 | [Dynamic Sub-Agent Sizing](dynamic-subagent-sizing.md) | Auto-size the concurrent sub-agent cap from host memory/CPU and a learned per-agent cost |
 | [Memory](memory-and-learning.md) | Persistent preferences, project context, and learned corrections across sessions, plus per-session persistent / incognito / temporary memory modes |

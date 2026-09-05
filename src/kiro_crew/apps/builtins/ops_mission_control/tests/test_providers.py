@@ -1945,7 +1945,9 @@ class TestRunGhTimeoutReapsChild(unittest.IsolatedAsyncioTestCase):
         )
 
         class HangProc:
-            pid = 4242
+            # No supported OS can allocate this PID, so the host process table cannot
+            # make the fake child look like it shares the test runner's process group.
+            pid = 99_999_999_999
             returncode: int | None = None
             kill_calls = 0
             wait_calls = 0

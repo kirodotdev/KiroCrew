@@ -30,7 +30,7 @@ from types import SimpleNamespace
 import pytest
 
 import kiro_crew.autonudge_authz as autonudge_authz
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew.autonudge import NudgeAdmissionRefused, binding_key_for
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.workflows.service import WorkflowService
 
@@ -312,7 +312,7 @@ class FakeNudgeSvc:
         gate=True,
     ):
         if admission_check is not None and not admission_check():
-            raise AssertionError("test admission unexpectedly changed")
+            raise NudgeAdmissionRefused("session changed before nudge arm committed")
         self.added.append((slot_key, message, idle_secs, max_cycles))
         self.banners: list[str] = getattr(self, "banners", [])
         self.banners.append(banner)
@@ -347,11 +347,27 @@ async def test_authz_rejects_unknown_dashboard_slot() -> None:
     assert svc.added == []  # never armed
 
 
+async def test_authz_rejects_dashboard_slot_during_close() -> None:
+    svc = FakeNudgeSvc()
+    slot = SimpleNamespace(workspace="default", is_closing=True)
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": slot}),
+        slot_key="chat-1-1",
+        message="watch",
+        source="dashboard",
+    )
+
+    assert loop is None and status == 409 and "session changed" in error
+    assert svc.added == []
+
+
 async def test_authz_rejects_message_too_long() -> None:
     svc = FakeNudgeSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="x" * 8001,
         source="workflow",
@@ -402,7 +418,7 @@ async def test_authz_arms_valid_dashboard_slot_and_audits(monkeypatch) -> None:
     svc = FakeNudgeSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         idle_secs=60,
@@ -435,7 +451,7 @@ async def test_authz_denies_arm_when_audit_unavailable(monkeypatch) -> None:
     svc = FakeNudgeSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         source="workflow",
@@ -463,7 +479,7 @@ async def test_authz_success_audit_failure_keeps_loop(monkeypatch) -> None:
     svc = FakeNudgeSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         source="workflow",
@@ -504,7 +520,7 @@ async def test_authz_redacts_llm_influenced_message(monkeypatch) -> None:
     secret = "check AKIA" + "IOSFODNN7EXAMPLE and report"  # AWS access key id shape
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message=secret,
         source="workflow",
