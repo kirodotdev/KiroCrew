@@ -1104,6 +1104,122 @@ def _verified_unchanged_fingerprint(dest_dir: Path, src_dir: Path | None) -> str
     return dest_fingerprint
 
 
+# A cron script body is one file, not a tree, so its ceiling sits far below the
+# whole-tree budget above. A body over this size reads as unverifiable rather
+# than being compared -- the same fail-safe direction an unprovable tree takes.
+_CRON_SOURCE_MAX_BYTES = 2 * 1024 * 1024
+
+CRON_SOURCE_IN_SYNC = "in-sync"
+CRON_SOURCE_DIVERGED = "diverged"
+CRON_SOURCE_UNVERIFIABLE = "unverifiable"
+
+
+@dataclass(frozen=True)
+class CronScriptSource:
+    """One deployed cron script judged against the installed skill asset it came from."""
+
+    name: str
+    source: Path
+    state: str
+
+
+def _skill_script_index(base: Path) -> dict[str, list[Path]]:
+    """Map each ``*.py`` script asset name to the installed skills shipping it.
+
+    A name can be shipped by more than one skill, so the value is a list and the
+    caller decides -- guessing an owner would invent provenance the copy never
+    recorded.
+    """
+    index: dict[str, list[Path]] = {}
+    for _name, skill_file in _iter_skill_files(base):
+        scripts = skill_file.parent / "scripts"
+        if not scripts.is_dir():
+            continue
+        for entry in sorted(scripts.glob("*.py")):
+            index.setdefault(entry.name, []).append(entry)
+    return index
+
+
+def _read_for_comparison(path: Path, root: Path) -> bytes | None:
+    """Read *path* under *root* containment, or None when it cannot be proven."""
+    try:
+        return safe_read_file_bytes_nolink(
+            str(path), within_root=str(root), max_bytes=_CRON_SOURCE_MAX_BYTES
+        )
+    except FileTooLargeError:
+        return None
+    except OSError:
+        return None
+
+
+def deployed_cron_script_sources() -> list[CronScriptSource]:
+    """Judge each deployed cron script that has an installed skill asset of its name.
+
+    This is the second hop of the journey :func:`_verified_unchanged_fingerprint`
+    already guards. The first hop -- packaged ``builtin_skills/`` into the
+    installed skills dir -- is verified by CONTENT, the ``scripts/`` subtree
+    included, precisely because a release that changes only a script leaves
+    ``SKILL.md`` byte-identical, so a manifest-only comparison reports "up to
+    date" while the install keeps running superseded code. The second hop --
+    installed skill asset into ``<config_dir>/crons/`` -- is a hand-run ``cp``
+    documented in the owning skill, and nothing has ever compared its two sides.
+    The same silent staleness the first hop was taught to catch is therefore
+    unobserved one step later.
+
+    Scope is deliberately narrow. A deployed script with NO installed skill asset
+    of that name is ABSENT from the result rather than reported: cron script
+    bodies are LLM-writeable by design (see :mod:`kiro_crew.cron_script`) and
+    most are authored in place with no source anywhere, so whether they ought to
+    have one is a product question this function does not raise. Only a script
+    that DOES have a source can be out of step with it.
+
+    Reads go through the containment-checked reader the fingerprint helpers use,
+    so a symlink, a hardlinked inode, a non-regular file, a path escaping its
+    root, or an oversized body yields ``CRON_SOURCE_UNVERIFIABLE`` instead of a
+    comparison. Unverifiable never reads as agreement -- an instrument whose read
+    failed must not report the two sides equal.
+
+    When several skills ship the same script name, agreement with ANY of them is
+    ``CRON_SOURCE_IN_SYNC``: the copy records no owner, so a mismatch against an
+    arbitrarily chosen candidate would be a fabricated finding.
+    """
+    crons_root = config_dir() / "crons"
+    skills_root = skills_dir()
+    if not crons_root.is_dir() or not skills_root.is_dir():
+        return []
+    index = _skill_script_index(skills_root)
+    if not index:
+        return []
+
+    results: list[CronScriptSource] = []
+    for deployed in sorted(crons_root.glob("*.py")):
+        candidates = index.get(deployed.name)
+        if not candidates:
+            # No source to be out of step with -- out of scope by design.
+            continue
+        body = _read_for_comparison(deployed, crons_root)
+        state = CRON_SOURCE_UNVERIFIABLE
+        matched = candidates[0]
+        if body is not None:
+            unreadable = 0
+            for candidate in candidates:
+                source_body = _read_for_comparison(candidate, skills_root)
+                if source_body is None:
+                    unreadable += 1
+                    continue
+                if source_body == body:
+                    matched = candidate
+                    state = CRON_SOURCE_IN_SYNC
+                    break
+            else:
+                # Every candidate was read and none matched, or some could not
+                # be read at all. Only the fully-read case is a real divergence;
+                # an unread candidate might have been the matching one.
+                state = CRON_SOURCE_UNVERIFIABLE if unreadable else CRON_SOURCE_DIVERGED
+        results.append(CronScriptSource(name=deployed.name, source=matched, state=state))
+    return results
+
+
 def _claim_dir_for_replacement(dest_dir: Path) -> Path | None:
     """Atomically move *dest_dir* to a dot-prefixed sibling before verifying.
 

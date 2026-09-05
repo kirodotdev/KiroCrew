@@ -994,6 +994,62 @@ def _doctor_data_home() -> None:
     )
 
 
+def _doctor_cron_script_sources(issues: list[str]) -> None:
+    """Report deployed cron scripts that no longer agree with their skill-asset source.
+
+    The packaged-to-installed hop is content-verified, ``scripts/`` included. The
+    installed-to-``crons/`` hop is a hand-run ``cp`` documented in the owning
+    skill, and nothing compares its two sides -- so a deploy can run superseded
+    code indefinitely while looking healthy, which is how the shipped PR watch
+    came to re-emit its wake footer once per observation long after the package
+    had split that out.
+
+    Divergence is reported WITHOUT a direction. A cron script body is
+    LLM-writeable by design, so the two sides disagreeing can mean a stale deploy
+    or a deliberate local edit, and nothing on disk distinguishes them. Doctor
+    surfaces the disagreement and leaves the reconciliation to whoever knows
+    which they intended.
+
+    Silent when nothing deployed has a source: a cron script without one is out
+    of scope here, not a finding.
+    """
+    from kiro_crew.skills import (
+        CRON_SOURCE_DIVERGED,
+        CRON_SOURCE_IN_SYNC,
+        deployed_cron_script_sources,
+    )
+
+    states = deployed_cron_script_sources()
+    if not states:
+        return
+
+    print("\nCron Script Sources")
+    for state in states:
+        # Both halves are read off disk and BOTH go through _safe_display. The
+        # crons dir is agent-writeable by design (see cron_script.py), so a
+        # deployed script's name is not merely untrusted in the abstract -- the
+        # design deliberately lets an agent choose it. A diagnostic that reads
+        # those names and prints them raw is exactly the wrong consumer for such
+        # a directory: an OSC/ANSI sequence or a newline in a filename would
+        # drive the terminal or forge the surrounding verdict lines.
+        name = _safe_display(state.name)
+        source = _safe_display(str(state.source))
+        if state.state == CRON_SOURCE_IN_SYNC:
+            print(f"  {name}:  ✅ agrees with {source}")
+        elif state.state == CRON_SOURCE_DIVERGED:
+            print(f"  {name}:  ❌ DIVERGED from {source}")
+        else:
+            print(f"  {name}:  ⏹ could not be compared against {source}")
+
+    if any(state.state == CRON_SOURCE_DIVERGED for state in states):
+        issues.append("deployed cron script diverged from its skill source")
+        print(
+            "               Reconcile using the owning skill's own copy recipe. "
+            "A diverged copy may be a stale deploy OR an intentional local edit "
+            "-- doctor cannot tell which, so it does not overwrite either one."
+        )
+
+
 def _doctor_managed_service_policy(issues: list[str]) -> None:
     """Surface installed service definitions that predate launch-class policy."""
     state = service_controller.installed_service_has_managed_marker()
@@ -2915,6 +2971,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Data Home (+ leftover legacy home) ──
     _doctor_data_home()
+    _doctor_cron_script_sources(issues)
     _doctor_path_launcher()
     _doctor_trust_root()
     _doctor_strict_identity(cfg)
