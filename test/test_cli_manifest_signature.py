@@ -972,11 +972,17 @@ def test_installer_publish_refuses_an_unconfigured_trust_root() -> None:
 def test_publish_workflow_writes_immutable_manifest_before_signed_feed() -> None:
     run = _workflow_step("Publish wheel and signed channel manifest")["run"]
     immutable = 'put_immutable "${PREFIX}/cli-manifest.json" "$MANIFEST_PATH"'
-    feed = 'aws s3 cp "$MANIFEST_PATH" "s3://${BUCKET}/feed/${CHANNEL}/latest-cli.json"'
+    # The feed write targets ${FEED_KEY} (feed/<channel>/latest-cli.json),
+    # and sits behind the monotonicity guard's advance verdict -- but its
+    # ORDER relative to the immutable manifest put is unchanged: the pointer
+    # may only ever name a manifest that is already live.
+    feed_key = 'FEED_KEY="feed/${CHANNEL}/latest-cli.json"'
+    feed = 'aws s3 cp "$MANIFEST_PATH" "s3://${BUCKET}/${FEED_KEY}"'
 
     assert immutable in run
+    assert feed_key in run
     assert feed in run
-    assert run.index(immutable) < run.index(feed)
+    assert run.index(immutable) < run.index(feed_key) < run.index(feed)
     assert "cat > /tmp/latest-cli.json" not in run
     assert "--cache-control no-cache" in run
 
