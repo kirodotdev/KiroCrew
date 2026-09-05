@@ -68,16 +68,25 @@ export interface BreadcrumbSegment { seg: string; path: string; isFile: boolean 
  *
  * A leading slash is preserved explicitly: joining segments with '/' drops it,
  * which would turn an absolute path into a relative one the folder browser then
- * resolves against the wrong root. Exported for unit tests.
+ * resolves against the wrong root. A drive-rooted Windows path (`C:\x`, `C:/x`)
+ * needs no such restoration: unlike POSIX's leading '/', its root is not a
+ * separator at all, so split()+filter(Boolean) leaves it in place as the first
+ * segment ('C:') and the plain join reconstructs it correctly on its own — the
+ * bug here was never the missing prefix, it was that the OLD split (`/` only)
+ * read a whole backslash path as a single segment. Splitting on either
+ * separator, and rejoining with whichever one the input used, fixes both the
+ * POSIX and the Windows shape in one pass. Exported for unit tests.
  */
 export function breadcrumbSegments(filePath: string): BreadcrumbSegment[] {
-  const isAbs = filePath.startsWith('/')
-  const allSegs = filePath.replace(/\/+$/, '').split('/').filter(Boolean)
+  const isPosixAbs = filePath.startsWith('/')
+  const sep = filePath.includes('\\') ? '\\' : '/'
+  const allSegs = filePath.replace(/[\\/]+$/, '').split(/[\\/]+/).filter(Boolean)
   const shown = Math.min(3, allSegs.length)
   return allSegs.slice(-3).map((seg, j) => {
     const absIndex = allSegs.length - shown + j
-    const joined = allSegs.slice(0, absIndex + 1).join('/')
-    return { seg, path: isAbs ? '/' + joined : joined, isFile: absIndex === allSegs.length - 1 }
+    const joined = allSegs.slice(0, absIndex + 1).join(sep)
+    const path = isPosixAbs ? '/' + joined : joined
+    return { seg, path, isFile: absIndex === allSegs.length - 1 }
   })
 }
 

@@ -402,6 +402,30 @@ describe('breadcrumbSegments', () => {
     const crumbs = breadcrumbSegments('/README.md')
     expect(crumbs).toEqual([{ seg: 'README.md', path: '/README.md', isFile: true }])
   })
+
+  it('splits a drive-rooted Windows path on backslash, either separator', () => {
+    // A Windows gateway names its files with `\`. The old split('/') read the
+    // whole string as one segment (no '/' to split on), so a directory on that
+    // gateway rendered as a single giant non-navigable breadcrumb.
+    const crumbs = breadcrumbSegments('C:\\Users\\me\\Documents\\notes.md')
+    expect(crumbs.map(c => c.seg)).toEqual(['me', 'Documents', 'notes.md'])
+    expect(crumbs.map(c => c.isFile)).toEqual([false, false, true])
+  })
+
+  it('reconstructs each Windows ancestor path with the drive letter intact', () => {
+    const crumbs = breadcrumbSegments('C:\\Users\\me\\Documents\\notes.md')
+    // The drive root ('C:') is not a separator, so it survives as the first
+    // segment and needs no leading-slash restoration the way POSIX does.
+    expect(crumbs[0].path).toBe('C:\\Users\\me')
+    expect(crumbs[1].path).toBe('C:\\Users\\me\\Documents')
+    expect(crumbs[2].path).toBe('C:\\Users\\me\\Documents\\notes.md')
+  })
+
+  it('accepts the forward-slash spelling of a drive-rooted path too', () => {
+    const crumbs = breadcrumbSegments('C:/Users/me/notes.md')
+    expect(crumbs.map(c => c.seg)).toEqual(['Users', 'me', 'notes.md'])
+    expect(crumbs[2].path).toBe('C:/Users/me/notes.md')
+  })
 })
 
 /**
