@@ -10115,10 +10115,7 @@
       "workspace_2": "ワークスペース",
       "workspace_name_is_required": "ワークスペース名は必須です",
       "yes_delete_it": "はい、削除します",
-      "session_color": "セッションの色",
-      "session_color_hint": "このエージェントが開始したセッションは、セッション自身の色がない限りこの色を使用します。変更するとそれらのセッションが再着色されます。エージェントの色を設定しない場合は空欄にしてください。",
-      "session_color_hex": "セッションの色の16進値",
-      "session_color_clear": "クリア"
+      "template_edit_later_note": "いちばん近い出発点を選んでください — このエージェントのテンプレートは作成後にいつでも切り替えられます。"
     },
     "knowledge": {
       "detailView": {

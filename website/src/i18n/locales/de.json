@@ -10262,10 +10262,7 @@
       "workspace_2": "Workspace",
       "workspace_name_is_required": "Workspace-Name ist erforderlich",
       "yes_delete_it": "Ja, löschen",
-      "session_color": "Sitzungsfarbe",
-      "session_color_hint": "Von diesem Agenten gestartete Sitzungen verwenden diese Farbe, sofern die Sitzung keine eigene Farbe hat. Eine Änderung färbt diese Sitzungen neu ein. Leer lassen für keine Agentenfarbe.",
-      "session_color_hex": "Hex-Wert der Sitzungsfarbe",
-      "session_color_clear": "Entfernen"
+      "template_edit_later_note": "Wähle den passendsten Startpunkt — die Vorlage dieses Agenten kannst du nach dem Erstellen jederzeit wechseln."
     },
     "knowledge": {
       "detailView": {

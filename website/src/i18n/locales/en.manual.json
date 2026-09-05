@@ -3915,10 +3915,7 @@
       "select_an_agent_template": "Select an agent template…",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Subdirectory inside ~/.kiro/crew where this workspace stores its data (chat history, lessons, projects). Each workspace gets its own isolated directory.",
       "workspace_name_is_required": "Workspace name is required",
-      "session_color": "Session Color",
-      "session_color_hint": "Sessions this agent starts use this color unless the session has a color of its own. Editing it re-tints those sessions. Leave empty for no agent color.",
-      "session_color_hex": "Session color hex value",
-      "session_color_clear": "Clear"
+      "template_edit_later_note": "Pick the closest starting point — you can switch this agent's template anytime after creating."
     },
     "knowledge": {
       "detailView": {

@@ -10115,10 +10115,7 @@
       "workspace_2": "워크스페이스",
       "workspace_name_is_required": "워크스페이스 이름은 필수입니다",
       "yes_delete_it": "예, 삭제합니다",
-      "session_color": "세션 색상",
-      "session_color_hint": "이 에이전트가 시작한 세션은 세션 자체 색상이 없으면 이 색상을 사용합니다. 변경하면 해당 세션이 다시 착색됩니다. 에이전트 색상을 사용하지 않으려면 비워 두세요.",
-      "session_color_hex": "세션 색상 16진수 값",
-      "session_color_clear": "지우기"
+      "template_edit_later_note": "가장 가까운 출발점을 선택하세요 — 이 에이전트의 템플릿은 만든 뒤에 언제든지 바꿀 수 있습니다."
     },
     "knowledge": {
       "detailView": {

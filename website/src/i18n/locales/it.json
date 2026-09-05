@@ -10409,10 +10409,7 @@
       "workspace_2": "Workspace",
       "workspace_name_is_required": "Il nome del workspace è obbligatorio",
       "yes_delete_it": "Sì, elimina",
-      "session_color": "Colore sessione",
-      "session_color_hint": "Le sessioni avviate da questo agente usano questo colore a meno che la sessione non abbia un colore proprio. Modificarlo ricolora quelle sessioni. Lasciare vuoto per nessun colore agente.",
-      "session_color_hex": "Valore esadecimale del colore sessione",
-      "session_color_clear": "Cancella"
+      "template_edit_later_note": "Scegli il punto di partenza più simile: puoi cambiare il modello di questo agente in qualsiasi momento dopo la creazione."
     },
     "knowledge": {
       "detailView": {

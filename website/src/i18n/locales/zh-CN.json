@@ -10115,10 +10115,7 @@
       "workspace_2": "工作区",
       "workspace_name_is_required": "工作区名称为必填项",
       "yes_delete_it": "是的，删除它",
-      "session_color": "会话颜色",
-      "session_color_hint": "由此代理启动的会话在自身没有颜色时使用此颜色。修改它会重新为这些会话着色。留空则不使用代理颜色。",
-      "session_color_hex": "会话颜色十六进制值",
-      "session_color_clear": "清除"
+      "template_edit_later_note": "选择最接近的起点 — 这个代理的模板在创建后随时可以更换。"
     },
     "knowledge": {
       "detailView": {

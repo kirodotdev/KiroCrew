@@ -8,7 +8,6 @@ import { createSlot } from '../store/chatSlice'
 import { api, type WebhookTokenEntry } from '../api/client'
 import { useProvider } from '../providers'
 import { useAvailableModels } from '../hooks/useAvailableModels'
-import { FOLDER_COLOR_PALETTE } from '../components/folderColorCatalog'
 import { Btn, SendBtn, Input, Badge, SearchInput, PageHeader, EmptyState } from '../components/ui'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import {
@@ -291,8 +290,11 @@ function withCurrent(opts: string[], cur: string): string[] {
  * SAME control rather than two copies that drift. Create composes them through
  * `BindingFields`; the editor mounts them individually, one per rail pane.
  */
-export function TemplateField({ label, options, value, onChange }: {
+export function TemplateField({ label, options, value, onChange, editLaterNote }: {
   label: string; options: string[]; value: string; onChange: (v: string) => void
+  /** Create-only reassurance that the pick is not a commitment. The editor never
+   *  sets it: there the fields being edited are themselves the answer. */
+  editLaterNote?: boolean
 }) {
   return (
     <Field label={label} hint={i18nT('pages.kiroCrewAgentsPage.the_agent_definition_it_boots_from_tools_mcp_ser')}>
@@ -303,6 +305,15 @@ export function TemplateField({ label, options, value, onChange }: {
         triggerFallback={i18nT('pages.kiroCrewAgentsPage.select_an_agent_template')}
         aria-label={label}
       />
+      {/* Says "this agent", not "the template": a definition edit customizes THIS
+       *  agent, so copy implying the template itself changes would promise a
+       *  blast radius onto other agents bound to it that does not exist. */}
+      {editLaterNote && (
+        <span className="flex items-start gap-1.5 text-[11.5px] leading-relaxed text-accent">
+          <Sparkles className="lucide-inline h-3 w-3 mt-0.5 shrink-0" aria-hidden="true" />
+          {i18nT('pages.kiroCrewAgentsPage.template_edit_later_note')}
+        </span>
+      )}
     </Field>
   )
 }
@@ -407,107 +418,6 @@ export function TriggersField({ value, onChange }: { value: string; onChange: (v
   )
 }
 
-/** Session color picker for agent configuration. Sets the default session
- *  tint color for new sessions created with this agent. */
-export function SessionColorField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const HEX_RE = /^#[0-9a-f]{6}$/i
-  const [draft, setDraft] = useState(value || '')
-  // Re-sync the draft when the committed value changes from outside (e.g. the
-  // swatch, Clear, or opening the editor on a different crew).
-  useEffect(() => { setDraft(value || '') }, [value])
-  const commit = (raw: string) => {
-    const v = raw.trim().toLowerCase()
-    if (v === '') { onChange(''); setDraft('') }
-    else if (HEX_RE.test(v)) { onChange(v); setDraft(v) }
-    else { setDraft(value || '') } // invalid on blur → revert to committed
-  }
-  return (
-    <Field label={i18nT('pages.kiroCrewAgentsPage.session_color')} hint={i18nT('pages.kiroCrewAgentsPage.session_color_hint')}>
-      {/* Quick picks first, exact entry below — the order the session
-       *  right-click menu uses, so the two surfaces read the same way.
-       *
-       *  These are FOLDER_COLOR_PALETTE, the repo's existing fixed-hex identity
-       *  catalog, NOT the sidebar's generated palette. The sidebar's swatches
-       *  are a `color_index` into a palette derived from the theme accent, so
-       *  they re-derive when the theme changes; a crew's `session_color` is a
-       *  stored hex, so a swatch here has to commit exactly the literal it
-       *  shows and must not drift. That is the same job the folder catalog
-       *  already does, and reusing it keeps one visual language across folders,
-       *  tags and crews — as that file's own comment argues — instead of a
-       *  second preset list that would silently diverge from it. Read-only:
-       *  the catalog's KEEP IN SYNC contract with chat_folders.py governs
-       *  changes to its entries, and consuming it adds no such coupling.
-       *
-       *  The active ring is matched by hex, so a custom colour outside the
-       *  catalog correctly rings nothing.
-       *
-       *  No "no color" cell here: Clear already owns that, and two controls for
-       *  one action is worse than one. */}
-      <div className="mb-2 flex flex-wrap items-center gap-1.5">
-        {FOLDER_COLOR_PALETTE.map(({ value: c, label }) => {
-          const active = HEX_RE.test(value) && value.toLowerCase() === c
-          return (
-            <Btn
-              type="button"
-              key={c}
-              aria-label={label()}
-              aria-pressed={active}
-              title={label()}
-              // Btn, not a raw <button>, so the swatches inherit the standard
-              // press and disabled treatment. `p-0` and the sizing below win
-              // over Btn's own padding/radius/border because Btn twMerges
-              // `className` last; the inline background beats its
-              // `bg-transparent` (and its hover background) on specificity, so
-              // the dot keeps its colour in every state.
-              //
-              // `border-text-strong`, not `border-accent`: the accent is itself a
-              // purple in most themes, so an accent ring on the indigo and violet
-              // entries reads as no ring at all. The near-white ring is what
-              // SessionColorSwatches uses, and it separates from every hue here.
-              className={`h-5 w-5 p-0 cursor-pointer rounded-full border-2 transition-transform hover:scale-110 ${active ? 'border-text-strong scale-110' : 'border-border'}`}
-              style={{ background: c }}
-              onClick={() => onChange(c)}
-            />
-          )
-        })}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          type="color"
-          value={value || '#6366f1'}
-          onChange={e => onChange(e.target.value.toLowerCase())}
-          className="h-8 w-8 flex-none cursor-pointer p-0.5"
-          aria-label={i18nT('pages.kiroCrewAgentsPage.session_color')}
-        />
-        <Input
-          placeholder="#rrggbb"
-          value={draft}
-          onChange={e => {
-            const v = e.target.value.trim().toLowerCase()
-            setDraft(v)
-            // Live-commit only when the draft is a complete hex or cleared;
-            // partial values stay local so typing is never swallowed.
-            if (v === '' || HEX_RE.test(v)) onChange(v)
-          }}
-          onBlur={e => commit(e.target.value)}
-          className="flex-1 font-mono text-[13px]"
-          aria-label={i18nT('pages.kiroCrewAgentsPage.session_color_hex')}
-        />
-        {value && (
-          <Btn
-            type="button"
-            onClick={() => onChange('')}
-            className="text-[11px]"
-            aria-label={i18nT('pages.kiroCrewAgentsPage.session_color_clear')}
-          >
-            {i18nT('pages.kiroCrewAgentsPage.session_color_clear')}
-          </Btn>
-        )}
-      </div>
-    </Field>
-  )
-}
-
 /** The create form's binding block. */
 function BindingFields({
   templateLabel, kiroAgentOptions, kiroAgent, setKiroAgent,
@@ -523,7 +433,7 @@ function BindingFields({
 }) {
   return (
     <>
-      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} />
+      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} editLaterNote />
       <WorkspaceField options={workspaceOptions} value={workspace} onChange={setWorkspace} onNewWorkspace={onNewWorkspace} />
       <MemoryStoreField options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} />
       {modelOptions && setModel && model !== undefined && (
@@ -750,6 +660,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [workspace, setWorkspace] = useState('default')
   const [memoryStore, setMemoryStore] = useState('default')
   const [triggers, setTriggers] = useState('')
+  /** No control edits this any more — the picker was removed from both modals.
+   *  The state stays so an agent that already carries a stored colour keeps it:
+   *  it is loaded on open and written back on save, so editing an unrelated pane
+   *  cannot silently clear a tint the user set before. */
   const [sessionColor, setSessionColor] = useState('')
   const [editModel, setEditModel] = useState(INHERIT_MODEL)
   const [editEffort, setEditEffort] = useState('')
@@ -1218,7 +1132,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
     if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
     if (triggers !== (editingAgent.triggers || '')) out.add('routing')
-    if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
     // Both tiers in one comparison: ghost traits normalize through
     // ghostTraitsFrom (flat record, stable key order) and an image override
     // through imageAvatarFrom — so a picture pick, replace, or removal is
@@ -1237,7 +1150,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // eat a half-typed schedule the way an untracked surface would.
     if (schedDraft) out.add('schedules')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, schedDraft, editAvatar])
 
   const sections = useCrewEditorSections({
     templateLabel: provider.labels.agentTemplateField,
@@ -1499,7 +1412,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 <section className="flex flex-col gap-3">
                   <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.routing')}</h3>
                   <TriggersField value={triggers} onChange={setTriggers} />
-                  <SessionColorField value={sessionColor} onChange={setSessionColor} />
                 </section>
                 <section className="flex flex-col gap-3">
                   <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.runtime_binding')}</h3>
@@ -1677,7 +1589,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   {pane === 'routing' && (
                     <>
                       <TriggersField value={triggers} onChange={setTriggers} />
-                      <SessionColorField value={sessionColor} onChange={setSessionColor} />
                       <Field
                         label={i18nT('components.avatarBuilder.field_label')}
                         hint={i18nT('components.avatarBuilder.field_hint')}
