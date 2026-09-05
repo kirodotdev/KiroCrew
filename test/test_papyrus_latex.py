@@ -27,6 +27,9 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+
+if sys.platform == "win32":  # pragma: no cover - platform-gated
+    import _winapi
 from pathlib import Path
 from typing import Iterator
 from unittest import mock
@@ -1285,3 +1288,110 @@ class TestSandboxRefusalIsReportedNotSwallowed:
         assert wrap.call_count == 1
         # `strict`, not a weaker tier chosen to make the spawn succeed.
         assert _spawn_mode(wrap) == "strict"
+
+
+class TestTheCompileLinkScanRefusesJunctionsToo:
+    """The Compile guard must refuse a link through ``store.is_reparse_link``.
+
+    That helper's own contract says it: "every place this module refuses a link at a
+    name Kiro Crew owns has to refuse a junction too, or the refusal is POSIX-only".
+    ``store.list_files`` honours it. ``_symlinked_artifacts`` asked ``is_symlink()``,
+    which does NOT report a Windows directory junction — and a junction is precisely
+    a DIRECTORY link, so it reached the ``is_dir()`` arm of the same loop and broke
+    the guard in both directions at once:
+
+    * the junction was absent from the refusal list, so Compile proceeded and
+      ``pdflatex`` was free to write through it to whatever it points at — the exact
+      outcome ``_symlinked_artifacts`` exists to prevent; and
+    * the walk DESCENDED it, contradicting the docstring's "does not descend INTO
+      links" and spending ``MAX_PROJECT_FILES`` budget on a tree outside the project,
+      which pushes ``complete`` toward False for reasons the project does not contain.
+
+    Junctions are the link type a Windows user can create WITHOUT elevation, so this
+    is the platform's cheapest bypass — and note every symlink test above is skipped
+    on win32 precisely because symlinks there need a privilege junctions do not.
+
+    Asserted through the shared helper rather than by creating a real junction,
+    because ``os.path.isjunction`` is 3.12+ and always ``False`` off Windows — the
+    same technique ``test_papyrus_store.py`` uses. One real-junction test runs on
+    Windows so the stub is anchored to the platform behaviour it stands in for.
+    """
+
+    def test_a_junction_is_reported_as_a_link(self, project: Path) -> None:
+        junction = project / "linked"
+        junction.mkdir()
+        with mock.patch.object(store, "is_reparse_link", lambda p: Path(p) == junction):
+            links, complete = latex._symlinked_artifacts(project)
+        assert complete is True
+        assert "linked" in links
+
+    def test_the_walk_does_not_descend_a_junction(self, project: Path) -> None:
+        """Descent is the half that survives even once the name is reported, and it
+        cannot be observed through the return value: this scan only ever appends
+        LINKS, so a walk that descended a junction full of ordinary files still
+        returns the same list. Assert it against what the walk LOOKED at instead."""
+        junction = project / "linked"
+        junction.mkdir()
+        (junction / "inside.tex").write_text("x", encoding="utf-8")
+        seen: list[str] = []
+
+        def _spy(p: Path) -> bool:
+            seen.append(Path(p).name)
+            return Path(p) == junction
+
+        with mock.patch.object(store, "is_reparse_link", _spy):
+            links, _complete = latex._symlinked_artifacts(project)
+
+        assert "linked" in links
+        assert "inside.tex" not in seen, "the walk descended into the junction"
+
+    def test_the_scan_consults_the_shared_helper(self, project: Path) -> None:
+        """A junction is only refused if the scan ASKS the helper about it."""
+        (project / "sections").mkdir(exist_ok=True)
+        seen: list[str] = []
+
+        def _spy(p: Path) -> bool:
+            seen.append(Path(p).name)
+            return False
+
+        with mock.patch.object(store, "is_reparse_link", _spy):
+            latex._symlinked_artifacts(project)
+
+        assert "sections" in seen
+
+    @pytest.mark.asyncio
+    async def test_compile_refuses_when_a_junction_is_present(self, project: Path) -> None:
+        """End-to-end: the compiler must not run. Without this the spawn happens and
+        `pdflatex` writes by name through the link."""
+        junction = project / "linked"
+        junction.mkdir()
+        with mock.patch.object(store, "is_reparse_link", lambda p: Path(p) == junction), (
+            mock.patch.object(
+                latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
+            )
+        ), mock.patch.object(latex, "_run", mock.AsyncMock()) as run:
+            result = await latex.compile_project(project, "main.tex")
+        assert result.ok is False
+        assert "linked" in result.log
+        assert not run.called, "the compiler ran despite a junctioned directory"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows reparse point")
+    def test_a_real_windows_junction_is_refused(self, project: Path) -> None:
+        """No stub and no elevation: the real reparse point, which is what makes the
+        stubbed tests above a stand-in for something rather than for nothing."""
+        outside = project.parent / "outside"
+        outside.mkdir()
+        (outside / "secret.tex").write_text("secret", encoding="utf-8")
+        junction = project / "linked"
+        _winapi.CreateJunction(str(outside), str(junction))
+
+        # A budget of 2 is enough for `main.tex` + `linked`, and NOT enough to also
+        # walk the junction's contents — so `complete` staying True is what proves
+        # the walk stopped at the link rather than following it out of the project.
+        for i in range(4):
+            (outside / f"pad{i}.tex").write_text("", encoding="utf-8")
+        with mock.patch.object(store, "MAX_PROJECT_FILES", 2):
+            links, complete = latex._symlinked_artifacts(project)
+
+        assert "linked" in links, "a real junction was not reported as a link"
+        assert complete is True, "the walk followed a real junction and blew the budget"
