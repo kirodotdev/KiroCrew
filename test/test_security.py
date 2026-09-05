@@ -1917,10 +1917,10 @@ class TestBuiltinDenyPatterns:
         keeps iterating (this test exercises that path); pass 2 uses
         ``continue`` for the same reason (covered by other tests).
 
-        ``_DENY_EXCEPTIONS`` is now empty (the sole former ``*git*push*`` entry
-        is obsolete — git-publish is verb-anchored and never trips the exception
-        machinery), so the multi-pattern interaction can no longer be expressed
-        with live catalog data.  We install a synthetic two-glob scenario to
+        ``_DENY_EXCEPTIONS`` ships only the #8802 search-verb carve-out on the two
+        ``local-destructive`` rm rules, so the multi-pattern interaction still cannot
+        be expressed with live catalog data (one input would have to trip two rm rules
+        at once).  We install a synthetic two-glob scenario to
         keep exercising the loop-control invariant directly: the input matches
         an exception-carrying glob AND a second glob with no exception, so pass 1
         must fall through to the second glob and deny outright.  A ``break``
@@ -1960,6 +1960,195 @@ class TestBuiltinDenyPatterns:
         )
         # Multi-line / heredoc-style body mentioning push.
         assert is_denied("git commit -m 'docs: explain when to push and when to rebase'") is None
+
+    # ── #8802: a destructive literal handed to a read-only search verb ──
+    # Assembled at runtime so this test module is not itself an un-greppable
+    # needle: a plain literal here would make the file impossible to search for
+    # by the very rule it exercises, which is the bug being fixed.
+    ROOT_WIPE = "rm -" + "rf /"
+    HOME_WIPE = "rm -" + "rf ~"
+
+    def test_allows_a_destructive_literal_as_a_search_operand(self) -> None:
+        """A read-only search verb cannot execute its operands, so a destructive
+        string handed to it as a PATTERN is text and must be ALLOWED.
+
+        Regression for #8802: ``local-destructive-rm-rf-root`` / ``-home`` are
+        plain literal patterns matched over the segment text, so grepping FOR
+        the rule's own subject matter was refused exactly as if the deletion had
+        been typed — which prevented nothing (the same work completes by moving
+        the payload into a file, which is not scanned) while blocking anyone
+        working ON these rules.
+        """
+        from kiro_crew.security import is_denied
+
+        for verb in ("grep -rn", "egrep -r", "fgrep"):
+            assert is_denied(f'{verb} "{self.ROOT_WIPE}" test/') is None, verb
+            assert is_denied(f'{verb} "{self.HOME_WIPE}" test/') is None, verb
+
+    def test_a_search_pattern_containing_an_alternation_is_still_denied(self) -> None:
+        """KNOWN LIMITATION, pinned deliberately (#8802).
+
+        The command that motivated the report puts a regex ALTERNATION in the
+        search pattern::
+
+            grep -rln "rm-rf-root\\|rm -rf /" test/
+
+        ``_CMD_SPLIT_RE`` is quote-unaware, so the ``|`` inside the quoted
+        pattern is read as a pipe and the command splits into
+        ``grep -rln "rm-rf-root\\`` and ``rm -rf /" test/``.  The second segment
+        genuinely looks like a bare deletion in command position, so the
+        verb-anchored carve-out cannot reach it — the exception is keyed to
+        segments that START with a search verb, and by design it must stay that
+        way or ``grep x | xargs <destructive>`` would be exonerated too.
+
+        Closing this case needs quote-aware SEGMENTATION, which is a separate and
+        much larger change (it also has to stay compatible with the
+        quote-NORMALIZED matching added for evasion resistance).  Asserting the
+        current behaviour rather than xfailing it, so the boundary is explicit and
+        a future segmentation fix has to update this test consciously.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied(f'grep -rln "rm-rf-root\\|{self.ROOT_WIPE}" test/') is not None
+        # The same search without the alternation IS exonerated — isolating the
+        # cause to segmentation rather than to the carve-out.
+        assert is_denied(f'grep -rln "{self.ROOT_WIPE}" test/') is None
+
+    def test_still_denies_the_real_destruction_and_any_chaining(self) -> None:
+        """The carve-out is anchored at the search verb, so it must not exonerate
+        a destructive command — including one chained after a real search.
+
+        This is the half that makes #8802 safe to fix: ``_CMD_SPLIT_RE`` splits on
+        every execution boundary, so the destructive SEGMENT is still evaluated in
+        its own right and the Pass 1 whole-string exception only defers to Pass 2.
+        """
+        from kiro_crew.security import is_denied
+
+        # Bare, and behind a wrapper that DOES execute its operands.
+        assert is_denied(self.ROOT_WIPE) is not None
+        assert is_denied(self.HOME_WIPE) is not None
+        assert is_denied(f"sudo {self.ROOT_WIPE}") is not None
+        assert is_denied(f"grep -rl x test/ | xargs {self.ROOT_WIPE}") is not None
+        # Chained after a genuine search, across every separator the splitter knows.
+        for joiner in ("&&", ";", "||", "|", "&", "\n"):
+            cmd = f'grep -rn "needle" test/ {joiner} {self.ROOT_WIPE}'
+            assert is_denied(cmd) is not None, joiner
+        # Command substitution, both spellings.
+        assert is_denied(f'grep -rn "$({self.ROOT_WIPE})" test/') is not None
+        assert is_denied(f'grep -rn "`{self.ROOT_WIPE}`" test/') is not None
+
+    def test_the_carve_out_does_not_exonerate_other_rules(self) -> None:
+        """The exception is keyed to the two rm patterns only, so a search verb
+        must not become a blanket allowlist for unrelated deny rules."""
+        from kiro_crew.security import is_denied
+
+        # A different local-destructive rule in the same segment as a search verb.
+        assert is_denied("grep -rn x test/ && mkfs.ext4 /dev/sda1") is not None
+
+    def test_a_search_verb_fragment_inside_an_operand_does_not_exonerate(self) -> None:
+        """A ``/grep `` fragment ANYWHERE in a destructive command must not exonerate it.
+
+        Regression for the first bypass found reviewing #8802's own fix. An
+        earlier revision also carried path-qualified globs (``*/grep *``) so that
+        ``/usr/bin/grep ...`` would be exonerated too. ``fnmatch`` is a full
+        match, but ``*`` crosses spaces, so a LEADING ``*`` is really an
+        unanchored substring test: ``*/grep *`` matches
+        ``rm -rf / /bin/grep x`` -- a genuine root wipe that merely lists a path
+        containing ``/grep `` among its operands -- and the deletion was ALLOWED.
+
+        Only the bare ``<verb> *`` form is safe, because it forces the segment to
+        BEGIN with the verb. The cost is that a path-qualified search is no
+        longer exonerated, asserted below so the trade-off is explicit rather
+        than looking like an oversight.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied(f"{self.ROOT_WIPE} /bin/grep x") is not None
+        assert is_denied(f"{self.ROOT_WIPE} x/grep y") is not None
+        assert is_denied(f"{self.HOME_WIPE} /usr/bin/grep z") is not None
+        # The accepted trade-off: a path-qualified search verb is NOT exonerated,
+        # because no glob can express "the first token's basename is the verb".
+        assert is_denied(f'/usr/bin/grep -rn "{self.ROOT_WIPE}" test/') is not None
+
+    def test_no_shell_active_construct_is_ever_exonerated(self) -> None:
+        """A command hidden in any expansion behind a search verb must stay denied.
+
+        Regression for the second and fourth bypasses found reviewing #8802's own
+        fix. ``_CMD_SPLIT_RE`` isolates ``;`` ``|`` ``&&`` ``&`` ``$(`` ``)``
+        backtick and newline, but NOT ``<(`` / ``>(`` / ``${`` / a bare ``(``. So
+        ``_split_segments`` cuts ``grep x <(<destructive>)`` only at the trailing
+        ``)``, and ``grep x ${ <destructive>;}`` only at the ``;`` -- in both
+        cases leaving the destructive command glued to the search verb instead of
+        isolated in its own command position, while bash still executes it.
+
+        The first attempt blocklisted just ``(`` and was defeated by the bash 5.3
+        funsub. ``_exception_eligible`` now refuses any view containing a
+        shell-active character, closing the class instead of chasing spellings.
+        """
+        from kiro_crew.security import is_denied
+
+        # Process substitution, input and output forms, and a bare subshell.
+        assert is_denied(f"grep x <({self.ROOT_WIPE}tmp/victim)") is not None
+        assert is_denied(f'grep -rn "x" <({self.ROOT_WIPE})') is not None
+        assert is_denied(f"grep x >({self.ROOT_WIPE}tmp/victim)") is not None
+        assert is_denied(f"grep x ({self.ROOT_WIPE})") is not None
+        # bash >= 5.3 funsub -- the opener that defeated the `(`-only guard.
+        assert is_denied(f"grep x ${{ {self.ROOT_WIPE};}}") is not None
+        assert is_denied(f"grep x ${{ {self.HOME_WIPE};}}") is not None
+        # Command substitution and backticks (already split, asserted anyway).
+        assert is_denied(f'grep -rn "$({self.ROOT_WIPE})" test/') is not None
+        assert is_denied(f'grep -rn "`{self.ROOT_WIPE}`" test/') is not None
+        # Confidence check: the plain search is still exonerated, so the guard
+        # narrowed exactly the shell-active forms and nothing else.
+        assert is_denied(f'grep -rn "{self.ROOT_WIPE}" test/') is None
+
+    def test_a_search_verb_that_can_execute_a_helper_is_not_exonerated(self) -> None:
+        """Only verbs with no exec flag are exonerated.
+
+        Regression for the third bypass found reviewing #8802's own fix. The
+        carve-out's premise is that the verb cannot execute its operands, and
+        that is a property of the specific tool, not of "being a search tool":
+        ``rg --pre <cmd>`` runs a preprocessor and ``ack --pager <cmd>`` runs a
+        pager, so ``rg --pre sh "<destructive>" payload.sh`` really does execute.
+
+        ``rg`` and ``ack`` were therefore dropped from the allowlist, which makes
+        the premise true rather than merely asserted. ``grep``/``egrep``/``fgrep``
+        have no flag that spawns a helper.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied(f'rg --pre sh "{self.ROOT_WIPE}tmp/victim" payload.sh') is not None
+        # Dropped wholesale, not just for the executing flag: a glob cannot tell
+        # `rg PATTERN` from `rg --pre sh PATTERN`, so the verb cannot be trusted.
+        assert is_denied(f'rg "{self.ROOT_WIPE}" src/') is not None
+        assert is_denied(f'ack "{self.ROOT_WIPE}" src/') is not None
+
+    def test_a_pipeline_into_an_interpreter_is_never_exonerated(self) -> None:
+        """A search piped into something that executes what it emitted must deny.
+
+        Regression for the fifth bypass found reviewing #8802's own fix.
+        ``grep '<destructive>' payload.py | python`` splits at the pipe, so the
+        Pass 2 grep segment looks innocent on its own and the bare ``python``
+        segment matches no rule -- the pipeline as a whole was allowed, and the
+        interpreter runs the line the search emitted.
+
+        Note the pipe cannot be caught in the Pass 2 segment (the splitter has
+        already consumed it). What closes this is refusing the separators in the
+        PASS 1 whole-string view, so the whole-string deny match stands instead
+        of deferring to the innocent-looking segment. Hence
+        ``_exception_eligible`` requires a single plain command, not merely one
+        free of expansion openers.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied(f"grep '{self.ROOT_WIPE}tmp/victim' payload.py | python") is not None
+        assert is_denied(f"grep '{self.ROOT_WIPE}' payload.sh | sh") is not None
+        assert is_denied(f"grep '{self.ROOT_WIPE}' f | bash -s") is not None
+        # A compound whose later stage is inert is denied for the same reason:
+        # an exception must not speak for more than one command.
+        assert is_denied(f"grep '{self.ROOT_WIPE}' f && echo done") is not None
+        # Confidence check: the single plain search remains exonerated.
+        assert is_denied(f'grep -rn "{self.ROOT_WIPE}" test/') is None
 
     def test_feature_push_not_blocked_by_prose_push_word_in_earlier_segment(self) -> None:
         """A legit feature-branch push must be ALLOWED even when an EARLIER
