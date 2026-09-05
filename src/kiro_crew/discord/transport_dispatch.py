@@ -86,6 +86,7 @@ from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import live_dashboard_slot, uploads_restricted
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorDispatchResult
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -835,11 +836,15 @@ class DiscordDispatcher:
                 # Loop-side: put the turn in the live dashboard window FIRST so
                 # the dashboard's own save serializes it in chronological
                 # position instead of appending it to the foreign tail.
-                mirror_mids = self._mirror_turn_to_live_slot(session_key, text, accumulated)
+
+                # Both copies of this row must carry the SAME body: append_if_absent
+                # dedupes on body plus mid, so a raw mirror also persists twice.
+                safe_text = redact_via_context(text)
+                mirror_mids = self._mirror_turn_to_live_slot(session_key, safe_text, accumulated)
                 await asyncio.to_thread(
                     self._persist_turn,
                     session_key,
-                    text,
+                    safe_text,
                     accumulated,
                     is_new_own_session,
                     agent=agent,
@@ -1700,6 +1705,10 @@ class DiscordDispatcher:
         """
         if self.conv_log is None:
             return
+        # This row is an EGRESS: persisted, then served to dashboard readers. The turn
+        # has already run, so scrubbing here cannot rewrite the prompt the model saw.
+
+        user_text = redact_via_context(user_text)
         if mirror_mids is not None:
             user_mid, assistant_mid = mirror_mids
             self.conv_log.append_if_absent(

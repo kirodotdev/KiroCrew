@@ -1322,12 +1322,23 @@ terminal outcome. Load reconstructs the typed record; a terminal current-version
 record with a contradictory active loop is deactivated. AutoNudge dashboard
 responses recursively pass every string in the structured monitor mapping through
 `redact_via_context`, including provider-controlled observation keys and values,
-before they leave the backend. Legacy loop fields retain their existing response
-shape. An unsupported monitor version is marked blocked in its compatibility view
-and retained for inspection rather than executed under an older policy; its raw
-future payload and outer active intent survive an unrelated store rewrite unchanged.
-A generic legacy Save with `active=true` likewise leaves that future outer intent untouched. Its inert
-compatibility view uses validated current identity values when
+before they leave the backend. Legacy loop fields are scrubbed through that same
+projection rather than retaining their prior response shape, and a loop whose
+`message` the scrub changed carries `message_redacted`, while a write whose
+`message` the backend declined to store carries `message_ignored`. An unvetted store
+answers both authorizers with 503 rather than persisting. Rows whose addressing fields
+fail vetting are held aside in a separate persisted `autonudge.quarantine.json`
+sidecar, written additively before the main store lands and compacted only once it
+has; a held row is never armed, so repairing it means moving it back into `loops`
+rather than restarting. An unreadable sidecar refuses every write in that process
+and is moved aside under a `.corrupt-<ts>` name, so recovery from that is a restart
+rather than a hand repair. An
+unsupported monitor version is marked blocked in its compatibility view and
+retained for inspection rather than executed under an older policy; its raw
+future payload and outer active intent survive an unrelated store rewrite
+unchanged. A generic legacy Save with `active=true` likewise leaves that future
+outer intent untouched. Its inert compatibility view uses validated current
+identity values when
 present and placeholders otherwise, so a future schema may rename those fields
 without making an older reader delete the raw record. Its compatibility view is
 inert under the older runtime without rewriting the outer active intent, allowing
@@ -1605,6 +1616,33 @@ crew that does not exist yet cannot have staged a picture.
 **Webhook Hooks**: POST `/api/hooks/agent` is the shared external ingress endpoint, but credentials are first-class **sources**: every newly minted source owns `{label, agent, enabled, require_signature}` and one bearer credential, and maps to one operator-selected installed agent. Admission order is global switch → auth throttle → bearer lookup without stamping → per-source `enabled` gate (before body read; paused returns 503 `source_disabled`) → bounded raw-body read → HMAC/replay → last-used stamp → JSON/body validation → mapped-agent resolution → in-flight/capacity gates → background task. A body `agent` may be omitted or equal the mapping; a conflict returns 409 `agent_conflict`. A deleted/unknown mapped agent returns 409 `destination_agent_unavailable` and never falls back. Bearer lookup, source admission, and signing-secret lookup remain separate store reads so concurrent revocation fails closed; all store and agent-discovery reads are off the event loop. Dashboard management: POST `/api/webhooks/tokens` `{label, agent, require_signature?}`, PATCH `/api/webhooks/tokens/{id}` with the exact allowlist `{agent?, enabled?, label?}`, DELETE the same id. Signing policy and credentials are immutable after mint, preserving one-time bearer/signing-secret reveal. Legacy `hooks.webhook_token` is a synthetic read-only source; pre-routing stored rows normalize to `agent: ""`, `enabled: true` and retain historical caller/default routing until explicitly assigned. The top-level Webhooks/Activity UI keeps source configuration separate from contexts/runs; the source rail contains no token table or operational rows. `sessionKey` must start with `hook:`, max concurrency is 6, sessions are destroyed after each turn, and registered context comes from `~/.kiro/crew/hooks.json`.
 
 **MCP Custom Servers** (manual JSON path — Add Custom modal + per-server Edit JSON): POST `/api/mcp/custom` `{servers: {name: spec}, enable?: bool=false}` — user-authored specs (stdio `command`/`args`/`env` XOR remote `url`/`scopes`/`clientId`/`headers`, unknown keys rejected by name; header names/values are shape-checked and a fresh spec carrying the redaction marker as a header value is refused — it means the user pasted a redacted read payload), validate-all-then-write (no partial batch), collision → 409 with `conflicts` list, servers land disabled unless `enable: true` (the modal's "Enable immediately" tick is the consent act). GET `/api/mcp/custom/{name}` — full editable spec including env (the list endpoint omits env; prefilling from it would drop vars on save). PUT `/api/mcp/custom/{name}` — replace spec, 404 when not Kiro Crew-managed, always preserves enabled/disabled state (editing is not consent to run; a pasted `disabled: false` cannot smuggle an enable). Non-allowlisted keys already on the entry (`disabledTools`, `autoApprove`, …) round-trip: an unmodified GET→PUT save succeeds and their on-disk values are preserved verbatim — they cannot be edited or removed via this endpoint (dropping `disabledTools` would silently widen the tool surface); modifying one → 400. `headers` straddles that line: an entry WITHOUT stored headers may author them on PUT like a fresh add, but once values exist on disk they join the carried set — reads redact header values, so an editable headers key would let the redaction markers overwrite the real credentials (modifying stored headers → 400 `stored_headers_not_editable`; changing them means remove + re-add, same as a `url` change with stored headers). Fresh POSTs carry nothing, so the tight allowlist still applies. All three SEL-audited; writes share the mcp.py file lock + entry helpers with discover-install. Consent-disabled entries (custom adds + registry installs) surface in the servers table as `Disabled` rows — `list_servers()` marks Kiro Crew-scope `disabled: true` entries (incl. when config sync mirrors the disable into the agent file) and a disabled server is never probed (a probe would spawn the unconsented process); the table's enable action is the reachable consent step. The refusal is enforced inside **`probe_server()`** — the one function every probe passes through, ahead of its local/remote dispatch — so a new per-server entry point cannot become a way around the consent gate by forgetting to pre-filter. `probe_all()` keeps its own `disabled` filter as defense-in-depth and to shape its result (disabled rows are omitted from `GET /api/mcp/probe` rather than returned with `status="disabled"`); a caller may add a friendlier error on top (Mochi's `GET /api/apps/mochi/mcp-tools/{name}` answers 409 `server_disabled`), but that is UX, not the safety property. The refusal deliberately does NOT write the probe cache: it is keyed by name and shared with `GET /api/mcp`, so recording an empty `disabled` result would erase the tool list an earlier real probe stored. `GET /api/mcp` rows carry `kirocrewManaged` (gates the Edit JSON action).
+
+### AutoNudge Quarantine Sidecar — Ordering Invariant
+
+`autonudge.quarantine.json` holds loop rows whose addressing fields (`id`, `slot_key`) failed
+vetting at load, so they are neither armed nor silently dropped. Because a held row exists in
+exactly two places — the sidecar, and the `loops` store it was removed from — the write order is
+the correctness property, and it lives in `_write_state`:
+
+1. Serialize the new `loops` payload to a temp file in the same directory, `flush` then `fsync`.
+2. Write the sidecar (`_write_quarantine_sidecar`) — **before** the main store is replaced.
+3. `replace_with_retry` the temp file onto `autonudge.json`, committing the new store.
+4. Compact the sidecar (`_compact_quarantine_sidecar`) — **after** the commit, and non-fatally.
+
+**The guarantee: a quarantined row is never the only durable copy in flight.** Step 2 precedes
+step 3, so a crash between them leaves the old complete store on disk — still containing the row —
+alongside a sidecar that also contains it. A crash after step 3 leaves the row in the sidecar,
+which is where the new store expects it. Step 4 is additive-then-compact rather than
+rewrite-in-place for the same reason: a crash mid-compact can leave a duplicate entry, which the
+reader tolerates, but never a window in which neither file holds the row.
+
+Two failure modes are deliberate refusals rather than best-effort recoveries. A load that could
+not vet the store latches `_load_refused`, and every later `_write_state` then raises
+`AutoNudgeStoreUnvetted` instead of persisting, because the in-memory list is empty for that reason
+rather than because the store is empty — writing would delete rows the operator still has to
+correct. An unreadable sidecar is moved aside under a `.corrupt-<ts>` name and refuses writes for
+the life of the process, so recovery is an operator action on a preserved file rather than an
+automatic rewrite that could discard held rows.
 
 ### Frontend (React SPA)
 

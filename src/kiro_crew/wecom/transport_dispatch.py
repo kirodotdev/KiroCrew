@@ -52,6 +52,7 @@ from kiro_crew.messaging.link import (
     release_conversation_location,
     seed_generation,
 )
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.wecom.attachments import process_wecom_attachments
 from kiro_crew.wecom.commands import (
@@ -378,6 +379,8 @@ class WeComDispatcher:
         """Record the turn to conversation_log (dashboard visibility + restart)."""
         if self.conv_log is None:
             return
+        # This row is an EGRESS: persisted, then served to dashboard readers.
+        user_text = redact_via_context(user_text)
         self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
             self.conv_log.append(

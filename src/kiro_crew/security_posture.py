@@ -265,6 +265,21 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes through the credential + exfiltration-URL chain before egress.",
     ),
     (
+        "Auto-nudge loop inventory",
+        "dashboard/handlers/autonudge.py",
+        "A nudge loop's own text fields -- its `message` and `stopped_reason` -- "
+        "served by `GET /api/autonudge` and its per-loop detail, and echoed back on the "
+        "`POST` and `PATCH` responses. `message` is the instruction re-delivered to the "
+        "model every cycle, and three producers reach `svc.add` without passing through the "
+        "arming authorizer (the goal loop, auto-research, and issue-radar, the last "
+        "composing its text from external issue bodies), while a hand-edited "
+        "`autonudge.json` bypasses that authorizer too -- so the stored value can be text "
+        "nothing has scanned. `_serialize` therefore runs the credential + "
+        "exfiltration-URL chain over every string it returns except the `id` and `slot_key` "
+        "the client uses to address the loop, which must survive verbatim or the row cannot "
+        "be acted on.",
+    ),
+    (
         "Chat pin previews",
         "dashboard/chat_pins.py",
         "Message previews submitted to POST /api/chat/pins are persisted to "
@@ -594,7 +609,10 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Slack cron / notification posts",
         "slack/gateway.py",
-        "Job names, cron results, and error strings before they reach a channel.",
+        "Job names, cron results, and error strings before they reach a channel. Also "
+        "the auto-nudge loop's `message` before the `autonudge_state` broadcast reaches "
+        "every connected dashboard client -- a distinct egress from the channel posts, "
+        "and one a producer that bypasses the arm-time authorizer can reach.",
     ),
     (
         "Subagent results",
@@ -850,6 +868,84 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "ZWSP insertion is itself a post-scan transformation. Enforced at this sink "
         "rather than per renderer for the same reason the max_buttons cap lives in "
         "shared code: a channel cannot forget what it does not call.",
+    ),
+    (
+        "Webex persisted transcript rows",
+        "webex/transport_dispatch.py",
+        "The turn this channel writes to the conversation log, which is then served "
+        "back to dashboard readers. The user side of that row can carry store-sourced "
+        "text no ingress scan ever saw -- an auto-nudge goal composed from a "
+        "hand-edited store, delivered here as a synthetic inbound whose single `text` "
+        "field is both the prompt and the row. It is therefore redacted AT THE SINK, "
+        "inside `_persist_turn`, which runs after the turn has completed: the prompt "
+        "the model received is already consumed and cannot be rewritten, so the "
+        "instruction survives verbatim while the persisted copy is scrubbed. The "
+        "sibling channels that own a persister carry the same call at the same "
+        "boundary, for two different reasons: `discord/transport_dispatch.py` can "
+        "receive that synthetic inbound, while `telegram/transport_dispatch.py` cannot "
+        "-- `binding_key_for` honours only `slack:`/`discord:`/`webex:`, so no nudge is "
+        "ever armed on a telegram session and its scrub covers ordinary inbound user "
+        "text on the same persisted-row egress.",
+    ),
+    (
+        "Feishu persisted transcript rows",
+        "feishu/transport_dispatch.py",
+        "Same persisted-row egress as the Discord/Telegram/Webex persisters: the user side "
+        "of the turn this channel writes to the conversation log is served back to dashboard "
+        "readers. No nudge synthetic inbound reaches it -- `binding_key_for` honours only "
+        "`slack:`/`discord:`/`webex:` -- so the scrub covers ordinary inbound user text, "
+        "which is the same reader-facing sink and therefore the same rule.",
+    ),
+    (
+        "Teams persisted transcript rows",
+        "teams/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. No nudge "
+        "is armed on a teams session, so this covers ordinary inbound user text.",
+    ),
+    (
+        "WeCom persisted transcript rows",
+        "wecom/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. No nudge "
+        "is armed on a wecom session, so this covers ordinary inbound user text.",
+    ),
+    (
+        "Weixin persisted transcript rows",
+        "weixin/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. No nudge "
+        "is armed on a weixin session, so this covers ordinary inbound user text.",
+    ),
+    (
+        "WhatsApp persisted transcript rows",
+        "whatsapp/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. No nudge "
+        "is armed on a whatsapp session, so this covers ordinary inbound user text.",
+    ),
+    (
+        "iMessage persisted transcript rows",
+        "imessage/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. This "
+        "module also calls `redact_handle` for gate-side log hygiene, which is why its "
+        "siblings `imessage/client.py` and `imessage/transport.py` are non-egress; adding "
+        "the transcript scrub here made THIS one a content sink, so it is registered "
+        "rather than allowlisted. No nudge is armed on an imessage session, so the scrub "
+        "covers ordinary inbound user text.",
+    ),
+    (
+        "Slack persisted transcript rows",
+        "slack/transport_dispatch.py",
+        "The inbound user row this channel writes to the conversation log, served back to "
+        "dashboard readers. Scrubbed for the PERSISTED copy only: the same `text` still "
+        "reaches `build_message`, so the model prompt stays verbatim. This module's OTHER "
+        "user rows do not call a redactor here -- they go through "
+        "`save_conversation_turn`, which scrubs on behalf of all twelve of its Slack "
+        "callers, so this entry covers the direct append and that helper covers the rest. "
+        "The two assistant appends need no call: `_redact_at_write_boundary` already "
+        "scrubs every role other than `user`, and that exemption is the gap being closed.",
     ),
     (
         "Webex delivery",
@@ -1321,8 +1417,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # no output of its own -- the registered sinks are the modules that call
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
-        # ``autonudge.py``'s ``_load`` credential-scrubs a persisted ``banner`` in
-        # memory and attempts to persist the masked value back, so a banner
+        # ``_load`` credential-scrubs a persisted ``banner`` and ``message`` in
+        # memory and attempts to persist the masked value back, so a value
         # written to the store out-of-band (a hand-edited file, or a direct
         # ``AutoNudgeService.add`` that skips the authorizer) is masked on the next
         # load rather than served raw — best-effort, since a failed re-persist
@@ -1332,6 +1428,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # this is at-rest sanitisation at the trust boundary where the store is
         # read, not an egress pass.
         "autonudge.py",
+        # The other inbound edge: ``autonudge_authz`` scrubs a ``message`` arriving over
+        # the API, and owns no output of its own.
         "autonudge_authz.py",
         # Gate-side log hygiene for a channel whose user identity IS a phone
         # number or an Apple Account email. ``redact_handle`` shortens a handle
@@ -1348,7 +1446,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # can reassemble a credential that scan could not see.
         "imessage/client.py",
         "imessage/transport.py",
-        "imessage/transport_dispatch.py",
         # The tool-permission prompt and its SEL record. Neither crosses a
         # machine boundary: the prompt is written to the operator's OWN terminal
         # in their own process, and the audit line goes to the local SEL log. The

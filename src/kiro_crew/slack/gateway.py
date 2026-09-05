@@ -117,8 +117,8 @@ from kiro_crew.dashboard.cron_inject import (
     prefetch_cron_history,
 )
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
+from kiro_crew.dashboard.handlers.autonudge import _serialize as _serialize_loop_for_clients
 from kiro_crew.dashboard.handlers.autonudge import (
-    _redact_monitor_value,
     compose_nudge_body,
     render_nudge_message,
 )
@@ -228,7 +228,6 @@ from kiro_crew.monitoring.completion import (
 from kiro_crew.monitoring.models import (
     MonitorActionDisposition,
     MonitorDispatchResult,
-    monitor_state_public_dict,
 )
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
@@ -5734,8 +5733,11 @@ class GatewayOrchestrator:
         # Persist for dashboard replay (mirrors subagent Slack injection).
         if self.conv_log and not (is_thread_temporary(key) or is_thread_incognito(key)):
             try:
-                safe_nudge, _ = redact_exfiltration_urls(tagged)
-                safe_nudge, _ = redact_credentials(safe_nudge)
+                # Same contract as the dashboard replay row below: the nudge text
+                # carries store-sourced ``loop.message``, so it goes through the
+                # context shim, whose composed-host patterns the baseline pair
+                # does not apply. ``response`` is model output, not store text.
+                safe_nudge = redact_via_context(tagged)
                 safe_response, _ = redact_exfiltration_urls(response or "")
                 safe_response, _ = redact_credentials(safe_response)
                 await save_conversation_turn_off_loop(
@@ -6072,16 +6074,13 @@ class GatewayOrchestrator:
         # fall through to ``tagged``.
         banner = loop.banner.strip() if isinstance(loop.banner, str) else ""
         if banner and wake_message is None:
-            # Credential redaction lives at the banner's single owner — the
-            # authorized write paths (incl. /goal via ``normalize_banner``) and
-            # ``_load`` for a hand-edited store — so ``loop.banner`` is already
-            # scrubbed here and every egress (this row, ``GET /api/autonudge``,
-            # the WS broadcast) serves the same scrubbed value. No per-fire,
-            # per-field scrub at this sink.
             shown = render_nudge_message(banner, loop.stop_sentinel_path)
             visible = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{shown}"
         else:
             visible = tagged
+        # REDACT AT THE SINK after BOTH arms: ``{{STOP_FILE}}`` substitution injects the
+        # sentinel path after the banner's own scrub. ``tagged`` stays raw -- it is the PROMPT.
+        visible = redact_via_context(visible)
         from kiro_crew.dashboard.chat import (
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
         )
@@ -6135,6 +6134,9 @@ class GatewayOrchestrator:
         assert dashboard_state is not None and turn_slot is not None
 
         def _append_nudge() -> None:
+            # ``visible`` rather than ``tagged``: identical unless the sink scrub
+            # above rewrote text nothing had scanned, and ``_run_chat`` below still
+            # receives the full unredacted prompt either way.
             turn_slot.append(
                 "nudge",
                 visible,
@@ -6370,24 +6372,49 @@ class GatewayOrchestrator:
             if event == "expired" and loop is not None:
                 self._notify_nudge_expired(loop)
             if self.dashboard_state and loop is not None:
+                # SCRUB BEFORE THE BROADCAST. ``message`` is the only free-text
+                # field in this payload and it reaches every connected dashboard
+                # client over ``autonudge_state``, rendered raw by
+                # ``AutoNudgePopover``. The REST serializer already scrubs it, so
+                # leaving this path bare left one autonudge egress uncovered: a
+                # credential arriving through a producer that bypasses the
+                # authorizer -- the goal loop, auto-research, issue-radar -- or a
+                # hand-edited store still went out here verbatim.
+                #
+                # Same rule as the REST serializer, and literally the same
+                # FUNCTION, so the two surfaces cannot disagree about what counts
+                # as credential-shaped -- including for a non-string ``message``,
+                # which a hand-edited store or a direct ``svc.add`` can supply
+                # since the dataclass annotation is not enforced on
+                # ``NudgeLoop(**raw)``. The remaining scalar fields are addressing
+                # (``id``/``slot_key``, which ``_load`` refuses outright if
+                # credential-shaped or non-string) or numeric and boolean; the
+                # structured ``monitor`` and ``stopped_reason`` fields added below
+                # carry provider-controlled text and get their own redactors.
+                # DERIVED from the REST denylist projection, not rebuilt field by field,
+                # so a new free-text field is scrubbed on both surfaces or neither.
+                projected = _serialize_loop_for_clients(loop)
                 loop_payload: dict[str, Any] = {
-                    "id": loop.id,
-                    "slot_key": loop.slot_key,
-                    "message": loop.message,
-                    "idle_secs": loop.idle_secs,
-                    "max_cycles": loop.max_cycles,
-                    "max_runtime_secs": loop.max_runtime_secs,
-                    "cycle_count": loop.cycle_count,
-                    "active": loop.active,
-                    "last_fire_ts": loop.last_fire_ts,
+                    key: projected[key]
+                    for key in (
+                        "id",
+                        "slot_key",
+                        "message",
+                        "message_redacted",
+                        "idle_secs",
+                        "max_cycles",
+                        "max_runtime_secs",
+                        "cycle_count",
+                        "active",
+                        "last_fire_ts",
+                    )
+                    if key in projected
                 }
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
-                    loop_payload["monitor"] = _redact_monitor_value(
-                        monitor_state_public_dict(loop.monitor)
-                    )
+                    loop_payload["monitor"] = projected.get("monitor")
                     loop_payload["next_due_ts"] = loop.next_due_ts
-                    loop_payload["stopped_reason"] = loop.stopped_reason
+                    loop_payload["stopped_reason"] = projected.get("stopped_reason")
                 broadcast = (
                     self.dashboard_state.broadcast_ws_owners
                     if is_structured_monitor_loop(loop)

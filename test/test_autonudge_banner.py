@@ -234,6 +234,24 @@ class TestBannerDivergesTheRowFromThePrompt:
         assert loop.message in prompt
 
     @pytest.mark.asyncio
+    async def test_a_credential_shaped_sentinel_is_scrubbed_in_the_row_not_the_prompt(self) -> None:
+        """``{{STOP_FILE}}`` substitutes the sentinel AFTER the banner's write-path scrub.
+
+        Without a sink pass over the composed row, that path reaches the persisted and
+        broadcast transcript raw. The prompt must keep it: the model has to be able to
+        write the real file.
+        """
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        loop = _loop(
+            message="run until done: {{STOP_FILE}}",
+            banner="halt: {{STOP_FILE}}",
+            stop_sentinel_path=f"/tmp/.stop-{secret}",
+        )
+        row, prompt = await _fire(loop)
+        assert secret not in row, f"credential-shaped sentinel reached the persisted row: {row!r}"
+        assert secret in prompt, "the model lost the real sentinel path it must write"
+
+    @pytest.mark.asyncio
     async def test_the_banner_is_the_only_thing_shortened(self) -> None:
         """A negative control on the saving the field exists to deliver.
 
