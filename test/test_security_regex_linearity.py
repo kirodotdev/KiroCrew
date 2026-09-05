@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 
 import pytest
 
@@ -291,46 +292,130 @@ def inspect_source(func: object) -> str:
     return inspect.getsource(func)  # type: ignore[arg-type]
 
 
-def test_long_nonshell_line_does_not_blow_up() -> None:
-    """Catastrophe ceiling for Mesh-3693.
+def _best_of(fn: Callable[[str], object], arg: str, reps: int = 3) -> float:
+    """Return the MIN elapsed ``time.perf_counter()`` over ``reps`` calls.
 
-    A ~20 KB newline-free non-shell string is the worst case for the old anchor:
-    eleven branches each retried a greedy ``.*`` from every offset. On the dev box
-    that form took ~27 s; the rewritten anchor takes ~2.0 s -- a ~14x separation,
-    which is what this test actually keys on.
-
-    Two deliberate choices keep it off the flake list, both learned from a 6.27 s
-    reading on a 16-worker CI shard against the old 6.0 s ceiling:
-
-    * ``min()`` over two repeats, after a warm-up call. The first call pays the
-      one-time ``_build_sensitive_regex`` compile (~0.12 s) and ``min`` discards
-      scheduler interference rather than averaging it in.
-    * a 20 s ceiling, not a ~4x margin over the dev-box reading. The measured
-      contention factor on a loaded shard is ~3.2x (2.0 s -> 6.3 s), so 20 s
-      leaves ~3x headroom above the worst observed fixed-path time while the old
-      form -- ~27 s unloaded, ~86 s at that same contention factor -- still
-      overshoots by >4x.
-
-    This is a catastrophe ceiling, not a benchmark. The DETERMINISTIC net for the
-    specific regression it names is
-    :func:`test_sensitive_anchor_has_no_leading_wildcard`, which reads the anchor
-    out of the source and cannot flake at all; keep that one primary.
+    Min-of-N cancels scheduler noise on a loaded runner far better than a single
+    sample or a mean: interference can only ADD time to a sample, so the minimum
+    is the closest observable to the code's intrinsic cost.
     """
-    blob = "abcdefgh " * 2500
-    assert len(blob) > 20_000
-    # Warm-up: pays the one-time regex build so it is not billed to a sample.
-    verdict = is_sensitive_bash_command(blob)
-    assert bool(verdict) is False
-    samples = []
-    for _ in range(2):
+    best = float("inf")
+    for _ in range(reps):
         started = time.perf_counter()
-        is_sensitive_bash_command(blob)
-        samples.append(time.perf_counter() - started)
-    elapsed = min(samples)
-    assert elapsed < 20.0, (
-        f"is_sensitive_bash_command took {elapsed:.2f}s on a 20 KB line "
-        f"(samples: {[f'{s:.2f}' for s in samples]}) -- "
-        "a leading `.*` in the sensitive-path anchor is quadratic"
+        fn(arg)
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
+def test_long_nonshell_line_does_not_blow_up() -> None:
+    """Complexity-class guard for Mesh-3693 -- a calibrated ratio, not a wall clock.
+
+    A long newline-free non-shell string is the worst case for the old anchor:
+    eleven branches each retried a greedy ``.*`` from every offset. Earlier
+    versions of this test pinned an absolute ceiling (6 s, then 20 s) derived
+    from one dev box (~1.5-2.0 s fixed, ~27 s pre-fix -- history only). A loaded
+    16-worker CI shard then took 6.54 s down the FIXED path and failed a PR whose
+    diff could not touch the measured code: an absolute ceiling mis-attributes
+    runner slowness as a complexity regression (#8374).
+
+    A naive two-size ratio (t_20k / t_10k) does NOT work here, by measurement:
+    the anchor's per-separator work inside the large alternation makes even the
+    fixed form scale ~4x per input doubling on this blob shape, the same
+    doubling signature as the quadratic form -- only the CONSTANT separates them
+    (~14-20x at equal size). So the guard is the issue's other suggestion, a
+    same-run measured baseline: compile a deliberately quadratic REFERENCE from
+    the live pattern (the exact ``.*`` spelling Mesh-3693 removed) and require
+    the live pattern to beat it by a wide factor on the same input in the same
+    run. Live and reference samples are INTERLEAVED at equal repetitions and
+    compared min-to-min, so a contention burst lands on both sides instead of
+    biasing one; the runner's constant slowness multiplies both minima and
+    cancels out of the ratio. If the ``.*`` comes back, live == reference and
+    the ratio collapses to ~1x, far below the bar.
+
+    Scope, stated plainly: this ratio detects the leading-``.*`` regression
+    class specifically. A quadratic blowup of a DIFFERENT shape (say a nested
+    quantifier added elsewhere in the alternation) slows live and reference
+    together and can pass the ratio; such shapes are covered only by the
+    backstop below and by :func:`test_sensitive_anchor_has_no_leading_wildcard`,
+    which reads the anchor out of the source and cannot flake at all -- keep
+    that one primary.
+
+    The absolute backstop is SELF-CALIBRATING: the cap scales with the same-run
+    quadratic reference timing (never below 60 s), so a runner slow enough to
+    inflate the healthy path inflates the cap with it -- unlike the fixed
+    ceilings this test used to have. It detects, not prevents: it runs after the
+    measured call returns, so a truly unbounded hang is bounded by the CI job
+    timeout, not by this assert.
+    """
+    blob_20k = "abcdefgh " * 2500
+    assert len(blob_20k) > 20_000
+    # Verdict unchanged: the blob is not a sensitive command. The first call
+    # also pays the one-time regex build so it is not billed to a sample.
+    assert bool(is_sensitive_bash_command(blob_20k)) is False
+
+    # ── Same-run calibrated baseline ──
+    from kiro_crew import security as security_mod
+
+    live = security_mod._get_sensitive_re()
+    fixed_anchor = r"""(?:^|[\s'\"=:,;])"""
+    quad_anchor = r"""(?:^|.*[\s'\"=:,;])"""
+    # Normalize first so that if the live pattern ALREADY carries the quadratic
+    # spelling, live and reference compile identically and the ratio assertion
+    # below is what fails (rather than a spelling assertion masking it).
+    base = live.pattern.replace(quad_anchor, fixed_anchor)
+    assert fixed_anchor in base, (
+        "sensitive-path anchor spelling changed -- update fixed_anchor/quad_anchor "
+        "here together with test_sensitive_anchor_has_no_leading_wildcard"
+    )
+    quad_ref = re.compile(base.replace(fixed_anchor, quad_anchor), live.flags)
+
+    # ~5.6 KB keeps the deliberately quadratic reference affordable (~2 s
+    # unloaded per sample) while the separation stays ~14-20x. Interleave the
+    # two patterns at EQUAL reps and take each side's min: a descheduling spike
+    # during any single sample is discarded by min(), and a sustained
+    # contention window covers adjacent live and reference samples alike, so
+    # neither side is systematically favored.
+    small = "abcdefgh " * 625
+    live.search(small)  # warm-up
+    t_live = float("inf")
+    t_ref = float("inf")
+    for _ in range(3):
+        started = time.perf_counter()
+        live.search(small)
+        t_live = min(t_live, time.perf_counter() - started)
+        started = time.perf_counter()
+        quad_ref.search(small)
+        t_ref = min(t_ref, time.perf_counter() - started)
+
+    # Floor guard: below ~20 ms a sample is timer granularity and cache noise.
+    # The skip window is 10x the floor because the ratio bar needs
+    # t_ref > 4 * floor to be clearable at all once t_live clamps to the floor;
+    # skipping below 10x leaves margin above that boundary instead of failing a
+    # healthy pattern on a machine merely fast enough to shrink the reference.
+    floor = 0.02
+    if t_ref < floor * 10:
+        return
+    ratio = t_ref / max(t_live, floor)
+    assert ratio > 4.0, (
+        f"the live sensitive-path pattern is only {ratio:.1f}x faster than a "
+        f"deliberately quadratic (leading `.*`) reference on the same input in "
+        f"the same run (t_live={t_live:.3f}s, t_ref={t_ref:.3f}s; healthy "
+        "separation is ~14-20x, a re-introduced `.*` gives ~1x). The same-run "
+        "reference cancels the runner's constant slowness factor, so this "
+        "failure indicates a real complexity regression, not a loaded runner."
+    )
+
+    # Backstop, NOT the guarded property: catches a catastrophic blowup of a
+    # shape the ratio cannot see (see the docstring). Self-calibrating -- the
+    # cap scales with the same-run reference timing so runner slowness raises
+    # the cap along with the measurement; 60 s remains as the unloaded floor.
+    t_20k = _best_of(is_sensitive_bash_command, blob_20k, reps=2)
+    cap = max(60.0, 20.0 * t_ref)
+    assert t_20k < cap, (
+        f"is_sensitive_bash_command took {t_20k:.2f}s on a 20 KB line "
+        f"(self-calibrated cap {cap:.1f}s) -- this is the catastrophic-"
+        "regression backstop, not the complexity guard; the calibrated ratio "
+        "above is the guarded property"
     )
 
 
