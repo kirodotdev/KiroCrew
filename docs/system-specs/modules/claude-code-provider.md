@@ -318,11 +318,13 @@ naming what is lost.
 
 `_spawn` also merges `extra_env` into the child environment, which is how a
 caller-supplied `CLAUDE_CONFIG_DIR` reaches the adapter
-(`test_spawn_forwards_claude_config_dir_from_extra_env`). The public core does not
-set that variable itself: an isolated CC config root (seeding a Crew-owned
-directory from the user's `~/.claude`, keeping credentials and models while
-stripping inherited `permissions` that would pre-approve past Crew's gate) is
-**not implemented here** — see the known gap below.
+(`test_spawn_forwards_claude_config_dir_from_extra_env`). The gateway contract is
+to forward inherited `ANTHROPIC_*` and `CLAUDE_CODE_*` variables to the harness
+child, so the spawn scrub list must not grow to cover either namespace. The public
+core does not set `CLAUDE_CONFIG_DIR` itself: an isolated CC config root (seeding a
+Crew-owned directory from the user's `~/.claude`, keeping credentials and models
+while stripping inherited `permissions` that would pre-approve past Crew's gate)
+is **not implemented here** — see the known gap below.
 
 ### Known gap: the user's global `~/.claude` is inherited
 

@@ -1630,6 +1630,37 @@ class TestBuildLauncherScript:
             ), f"{level}: launcher references un-importable module(s) {forbidden}"
 
 
+class TestAgentEnvPassthroughContract:
+    """Pin the claude-code-provider env-passthrough contract.
+
+    Inherited ``ANTHROPIC_*`` / ``CLAUDE_CODE_*`` variables must keep flowing
+    to claude-harness children (docs/system-specs/modules/claude-code-provider.md,
+    env-passthrough section); the custom-endpoint guide
+    (docs/guides/custom-llm-backend.md) depends on them reaching the child. If
+    either scrub list grows to cover these namespaces, this fails red — the
+    failure a green-CI hardening pass would otherwise ship silently.
+    """
+
+    _PASSTHROUGH_KEYS = [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+        "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+    ]
+
+    def test_anthropic_and_claude_code_env_survive_agent_subprocess_scrub(self):
+        # Both lists are prefix-matched (``startswith`` in ``scrub_env`` and
+        # ``scrub_agent_denied_env``), so assert prefix semantics, not bare
+        # membership — a prefix entry like "ANTHROPIC_" would never equal a key.
+        for key in self._PASSTHROUGH_KEYS:
+            assert not any(key.startswith(p) for p in _SENSITIVE_ENV_PREFIXES), key
+            assert not any(key.startswith(p) for p in sandbox_mod._AGENT_DENIED_ENV_KEYS), key
+        # And the ACP spawn path's own parent-side scrub passes them through.
+        env = {key: "x" for key in self._PASSTHROUGH_KEYS}
+        assert sandbox_mod.scrub_agent_subprocess_env(env) == env
+
+
 @_POSIX_ONLY
 class TestHardlinkScanBudget:
     """Step-7 pre-exec hardlink scan: per-root budgets + loud truncation.
