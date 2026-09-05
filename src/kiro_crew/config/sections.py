@@ -61,6 +61,9 @@ logger = logging.getLogger("kiro_crew.config.loader")
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
+# Ceiling for a WHOLE orchestrator plan. The per-stage timeout multiplies by
+# stage count, so this is the only bound on total unattended runtime.
+DEFAULT_MAX_PLAN_DURATION = 7200  # 2 h
 # Auto-compaction threshold, as a percentage of the context window. Named
 # because two code paths need it — the dataclass field default (used only when
 # there is no config file) and the dict-load fallback in ``load()`` (used when
@@ -1359,6 +1362,16 @@ class OrchestratorConfig:
         default=1800,
         metadata=_meta(
             "Stage Timeout", "Max seconds per stage before auto-run stops. Default 30 min."
+        ),
+    )
+    max_plan_duration_seconds: int = field(
+        default=DEFAULT_MAX_PLAN_DURATION,
+        metadata=_meta(
+            "Max Plan Duration",
+            "Ceiling for a WHOLE auto-run plan in seconds, checked at each stage "
+            "boundary, with one warning at 75% of the budget. The per-stage "
+            "timeout above multiplies by stage count, so without this a long "
+            "plan can run unattended for hours. 0 disables. Default 2 h.",
         ),
     )
 

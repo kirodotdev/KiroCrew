@@ -2844,6 +2844,18 @@ class KiroCrewConfig:
                 stage_timeout_seconds=_safe_int(
                     orchestrator_data.get("stage_timeout_seconds", 1800), 1800
                 ),
+                # Default read off the dataclass rather than imported: the loader's
+                # re-export list from config.sections is a frozen boundary snapshot
+                # (test_config_module_boundaries), and this keeps
+                # DEFAULT_MAX_PLAN_DURATION as the single source of truth without
+                # adding an alias to it.
+                max_plan_duration_seconds=_safe_int(
+                    orchestrator_data.get(
+                        "max_plan_duration_seconds",
+                        OrchestratorConfig.max_plan_duration_seconds,
+                    ),
+                    OrchestratorConfig.max_plan_duration_seconds,
+                ),
             ),
             watchdog=WatchdogConfig(
                 check_after_secs=_safe_float(watchdog_data.get("check_after_secs", 60.0), 60.0),
