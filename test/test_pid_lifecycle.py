@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
@@ -365,6 +366,58 @@ class TestCleanupOrphanedSessions:
         # bad!name still exists (unlink failed gracefully), valid one cleaned up
         assert (tmp_path / "session_pid_bad!name.txt").exists()
         assert not (tmp_path / "session_pid_99999.txt").exists()
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="tids share the pid space on Linux only")
+    def test_pid_file_recycled_as_a_thread_is_deleted(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A mapping whose pid now names a THREAD of a live process is stale.
+
+        Linux draws tids from the pid space and lets you signal one, so such a
+        pid passes ``pid_exists`` and the mapping used to survive forever. It is
+        not inert while it lingers: the sidecar binds pid + session key but not
+        process identity, so ``peer_resolve`` would answer for whatever process
+        holds that pid with the previous owner's session key.
+
+        Uses a real live thread's native tid rather than a fake ``/proc``, so
+        the test exercises the same kernel behaviour that produced the bug.
+        """
+        from kiro_crew.session_pid import cleanup_orphaned_sessions
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        session_pid_file.write_text("")
+
+        tid_box: dict[str, int] = {}
+        release = threading.Event()
+        captured = threading.Event()
+
+        def _hold() -> None:
+            tid_box["tid"] = threading.get_native_id()
+            captured.set()
+            release.wait(timeout=30)
+
+        holder = threading.Thread(target=_hold, daemon=True)
+        holder.start()
+        assert captured.wait(timeout=30), "helper thread never reported its tid"
+        tid = tid_box["tid"]
+        assert tid != os.getpid(), "native_id must differ from the group leader"
+
+        try:
+            thread_map = tmp_path / f"session_pid_{tid}.txt"
+            leader_map = tmp_path / f"session_pid_{os.getpid()}.txt"
+            thread_map.write_text("sess-recycled-as-thread")
+            leader_map.write_text("sess-live-leader")
+
+            # NOT patching os.kill: both pids are genuinely signalable here,
+            # which is exactly the condition the old predicate could not split.
+            with patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0):
+                cleanup_orphaned_sessions()
+
+            assert not thread_map.exists(), "a pid that is only a thread must be pruned"
+            assert leader_map.exists(), "a live thread-group leader must be retained"
+        finally:
+            release.set()
+            holder.join(timeout=30)
 
 
 class TestResetStateUntracksParentPid:
