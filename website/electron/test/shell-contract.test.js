@@ -68,7 +68,11 @@ test("packaging allowlist covers every relatively-required module", () => {
 
 test("packaging allowlist has no stale entries", () => {
   const listed = require(path.join(ROOT, "package.json")).build.files;
-  const stale = listed.filter((f) => !fs.existsSync(path.join(ROOT, f)));
+  // EXTERNALLY-MANAGED is a build-time input build-desktop.sh places on demand
+  // (KIROCREW_MANAGED_INSTALL_MARKER), not checked-in source -- absent in a
+  // checkout by design. See packaging.test.js BUILD_TIME_INPUTS.
+  const buildTimeInputs = new Set(["EXTERNALLY-MANAGED"]);
+  const stale = listed.filter((f) => !buildTimeInputs.has(f) && !fs.existsSync(path.join(ROOT, f)));
   assert.deepStrictEqual(
     stale,
     [],

@@ -179,7 +179,7 @@ from kiro_crew.safety_override import (
     take_dropped_grant,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.sel import sel, warm_sel_singleton
+from kiro_crew.sel import sel, sel_is_warm, warm_sel_singleton
 from kiro_crew.skill_usage import register_skill_read_observer
 from kiro_crew.skills import SkillsLoader, set_pending_consumed_hook, set_pending_staged_hook
 from kiro_crew.stall_attribution import attribute_dump, describe
@@ -473,12 +473,18 @@ async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
       raise, and an unguarded write would turn the refusal into a 500: losing
       the denial in order to report it.
 
-    No thread hop: the SEL singleton is warmed at startup
+    No thread hop on the healthy path: the SEL singleton is warmed at startup
     (:func:`kiro_crew.sel.warm_sel_singleton`, awaited by both start paths
     before the middleware chain is built), so ``log_api_access`` here only
     enqueues to the writer thread (after its one-time start on first
-    ``log()``) (#8608). The guard stays because a FAILED
-    warm leaves construction to retry on this thread and possibly raise.
+    ``log()``) (#8608). The warm is best-effort, though: when it FAILED, the
+    next ``sel()`` retries ``_init_locked`` -- trust-dir creation, key load,
+    a tail read of the log -- on the calling thread, and this helper runs on
+    the event loop for every denied request. So the hop is kept for exactly
+    that case, gated on :func:`kiro_crew.sel.sel_is_warm`: two attribute
+    reads on the healthy path, a worker thread on the degraded one, never
+    blocking file I/O on the loop. The ``except`` stays because construction
+    can raise on either path.
 
     Calling this CLAIMS the request (:func:`origin.mark_audit_claimed`) so the
     deny-audit boundary outer to every barrier does not record the same refusal
@@ -487,7 +493,8 @@ async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
     boundary buys nothing.
     """
     mark_audit_claimed(request)
-    try:
+
+    def _write() -> None:
         sel().log_api_access(
             caller=caller,
             operation=f"{request.method} {request.path}",
@@ -495,6 +502,12 @@ async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
             resources=request.path,
             error=error,
         )
+
+    try:
+        if sel_is_warm():
+            _write()
+        else:
+            await asyncio.to_thread(_write)
     except Exception:
         logger.warning("Failed to log a middleware denial to SEL", exc_info=True)
 
