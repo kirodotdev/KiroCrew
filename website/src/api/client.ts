@@ -3268,8 +3268,10 @@ export const api = {
   exportPlanYaml: async (taskId: string) => {
     const r = await get('/api/taskrunner/' + encodeURIComponent(taskId) + '/plan.yaml')
     if (!r.ok) {
-      const t = await r.text()
-      throw new ApiError(r.status, t || `HTTP ${r.status}`)
+      // Through the same chokepoint as `j`: unwraps the {"error": …} envelope
+      // into the human message and journals the failure, so the ErrorNotice
+      // this rejection lands on shows prose instead of raw JSON (#8625).
+      throw apiFailure(r, await r.text())
     }
     const blob = await r.blob()
     const cd = r.headers.get('Content-Disposition') || ''

@@ -3449,6 +3449,8 @@
       "connection_error": "Connection error",
       "could_not_start_a_new_session": "Could not start a new session",
       "could_not_start_session_message_restored": "Could not start a new session: {{error}}. Your message was restored — send it again to retry.",
+      "could_not_steer": "Couldn't steer — your message is back in the composer",
+      "steer_may_not_have_arrived": "Steer may not have arrived — check the transcript before sending it again",
       "error_reading_file": "_Error reading file_",
       "expand_knowledge_context": "Expand knowledge context",
       "file_not_found_on_disk_it_may_have_been_moved_or": "_File not found on disk. It may have been moved or deleted._",
@@ -4402,6 +4404,7 @@
       "window_title": "{{label}} — {{productName}}"
     },
     "projectDetailPage": {
+      "export_failed": "Could not export the plan YAML",
       "export_yaml": "Export YAML",
       "exporting": "Exporting…",
       "task_is_waiting_for_your_decision": "Task {{index}} \"{{title}}\" is waiting for your decision"

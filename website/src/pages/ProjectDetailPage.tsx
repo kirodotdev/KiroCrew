@@ -12,6 +12,7 @@ import TaskDetailPanel from './aidlc/TaskDetailPanel';
 import { api } from '../api/client';
 import { AlertTriangle, Download, Hourglass, Zap } from 'lucide-react';
 import { Badge } from '../components/ui';
+import ErrorNotice from '../components/ErrorNotice';
 
 import { i18nT } from '../i18n/t'
 type Tab = 'idea' | 'tasks';
@@ -95,12 +96,32 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
     onSuccess: () => { onRefresh?.(); queryClient.invalidateQueries({ queryKey: ['approvals', run.task_id] }); },
   });
   const exportMutation = useMutation({
-    mutationFn: () => api.exportPlanYaml(run.task_id),
+    mutationFn: (taskId: string) => api.exportPlanYaml(taskId),
     onError: (e) => {
-      // eslint-disable-next-line no-console -- surface plan-export failures for debugging
+      // eslint-disable-next-line no-console -- keep the raw error alongside the notice for diagnostics
       console.error('Failed to export plan YAML:', e);
     },
   });
+  // The export failure the button press produced, rendered below the tab bar
+  // (the row the button lives in is a flex header — a boxed banner inside it
+  // would break the row). React Query already holds the error, the run the
+  // press belonged to (`variables`), and reset(), so no extra state: the
+  // notice lives exactly as long as the mutation's error. The variables gate
+  // makes cross-run misattribution unreachable even for the render that first
+  // carries a new run.task_id (the reset effect below lags it by one frame).
+  const exportErrorRaw = exportMutation.error?.message;
+  const exportErrorMessage = exportErrorRaw || i18nT('pages.projectDetailPage.export_failed');
+  // Only lead with the action name when the message is raw transport text —
+  // when the fallback IS that sentence, a title would double it up.
+  const exportErrorTitle = exportErrorRaw ? i18nT('pages.projectDetailPage.export_failed') : undefined;
+  const exportErrorOwned = exportMutation.isError && exportMutation.variables === run.task_id;
+  // ProjectsPage reuses this component instance across run selections, so an
+  // error that outlives its run would linger invisibly (the gate above hides
+  // it) and then resurface if the user returns to the failed run much later,
+  // stale. `reset` is referentially stable, so the effect fires only on a
+  // real run switch.
+  const exportErrorReset = exportMutation.reset;
+  useEffect(() => { exportErrorReset(); }, [run.task_id, exportErrorReset]);
   const handleToggleApproval = useCallback(async (index: number, field: 'requires_approval' | 'force_approval', value: boolean): Promise<boolean> => {
     try {
       const updates: Record<string, boolean> = { [field]: value };
@@ -210,7 +231,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
           )}
           {!isPlanning && (run.task_details || []).length > 0 && (
             <button
-              onClick={() => exportMutation.mutate()}
+              onClick={() => exportMutation.mutate(run.task_id)}
               disabled={exportMutation.isPending}
               title={i18nT('pages.projectDetailPage.export_this_plan_as_a_yaml_workflow_re_importabl')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded border border-border text-muted cursor-pointer transition-all hover:text-accent hover:border-accent ${exportMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -219,6 +240,23 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             </button>
           )}
         </div>
+
+        {/* The answer to a failed Export YAML press, directly under the row
+            that holds the button (AUTOSDE errors-use-error-notice — this was
+            console.error-only, so the press failed silently on screen).
+            No hand-off: this page holds unsaved plan edits (pendingEdits) and
+            the agent hand-off navigates to chat, unmounting them — exactly the
+            data-loss case the askAgent opt-in default exists to prevent. */}
+        {exportErrorOwned && (
+          <div className="mx-4 mt-2 shrink-0">
+            <ErrorNotice
+              title={exportErrorTitle}
+              message={exportErrorMessage}
+              onDismiss={() => exportMutation.reset()}
+              testId="plan-export-error"
+            />
+          </div>
+        )}
 
         {/* Approval banner */}
         {run.status === 'running' && Object.keys(approvalMap).length > 0 && (() => {

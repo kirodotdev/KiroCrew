@@ -89,6 +89,51 @@ describe('ProjectDetailPage', () => {
     spy.mockRestore()
   })
 
+  it('surfaces a rejected export through ErrorNotice, and dismiss clears it (#8625)', async () => {
+    // Before this, the onError only console.error'd, so the press failed with
+    // nothing on screen — the user's only theory was "the click did nothing".
+    const spy = vi.spyOn(api, 'exportPlanYaml').mockRejectedValue(new Error('plan is still being generated'))
+    renderWithProviders(<ProjectDetailPage run={mockRun()} />)
+    fireEvent.click(screen.getByText('Export YAML'))
+
+    const notice = await screen.findByTestId('plan-export-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    // Action-naming lead + the server's raw reason.
+    expect(notice.textContent).toContain('Could not export the plan YAML')
+    expect(notice.textContent).toContain('plan is still being generated')
+    // Deliberately NO agent hand-off: the page holds unsaved plan edits
+    // (pendingEdits) and the hand-off unmounts them (see the render comment).
+    expect(screen.queryByRole('button', { name: /Ask the agent/ })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(screen.queryByTestId('plan-export-error')).toBeNull())
+    spy.mockRestore()
+  })
+
+  it('falls back to the catalog sentence when the rejection carries no message (#8625)', async () => {
+    const spy = vi.spyOn(api, 'exportPlanYaml').mockRejectedValue(new Error(''))
+    renderWithProviders(<ProjectDetailPage run={mockRun()} />)
+    fireEvent.click(screen.getByText('Export YAML'))
+
+    const notice = await screen.findByTestId('plan-export-error')
+    expect(notice.textContent).toContain('Could not export the plan YAML')
+    spy.mockRestore()
+  })
+
+  it('does not carry an export error across a run switch (#8625)', async () => {
+    // ProjectsPage reuses the same ProjectDetailPage instance when the user
+    // selects another run, so a surviving error would falsely claim the NEXT
+    // run's export failed.
+    const spy = vi.spyOn(api, 'exportPlanYaml').mockRejectedValue(new Error('no plan to export'))
+    const { rerender } = renderWithProviders(<ProjectDetailPage run={mockRun()} />)
+    fireEvent.click(screen.getByText('Export YAML'))
+    await screen.findByTestId('plan-export-error')
+
+    rerender(<ProjectDetailPage run={mockRun({ task_id: 'run-2', name: 'Other Run' })} />)
+    await waitFor(() => expect(screen.queryByTestId('plan-export-error')).toBeNull())
+    spy.mockRestore()
+  })
+
   it('hides Export YAML button when the run has no tasks', () => {
     renderWithProviders(<ProjectDetailPage run={mockRun({ task_details: [] })} />)
     expect(screen.queryByText('Export YAML')).not.toBeInTheDocument()

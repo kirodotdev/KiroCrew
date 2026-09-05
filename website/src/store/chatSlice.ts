@@ -3718,7 +3718,7 @@ const chatSlice = createSlice({
      *  Both modes need the bubble still `optimistic` — once an echo or
      *  `confirmOptimisticSend` cleared that, the server owns the row. Scans BOTH
      *  arrays as `confirmOptimisticSend` does; `sendId` is unique per send. */
-    resolveOptimisticSteer(state, action: PayloadAction<{ slot: string; sendId: string; outcome: 'queued' | 'turn' }>) {
+    resolveOptimisticSteer(state, action: PayloadAction<{ slot: string; sendId: string; outcome: 'queued' | 'turn' | 'failed' }>) {
       const { slot, sendId, outcome } = action.payload
       if (isUnsafeKey(slot)) return
       const resolve = (msgs: ChatMessage[] | undefined): boolean => {
@@ -3728,7 +3728,11 @@ const chatSlice = createSlice({
           const m = msgs[i]
           if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
           if (!m.meta?.steer || !m.meta?.optimistic) return true
-          if (outcome === 'queued') { msgs.splice(i, 1); return true }
+          // `queued`: the server-owned queue card is the real representation.
+          // `failed`: the POST rejected, so nothing reached the turn at all —
+          // leaving the bubble would assert delivery right above the refusal
+          // notice saying the opposite (#8625).
+          if (outcome === 'queued' || outcome === 'failed') { msgs.splice(i, 1); return true }
           const meta = { ...(m.meta || {}) }
           delete meta.steer
           m.meta = meta
