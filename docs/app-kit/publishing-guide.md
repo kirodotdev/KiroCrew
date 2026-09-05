@@ -312,8 +312,10 @@ safeguards:
   rewritten to relative form so the installed copy does not depend on your
   source directory.
 - **Build-input and VCS directories are excluded** at any depth: `node_modules`,
-  `.git`, `__pycache__`, `.venv`. Serve your UI from a committed `ui/dist/`
-  bundle; nothing needed at runtime may live under those names.
+  `.git`, `__pycache__`, `.venv`, and the gateway's own `.kirocrew-deps`
+  provisioning output (plus its transient staging/prior siblings). Serve your
+  UI from a committed `ui/dist/` bundle; nothing needed at runtime may live
+  under those names.
 
 `data/` is preserved across updates and, by default, across uninstall.
 
