@@ -12435,7 +12435,8 @@
         "recordMetricsLabel": "メトリクスを記録",
         "recordMetricsOverlayPinned": "config.local.json のエントリがこの設定を固定しています — ここで変更するには、そのエントリを削除してください。",
         "recordMetricsSaveFailed": "設定を変更できませんでした。もう一度お試しください。",
-        "recordMetricsSaveRefusedEgress": "記録は有効になりませんでした。telemetry.otlp_endpoint が設定されているため、ここで有効にするとメトリクスがこのマシンの外に送信され始めます。代わりに config.json で有効にしてください。"
+        "recordMetricsSaveRefusedEgress": "記録は有効になりませんでした。telemetry.otlp_endpoint が設定されているため、ここで有効にするとメトリクスがこのマシンの外に送信され始めます。代わりに config.json で有効にしてください。",
+        "recordMetricsStatusUnavailable": "メトリクス記録の設定を読み込めませんでした。読み込まれるまでスイッチはロックされます。"
       },
       "postureDisclosure": {
         "filter": "{{label}} をフィルター",
@@ -12697,7 +12698,13 @@
           "allow_all_confirm_ack": "インストールする各サードパーティアプリが、{{productName}} のアクセス権で独自のコードを実行できるようになることを理解しました。",
           "ineffective_label": "保存済みだが機能していません",
           "ineffective_description": "これらの名前は信頼済みとして保存されましたが、{{productName}} はそれらを受け付けないため、アプリは依然としてブロックされています。リストを整理するには削除してください。"
-        }
+        },
+        "yolo_duration_load_failed": "保存済みの期間を読み込めませんでした。強調表示されている選択肢は保存値ではなくデフォルトです。",
+        "tailnet_copy_failed": "コピーできませんでした。アドレスを選択して手動でコピーしてください。",
+        "distribution_error_misconfigured_detail": "このホストの中央ポリシー宣言を解析できなかったため、上限は取得されていません。",
+        "distribution_refresh_rejected_detail": "前回のポリシー更新はソースにより拒否されました。",
+        "distribution_refresh_unreachable_detail": "前回のポリシー更新はソースに到達できませんでした。",
+        "denied_commands_load_failed": "拒否コマンドのルールを読み込めませんでした。下の一覧が空なのは読み取りに失敗したためで、ルールが存在しないからではありません。"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "チャットタブの切り替えを Option+digit ではなく Ctrl+digit にバインドします",
@@ -12721,7 +12728,8 @@
         "failed_to_save_skills_setting": "スキル設定を保存できませんでした",
         "keep_every_auto_generated_candidate_in_the_pendi": "承認するまで、自動生成されたすべての候補を保留キューに保持します。これをオフにすると、テキストのみのスキルを自動公開できます。スクリプトをバンドルするスキルは、関係なく常に承認が必要です。",
         "require_approval_before_generated_skills_go_live": "生成されたスキルがライブになる前に承認が必要",
-        "skills": "スキル"
+        "skills": "スキル",
+        "config_load_failed": "スキル設定を読み込めませんでした。スイッチは保存値ではなくデフォルトを表示しています。"
       },
       "slackPanel": {
         "add": "追加",
@@ -12774,7 +12782,9 @@
         "u0123abc456": "U0123ABC456",
         "verified_with_slack_and_saved_restart_the_gatewa": "Slack で確認され、保存されました。ゲートウェイを再起動して接続してください。",
         "where_to_find_the_app_token": "アプリトークンの場所",
-        "where_to_find_the_bot_token": "ボットトークンの場所"
+        "where_to_find_the_bot_token": "ボットトークンの場所",
+        "manifest_unavailable": "Slack アプリのマニフェストを読み込めませんでした。セットアップガイドを参考にアプリを手動で作成してください。",
+        "copy_manifest_failed": "マニフェストをクリップボードにコピーできませんでした。"
       },
       "sttSettings": {
         "allow_microphone_access_to_show_device_names": "デバイス名を表示するためにマイクへのアクセスを許可",
@@ -12873,7 +12883,9 @@
         "decoder_download_failed_reason": "デコーダーのダウンロードに失敗しました: {{error}}",
         "let_the_agent_fix_it": "{{productName}} に任せる",
         "decoder_failure_unknown": "報告なし",
-        "decoder_agent_prompt": "{{productName}} が音声録音を文字起こしするために必要なオーディオデコーダー（ffmpeg）をインストールできませんでした。このホストで動作するようにしてください。\n\n失敗した内容: {{code}} — {{detail}}\nホスト: {{os}} {{arch}}\n\n{{productName}} は、バイト列が固定された SHA-256 ダイジェストと一致する ffmpeg のみを実行し、探す場所はこれだけです: /usr/local/bin、/opt/homebrew/bin、この OS 自身のプログラムディレクトリ、そして <data home>/models/ffmpeg/ にあるダイジェスト検証済みのデコーダーストア。パスは決して信頼の根拠にならないため、~/.local/bin は意図的に信頼されず、そこに置いたコピーは無視されます。\n\nこのホストに実際に必要なもの——パッケージマネージャー、ソースからのビルド、あるいはデコーダーのダウンロードの再試行——を見極め、権限昇格が適切かどうかは自分で判断してから使ってください。終わったら GET /api/stt/status を再確認し、音声設定ページがデコーダーの不足を報告しなくなったことを確かめてください。"
+        "decoder_agent_prompt": "{{productName}} が音声録音を文字起こしするために必要なオーディオデコーダー（ffmpeg）をインストールできませんでした。このホストで動作するようにしてください。\n\n失敗した内容: {{code}} — {{detail}}\nホスト: {{os}} {{arch}}\n\n{{productName}} は、バイト列が固定された SHA-256 ダイジェストと一致する ffmpeg のみを実行し、探す場所はこれだけです: /usr/local/bin、/opt/homebrew/bin、この OS 自身のプログラムディレクトリ、そして <data home>/models/ffmpeg/ にあるダイジェスト検証済みのデコーダーストア。パスは決して信頼の根拠にならないため、~/.local/bin は意図的に信頼されず、そこに置いたコピーは無視されます。\n\nこのホストに実際に必要なもの——パッケージマネージャー、ソースからのビルド、あるいはデコーダーのダウンロードの再試行——を見極め、権限昇格が適切かどうかは自分で判断してから使ってください。終わったら GET /api/stt/status を再確認し、音声設定ページがデコーダーの不足を報告しなくなったことを確かめてください。",
+        "config_load_failed": "音声認識の設定を読み込めませんでした。",
+        "status_unavailable": "音声認識の状態を確認できませんでした。上のバッジはライブ確認ではなく保存済みの設定を表示しています。"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "上記。Slack とは異なり、Bot Framework には\n              送信専用モードがありません。",
@@ -13014,7 +13026,8 @@
         "speed": "速度",
         "text_to_speech": "テキスト音声変換",
         "us_east_1": "us-east-1",
-        "voice": "音声"
+        "voice": "音声",
+        "voice_catalogue_unavailable": "Polly の音声一覧を読み込めませんでした。ピッカーには内蔵の代替一覧を表示しています。"
       },
       "weComPanel": {
         "allow_all_bypass_note": "すべて許可がオンになっています。上記のユーザーIDリストはスキップされます。戻すときのために保持されています。",
@@ -13128,7 +13141,8 @@
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat ログイン QR コード",
         "who_can_message_the_bot": "ボットにメッセージを送信できる人",
-        "wxid": "wxid_…"
+        "wxid": "wxid_…",
+        "scan_status_poll_failing": "コードがスキャンされたか確認できませんでした。再試行しています。"
       },
       "whatsAppPanel": {
         "status_unavailable": "ステータスを取得できません",
@@ -13192,7 +13206,9 @@
         "rules_example_placeholder": "3D プリントに関する質問に答える",
         "seconds_between_unprompted_replies": "自発的な返信の間隔（秒）",
         "remove_name_from_the_group_list": "グループ一覧から {{name}} を削除",
-        "unofficial_protocol_ban_risk": "非公式プロトコルです。WhatsApp が連携した番号を利用停止にする可能性があります。失っても困らない番号を使ってください。"
+        "unofficial_protocol_ban_risk": "非公式プロトコルです。WhatsApp が連携した番号を利用停止にする可能性があります。失っても困らない番号を使ってください。",
+        "scan_status_poll_failing": "コードがスキャンされたか確認できませんでした。再試行しています。",
+        "groups_unavailable": "このアカウントが参加しているグループを読み込めませんでした。"
       },
       "remoteCrewPanel": {
         "your_crews": "あなたのインスタンス",
@@ -13286,7 +13302,10 @@
         "stopping": "停止中…",
         "starting": "起動中…",
         "changed_outside_this_form": "このインスタンスはこのフォームの外で変更されました（{{fields}}）。上の行を確認してください — 編集を開始したインスタンスでない場合はキャンセルしてください。",
-        "use_my_edits_anyway": "現在の状態のインスタンスに自分の編集を適用する"
+        "use_my_edits_anyway": "現在の状態のインスタンスに自分の編集を適用する",
+        "copy_failed": "コピーできませんでした。テキストを選択して手動でコピーしてください。",
+        "launch_status_unavailable": "セットアップの進行状況を更新できませんでした。下のカードは最後に受信した状態を表示しています。",
+        "copy_policy_failed": "ポリシー JSON をクリップボードにコピーできませんでした。もう一度試すか、このサイトにクリップボードへのアクセスを許可してください。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "受信 Webhooks",
@@ -13774,7 +13793,8 @@
       "secret_name_aria": "シークレット名",
       "secret_value_aria": "シークレット値",
       "save_error": "シークレットを保存できませんでした：{{error}}",
-      "delete_error": "シークレットを削除できませんでした：{{error}}"
+      "delete_error": "シークレットを削除できませんでした：{{error}}",
+      "load_error": "シークレットを読み込めませんでした：{{error}}"
     }
   },
   "store": {

@@ -12771,7 +12771,8 @@
         "recordMetricsDescriptionExporting": "Coletar métricas de desempenho e enviá-las ao coletor configurado em config.json.",
         "recordMetricsEgressOff": "telemetry.otlp_endpoint está definido, então registrar também enviaria métricas para fora desta máquina. Ative o registro em config.json se for isso que você quer.",
         "recordMetricsEgressOn": "As métricas estão sendo enviadas para fora desta máquina, ao coletor em telemetry.otlp_endpoint.",
-        "recordMetricsSaveRefusedEgress": "O registro não foi ativado: telemetry.otlp_endpoint está definido, então ativá-lo aqui começaria a enviar métricas para fora desta máquina. Ative-o em config.json."
+        "recordMetricsSaveRefusedEgress": "O registro não foi ativado: telemetry.otlp_endpoint está definido, então ativá-lo aqui começaria a enviar métricas para fora desta máquina. Ative-o em config.json.",
+        "recordMetricsStatusUnavailable": "Não foi possível carregar a configuração de gravação de métricas. O interruptor fica bloqueado até carregar."
       },
       "postureDisclosure": {
         "filter": "Filtrar {{label}}",
@@ -13033,7 +13034,13 @@
           "allow_all_confirm_ack": "Entendo que todo app de terceiros que eu instalar vai poder executar o próprio código com o acesso do {{productName}}.",
           "ineffective_label": "Salvo, mas sem efeito",
           "ineffective_description": "Esses nomes foram salvos como confiáveis, mas o {{productName}} não os aceita, então os apps continuam bloqueados. Remova-os para limpar a lista."
-        }
+        },
+        "yolo_duration_load_failed": "Não foi possível carregar a duração salva. A opção destacada é o padrão, não o que está salvo.",
+        "tailnet_copy_failed": "Falha ao copiar. Selecione o endereço e copie manualmente.",
+        "distribution_error_misconfigured_detail": "A declaração de política central neste host não pôde ser interpretada, então nenhum limite está sendo obtido.",
+        "distribution_refresh_rejected_detail": "A última atualização da política foi rejeitada pela origem.",
+        "distribution_refresh_unreachable_detail": "A última atualização da política não conseguiu alcançar a origem.",
+        "denied_commands_load_failed": "Não foi possível carregar as regras de comandos negados. As listas abaixo estão vazias porque a leitura falhou, não porque não há regras."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Vincular a alternância de abas de chat a Ctrl+dígito em vez de Option+dígito",
@@ -13057,7 +13064,8 @@
         "failed_to_save_skills_setting": "Falha ao salvar a configuração de habilidades",
         "keep_every_auto_generated_candidate_in_the_pendi": "Manter todo candidato gerado automaticamente na fila de pendentes até você aprová-lo. Desativar isso permite que skills apenas de texto sejam publicadas automaticamente; skills que incluem scripts sempre exigem aprovação.",
         "require_approval_before_generated_skills_go_live": "Exigir aprovação antes de as skills geradas entrarem em vigor",
-        "skills": "Skills"
+        "skills": "Skills",
+        "config_load_failed": "Não foi possível carregar as configurações de habilidades. Os interruptores mostram os padrões, não o que está salvo."
       },
       "slackPanel": {
         "add": "Adicionar",
@@ -13110,7 +13118,9 @@
         "u0123abc456": "U0123ABC456",
         "verified_with_slack_and_saved_restart_the_gatewa": "Verificado com o Slack e salvo. Reinicie o gateway para conectar.",
         "where_to_find_the_app_token": "Onde encontrar o token de app",
-        "where_to_find_the_bot_token": "Onde encontrar o token de bot"
+        "where_to_find_the_bot_token": "Onde encontrar o token de bot",
+        "manifest_unavailable": "Não foi possível carregar o manifesto do app do Slack. Crie o app manualmente a partir do guia de configuração.",
+        "copy_manifest_failed": "Não foi possível copiar o manifesto para a área de transferência."
       },
       "sttSettings": {
         "allow_microphone_access_to_show_device_names": "Permita o acesso ao microfone para exibir os nomes dos dispositivos",
@@ -13209,7 +13219,9 @@
         "decoder_download_failed_reason": "O download do decodificador falhou: {{error}}",
         "let_the_agent_fix_it": "Deixar o {{productName}} resolver",
         "decoder_failure_unknown": "não informado",
-        "decoder_agent_prompt": "Não foi possível instalar o decodificador de áudio (ffmpeg) de que o {{productName}} precisa para transcrever gravações de voz. Faça-o funcionar neste host.\n\nO que falhou: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\nO {{productName}} só executa um ffmpeg cujos bytes correspondam a um resumo SHA-256 fixado, e procura exatamente nestes lugares: /usr/local/bin, /opt/homebrew/bin, os diretórios de programas do próprio sistema operacional e seu próprio repositório de decodificadores verificado por resumo em <data home>/models/ffmpeg/. O caminho nunca é a âncora de confiança, então ~/.local/bin NÃO é confiável de propósito e uma cópia deixada ali é ignorada.\n\nDescubra o que este host realmente precisa — um gerenciador de pacotes, uma compilação a partir do código-fonte ou outra tentativa de baixar o decodificador — e decida por conta própria se privilégios elevados se justificam antes de usá-los. Ao terminar, verifique novamente GET /api/stt/status e confirme que a página de configurações de Voz não relata mais um decodificador ausente."
+        "decoder_agent_prompt": "Não foi possível instalar o decodificador de áudio (ffmpeg) de que o {{productName}} precisa para transcrever gravações de voz. Faça-o funcionar neste host.\n\nO que falhou: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\nO {{productName}} só executa um ffmpeg cujos bytes correspondam a um resumo SHA-256 fixado, e procura exatamente nestes lugares: /usr/local/bin, /opt/homebrew/bin, os diretórios de programas do próprio sistema operacional e seu próprio repositório de decodificadores verificado por resumo em <data home>/models/ffmpeg/. O caminho nunca é a âncora de confiança, então ~/.local/bin NÃO é confiável de propósito e uma cópia deixada ali é ignorada.\n\nDescubra o que este host realmente precisa — um gerenciador de pacotes, uma compilação a partir do código-fonte ou outra tentativa de baixar o decodificador — e decida por conta própria se privilégios elevados se justificam antes de usá-los. Ao terminar, verifique novamente GET /api/stt/status e confirme que a página de configurações de Voz não relata mais um decodificador ausente.",
+        "config_load_failed": "Não foi possível carregar as configurações de fala para texto.",
+        "status_unavailable": "Não foi possível verificar o status de fala para texto. O selo acima mostra a configuração salva, não uma verificação ao vivo."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "acima. Diferente do Slack, o Bot Framework não tem\n              modo somente de saída.",
@@ -13350,7 +13362,8 @@
         "speed": "Velocidade",
         "text_to_speech": "Texto para fala",
         "us_east_1": "us-east-1",
-        "voice": "Voz"
+        "voice": "Voz",
+        "voice_catalogue_unavailable": "Não foi possível carregar a lista de vozes do Polly. O seletor mostra uma lista de reserva integrada."
       },
       "weComPanel": {
         "allow_all_bypass_note": "“Permitir todos” está ativado: a lista de userids acima é ignorada. Ela é mantida para quando você voltar atrás.",
@@ -13464,7 +13477,8 @@
         "wechat": "WeChat",
         "wechat_login_qr_code": "QR code de login do WeChat",
         "who_can_message_the_bot": "Quem pode enviar mensagem ao bot",
-        "wxid": "wxid_…"
+        "wxid": "wxid_…",
+        "scan_status_poll_failing": "Não foi possível verificar se o código foi escaneado. Continuando a tentar."
       },
       "whatsAppPanel": {
         "status_unavailable": "Status indisponível",
@@ -13528,7 +13542,9 @@
         "rules_example_placeholder": "Responder perguntas sobre impressão 3D",
         "seconds_between_unprompted_replies": "Segundos entre respostas não solicitadas",
         "remove_name_from_the_group_list": "Remover {{name}} da lista de grupos",
-        "unofficial_protocol_ban_risk": "Protocolo não oficial: o WhatsApp pode banir o número vinculado. Não vincule um número que você não possa perder."
+        "unofficial_protocol_ban_risk": "Protocolo não oficial: o WhatsApp pode banir o número vinculado. Não vincule um número que você não possa perder.",
+        "scan_status_poll_failing": "Não foi possível verificar se o código foi escaneado. Continuando a tentar.",
+        "groups_unavailable": "Não foi possível carregar os grupos dos quais esta conta participa."
       },
       "remoteCrewPanel": {
         "your_crews": "Suas instâncias",
@@ -13622,7 +13638,10 @@
         "stopping": "Parando…",
         "starting": "Iniciando…",
         "changed_outside_this_form": "Esta instância mudou fora deste formulário ({{fields}}). Verifique a linha acima — se não for a instância que você começou a editar, cancele.",
-        "use_my_edits_anyway": "Aplicar minhas alterações à instância como ela está agora"
+        "use_my_edits_anyway": "Aplicar minhas alterações à instância como ela está agora",
+        "copy_failed": "Falha ao copiar. Selecione o texto e copie manualmente.",
+        "launch_status_unavailable": "Não foi possível atualizar o progresso da configuração. O cartão abaixo mostra o último estado recebido.",
+        "copy_policy_failed": "Não foi possível copiar o JSON da política para a área de transferência. Tente novamente ou permita o acesso à área de transferência para este site."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks de entrada",
@@ -14130,7 +14149,8 @@
       "secret_name_aria": "Nome do segredo",
       "secret_value_aria": "Valor do segredo",
       "save_error": "Não foi possível salvar o segredo: {{error}}",
-      "delete_error": "Não foi possível excluir o segredo: {{error}}"
+      "delete_error": "Não foi possível excluir o segredo: {{error}}",
+      "load_error": "Não foi possível carregar os segredos: {{error}}"
     }
   },
   "store": {

@@ -4734,7 +4734,9 @@
         "tokens_are_saved_but_not_yet_active_restart_the": "Tokens are saved but not yet active. Restart the gateway to connect.",
         "verified_with_slack_and_saved_restart_the_gatewa": "Verified with Slack and saved. Restart the gateway to connect.",
         "where_to_find_the_app_token": "Where to find the app token",
-        "where_to_find_the_bot_token": "Where to find the bot token"
+        "where_to_find_the_bot_token": "Where to find the bot token",
+        "manifest_unavailable": "Could not load the Slack app manifest. Create the app by hand from the setup guide.",
+        "copy_manifest_failed": "Could not copy the manifest to the clipboard."
       },
       "botChannelPanel": {
         "bot_token": "{{channel}} bot token",
@@ -4896,7 +4898,10 @@
       },
       "remoteCrewPanel": {
         "auto_connect": "Auto-connect crews",
-        "auto_connect_desc": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
+        "auto_connect_desc": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it.",
+        "copy_failed": "Copy failed. Select the text and copy it manually.",
+        "launch_status_unavailable": "Could not refresh the setup progress. The card below shows the last state received.",
+        "copy_policy_failed": "Could not copy the policy JSON to the clipboard. Try again, or allow clipboard access for this site."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Record metrics",
@@ -4907,7 +4912,8 @@
         "recordMetricsEnvPinned": "The {{envVar}} environment variable is pinning this setting — unset it to change it here.",
         "recordMetricsOverlayPinned": "A config.local.json entry is pinning this setting — remove it to change it here.",
         "recordMetricsEgressOn": "Metrics are being sent off this machine, to the collector at telemetry.otlp_endpoint.",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint is set, so recording would also send metrics off this machine. Turn it on in config.json if that is what you want."
+        "recordMetricsEgressOff": "telemetry.otlp_endpoint is set, so recording would also send metrics off this machine. Turn it on in config.json if that is what you want.",
+        "recordMetricsStatusUnavailable": "Could not load the metric-recording setting. The switch is locked until it loads."
       },
       "notificationsPanel": {
         "always_interrupts_cannot_be_muted_or_lowered": "Always interrupts — cannot be muted or lowered",
@@ -5130,10 +5136,17 @@
           "allow_all_confirm_ack": "I understand every third-party app I install will be able to run its own code with {{productName}}'s access.",
           "ineffective_label": "Saved but not working",
           "ineffective_description": "These names were saved as trusted, but {{productName}} does not accept them, so the apps are still blocked. Remove them to tidy the list."
-        }
+        },
+        "yolo_duration_load_failed": "Could not load the saved duration. The highlighted option is the default, not what is stored.",
+        "tailnet_copy_failed": "Copy failed. Select the address and copy it manually.",
+        "distribution_error_misconfigured_detail": "The central policy declaration on this host could not be parsed, so no ceiling is being fetched.",
+        "distribution_refresh_rejected_detail": "The last policy refresh was rejected by the source.",
+        "distribution_refresh_unreachable_detail": "The last policy refresh could not reach the source.",
+        "denied_commands_load_failed": "Could not load the denied-command rules. The lists below are empty because the read failed, not because there are no rules."
       },
       "skillsPanel": {
-        "failed_to_save_skills_setting": "Failed to save skills setting"
+        "failed_to_save_skills_setting": "Failed to save skills setting",
+        "config_load_failed": "Could not load the skills settings. The switches show defaults, not what is stored."
       },
       "sttSettings": {
         "failed_to_save_stt_config": "Failed to save STT config",
@@ -5168,7 +5181,9 @@
         "decoder_download_failed_reason": "The decoder download failed: {{error}}",
         "let_the_agent_fix_it": "Let {{productName}} fix it",
         "decoder_failure_unknown": "not reported",
-        "decoder_agent_prompt": "The audio decoder (ffmpeg) that {{productName}} needs in order to transcribe voice recordings could not be installed. Please get it working on this host.\n\nWhat failed: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} only executes an ffmpeg whose bytes match a pinned SHA-256 digest, and it looks in exactly these places: /usr/local/bin, /opt/homebrew/bin, this operating system's own program directories, and its own digest-verified decoder store at <data home>/models/ffmpeg/. The path is never the trust anchor, so ~/.local/bin is deliberately NOT trusted and a copy left there is ignored.\n\nWork out what this host actually needs — a package manager, a build from source, or another attempt at the decoder download — and decide for yourself whether elevated privileges are appropriate before using any. When you are done, re-check GET /api/stt/status and confirm that the Voice settings page no longer reports a missing decoder."
+        "decoder_agent_prompt": "The audio decoder (ffmpeg) that {{productName}} needs in order to transcribe voice recordings could not be installed. Please get it working on this host.\n\nWhat failed: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} only executes an ffmpeg whose bytes match a pinned SHA-256 digest, and it looks in exactly these places: /usr/local/bin, /opt/homebrew/bin, this operating system's own program directories, and its own digest-verified decoder store at <data home>/models/ffmpeg/. The path is never the trust anchor, so ~/.local/bin is deliberately NOT trusted and a copy left there is ignored.\n\nWork out what this host actually needs — a package manager, a build from source, or another attempt at the decoder download — and decide for yourself whether elevated privileges are appropriate before using any. When you are done, re-check GET /api/stt/status and confirm that the Voice settings page no longer reports a missing decoder.",
+        "config_load_failed": "Could not load the speech-to-text settings.",
+        "status_unavailable": "Could not check the speech-to-text status. The badge above shows the saved setting, not a live probe."
       },
       "teamsPanel": {
         "active": "Active",
@@ -5196,7 +5211,8 @@
         "piper_local_offline": "Piper (local, offline)",
         "slow": "Slow",
         "slower": "Slower",
-        "slowest": "Slowest"
+        "slowest": "Slowest",
+        "voice_catalogue_unavailable": "Could not load the Polly voice list. The picker shows a built-in fallback list."
       },
       "iMessagePanel": {
         "access": "Access",
@@ -5272,7 +5288,8 @@
         "created_for_you_when_you_turn_this_on_if_it_does": "Created for you when you turn this on, if it does not exist yet.",
         "scanned_confirm_in_wechat": "Scanned — confirm in WeChat",
         "sign_in_again": "Sign in again",
-        "waiting_for_scan": "Waiting for scan…"
+        "waiting_for_scan": "Waiting for scan…",
+        "scan_status_poll_failing": "Could not check whether the code was scanned. Still trying."
       },
       "whatsAppPanel": {
         "status_unavailable": "Status unavailable",
@@ -5336,7 +5353,9 @@
         "rules_example_placeholder": "Answer questions about 3D printing",
         "seconds_between_unprompted_replies": "Seconds between unprompted replies",
         "remove_name_from_the_group_list": "Remove {{name}} from the group list",
-        "unofficial_protocol_ban_risk": "Unofficial protocol: WhatsApp may ban the linked number. Don't link a number you can't afford to lose."
+        "unofficial_protocol_ban_risk": "Unofficial protocol: WhatsApp may ban the linked number. Don't link a number you can't afford to lose.",
+        "scan_status_poll_failing": "Could not check whether the code was scanned. Still trying.",
+        "groups_unavailable": "Could not load the groups this account has joined."
       },
       "channels": {
         "get_your_bot_credentials": "Get your bot credentials",
@@ -5600,6 +5619,9 @@
         "description": "Text-to-speech and speech-to-text (dictation) settings",
         "label": "Voice"
       }
+    },
+    "secrets": {
+      "load_error": "Could not load secrets: {{error}}"
     }
   },
   "utils": {

@@ -5,6 +5,7 @@ import { WebexIcon } from '../../components/WebexIcon'
 import { SettingsSection, SettingsCard, SettingsInput, SettingsToggle } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
 import { Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { TagListEditor } from './SlackPanel'
 import { api, type WebexConfigData, type WebexConfigSave } from '../../api/client'
 
@@ -70,12 +71,22 @@ function StatusBadge({ config }: { config: WebexConfigData }) {
   )
 }
 
+/**
+ * The bot's startup failure (`connect_error`), kept apart from
+ * {@link connectionHint}: it is the outcome of something that FAILED, so it
+ * renders through `ErrorNotice`, while the hints describe a state that has not
+ * gone wrong yet.
+ */
+function connectError(config: WebexConfigData): string {
+  if (config.connected || !config.connect_error) return ''
+  return i18nT('pages.settings.webexPanel.connection_failed', { error: config.connect_error })
+}
+
 /** One-line explanation of WHY Webex is not active, with the fix. */
 function connectionHint(config: WebexConfigData): string {
-  if (config.connected) return ''
-  if (config.connect_error) {
-    return i18nT('pages.settings.webexPanel.connection_failed', { error: config.connect_error })
-  }
+  // A startup failure is shown by `connectError`; the status hints would only
+  // repeat "not running" under it.
+  if (config.connected || config.connect_error) return ''
   if (config.configured) {
     return i18nT('pages.settings.webexPanel.settings_are_saved_but_the_channel_is_not_runnin')
   }
@@ -109,7 +120,12 @@ export function WebexPanel() {
   const [restartHint, setRestartHint] = useState(false)
   const [verifyWarning, setVerifyWarning] = useState('')
   const [tokenVerified, setTokenVerified] = useState(false)
-  const [error, setError] = useState('')
+  // Two states on purpose: `saveError` is the server's rejection (an error
+  // surface), `thresholdError` is a client-side validation hint that never
+  // reached the server — routing it through ErrorNotice would offer the agent
+  // nothing to diagnose.
+  const [saveError, setSaveError] = useState('')
+  const [thresholdError, setThresholdError] = useState('')
 
   // Sync the local draft when server config arrives. Guarded so only the
   // initial load and post-save invalidation reseed it — a background refetch
@@ -134,8 +150,10 @@ export function WebexPanel() {
           msg = e.message
         }
       }
-      setError(msg)
-      setTimeout(() => setError(''), 8000)
+      // Persist until the next save attempt clears it: the rejected draft is
+      // still in the form, and a notice that erases itself after a few seconds
+      // leaves a quiet form that reads as saved.
+      setSaveError(msg)
     },
     onSuccess: (res, vars) => {
       setSaved(true)
@@ -151,7 +169,8 @@ export function WebexPanel() {
 
   const handleSave = useCallback(() => {
     if (!draft) return
-    setError('')
+    setSaveError('')
+    setThresholdError('')
     // Validate the thresholds BEFORE sending. `Number(x) || 80` silently
     // substitutes the default for a typo, and the pair is silently reordered
     // server-side when soft exceeds hard — so a user who typed "8 5", or who
@@ -166,11 +185,11 @@ export function WebexPanel() {
       [hard, i18nT('pages.settings.webexPanel.hard_threshold_must_be_1_to_100')] as const,
     ].find(([v]) => !Number.isInteger(v) || v < 1 || v > 100)
     if (bad) {
-      setError(bad[1])
+      setThresholdError(bad[1])
       return
     }
     if (soft > hard) {
-      setError(i18nT('pages.settings.webexPanel.soft_threshold_must_not_exceed_hard'))
+      setThresholdError(i18nT('pages.settings.webexPanel.soft_threshold_must_not_exceed_hard'))
       return
     }
     const payload: Partial<WebexConfigSave> = {
@@ -191,10 +210,13 @@ export function WebexPanel() {
   }, [draft, botToken, botClear, saveMut])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.webexPanel.loading_webex_config')}</p>
-  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">{i18nT('pages.settings.webexPanel.cannot_load_webex_config_is_the_gateway_running')}</p>
+  // Nothing to lose here: the form is not mounted in this branch.
+  if (isError || !data || !draft) return <ErrorNotice className="m-4" message={i18nT('pages.settings.webexPanel.cannot_load_webex_config_is_the_gateway_running')} askAgent />
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
+  const startupError = connectError(data)
+  const hint = connectionHint(data)
 
   return (
     <>
@@ -211,10 +233,15 @@ export function WebexPanel() {
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.webexPanel.talk_to_your_agents_from_cisco_webex_no_public_u')}
           </p>
-          {connectionHint(data) && (
+          {/* No hand-off: `botToken` (SecretField draft, never persisted) and the
+              unsaved `draft` (allowed emails, room ids, thresholds, session
+              folder) live in this panel's local state — navigating to the chat
+              would discard them. */}
+          <ErrorNotice message={startupError} className="mt-2" />
+          {hint && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
               <AlertTriangle size={12} className="flex-none" />
-              {connectionHint(data)}
+              {hint}
             </p>
           )}
         </div>
@@ -396,11 +423,18 @@ export function WebexPanel() {
             <AlertTriangle size={14} /> {verifyWarning}
           </span>
         )}
-        {error && (
+        {/* Client-side validation hint (the thresholds never left the browser) —
+            not an error surface, so it stays plain text rather than ErrorNotice. */}
+        {thresholdError && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle size={14} /> {error}
+            <AlertTriangle size={14} /> {thresholdError}
           </span>
         )}
+        {/* No hand-off: `botToken` (SecretField draft, never persisted) and the
+            unsaved `draft` are exactly what a failed save did not store — the
+            hand-off unmounts this panel and would lose them. Same shape as
+            SlackPanel's save row. */}
+        <ErrorNotice message={saveError} variant="inline" />
       </div>}
     </>
   )

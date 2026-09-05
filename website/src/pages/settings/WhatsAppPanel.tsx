@@ -12,6 +12,7 @@ import { WhatsAppLogo } from '../../components/WhatsAppLogo'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn, IconButton, PanelSectionHeader } from '../../components/ui'
 import { SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useChannelFolderSave } from '../../hooks/useChannelFolderSave'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { parseErrorCode } from '../../utils/errorReport'
@@ -28,6 +29,13 @@ const POLL_MS = 1500
 /** Give up on an unscanned QR after this long (WhatsApp expires linked-device
  *  codes on its own side too, so this only bounds our own polling). */
 const QR_TTL_MS = 5 * 60 * 1000
+/**
+ * Consecutive failed status polls before the failure is said out loud. One or
+ * two are ordinary weather for a polled endpoint; three in a row (~5s) is a
+ * gateway that has stopped answering, and a code that silently never confirms
+ * is indistinguishable from one nobody scanned.
+ */
+const QR_POLL_FAILURES_TO_REPORT = 3
 /** How long the unlink button stays armed after the first click. An armed
  *  control left on screen becomes a trap for the next click minutes later. */
 const UNLINK_ARM_MS = 5000
@@ -135,11 +143,49 @@ function statusBadge(config: WhatsAppConfigData): { text: string; textCls: strin
   }
 }
 
+/**
+ * Which lifecycle states are a FAILURE. The gateway writes `connect_error` as
+ * `"<state>: <detail>"` for EVERY non-connected state (`whatsapp/gateway.py`
+ * `_on_state`), so during a healthy pairing it reads "pairing: scan the QR code
+ * from your phone" — an instruction, not an error. Only these states mean the
+ * link is broken; everything else stays a hint.
+ */
+const FAILED_STATES = new Set(['error', 'banned', 'logged_out'])
+
+/**
+ * The gateway's connection failure, kept apart from {@link connectionHint}: it
+ * is the outcome of something that FAILED, so it renders through `ErrorNotice`,
+ * while the hint describes a state that has not gone wrong yet. A populated
+ * `connect_error` alone is not the test (see FAILED_STATES): it is a failure
+ * when the lifecycle state says so, or when the message carries no state prefix
+ * at all — the missing-extra hint and the startup exception path write it that
+ * way, and neither is a lifecycle state.
+ */
+function connectError(config: WhatsAppConfigData): string {
+  if (config.connected || !config.connect_error) return ''
+  // The prefix is read as well as `state`: the two come from different
+  // snapshots (the error string is written by the state callback, `state` by
+  // the config read), so "error: dial tcp timeout" is a failure even if the
+  // config read still says `unpaired`.
+  const prefix = /^([a-z_]+): /.exec(config.connect_error)?.[1]
+  const failed = FAILED_STATES.has(config.state ?? '') || (prefix ? FAILED_STATES.has(prefix) : true)
+  if (!failed) return ''
+  return i18nT('pages.settings.whatsAppPanel.whatsapp_did_not_connect', {
+    error: config.connect_error,
+  })
+}
+
 /** One line naming WHY the channel is down, the same shape the Slack, Teams,
  *  Webex, iMessage and bot-channel panels use. While pairing, the gateway's
  *  detail IS the scan instruction, which is still the accurate answer. */
 function connectionHint(config: WhatsAppConfigData): string {
   if (config.connected) return ''
+  // A genuine failure is shown by `connectError`; "enabled but not running"
+  // would only repeat it underneath.
+  if (connectError(config)) return ''
+  // A non-failure lifecycle detail ("pairing: scan the QR code from your
+  // phone", "unpaired: …") is the status the gateway wants shown — the same
+  // warn hint it was before the failure branch was split out.
   if (config.connect_error) {
     return i18nT('pages.settings.whatsAppPanel.whatsapp_did_not_connect', {
       error: config.connect_error,
@@ -321,12 +367,28 @@ export function WhatsAppPanel() {
   // and stops as soon as the flow reaches a terminal phase, so there is no
   // hand-rolled timer to leak on unmount.
   const polling = phase === 'waiting' || phase === 'scanned'
+  // Counted here, not read from React Query's `failureCount`: with `retry: false`
+  // that counter is reset at the start of EVERY `refetchInterval` fetch (each
+  // fetch gets a fresh retry budget), so it never exceeds 1 and a gate on it
+  // would never fire. Cleared by any successful poll and by a fresh pairing.
+  const [qrPollFailures, setQrPollFailures] = useState(0)
   const { data: qrStatus } = useQuery({
     queryKey: ['whatsapp-qr-status'],
-    queryFn: () => api.whatsAppQrStatus(),
+    queryFn: async () => {
+      try {
+        const r = await api.whatsAppQrStatus()
+        setQrPollFailures(0)
+        return r
+      } catch (e) {
+        setQrPollFailures(n => n + 1)
+        throw e
+      }
+    },
     enabled: polling,
     refetchInterval: polling ? POLL_MS : false,
     retry: false,
+    // Transient failures keep the last value; a poll that keeps failing is
+    // reported below once the consecutive count reaches QR_POLL_FAILURES_TO_REPORT.
     gcTime: 0,
   })
 
@@ -366,6 +428,7 @@ export function WhatsAppPanel() {
     mutationFn: () => api.whatsAppQrStart(),
     onMutate: () => {
       setErrMsg('')
+      setQrPollFailures(0)
       setPhase('starting')
     },
     onSuccess: r => {
@@ -510,6 +573,7 @@ export function WhatsAppPanel() {
   const codeAvailable = liveState === 'pairing'
   const groups = data?.groups || []
   const badge = data ? statusBadge(data) : null
+  const startupError = data ? connectError(data) : ''
   const hint = data ? connectionHint(data) : ''
   // One explanation, never two: after a refused click the config read catches up
   // and both the standing line and the click's answer would say the same thing.
@@ -519,7 +583,7 @@ export function WhatsAppPanel() {
   // The joined-group list only exists while the channel is connected (the
   // endpoint answers with an empty list otherwise), so it is not fetched when it
   // could only return nothing.
-  const { data: joinedGroups } = useQuery({
+  const { data: joinedGroups, isError: joinedGroupsFailed } = useQuery({
     queryKey: ['whatsapp-groups'],
     queryFn: api.getWhatsAppGroups,
     enabled: connected,
@@ -585,7 +649,10 @@ export function WhatsAppPanel() {
         data-testid="whatsapp-status"
       >
         {isError ? (
-          <span className="text-[12.5px] text-muted">{i18nT('pages.settings.whatsAppPanel.status_unavailable')}</span>
+          // Read failure. askAgent ON: the only editable field on this panel is
+          // the session-folder name, and it commits `onBlur` — moving focus to
+          // the hand-off button is itself what saves it.
+          <ErrorNotice variant="inline" message={i18nT('pages.settings.whatsAppPanel.status_unavailable')} askAgent />
         ) : !badge ? (
           <span className="text-[12.5px] text-muted">{i18nT('pages.settings.channelsPanel.checking')}</span>
         ) : (
@@ -599,14 +666,24 @@ export function WhatsAppPanel() {
               )}
               <span className={`text-[12.5px] font-medium ${badge.textCls}`}>{badge.text}</span>
             </span>
-            {/* The reason, not just the verdict. Without it a down channel gives
-                the operator nothing to act on, and the gateway already carries
-                the detail (a missing dependency extra, a refused pairing, a
-                dropped socket). */}
+            {/* The gateway's own failure (`connect_error`): a missing dependency
+                extra, a refused pairing, a dropped socket. askAgent ON for the
+                same onBlur reason as the read failure above — the folder name is
+                the only draft and the click commits it. */}
+            <ErrorNotice
+              variant="inline"
+              className="text-[11.5px]"
+              message={startupError}
+              askAgent
+              testId="whatsapp-connect-error"
+            />
+            {/* The reason, not just the verdict, for a channel that is merely
+                not running: status about something that has not failed, so it
+                stays a hint rather than an error surface. */}
             {hint && (
               <span
                 className="text-[11.5px] text-warn flex items-start gap-1.5"
-                data-testid="whatsapp-connect-error"
+                data-testid="whatsapp-connect-hint"
               >
                 <TriangleAlert className="lucide-inline mt-0.5" aria-hidden="true" />
                 <span className="min-w-0 break-words">{hint}</span>
@@ -691,6 +768,19 @@ export function WhatsAppPanel() {
               <Loader2 size={12} className="animate-spin" />
               {phase === 'scanned' ? i18nT('pages.settings.whatsAppPanel.scanned_confirm_on_your_phone') : i18nT('pages.settings.whatsAppPanel.waiting_for_scan')}
             </div>
+            {/* The status poll has stopped answering (see QR_POLL_FAILURES_TO_REPORT).
+                The code stays up because a scan may still land; the hand-off is on
+                because a gateway that stops answering is the agent's to diagnose and
+                nothing on this panel is an unsaved draft (the folder name commits
+                onBlur). */}
+            {qrPollFailures >= QR_POLL_FAILURES_TO_REPORT && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.whatsAppPanel.scan_status_poll_failing')}
+                askAgent
+                testId="whatsapp-poll-failing"
+              />
+            )}
           </div>
         )}
 
@@ -709,10 +799,18 @@ export function WhatsAppPanel() {
           </div>
         )}
 
+        {/* The pairing flow's own failure: a rejected `showCode`, an `r.error`
+            body, or a `logged_out` / `error` state pushed by the poll. askAgent
+            ON: the gateway's client state is the agent's to diagnose, and the
+            folder name below commits `onBlur`, so the navigation loses nothing. */}
         {phase === 'error' && (
-          <div className="mt-3 flex items-center gap-1.5 text-[12.5px] text-danger" data-testid="whatsapp-error">
-            <TriangleAlert size={13} /> {errMsg}
-          </div>
+          <ErrorNotice
+            variant="inline"
+            className="mt-3 text-[12.5px]"
+            message={errMsg}
+            askAgent
+            testId="whatsapp-error"
+          />
         )}
       </div>
 
@@ -760,7 +858,20 @@ export function WhatsAppPanel() {
                 : i18nT('pages.settings.whatsAppPanel.unlink_this_device')}
             </Btn>
           </div>
-          {unlinkOutcome && (
+          {/* The refused unlink (`danger`) is a failed request and renders through
+              ErrorNotice; `ok` / `warn` report an unlink that DID happen (possibly
+              with a leftover file) and stay status text. askAgent ON: the device
+              state is server-side and nothing here is a draft. */}
+          {unlinkOutcome?.tone === 'danger' && (
+            <ErrorNotice
+              variant="inline"
+              className="mt-2 text-[12px]"
+              message={unlinkOutcome.text}
+              askAgent
+              testId="whatsapp-unlink-outcome"
+            />
+          )}
+          {unlinkOutcome && unlinkOutcome.tone !== 'danger' && (
             <p
               className={`mt-2 mb-0 flex items-start gap-1.5 text-[12px] ${OUTCOME_TEXT_CLS[unlinkOutcome.tone]}`}
               role={unlinkOutcome.tone === 'ok' ? 'status' : 'alert'}
@@ -862,6 +973,17 @@ export function WhatsAppPanel() {
                 onChange={addGroup}
                 aria-label={i18nT('pages.settings.whatsAppPanel.add_a_group')}
               />
+            ) : joinedGroupsFailed ? (
+              // A failed read must not read as "every group is already listed".
+              // askAgent ON: nothing in this block is a draft (the folder name
+              // below commits onBlur).
+              <ErrorNotice
+                variant="inline"
+                className="text-[11.5px]"
+                message={i18nT('pages.settings.whatsAppPanel.groups_unavailable')}
+                askAgent
+                testId="whatsapp-groups-error"
+              />
             ) : (
               <div className="text-[11.5px] text-muted">
                 {connected
@@ -933,16 +1055,16 @@ export function WhatsAppPanel() {
         {/* Outside the `folderOn` block on purpose: when an ENABLE is rejected
             the revert returns the switch to the server's value — off, since the
             server has no folder — so an error nested in that block would unmount
-            before it could paint and the failure would be silent. */}
-        {saveError && (
-          <p
-            className="text-[11.5px] text-danger mt-1 mb-0"
-            role="alert"
-            data-testid="whatsapp-session-folder-error"
-          >
-            {saveError}
-          </p>
-        )}
+            before it could paint and the failure would be silent.
+            No hand-off: `folderName` is the rejected draft this failure is about —
+            the hook deliberately keeps the typed text so it can be corrected, and
+            the navigation would discard it. */}
+        <ErrorNotice
+          variant="inline"
+          className="mt-1 text-[11.5px]"
+          message={saveError}
+          testId="whatsapp-session-folder-error"
+        />
       </div>
 
       <p className="text-[11.5px] text-muted m-0">

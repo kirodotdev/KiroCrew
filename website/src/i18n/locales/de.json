@@ -12603,7 +12603,8 @@
         "recordMetricsEgressOff": "telemetry.otlp_endpoint ist gesetzt, deshalb würde die Aufzeichnung Metriken auch von diesem Rechner nach außen senden. Aktiviere sie in config.json, wenn du das möchtest.",
         "recordMetricsEgressOn": "Metriken werden von diesem Rechner nach außen gesendet, an den Collector unter telemetry.otlp_endpoint.",
         "recordMetricsSaveRefusedEgress": "Die Aufzeichnung wurde nicht aktiviert: telemetry.otlp_endpoint ist gesetzt, deshalb würde das Aktivieren hier damit beginnen, Metriken von diesem Rechner nach außen zu senden. Aktiviere sie stattdessen in config.json.",
-        "recordMetricsSaveFailed": "Diese Einstellung konnte nicht geändert werden. Versuche es erneut."
+        "recordMetricsSaveFailed": "Diese Einstellung konnte nicht geändert werden. Versuche es erneut.",
+        "recordMetricsStatusUnavailable": "Die Einstellung zur Metrikaufzeichnung konnte nicht geladen werden. Der Schalter bleibt gesperrt, bis sie geladen ist."
       },
       "postureDisclosure": {
         "filter": "{{label}} filtern",
@@ -12865,7 +12866,13 @@
           "allow_all_confirm_ack": "Mir ist klar, dass jede App von Drittanbietern, die ich installiere, eigenen Code mit den Zugriffsrechten von {{productName}} ausführen kann.",
           "ineffective_label": "Gespeichert, aber ohne Wirkung",
           "ineffective_description": "Diese Namen wurden als vertrauenswürdig gespeichert, aber {{productName}} akzeptiert sie nicht, deshalb bleiben die Apps blockiert. Entferne sie, um die Liste aufzuräumen."
-        }
+        },
+        "yolo_duration_load_failed": "Die gespeicherte Dauer konnte nicht geladen werden. Die hervorgehobene Option ist der Standardwert, nicht der gespeicherte.",
+        "tailnet_copy_failed": "Kopieren fehlgeschlagen. Markieren Sie die Adresse und kopieren Sie sie manuell.",
+        "distribution_error_misconfigured_detail": "Die zentrale Richtliniendeklaration auf diesem Host konnte nicht gelesen werden, daher wird keine Obergrenze abgerufen.",
+        "distribution_refresh_rejected_detail": "Die letzte Richtlinienaktualisierung wurde von der Quelle abgelehnt.",
+        "distribution_refresh_unreachable_detail": "Die letzte Richtlinienaktualisierung konnte die Quelle nicht erreichen.",
+        "denied_commands_load_failed": "Die Regeln für gesperrte Befehle konnten nicht geladen werden. Die Listen unten sind leer, weil das Lesen fehlgeschlagen ist, nicht weil es keine Regeln gibt."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Wechsel zwischen Chat-Tabs an Strg+Zahl statt Option+Zahl binden",
@@ -12889,7 +12896,8 @@
         "failed_to_save_skills_setting": "Skills-Einstellung konnte nicht gespeichert werden",
         "keep_every_auto_generated_candidate_in_the_pendi": "Jeden automatisch erzeugten Kandidaten in der Warteschlange halten, bis Sie ihn genehmigen. Wenn Sie dies deaktivieren, werden Skills, die nur Text enthalten, automatisch veröffentlicht; Skills mit gebündelten Skripten erfordern in jedem Fall eine Genehmigung.",
         "require_approval_before_generated_skills_go_live": "Genehmigung erforderlich, bevor erzeugte Skills live gehen",
-        "skills": "Skills"
+        "skills": "Skills",
+        "config_load_failed": "Die Skill-Einstellungen konnten nicht geladen werden. Die Schalter zeigen Standardwerte, nicht die gespeicherten."
       },
       "slackPanel": {
         "add": "Hinzufügen",
@@ -12942,7 +12950,9 @@
         "u0123abc456": "U0123ABC456",
         "verified_with_slack_and_saved_restart_the_gatewa": "Mit Slack verifiziert und gespeichert. Starte das Gateway neu, um eine Verbindung herzustellen.",
         "where_to_find_the_app_token": "Wo du das App-Token findest",
-        "where_to_find_the_bot_token": "Wo du das Bot-Token findest"
+        "where_to_find_the_bot_token": "Wo du das Bot-Token findest",
+        "manifest_unavailable": "Das Slack-App-Manifest konnte nicht geladen werden. Erstellen Sie die App manuell anhand der Einrichtungsanleitung.",
+        "copy_manifest_failed": "Das Manifest konnte nicht in die Zwischenablage kopiert werden."
       },
       "sttSettings": {
         "allow_microphone_access_to_show_device_names": "Mikrofonzugriff erlauben, um Gerätenamen anzuzeigen",
@@ -13041,7 +13051,9 @@
         "decoder_download_failed_reason": "Der Decoder-Download ist fehlgeschlagen: {{error}}",
         "let_the_agent_fix_it": "{{productName}} das beheben lassen",
         "decoder_failure_unknown": "nicht gemeldet",
-        "decoder_agent_prompt": "Der Audio-Decoder (ffmpeg), den {{productName}} zum Transkribieren von Sprachaufnahmen braucht, konnte nicht installiert werden. Bitte bring ihn auf diesem Host zum Laufen.\n\nWas fehlgeschlagen ist: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} führt nur ein ffmpeg aus, dessen Bytes zu einem festgelegten SHA-256-Digest passen, und sucht genau an diesen Stellen: /usr/local/bin, /opt/homebrew/bin, den eigenen Programmverzeichnissen dieses Betriebssystems und seinem eigenen Digest-geprüften Decoder-Speicher unter <data home>/models/ffmpeg/. Der Pfad ist nie der Vertrauensanker, deshalb gilt ~/.local/bin absichtlich NICHT als vertrauenswürdig, und eine dort abgelegte Kopie wird ignoriert.\n\nFinde heraus, was dieser Host wirklich braucht — einen Paketmanager, einen Build aus den Quellen oder einen weiteren Versuch beim Decoder-Download — und entscheide selbst, ob erhöhte Rechte angebracht sind, bevor du sie einsetzt. Prüfe danach erneut GET /api/stt/status und bestätige, dass die Voice-Einstellungsseite keinen fehlenden Decoder mehr meldet."
+        "decoder_agent_prompt": "Der Audio-Decoder (ffmpeg), den {{productName}} zum Transkribieren von Sprachaufnahmen braucht, konnte nicht installiert werden. Bitte bring ihn auf diesem Host zum Laufen.\n\nWas fehlgeschlagen ist: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} führt nur ein ffmpeg aus, dessen Bytes zu einem festgelegten SHA-256-Digest passen, und sucht genau an diesen Stellen: /usr/local/bin, /opt/homebrew/bin, den eigenen Programmverzeichnissen dieses Betriebssystems und seinem eigenen Digest-geprüften Decoder-Speicher unter <data home>/models/ffmpeg/. Der Pfad ist nie der Vertrauensanker, deshalb gilt ~/.local/bin absichtlich NICHT als vertrauenswürdig, und eine dort abgelegte Kopie wird ignoriert.\n\nFinde heraus, was dieser Host wirklich braucht — einen Paketmanager, einen Build aus den Quellen oder einen weiteren Versuch beim Decoder-Download — und entscheide selbst, ob erhöhte Rechte angebracht sind, bevor du sie einsetzt. Prüfe danach erneut GET /api/stt/status und bestätige, dass die Voice-Einstellungsseite keinen fehlenden Decoder mehr meldet.",
+        "config_load_failed": "Die Sprache-zu-Text-Einstellungen konnten nicht geladen werden.",
+        "status_unavailable": "Der Sprache-zu-Text-Status konnte nicht geprüft werden. Das Abzeichen oben zeigt die gespeicherte Einstellung, keine Live-Prüfung."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "oben. Im Gegensatz zu Slack hat das Bot Framework keinen\n              rein ausgehenden Modus.",
@@ -13182,7 +13194,8 @@
         "speed": "Geschwindigkeit",
         "text_to_speech": "Text-zu-Sprache",
         "us_east_1": "us-east-1",
-        "voice": "Sprache"
+        "voice": "Sprache",
+        "voice_catalogue_unavailable": "Die Polly-Stimmenliste konnte nicht geladen werden. Die Auswahl zeigt eine integrierte Ersatzliste."
       },
       "weComPanel": {
         "allow_all_bypass_note": "„Alle erlauben“ ist aktiv: Die Liste der userids oben wird übergangen. Die Liste bleibt erhalten, falls du zurückwechselst.",
@@ -13296,7 +13309,8 @@
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat-Anmelde-QR-Code",
         "who_can_message_the_bot": "Wer dem Bot schreiben darf",
-        "wxid": "wxid_…"
+        "wxid": "wxid_…",
+        "scan_status_poll_failing": "Ob der Code gescannt wurde, konnte nicht geprüft werden. Es wird weiter versucht."
       },
       "whatsAppPanel": {
         "status_unavailable": "Status nicht verfügbar",
@@ -13360,7 +13374,9 @@
         "rules_example_placeholder": "Fragen zum 3D-Druck beantworten",
         "seconds_between_unprompted_replies": "Sekunden zwischen unaufgeforderten Antworten",
         "remove_name_from_the_group_list": "{{name}} aus der Gruppenliste entfernen",
-        "unofficial_protocol_ban_risk": "Unoffizielles Protokoll: WhatsApp kann die verknüpfte Nummer sperren. Verknüpfe keine Nummer, deren Verlust du nicht verkraftest."
+        "unofficial_protocol_ban_risk": "Unoffizielles Protokoll: WhatsApp kann die verknüpfte Nummer sperren. Verknüpfe keine Nummer, deren Verlust du nicht verkraftest.",
+        "scan_status_poll_failing": "Ob der Code gescannt wurde, konnte nicht geprüft werden. Es wird weiter versucht.",
+        "groups_unavailable": "Die Gruppen, denen dieses Konto beigetreten ist, konnten nicht geladen werden."
       },
       "remoteCrewPanel": {
         "your_crews": "Deine Instanzen",
@@ -13454,7 +13470,10 @@
         "stopping": "Wird gestoppt…",
         "starting": "Wird gestartet…",
         "changed_outside_this_form": "Diese Instanz wurde außerhalb dieses Formulars geändert ({{fields}}). Prüfe die Zeile oben — wenn es nicht die Instanz ist, die du bearbeiten wolltest, brich ab.",
-        "use_my_edits_anyway": "Meine Änderungen auf die Instanz in ihrem aktuellen Zustand anwenden"
+        "use_my_edits_anyway": "Meine Änderungen auf die Instanz in ihrem aktuellen Zustand anwenden",
+        "copy_failed": "Kopieren fehlgeschlagen. Markieren Sie den Text und kopieren Sie ihn manuell.",
+        "launch_status_unavailable": "Der Einrichtungsfortschritt konnte nicht aktualisiert werden. Die Karte unten zeigt den letzten empfangenen Stand.",
+        "copy_policy_failed": "Das Richtlinien-JSON konnte nicht in die Zwischenablage kopiert werden. Versuchen Sie es erneut oder erlauben Sie dieser Seite den Zugriff auf die Zwischenablage."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Eingehende Webhooks",
@@ -13952,7 +13971,8 @@
       "secret_name_aria": "Name des Secrets",
       "secret_value_aria": "Wert des Secrets",
       "save_error": "Geheimnis konnte nicht gespeichert werden: {{error}}",
-      "delete_error": "Geheimnis konnte nicht gelöscht werden: {{error}}"
+      "delete_error": "Geheimnis konnte nicht gelöscht werden: {{error}}",
+      "load_error": "Geheimnisse konnten nicht geladen werden: {{error}}"
     }
   },
   "store": {

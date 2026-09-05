@@ -12771,7 +12771,8 @@
         "recordMetricsEnvPinned": "La variabile d’ambiente {{envVar}} sta fissando questa impostazione: rimuovila dall’ambiente per modificarla qui.",
         "recordMetricsOverlayPinned": "Una voce in config.local.json sta fissando questa impostazione: rimuovila per modificarla qui.",
         "recordMetricsEgressOff": "telemetry.otlp_endpoint è impostato, quindi la registrazione invierebbe le metriche anche fuori da questa macchina. Attivala nel file config.json se è ciò che desideri.",
-        "recordMetricsEgressOn": "Le metriche vengono inviate fuori da questa macchina, al collector indicato da telemetry.otlp_endpoint."
+        "recordMetricsEgressOn": "Le metriche vengono inviate fuori da questa macchina, al collector indicato da telemetry.otlp_endpoint.",
+        "recordMetricsStatusUnavailable": "Impossibile caricare l'impostazione di registrazione delle metriche. L'interruttore resta bloccato finché non viene caricata."
       },
       "postureDisclosure": {
         "filter": "Filtra {{label}}",
@@ -13033,7 +13034,13 @@
           "allow_all_confirm_ack": "Ho capito che ogni app di terze parti che installo potrà eseguire codice proprio con gli accessi di {{productName}}.",
           "ineffective_label": "Salvato ma senza effetto",
           "ineffective_description": "Questi nomi sono stati salvati come attendibili, ma {{productName}} non li accetta, quindi le app restano bloccate. Rimuovili per pulire l'elenco."
-        }
+        },
+        "yolo_duration_load_failed": "Impossibile caricare la durata salvata. L'opzione evidenziata è quella predefinita, non quella salvata.",
+        "tailnet_copy_failed": "Copia non riuscita. Seleziona l'indirizzo e copialo manualmente.",
+        "distribution_error_misconfigured_detail": "La dichiarazione della policy centrale su questo host non può essere interpretata, quindi non viene recuperato alcun limite.",
+        "distribution_refresh_rejected_detail": "L'ultimo aggiornamento della policy è stato rifiutato dall'origine.",
+        "distribution_refresh_unreachable_detail": "L'ultimo aggiornamento della policy non ha raggiunto l'origine.",
+        "denied_commands_load_failed": "Impossibile caricare le regole dei comandi negati. Gli elenchi sotto sono vuoti perché la lettura non è riuscita, non perché non ci siano regole."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Associa il cambio di scheda chat a Ctrl+cifra invece di Option+cifra",
@@ -13057,7 +13064,8 @@
         "failed_to_save_skills_setting": "Impossibile salvare l’impostazione delle skill",
         "keep_every_auto_generated_candidate_in_the_pendi": "Mantieni ogni candidato generato automaticamente nella coda in attesa fino alla tua approvazione. Disattivandolo, le skill di solo testo vengono pubblicate automaticamente; le skill che includono script richiedono sempre l'approvazione.",
         "require_approval_before_generated_skills_go_live": "Richiedi l'approvazione prima che le skill generate vadano in produzione",
-        "skills": "Skill"
+        "skills": "Skill",
+        "config_load_failed": "Impossibile caricare le impostazioni delle skill. Gli interruttori mostrano i valori predefiniti, non quelli salvati."
       },
       "slackPanel": {
         "add": "Aggiungi",
@@ -13110,7 +13118,9 @@
         "u0123abc456": "U0123ABC456",
         "verified_with_slack_and_saved_restart_the_gatewa": "Verificato con Slack e salvato. Riavvia il gateway per connetterti.",
         "where_to_find_the_app_token": "Dove trovare il token dell’app",
-        "where_to_find_the_bot_token": "Dove trovare il token bot"
+        "where_to_find_the_bot_token": "Dove trovare il token bot",
+        "manifest_unavailable": "Impossibile caricare il manifest dell'app Slack. Crea l'app manualmente seguendo la guida di configurazione.",
+        "copy_manifest_failed": "Impossibile copiare il manifest negli appunti."
       },
       "sttSettings": {
         "allow_microphone_access_to_show_device_names": "Consenti l'accesso al microfono per mostrare i nomi dei dispositivi",
@@ -13209,7 +13219,9 @@
         "decoder_download_failed_reason": "Il download del decodificatore è fallito: {{error}}",
         "let_the_agent_fix_it": "Fai risolvere a {{productName}}",
         "decoder_failure_unknown": "non segnalato",
-        "decoder_agent_prompt": "Non è stato possibile installare il decodificatore audio (ffmpeg) che serve a {{productName}} per trascrivere le registrazioni vocali. Fallo funzionare su questo host.\n\nCosa è fallito: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} esegue soltanto un ffmpeg i cui byte corrispondono a un digest SHA-256 fissato, e cerca esattamente in questi posti: /usr/local/bin, /opt/homebrew/bin, le directory dei programmi del sistema operativo stesso e il proprio archivio di decodificatori verificato tramite digest in <data home>/models/ffmpeg/. Il percorso non è mai l'ancora di fiducia, quindi ~/.local/bin NON è considerato affidabile di proposito e una copia lasciata lì viene ignorata.\n\nCapisci cosa serve davvero a questo host — un gestore di pacchetti, una compilazione dal codice sorgente o un altro tentativo di scaricare il decodificatore — e valuta tu se i privilegi elevati siano opportuni prima di usarli. Quando hai finito, ricontrolla GET /api/stt/status e verifica che la pagina delle impostazioni Voce non segnali più un decodificatore mancante."
+        "decoder_agent_prompt": "Non è stato possibile installare il decodificatore audio (ffmpeg) che serve a {{productName}} per trascrivere le registrazioni vocali. Fallo funzionare su questo host.\n\nCosa è fallito: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} esegue soltanto un ffmpeg i cui byte corrispondono a un digest SHA-256 fissato, e cerca esattamente in questi posti: /usr/local/bin, /opt/homebrew/bin, le directory dei programmi del sistema operativo stesso e il proprio archivio di decodificatori verificato tramite digest in <data home>/models/ffmpeg/. Il percorso non è mai l'ancora di fiducia, quindi ~/.local/bin NON è considerato affidabile di proposito e una copia lasciata lì viene ignorata.\n\nCapisci cosa serve davvero a questo host — un gestore di pacchetti, una compilazione dal codice sorgente o un altro tentativo di scaricare il decodificatore — e valuta tu se i privilegi elevati siano opportuni prima di usarli. Quando hai finito, ricontrolla GET /api/stt/status e verifica che la pagina delle impostazioni Voce non segnali più un decodificatore mancante.",
+        "config_load_failed": "Impossibile caricare le impostazioni di riconoscimento vocale.",
+        "status_unavailable": "Impossibile verificare lo stato del riconoscimento vocale. Il badge sopra mostra l'impostazione salvata, non una verifica in tempo reale."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "sopra. A differenza di Slack, il Bot Framework non ha\n              una modalità solo in uscita.",
@@ -13350,7 +13362,8 @@
         "speed": "Velocità",
         "text_to_speech": "Da testo a voce",
         "us_east_1": "us-east-1",
-        "voice": "Voce"
+        "voice": "Voce",
+        "voice_catalogue_unavailable": "Impossibile caricare l'elenco delle voci Polly. Il selettore mostra un elenco di riserva integrato."
       },
       "weComPanel": {
         "allow_all_bypass_note": "«Consenti a tutti» è attivo: l’elenco di userid qui sopra viene ignorato. Viene conservato per quando tornerai indietro.",
@@ -13464,7 +13477,8 @@
         "wechat": "WeChat",
         "wechat_login_qr_code": "Codice QR di accesso a WeChat",
         "who_can_message_the_bot": "Chi può scrivere al bot",
-        "wxid": "wxid_…"
+        "wxid": "wxid_…",
+        "scan_status_poll_failing": "Impossibile verificare se il codice è stato scansionato. Nuovo tentativo in corso."
       },
       "whatsAppPanel": {
         "status_unavailable": "Stato non disponibile",
@@ -13528,7 +13542,9 @@
         "rules_example_placeholder": "Rispondere a domande sulla stampa 3D",
         "seconds_between_unprompted_replies": "Secondi tra le risposte spontanee",
         "remove_name_from_the_group_list": "Rimuovi {{name}} dall'elenco dei gruppi",
-        "unofficial_protocol_ban_risk": "Protocollo non ufficiale: WhatsApp può bloccare il numero collegato. Non collegare un numero che non puoi perdere."
+        "unofficial_protocol_ban_risk": "Protocollo non ufficiale: WhatsApp può bloccare il numero collegato. Non collegare un numero che non puoi perdere.",
+        "scan_status_poll_failing": "Impossibile verificare se il codice è stato scansionato. Nuovo tentativo in corso.",
+        "groups_unavailable": "Impossibile caricare i gruppi a cui questo account ha aderito."
       },
       "remoteCrewPanel": {
         "your_crews": "Le tue istanze",
@@ -13622,7 +13638,10 @@
         "stopping": "Arresto in corso…",
         "starting": "Avvio in corso…",
         "changed_outside_this_form": "Questa istanza è cambiata fuori da questo modulo ({{fields}}). Controlla la riga sopra — se non è l’istanza che hai iniziato a modificare, annulla.",
-        "use_my_edits_anyway": "Applica le mie modifiche all’istanza così com’è ora"
+        "use_my_edits_anyway": "Applica le mie modifiche all’istanza così com’è ora",
+        "copy_failed": "Copia non riuscita. Seleziona il testo e copialo manualmente.",
+        "launch_status_unavailable": "Impossibile aggiornare l'avanzamento della configurazione. La scheda sotto mostra l'ultimo stato ricevuto.",
+        "copy_policy_failed": "Impossibile copiare il JSON della policy negli appunti. Riprova oppure consenti a questo sito l'accesso agli appunti."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhook in entrata",
@@ -14130,7 +14149,8 @@
       "secret_name_aria": "Nome del segreto",
       "secret_value_aria": "Valore del segreto",
       "save_error": "Impossibile salvare il segreto: {{error}}",
-      "delete_error": "Impossibile eliminare il segreto: {{error}}"
+      "delete_error": "Impossibile eliminare il segreto: {{error}}",
+      "load_error": "Impossibile caricare i segreti: {{error}}"
     }
   },
   "store": {

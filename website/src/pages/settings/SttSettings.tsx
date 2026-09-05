@@ -42,6 +42,8 @@ import {
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import { errMessage } from '../../utils/thunkError'
+
 interface SttConfig {
   enabled: boolean
   provider: string
@@ -517,7 +519,16 @@ export default function SttSettings({ cardIndex }: {
     // skeleton at the same position, and a differing delay would hold the
     // already-loaded content blank for the delay after the swap.
     <SettingsCard index={cardIndex}>
-      <FormSkeleton rows={['toggle', 'info', 'field', 'field', 'field', 'info']} />
+      {sttQ.isError ? (
+        // A skeleton that never resolves is indistinguishable from a slow load.
+        // Nothing to lose: no control is mounted in this branch.
+        <ErrorNotice
+          message={errMessage(sttQ.error) || i18nT('pages.settings.sttSettings.config_load_failed')}
+          askAgent
+        />
+      ) : (
+        <FormSkeleton rows={['toggle', 'info', 'field', 'field', 'field', 'info']} />
+      )}
     </SettingsCard>
   )
 
@@ -597,11 +608,20 @@ export default function SttSettings({ cardIndex }: {
     <>
       {/* Only mutation failures reach here, so dismissing simply clears it. There
           is no server-held error to re-read: a failed model download reports
-          itself through the status query's own `download.error`. */}
+          itself through the status query's own `download.error`.
+          askAgent is gated on the drafts (the SecretsPanel shape): the AWS
+          profile / region inputs commit `onBlur`, so a failed save leaves the
+          typed-but-rejected text in them — kept on purpose, so it can be
+          corrected rather than retyped. No hand-off while either differs from
+          the stored value: `localProfile` / `localRegion`. */}
       <ErrorNotice
         message={err}
         onDismiss={() => setErr('')}
         className="mb-4 animate-rise"
+        askAgent={
+          localProfile.trim() === (stt.transcribe_profile || '')
+          && localRegion.trim() === (stt.transcribe_region || '')
+        }
       />
       <SettingsCard index={cardIndex}>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} description={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
@@ -618,6 +638,17 @@ export default function SttSettings({ cardIndex }: {
             `lib/sttProviders.unavailableMessage`. */}
         {!available && unavailableText && (
           <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
+        )}
+        {/* The probe itself failed: the badge above is then showing the config's
+            plain boolean, not a verdict, and the model catalog is absent. Status
+            row, nothing editable → hand-off on. */}
+        {statusQ.isError && (
+          <ErrorNotice
+            variant="inline"
+            className="-mt-1 mb-1"
+            message={errMessage(statusQ.error) || i18nT('pages.settings.sttSettings.status_unavailable')}
+            askAgent
+          />
         )}
 
         <SettingsSelect
@@ -681,10 +712,15 @@ export default function SttSettings({ cardIndex }: {
                 </Btn>
               </div>
             ) : null}
+            {/* A finished-and-failed transfer (the job's own `error`). Status
+                panel with nothing editable in this block → hand-off on. */}
             {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
-              <p className="text-[12px] text-danger -mt-1 mb-1">
-                {i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
-              </p>
+              <ErrorNotice
+                variant="inline"
+                className="-mt-1 mb-1"
+                message={i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
+                askAgent
+              />
             )}
           </>
         )}

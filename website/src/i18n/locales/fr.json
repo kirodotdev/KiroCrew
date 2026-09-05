@@ -12772,7 +12772,8 @@
         "recordMetricsEgressOff": "telemetry.otlp_endpoint est défini, donc l’enregistrement enverrait aussi les métriques hors de cette machine. Active-le dans config.json si c’est ce que tu veux.",
         "recordMetricsEgressOn": "Les métriques sont envoyées hors de cette machine, vers le collecteur défini par telemetry.otlp_endpoint.",
         "recordMetricsSaveRefusedEgress": "L’enregistrement n’a pas été activé : telemetry.otlp_endpoint est défini, donc l’activer ici commencerait à envoyer des métriques hors de cette machine. Active-le plutôt dans config.json.",
-        "recordMetricsSaveFailed": "Impossible de modifier ce réglage. Réessaie."
+        "recordMetricsSaveFailed": "Impossible de modifier ce réglage. Réessaie.",
+        "recordMetricsStatusUnavailable": "Impossible de charger le réglage d'enregistrement des métriques. L'interrupteur reste verrouillé jusqu'au chargement."
       },
       "postureDisclosure": {
         "filter": "Filtrer {{label}}",
@@ -13034,7 +13035,13 @@
           "allow_all_confirm_ack": "Je comprends que chaque application tierce que j'installe pourra exécuter son propre code avec les accès de {{productName}}.",
           "ineffective_label": "Enregistré mais sans effet",
           "ineffective_description": "Ces noms ont été enregistrés comme de confiance, mais {{productName}} ne les accepte pas, donc les applications restent bloquées. Retire-les pour nettoyer la liste."
-        }
+        },
+        "yolo_duration_load_failed": "Impossible de charger la durée enregistrée. L'option en surbrillance est la valeur par défaut, pas celle enregistrée.",
+        "tailnet_copy_failed": "Copie impossible. Sélectionnez l'adresse et copiez-la manuellement.",
+        "distribution_error_misconfigured_detail": "La déclaration de politique centrale sur cet hôte n'a pas pu être analysée ; aucun plafond n'est donc récupéré.",
+        "distribution_refresh_rejected_detail": "La dernière actualisation de la politique a été rejetée par la source.",
+        "distribution_refresh_unreachable_detail": "La dernière actualisation de la politique n'a pas pu joindre la source.",
+        "denied_commands_load_failed": "Impossible de charger les règles de commandes refusées. Les listes ci-dessous sont vides parce que la lecture a échoué, pas parce qu'il n'y a aucune règle."
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Associer le changement d'onglet de chat à Ctrl+chiffre au lieu de Option+chiffre",
@@ -13058,7 +13065,8 @@
         "failed_to_save_skills_setting": "Échec de l’enregistrement du réglage des compétences",
         "keep_every_auto_generated_candidate_in_the_pendi": "Conserver chaque candidat généré automatiquement dans la file d'attente jusqu'à ce que vous l'approuviez. Désactiver cette option permet aux compétences purement textuelles d'être publiées automatiquement ; les compétences qui embarquent des scripts nécessitent toujours une approbation.",
         "require_approval_before_generated_skills_go_live": "Exiger une approbation avant la mise en service des compétences générées",
-        "skills": "Compétences"
+        "skills": "Compétences",
+        "config_load_failed": "Impossible de charger les réglages des compétences. Les interrupteurs affichent les valeurs par défaut, pas celles enregistrées."
       },
       "slackPanel": {
         "add": "Ajouter",
@@ -13111,7 +13119,9 @@
         "u0123abc456": "U0123ABC456",
         "verified_with_slack_and_saved_restart_the_gatewa": "Vérifié auprès de Slack et enregistré. Redémarre la passerelle pour établir la connexion.",
         "where_to_find_the_app_token": "Où trouver le jeton d’application",
-        "where_to_find_the_bot_token": "Où trouver le jeton de bot"
+        "where_to_find_the_bot_token": "Où trouver le jeton de bot",
+        "manifest_unavailable": "Impossible de charger le manifeste de l'app Slack. Créez l'app à la main à partir du guide de configuration.",
+        "copy_manifest_failed": "Impossible de copier le manifeste dans le presse-papiers."
       },
       "sttSettings": {
         "allow_microphone_access_to_show_device_names": "Autorisez l'accès au microphone pour afficher les noms des périphériques",
@@ -13210,7 +13220,9 @@
         "decoder_download_failed_reason": "Le téléchargement du décodeur a échoué : {{error}}",
         "let_the_agent_fix_it": "Laisser {{productName}} le réparer",
         "decoder_failure_unknown": "non communiqué",
-        "decoder_agent_prompt": "Le décodeur audio (ffmpeg) dont {{productName}} a besoin pour transcrire les enregistrements vocaux n'a pas pu être installé. Merci de le faire fonctionner sur cet hôte.\n\nCe qui a échoué : {{code}} — {{detail}}\nHôte : {{os}} {{arch}}\n\n{{productName}} n'exécute qu'un ffmpeg dont les octets correspondent à une empreinte SHA-256 épinglée, et il cherche exactement à ces endroits : /usr/local/bin, /opt/homebrew/bin, les répertoires de programmes propres à ce système d'exploitation, et son propre magasin de décodeurs vérifié par empreinte, dans <data home>/models/ffmpeg/. Le chemin n'est jamais l'ancre de confiance : ~/.local/bin n'est donc délibérément PAS fiable et une copie laissée là est ignorée.\n\nDétermine ce dont cet hôte a réellement besoin — un gestionnaire de paquets, une compilation depuis les sources, ou une nouvelle tentative de téléchargement du décodeur — et juge par toi-même si des privilèges élevés se justifient avant d'y recourir. Une fois terminé, revérifie GET /api/stt/status et confirme que la page de réglages Voix ne signale plus de décodeur manquant."
+        "decoder_agent_prompt": "Le décodeur audio (ffmpeg) dont {{productName}} a besoin pour transcrire les enregistrements vocaux n'a pas pu être installé. Merci de le faire fonctionner sur cet hôte.\n\nCe qui a échoué : {{code}} — {{detail}}\nHôte : {{os}} {{arch}}\n\n{{productName}} n'exécute qu'un ffmpeg dont les octets correspondent à une empreinte SHA-256 épinglée, et il cherche exactement à ces endroits : /usr/local/bin, /opt/homebrew/bin, les répertoires de programmes propres à ce système d'exploitation, et son propre magasin de décodeurs vérifié par empreinte, dans <data home>/models/ffmpeg/. Le chemin n'est jamais l'ancre de confiance : ~/.local/bin n'est donc délibérément PAS fiable et une copie laissée là est ignorée.\n\nDétermine ce dont cet hôte a réellement besoin — un gestionnaire de paquets, une compilation depuis les sources, ou une nouvelle tentative de téléchargement du décodeur — et juge par toi-même si des privilèges élevés se justifient avant d'y recourir. Une fois terminé, revérifie GET /api/stt/status et confirme que la page de réglages Voix ne signale plus de décodeur manquant.",
+        "config_load_failed": "Impossible de charger les réglages de la reconnaissance vocale.",
+        "status_unavailable": "Impossible de vérifier l'état de la reconnaissance vocale. Le badge ci-dessus reflète le réglage enregistré, pas une vérification en direct."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ci-dessus. Contrairement à Slack, le Bot Framework n'a pas de\n              mode sortant uniquement.",
@@ -13351,7 +13363,8 @@
         "speed": "Vitesse",
         "text_to_speech": "Synthèse vocale",
         "us_east_1": "us-east-1",
-        "voice": "Voix"
+        "voice": "Voix",
+        "voice_catalogue_unavailable": "Impossible de charger la liste des voix Polly. Le sélecteur affiche une liste de secours intégrée."
       },
       "weComPanel": {
         "allow_all_bypass_note": "L’autorisation générale est activée : la liste de userid ci-dessus est ignorée. Elle est conservée pour ton retour en arrière.",
@@ -13465,7 +13478,8 @@
         "wechat": "WeChat",
         "wechat_login_qr_code": "QR code de connexion WeChat",
         "who_can_message_the_bot": "Qui peut écrire au bot",
-        "wxid": "wxid_…"
+        "wxid": "wxid_…",
+        "scan_status_poll_failing": "Impossible de vérifier si le code a été scanné. Nouvelle tentative en cours."
       },
       "whatsAppPanel": {
         "status_unavailable": "Statut indisponible",
@@ -13529,7 +13543,9 @@
         "rules_example_placeholder": "Répondre aux questions sur l'impression 3D",
         "seconds_between_unprompted_replies": "Secondes entre les réponses spontanées",
         "remove_name_from_the_group_list": "Retirer {{name}} de la liste des groupes",
-        "unofficial_protocol_ban_risk": "Protocole non officiel : WhatsApp peut bannir le numéro associé. N'associez pas un numéro que vous ne pouvez pas perdre."
+        "unofficial_protocol_ban_risk": "Protocole non officiel : WhatsApp peut bannir le numéro associé. N'associez pas un numéro que vous ne pouvez pas perdre.",
+        "scan_status_poll_failing": "Impossible de vérifier si le code a été scanné. Nouvelle tentative en cours.",
+        "groups_unavailable": "Impossible de charger les groupes rejoints par ce compte."
       },
       "remoteCrewPanel": {
         "your_crews": "Tes instances",
@@ -13623,7 +13639,10 @@
         "stopping": "Arrêt…",
         "starting": "Démarrage…",
         "changed_outside_this_form": "Cette instance a changé en dehors de ce formulaire ({{fields}}). Vérifie la ligne ci-dessus — si ce n’est pas l’instance que tu as commencé à modifier, annule.",
-        "use_my_edits_anyway": "Appliquer mes modifications à l’instance dans son état actuel"
+        "use_my_edits_anyway": "Appliquer mes modifications à l’instance dans son état actuel",
+        "copy_failed": "Copie impossible. Sélectionnez le texte et copiez-le manuellement.",
+        "launch_status_unavailable": "Impossible d'actualiser la progression de la configuration. La carte ci-dessous affiche le dernier état reçu.",
+        "copy_policy_failed": "Impossible de copier le JSON de la politique dans le presse-papiers. Réessayez ou autorisez l'accès au presse-papiers pour ce site."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrants",
@@ -14131,7 +14150,8 @@
       "secret_name_aria": "Nom du secret",
       "secret_value_aria": "Valeur du secret",
       "save_error": "Impossible d’enregistrer le secret : {{error}}",
-      "delete_error": "Impossible de supprimer le secret : {{error}}"
+      "delete_error": "Impossible de supprimer le secret : {{error}}",
+      "load_error": "Impossible de charger les secrets : {{error}}"
     }
   },
   "store": {
