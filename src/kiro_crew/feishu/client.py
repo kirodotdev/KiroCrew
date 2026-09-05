@@ -66,6 +66,13 @@ class LarkInbound:
     #: mention-free) or a message naming somebody else as well, which must NOT
     #: be read as a bare command.
     command_text: str = ""
+    #: Feishu's ``message_type`` when it was something this channel cannot read
+    #: (``image``, ``file``, ``audio``, ``post``...), otherwise empty. Such a
+    #: message is carried to the transport with an empty ``text`` instead of
+    #: being dropped at the parse step, so the SENDER can be told rather than
+    #: only the gateway log -- but only after the transport's own gates have
+    #: authorised them. It never drives a turn.
+    unsupported_type: str = ""
 
 
 # Signature for the async dispatch callback the transport injects.
@@ -265,15 +272,11 @@ class LarkClient:
         # message can be evicted from. Dedup lives in ``receive`` immediately
         # after authorization instead.
 
-        # Only handle plain-text messages for now.
+        # Only plain text drives a turn. The type is read here but decided
+        # AFTER the sender, because a message this channel cannot read is now
+        # carried to the transport rather than dropped -- and the transport
+        # cannot authorise a sender it was never given.
         message_type = message.message_type or ""
-        if message_type != "text":
-            logger.info(
-                "Feishu inbound dropped: unsupported message_type=%r (message_id=%s)",
-                message_type,
-                msg_id,
-            )
-            return
 
         sender = getattr(event, "sender", None)
         sid = getattr(sender, "sender_id", None) if sender else None
@@ -282,6 +285,28 @@ class LarkClient:
             logger.info(
                 "Feishu inbound dropped: sender has no open_id (message_id=%s)",
                 msg_id,
+            )
+            return
+
+        if message_type != "text":
+            # Handed on with an empty ``text`` and the type recorded, so
+            # ``FeishuTransport.receive`` can answer an AUTHORISED sender
+            # instead of leaving them with silence. The log line stays: it is
+            # the operator's record and predates the reply (#7551).
+            logger.info(
+                "Feishu inbound dropped: unsupported message_type=%r (message_id=%s)",
+                message_type,
+                msg_id,
+            )
+            self._deliver(
+                LarkInbound(
+                    open_id=open_id,
+                    text="",
+                    message_id=msg_id,
+                    chat_type=message.chat_type or "",
+                    chat_id=message.chat_id or "",
+                    unsupported_type=message_type,
+                )
             )
             return
 
@@ -334,6 +359,16 @@ class LarkClient:
             command_text=command_body,
         )
 
+        self._deliver(inbound)
+
+    def _deliver(self, inbound: LarkInbound) -> None:
+        """Hand *inbound* to the transport on the event loop, if one is live.
+
+        Extracted because two parse outcomes reach it now -- a text message and
+        an unreadable one -- and the liveness guard must not be copied: a second
+        copy is where a closed-loop check goes stale. Called from the WS thread,
+        so the hop through ``run_coroutine_threadsafe`` is what makes it safe.
+        """
         loop = self._loop
         handler = self._on_message
         if loop is not None and not loop.is_closed() and handler is not None:

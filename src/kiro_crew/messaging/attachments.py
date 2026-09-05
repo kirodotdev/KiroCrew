@@ -78,6 +78,13 @@ _VIDEO_PREFIXES = ("video/",)
 
 _SAFE_SUFFIX_RE = re.compile(r"[^a-zA-Z0-9]")
 
+#: Platform-supplied attachment kinds are echoed back to the sender, so they are
+#: reduced to a word first. Brackets and dashes are what a rejection line is
+#: made of, so leaving them in would let a crafted ``message_type`` forge a
+#: second segment inside the reply.
+_REJECTION_KIND_RE = re.compile(r"[^a-zA-Z0-9_]")
+_REJECTION_KIND_MAX = 32
+
 #: Async ``(url, dest_path) -> None``. Must raise on failure.
 DownloadFn = Callable[[str, str], Awaitable[None]]
 
@@ -127,6 +134,29 @@ class IngestResult:
     def temp_paths(self) -> list[str]:
         """Every path the caller is responsible for cleaning up."""
         return [*self.image_paths, *self.audio_paths]
+
+
+def channel_reads_no_attachments(kind: str = "") -> str:
+    """The rejection for a channel that ingests no attachments at all.
+
+    A transport declaring ``files_inbound=False`` never reaches :func:`ingest`,
+    so it has no ``IngestResult`` to carry a reason and nothing surfaces the
+    defect this module exists to prevent -- the sender is left unable to tell a
+    refused attachment from a broken bot. This is the reason such a channel
+    sends instead, in the same shape and register as the ones :func:`ingest`
+    produces, so a channel that later gains real ingestion changes which
+    function builds the string and not how it reads.
+
+    *kind* is the platform's own word for what arrived (Feishu's
+    ``message_type``: ``image``, ``file``, ``audio``, ``post``...). It is
+    included when known because "your image" is answerable and "your
+    attachment" invites a second attempt with a different file. Untrusted
+    input: platform-supplied, so it is length-capped and stripped of the
+    characters that would let it forge a second bracketed segment.
+    """
+    clean = _REJECTION_KIND_RE.sub("", kind or "")[:_REJECTION_KIND_MAX]
+    subject = f"Attachment ({clean})" if clean else "Attachment"
+    return f"[{subject} — this channel reads text only; the file was not opened]"
 
 
 def safe_suffix(hint: str, default: str = "bin") -> str:

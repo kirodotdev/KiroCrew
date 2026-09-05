@@ -626,3 +626,63 @@ class TestCancellationCleanupOwnership:
 
             monkeypatch.setattr(asyncio, "to_thread", raising)
             await attachments.cleanup_offloaded([str(tmp_path / "y.png")])
+
+
+class TestChannelReadsNoAttachments:
+    """The rejection a channel with no ingest sends instead of silence (#7848).
+
+    ``ingest`` returns its reasons on ``IngestResult.rejections`` because
+    silently dropping an attachment is the defect this module exists to fix. A
+    transport declaring ``files_inbound=False`` never calls ``ingest``, so it has
+    no result to carry one; this builds the same sentence for that case, and the
+    tests pin the shape rather than the prose so a reworded reason stays one
+    bracketed segment.
+    """
+
+    def test_it_names_the_kind_when_known(self) -> None:
+        from kiro_crew.messaging.attachments import channel_reads_no_attachments
+
+        out = channel_reads_no_attachments("image")
+        assert out.startswith("[Attachment (image) — ")
+        assert out.endswith("]")
+
+    def test_it_omits_an_empty_kind_rather_than_printing_brackets(self) -> None:
+        from kiro_crew.messaging.attachments import channel_reads_no_attachments
+
+        out = channel_reads_no_attachments("")
+        assert out.startswith("[Attachment — ")
+        assert "()" not in out
+
+    def test_it_matches_the_shape_ingest_produces(self) -> None:
+        """One bracketed segment, em dash separated -- the form every
+        ``ingest`` rejection already uses, so a channel that later gains real
+        ingestion changes which function builds the string and not how it
+        reads."""
+        from kiro_crew.messaging.attachments import channel_reads_no_attachments
+
+        out = channel_reads_no_attachments("file")
+        assert out.count("[") == 1
+        assert out.count("]") == 1
+        assert " — " in out
+
+    def test_a_platform_kind_cannot_forge_a_second_segment(self) -> None:
+        """The kind is platform-supplied and echoed to the sender, so brackets
+        and dashes -- what a rejection line is made of -- are stripped."""
+        from kiro_crew.messaging.attachments import channel_reads_no_attachments
+
+        out = channel_reads_no_attachments("x] — [injected")
+        assert out.count("[") == 1
+        assert out.count("]") == 1
+
+    def test_a_long_kind_is_capped(self) -> None:
+        from kiro_crew.messaging.attachments import channel_reads_no_attachments
+
+        out = channel_reads_no_attachments("a" * 500)
+        assert len(out) < 200
+
+    def test_it_carries_no_emoji(self) -> None:
+        """AGENTS.md: never an emoji in a user-facing surface."""
+        from kiro_crew.messaging.attachments import channel_reads_no_attachments
+
+        out = channel_reads_no_attachments("image")
+        assert all(ord(ch) < 0x2500 or ch == "\u2014" for ch in out)
