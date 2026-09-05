@@ -116,6 +116,179 @@ function nativeLoggingSwitches(logPath, env = process.env) {
   return switches;
 }
 
+/** Mode for a file that may contain a bearer credential: owner read/write only. */
+const SECRET_FILE_MODE = 0o600;
+
+/**
+ * Redaction cap. Reading the file to rewrite it costs its size in memory, and
+ * this runs during boot on a host that may already be under pressure. One
+ * session of Chromium logging is small (see `rotateNativeLog`) — a file past
+ * this bound means something looped, and the honest trade is to keep the
+ * evidence unredacted rather than risk an out-of-memory at launch.
+ */
+const MAX_REDACT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Query-string bearer tokens, as Chromium writes them.
+ *
+ * Chromium's `INFO:CONSOLE` lines append the document URL, and the desktop app
+ * loads the dashboard as `?token=<jwt>` — so every renderer console message from
+ * that document records the session token verbatim. The value ends at the next
+ * URL/log delimiter; `&` matters because the real URL continues with `&sid=`.
+ *
+ * Deliberately narrow: only the query parameter shape that was observed. A
+ * broad "anything JWT-shaped" pattern would start eating legitimate log content.
+ */
+const TOKEN_QUERY_RE = /([?&](?:token|access_token)=)[^&\s"'`)\]]+/gi;
+
+/**
+ * Replace query-string token values with a marker, preserving everything else.
+ *
+ * Pure so the pattern is testable without touching a filesystem. The marker is
+ * left in place of the value rather than removing the parameter, so a log reader
+ * can still see that a tokened URL was involved.
+ */
+function redactTokensInText(text) {
+  return String(text == null ? "" : text).replace(TOKEN_QUERY_RE, "$1[REDACTED]");
+}
+
+/**
+ * Best-effort `chmod` to {@link SECRET_FILE_MODE}. Never throws.
+ *
+ * Separate from creation because it applies to BOTH generations: the file this
+ * boot creates and the one the previous boot left behind at an inherited 0644.
+ * On Windows the POSIX mode is largely advisory — the call is still made rather
+ * than platform-gated, because it is harmless there and gating it would be one
+ * more branch that only ever runs on one OS.
+ */
+function tightenLogMode(filePath, { fs, log = () => {} } = {}) {
+  if (!fs || typeof fs.chmodSync !== "function") return false;
+  try {
+    fs.chmodSync(filePath, SECRET_FILE_MODE);
+    return true;
+  } catch (e) {
+    log(`native log chmod failed at ${filePath}: ${e && e.message}`);
+    return false;
+  }
+}
+
+/**
+ * Strip credentials from a log file in place, and tighten its mode.
+ *
+ * Only ever called on the ROTATED generation, which this process owns outright
+ * after `renameSync` — the live file belongs to Chromium's own file handle and
+ * rewriting under it would race the writer. That split is why mode bits alone
+ * are not enough: they stop another local account reading the file, but the
+ * retained log is also the artifact users are asked to attach to a bug report,
+ * and that copy has to be clean on its own.
+ *
+ * Fail-soft in every direction, matching this module's posture: losing a
+ * redaction pass is worth a log line, never a failed launch. An `fs` double
+ * without the read/write/stat members simply opts out.
+ */
+function redactNativeLogSecrets(filePath, { fs, log = () => {} } = {}) {
+  if (!fs || typeof fs.readFileSync !== "function" || typeof fs.writeFileSync !== "function") {
+    return { scanned: false, redacted: false, skipped: "unsupported-fs" };
+  }
+  try {
+    if (typeof fs.statSync === "function") {
+      const size = Number(fs.statSync(filePath).size);
+      if (Number.isFinite(size) && size > MAX_REDACT_BYTES) {
+        log(`native log redaction skipped at ${filePath}: ${size} bytes over cap`);
+        return { scanned: false, redacted: false, skipped: "too-large" };
+      }
+    }
+    const raw = fs.readFileSync(filePath, "utf8");
+    const cleaned = redactTokensInText(raw);
+    if (cleaned === raw) return { scanned: true, redacted: false, skipped: null };
+    // Atomic replace, NOT an in-place rewrite. `writeFileSync` truncates before
+    // it writes, so a write that fails partway (ENOSPC, EIO, a Windows sharing
+    // violation) would leave the retained log partial or empty — destroying the
+    // one generation this module exists to preserve. An unredacted log is a
+    // hygiene problem; a truncated one is the loss of the crash evidence, which
+    // is strictly worse. So: write a sibling at the tight mode, then rename over
+    // the original only once the write returned. `renameSync` carries the temp
+    // file's mode across, so the replacement is owner-only by construction.
+    // Mirrors `src/kiro_crew/atomic_write.py`, already cited by the rotation
+    // comment above for the same class of failure.
+    // The temp path is predictable, so the write has to be exclusive-create:
+    // `writeFileSync`'s default `w` follows a symlink planted at that path and
+    // would land this log's contents on the link's target. `wx` (O_EXCL) refuses
+    // any pre-existing entry, symlink included, which is the same reason
+    // `createTightLogFile` below opens with `wx` rather than `w`. A stale temp
+    // from a crashed earlier pass would otherwise disable redaction forever, so
+    // EEXIST gets exactly one retry: unlink removes the entry itself — never
+    // whatever it points at — and the retry is still exclusive, so an attacker
+    // re-planting inside that window loses the race into the skip path below
+    // instead of winning a write.
+    const tmpPath = `${filePath}.redact.tmp`;
+    try {
+      try {
+        fs.writeFileSync(tmpPath, cleaned, { mode: SECRET_FILE_MODE, flag: "wx" });
+      } catch (e) {
+        if (!e || e.code !== "EEXIST" || typeof fs.unlinkSync !== "function") throw e;
+        fs.unlinkSync(tmpPath);
+        fs.writeFileSync(tmpPath, cleaned, { mode: SECRET_FILE_MODE, flag: "wx" });
+      }
+      fs.renameSync(tmpPath, filePath);
+    } catch (e) {
+      // The original is untouched on this path — that is the whole point of the
+      // sibling. Clean up the partial temp so it cannot be mistaken for a log,
+      // and report the miss rather than raising: this runs during boot.
+      try {
+        if (typeof fs.unlinkSync === "function") fs.unlinkSync(tmpPath);
+      } catch {
+        /* the temp may never have been created; nothing to clean up */
+      }
+      log(`native log redaction not applied at ${filePath}: ${e && e.message}`);
+      return { scanned: true, redacted: false, skipped: "replace-failed" };
+    }
+    return { scanned: true, redacted: true, skipped: null };
+  } catch (e) {
+    log(`native log redaction failed at ${filePath}: ${e && e.message}`);
+    return { scanned: false, redacted: false, skipped: "error" };
+  }
+}
+
+/**
+ * Pre-create the live log with a tight mode, so Chromium opens an inode that is
+ * already owner-only.
+ *
+ * Chromium creates `--log-file` itself at the process's default umask, which on
+ * a normal macOS install is 0644 — world-readable, for a file that records the
+ * dashboard session token on every renderer console line. Nothing on this side
+ * can filter what Chromium writes into that handle, so the mode has to be set
+ * on the inode BEFORE Chromium opens it.
+ *
+ * `wx` (fail-if-exists) rather than `w`: truncating here would destroy exactly
+ * the evidence `rotateNativeLog` just went to the trouble of preserving in the
+ * blocked-rotation case. Creating the file empty keeps the module's existing
+ * "starts clean either way" property intact — Chromium appending to a
+ * zero-length file and truncating one are indistinguishable in the result.
+ *
+ * Never throws. An EEXIST still falls through to the `chmod`, which is the
+ * upgrade path for a log left at 0644 by an earlier build.
+ */
+function createTightLogFile(logPath, { fs, log = () => {} } = {}) {
+  if (!fs) return { created: false, tightened: false };
+  let created = false;
+  try {
+    if (typeof fs.openSync === "function" && typeof fs.closeSync === "function") {
+      fs.closeSync(fs.openSync(logPath, "wx", SECRET_FILE_MODE));
+      created = true;
+    } else if (typeof fs.writeFileSync === "function") {
+      fs.writeFileSync(logPath, "", { flag: "wx", mode: SECRET_FILE_MODE });
+      created = true;
+    }
+  } catch (e) {
+    if (!e || e.code !== "EEXIST") {
+      log(`native log pre-create failed at ${logPath}: ${e && e.message}`);
+      return { created: false, tightened: tightenLogMode(logPath, { fs, log }) };
+    }
+  }
+  return { created, tightened: tightenLogMode(logPath, { fs, log }) };
+}
+
 /**
  * Start-of-boot rotation, which is what bounds this file's size.
  *
@@ -164,6 +337,10 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
     // Search-indexer touch is enough); see `replace_with_retry` in
     // `src/kiro_crew/atomic_write.py`.
     fs.renameSync(logPath, previousPath);
+    // The retained generation is ours now, and it is the copy users hand over.
+    // Strip credentials from it and tighten its mode before anything reads it.
+    redactNativeLogSecrets(previousPath, { fs, log });
+    tightenLogMode(previousPath, { fs, log });
     return { rotated: true, blocked: false, previousPath };
   } catch (e) {
     // A read-only directory or a Windows sharing violation reaches here. The
@@ -207,6 +384,13 @@ function initNativeLogging({
   // previous generation has to be moved aside first or it is appended to (or
   // clobbered) instead of preserved.
   if (fs) ({ rotated, blocked, previousPath } = rotateNativeLog(logPath, { fs, log }));
+
+  // Chromium creates `--log-file` at the process umask (0644 on a normal macOS
+  // install) and records the dashboard session token on every renderer console
+  // line, so the inode has to be owner-only BEFORE Chromium opens it. Skipped
+  // when rotation was blocked: the un-rotated file still holds the session we
+  // are trying to preserve, and the sink is not armed for it either (below).
+  if (fs && !blocked) createTightLogFile(logPath, { fs, log });
 
   // Fail SAFE, not fail open. A blocked rotation means the un-rotated live log
   // still holds the session we were trying to preserve — and Chromium's own
@@ -264,6 +448,12 @@ module.exports = {
   previousNativeLogPath,
   nativeLoggingSwitches,
   rotateNativeLog,
+  redactTokensInText,
+  redactNativeLogSecrets,
+  createTightLogFile,
+  tightenLogMode,
   NATIVE_LOG_BASENAME,
   NATIVE_LOG_PREVIOUS_BASENAME,
+  SECRET_FILE_MODE,
+  MAX_REDACT_BYTES,
 };
