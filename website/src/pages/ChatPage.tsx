@@ -77,7 +77,7 @@ import { shouldPaginateOlder, shouldContinueOlderWalk, canForkAtWindow, searchSc
 import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import TranscriptScrollShell from './chat/TranscriptScrollShell'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { addPendingFile, parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, hasExactRelMention, normalizeWindowsPath, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
+import { addPendingFile, parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, hasExactRelMention, isWindowsShapedPath, normalizeWindowsPath, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens, tokenRegex, VIDEO_EXT } from '../utils/fileTokens'
 import { classifyDrop } from '../utils/dropClassify'
 import { makeRelative } from '../components/FilePickerMenu'
 import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
@@ -651,6 +651,45 @@ export function virtualKeyFor(
 /** Tie-break suffix for colliding virtualizer keys. Key plumbing only — the
  *  string never renders as user-visible text. */
 const DUP_KEY_SUFFIX = '~#'
+
+/** Trailing boundary for a recorded `@rel` mention: whitespace, end-of-
+ *  string, a RUN of one-or-more punctuation characters that is ITSELF
+ *  followed by whitespace/end (`?!`, `).`  -- ordinary sentence-ending
+ *  punctuation clusters, fork Opus review), or a colon-number suffix
+ *  followed by whitespace/end (`:42`, a file:line reference, same
+ *  review). A punctuation run is not enough on its own unless the WHOLE
+ *  run is immediately followed by whitespace/end -- `.` is a legal,
+ *  common mid-filename character (`README.md`), so treating it as a
+ *  sufficient boundary by itself would match `@README` as a PREFIX of
+ *  the unrelated, longer `@README.md` mention (fork GPT review). Shared
+ *  between the reconciliation staleness check and the remove-chip strip
+ *  so the two can never disagree about what counts as a boundary.
+ *
+ *  A REGEX LITERAL's `.source`, not a string constant: `no-literal-string`
+ *  only inspects `Literal` nodes whose value is a string, and a regex
+ *  literal's value is a RegExp, so this is exempt by AST shape rather than
+ *  needing a content exclusion in the shared `eslint.i18n.config.js` (fork
+ *  GPT review) -- the pattern itself has no natural-language words for a
+ *  content-shape exemption to key on either way. */
+const mentionBoundary = /(?:\s|$|[,.!?;:)\]}]+(?=\s|$)|:\d+(?=\s|$))/.source
+
+/** The strict, punctuation-free fallback boundary (`boundaryFor`, fork GPT
+ *  review round 18) -- same `.source` construction and the same i18n-gate
+ *  reasoning as `mentionBoundary` above. */
+const strictMentionBoundary = /(?:\s|$)/.source
+
+/** Leading boundary for a recorded `@rel` mention: start-of-string,
+ *  whitespace, or either of those immediately followed by ONE opening-
+ *  punctuation character -- `(@src/main.ts)`, a mention wrapped in
+ *  parens, is an entirely ordinary way to reference a file inline, but
+ *  the plain `(^|\s)` boundary this shared with `tokenRegex` never
+ *  recognized it (fork GPT review, round 19), silently unstaging a
+ *  still-intended attachment the moment its wrapping parenthesis made
+ *  the leading boundary fail -- the same "nothing acted on this before
+ *  the reconciliation effect existed" gap round 15 found on the
+ *  trailing side. Same `.source` construction as `mentionBoundary`
+ *  above, for the same i18n-gate reason. */
+const leadingMentionBoundary = /(?:^|\s)[($[{]?/.source
 
 export function uniqueRowKeys(
   items: readonly DisplayItem[],
@@ -2287,7 +2326,43 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the same remove contract folder chips have. Uploaded/dropped files never
   // get an entry (they have no token), so their remove stays state-only. A
   // ref, not state: it never drives rendering. Entries die with their chip.
-  const pickedFileTokens = useRef<Record<string, string>>({})
+  //
+  // Keyed by SLOT first, then absolute path, then an ARRAY of every `@rel`
+  // alias ever recorded for that path in this slot (`pickedFileTokens.current
+  // [slot][absPath] = ['@src/main.ts', '@main.ts']`) -- five review rounds on
+  // progressively narrower shapes each found a different way the previous
+  // shape lost information:
+  //  1-3. A flat, path-only `Record<absPath, token>` let a DIFFERENT slot's
+  //     pick/send/staging corrupt this slot's entry through the shared key.
+  //     Moot once each slot owns its own sub-map, reachable ONLY through
+  //     composerSlotRef -- a foreign slot's entry can never be read as this
+  //     slot's own.
+  //  4-5. Even slot-scoped, a single STRING per path only remembers the LAST
+  //     alias recorded. If the slot's project changes and the same file gets
+  //     a SECOND `@rel` alias (a fresh pick, or an already-typed mention in
+  //     the new form), the second pick overwrote the first alias outright --
+  //     deleting the NEW alias then unstaged the file even though the text
+  //     still carried the ORIGINAL alias untouched. An array keeps every
+  //     alias ever recorded; the file counts as mentioned if ANY of them is
+  //     still in the text, and unstages only once NONE are.
+  const pickedFileTokens = useRef<Record<string, Record<string, string[]>>>({})
+  // useCallback (not a plain function) purely so a caller wrapped in its own
+  // useCallback/useEffect gets a STABLE reference to depend on -- the body
+  // only reads refs, which never change identity, so `[]` deps are already
+  // exhaustive.
+  const currentSlotTokens = useCallback(() => {
+    const slot = composerSlotRef.current
+    if (!slot) return null
+    return pickedFileTokens.current[slot] ??= {}
+  }, [])
+  /** Append `token` as an alias for `absPath` in the CURRENT slot's token map,
+   *  deduping exact repeats. No-ops outside a known slot. */
+  const recordSlotToken = useCallback((absPath: string, token: string) => {
+    const slotTokens = currentSlotTokens()
+    if (!slotTokens) return
+    const aliases = slotTokens[absPath] ?? []
+    if (!aliases.includes(token)) slotTokens[absPath] = [...aliases, token]
+  }, [currentSlotTokens])
   const [snipFrame, setSnipFrame] = useState<HTMLCanvasElement | null>(null)
   // The slot that INITIATED the current snip. getDisplayMedia + cropping is
   // async and the user may switch slots meanwhile, so the cropped image must
@@ -2306,6 +2381,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Draft key is composerSlotRef; the slot-change effect handles that
     // transition.
   }, [pendingFiles, saveDraftsDebounced])
+  // File-chip <-> composer-text reconciliation lives below, right after
+  // handleAddToContext (search "pickedFileTokens reconciliation").
   // Collapsed paste blocks backing the `[ Paste #N · M lines ]` tokens in
   // `input`. Persisted per-slot via chatPasteDrafts (localStorage, 30-day TTL)
   // so they survive slot switches / refresh; cleared on send and slot delete.
@@ -4961,7 +5038,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
     setPrefillHint(false)
     if (!optionText) {
-      setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
+      // Drops only THIS slot's own token sub-map (`pickedFileTokens` is
+      // slot-scoped -- see its declaration), never another slot's: a
+      // DIFFERENT, still-open slot's attachment is untouched regardless of
+      // what this send just carried.
+      setInput(''); setPendingFiles([]); if (uiSlot) delete pickedFileTokens.current[uiSlot]; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
       // The challenge-handoff prompt is seeded into PREFILL_STORAGE_KEY and the
       // slot-restore effect re-applies it on slot changes. Once that prompt is
       // sent, clear the seed so a later slot-restore can't re-fill the (now
@@ -5561,6 +5642,73 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch, activeSlot, search.close])
   const currentProjectRef = useRef<string | undefined>(undefined)
   currentProjectRef.current = currentSlot?.project || undefined
+  // `hasExactRelMention` (and a same-shaped inline check below) always try
+  // BOTH separator forms, folding forward-slash and backslash as
+  // interchangeable -- correct for a Windows-shaped project (the OS accepts
+  // either), but WRONG on POSIX, where `\` is a legal filename character: a
+  // nested file `src/main.ts` and a literal filename `src\main.ts` sitting
+  // directly in the project root would otherwise compare as the same
+  // mention (fork GPT review) -- deleting one's own alias would then read
+  // as "still referenced" via the OTHER, unrelated file's genuine mention,
+  // and both would be sent. Folding is gated on the CURRENT project
+  // actually being Windows-shaped via `isWindowsShapedPath`, checked
+  // directly against the drive-letter/UNC prefix rather than via
+  // `normalizeWindowsPath(project) !== project` (fork GPT review) -- that
+  // comparison is false for a Windows-shaped project already spelled with
+  // forward slashes (`C:/repo`), since there is nothing for the backslash
+  // rewrite to change, silently disabling the fold exactly where it is
+  // needed. `rel` itself can arrive in EITHER separator spelling (whichever
+  // form was actually recorded), so the fallback swaps whichever separator
+  // `rel` uses for the other one, not just forward-to-backslash.
+  // The shared `tokenRegex`'s trailing boundary requires whitespace or
+  // end-of-string, so an entirely ordinary sentence -- "check @file.ts,
+  // please" -- reads as "mention gone" the instant the comma is typed,
+  // and the reconciliation effect below silently unstages a still-
+  // intended attachment before the user finishes the sentence (fork GPT
+  // review). Before this PR nothing acted on that gap: a file chip was
+  // pure list state with no text-driven staleness check at all, so
+  // `tokenRegex`'s pre-existing punctuation blind spot never had a
+  // user-visible consequence. This reconciliation-only boundary also
+  // accepts common trailing punctuation, scoped here rather than
+  // widening the shared `tokenRegex` (used for insertion/splicing
+  // elsewhere, where an inserted token is always followed by a real
+  // space per the caret-insertion logic above). A bare punctuation
+  // character is NOT enough on its own, though (fork GPT review): `.` is
+  // a legal, common mid-filename character (`README.md`), so treating it
+  // as a sufficient boundary by itself would match `@README` as a
+  // PREFIX of the unrelated, longer `@README.md` mention. Each
+  // punctuation option is therefore itself required to be followed by
+  // whitespace or end-of-string. Shared with the remove-chip strip below
+  // (round 16) so the two can never disagree about what counts as a
+  // boundary.
+  // A punctuation boundary can itself be the START of a DIFFERENT staged
+  // file's own longer alias (fork GPT review, round 18): `report` and
+  // `report,` can both be genuine, distinct filenames, so accepting a
+  // bare trailing comma as `report`'s boundary matches it as a PREFIX of
+  // `report,`'s own mention -- silently mis-attributing the LONGER file's
+  // text to the shorter one on both sides of the reconciliation contract
+  // (staleness AND remove-chip strip). Falls back to the strict
+  // whitespace/end-only boundary whenever another currently-relevant
+  // alias literally begins with this one, so a trailing punctuation
+  // character that could belong to a real sibling file's name is never
+  // treated as "just punctuation." `otherAliases` is optional: callers
+  // with no cross-file context to check against (none currently) get the
+  // permissive boundary, same as before this round.
+  const boundaryFor = useCallback((fullAlias: string, otherAliases?: ReadonlySet<string>) => {
+    const unsafe = otherAliases && [...otherAliases].some(o => o.length > fullAlias.length && o.startsWith(fullAlias))
+    return unsafe ? strictMentionBoundary : mentionBoundary
+  }, [])
+  const mentionRegex = useCallback((token: string, otherAliases?: ReadonlySet<string>) => {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`(${leadingMentionBoundary})@${escaped}(?=${boundaryFor(`@${token}`, otherAliases)})`)
+  }, [boundaryFor])
+  const relMentionedHere = useCallback((text: string, rel: string, otherAliases?: ReadonlySet<string>) => {
+    if (mentionRegex(rel, otherAliases).test(text)) return true
+    const project = currentProjectRef.current || ''
+    if (!isWindowsShapedPath(project)) return false
+    const altRel = rel.includes('\\') ? rel.replace(/\\/g, '/') : rel.replace(/\//g, '\\')
+    return mentionRegex(altRel, otherAliases).test(text)
+  }, [mentionRegex])
 
   // "Add to context" from the file-browser rail's row context menu: insert the
   // SAME `@`-mention the file picker does, so a right-click is just a second
@@ -5590,13 +5738,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // be conflated.
       const relSlash = rel.endsWith('/') ? rel : `${rel}/`
       const project = currentProjectRef.current || ''
-      const projectIsWindowsShaped = normalizeWindowsPath(project) !== project
+      // Checked directly against the drive-letter/UNC prefix, not via
+      // `normalizeWindowsPath(project) !== project` (fork GPT review) --
+      // that comparison misses a Windows-shaped project already spelled
+      // with forward slashes (`C:/repo`).
+      const projectIsWindowsShaped = isWindowsShapedPath(project)
       const dup = projectIsWindowsShaped && parseDirTokens(inputRef.current).some(
         t => t.rel.replace(/\\/g, '/') === relSlash,
       )
       if (!dup) {
-        const spliced = spliceDirTokens(inputRef.current, null, [rel])
-        if (spliced.changed) setInput(spliced.value)
+        // Insert at the last known caret, same as a dir-token drop (line ~3130)
+        // -- both go through spliceDirTokens, so they share its caret contract.
+        const spliced = spliceDirTokens(inputRef.current, voiceCaretRef.current?.start ?? null, [rel])
+        if (spliced.changed) {
+          voicePendingCaretRef.current = spliced.caret
+          setInput(spliced.value)
+        }
       }
     } else {
       const token = `@${rel}`
@@ -5613,11 +5770,56 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // token that is not there while leaving the real one behind.
       const alreadyMentioned = hasExactRelMention(inputRef.current, rel)
       if (!alreadyMentioned) {
-        setInput(prev => {
-          const lead = prev && !/\s$/.test(prev) ? ' ' : ''
-          return `${prev}${lead}${token} `
-        })
-        pickedFileTokens.current[absPath] = token
+        // Insert at the last known caret rather than always appending, so
+        // "please check @README.md for bugs" stays possible when the file is
+        // added mid-sentence instead of the token always landing at the end.
+        const prev = inputRef.current
+        const caret = voiceCaretRef.current?.start ?? null
+        const at = caret == null ? prev.length : Math.max(0, Math.min(caret, prev.length))
+        const before = prev.slice(0, at)
+        const after = prev.slice(at)
+        const lead = before && !/\s$/.test(before) ? ' ' : ''
+        const trail = after && !/^\s/.test(after) ? ' ' : ''
+        const run = `${lead}${token}${trail || ' '}`
+        voicePendingCaretRef.current = before.length + run.length
+        setInput(before + run + after)
+        recordSlotToken(absPath, token)
+      } else {
+        // Already mentioned, so no text was inserted -- but the file is
+        // about to be staged below regardless, and the reconciliation effect
+        // needs a recorded token to ever notice a later hand-edit on it (fork
+        // GPT review: without this, a pick that lands on an existing mention
+        // never gets bookkeeping, so deleting that mention later leaves an
+        // orphaned chip -- the exact bug this PR fixes, through a side door).
+        // Record the LITERAL form already in the text, not this handler's own
+        // canonical `token` -- the existing mention could be a different
+        // separator rendition (the Windows @-picker inserts backslash rels).
+        // Checked the same way `alreadyMentioned` itself was determined
+        // (forward-slash first, then backslash) rather than via buildRelMap's
+        // suffix walk, which only ever tries forward-slash and so silently
+        // finds nothing for a backslash mention (fork GPT review) -- leaving
+        // this file with no recorded token at all, the same orphaned-chip gap
+        // the forward-slash case above was just fixed for.
+        // The backslash branch is gated on the project being Windows-shaped
+        // (fork GPT review): `alreadyMentioned` above can ITSELF be a false
+        // positive on POSIX, where `hasExactRelMention` folds separators
+        // unconditionally -- a DISTINCT file literally named `src\main.ts`
+        // makes `alreadyMentioned` true for an unrelated `src/main.ts` pick.
+        // Recording that literal backslash string as ITS alias would then
+        // make removing the NEW file's chip strip the unrelated file's own
+        // genuine mention out of the text. Only on a Windows-shaped project,
+        // where the two separators really are the same path, is the
+        // backslash literal safe to attribute to this rel.
+        const project = currentProjectRef.current || ''
+        // Checked directly against the drive-letter/UNC prefix, not via
+        // `normalizeWindowsPath(project) !== project` (fork GPT review) --
+        // that comparison misses a Windows-shaped project already spelled
+        // with forward slashes (`C:/repo`).
+        const projectIsWindowsShaped = isWindowsShapedPath(project)
+        const existing = tokenRegex(rel).test(inputRef.current) ? rel
+          : projectIsWindowsShaped && tokenRegex(rel.replace(/\//g, '\\')).test(inputRef.current) ? rel.replace(/\//g, '\\')
+          : null
+        if (existing) recordSlotToken(absPath, `@${existing}`)
       }
       // addPendingFile dedupes by canonical Windows identity: the @-picker may
       // have already staged this file in native `C:\…` form, and an exact check
@@ -5625,7 +5827,117 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setPendingFiles(prev => addPendingFile(prev, absPath))
     }
     revealComposer()
-  }, [])
+  }, [recordSlotToken])
+
+  // pickedFileTokens reconciliation -- keeps a file chip in sync with its
+  // `@rel` alias(es) in BOTH directions, the same way a folder chip (line
+  // ~1737) already is for free by being text-derived. A file chip is
+  // list-backed (`pendingFiles`), not text-derived, so without this it never
+  // notices a hand-edit:
+  //  - A picker-picked/tree-added file none of whose recorded aliases appear
+  //    in the text anymore has been hand-edited out (cut, or an over-eager
+  //    selection-delete) -- drop its chip.
+  //  - A file whose alias reappears (undo, or the text pasted back after a
+  //    cut-to-reposition -- the very workflow the caret fix above exists for)
+  //    restages its chip, rather than leaving the mention as plain text with
+  //    the attachment silently gone.
+  //
+  // Each path can carry MULTIPLE recorded aliases (fork GPT review): a later
+  // pick of the SAME file under a changed project adds a second `@rel` form
+  // without replacing the first, since the two texts can coexist. So the
+  // stale check requires NONE of the aliases to still be mentioned, and
+  // revival accepts ANY of them.
+  //
+  // Every comparison trusts the STORED alias strings directly (not a
+  // re-derived rel): `pickedFileTokens` is slot-scoped, so the entries read
+  // here can only be ones THIS slot itself wrote, at THIS slot's own pick
+  // time(s) -- unlike a re-derivation against the slot's CURRENT project,
+  // which breaks the moment the slot's project changes after a pick (the
+  // text was never rewritten, so the OLD rel is still what is sitting there;
+  // re-deriving against the NEW project would falsely call it stale and drop
+  // a still-referenced attachment).
+  //
+  // Entries are NOT deleted on unstage (only on the chip's own ✕, which also
+  // strips every recorded alias from the text, so revival can never fire for
+  // it) -- keeping the mapping alive is what makes revival possible.
+  // Uploaded/dropped files carry no recorded aliases and are never touched by
+  // either direction -- there is no text mention to lose or regain.
+  //
+  // Revival, unlike the stale check above, DOES cross-check each candidate
+  // alias's rel against a fresh re-derivation under the CURRENT project (fork
+  // GPT review): an entry that survived an earlier unstage can be for a path
+  // whose alias no longer matches what that same rel would mean under the
+  // project the slot has SINCE moved to. Reviving it purely because the text
+  // happens to contain that rel again -- typed with the NEW project's own
+  // file in mind -- would silently attach the OLD, unrelated absolute path
+  // instead. An alias is skipped (not merely blocked) when the two ever
+  // disagree, so a stale cross-project alias can never revive on a
+  // coincidental rel match.
+  //
+  // KNOWN LIMITATION: `pickedFileTokens` is in-memory only, while `pendingFiles`
+  // persists across a reload/slot-restore via `fileDrafts` (localStorage). A
+  // file chip restored that way has no recorded aliases, so a hand-edit on it
+  // post-restore is invisible to this effect and the chip sticks -- the same
+  // tradeoff the remove button's own token derivation already documents below
+  // ("the ref is in-memory only: a restored draft ... re-stages the file
+  // without it"). Not fixed here: it would mean persisting the aliases
+  // alongside the draft too, a separate change from this reconciliation.
+  useEffect(() => {
+    const known = currentSlotTokens()
+    if (!known) return
+    const staged = new Set(pendingFilesRef.current)
+    const sameSlash = (a: string, b: string) => a.replace(/\\/g, '/') === b.replace(/\\/g, '/')
+    // Deliberately NOT a boundary-checked path-SUFFIX fallback (tried and
+    // reverted -- fork GPT review, two rounds): recognizing "any suffix of
+    // this path is mentioned" as proof of reference sounds safe for a single
+    // file, but two DIFFERENT staged files can share a trailing path segment
+    // (`/repo/src/main.ts` and `/repo/other/src/main.ts` both end in
+    // `src/main.ts`). Deleting one file's own mention while the other's
+    // longer, unrelated mention remains would then read as "still
+    // referenced" and skip unstaging the WRONG file -- sent when the user
+    // explicitly tried to remove it. Only the EXACT aliases this file was
+    // actually recorded under (never a suffix borrowed from a sibling
+    // file's mention) are trusted here.
+    // Every OTHER currently-STAGED path's aliases, so `relMentionedHere`
+    // can refuse a punctuation-boundary match that is really the start of
+    // a DIFFERENT file's own longer mention (fork GPT review, round 18).
+    // Scoped to `staged`, not the full historical `known` map (fork GPT
+    // review, round 20): entries are deliberately never deleted on
+    // unstage (kept alive for revival), so `known` can carry an OLD
+    // project's long-abandoned alias for a file that isn't attached to
+    // anything anymore. Treating that stale history as "another real
+    // file to protect" forced the strict boundary onto a CURRENTLY
+    // staged file's own, entirely ordinary punctuated mention, and
+    // wrongly unstaged the attachment the user is actually still typing
+    // about.
+    const otherAliasesFor = (p: string) => {
+      const others = new Set<string>()
+      for (const [otherPath, otherTokens] of Object.entries(known)) {
+        if (otherPath === p || !staged.has(otherPath)) continue
+        otherTokens.forEach(t => others.add(t))
+      }
+      return others
+    }
+    const stale = pendingFilesRef.current.filter(p => {
+      const aliases = known[p]
+      return aliases != null && aliases.length > 0 && !aliases.some(token => relMentionedHere(input, token.slice(1), otherAliasesFor(p)))
+    })
+    const revived = Object.keys(known).filter(p => {
+      if (staged.has(p) || stale.includes(p)) return false
+      const currentRel = makeRelative(p, normalizeWindowsPath(currentProjectRef.current || ''))
+      const otherAliases = otherAliasesFor(p)
+      return known[p].some(token => {
+        const storedRel = token.slice(1)
+        if (!sameSlash(storedRel, currentRel)) return false
+        return relMentionedHere(input, storedRel, otherAliases)
+      })
+    })
+    if (!stale.length && !revived.length) return
+    setPendingFiles(prev => {
+      const next = prev.filter(p => !stale.includes(p))
+      return revived.reduce((acc, p) => addPendingFile(acc, p), next)
+    })
+  }, [input, currentSlotTokens, relMentionedHere])
 
   // ── Follow-up card actions (suggest_followup MCP tool) ───────────────────
   // Both routes PRE-FILL a composer and stop; neither sends. `setPendingInput`
@@ -7275,7 +7587,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // would lose a reference the user cannot recover except by dragging again.
     // Leaving them staged is lossless and predictable: the chip stays in the
     // composer and rides the next real send, which does have a restore path.
-    setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([])
+    // Drops only this slot's own token sub-map -- see the same-shaped
+    // comment at the other send-clear site above.
+    setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
   }, [activeSlot, slotRunning, send, steerMutation, saveDrafts, dispatch])
@@ -9479,24 +9793,103 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               resizedInfo={resizedInfo}
               onRemoveFile={p => {
                 setPendingFiles(prev => prev.filter(x => x !== p))
-                // A picker-picked file also inserted an `@rel` token into the
-                // composer, so its remove strips that token too — the same
+                // A picker-picked file also inserted `@rel` token(s) into the
+                // composer, so its remove strips ALL of them too — the same
                 // contract folder chips have, so the two chip kinds cannot
-                // disagree about what "remove" means. The exact token is
-                // recorded at pick time, but the ref is in-memory only: a
+                // disagree about what "remove" means. The recorded aliases can
+                // include more than one: a later pick under a changed project
+                // adds a second `@rel` form for the same file without
+                // replacing the first (fork GPT review) -- stripping only one
+                // would leave the other sitting in the text with no chip
+                // behind it. The aliases are in-memory only, though: a
                 // restored draft or a failed-send restore re-stages the file
-                // without it. Fall back to deriving the token from the path —
+                // without any. Fall back to deriving ONE token from the path —
                 // the shortest boundary-checked `@suffix` present in the text
                 // (the same walk buildRelMap uses), which is exactly the form
                 // the picker inserts. Uploaded/dropped files have no token in
                 // the text, so the derivation finds nothing and their remove
                 // stays state-only. On no match the text is left alone —
                 // visible and editable is the safe fallback.
-                const token = pickedFileTokens.current[p] ?? [...buildRelMap([p], inputRef.current).keys()].map(s => `@${s}`)[0]
-                delete pickedFileTokens.current[p]
-                if (!token) return
-                const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-                setInput(prev => prev.replace(new RegExp(`(^|\\s)${esc}(?: |(?=\\s)|$)`, 'g'), '$1'))
+                const slotTokens = currentSlotTokens()
+                const tokens = slotTokens?.[p] ?? [[...buildRelMap([p], inputRef.current).keys()].map(s => `@${s}`)[0]].filter((t): t is string => !!t)
+                // A later pick under a changed project can compute the SAME
+                // rel for a DIFFERENT absolute path (fork GPT review) --
+                // both files then share the identical literal alias string,
+                // recorded independently under their own path. Stripping a
+                // shared alias here would delete the ONLY text occurrence
+                // both files' bookkeeping points at, and the reconciliation
+                // effect would then read the OTHER, untouched file as stale
+                // too and silently drop it. Any alias still claimed by
+                // another currently-staged path is left in the text.
+                const otherAliases = new Set<string>()
+                if (slotTokens) {
+                  for (const otherPath of pendingFilesRef.current) {
+                    if (otherPath === p) continue
+                    slotTokens[otherPath]?.forEach(t => otherAliases.add(t))
+                  }
+                }
+                if (slotTokens) delete slotTokens[p]
+                if (!tokens.length) return
+                // On a Windows-shaped project, a chip's OWN mention can have
+                // been hand-edited to the OTHER separator spelling of the
+                // SAME file after it was staged (round 9-12) -- the
+                // reconciliation effect correctly keeps the chip staged
+                // through that edit (it folds), but the RECORDED alias
+                // still says the OLD spelling. Stripping only that literal
+                // form here misses the edited mention entirely: the chip
+                // disappears from the list, but its text reference is left
+                // behind and gets sent as a stale, unattached `@rel` (fork
+                // GPT review). Try both separator forms of each token; the
+                // `otherAliases` guard must ALSO fold on a Windows-shaped
+                // project (fork GPT review, round 14) -- another staged
+                // file's alias can be recorded in the OTHER separator
+                // spelling than the candidate being tested (exactly the
+                // round-11 shared-alias scenario, after a round-12/13
+                // separator edit), so an exact-literal-only guard misses
+                // it: the flipped candidate strips the ONLY shared text
+                // occurrence out from under the other file too, unstaging
+                // both attachments instead of just the one being removed.
+                const projectIsWindowsShaped = isWindowsShapedPath(currentProjectRef.current || '')
+                const flip = (t: string) => t.includes('\\') ? t.replace(/\\/g, '/') : t.replace(/\//g, '\\')
+                setInput(prev => tokens.reduce((text, token) => {
+                  const candidates = projectIsWindowsShaped ? [token, flip(token)] : [token]
+                  return candidates.reduce((t, candidate) => {
+                    const guarded = otherAliases.has(candidate) ||
+                      (projectIsWindowsShaped && otherAliases.has(flip(candidate)))
+                    if (guarded) return t
+                    // Shares `mentionBoundary` (via `boundaryFor`, which also
+                    // takes `otherAliases` -- round 18) and
+                    // `leadingMentionBoundary` (round 19) with
+                    // `mentionRegex` (round 16) -- a mention followed
+                    // directly by punctuation (`@file.ts,`, no space) or
+                    // wrapped in parens (`(@file.ts)`) survives
+                    // reconciliation as still-mentioned (rounds 15/19), but
+                    // this replace used the OLD, stricter boundaries and
+                    // never matched it: the chip disappeared from the list
+                    // while its text reference was left behind and sent as
+                    // a stale, unattached `@rel`.
+                    const esc = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                    const boundarySrc = boundaryFor(candidate, otherAliases)
+                    // A wrapping bracket pair is stripped WITH the mention,
+                    // not left behind (fork Opus review): matching only
+                    // `leadingMentionBoundary`'s optional OPENING bracket
+                    // and re-emitting it via `$1` left the never-consumed
+                    // CLOSING bracket stranded -- `(@file.ts)` -> `()`, a
+                    // stray, empty pair sent as real message text. Tried
+                    // for each bracket kind BEFORE the general strip below,
+                    // so a genuinely wrapping pair is removed as a unit;
+                    // an unpaired or mismatched bracket still falls through
+                    // to the general strip and is left in place, same as
+                    // any other punctuation this PR doesn't try to erase.
+                    let stripped = t
+                    for (const [open, close] of [['(', ')'], ['[', ']'], ['{', '}']] as const) {
+                      const openEsc = open.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                      const closeEsc = close.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                      stripped = stripped.replace(new RegExp(`(^|\\s)${openEsc}${esc}${closeEsc}(?: |(?=${boundarySrc})|$)`, 'g'), '$1')
+                    }
+                    return stripped.replace(new RegExp(`(${leadingMentionBoundary})${esc}(?: |(?=${boundarySrc})|$)`, 'g'), '$1')
+                  }, text)
+                }, prev))
               }}
               onRemoveDir={rel => {
                 // The chip derives from the `@rel/` token, so removing the
@@ -9519,7 +9912,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 // twice. Token bookkeeping keys on the staged form so remove
                 // finds it.
                 const canon = normalizeWindowsPath(path)
-                if (token) pickedFileTokens.current[canon] = token
+                if (token) recordSlotToken(canon, token)
                 setPendingFiles(prev => addPendingFile(prev, canon))
               }}
               onFileOpen={handleFileOpen}
