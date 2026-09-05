@@ -177,10 +177,13 @@ without messaging credentials. Add a messaging channel —
 [Teams](src/kiro_crew/docs/teams-integration.md),
 [Webex](src/kiro_crew/docs/webex-integration.md),
 [WeCom](src/kiro_crew/docs/wecom-integration.md),
-[WeChat](src/kiro_crew/docs/weixin-integration.md), or
-[WhatsApp](src/kiro_crew/docs/whatsapp-integration.md) — when you want to continue
+[WeChat](src/kiro_crew/docs/weixin-integration.md),
+[WhatsApp](src/kiro_crew/docs/whatsapp-integration.md),
+[Feishu](src/kiro_crew/docs/feishu-integration.md), or
+[iMessage](src/kiro_crew/docs/imessage-integration.md) — when you want to continue
 working with the same agent away from the dashboard. Apart from Teams (which
-needs a public HTTPS webhook — see its guide), these channels connect
+needs a public HTTPS webhook — see its guide) and iMessage (which talks to
+Messages.app on the same Mac), these channels connect
 outbound, so you do not need to expose the dashboard port publicly.
 
 ### Docker
@@ -268,7 +271,7 @@ The complete inventory is in [Features](src/kiro_crew/docs/index.md) and
 
 ```mermaid
 flowchart TD
-    S["Desktop app · Web dashboard · CLI · Messaging channels (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat)"]
+    S["Desktop app · Web dashboard · CLI · Messaging channels (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat, WhatsApp, Feishu, iMessage)"]
     G["Gateway<br/>access · sessions · memory · schedules · approvals · apps"]
     A["Agent sessions<br/>ACP runtime · kiro-cli · MCP tools · models"]
     S --> G --> A
@@ -322,9 +325,12 @@ logical isolation boundary, not necessarily one OS process.
 | **Telegram** | Reach your agent from private DMs on your phone or laptop, with streaming replies, inline approvals, and commands. |
 | **Discord** | Work from DMs with streaming replies and approvals delivered as message buttons. |
 | **Teams** | Reach your agent from Microsoft Teams chats — replies arrive as complete messages, and approvals are answered by typing. |
-| **Webex** | Work from Webex direct messages with streaming replies and inline approvals. |
+| **Webex** | Work from Webex direct messages with inline approvals; progress shows as edits to one message, which the finished answer replaces. |
 | **WeCom** | Chat through an outbound-connected WeCom AI bot with configured user access and streaming replies. |
-| **WeChat (Weixin)** | Reach your agent from WeChat with configured user access and streaming replies. |
+| **WeChat (Weixin)** | Reach your agent from WeChat with configured user access; a typing indicator runs while the turn works and the reply arrives as complete messages. |
+| **WhatsApp** | Reach your agent from WhatsApp with streaming replies, file exchange, and reactions. |
+| **Feishu (Lark)** | Chat from Feishu DMs and allow-listed group chats through a custom app bot on an outbound long connection — replies arrive as complete messages. |
+| **iMessage** | Chat from the Messages app on your own Mac and Apple devices, with no bot to register and no token to paste — replies arrive as complete messages. |
 | **CLI** | Fast interactive chat and direct automation with `kirocrew chat`, `run`, `cron`, `spawn`, and `security`. |
 
 **Choose how work starts.**
@@ -613,7 +619,7 @@ performance metrics that never leave your machine. See
 | Install and packaging | [Install and build](docs/guides/install.md), [Windows](docs/guides/windows-install.md), [Docker](docs/guides/docker.md), [Desktop](docs/build/desktop-app.md), [Remote host](docs/guides/remote-and-mobile.md), [Release process](docs/build/release.md) |
 | Product capabilities | [Features](src/kiro_crew/docs/index.md), [Skills](skills/README.md), [All user docs](src/kiro_crew/docs/README.md) |
 | All documentation | [docs/](docs/README.md) for contributor and architecture docs |
-| Channels | [Slack](docs/guides/slack-setup.md), [Discord](src/kiro_crew/docs/discord-integration.md), [Telegram](src/kiro_crew/docs/telegram-integration.md), [Teams](src/kiro_crew/docs/teams-integration.md), [Webex](src/kiro_crew/docs/webex-integration.md), [WeCom](src/kiro_crew/docs/wecom-integration.md), [WeChat (Weixin)](src/kiro_crew/docs/weixin-integration.md), [WhatsApp](src/kiro_crew/docs/whatsapp-integration.md) |
+| Channels | [Slack](docs/guides/slack-setup.md), [Discord](src/kiro_crew/docs/discord-integration.md), [Telegram](src/kiro_crew/docs/telegram-integration.md), [Teams](src/kiro_crew/docs/teams-integration.md), [Webex](src/kiro_crew/docs/webex-integration.md), [WeCom](src/kiro_crew/docs/wecom-integration.md), [WeChat (Weixin)](src/kiro_crew/docs/weixin-integration.md), [WhatsApp](src/kiro_crew/docs/whatsapp-integration.md), [Feishu (Lark)](src/kiro_crew/docs/feishu-integration.md), [iMessage](src/kiro_crew/docs/imessage-integration.md) |
 | Architecture | [System architecture](docs/architecture/overview.md), [Memory](docs/system-specs/modules/memory-skills-hooks.md), [MCP](docs/architecture/mcp.md), [App Kit](docs/app-kit/getting-started.md) |
 | Trust and dependencies | [Security](docs/architecture/security-deep-dive.md), [Security policy](SECURITY.md) |
 | Project work | [Contributing](CONTRIBUTING.md), [Tenets](TENETS.md), [Governance](GOVERNANCE.md), [Maintainers](MAINTAINERS.md), [AI assistant rules](AGENTS.md), [Changelog](CHANGELOG.md) |
