@@ -269,9 +269,9 @@ class TestProbeSignalsAreDocumented:
 
     def test_the_noprogress_row_routes_to_effect_and_not_to_a_nudge(self):
         """A row that exists but restates `IDLE`'s ladder rebuilds the defect one
-        level down. The tag is only reached for a session held WARM by inbound
-        traffic it never answers, so the reading it supports is an effect check,
-        and another nudge is more of the input that produced it."""
+        level down. The tag's own case -- a session held WARM by inbound traffic
+        it never answers -- has an action `IDLE` does not: another nudge is more
+        of the input that produced the reading."""
         rows = [
             row
             for row in _skill_section(self.HEADING).splitlines()
@@ -282,6 +282,14 @@ class TestProbeSignalsAreDocumented:
         assert "effect" in action
         assert "never liveness" in action
         assert "not a nudge" in action
+        # But the tag is not warm-only, and a row that says it is sends a cold
+        # session past the nudge it does need. The classifier ranks the tag below
+        # the clock, so ITS path is warm by construction -- while the suppression
+        # fallback substitutes the tag for an already-dispositioned report with no
+        # age test at all, so a cold line can carry it too. The printed age is
+        # what separates them, so the row has to route on it.
+        assert "route on the line's own age" in action
+        assert "idle_alert_secs" in action
 
     def test_the_probe_makes_the_no_progress_comparison_itself(self):
         """The procedure documented a manual two-cycle diff of ``i=``, which the
