@@ -580,6 +580,25 @@ jobs:
         # matrix has a single Python, so there is no --no-cov lane left. Each
         # shard emits a partial data file merged later by the coverage-combine
         # job.
+        #
+        # --max-worker-restart=0 overrides setup.cfg's =2 for THIS job too, for
+        # the destination rather than the trigger. backend-test-windows adopted
+        # it because pytest-timeout has no SIGALRM there and every per-test
+        # timeout kills a whole worker (#5043) -- that trigger is Windows-only,
+        # and this job reports `timeout method: signal`, so a slow test here
+        # fails as one test. The destination is shared: whatever kills a worker,
+        # =2 permits the replacement, and xdist's node-replacement path leaves a
+        # node in assigned_work but absent from registered_collections (#2803),
+        # which either dies with INTERNALERROR or never completes the session.
+        # MEASURED on `Backend Tests (3.12, 4)` of run 33788776072 (2026-09-03):
+        # `[gw2] node down: Not properly terminated` at 19:12:56 with 99.8% of
+        # 21077 items already reported, then 12m20s of zero output, then the
+        # 40-minute cap cancelled the job with no summary -- so the one recorded
+        # failure, the crashed item itself, was never named. Its three sibling
+        # shards passed in 28-32 minutes on the same commit, so the budget was
+        # not the problem. Same trade-off Windows accepted: refusing the
+        # replacement abandons that shard's pending work, and a named red at the
+        # 25-minute mark beats an uninterpretable cancellation at the cap.
         env:
           REDUCED: ${{ steps.scope.outputs.reduced }}
           LEAF: ${{ steps.scope.outputs.leaf }}
@@ -636,24 +655,24 @@ jobs:
             fi
             if [ "${#GATES[@]}" -gt 0 ]; then
               echo "::group::leaf corpus gates (${#GATES[@]} file(s), once)"
-              pytest -q -n auto --timeout=120 --no-cov "${GATES[@]}"
+              pytest -q -n auto --timeout=120 --no-cov --max-worker-restart=0 "${GATES[@]}"
               echo "::endgroup::"
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
-              pytest -q -n auto --timeout=120 --no-cov "${CHANGED[@]}"
+              pytest -q -n auto --timeout=120 --no-cov --max-worker-restart=0 "${CHANGED[@]}"
               echo "::endgroup::"
             done
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            pytest -q -n auto --timeout=120 \
+            pytest -q -n auto --timeout=120 --max-worker-restart=0 \
               --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
               --no-cov \
               "${TARGETS[@]}"
             exit 0
           fi
-          pytest -q -n auto --timeout=120 \
+          pytest -q -n auto --timeout=120 --max-worker-restart=0 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
             --cov=kiro_crew --cov=sage_lib
         # Nothing is deselected. The eleven files that used to be -- the two sandbox
