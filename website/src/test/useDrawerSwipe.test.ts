@@ -619,6 +619,115 @@ describe('useDrawerSwipe', () => {
     fireThroughShadow(host, inner, touch('touchmove', 360))
     expect(onGestureOpen).toHaveBeenCalledTimes(1)
   })
+
+  // ── Text-selection ownership ────────────────────────────────────────────
+  // A long-press selects a word and puts drag handles on it, and extending the
+  // selection rightward is a horizontal drag over plain chat text — dead
+  // center in the arming surface, with the handles invisible to both chain
+  // readers (they are browser chrome, not elements). Without deference the
+  // drawer slid in mid-selection.
+
+  describe('yields to an active text selection', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+      // The focused-editable cases leave a focused node behind; removing the
+      // bound element takes it out of the document, which resets
+      // `document.activeElement` — so no later test inherits the focus.
+      el.remove()
+    })
+
+    /** What `document.getSelection()` reports; only `isCollapsed` is read. */
+    function stubSelection(isCollapsed: boolean) {
+      return vi.spyOn(document, 'getSelection').mockReturnValue({ isCollapsed } as Selection)
+    }
+
+    it('never arms while a selection is active, however clean the drag', () => {
+      stubSelection(false)
+      mount()
+      fire(el, touch('touchstart', 40))
+      fire(el, touch('touchmove', 200))   // far past AXIS_LOCK
+      expect(onGestureOpen).not.toHaveBeenCalled()
+      expect(x.get()).toBe(0)
+    })
+
+    it('a collapsed selection (a caret, or none) changes nothing', () => {
+      // The regression pin: getSelection() is rarely null in a real engine —
+      // an empty selection reports as a collapsed one — so the guard must key
+      // on isCollapsed, not on existence.
+      stubSelection(true)
+      mount()
+      fire(el, touch('touchstart', 40))
+      fire(el, touch('touchmove', 60))
+      expect(onGestureOpen).toHaveBeenCalledTimes(1)
+      expect(x.get()).toBe(CLOSED + 20)
+    })
+
+    it('never arms on a touch that begins inside a focused editable', () => {
+      // One step earlier than a range: the caret's own handle drags before any
+      // selection exists, so the element being typed in owns its touches.
+      const ta = document.createElement('textarea')
+      el.appendChild(ta)
+      ta.focus()
+      expect(document.activeElement).toBe(ta)
+      mount()
+      fire(ta, touch('touchstart', 40))
+      fire(ta, touch('touchmove', 200))
+      expect(onGestureOpen).not.toHaveBeenCalled()
+      expect(x.get()).toBe(0)
+    })
+
+    it('an editable that is NOT focused does not suppress the gesture', () => {
+      // Focus is the signal: an idle input carries no handle to defer to, and
+      // merely containing a form must not kill the swipe across it.
+      const ta = document.createElement('textarea')
+      el.appendChild(ta)
+      expect(document.activeElement).not.toBe(ta)
+      mount()
+      fire(ta, touch('touchstart', 40))
+      fire(ta, touch('touchmove', 60))
+      expect(onGestureOpen).toHaveBeenCalledTimes(1)
+    })
+
+    it('sees a focused editable INSIDE a shadow root', () => {
+      // Outside the root both `e.target` and `document.activeElement` are
+      // retargeted to the HOST, so a parentElement walk from the target never
+      // meets the editable. The guard crosses the boundary the same way the
+      // scroller search does — the composed chain — and the focus side
+      // descends through `shadowRoot.activeElement` to the real caret holder.
+      const host = document.createElement('div')
+      el.appendChild(host)
+      const shadow = host.attachShadow({ mode: 'open' })
+      const ta = document.createElement('textarea')
+      shadow.appendChild(ta)
+      ta.focus()
+      expect(document.activeElement).toBe(host)   // retargeted — the trap this pins
+      expect(shadow.activeElement).toBe(ta)
+      mount()
+      fireThroughShadow(host, ta, touch('touchstart', 40))
+      fireThroughShadow(host, ta, touch('touchmove', 200))
+      expect(onGestureOpen).not.toHaveBeenCalled()
+      expect(x.get()).toBe(0)
+    })
+
+    it('resets when a long-press creates the selection MID-touch', () => {
+      // The finger goes down on unselected text, the long-press selects under
+      // it, and the same touch drags the handle on without lifting — so the
+      // touchstart check saw a collapsed selection and armed. The pending
+      // branch re-checks right before locking.
+      const spy = stubSelection(true)
+      mount()
+      fire(el, touch('touchstart', 40))
+      spy.mockReturnValue({ isCollapsed: false } as Selection)
+      fire(el, touch('touchmove', 200))
+      expect(onGestureOpen).not.toHaveBeenCalled()
+      expect(x.get()).toBe(0)
+      // And it stays declined — reset, not postponed: a later stretch of the
+      // same touch must not retroactively claim the gesture.
+      fire(el, touch('touchmove', 300))
+      expect(onGestureOpen).not.toHaveBeenCalled()
+      expect(x.get()).toBe(0)
+    })
+  })
 })
 
 // ── The page stands down for the duration of a locked gesture ──────────────
