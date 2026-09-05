@@ -94,6 +94,7 @@ import type { SortKey } from './chat/sessionOrder'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 import { i18nT } from '../i18n/t'
+import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { compareText, fmtDateFields, fmtList } from '../i18n/format'
 
 /** Date-segment header between rows. Marks the geometry a row's own rect cannot
@@ -1512,6 +1513,22 @@ const SessionRow = memo(function SessionRow({
     // Board columns keep the separate native-HTML5 drag (their own scope).
     const dndRow = scope === 'list' || scope === 'flat'
     const agentName = s.agent || defaultAgent || ''
+    // What the row SHOWS, kept separate from `agentName` on purpose. That value
+    // is a resolution KEY — it feeds the source tint lookup, the divergence
+    // comparison and the span's React key — so a decorated string in it would
+    // tint the wrong agent and compare a label against a name.
+    //
+    // An empty `s.agent` means this session resolves the CURRENT default at run
+    // time; it is NOT a pin that happens to name the default. Both states put
+    // the same alias in `agentName`, and `effective_agent` is "" for both (an
+    // alias resolving to itself reports nothing), so without the marker the two
+    // are indistinguishable in every value the row holds (#6529). One shared
+    // spelling with the agents rail and the Schedule page.
+    //
+    // The row's own empty-state placeholder is preserved: with no agent AND no
+    // default there is nothing to mark, and the literal 'default' the helper
+    // degrades to would be a boot-window claim rather than a label.
+    const agentDisplay = agentName ? agentOrDefaultLabel(s.agent, defaultAgent) : ''
     // A DIVERGENCE, not a status: the row is advertising `agentName` while a
     // different agent answers the session — usually an app agent that was
     // removed, or one whose registration has not landed yet. Shown because the
@@ -2020,7 +2037,7 @@ const SessionRow = memo(function SessionRow({
                 *  every sidebar commit for a crossfade that fires only on the
                 *  rare agent switch, and the repo's animation invariant is
                 *  framer-only (no new CSS @keyframes). */}
-              <span key={agentName || 'empty'} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentName || '\u00A0'}</span>
+              <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               {agentDiverged && (
                 // Plain secondary TEXT, deliberately not a badge, a colour or an
                 // icon. It is informational — the session works, it is simply
@@ -7163,6 +7180,13 @@ function ChatSidebar({
                 const historyRow = (s: (typeof sortedHistory)[number]) => {
                   const displayDate = fmtRelativeTime(s.modified ?? s.created)
                   const agentName = s.agent || defaultAgent || ''
+                  // Display vs resolution key, same split as renderSessionRow:
+                  // `agentColorFor` must receive the bare name. An archived
+                  // session whose JSONL metadata never recorded an agent falls
+                  // back to the CURRENT default, which is a different fact from
+                  // a session pinned to that same alias — the marker is what
+                  // tells them apart (#6529).
+                  const agentDisplay = agentName ? agentOrDefaultLabel(s.agent, defaultAgent) : ''
                   const agentColor = agentColorFor(agentName)
                   const isDashboard = s.key.startsWith('dashboard')
                   const channel = slotChannelNamespace(s.key)
@@ -7221,7 +7245,7 @@ function ChatSidebar({
                       </span>
                       <div className="flex-1 min-w-0 overflow-hidden">
                         <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
-                          <span className="truncate">{agentName || '\u00A0'}</span>
+                          <span className="truncate" title={agentDisplay || undefined}>{agentDisplay || '\u00A0'}</span>
                           {/* Remote-crew marker. Tinted `info` + a server glyph rather
                               than the neutral chip styling every other meta chip uses:
                               this row's transcript lives on ANOTHER MACHINE, which is a
