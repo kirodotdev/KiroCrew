@@ -24,6 +24,7 @@ import {
 import { PanelLeftLight, PanelLeftSolid } from '../../components/icons/panels'
 import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 import {
   ACCENT,
   AUTO_COMMIT_MINS,
@@ -2428,19 +2429,11 @@ export default function MdNotebookPage() {
             </button>
           </div>
         )}
+        {/* No hand-off: the open note's editor buffer below is unsaved local
+            state — a failed save is exactly when it holds text nowhere else. */}
         {error && (
-          <div
-            role="alert"
-            style={{
-              margin: `8px ${COLUMN_PAD_X}px 0`,
-              padding: '8px 10px',
-              borderRadius: '8px',
-              background: 'var(--danger-subtle)',
-              color: 'var(--danger)',
-              fontSize: '11px',
-            }}
-          >
-            {error}
+          <div style={{ margin: `8px ${COLUMN_PAD_X}px 0` }}>
+            <ErrorNotice message={error} />
           </div>
         )}
 

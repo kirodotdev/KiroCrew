@@ -11,7 +11,7 @@
 // the UI never presents an action the provider will refuse (cancelling a finished
 // run is a 409; re-running an in-flight one is not a thing).
 import { useQuery } from '@tanstack/react-query'
-import { CircleSlash, RotateCw, Loader2, AlertTriangle, PlayCircle } from 'lucide-react'
+import { CircleSlash, RotateCw, Loader2, PlayCircle } from 'lucide-react'
 import { safeHttpUrl } from '../../../lib/safeUrl'
 import { usePrActions, PR_ACTION } from '../lib/prActions'
 import { repoScopeKey } from '../lib/links'
@@ -19,6 +19,7 @@ import { issueRadarApi, type RepoRef } from '../api'
 import { detailPollMs } from '../lib/format'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 
 export default function PrRunActions({
   repoRef, number, headSha, canWrite, live,
@@ -76,12 +77,8 @@ export default function PrRunActions({
         </span>
       )}
 
-      {actions.error && (
-        <div className="mb-1 flex items-start gap-1 text-[11.5px] text-danger">
-          <AlertTriangle className="lucide-inline flex-shrink-0" />
-          <span className="min-w-0 break-words">{actions.error.message}</span>
-        </div>
-      )}
+      {/* Cancel / rerun act on a persisted CI run; this block holds no input. */}
+      <ErrorNotice message={actions.error?.message} variant="inline" askAgent className="mb-1" />
 
       <div className="flex flex-col gap-1">
         {actionable.map((run) => {

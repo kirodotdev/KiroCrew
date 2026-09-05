@@ -61,6 +61,7 @@ import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
 import { providerTerms, readOnlyHint } from '../lib/links'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtDateTime, fmtDateTimeNumeric } from '../../../i18n/format'
 /** A relative timestamp that flips to the absolute local date-time when
  * clicked (and always shows it on hover). Within the last 24h it reads
@@ -923,9 +924,14 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               </DetailOverflowMenu>
             </>}
             extra={stateMutation.isError && (
-              <div className="mt-2 text-[12px] text-danger">
-                {(stateMutation.error as Error).message}
-              </div>
+              /* Acts on a persisted issue; this pane holds no composer, so the
+                 hand-off loses nothing. Same for the three notices below. */
+              <ErrorNotice
+                message={(stateMutation.error as Error).message}
+                variant="inline"
+                askAgent
+                className="mt-2"
+              />
             )}
           />
 
@@ -1000,7 +1006,12 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
 
             {activityLoading && <TimelineSkeleton />}
             {activityError && (
-              <div className="py-2 text-[12px] text-danger">{i18nT('apps.issueRadar.components.issueDetail.couldn_t_load_activity')} {activityError.message}</div>
+              <ErrorNotice
+                title={i18nT('apps.issueRadar.components.issueDetail.couldn_t_load_activity')}
+                message={activityError.message}
+                askAgent
+                className="my-2"
+              />
             )}
             {!activityLoading && !activityError && activityDesc.length === 0 && (
               <div className="py-2 text-[12px] text-muted">{i18nT('apps.issueRadar.components.issueDetail.no_activity_yet')}</div>
@@ -1060,7 +1071,12 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               )}
 
               {assigneesMutation.isError && (
-                <div className="mt-2 text-[11px] text-danger">{(assigneesMutation.error as Error).message}</div>
+                <ErrorNotice
+                  message={(assigneesMutation.error as Error).message}
+                  variant="inline"
+                  askAgent
+                  className="mt-2"
+                />
               )}
             </Section>
 
@@ -1111,7 +1127,12 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               />
 
               {labelMutation.isError && (
-                <div className="mt-2 text-[11px] text-danger">{(labelMutation.error as Error).message}</div>
+                <ErrorNotice
+                  message={(labelMutation.error as Error).message}
+                  variant="inline"
+                  askAgent
+                  className="mt-2"
+                />
               )}
             </Section>
 

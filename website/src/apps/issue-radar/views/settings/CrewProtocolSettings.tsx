@@ -50,6 +50,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
 import { Input } from '../../../../components/ui'
+import ErrorNotice from '../../../../components/ErrorNotice'
 import {
   issueRadarApi,
   type CrewSettings, type CrewSettingsPatch, type CrewSettingsResponse, type RepoRef,
@@ -418,7 +419,11 @@ export default function CrewProtocolSettings({
         data-state={save.isPending ? 'saving' : error ? 'failed' : saved ? 'saved' : 'idle'}
       >
         {save.isPending && <span className="text-muted">{t('apps.issueRadar.views.crews.desk.settings_saving')}</span>}
-        {!save.isPending && error && <span className="text-danger">{t('apps.issueRadar.views.crews.desk.settings_failed', { error })}</span>}
+        {/* No hand-off: the protocol text fields above (needs-human label, commit
+            trailer) hold the unsaved value this failure is about. */}
+        {!save.isPending && error && (
+          <ErrorNotice message={t('apps.issueRadar.views.crews.desk.settings_failed', { error })} variant="inline" />
+        )}
         {!save.isPending && !error && saved && <span className="text-ok">{t('apps.issueRadar.views.crews.desk.settings_saved')}</span>}
       </div>
     </div>

@@ -16,6 +16,7 @@ import type { Crew } from '../api'
 import { compareText, fmtNumber } from '../../../i18n/format'
 import { Btn, EmptyState } from '../../../components/ui'
 import Clickable from '../../../components/Clickable'
+import ErrorNotice from '../../../components/ErrorNotice'
 import CrewGhost from './CrewGhost'
 import ListSkeleton from './ListSkeleton'
 
@@ -171,9 +172,8 @@ export default function CrewList({ onCreate }: CrewListProps) {
           </Btn>
         </div>
 
-        {crewsError && (
-          <div className="px-1 text-[13px] text-danger">{crewsError.message}</div>
-        )}
+        {/* A list read on a page with no draft input: nothing to lose in the hand-off. */}
+        <ErrorNotice message={crewsError?.message} askAgent className="mx-1" />
 
         {crewsLoading && <ListSkeleton count={3} />}
 

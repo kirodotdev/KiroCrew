@@ -47,6 +47,7 @@ import { useNavigate } from 'react-router-dom'
 import { CirclePlus, Inbox, ListChecks, Pause, Pencil, Play, ScrollText } from 'lucide-react'
 
 import { Badge, Btn, Card, CardTitle, EmptyState, StatCard } from '../../../components/ui'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtDate, fmtDateFields, fmtDateTime, fmtNumber, fmtRelative, toDate } from '../../../i18n/format'
 import { useAppDispatch } from '../../../store'
 import { switchSlot } from '../../../store/chatSlice'
@@ -310,11 +311,20 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
   if (detail.isError || !crew) {
     return (
       <div className="px-4 md:px-6 pt-4 pb-6" data-testid="crew-page-error">
-        <EmptyState
-          icon={<Inbox className="lucide-inline" />}
-          title={t('apps.issueRadar.views.crews.page.load_failed')}
-          subtitle={detail.error instanceof Error ? detail.error.message : undefined}
-        />
+        {detail.isError ? (
+          // A failed read is an error, not an empty state; the page holds no
+          // draft, so the hand-off is offered.
+          <ErrorNotice
+            title={t('apps.issueRadar.views.crews.page.load_failed')}
+            message={detail.error instanceof Error ? detail.error.message : String(detail.error)}
+            askAgent
+          />
+        ) : (
+          <EmptyState
+            icon={<Inbox className="lucide-inline" />}
+            title={t('apps.issueRadar.views.crews.page.load_failed')}
+          />
+        )}
       </div>
     )
   }
@@ -370,9 +380,14 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
               {t('apps.issueRadar.views.crews.page.paused_reason', { reason: crew.paused_reason })}
             </div>
           )}
-          {sessionError !== null && (
-            <div className="mt-1.5 text-[13px] text-danger" data-testid="crew-session-error">{sessionError}</div>
-          )}
+          {/* Opening the crew's session acts on a persisted slot; no draft here. */}
+          <ErrorNotice
+            message={sessionError}
+            variant="inline"
+            askAgent
+            className="mt-1.5"
+            testId="crew-session-error"
+          />
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <Btn

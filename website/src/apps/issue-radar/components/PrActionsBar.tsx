@@ -21,7 +21,7 @@
 //    button that returns an error.
 import { useEffect, useRef, useState } from 'react'
 import {
-  Check, CircleSlash, CircleDot, MessageSquarePlus, GitMerge, X, Loader2, AlertTriangle,
+  Check, CircleSlash, CircleDot, MessageSquarePlus, GitMerge, X, Loader2,
 } from 'lucide-react'
 import { Btn } from '../../../components/ui'
 import { usePrActions, PR_ACTION, isMergeReady, canArmAutoMerge as rowCanArm } from '../lib/prActions'
@@ -29,6 +29,7 @@ import { providerTerms, isGitlab } from '../lib/links'
 import type { PrDetailData, PullRequest, RepoRef } from '../api'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { useImeGuard } from '../../../hooks/useImeGuard'
 
 /** Which composer is open, if any. `null` means the bar is showing its buttons. */
@@ -269,12 +270,9 @@ export default function PrActionsBar({
           rows={3}
           className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[13px] text-text placeholder:text-muted outline-none resize-y transition-colors focus-ring font-body"
         />
-        {actions.error && (
-          <div className="mt-1.5 flex items-start gap-1.5 text-[12px] text-danger">
-            <AlertTriangle className="lucide-inline flex-shrink-0" />
-            <span className="min-w-0 break-words">{actions.error.message}</span>
-          </div>
-        )}
+        {/* No hand-off: the review / comment body typed in the textarea above is
+            unsaved — the failure shows precisely because it did not post. */}
+        <ErrorNotice message={actions.error?.message} className="mt-1.5" />
         <div className="mt-1.5 flex items-center gap-1.5">
           <Btn
             primary
@@ -299,16 +297,16 @@ export default function PrActionsBar({
 
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
+      {/* The composer is closed here, so nothing on screen is a draft: the
+          cause is shown in full (it used to hide in a `title=`) and handed off. */}
       {actions.error && (
-        <Btn
-          danger
-          onClick={actions.clearError}
-          title={actions.error.message}
-          aria-label={i18nT('apps.issueRadar.components.prActionsBar.dismiss_error')}
-        >
-          <AlertTriangle className="lucide-inline" />
-          {i18nT('apps.issueRadar.components.prActionsBar.action_failed')}
-        </Btn>
+        <ErrorNotice
+          title={i18nT('apps.issueRadar.components.prActionsBar.action_failed')}
+          message={actions.error.message}
+          variant="inline"
+          askAgent
+          onDismiss={actions.clearError}
+        />
       )}
 
       {/* A closed PR keeps only "reopen": approving or arming auto-merge on it

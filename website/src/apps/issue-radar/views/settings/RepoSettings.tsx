@@ -16,6 +16,7 @@ import CrewProtocolSettings from './CrewProtocolSettings'
 import { asArray } from '../../lib/format'
 
 import { i18nT } from '../../../../i18n/t'
+import ErrorNotice from '../../../../components/ErrorNotice'
 // Heuristic name patterns used only to *suggest* likely labels (one-click add);
 // the user always confirms. Repos name these things a dozen different ways.
 const TRIAGE_PATTERN = /(^|[\s:_/-])(triage|untriaged|unconfirmed|pending|needs?[\s_/-]?(triage|info|repro|reproduction|investigation|review|response|details?|decision))/i
@@ -369,14 +370,25 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
       </p>
 
       {(settingsQuery.isError || saveMutation.isError) && (
-        <div className="rounded-lg border border-danger/40 bg-danger/5 px-4 py-3 mb-6 text-[12px] text-danger">
-          <div className="font-medium mb-0.5">
-            {settingsQuery.isError ? i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_load_saved_settings') : i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_save_your_changes')}
-          </div>
-          <div className="opacity-80">
-            {((settingsQuery.error ?? saveMutation.error) as Error)?.message}
-            {' — '}{i18nT('apps.issueRadar.views.settings.repoSettings.your_edits_are_kept_here_but_won_t_persist_if_yo')}
-          </div>
+        <div className="mb-6">
+          {settingsQuery.isError ? (
+            // A read; the form below still edits fine, so nothing is at stake.
+            <ErrorNotice
+              title={i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_load_saved_settings')}
+              message={(settingsQuery.error as Error)?.message}
+              askAgent
+            />
+          ) : (
+            /* No hand-off: the settings form below (label pickers, toggles) holds
+               the unsaved edits this failure is about. */
+            <ErrorNotice
+              title={i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_save_your_changes')}
+              message={(saveMutation.error as Error)?.message}
+            />
+          )}
+          <p className="mt-1.5 text-[12px] text-muted">
+            {i18nT('apps.issueRadar.views.settings.repoSettings.your_edits_are_kept_here_but_won_t_persist_if_yo')}
+          </p>
         </div>
       )}
 
@@ -593,8 +605,9 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
             <Trash2 size={13} /> {i18nT('apps.issueRadar.views.settings.repoSettings.disconnect')}
           </button>
         )}
+        {/* Disconnect acts on the persisted connection; the confirm has no input. */}
         {disconnectMutation.error && (
-          <div className="text-[12px] text-danger mt-2">{(disconnectMutation.error as Error).message}</div>
+          <ErrorNotice message={(disconnectMutation.error as Error).message} askAgent className="mt-2" />
         )}
       </div>
     </div>
