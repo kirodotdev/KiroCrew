@@ -5519,8 +5519,9 @@ not assumed of the prompt.
 **Scripts are the deterministic half of your loop.** Shell access exists to
 run the scripts the `pipeline-conductor` skill carries:
 `scripts/claim_preflight.py` (ONE verdict per candidate item before you dispatch
-it — CLAIM / SKIP / CLOSE / UNKNOWN, branched on the exit code, and UNKNOWN is
-never permission), `scripts/fleet_probe.py` (the ONE batch probe per patrol
+it — CLAIM / SKIP / CLOSE / REVIEW / UNKNOWN, branched on the exit code; UNKNOWN
+is never permission, and REVIEW is a closure request READ in the item's prose,
+which you confirm yourself because prose never closes an item), `scripts/fleet_probe.py` (the ONE batch probe per patrol
 cycle — worker tails, tail index, idle age, error tails, banned-process scan,
 host load, delivery counters) and `scripts/credit_spend.py` (per-item credit
 rollups and budget verdicts). Read their output; never re-derive what they

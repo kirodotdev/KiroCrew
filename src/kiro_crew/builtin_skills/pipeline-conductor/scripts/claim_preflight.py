@@ -50,7 +50,11 @@ Exit codes (the conductor branches on these):
 
     0   CLAIM    — dispatch it
    10   SKIP     — covered or not workable; do not dispatch
-   11   CLOSE    — triage debt: already fixed, or the reporter asked to close
+   11   CLOSE    — triage debt: a merged PR already landed the fix
+   13   REVIEW   — a standing closure request was READ in the item's prose. Do
+                   not dispatch and do not close: hand it to a human, or to the
+                   conductor, with the reason. Prose noticing that something
+                   might be resolved is not prose deciding it.
     2            — malformed arguments or config
     3   UNKNOWN  — a check could not be answered (forge unreachable, rate
                    limited, no clone for a question only git can answer)
@@ -75,9 +79,10 @@ The five checks, all of them, every call:
                        the author SAYS, with code fences, backtick spans,
                        blockquotes and quoted spans removed first, because a
                        phrase inside them is being cited. BOTH phrase sets need
-                       standing (the reporter, or a repository insider), for
-                       opposite reasons: CLOSE acts on live work, and a SKIP any
-                       commenter can cast is a denial-of-work channel.
+                       standing (the reporter, or a repository insider), and for
+                       the SAME reason now that neither one closes anything:
+                       each suppresses a dispatch, and a suppression any passer-by
+                       can cast is a denial-of-work channel.
   4. ``symbol_on_base``every symbol the item names, by ``git grep`` on the
                        default branch. Absent means the target code may live
                        only on an unmerged branch — but that reading holds only
@@ -101,7 +106,8 @@ the checks dict so every branch is unit-testable with no forge access):
                                                ``untrusted-fork`` at
                                                ``risk=high`` when the PR is an
                                                unvouched fork
-  3. ``prose_claim.closure_requested``       → CLOSE ``reporter-asked-close``
+  3. ``prose_claim.closure_requested``       → REVIEW ``reporter-asked-close``
+                                               at ``risk=high``
   4. ``prose_claim.claimed_by_other``        → SKIP  ``prose-claim``
   5. ``symbol_on_base.missing`` AND bug-class→ SKIP  ``symbol-absent``
   6. any check errored                       → UNKNOWN
@@ -110,7 +116,22 @@ the checks dict so every branch is unit-testable with no forge access):
                                                symbol or an UNAUTHORIZED claim
                                                forces to ``high``
 
-Rules 2 and 4 both suppress work on evidence anybody can manufacture, and both
+Rule 3 is the one verdict here that is read out of HAND-WRITTEN ENGLISH, and it
+used to be CLOSE — the strongest response this script has, aimed at somebody
+else's live work, on the weakest evidence it collects. Nine separate false-CLOSE
+paths reached review in one change: a quotation bound truncated at a fixed
+offset, closure verbs with no object, bare pronouns resolving to a socket rather
+than the item, a means-versus-state confusion between two prepositions. Each was
+fixed on the merits and a ratchet now stops a new PATTERN shipping unguarded.
+What the ratchet cannot stop is the next unguarded PHRASING of a pattern that is
+already guarded, and the space of English that accidentally resembles "close
+this" has no edge to reach. So the pairing was wrong rather than the patterns:
+detection keeps its job, which is noticing that an item might be resolved, and
+loses the job it should never have had, which is deciding it. Rule 1 still
+CLOSES, because a merged commit that is an ancestor of the base is evidence, not
+prose.
+
+Rules 2, 3 and 4 all suppress work on evidence anybody can manufacture, and all
 answer it the same way rather than by refusing to look: the finding stands, and
 the doubt is published alongside it. A verdict that acts while doubting has to
 say so, or the doubt is only in this docstring.
@@ -242,9 +263,12 @@ WITHDRAWAL_RES: tuple[str, ...] = (
 )
 
 #: Closure requests, from the item whose reporter had already said it was done.
-#: Every pattern that can produce CLOSE carries a continuation guard, because
-#: CLOSE is the one verdict that writes to somebody else's live work and this
-#: list has now produced four separate false positives without one.
+#: Every pattern here still carries a continuation guard even though the verdict
+#: no longer closes anything: REVIEW does not write, but it does take the item
+#: out of the dispatch queue and put it in front of a human, so a phrase that
+#: fires on "please close the connection" still spends attention and still
+#: withholds work. This list produced four separate false positives before the
+#: guards, and losing them would restore that whether or not the verdict writes.
 CLOSURE_RES: tuple[str, ...] = (
     rf"\bthis\s+(?:is|was)\s+(?:already\s+)?(?:resolved|fixed)\b{_STATE_END}",
     rf"\bhappy\s+to\s+have\s+(?:{_ISSUE_OBJECT})\s+closed\b",
@@ -279,8 +303,11 @@ ACTIVE_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR
 
 #: Standing to ask for closure on somebody else's item. Narrower than
 #: ACTIVE_ASSOCIATIONS on purpose: CONTRIBUTOR means "has had a PR merged here
-#: once", which is not authority to close another person's report, while CLOSE
-#: is the one verdict that acts on live work.
+#: once", which is not standing to declare another person's report finished. The
+#: set is unchanged now that a closure request produces REVIEW rather than CLOSE
+#: — only the reason is. It is no longer "this verdict writes"; it is that REVIEW
+#: withholds a dispatch, and a suppression any passer-by can cast is the same
+#: denial-of-work channel the self-claim path already refuses to open.
 INSIDER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 #: GitHub's closing keywords. A merged PR is coverage only if it CLAIMS to close
@@ -326,7 +353,13 @@ CHECK_NAMES = (
     "recency",
 )
 
-EXIT_CODES = {"CLAIM": 0, "SKIP": 10, "CLOSE": 11, "UNKNOWN": 3}
+#: One integer per verdict, and a verdict never borrows another's number: the
+#: caller branches on the number alone, so a number that means two things is a
+#: wrong branch rather than a confusing message. Numbers are assigned, never
+#: recycled -- 12 is unallocated here and a later verdict should take the next
+#: free integer rather than fill the gap, because a reader cannot tell a gap
+#: that is free from one that is retired.
+EXIT_CODES = {"CLAIM": 0, "SKIP": 10, "CLOSE": 11, "REVIEW": 13, "UNKNOWN": 3}
 
 #: ``gh`` shapes this script is allowed to run. Everything else — including
 #: every write verb — is refused before the subprocess starts.
@@ -664,10 +697,11 @@ _FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"(`+)[^`]*?\1")
 _BLOCKQUOTE_RE = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
 #: Deliberately UNBOUNDED between the delimiters. A length cap here is a
-#: false-CLOSE channel: a reporter who quotes "please close" inside a quotation
-#: longer than the cap has the phrase read as their OWN prose, and this verdict
-#: performs a write on live work. Linear despite the ``*`` because the class is
-#: negated -- there is no nested quantifier to backtrack through.
+#: false-reading channel: a reporter who quotes "please close" inside a quotation
+#: longer than the cap has the phrase read as their OWN prose, and the item is
+#: then withheld from dispatch over a sentence they were citing. Linear despite
+#: the ``*`` because the class is negated -- there is no nested quantifier to
+#: backtrack through.
 _QUOTED_RE = re.compile('["\u201c\u201d][^"\u201c\u201d\n]*["\u201c\u201d]')
 #: An UNMATCHED opening delimiter is the same channel by the other door: a
 #: citation whose closing quote the author forgot (or that a smart-quote pair
@@ -675,7 +709,7 @@ _QUOTED_RE = re.compile('["\u201c\u201d][^"\u201c\u201d\n]*["\u201c\u201d]')
 #: words. Everything from a leftover delimiter to the end is therefore dropped
 #: too. This is the deliberately lossy direction -- prose after an unbalanced
 #: quote can hide a REAL closure request, which costs one dispatch, where the
-#: other reading closes somebody's live work.
+#: other reading withholds one and asks a human to read a citation.
 _UNCLOSED_QUOTE_RE = re.compile('["\u201c\u201d].*$', re.DOTALL)
 
 
@@ -685,9 +719,11 @@ def plain_prose(text: str) -> str:
     Measured on the item that specified this script: its body quotes the very
     closure phrases the check looks for ("this is resolved / happy to have it
     closed", as a description of what to detect), and scanning it raw produced
-    CLOSE on a live item. A false CLOSE closes work in flight; a missed one only
-    costs the dispatch that discovers the work is done — so citations come out
-    before matching, and the asymmetry runs the cheap way.
+    CLOSE on a live item. That verdict is now REVIEW, so a false reading no
+    longer closes work in flight — but it still withholds the item from dispatch
+    and spends a human read, while a missed one only costs the dispatch that
+    discovers the work is done. The asymmetry narrowed and did not invert, so
+    citations still come out before matching.
 
     Line structure first, then whitespace, then spans. Fences and blockquotes
     are line-shaped, so they have to go while the newlines are still there.
@@ -703,7 +739,7 @@ def plain_prose(text: str) -> str:
     author's own words and returned CLOSE on a live item. Every span rule here
     is therefore allowed to strip too MUCH, never too little -- over-stripping
     can hide a real closure request and cost one dispatch, while under-stripping
-    closes somebody's work in flight.
+    withholds one on a sentence the author was only citing.
     """
     text = _HTML_COMMENT_RE.sub(" ", text)
     text = _FENCE_RE.sub(" ", text)
@@ -878,14 +914,19 @@ def scan_prose(
     as somebody else's — the fail-safe direction is SKIP, never CLAIM.
 
     BOTH phrase sets need STANDING (the item's own author, always true of the
-    body, or a repository insider by ``author_association``) but for opposite
-    reasons, and the asymmetry is the point:
+    body, or a repository insider by ``author_association``). That used to be
+    two rules with opposite reasons; it is now one reason, because neither
+    reading closes anything any more:
 
-    * a closure request produces CLOSE, which acts on live work, so "please
-      close" from a passer-by must not fire it;
+    * a closure request produces REVIEW, which withholds a dispatch and asks a
+      human, so "please close" from a passer-by must not fire it;
     * a self-claim produces SKIP, and a veto anyone can cast is a
       denial-of-work channel -- one comment would suppress a queued item
       indefinitely with nothing downstream reporting the suppression.
+
+    This function is the DETECTOR and knows nothing about either verdict. What
+    it reports and what is done about it are deliberately separate concerns, and
+    that separation is what let the response change without the patterns moving.
 
     So an unauthorized claim is not discarded and not obeyed: it sets
     ``claim_without_standing``, which annotates ``risk=high`` and sends the item
@@ -1188,13 +1229,29 @@ def untrusted_fork_skip(checks: dict) -> int | None:
     return None
 
 
+def closure_request(checks: dict) -> bool:
+    """Whether a STANDING closure request was read out of the item's prose.
+
+    The third member of the family with :func:`unauthorized_claim` and
+    :func:`untrusted_fork_skip`, and the one whose evidence is weakest: those two
+    read a forge field, this one reads hand-written English. So it is also the
+    only one whose verdict declines to act at all — see rule 3 in
+    :func:`verdict` — and the ``risk=high`` it forces is the whole point of the
+    verdict rather than a footnote on it.
+    """
+    prose = checks.get("prose_claim")
+    if not isinstance(prose, dict) or errored(prose):
+        return False
+    return bool(prose.get("closure_requested"))
+
+
 def risk_of(checks: dict) -> str:
     """``low`` or ``high``, from check 5, from an uncorroborated absent symbol,
-    from an unauthorized self-claim, and from an untrusted-fork suppression,
-    defaulting to the cautious side."""
+    from an unauthorized self-claim, from an untrusted-fork suppression, and from
+    a prose closure request, defaulting to the cautious side."""
     if uncorroborated_absent_symbols(checks) or unauthorized_claim(checks):
         return "high"
-    if untrusted_fork_skip(checks) is not None:
+    if untrusted_fork_skip(checks) is not None or closure_request(checks):
         return "high"
     recency = checks.get("recency")
     if not isinstance(recency, dict) or errored(recency):
@@ -1237,8 +1294,16 @@ def verdict(checks: dict) -> tuple[str, str, dict]:
     prose = checks.get("prose_claim")
     if isinstance(prose, dict) and not errored(prose):
         if prose.get("closure_requested"):
+            # NOT CLOSE. A prose reading is the weakest evidence this script
+            # collects and closing is the strongest thing it could do with it,
+            # aimed at work somebody else may still be doing. Nine false-CLOSE
+            # paths in one review made the case that the pairing was the defect
+            # rather than the patterns, so the reading survives and the response
+            # is withheld: the item leaves the dispatch queue, nothing is
+            # written, and a human or the conductor decides. Rule 1 above still
+            # closes, on a merge commit that is an ancestor of the base.
             return (
-                "CLOSE",
+                "REVIEW",
                 "reporter-asked-close",
                 {"comment_id": prose.get("comment_id"), "where": prose.get("where")},
             )
@@ -1311,7 +1376,10 @@ def human_line(item: int, name: str, reason: str, evidence: dict, risk: str) -> 
     if reason == "reporter-asked-close":
         ident = evidence.get("comment_id")
         tail = f"comment-id={ident}" if ident is not None else f"where={evidence.get('where')}"
-        return f"CLOSE {item} reporter-asked-close {tail}"
+        # The comment id is the whole point of the line: this verdict asks a
+        # human to read the sentence the scanner matched, and it never prints
+        # that sentence, so it has to say where to find it.
+        return f"REVIEW {item} reporter-asked-close {tail} risk={risk}"
     if reason == "prose-claim":
         return (
             f"SKIP {item} prose-claim claimed-by={evidence.get('claimed_by')} "

@@ -94,7 +94,7 @@ class TestAgentPromptNamesEveryScript:
 
     def test_prompt_states_the_verdicts_the_conductor_branches_on(self):
         prompt = agent._PIPELINE_CONDUCTOR_SYSTEM_PROMPT
-        for verdict in ("CLAIM", "SKIP", "CLOSE", "UNKNOWN"):
+        for verdict in ("CLAIM", "SKIP", "CLOSE", "REVIEW", "UNKNOWN"):
             assert verdict in prompt, verdict
 
     def test_prompt_carries_the_absent_script_rule(self):
@@ -145,12 +145,12 @@ class TestClaimPreflightIsDocumented:
             for row in _skill_section(self.HEADING).splitlines()
             if row.startswith("|") and row.count("|") >= 3
         }
-        for code in ("0", "10", "11", "2", "3"):
+        for code in ("0", "10", "11", "13", "2", "3"):
             assert code in rows, f"exit code {code} has no row in the branch table"
 
-    def test_all_four_verdicts_are_named(self):
+    def test_all_five_verdicts_are_named(self):
         preflight = _skill_section(self.HEADING)
-        for verdict in ("CLAIM", "SKIP", "CLOSE", "UNKNOWN"):
+        for verdict in ("CLAIM", "SKIP", "CLOSE", "REVIEW", "UNKNOWN"):
             assert verdict in preflight, verdict
 
     def test_unknown_is_never_permission(self):
@@ -160,14 +160,25 @@ class TestClaimPreflightIsDocumented:
         assert "never treat this as permission" in preflight
 
     def test_a_prose_closure_request_requires_author_authorization(self):
-        """CLOSE is a WRITE driven by ingested text on an unattended cycle, and
-        anyone can comment on a public item. Without an authorization condition
-        this verdict lets an untrusted commenter close a live issue."""
+        """Anyone can comment on a public item. The verdict no longer writes --
+        it is REVIEW, not CLOSE -- but it still withholds the item from dispatch,
+        so without an authorization condition an untrusted commenter could park
+        live work by typing one sentence."""
         preflight = _flat(_skill_section(self.HEADING))
         assert "reporter or a repository insider" in preflight
         # An unauthorized phrase must not silently become a weaker verdict
         # either: it is simply not a closure request.
         assert "falls through to the remaining checks" in preflight
+
+    def test_prose_never_closes_an_item(self):
+        """The structural answer to nine false-CLOSE paths in one change: a
+        ratchet stops a new unguarded PATTERN, and cannot stop the next unguarded
+        PHRASING of one already guarded. So the skill has to say that a prose
+        reading is never the authority to close -- otherwise the next reader
+        reinstates the terminal verdict as an obvious simplification."""
+        preflight = _flat(_skill_section(self.HEADING))
+        assert "prose never closes anything" in preflight
+        assert "do not dispatch and do not close" in preflight
 
     def test_a_prose_self_claim_from_anyone_else_is_not_a_veto(self):
         """A veto anyone can cast is a denial-of-work channel: one comment would

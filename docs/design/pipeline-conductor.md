@@ -93,14 +93,19 @@ subprocess-free scripts:
 - `scripts/claim_preflight.py` — one deterministic verdict per candidate item, from five checks in
   one invocation: open PRs (fork PRs included), merged PRs tested for having actually landed on the
   default branch, prose self-claims and closure requests in the body and last comment (a closure
-  request counting only from the reporter or a repository insider, since closing an item is a write
-  driven by ingested text), the named symbol's presence on the default branch, and a
+  request counting only from the reporter or a repository insider, since even a non-writing verdict
+  that withholds work must not be castable by a passer-by), the named symbol's presence on the
+  default branch, and a
   recency/authorship risk flag. The verdict is a pure function of the checks, so every branch is
-  unit-testable, and the exit codes are the interface: `CLAIM` / `SKIP` / `CLOSE` / `UNKNOWN`, where
-  `UNKNOWN` is never reported as `CLAIM`. Two of those checks are deliberately non-vetoing: symbol
+  unit-testable, and the exit codes are the interface: `CLAIM` / `SKIP` / `CLOSE` / `REVIEW` /
+  `UNKNOWN`, where
+  `UNKNOWN` is never reported as `CLAIM`. Three of those checks are deliberately non-vetoing: symbol
   absence downgrades to a high-risk claim unless the item is corroborated as bug-class, because a
   feature request names the symbol it proposes to add, and `risk=high` routes the item out of the
-  batch to its own live recheck rather than merely annotating the line.
+  batch to its own live recheck rather than merely annotating the line. A closure request read in
+  PROSE is the third: it yields `REVIEW`, never a close, because a hand-written sentence is the
+  weakest evidence here and closing is the strongest response — only a merged commit that is an
+  ancestor of the base earns `CLOSE`.
 - `scripts/fleet_probe.py` — one call per cycle: tail-classifies every worker session, emits the
   tail's message index, computes idle age, flags error tails, distinguishes a terminal report from
   an idle one, scans for banned processes scoped to the fleet's own worktrees, and reads host load

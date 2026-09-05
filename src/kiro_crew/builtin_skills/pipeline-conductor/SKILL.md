@@ -16,7 +16,7 @@ is not assumed: check at first use, and treat an absent script as `UNKNOWN`
 rather than permission.
 
 - `scripts/claim_preflight.py` — one verdict per candidate item before you
-  dispatch it: `CLAIM` / `SKIP` / `CLOSE` / `UNKNOWN`.
+  dispatch it: `CLAIM` / `SKIP` / `CLOSE` / `REVIEW` / `UNKNOWN`.
 - `scripts/fleet_probe.py` — batch worker-tail classification + idle age +
   error tails + banned-process scan + host load + delivery counters, in ONE
   call per cycle.
@@ -285,6 +285,7 @@ python3 scripts/claim_preflight.py --repo <owner/repo> --item <N> \
 | 0 | `CLAIM` | Dispatch it. `risk=high` on the line means self-claim collision risk: that item is NOT batched — it goes to the live recheck on its own, immediately before claiming. |
 | 10 | `SKIP` | Covered, or not workable. Leave it alone; record the reason. |
 | 11 | `CLOSE` | Triage debt, not work. Close the item with the evidence the script printed. |
+| 13 | `REVIEW` | A closure request was READ in the item's prose. **Do not dispatch and do not close.** Open the comment the line names, decide yourself whether the item is really done, and then either close it or dispatch it. This verdict exists because prose is the weakest evidence the preflight collects and closing is the strongest response it had. |
 | 2 | malformed | YOUR arguments or config are wrong. Fix the call — a bad call is not a verdict about the item. |
 | 3 | `UNKNOWN` | A check could not be answered (forge unreachable, rate limited). **Never treat this as permission.** Re-run it later or park the item. |
 
@@ -307,11 +308,18 @@ precedence list:
    `open-pr`.
 3. `prose_claim` — a closure request in the body or the last comment ("this is
    resolved", "please close") **from the item's own reporter or a repository
-   insider** → **CLOSE** `reporter-asked-close`. The authorization condition is
-   load-bearing, not decoration: anyone can comment on a public item, closing one
-   is a WRITE, and this verdict would otherwise let ingested untrusted text drive
-   that write on an unattended cycle. A closure phrase from anybody else is not a
-   closure request — it falls through to the remaining checks.
+   insider** → **REVIEW** `reporter-asked-close` at `risk=high`. **Prose never
+   closes anything.** It is the weakest evidence this script collects — nine
+   separate false-CLOSE paths reached review in one change, and a ratchet that
+   stops a new unguarded PATTERN cannot stop the next unguarded PHRASING of a
+   pattern already guarded, because the space of English that accidentally means
+   "close this" has no edge. So the detection stays and the response is withheld:
+   you read the comment the line names and you decide. The authorization
+   condition stays too, for a different reason than it had — `REVIEW` writes
+   nothing, but it does withhold a dispatch, and a suppression any passer-by can
+   cast is the same denial-of-work channel rule 4 refuses to open. A closure
+   phrase from anybody else is not a closure request — it falls through to the
+   remaining checks.
 4. `prose_claim` — a self-claim ("I'm claiming this", "working on this") **from
    the item's reporter or a repository insider** → **SKIP** `prose-claim`. A claim
    written in prose is invisible to every label and field query that exists, which
@@ -335,8 +343,10 @@ precedence list:
 
 **`risk=high` is a decision, not a note.** A high-risk `CLAIM` is NOT batched:
 it goes to the live per-item recheck immediately before the atomic claim, on its
-own. An annotation nothing acts on is the same defect as a prose predicate — it
-reads as caution and changes nothing.
+own. A `REVIEW` is always high-risk and is not a dispatch at all: it goes on your
+own list, and it clears only when you have read the named comment and either
+closed the item or dispatched it. An annotation nothing acts on is the same
+defect as a prose predicate — it reads as caution and changes nothing.
 
 **A batch snapshot is never the authority.** Preflighting a batch is how you
 order a queue; a per-item live recheck immediately before the atomic claim stays
@@ -348,6 +358,9 @@ item.** Its verdict is CLOSE with the landing-commit evidence, and closing it IS
 the work. Dispatching a worker to rediscover that the work does not exist spends
 a whole session — create, seed, preflight, stand down, unclaim — to learn
 nothing, and leaves claim churn on a repository other operators are reading.
+**An item that merely READS as already fixed is not the same item.** A merged
+commit that is an ancestor of the base is evidence; a sentence saying so is a
+reading, and it comes back as `REVIEW` for you to confirm.
 
 ### Dispatch mechanics
 

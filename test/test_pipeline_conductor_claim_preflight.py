@@ -216,8 +216,10 @@ class TestVerdictPrecedence:
         )
 
     def test_closure_request_outranks_a_prose_claim(self, mod):
-        """Precedence 3 before 4: if the reporter says it is done, it is triage
-        debt even when somebody also said they were working on it."""
+        """Precedence 3 before 4: if the reporter says it is done, that reading
+        is the one worth surfacing even when somebody also said they were
+        working on it. It surfaces as REVIEW, not CLOSE -- see
+        :class:`TestClosureProseNeverCloses`."""
         checks = clean_checks(
             prose_claim={
                 "closure_requested": True,
@@ -230,19 +232,23 @@ class TestVerdictPrecedence:
         )
         assert naive_claim(checks) is True
         name, reason, evidence = mod.verdict(checks)
-        assert (name, reason) == ("CLOSE", "reporter-asked-close")
+        assert (name, reason) == ("REVIEW", "reporter-asked-close")
         assert evidence == {"comment_id": 123456, "where": "comment"}
-        assert mod.EXIT_CODES[name] == 11
+        assert mod.EXIT_CODES[name] == 13
+        # The risk is not the caller's to choose here: risk_of() derives it from
+        # the same checks the verdict came from, so the line cannot claim a
+        # REVIEW is low-risk.
+        assert mod.risk_of(checks) == "high"
         assert (
-            mod.human_line(ITEM, name, reason, evidence, "low")
-            == f"CLOSE {ITEM} reporter-asked-close comment-id=123456"
+            mod.human_line(ITEM, name, reason, evidence, mod.risk_of(checks))
+            == f"REVIEW {ITEM} reporter-asked-close comment-id=123456 risk=high"
         )
 
     def test_closure_request_in_the_body_reports_where_instead_of_an_id(self, mod):
         evidence = {"comment_id": None, "where": "body"}
         assert (
-            mod.human_line(ITEM, "CLOSE", "reporter-asked-close", evidence, "low")
-            == f"CLOSE {ITEM} reporter-asked-close where=body"
+            mod.human_line(ITEM, "REVIEW", "reporter-asked-close", evidence, "high")
+            == f"REVIEW {ITEM} reporter-asked-close where=body risk=high"
         )
 
     def test_absent_symbol_skips_only_for_a_corroborated_bug_item(self, mod):
@@ -1902,6 +1908,131 @@ def run_main(mod, monkeypatch, forge: Forge, extra: list[str] | None = None) -> 
     return mod.main(["--repo", REPO, "--item", str(ITEM), *(extra or [])])
 
 
+class TestClosureProseNeverCloses:
+    """Rule 3 reads HAND-WRITTEN ENGLISH, and it used to answer with the
+    strongest thing this script can say about somebody else's live work.
+
+    Nine false-CLOSE paths reached review in one change and each was fixed on the
+    merits, but the space of English that accidentally means "close this" has no
+    edge, so the next unguarded phrasing was always going to arrive. These tests
+    pin the structural answer instead: the reading survives, the response does
+    not. They are deliberately split -- one pins the CONSEQUENCE (no dispatch),
+    one pins the INTEGER -- because those two can drift apart in a refactor and a
+    caller that branches on the number would then break while a
+    consequence-only test stayed green.
+    """
+
+    def closure_checks(self) -> dict:
+        return clean_checks(
+            prose_claim={
+                "closure_requested": True,
+                "claimed_by_other": False,
+                "claim_without_standing": False,
+                "claimed_by": None,
+                "closure_by": "reporter",
+                "where": "comment",
+                "comment_id": 777,
+                "pattern": "x",
+            }
+        )
+
+    def closure_forge(self) -> Forge:
+        return Forge(comments=[a_comment("happy to have this closed", ident=777)])
+
+    def test_a_standing_closure_request_is_never_dispatched(self, mod, monkeypatch):
+        """The consequence that matters. A sentence is not permission to spend a
+        worker session, and it never was -- this is the half of the old behaviour
+        that was right."""
+        checks = self.closure_checks()
+        assert naive_claim(checks) is True
+        name, _, _ = mod.verdict(checks)
+        assert name != "CLAIM"
+        assert mod.EXIT_CODES[name] != mod.EXIT_CODES["CLAIM"]
+        # End to end as well: verdict() is not the only code between the comment
+        # and the dispatch, and a test of the pure function alone would not
+        # notice collect() or main() losing the reading on the way.
+        assert run_main(mod, monkeypatch, self.closure_forge()) != 0
+
+    def test_a_standing_closure_request_is_never_closed_either(self, mod, monkeypatch):
+        """The half that was wrong, and the whole point of the change: the item
+        must not be CLOSED on prose. Asserting the absence of CLOSE is what
+        distinguishes this from the old behaviour, which also refused to
+        dispatch."""
+        name, _, _ = mod.verdict(self.closure_checks())
+        assert name != "CLOSE"
+        assert mod.EXIT_CODES[name] != mod.EXIT_CODES["CLOSE"]
+        assert run_main(mod, monkeypatch, self.closure_forge()) != mod.EXIT_CODES["CLOSE"]
+
+    def test_a_standing_closure_request_exits_thirteen(self, mod, monkeypatch, capsys):
+        """The integer, asserted on its own. The caller branches on this number
+        and nothing else, so it is part of the contract rather than an
+        implementation detail of the verdict name."""
+        name, reason, _ = mod.verdict(self.closure_checks())
+        assert (name, reason) == ("REVIEW", "reporter-asked-close")
+        assert mod.EXIT_CODES["REVIEW"] == 13
+        assert run_main(mod, monkeypatch, self.closure_forge()) == 13
+        assert capsys.readouterr().out.strip().startswith("REVIEW")
+
+    def test_a_review_verdict_is_always_high_risk(self, mod):
+        """``risk`` is computed by risk_of() from the same checks the verdict came
+        from, so the two cannot disagree. Without this, a REVIEW line could print
+        ``risk=low`` -- a verdict that exists BECAUSE the evidence is weak,
+        reporting that the evidence is fine."""
+        checks = self.closure_checks()
+        assert mod.verdict(checks)[0] == "REVIEW"
+        assert mod.risk_of(checks) == "high"
+        assert mod.closure_request(checks) is True
+
+    def test_the_review_line_names_the_comment_to_read(self, mod):
+        """This verdict delegates to a human, and it never prints the matched
+        sentence, so the identifier that lets them find it is the payload."""
+        _, reason, evidence = mod.verdict(self.closure_checks())
+        line = mod.human_line(ITEM, "REVIEW", reason, evidence, "high")
+        assert "comment-id=777" in line
+        assert "risk=high" in line
+
+    def test_a_merged_landed_pr_still_closes(self, mod):
+        """The scope boundary. Rule 1 is EVIDENCE -- a merge commit that is an
+        ancestor of the base -- not a reading of prose, so it keeps CLOSE.
+        Downgrading it too would leave exit 11 with no producers at all."""
+        checks = clean_checks(
+            merged_prs=[
+                {
+                    "number": 8712,
+                    "landed": True,
+                    "closes_item": True,
+                    "merge_commit_sha": "c791f0f1",
+                }
+            ]
+        )
+        name, reason, _ = mod.verdict(checks)
+        assert (name, reason) == ("CLOSE", "already-fixed")
+        assert mod.EXIT_CODES[name] == 11
+
+    def test_an_auto_pipeline_stand_down_is_not_read_as_closure_prose(self, mod):
+        """A pipeline's own stand-down note is the phrasing that most looks like
+        closure without being a reporter's verdict, and it is measurably INERT
+        here: it fires no closure pattern and no self-claim pattern.
+
+        Pinned because that is a property somebody could remove by accident. If
+        a future change teaches this scanner to read "standing down", this test
+        reds and forces the question of whether a pipeline's own note should
+        route through REVIEW at all -- rather than the phrase quietly acquiring a
+        verdict. It does NOT claim such an item is otherwise protected: this
+        script has no check for "my own pipeline already dispositioned this".
+        """
+        stand_down = (
+            "Kiro Crew Auto-Pipeline [operator: redacted] - standing down and "
+            "handing back to `needs-human`. No longer being worked by the fleet; "
+            "the investigation notes are below for whoever picks it up."
+        )
+        assert mod._first_match(mod.CLOSURE_RES, mod.plain_prose(stand_down)) is None
+        assert mod._first_match(mod.SELF_CLAIM_RES, mod.plain_prose(stand_down)) is None
+        # Control: the harness really can match, so the two Nones above are
+        # findings and not a silently broken instrument.
+        assert mod._first_match(mod.CLOSURE_RES, mod.plain_prose("This is resolved.")) is not None
+
+
 class TestEndToEnd:
     def test_clean_item_exits_zero_and_prints_the_claim_line(self, mod, monkeypatch, capsys):
         fresh = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -2083,16 +2214,19 @@ class TestEndToEnd:
         out = capsys.readouterr().out.strip()
         assert out == f"SKIP {ITEM} prose-claim claimed-by=otherdev where=body"
 
-    def test_reporter_asked_close_in_the_last_comment_exits_eleven(self, mod, monkeypatch, capsys):
+    def test_reporter_asked_close_in_the_last_comment_exits_thirteen(
+        self, mod, monkeypatch, capsys
+    ):
         forge = Forge(
             comments=[
                 a_comment("automated triage summary", login="github-actions[bot]", kind="Bot"),
                 a_comment("happy to have this closed", ident=777),
             ]
         )
-        assert run_main(mod, monkeypatch, forge) == 11
+        assert run_main(mod, monkeypatch, forge) == 13
         assert (
-            capsys.readouterr().out.strip() == f"CLOSE {ITEM} reporter-asked-close comment-id=777"
+            capsys.readouterr().out.strip()
+            == f"REVIEW {ITEM} reporter-asked-close comment-id=777 risk=high"
         )
 
     def test_an_absent_symbol_on_a_labelled_bug_exits_ten(self, mod, monkeypatch, capsys):
@@ -2283,7 +2417,21 @@ class TestArgumentHandling:
         assert excinfo.value.code == 2
 
     def test_exit_codes_are_the_documented_ones(self, mod):
-        assert mod.EXIT_CODES == {"CLAIM": 0, "SKIP": 10, "CLOSE": 11, "UNKNOWN": 3}
+        assert mod.EXIT_CODES == {
+            "CLAIM": 0,
+            "SKIP": 10,
+            "CLOSE": 11,
+            "REVIEW": 13,
+            "UNKNOWN": 3,
+        }
+
+    def test_no_two_verdicts_share_an_exit_code(self, mod):
+        """The caller branches on the integer alone, so a shared number is a
+        wrong branch rather than a confusing message. This is the invariant that
+        matters; which particular integers are unallocated is not one, so it is
+        deliberately not asserted here."""
+        codes = list(mod.EXIT_CODES.values())
+        assert len(codes) == len(set(codes))
 
 
 class TestForgeHelpers:
