@@ -27,6 +27,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import (
     app_execution_denied,
+    is_builtin_app,
     shipped_builtin_app_root,
     shipped_builtin_module_path,
 )
@@ -39,6 +40,7 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
+    app_backend_visible_targets,
     cgroup_scope_argv,
     popen_limited,
     run_limited,
@@ -1133,11 +1135,26 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     # control available. What still bounds a forged cache there is provenance rather than
     # permissions: with ``require_policy_signature`` set in the admission policy, a document
     # nobody trusted is refused however it got onto disk.
+    # The app's OWN hidden state leaves (e.g. md-notebook's vault registry, PAT, and
+    # sync settings) are unmasked for exactly this spawn: the mask fences agent
+    # subprocesses, but this backend is each leaf's only legitimate reader/writer, and
+    # leaving the mask on breaks the app outright (#8762). Unlike the governance cache
+    # these are the app's own read-write state, so the blanket "visible" meaning is the
+    # correct one. Empty for every app without declared owned leaves.
+    #
+    # Gated on IMMUTABLE PACKAGE PROVENANCE of the code this spawn executes, not on the
+    # app name alone: a trusted third-party app that claimed the name could otherwise
+    # spawn with the builtin's credential leaves (the Notes PAT) unmasked. The same
+    # ``execution_path`` the admission gate above vetted is what the provenance check
+    # binds to, so a file-entry install under the builtin's name gets no exemption.
+    _cache_visible = bool(_platform_extra.get(POLICY_CACHE_ONLY_ENV))
     _visible: tuple[str, ...] = ()
-    if _platform_extra.get(POLICY_CACHE_ONLY_ENV):
-        _visible = (str(policy_cache_dir()),)
+    if is_builtin_app(app_root=execution_path, app_name=app_name):
+        _visible = app_backend_visible_targets(app_name)
+    if _cache_visible:
+        _visible = _visible + (str(policy_cache_dir()),)
     sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
-    if _visible and list(sandboxed_cmd) == list(cmd):
+    if _cache_visible and list(sandboxed_cmd) == list(cmd):
         # The wrap was a no-op, so this host has no OS confinement at all: no sandbox backend,
         # or agent.sandbox='off' with the sandbox_allow_no_isolation opt-in. Said once,
         # because the combination is worth naming — a centrally governed host running app code

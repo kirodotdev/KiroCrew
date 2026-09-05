@@ -199,6 +199,12 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "apps/aws-control/data",
     "apps/meetings/data/edits",
     "whatsapp",
+    # The Notes state files below are OWNED by the md-notebook backend, which is itself
+    # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
+    # registry write's final rename gets EPERM and attach/clone always fails (#8762).
+    # The backend spawn therefore passes them back as ``extra_visible_dirs`` via
+    # :func:`app_backend_visible_targets` — the mask still applies to every OTHER
+    # sandboxed process, which is the population it exists to fence.
     "workspace/md-notebook/pat",
     "workspace/md-notebook/vaults.json",
     "workspace/md-notebook/settings.json",
@@ -308,6 +314,46 @@ def _crew_home_entries(leaves: tuple[str, ...]) -> list[str]:
 _CREW_HIDDEN_DIRS: list[str] = _crew_home_entries(_CREW_HIDDEN_LEAVES)
 #: Exposed read-only in every mode.
 _CREW_READONLY_TARGETS: list[str] = _crew_home_entries(_CREW_READONLY_LEAVES)
+
+#: Hidden crew-home leaves one app's OWN backend must read and write.
+#:
+#: These leaves sit in ``_CREW_HIDDEN_LEAVES`` to fence AGENT subprocesses (a
+#: prompt-injected shell must not repoint a vault's push target or lift the PAT), but
+#: the named app's backend is each leaf's only legitimate reader/writer — and that
+#: backend is itself a sandboxed spawn, so the blanket mask breaks the app (#8762).
+#: ``apps/backend.py`` passes the resolved paths back as ``extra_visible_dirs`` when
+#: spawning exactly that app's backend; every other sandboxed process keeps the mask.
+#:
+#: Keyed by app name as ``apps/backend.py`` spawns it. Only apps with a SPAWNED
+#: backend belong here — an in-process builtin (routes/hooks) runs unsandboxed in the
+#: gateway and needs no exemption.
+_APP_BACKEND_OWNED_LEAVES: dict[str, tuple[str, ...]] = {
+    "md-notebook": (
+        "workspace/md-notebook/pat",
+        "workspace/md-notebook/vaults.json",
+        "workspace/md-notebook/settings.json",
+    ),
+}
+
+
+def app_backend_visible_targets(app_name: str) -> tuple[str, ...]:
+    """Absolute paths of the hidden leaves *app_name*'s own backend owns.
+
+    Resolved the same way the launcher and seatbelt builders spell their hidden
+    targets — ``$HOME``-joined across both data-home spellings, plus the relocated
+    paths when ``KIROCREW_HOME`` moves the data home — so each returned path matches
+    its mask entry exactly and ``_hidden_path_contains_visible_path`` lifts it.
+
+    Returns ``()`` for an app with no owned leaves, leaving its spawn unchanged.
+    """
+    leaves = _APP_BACKEND_OWNED_LEAVES.get(app_name)
+    if not leaves:
+        return ()
+    home = str(Path.home())
+    targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
+    targets.extend(_relocated_crew_targets(leaves))
+    return tuple(targets)
+
 
 #: The subset of ``_CREW_READONLY_LEAVES`` the launcher may CREATE in order to seal.
 #:
