@@ -276,8 +276,18 @@ def _make_folder_app(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_tags_app(state: DashboardState) -> web.Application:
-    """Minimal aiohttp app with chat_tags endpoints (vocabulary, columns, drop, slot tags)."""
+def _make_tags_app(state: DashboardState, *, app_identity: str | None = None) -> web.Application:
+    """Minimal aiohttp app with chat_tags endpoints (vocabulary, columns, drop, slot tags).
+
+    Installs the same dashboard-owner claim middleware the chat app uses, because
+    production serves these routes behind ``token_auth_middleware`` and the lane
+    dispatch is gated on the ``app`` claim it sets. Without it the claim would be
+    ABSENT here and the fail-closed gate would refuse every dispatch, so the suite
+    would exercise a path production never takes.
+
+    ``app_identity`` overrides that claim to simulate an APP token (the middleware
+    only fills defaults, so a value set here wins). Pass it to test the gate.
+    """
     from kiro_crew.dashboard.chat_tags import (
         api_chat_slot_drop,
         api_chat_slot_tags,
@@ -292,7 +302,16 @@ def _make_tags_app(state: DashboardState) -> web.Application:
         api_chat_tags,
     )
 
-    app = web.Application()
+    @web.middleware
+    async def _tags_auth_middleware(request: web.Request, handler):
+        """Stamp the claims token_auth_middleware sets in production."""
+        if "app" not in request:
+            request["app"] = "" if app_identity is None else app_identity
+        if "user" not in request:
+            request["user"] = "local-app"
+        return await handler(request)
+
+    app = web.Application(middlewares=[_tags_auth_middleware])
     app["state"] = state
     app.router.add_get("/api/chat/tags", api_chat_tags)
     app.router.add_post("/api/chat/tags", api_chat_tag_create)

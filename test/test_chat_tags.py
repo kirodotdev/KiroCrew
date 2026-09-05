@@ -1279,3 +1279,54 @@ class TestNonObjectBodiesAcrossConvertedHandlers:
                     resp = await getattr(client, method)(path, json=payload)
                 assert resp.status == 400, (path, payload, resp.status)
                 assert (await resp.json())["code"] == "body_not_object", path
+
+
+# ── load_tags normalises the persisted status flag (the cause-level seam) ──
+
+
+class TestPersistedStatusFlagIsNormalised:
+    """``status`` becomes a real bool at load, so every reader can use truthiness.
+
+    Readers of this field used to have to test ``is True``, because a legacy or
+    hand-edited ``tags.json`` can carry the STRING ``"false"`` and a string is
+    truthy. That put the burden on five separate readers to remember the same
+    trick, and they disagreed: the drop handler classified an inactive tag as a
+    board lane while the lane filter did not, so the very drop that should have
+    fired ``SessionLaneChanged`` never did. Normalising once at the boundary is
+    what makes those readers agree, so this pins the boundary, not the readers.
+    """
+
+    def _load(self, tmp_path, monkeypatch, raw_status):
+        import json
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        (tmp_path / "tags.json").write_text(
+            json.dumps(
+                [{"id": "lane1", "name": "Lane", "color": "#111111", "order": 0, "status": raw_status}]
+            ),
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path)
+        state.load_tags()
+        return state._tags[0]["status"]
+
+    def test_the_stringy_false_that_broke_truthiness_becomes_False(self, tmp_path, monkeypatch):
+        got = self._load(tmp_path, monkeypatch, "false")
+        assert got is False, f'"false" must normalise to the bool False, got {got!r}'
+
+    def test_a_stringy_true_becomes_True(self, tmp_path, monkeypatch):
+        """The repair must not simply zero every string -- that loses real lanes."""
+        got = self._load(tmp_path, monkeypatch, "true")
+        assert got is True, f'"true" must normalise to the bool True, got {got!r}'
+
+    def test_a_real_bool_is_left_exactly_as_it_was(self, tmp_path, monkeypatch):
+        assert self._load(tmp_path, monkeypatch, True) is True
+        assert self._load(tmp_path, monkeypatch, False) is False
+
+    def test_the_repair_is_persisted_so_it_happens_once(self, tmp_path, monkeypatch):
+        """Normalising in memory only would re-run the repair on every boot."""
+        import json
+
+        self._load(tmp_path, monkeypatch, "false")
+        on_disk = json.loads((tmp_path / "tags.json").read_text(encoding="utf-8"))
+        assert on_disk[0]["status"] is False, f"the repair was not persisted: {on_disk!r}"
