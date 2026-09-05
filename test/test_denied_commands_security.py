@@ -3625,6 +3625,150 @@ class TestSelfFloorShortCircuit:
         assert security._is_credential_mint(cmd)
 
 
+class TestSelfKillArgvWindowIsQuoteAware:
+    """The bare-``kill`` argv window survives a QUOTED close-paren decoy (#8633).
+
+    ``_substitution_depth_delta`` counts parens on tokens the tokenizer already
+    stripped the quotes from, so ``kill $(printf ')' ; pgrep -f <name>)`` scored
+    the quoted paren as a real closer, ended the window at the ``;``, and
+    dropped the ``pgrep`` clause that names the target -- while bash, whose
+    substitution scan is quote-aware, runs that ``pgrep`` (measured).  The fix
+    re-derives the window's substitution bodies from the RAW text through the
+    same quote-aware span scan the extractor uses, as a UNION with the token
+    walk, so no previously-detected spelling is dropped.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the decoy class from the issue: a quoted ')' inside the body
+            "kill $(printf ')' ; pgrep -f {n})",
+            # same decoy through the backtick spelling of the substitution
+            "kill `printf ')' ; pgrep -f {n}`",
+            # the kill matched at any argv position, as the token walk does
+            "sudo kill $(printf ')' ; pgrep -f {n})",
+            # the decoy inside a nested shell payload is the same command
+            'sh -c \'kill $(printf ")" ; pgrep -f {n})\'',
+            # a quoted separator is DATA: bash hands kill the substitution too
+            "kill 123 ';' $(pgrep -f {n})",
+            # ``&>`` is a redirect of the SAME command, not a separator: bash
+            # runs ``kill <substitution output>`` (pre-push review, measured)
+            "kill &>/dev/null $(printf ')' ; pgrep -f {n})",
+            # ``>|`` (noclobber override) is the last separator-charactered
+            # member of the redirect grammar -- same rule, measured
+            # (server-side GPT review round 4)
+            "kill >|/dev/null $(printf ')' ; pgrep -f {n})",
+            # an escaped backtick is DATA inside a backtick body, so it must
+            # not be taken as the closer (pre-push review, measured)
+            "kill `printf '\\`' ; pgrep -f {n}`",
+            # a proven substitution INSIDE double quotes must not swallow the
+            # rest of the line: the ``;`` after it is a real separator and the
+            # kill segment after it is still scanned (pre-push review, measured)
+            'echo "$(date)" ; kill $(printf \')\' ; pgrep -f {n})',
+            # the decoy fully inside double quotes: bash parses the body in a
+            # fresh quote context, so the interior ')' stays data
+            "kill \"$(printf ')' ; pgrep -f {n})\"",
+            # quote-SPLICED kill: bash passes the word ``kill``, so the spliced
+            # spelling with the decoy must not slip both union halves
+            # (server-side GPT review, measured)
+            "k''ill $(printf ')' ; pgrep -f {n})",
+            "k'i'll $(printf ')' ; pgrep -f {n})",
+            '"ki"ll $(printf \')\' ; pgrep -f {n})',
+            # an EMPTY substitution expands to nothing, so ``kill$()`` is the
+            # word ``kill`` -- the glue exclusion must not eat the anchor
+            # (server-side GPT review round 2, measured)
+            "kill$() $(printf ')' ; pgrep -f {n})",
+            "kill$( ) $(pgrep -f {n})",
+            # a NON-empty body can still expand to nothing at runtime
+            # (``$(:)``, ``$(true)``), which no static scan decides -- a FIRST
+            # word whose pre-glue prefix is ``kill`` keeps its anchor
+            # (server-side GPT review round 3, measured)
+            "kill$(:) $(pgrep -f {n})",
+            "kill$(:) $(printf ')' ; pgrep -f {n})",
+            "kill$(true) `pgrep -f {n}`",
+            # a variable an EARLIER command assigned the verb to reaches the
+            # raw walk spelled ``$k`` while the token walk sees it resolved --
+            # so the decoyed alias slipped both union halves (server-side GPT
+            # review round 5, measured)
+            "k=kill; $k $(printf ')' ; pgrep -f {n})",
+            "k=kill; ${{k}} $(printf ')' ; pgrep -f {n})",
+            "x=/usr/bin/kill; $x $(printf ')' ; pgrep -f {n})",
+            # a command-position substitution whose OUTPUT is the verb: the
+            # undecoyed spelling is already token-detected, so only the
+            # decoyed combination needed the raw anchor (server-side GPT
+            # review round 6, measured)
+            "`printf kill` $(printf ')' ; pgrep -f {n})",
+            "$(echo kill) $(printf ')' ; pgrep -f {n})",
+        ],
+    )
+    def test_quoted_paren_decoy_is_still_a_self_kill(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the undecorated control the issue names
+            "kill $(pgrep -f {n})",
+            # an unbalanced span is UNPROVEN: fail closed, scan the remainder
+            "kill $(pgrep -f {n}",
+            # decoyed AND unbalanced: only the raw pass sees this one, so it is
+            # what discriminates its fail-closed remainder from an empty body
+            "kill $(printf ')' ; pgrep -f {n}",
+        ],
+    )
+    def test_control_spellings_remain_detected(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the issue's documented intentional non-detections: the name is an
+            # operand of a DIFFERENT command, so the fix must not widen the
+            # window into denying them
+            "kill 8123 && cp /tmp/{n}.json ~/",
+            "kill 123; echo $(cat /tmp/{n})",
+            # a comment is prose, not a command: bash never runs the pgrep
+            "kill 123 # $(pgrep -f {n})",
+            # single quotes make the whole thing data for echo
+            "echo 'kill $(pgrep -f {n})'",
+            # a substitution BEFORE the kill word is an environment word's
+            # value, not the kill's operand -- the exact false positive the
+            # token walk's own scoping replaced (pre-push review)
+            "LOG=$(ls /tmp/{n}.log) kill 4242",
+            "nice -n $(cat /opt/{n}/etc/nice) kill -TERM 4242",
+            # ``kill...`` glued to a substitution is an ARGUMENT of echo, not
+            # a program: bash runs only the echo (pre-push review)
+            "echo kill$(printf {n})",
+            # same glue, with a LATER substitution naming the product: the
+            # glued word must not anchor the forward window either
+            "echo kill$(printf x) $(pgrep -f {n})",
+            # a proven double-quoted substitution must not absorb the rest of
+            # the line into the kill's window (pre-push review)
+            'kill "$(printf 123)"; echo {n}',
+            'kill "$(printf 123)" && cp /tmp/{n}.json ~/',
+        ],
+    )
+    def test_scoped_non_detections_stay_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # a REAL pipe or or-list still separates -- only the redirect
+            # spellings (``2>&1``, ``&>``, ``>|``) ride inside a word.
+            # Predicate-level: the raw regex TIER matches these across the
+            # pipe on main too (its ``[^;&#>]`` class admits ``|``), so the
+            # public-gate verdict is owned by that tier, not this walk.
+            "kill 123 | grep $(cat /tmp/{n})",
+            "kill 123 || echo $(cat /tmp/{n})",
+        ],
+    )
+    def test_pipe_still_separates_the_argv_window(self, cmd):
+        from kiro_crew import security
+
+        assert security._is_self_kill(cmd.format(n=_NAME).lower()) is False
+
+
 class TestStdinProgramTextScoping:
     """A stdin-reading interpreter is judged on its PROGRAM, not on its neighbours.
 
