@@ -27,7 +27,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const app = readFileSync(resolve(__dirname, '../App.tsx'), 'utf8')
-const chat = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+// The page composition layer owns state and gestures; the extracted view owns
+// the DOM bindings. Keep the source contract spanning both rather than making
+// either module pretend to own the whole mobile-panel interaction.
+const chatController = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+const chatView = readFileSync(resolve(__dirname, '../pages/chat/ChatPageView.tsx'), 'utf8')
+const chat = `${chatController}\n${chatView}`
 const hook = readFileSync(resolve(__dirname, '../hooks/useDrawerSwipe.ts'), 'utf8')
 
 describe('mobile nav drawer (left) — compositor pairing', () => {

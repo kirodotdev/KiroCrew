@@ -59,10 +59,10 @@ is to scroll past everything or open a new session.
   (`pages/chat/ChatNavPanel.tsx:76`, `SidePanel`, `SubagentCompletionCard`), not
   to a message row.
 - There **are** collapse affordances, but all are *intra-turn*:
-  `pages/chat/CollapsibleToolGroup.tsx`, `pages/chat/TurnBlock.tsx` (used at
-  `pages/ChatPage.tsx:7554`), `pages/chat/ToolCallLine.tsx`. None can express
+  `pages/chat/CollapsibleToolGroup.tsx`, `pages/chat/TurnBlock.tsx` (composed by
+  `pages/chat/ChatPageView.tsx`), `pages/chat/ToolCallLine.tsx`. None can express
   "collapse everything before this point".
-- `pages/chat/EarlierMessagesBar.tsx` (rendered at `pages/ChatPage.tsx:7528`,
+- `pages/chat/EarlierMessagesBar.tsx` (rendered by `pages/chat/ChatPageView.tsx`,
   gated on `slotHasMore`) looks like the wanted control but is a **server-side
   pager** for history not yet in the client, not a fold of loaded rows.
 
@@ -160,7 +160,8 @@ label belongs.
 **Why not `role="system"`** (the one role whose `cls` survives) — it is in the
 SDK's `undrawn` set (`app-sdk/messageRenderers.tsx:349`) and so renders nothing
 there, while `ChatPage` has no `system` branch and would drop it into the
-assistant-bubble fallback (`pages/ChatPage.tsx:6564`). Reusing it means
+assistant-bubble fallback (`renderMessage` in
+`pages/chat/useChatPageTranscriptController.tsx`). Reusing it means
 un-picking a deliberate "carries state, not something to read" classification.
 
 **Why not `role="inject"`** (what `/note` writes) — two concrete harms. It is in
@@ -325,9 +326,9 @@ section_marker(label?: string, collapse_earlier?: boolean = true) -> string
 and **they disagree on the unknown-role fallback**, which makes this a hard
 requirement:
 
-- `pages/ChatPage.tsx` dispatches on role through `renderMessage` (`:6432`); an
-  unrecognised role falls through to the final `else` and is drawn as an assistant
-  markdown bubble (`:6564`).
+- The chat page dispatches on role through `renderMessage` in
+  `pages/chat/useChatPageTranscriptController.tsx`; an unrecognised role falls
+  through to the final `else` and is drawn as an assistant markdown bubble.
 - The SDK path (`components/ChatPane.tsx`, SideChat, embed) resolves via
   `resolveRenderer` (`app-sdk/messageRenderers.tsx:382`) and
   `if (!entry) return null` (`app-sdk/ChatMessageList.tsx:181`) — an unclaimed
@@ -385,7 +386,8 @@ the HTTP slot-detail rebuild (`store/chatSlice.ts:1448 fetchSlotDetail`, reducer
 viewport is recomputed. No new transport.
 
 **One interaction to resolve.** `EarlierMessagesBar` already occupies the top of
-the transcript when there is unloaded server history (`pages/ChatPage.tsx:7528`).
+the transcript when there is unloaded server history
+(`pages/chat/ChatPageView.tsx`).
 A "show earlier sections" bar would sit in the same place with a similar label and
 a different meaning. Both can be true at once. Merge them into one progressive
 control or differentiate the wording sharply; do not ship two similar bars
@@ -412,8 +414,8 @@ What changes, at a glance:
 | Append path | reuse `/note`'s deferral (`dashboard/state.py:3953` flush, existing seams) |
 | Persistence | none — `meta` already persists for all roles |
 | Recall | none — the role stays out of `RECALL_ROLES` (`context.py:61`) |
-| Frontend | renderer in `app-sdk/messageRenderers.tsx` **and** `pages/ChatPage.tsx:6432` |
-| Frontend | collapse default derived in the turn grouper (`createTurnGrouper`, `pages/chat/groupDisplayItems.ts:244`) or in `displayItems` (`pages/ChatPage.tsx:5740`) |
+| Frontend | renderer in `app-sdk/messageRenderers.tsx` **and** `renderMessage` in `pages/chat/useChatPageTranscriptController.tsx` |
+| Frontend | collapse default derived in the turn grouper (`createTurnGrouper`, `pages/chat/groupDisplayItems.ts:244`) or in `displayItems` in `pages/chat/useChatPageTranscriptController.tsx` |
 | Frontend | summary bar component, sibling to `pages/chat/EarlierMessagesBar.tsx` |
 
 Each phase is independently shippable and independently abandonable. Exit criteria
@@ -490,8 +492,9 @@ and nothing was deleted to achieve it.
 
 **Old frontend, new transcript.** Neither path throws. The SDK path draws nothing
 (`app-sdk/ChatMessageList.tsx:181`); `ChatPage` draws the row's `content` as an
-assistant bubble (`pages/ChatPage.tsx:6564`). The second is cosmetically wrong but
-not broken — and it is why §5.2 puts a human-readable string in `content` rather
+assistant bubble (`renderMessage` in
+`pages/chat/useChatPageTranscriptController.tsx`). The second is cosmetically
+wrong but not broken — and it is why §5.2 puts a human-readable string in `content` rather
 than leaving it empty or stuffing JSON there. An old client shows
 `— Section: second-item —` as a stray line, which is a legible degradation.
 **`content` is the compatibility surface; `meta` is the machine surface.**
@@ -651,7 +654,7 @@ marker would vanish on one of the two write paths.
    useful structural hint for a summarizer. Not determined from the code whether
    those readers need an explicit skip or would benefit from seeing them.
 5. **Virtualizer measurement.** The turn grouper → `displayItems` →
-   `useVirtualChat` (`pages/ChatPage.tsx:5738`, `:5740`, `:5832`) measures rows
+   `useVirtualChat` in `pages/chat/useChatPageTranscriptController.tsx` measures rows
    for the scroll window.
    Hiding a large prefix changes the measured set substantially. Not traced
    whether the virtualizer needs more than a shorter `items` array, or whether

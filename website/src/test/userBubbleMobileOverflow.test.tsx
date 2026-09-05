@@ -26,7 +26,7 @@ const src = (rel: string) => readFileSync(resolve(HERE, '..', rel), 'utf8')
 
 /** Both hosts render the same UserMessage inside the same wrapper pair. */
 const HOSTS = [
-  ['ChatPage.tsx', 'pages/ChatPage.tsx'],
+  ['ChatPage transcript controller', 'pages/chat/useChatPageTranscriptController.tsx'],
   ['app-sdk/ChatMessageList.tsx', 'app-sdk/ChatMessageList.tsx'],
 ] as const
 

@@ -162,9 +162,10 @@ describe('NoticeCard', () => {
 describe('registry wiring', () => {
   it("ChatPage renders the notice role through NoticeCard, not a hand-rolled box", () => {
     const here = dirname(fileURLToPath(import.meta.url))
-    const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
-    // Since chat-core P5-a the page dispatches through the app-sdk registry;
-    // the notice row is the page's `notice` host entry (same id as the default).
+    const src = readFileSync(resolve(here, '../pages/chat/useChatPageTranscriptController.tsx'), 'utf8')
+    // Since chat-core P5-a the transcript controller dispatches through the
+    // app-sdk registry; the notice row is its `notice` host entry (same id as
+    // the default).
     expect(src).toMatch(/id: 'notice', roles: \['notice'\], render: [^\n]*<NoticeCard/)
     // The old inline branch carried its own class recipe; its return must be
     // gone so the style cannot fork again at this call site.

@@ -48,7 +48,7 @@ describe('side panel mount decision', () => {
     expect(src).toContain('active={isActive && !panelHidden}')
     // ...and the flag has to reach the panel from its host, or the guard above
     // is dead code that always reads undefined.
-    const host = readSource(join(__dirname, '..', 'pages', 'ChatPage.tsx'))
+    const host = readSource(join(__dirname, '..', 'pages', 'chat', 'ChatPageView.tsx'))
     expect(host.match(/panelHidden=\{isSidePanelHidden\(/g) ?? []).toHaveLength(2)
   })
 

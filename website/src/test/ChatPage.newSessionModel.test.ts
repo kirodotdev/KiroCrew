@@ -29,7 +29,15 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const CHAT_PAGE = join(__dirname, '..', 'pages', 'ChatPage.tsx')
-const source = readFileSync(CHAT_PAGE, 'utf-8')
+const COMPOSER_CONTROLLER = join(__dirname, '..', 'pages', 'chat', 'useChatPageComposerController.tsx')
+const ACTIONS_CONTROLLER = join(__dirname, '..', 'pages', 'chat', 'useChatPageActionsController.ts')
+// The invariant crosses the page composition boundary: display resolution stays
+// in ChatPage, while pending-model ownership and agent switching now live in the
+// composer/actions controllers respectively.
+const source = [CHAT_PAGE, COMPOSER_CONTROLLER, ACTIONS_CONTROLLER]
+  .map(path => readFileSync(path, 'utf-8'))
+  .join('\n')
+const pageSource = readFileSync(CHAT_PAGE, 'utf-8')
 
 /** Arguments that are legitimate for a create-time model: nothing, or an
  *  explicit user pick. `v` is the setter's own parameter; `modelName` is the
@@ -37,6 +45,16 @@ const source = readFileSync(CHAT_PAGE, 'utf-8')
 const ALLOWED_ARGS = new Set(["''", '', 'v', 'modelName'])
 
 describe('ChatPage — a new session carries no model the user did not pick', () => {
+  it('creates the composer before actions bind its forward send port', () => {
+    const composerStart = pageSource.indexOf('const composer = useChatPageComposerController')
+    const actionsStart = pageSource.indexOf('const actions = useChatPageActionsController')
+
+    expect(composerStart).toBeGreaterThan(-1)
+    expect(actionsStart).toBeGreaterThan(composerStart)
+    expect(pageSource.slice(composerStart, actionsStart)).toContain('sendRef,')
+    expect(pageSource.slice(actionsStart)).toMatch(/composer:\s*\{[\s\S]*?sendRef,/)
+  })
+
   it('never passes a resolver result to setPendingModel', () => {
     const calls = [...source.matchAll(/setPendingModel\(([^)]*)\)/g)].map(m => m[1].trim())
     expect(calls.length).toBeGreaterThan(0)

@@ -23,7 +23,7 @@ import { createTestStore } from './helpers'
 // literal turns a deliberate retune of that size into two unrelated red tests.
 import { loadOlderMessages, resumeFromHistory, OLDER_WALK_PAGE_LIMIT } from '../store/chatSlice'
 import { shouldPaginateOlder } from '../pages/chat/pagination'
-import { shouldAutoFillOlder } from '../pages/ChatPage'
+import { shouldAutoFillOlder } from '../pages/chat/useChatPageTranscriptController'
 import { api } from '../api/client'
 
 interface Item { id: string }
@@ -325,30 +325,31 @@ describe('older-history trigger — fetch through the gate', () => {
 
 describe('older-history trigger — ChatPage wiring contract', () => {
   const here = dirname(fileURLToPath(import.meta.url))
-  const chatPageSrc = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+  const chatPageViewSrc = readFileSync(resolve(here, '../pages/chat/ChatPageView.tsx'), 'utf8')
+  const transcriptSrc = readFileSync(resolve(here, '../pages/chat/useChatPageTranscriptController.tsx'), 'utf8')
 
   it('hands the virtualizer a top-reached callback', () => {
-    expect(chatPageSrc).toMatch(/onTopReached:\s*handleTopReached/)
+    expect(transcriptSrc).toMatch(/onTopReached:\s*handleTopReached/)
   })
 
   it('gates that callback on the shared predicate rather than inline logic', () => {
-    expect(chatPageSrc).toMatch(/shouldPaginateOlder\(\{/)
-    expect(chatPageSrc).toMatch(/dispatch\(loadOlderMessages\(\)\)/)
+    expect(transcriptSrc).toMatch(/shouldPaginateOlder\(\{/)
+    expect(transcriptSrc).toMatch(/dispatch\(loadOlderMessages\(\)\)/)
   })
 
   it('reads live store state, so a stale render cannot suppress the fetch', () => {
-    expect(chatPageSrc).toMatch(/store\.getState\(\)\.chat/)
+    expect(transcriptSrc).toMatch(/store\.getState\(\)\.chat/)
   })
 
 
   it('renders the affordance only when the server reported unloaded history AND the cursor is this chat\'s', () => {
-    expect(chatPageSrc).toMatch(/slotHasMore && cursorIsForActiveSlot && \(\s*<EarlierMessagesBar/)
-    expect(chatPageSrc).toMatch(/loading=\{loadingOlder\}/)
+    expect(chatPageViewSrc).toMatch(/slotHasMore && cursorIsForActiveSlot && \(\s*<EarlierMessagesBar/)
+    expect(chatPageViewSrc).toMatch(/loading=\{loadingOlder\}/)
   })
 
   it('gives the explicit control its own handler, so a click bypasses the gate', () => {
-    expect(chatPageSrc).toMatch(/onLoad=\{handleLoadEarlier\}/)
-    expect(chatPageSrc).toMatch(/const handleLoadEarlier = useCallback/)
+    expect(chatPageViewSrc).toMatch(/onLoad=\{handleLoadEarlier\}/)
+    expect(transcriptSrc).toMatch(/const handleLoadEarlier = useCallback/)
   })
 
 

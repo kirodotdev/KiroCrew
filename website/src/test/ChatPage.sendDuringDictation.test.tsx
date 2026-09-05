@@ -10,7 +10,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { setActiveSlot } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import type { RootState } from '../store'
@@ -45,7 +45,7 @@ const voice = vi.hoisted(() => {
     // to reconstruct (and roll back) the dictated region, so a test exercising
     // the discard path has to set it alongside firing onPartial.
     partial: '',
-    onPartial: null as ((t: string) => void) | null,
+    onPartial: null as ((t: string, sessionId?: string | null) => void) | null,
     onEndpoint: null as (() => void) | null,
     onText: null as ((t: string, sessionId: string | null, origin: TranscriptOrigin) => void) | null,
     /** Mode the page configured, so a delivered transcript can carry the origin
@@ -63,7 +63,7 @@ voice.start = vi.fn(() => { voice.recording = true })
 voice.stop = vi.fn(() => { voice.recording = false })
 voice.cancel = vi.fn(() => { voice.recording = false })
 vi.mock('../hooks/useVoiceInput', () => ({
-  useVoiceInput: (onText: (t: string, sessionId: string | null, origin: TranscriptOrigin) => void, opts?: { onPartial?: (t: string) => void; onEndpoint?: () => void; streaming?: boolean }) => {
+  useVoiceInput: (onText: (t: string, sessionId: string | null, origin: TranscriptOrigin) => void, opts?: { onPartial?: (t: string, sessionId?: string | null) => void; onEndpoint?: () => void; streaming?: boolean }) => {
     voice.onPartial = opts?.onPartial ?? null
     voice.onEndpoint = opts?.onEndpoint ?? null
     voice.onText = onText
@@ -91,7 +91,11 @@ vi.mock('../hooks/useVoiceInput', () => ({
 
 /** Hand ChatPage a transcript exactly as `useVoiceInput` would: the origin is the
  *  capture path that produced it, which is the mode the page is configured for. */
-const deliverText = (text: string) => voice.onText?.(text, null, voice.streaming ? 'stream' : 'batch')
+const deliverText = (
+  text: string,
+  sessionId: string | null = null,
+  origin: TranscriptOrigin = voice.streaming ? 'stream' : 'batch',
+) => voice.onText?.(text, sessionId, origin)
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
@@ -235,6 +239,45 @@ describe('ChatPage — sending while dictating', () => {
     // Capture was NOT disarmed, so the transcript still lands.
     await act(async () => { deliverText('dictated words') })
     expect(ta.value).toBe('dictated words')
+  })
+
+  it('routes a late batch final once to the slot that started dictation', async () => {
+    setStt(false)
+    const store = makeStore('chat-a', [{ key: 'chat-a' }, { key: 'chat-b' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    // Start the real page path in A, then leave while its batch transcription
+    // is still pending. A slot switch stops the shared mic, but Whisper's one
+    // final arrives later and remains attributed to the capture owner.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
+    expect(voice.recording).toBe(true)
+    await act(async () => { fireEvent.change(ta, { target: { value: 'draft for A' } }) })
+
+    await act(async () => { store.dispatch(setActiveSlot('chat-b')) })
+    await waitFor(() => expect(ta.value).toBe(''))
+    await act(async () => { fireEvent.change(ta, { target: { value: 'draft for B' } }) })
+
+    await act(async () => { deliverText('batch final', 'chat-a', 'batch') })
+
+    await waitFor(() => {
+      const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+      expect(drafts['chat-a']).toBe('draft for A batch final')
+      expect(drafts['chat-b']).toBe('draft for B')
+    })
+    expect(ta.value).toBe('draft for B')
+
+    // Contrast the batch route with stale streaming callbacks from A. A late
+    // hypothesis is neither allowed into B's live composer nor appended again
+    // to A, whose streaming partial was already persisted on the switch.
+    await act(async () => { voice.onPartial?.('stale partial', 'chat-a') })
+    await act(async () => { deliverText('stale final', 'chat-a', 'stream') })
+    expect(ta.value).toBe('draft for B')
+
+    await act(async () => { store.dispatch(setActiveSlot('chat-a')) })
+    await waitFor(() => expect(ta.value).toBe('draft for A batch final'))
+    expect(ta.value.match(/batch final/g)).toHaveLength(1)
+    expect(ta.value).not.toContain('stale')
   })
 
   it('does not touch voice capture when not recording', async () => {

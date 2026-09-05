@@ -25,7 +25,7 @@ import { resolve } from 'node:path'
  * one of them as a Tailwind class jsdom cannot resolve into a height, and the
  * invariant is the arithmetic BETWEEN them.
  */
-const CHAT_PAGE = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+const CHAT_PAGE_VIEW = readFileSync(resolve(__dirname, '../pages/chat/ChatPageView.tsx'), 'utf8')
 const CHAT_INPUT = readFileSync(resolve(__dirname, '../components/ChatInput.tsx'), 'utf8')
 
 const num = (re: RegExp, src: string): number => {
@@ -35,10 +35,10 @@ const num = (re: RegExp, src: string): number => {
 }
 
 describe('transcript bottom mask geometry', () => {
-  const above = () => num(/const TRANSCRIPT_MASK_ABOVE_PX = (\d+)/, CHAT_PAGE)
-  const overshoot = () => num(/const COMPOSER_MASK_OVERSHOOT_PX = (\d+)/, CHAT_PAGE)
-  const tail = () => num(/const TRANSCRIPT_TAIL_SPACER_PX = (\d+)/, CHAT_PAGE)
-  const pad = () => num(/paddingBottom: (\d+)/, CHAT_PAGE)
+  const above = () => num(/const TRANSCRIPT_MASK_ABOVE_PX = (\d+)/, CHAT_PAGE_VIEW)
+  const overshoot = () => num(/const COMPOSER_MASK_OVERSHOOT_PX = (\d+)/, CHAT_PAGE_VIEW)
+  const tail = () => num(/const TRANSCRIPT_TAIL_SPACER_PX = (\d+)/, CHAT_PAGE_VIEW)
+  const pad = () => num(/paddingBottom: (\d+)/, CHAT_PAGE_VIEW)
 
   it('keeps tail spacer + scroller padding >= the mask above the scrollport edge', () => {
     expect(tail() + pad()).toBeGreaterThanOrEqual(above())
@@ -47,14 +47,14 @@ describe('transcript bottom mask geometry', () => {
   it('states the clearance in px, never in viewport units', () => {
     // A tail spacer sized in vh/dvh/svh/lvh passes the arithmetic above by accident
     // (its number reads as px) while still shrinking on a phone.
-    expect(CHAT_PAGE).not.toMatch(/height:\s*['"]?\d+(\.\d+)?(vh|dvh|svh|lvh)/)
+    expect(CHAT_PAGE_VIEW).not.toMatch(/height:\s*['"]?\d+(\.\d+)?(vh|dvh|svh|lvh)/)
   })
 
   it('consumes zero layout: height == above + overshoot, margins cancel it', () => {
     const decl = /height: (TRANSCRIPT_MASK_ABOVE_PX \+ COMPOSER_MASK_OVERSHOOT_PX),\s*marginTop: (-TRANSCRIPT_MASK_ABOVE_PX),\s*marginBottom: (-COMPOSER_MASK_OVERSHOOT_PX),/
     // Pinned symbolically rather than numerically: this is the one invariant that
     // must hold for ANY values the two constants take.
-    expect(CHAT_PAGE).toMatch(decl)
+    expect(CHAT_PAGE_VIEW).toMatch(decl)
   })
 
   it('overshoots exactly to the composer box, never past its top border', () => {
@@ -67,7 +67,7 @@ describe('transcript bottom mask geometry', () => {
   })
 
   it('keeps the solid stop above the scrollport edge, not merely at it', () => {
-    const stop = num(/from-bg from-\[(\d+)%\]/, CHAT_PAGE)
+    const stop = num(/from-bg from-\[(\d+)%\]/, CHAT_PAGE_VIEW)
     const solidPx = (stop / 100) * (above() + overshoot())
     // Solid must cover the whole overshoot AND reach some way past the edge, or the
     // gradient's topmost rows sit just shy of opaque and clipped glyphs bleed through.

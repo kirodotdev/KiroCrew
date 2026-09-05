@@ -23,7 +23,10 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const source = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf-8')
+const source = [
+  '../pages/chat/ChatPageView.tsx',
+  '../pages/chat/useChatPageTranscriptController.tsx',
+].map(file => readFileSync(resolve(__dirname, file), 'utf-8')).join('\n')
 
 /** Every `<CollapsibleToolGroup ...>` opening tag's attribute block. */
 function mountAttributeBlocks(src: string): string[] {

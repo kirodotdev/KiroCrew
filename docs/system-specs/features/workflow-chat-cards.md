@@ -2,7 +2,7 @@
 
 ## Behavior
 
-Workflow launches and completions render as durable inline cards in chat. `ChatPage.tsx` renders them for the primary chat surface, and `transcriptRenderers.tsx::createTranscriptRenderers` registers the same cards for SDK transcript hosts. `TurnBlock.tsx` keeps those items outside collapsed tool and reasoning groups so a launch or completion remains available in either collapse mode.
+Workflow launches and completions render as durable inline cards in chat. `useChatPageTranscriptController.tsx` renders them for the primary chat surface, and `transcriptRenderers.tsx::createTranscriptRenderers` registers the same cards for SDK transcript hosts. `TurnBlock.tsx` keeps those items outside collapsed tool and reasoning groups so a launch or completion remains available in either collapse mode.
 
 ### Launch card
 
@@ -20,9 +20,9 @@ The card sanitizes display text, switches to its own slot before opening the Wor
 
 ### Rendering invariants
 
-**Parse-gated completion detection prevents data loss.** `isWorkflowCompletionMessage` accepts only an assistant message that `parseWorkflowCompletion` successfully parses. `ChatPage.tsx` and `transcriptRenderers.tsx` use that predicate before selecting `WorkflowCompletionCard`; an unparseable header therefore falls through to ordinary markdown instead of selecting a card that returns no content. `WorkflowCompletionCard.test.tsx` pins this fallback.
+**Parse-gated completion detection prevents data loss.** `isWorkflowCompletionMessage` accepts only an assistant message that `parseWorkflowCompletion` successfully parses. `useChatPageTranscriptController.tsx` and `transcriptRenderers.tsx` use that predicate before selecting `WorkflowCompletionCard`; an unparseable header therefore falls through to ordinary markdown instead of selecting a card that returns no content. `WorkflowCompletionCard.test.tsx` pins this fallback.
 
-**Launch detection has the same fallback.** `WorkflowRunCard.tsx::extractWorkflowRunId` returns no ID when persisted tool output does not match the launch contract. `ChatPage.tsx` then renders the generic `ToolCallLine`, and `transcriptRenderers.tsx` does the same inside its launch renderer. This preserves the normal tool row while output is absent, malformed, or from another tool.
+**Launch detection has the same fallback.** `WorkflowRunCard.tsx::extractWorkflowRunId` returns no ID when persisted tool output does not match the launch contract. `useChatPageTranscriptController.tsx` then renders the generic `ToolCallLine`, and `transcriptRenderers.tsx` does the same inside its launch renderer. This preserves the normal tool row while output is absent, malformed, or from another tool.
 
 **Cards remain visible independently of turn folding.** `TurnBlock.tsx::isWorkflowRunItem` removes launch cards from the collapsed tool set, and `isWorkflowCompletionItem` includes completion cards in `isVisibleInline`. Without those classifications, the only chat anchor for a workflow lifecycle event can be hidden behind a turn disclosure.
 

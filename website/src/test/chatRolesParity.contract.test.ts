@@ -58,12 +58,19 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   bubble: 'the page\'s user / inject / assistant row, with fork, pin, footer, regenerate and search-scope chrome',
 }
 
-const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+// The page's row dispatch lives in the transcript controller that owns it
+// (pages/chat/useChatPageTranscriptController.tsx); ChatPage composes that
+// controller. Every check below reads the OWNING module, so a later move of
+// the dispatch is a rename here rather than a silently vacuous contract.
+const src = readFileSync(
+  resolve(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'),
+  'utf8',
+)
 
 function rendererBlock(): string {
   const start = src.indexOf('fallback: bubbleRenderer } = useMemo')
   const end = src.indexOf('const renderMessage = useCallback', start)
-  if (start < 0 || end < 0) throw new Error('ChatPage renderer block not found -- did the P5-a dispatch move?')
+  if (start < 0 || end < 0) throw new Error('chat page renderer block not found -- did the P5-a dispatch move?')
   return src.slice(start, end)
 }
 
@@ -97,8 +104,8 @@ function hostEntryIds(): string[] {
 
 describe('chat role parity (ChatPage consumes the app-sdk registry)', () => {
   it('ChatPage dispatches rows through the registry, not an if-chain of its own', () => {
-    expect(src).toMatch(/import \{[^}]*\bmergeRenderers\b[^}]*\} from '\.\.\/app-sdk\/messageRenderers'/)
-    expect(src).toMatch(/import \{[^}]*\bresolveRenderer\b[^}]*\} from '\.\.\/app-sdk\/messageRenderers'/)
+    expect(src).toMatch(/import \{[^}]*\bmergeRenderers\b[^}]*\} from '\.\.\/\.\.\/app-sdk\/messageRenderers'/)
+    expect(src).toMatch(/import \{[^}]*\bresolveRenderer\b[^}]*\} from '\.\.\/\.\.\/app-sdk\/messageRenderers'/)
     expect(src).toContain('resolveRenderer(m, chatPageRenderers)')
     // Variant flags INSIDE one entry (`const isUser = m.role === 'user'`) are
     // fine; a dispatch statement is not -- it would select a row the registry

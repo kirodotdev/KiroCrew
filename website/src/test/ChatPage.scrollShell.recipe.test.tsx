@@ -24,6 +24,8 @@ import { resolve } from 'node:path'
 // and a migration retargets nothing here.
 const SHELL_FILES = [
   '../pages/ChatPage.tsx',
+  '../pages/chat/ChatPageView.tsx', // owns the page's chrome, so it owns the shell invocation and its slot bodies
+  '../pages/chat/useChatPageTranscriptController.tsx', // owns the row props the shell wraps (the second loadingOlder consumer)
   '../pages/chat/TranscriptScrollShell.tsx', // post-extraction home (absent pre-extraction)
   '../app-sdk/ChatScrollChrome.tsx',
 ]
@@ -229,8 +231,10 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
 
   it('page threads the controller wiring onto the shell call', () => {
     // The import IS the extraction: its deletion is the "silently undone"
-    // mutation, and a collection failure alone names no pin.
-    expect(SRC).toContain("import TranscriptScrollShell from './chat/TranscriptScrollShell'")
+    // mutation, and a collection failure alone names no pin. The specifier is
+    // relative to whichever shell file holds the invocation — ChatPageView, which
+    // owns the page's chrome and sits in the same directory as the shell.
+    expect(SRC).toContain("import TranscriptScrollShell from './TranscriptScrollShell'")
     expect(SRC).toContain('scrollerRef={scrollerRef}')
     expect(SRC).toContain('virt={virt}')
     // Two consumers thread loadingOlder (the pinned-banner row props and the

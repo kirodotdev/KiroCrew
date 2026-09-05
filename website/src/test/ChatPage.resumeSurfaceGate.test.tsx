@@ -13,16 +13,16 @@
  * `ok` cannot distinguish the two cases: the wire request succeeds either way,
  * which is why it returns `surface` at all (#3624).
  *
- * SCOPE NOTE: `handleResumeSession` is a `useCallback` defined inline inside the
- * very large `ChatPage` component and is not exported, and the existing
- * `ChatPage.*.test.tsx` harnesses stub out the sidebar/virtualization layers
- * rather than drive them live. Following the precedent set by
- * `ChatPage.handleFork.test.tsx`, this file mounts the same body against the
- * REAL `resumeFromHistory` / `deleteSlot` thunks and the real `api` module
- * (mocked at the network boundary), so the gate is exercised through the real
- * reducer that produces the condition it guards. The callback body is duplicated
- * from `ChatPage.tsx` rather than imported; if that body changes, update this
- * file with it.
+ * SCOPE NOTE: `handleResumeSession` is a `useCallback` defined inline inside
+ * `pages/chat/useChatPageSessionController.ts` and is not exported on its own,
+ * and the existing `ChatPage.*.test.tsx` harnesses stub out the
+ * sidebar/virtualization layers rather than drive them live. Following the
+ * precedent set by `ChatPage.handleFork.test.tsx`, this file mounts the same
+ * body against the REAL `resumeFromHistory` / `deleteSlot` thunks and the real
+ * `api` module (mocked at the network boundary), so the gate is exercised
+ * through the real reducer that produces the condition it guards. The callback
+ * body is duplicated from that controller rather than imported; if that body
+ * changes, update this file with it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
@@ -50,9 +50,10 @@ function makeStore() {
 }
 
 /**
- * Verbatim reproduction of ChatPage.tsx's `handleResumeSession` body (see the
- * file header for why it is duplicated rather than imported). `drafts` stands in
- * for the component's draft refs so the discard is observable.
+ * Verbatim reproduction of `useChatPageSessionController`'s
+ * `handleResumeSession` body (see the file header for why it is duplicated
+ * rather than imported). `drafts` stands in for the controller's draft refs so
+ * the discard is observable.
  */
 function makeHandleResumeSession(
   store: ReturnType<typeof makeStore>,

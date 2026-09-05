@@ -18,7 +18,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { useEffect, useMemo, type ReactNode } from 'react'
 import TurnBlock from '../pages/chat/TurnBlock'
 import { groupDisplayItems, applyRunningState } from '../pages/chat/groupDisplayItems'
-import { virtualKeyFor } from '../pages/ChatPage'
+import { virtualKeyFor } from '../pages/chat/ChatPageMessageContent'
 import type { DisplayItem, TurnItem } from '../pages/chat/types'
 import type { ChatMessage } from '../types'
 

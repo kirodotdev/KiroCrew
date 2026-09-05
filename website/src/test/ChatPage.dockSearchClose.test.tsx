@@ -143,7 +143,8 @@ globalThis.fetch = vi.fn().mockResolvedValue({
   json: () => Promise.resolve({}),
 }) as never
 
-import ChatPage, { virtualKeyFor, turnLeadKey } from '../pages/ChatPage'
+import ChatPage from '../pages/ChatPage'
+import { virtualKeyFor, turnLeadKey } from '../pages/chat/ChatPageMessageContent'
 import type { DisplayItem } from '../pages/chat/types'
 import type { ChatMessage } from '../types'
 

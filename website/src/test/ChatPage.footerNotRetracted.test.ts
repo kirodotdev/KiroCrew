@@ -21,7 +21,7 @@ import { join } from 'node:path'
  * condition that makes the footer permanent. Pinned by source scan because the
  * predicate is an inline IIFE inside a 60-prop JSX element with no seam to call.
  */
-const SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+const SRC = readFileSync(join(__dirname, '..', 'pages', 'chat', 'useChatPageTranscriptController.tsx'), 'utf8')
 
 describe('completed-turn footer', () => {
   it('is not retracted by a run that started later', () => {

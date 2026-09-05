@@ -75,7 +75,7 @@ describe('AgentDropdownList hosts own the scroll (#6375)', () => {
   // vitest's cwd is website/ (the vitest config root), and import.meta.url is
   // not file-scheme under its transform, so resolve from cwd instead.
   const hosts = [
-    ['ChatPage', join(process.cwd(), 'src', 'pages', 'ChatPage.tsx')],
+    ['ChatPage', join(process.cwd(), 'src', 'pages', 'chat', 'ChatPageView.tsx')],
     ['ChatPane', join(process.cwd(), 'src', 'components', 'ChatPane.tsx')],
   ] as const
 

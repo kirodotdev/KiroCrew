@@ -214,7 +214,7 @@ describe('narrow-first layout baseline', () => {
     // `PageHeader`'s are one number -- asserted across the two files rather than as
     // two literals, because a drift here is invisible to every other check: both
     // sides still render, nothing overflows, and only the eye sees the step.
-    const chat = await readFile(join(SRC, 'pages', 'ChatPage.tsx'), 'utf8')
+    const chat = await readFile(join(SRC, 'pages', 'chat', 'ChatPageView.tsx'), 'utf8')
     const row = chat.match(/className=\{`px-(\d+(?:\.\d+)?) mx-auto w-full py-1`\}/)
     expect(row, 'ChatPage should render its message rows with an explicit gutter').toBeTruthy()
 

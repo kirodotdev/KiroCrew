@@ -9,7 +9,7 @@
  * The knowledge hook is mocked HERE (and only here) so the selection is
  * controllable; the rest of the create-failure suite exercises the real hook.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
@@ -22,6 +22,9 @@ import chatReducer, { setActiveSlot } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import type { KnowledgeBlock, KnowledgeResult } from '../pages/chat/useKnowledgeFetch'
+import { changeLanguage } from '../i18n/all'
+import { i18nT } from '../i18n/t'
+import { createFailReason } from '../pages/chat/useChatPageComposerController'
 
 const item = (id: string, content = `body-${id}`): KnowledgeResult => ({
   id, title: `T-${id}`, source: null, match_type: 'fts', tokens: 5, summary: '', content,
@@ -137,6 +140,10 @@ beforeEach(() => {
   knowledge.injected = []
 })
 
+afterEach(async () => {
+  await changeLanguage('en')
+})
+
 describe('create-failure knowledge recovery', { timeout: 20_000 }, () => {
   it('merges the failed selection with a newer one, newer winning on id collision', async () => {
     // Selection A is pending when the auto-send fires; B (sharing one id) is chosen
@@ -180,7 +187,7 @@ describe('create-failure knowledge recovery', { timeout: 20_000 }, () => {
     expect(sendChat).not.toHaveBeenCalled()
   })
 
-  it('reports the lost knowledge context when the user switched away', async () => {
+  it('preserves the legacy knowledge suffix through the pseudolocale template', async () => {
     // Off-screen, `inject` would attach the failed turn's context to whatever session
     // the user is now viewing, so it is deliberately not restored — but the
     // notification must say so rather than leaving the retry quietly context-free.
@@ -202,6 +209,7 @@ describe('create-failure knowledge recovery', { timeout: 20_000 }, () => {
       )
     })
     await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+    await changeLanguage('en-XA')
 
     await act(async () => {
       store.dispatch(setActiveSlot('slot-b'))
@@ -212,9 +220,16 @@ describe('create-failure knowledge recovery', { timeout: 20_000 }, () => {
     await waitFor(() => expect(store.getState().notifications.items).toHaveLength(1))
     const note = store.getState().notifications.items[0]
     expect(note.slot).toBe('slot-a')
-    expect(note.body).toContain('saved as a draft')
-    expect(note.body).toContain('knowledge context was not kept')
+    expect(note.body).toBe(i18nT('pages.chatPage.message_saved_as_draft', {
+      error: 'gateway unavailable',
+      extra: ' Its knowledge context was not kept — re-pick it before you resend.',
+    }))
     // And it was NOT injected into slot-b's selection.
     expect(knowledge.injected).toHaveLength(0)
+  })
+
+  it('keeps the legacy rejected-send fallback byte-identical under a non-English locale', async () => {
+    await changeLanguage('de')
+    expect(createFailReason({})).toBe('the server did not respond')
   })
 })

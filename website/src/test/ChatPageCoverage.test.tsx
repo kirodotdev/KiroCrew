@@ -733,13 +733,34 @@ describe('ChatPage pinned-messages panel', () => {
   /** Opens the side panel (which hosts the Pins tab) and returns once the pins
    *  contract ChatPage passes it has been recorded. */
   async function openPins(messages: ChatMessage[], opts: RenderOpts = {}) {
-    renderChatPage(messages, opts)
+    const handle = renderChatPage(messages, opts)
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     await waitFor(() => expect(pinsProps).not.toBeNull())
+    return handle
   }
 
   const highlighted = () => document.body.querySelector('.animate-msg-highlight')
   const UNAVAILABLE = 'This pinned message is no longer available in the loaded history.'
+
+  /** Install a paging cursor that says "this chat has older history, ask from
+   *  index 3". The mount fetch reports a complete transcript, so the cursor has
+   *  to be re-based afterwards; `switchSlot.fulfilled` is the reducer that owns
+   *  all three cursor fields as one unit (see setPagingCursor), which is why it
+   *  is dispatched rather than the fields being poked individually. */
+  const armPaging = (store: { dispatch: (a: unknown) => void }, messages: ChatMessage[]) => {
+    act(() => {
+      store.dispatch({
+        type: 'chat/switchSlot/fulfilled',
+        meta: { arg: 'chat-1', requestId: 'r-pin-page' },
+        payload: { key: 'chat-1', messages, running: false, hasMore: true, queue: [], nextBefore: 3, total: 40 },
+      })
+    })
+  }
+
+  /** The offsets `api.chatSlotDetail` was asked for, so a test can say "an OLDER
+   *  page was fetched" without depending on the walk's page size. */
+  const detailOffsets = () =>
+    (apiMocks.chatSlotDetail?.mock.calls ?? []).map((c: unknown[]) => c[2])
 
   it('jumping to a loaded pin highlights that message and clears the highlight later', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -768,6 +789,81 @@ describe('ChatPage pinned-messages panel', () => {
 
     act(() => pinsProps!.onJumpToPin('missing-ts', 'm-gone'))
     expect(await screen.findByText(UNAVAILABLE)).toBeInTheDocument()
+  })
+
+  it('pages older history for a pin outside the loaded slice, and lands the jump on it', async () => {
+    // The jump is DEFERRED rather than refused while history remains: the pin is a
+    // real message, it is simply behind the loaded window. This is the whole reason
+    // `pendingPinnedJump` exists, and no other test reaches it.
+    const loaded = msg('assistant', 'the loaded tail', { ts: 'a9' })
+    // `slotMessages: {}` because the paging reducers write the per-slot cache,
+    // which this suite's default preload leaves out.
+    const { store } = await openPins([loaded], { chat: { slotMessages: {} } })
+    armPaging(store, [loaded])
+
+    // The older page carries the pinned row, so the re-run resolves the jump.
+    apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({
+      messages: [msg('user', 'the pinned one', { ts: 'u1', meta: { mid: 'm-1' } })],
+      has_more: false, total: 40, next_before: 0,
+    })
+
+    act(() => pinsProps!.onJumpToPin('u1', 'm-1'))
+
+    await waitFor(() => expect(detailOffsets()).toContain(3))
+    await waitFor(() => expect(highlighted()).not.toBeNull())
+    // Resolved, not abandoned: no "no longer available" claim about a pin that was found.
+    expect(shown()).not.toContain(UNAVAILABLE)
+  })
+
+  it('reports the pin unavailable only once the walk has actually run out', async () => {
+    // The ordering that matters: the notice must not be written while a page is
+    // still outstanding, or a reader watching a reachable pin load is told it is gone.
+    const loaded = msg('assistant', 'the loaded tail', { ts: 'a9' })
+    // `slotMessages: {}` because the paging reducers write the per-slot cache,
+    // which this suite's default preload leaves out.
+    const { store } = await openPins([loaded], { chat: { slotMessages: {} } })
+    armPaging(store, [loaded])
+
+    apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({
+      messages: [msg('assistant', 'older, still not it', { ts: 'a1' })],
+      has_more: false, total: 40, next_before: 0,
+    })
+
+    act(() => pinsProps!.onJumpToPin('missing-ts', 'm-gone'))
+
+    await waitFor(() => expect(detailOffsets()).toContain(3))
+    expect(await screen.findByText(UNAVAILABLE)).toBeInTheDocument()
+    expect(store.getState().chat.slotHasMore).toBe(false)
+  })
+
+  it('abandons a pending jump when the chat it belongs to is left', async () => {
+    // A pending jump is addressed to ONE slot. Honouring it after a switch would
+    // page the wrong chat's history and scroll a transcript the reader did not ask
+    // about, so the effect drops it and says nothing.
+    const loaded = msg('assistant', 'the loaded tail', { ts: 'a9' })
+    // `slotMessages: {}` because the paging reducers write the per-slot cache,
+    // which this suite's default preload leaves out.
+    const { store } = await openPins([loaded], { chat: { slotMessages: {} } })
+    armPaging(store, [loaded])
+    // The same exhausted-walk mock as the test above, which is what makes the
+    // assertions below non-vacuous: left alone, this setup DOES reach the notice.
+    apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({
+      messages: [msg('assistant', 'older, still not it', { ts: 'a1' })],
+      has_more: false, total: 40, next_before: 0,
+    })
+
+    // One batch, so the effect's first run already stands in the other chat. Two
+    // separate `act` calls would let the walk start before the switch landed, which
+    // is a different path (a walk abandoned mid-flight, not a jump never started).
+    act(() => {
+      pinsProps!.onJumpToPin('missing-ts', 'm-gone')
+      store.dispatch({ type: 'chat/switchSlot/pending', meta: { arg: 'chat-2', requestId: 'r-away' } })
+    })
+
+    await waitFor(() => expect(pinsProps).not.toBeNull())
+    // Never asked for the pin's page, and never claimed the pin was gone.
+    expect(detailOffsets()).not.toContain(3)
+    expect(shown()).not.toContain(UNAVAILABLE)
   })
 
   it('surfaces an unpin failure and auto-dismisses the notice', async () => {
@@ -934,6 +1030,48 @@ describe('ChatPage search scope disclosure', () => {
 
     openSearchAndType('zzz-no-match')
     await waitFor(() => expect(shown()).toMatch(/in loaded history/i))
+  })
+
+  it('reports the position of a real match, which is what arms the scroll to it', async () => {
+    // Every other search test here types a term with no match, so the transcript
+    // never has a current match to travel to and the nav effect that owns that
+    // travel is cold. A hit is the ordinary case: the pane reports "1 / 1" and the
+    // controller resolves that message to a display index to scroll to.
+    renderChatPage([
+      msg('assistant', 'first reply', { ts: 'a1' }),
+      msg('assistant', 'a needle in here', { ts: 'a2' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('a needle in here'))
+
+    openSearchAndType('needle')
+    await waitFor(() => expect(shown()).toContain('1 of 1 results'))
+    expect(shown()).not.toContain('No results')
+  })
+
+  it('re-clicking the selected result travels back to it without advancing', async () => {
+    // Two distinct paths behind one click: a DIFFERENT result moves the selection
+    // through the search hook, while the ALREADY-SELECTED one cannot (the index
+    // does not change, so nothing re-runs) and is instead re-travelled to
+    // imperatively. Without that second path a reader who scrolls away from their
+    // match and clicks it again gets nothing.
+    renderChatPage([
+      msg('assistant', 'needle one', { ts: 'a1' }),
+      msg('assistant', 'needle two', { ts: 'a2' }),
+      msg('assistant', 'needle three', { ts: 'a3' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('needle three'))
+
+    openSearchAndType('needle')
+    await waitFor(() => expect(shown()).toContain('1 of 3 results'))
+
+    const results = () => screen.getAllByRole('option')
+    fireEvent.click(results()[2])
+    await waitFor(() => expect(shown()).toContain('3 of 3 results'))
+
+    // Same row again: still the third match, not the next one.
+    fireEvent.click(results()[2])
+    await waitFor(() => expect(results()[2].getAttribute('aria-selected')).toBe('true'))
+    expect(shown()).toContain('3 of 3 results')
   })
 
   it('reads as complete once the cursor DOES describe the active slot', async () => {

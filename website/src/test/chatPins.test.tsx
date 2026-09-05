@@ -1031,7 +1031,7 @@ describe('pinned jump — no arbitrary page-load cap', () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
     const chatPageSrc = fs.readFileSync(
-      path.resolve(__dirname, '../pages/ChatPage.tsx'),
+      path.resolve(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'),
       'utf8',
     )
     // The constant must not be defined
@@ -1044,7 +1044,7 @@ describe('pinned jump — no arbitrary page-load cap', () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
     const chatPageSrc = fs.readFileSync(
-      path.resolve(__dirname, '../pages/ChatPage.tsx'),
+      path.resolve(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'),
       'utf8',
     )
     // The ref is still incremented for diagnostic/logging purposes
@@ -1055,7 +1055,7 @@ describe('pinned jump — no arbitrary page-load cap', () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
     const chatPageSrc = fs.readFileSync(
-      path.resolve(__dirname, '../pages/ChatPage.tsx'),
+      path.resolve(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'),
       'utf8',
     )
     // The exhaustion condition is the sole loop terminator

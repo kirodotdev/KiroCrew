@@ -24,7 +24,7 @@ import { join } from 'node:path'
  * Source-scanned because these gates live in interval bodies and callbacks with
  * no exported seam.
  */
-const SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+const SRC = readFileSync(join(__dirname, '..', 'pages', 'chat', 'useChatPageTranscriptController.tsx'), 'utf8')
 
 describe('real-gesture authorization', () => {
   it('refreshes the gesture stamp from gestures only, not from scroll', () => {
