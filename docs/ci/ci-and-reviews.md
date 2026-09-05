@@ -592,16 +592,66 @@ no-output review must not look clean. A BLOCKING-labelled finding without the
 `[BLOCK-MERGE]` marker is only a non-gating **advisory warning**, since a coherence
 check on that pairing mis-fires whenever the model quotes prior text.
 
-The GPT summary comment is upserted in place, which once let a failed run's
-"review incomplete" body replace a posted verdict — the REST comments API
-exposes no edit history, so a `[BLOCK-MERGE]` finding vanished from every
-surface a reader or tool checks (#8292). The same-repo GPT lane's post step
-now refuses exactly that transition: an incomplete body never overwrites a
-marker-present verdict; it keeps the existing verdict and prepends one dated
-stale-verdict notice instead. Completed verdicts and human overrides still
-replace the comment, and the fail-closed gate above is unchanged. The fork
-GPT lane (`fork-gpt-review.yml`) still PATCHes unconditionally and is tracked
-separately.
+A lane's summary comment is **one slot shared by every run on the PR**, and it
+is upserted in place. The comments API has no `If-Match`, so a write to that
+slot is last-writer-wins, and it exposes no edit history, so the loss is
+undetectable afterwards: a failed run's "review incomplete" body once replaced
+a posted verdict and a `[BLOCK-MERGE]` finding vanished from every surface a
+reader or tool checks (#8292).
+
+Eight of the ten lanes that upsert a verdict comment now let exactly one kind of
+run claim that slot — a **completed verdict for the PR's current head**. The two
+other kinds each lose a live verdict, so each leaves an existing comment
+untouched (#8344):
+
+- **No `"<stamp> <head>"` proof marker** — a review failure. Preserving the
+  verdict and prepending a staleness notice is *not* a safe alternative: it
+  reads the body and writes a merge of it back, so a verdict published between
+  the read and the write is restored away.
+- **A completed verdict for a superseded head** — the same loss arriving late.
+  An older run can finish after a newer one published, because the fork lanes'
+  `concurrency` group is keyed per head so they are not cancelled, and a
+  cancelled same-repo run still executes its `if: always()` posting step. The
+  step reads the PR's head and stands down when it is not the head it
+  reviewed.
+- **A head that cannot be read.** Writing is the destructive half of the
+  guard, so it does not proceed on an unknown: a head unreadable after three
+  attempts is *not confirmed current* and the slot is left alone. The read
+  retries first — with the same bounded backoff this lane's other gating reads
+  use — because one blip is not evidence about the PR, and an API broken
+  enough to fail all three would fail the write too.
+
+Whether a comment exists is the other gating input, so that read retries on the
+same bounded backoff. A lookup still erroring afterwards counts as "a comment
+may exist", not as "none does", so a withheld run posts nothing rather than
+plant a second marker comment over a possibly-live verdict. When the lookup
+succeeded and found nothing there is no verdict to lose, so the body is posted
+as a new comment. Nothing is lost by standing down: the comment names the head
+it reviewed, each head's own check-run is finalized fail-closed, and
+`pr_status.py` matches reviewer stamps against the current head, so a comment
+left in place for an older head reads as *stale* and never as an approval of
+this one.
+
+Human overrides and skip notices are current-head determinations rather than
+review failures, so their upsert sites keep replacing the comment
+unconditionally, and a completed verdict for a **confirmed** current head whose
+*comment* lookup failed still CREATEs rather than stay silent (a duplicate
+comment is recoverable, an unposted verdict is not). The eight guarded lanes
+define the guard as a `guarded_comment_upsert` bash function that
+`test_ai_review_workflows.py` pins byte-identical across every lane, so the
+invariant cannot drift lane by lane.
+
+Two lanes stay outside that function, and both exclusions are deliberate:
+
+- **`codex-review.yml`** carries #8342's own inline preserve-and-prepend shape,
+  pinned byte-for-byte by its own tests — it is the one site left with a
+  read-modify-write window on the slot.
+- **`claude-review.yml`** keeps a plain lookup-then-PATCH. Its incomplete path
+  posts **nothing at all**, so the #8292 class — a failure notice burying a
+  verdict — cannot reach it. What remains is only the superseded-completed
+  window: its `concurrency` group cancels an older run per PR, but the posting
+  step is `if: always()`, which a cancelled run still executes, so an older run
+  holding a completed verdict can still claim the slot.
 
 ### Security posture of the reviewer jobs
 

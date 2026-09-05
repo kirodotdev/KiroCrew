@@ -3483,7 +3483,7 @@ class TestBlockAdjudicationContract:
             if lane == "codex-review.yml":
                 # Only the same-repo lane advertises the ready-to-paste command;
                 # the fork lane's comment carries no override command by
-                # standing design (see TestForkGptVerdictVisibility).
+                # standing design, and the `else` arm below is what pins that.
                 assert "/ai-review override gpt $HEAD: $rtxt" in comment, lane
             else:
                 assert "/ai-review override" not in comment, lane
@@ -4651,358 +4651,587 @@ class TestGptVerdictVisibility:
         assert "stale-notice" not in gate
 
 
-# The fork step writes its comment body to the workflow's hardcoded
-# `/tmp/fork-codex-comment.md` (a fork-lane idiom that is safe on an isolated CI
-# runner). These host-side cases exercise the REAL step, so `_run` rewrites that
-# absolute path under each test's own `tmp_path` before executing it: the writes
-# stay off the operator's machine and never race each other across xdist workers.
-class TestForkGptVerdictVisibility:
-    """The fork GPT lane must never bury a posted verdict under an incomplete body.
+def _exec_transcript(runner_temp: Path, review_text: str) -> dict[str, str]:
+    """Write a claude-code execution_file fixture and return its env binding.
 
-    ``fork-gpt-review.yml``'s ``Post/update summary comment`` step publishes its
-    verdict by editing ONE marker comment in place. A later incomplete run used
-    to PATCH that slot unconditionally, so a real ``[BLOCK-MERGE]`` verdict got
-    overwritten by a short "review incomplete" body -- recoverable only through
-    GraphQL ``userContentEdits``, which no REST reader or tool consults (#8292).
-    An incomplete run therefore NEVER modifies an existing comment: not even to
-    preserve the verdict and prepend a stale notice, because the preserving
-    PATCH is itself a stale-read overwrite (#8350) -- an incomplete run that
-    read verdict V1 would PATCH V1 back over a newer run's V2 that landed in
-    between. So when an existing bot comment is present, an incomplete run
-    leaves it entirely untouched (a diagnostic echo only); only blocked/clear
-    runs PATCH it. Each contract case runs the REAL fork step bash with a
-    stubbed ``gh``.
+    The design-family lanes read the model's review text from the action's
+    transcript (a single result object is one of the three shapes the step's
+    slurp+flatten parse accepts).
+    """
+    exec_file = runner_temp / "execution.json"
+    exec_file.write_text(json.dumps({"result": review_text}), encoding="utf-8")
+    return {"EXEC_FILE": str(exec_file), "REVIEW_OUTCOME": "success"}
 
-    The fork lane differs from the same-repo lane: the step runs under
-    ``set -uo pipefail`` with ``if: always()``, reads a cwd-relative
-    ``codex-review-output.md`` to decide ``kind`` (incomplete/blocked/clear --
-    there is NO human-override kind and NO override footer), and swallows gh
-    errors with ``|| true``.
+
+# One entry per review lane that carries the guarded comment upsert. Each
+# describes how to drive that lane's REAL posting step into a completed run
+# (body carries "<stamp> <head>") and an incomplete one (no verdict for the
+# current head), plus the phrase its incomplete body is known by.
+_GUARDED_LANES = [
+    {
+        "id": "fork-gpt",
+        "workflow": "fork-gpt-review.yml",
+        "step": "Post/update summary comment",
+        "marker": "<!-- codex-ai-review -->",
+        "stamp": "[GPT-REVIEWED]",
+        "incomplete_text": "review incomplete",
+        "needs_perl": False,
+        "env": {"ADJ_DECISION": "", "ADJ_NOTE": ""},
+        "completed": lambda cwd, rt, head: (
+            (cwd / "codex-review-output.md").write_text(
+                f"FINDINGS\n[GPT-REVIEWED] {head}\n", encoding="utf-8"
+            ),
+            {},
+        )[1],
+        "incomplete": lambda cwd, rt, head: {},
+    },
+    {
+        "id": "fork-opus",
+        "workflow": "fork-opus-review.yml",
+        "step": "Post/update summary comment",
+        "marker": "<!-- claude-ai-review -->",
+        "stamp": "[OPUS-REVIEWED]",
+        "incomplete_text": "review incomplete",
+        "needs_perl": False,
+        "env": {},
+        "completed": lambda cwd, rt, head: (
+            (cwd / "claude-review-output.md").write_text(
+                f"FINDINGS\n[OPUS-REVIEWED] {head}\n", encoding="utf-8"
+            ),
+            {},
+        )[1],
+        "incomplete": lambda cwd, rt, head: {},
+    },
+    {
+        "id": "design",
+        "workflow": "design-review.yml",
+        "step": "Post design review summary",
+        "marker": "<!-- design-review -->",
+        "stamp": "[DESIGN-REVIEWED]",
+        "incomplete_text": "could not complete",
+        "needs_perl": True,
+        "env": {"HUMAN_OVERRIDE": "false", "OVERRIDE_ACTOR": "", "ACTOR": "someone"},
+        "completed": lambda cwd, rt, head: _exec_transcript(
+            rt, f"Design-Verdict: PASS\n\nsolid reasoning\n\n[DESIGN-REVIEWED] {head}\n"
+        ),
+        "incomplete": lambda cwd, rt, head: _exec_transcript(
+            rt, "Design-Verdict: PASS\n\nstale reasoning\n\n[DESIGN-REVIEWED] feedbead\n"
+        ),
+    },
+    {
+        "id": "ux",
+        "workflow": "ux-review.yml",
+        "step": "Post UX review summary",
+        "marker": "<!-- ux-review -->",
+        "stamp": "[UX-REVIEWED]",
+        "incomplete_text": "could not complete",
+        "needs_perl": True,
+        "env": {
+            "HUMAN_OVERRIDE": "false",
+            "OVERRIDE_ACTOR": "",
+            "ACTOR": "someone",
+            "UI_SCOPE": "true",
+        },
+        "completed": lambda cwd, rt, head: _exec_transcript(
+            rt, f"UX-Verdict: PASS\n\nsolid reasoning\n\n[UX-REVIEWED] {head}\n"
+        ),
+        "incomplete": lambda cwd, rt, head: _exec_transcript(
+            rt, "UX-Verdict: PASS\n\nstale reasoning\n\n[UX-REVIEWED] feedbead\n"
+        ),
+    },
+    {
+        "id": "first-principles",
+        "workflow": "first-principles-review.yml",
+        "step": "Post first-principles review summary",
+        "marker": "<!-- first-principles-review -->",
+        "stamp": "[FIRST-PRINCIPLES-REVIEWED]",
+        "incomplete_text": "could not complete",
+        "needs_perl": True,
+        "env": {
+            "HUMAN_OVERRIDE": "false",
+            "OVERRIDE_ACTOR": "",
+            "ACTOR": "someone",
+            "SURFACE": "true",
+            "CONTRACT": "true",
+        },
+        "completed": lambda cwd, rt, head: _exec_transcript(
+            rt,
+            "First-Principles-Verdict: PASS\n\nsolid reasoning\n\n"
+            f"[FIRST-PRINCIPLES-REVIEWED] {head}\n",
+        ),
+        "incomplete": lambda cwd, rt, head: _exec_transcript(
+            rt,
+            "First-Principles-Verdict: PASS\n\nstale reasoning\n\n"
+            "[FIRST-PRINCIPLES-REVIEWED] feedbead\n",
+        ),
+    },
+    {
+        "id": "fork-design",
+        "workflow": "fork-design-review.yml",
+        "step": "Post/update design review comment",
+        "marker": "<!-- design-review -->",
+        "stamp": "[DESIGN-REVIEWED]",
+        "incomplete_text": "could not complete",
+        "needs_perl": False,
+        "env": {},
+        "completed": lambda cwd, rt, head: (
+            (rt / "design-review-output.md").write_text(
+                f"solid reasoning\n\n[DESIGN-REVIEWED] {head}\n", encoding="utf-8"
+            ),
+            {"VERDICT": "PASS", "REVIEW_OUTCOME": "success"},
+        )[1],
+        "incomplete": lambda cwd, rt, head: {"VERDICT": "UNKNOWN", "REVIEW_OUTCOME": "failure"},
+    },
+    {
+        "id": "fork-ux",
+        "workflow": "fork-ux-review.yml",
+        "step": "Post UX review summary",
+        "marker": "<!-- ux-review -->",
+        "stamp": "[UX-REVIEWED]",
+        "incomplete_text": "could not complete",
+        "needs_perl": True,
+        "env": {"UI_SCOPE": "true"},
+        "completed": lambda cwd, rt, head: _exec_transcript(
+            rt, f"UX-Verdict: PASS\n\nsolid reasoning\n\n[UX-REVIEWED] {head}\n"
+        ),
+        "incomplete": lambda cwd, rt, head: _exec_transcript(
+            rt, "UX-Verdict: PASS\n\nstale reasoning\n\n[UX-REVIEWED] feedbead\n"
+        ),
+    },
+    {
+        "id": "fork-first-principles",
+        "workflow": "fork-first-principles-review.yml",
+        "step": "Post/update first-principles review comment",
+        "marker": "<!-- first-principles-review -->",
+        "stamp": "[FIRST-PRINCIPLES-REVIEWED]",
+        "incomplete_text": "could not complete",
+        "needs_perl": False,
+        "env": {"WITHHELD": ""},
+        "completed": lambda cwd, rt, head: (
+            (rt / "first-principles-output.md").write_text(
+                f"solid reasoning\n\n[FIRST-PRINCIPLES-REVIEWED] {head}\n", encoding="utf-8"
+            ),
+            {"VERDICT": "PASS", "REVIEW_OUTCOME": "success"},
+        )[1],
+        "incomplete": lambda cwd, rt, head: {"VERDICT": "UNKNOWN", "REVIEW_OUTCOME": "failure"},
+    },
+]
+
+_GUARDED_LANE_PARAMS = [pytest.param(lane, id=lane["id"]) for lane in _GUARDED_LANES]
+
+
+class TestReviewLaneVerdictVisibility:
+    """No review lane may bury a posted verdict under an incomplete body (#8344).
+
+    Covers the eight lanes that upsert a marker-keyed summary comment outside
+    codex-review.yml. Each lane defines the guarded upsert as a byte-identical
+    ``guarded_comment_upsert`` bash function; the identity test pins every
+    copy to one canonical body so the invariant cannot drift lane by lane, and
+    the behavioral tests run each lane's REAL step bash with a stubbed ``gh``
+    for the contract cases.
+
+    The guarded transition is a NO-TOUCH, not a merge: a run whose body
+    carries no ``"<stamp> <head>"`` proof marker leaves an existing comment
+    entirely alone. Reading the body and PATCHing a merge of it back would
+    reopen the same class of loss from the other side, because runs for
+    different heads are not cancelled — a verdict published between the read
+    and the write is restored away.
     """
 
-    MARKER = "<!-- codex-ai-review -->"
-    HEAD = "f" * 40
-    OLD_HEAD = "a" * 40
-    BOT_COMMENT_ID = "555"
-    IMPOSTOR_COMMENT_ID = "666"
+    HEAD = "1234567890abcdef1234567890abcdef12345678"
+    OLD = "aaaa567890abcdef1234567890abcdef1234aaaa"
 
-    def _step(self) -> str:
-        return _step_script(_workflow("fork-gpt-review.yml"), "Post/update summary comment")
-
-    def _gh_stub(
-        self, comments_json: Path, patch_log: Path, created_log: Path, *, lookup_fails: bool = False
-    ) -> str:
-        """A gh stub that answers the three calls this step makes.
-
-        ``gh api .../comments --paginate --jq <f>``: runs the step's own jq
-        filter over an array fixture that holds both an impostor ``mallory``
-        comment and the ``github-actions[bot]`` comment, so the author guard is
-        exercised for real. ``gh api --method PATCH ...``: records the target id
-        and stdin body. ``gh pr comment ...``: records the created body.
-        """
+    def _verdict_body(self, lane: dict, sha: str) -> str:
         return (
-            "#!/usr/bin/env bash\n"
-            'if [ "${1:-}" = "api" ] && [ "${2:-}" = "--method" ] && [ "${3:-}" = "PATCH" ]; then\n'
-            f'  printf \'%s\\n\' "$4" >> "{patch_log}"\n'
-            "  # --field body=<value> follows; find it and record the value.\n"
-            "  shift 4\n"
-            '  while [ "$#" -gt 0 ]; do\n'
-            '    case "$1" in\n'
-            f'      body=*) printf \'%s\' "${{1#body=}}" >> "{patch_log}" ;;\n'
-            '      --field) shift; printf \'%s\' "${1#body=}" >> "' + str(patch_log) + '" ;;\n'
-            "    esac\n"
-            "    shift\n"
-            "  done\n"
-            "  exit 0\n"
-            "fi\n"
-            'if [ "${1:-}" = "api" ]; then\n'
-            # A lookup FAILURE: the comments-list API errors (network/5xx).
-            # The step must not treat the empty output as "no comment".
-            + ("  echo 'gh: API error' >&2\n  exit 1\n" if lookup_fails else "")
-            + "  # Locate the --jq filter and apply it to the array fixture.\n"
-            "  # `gh api --jq` emits RAW output (like `jq -r`), so an @json\n"
-            "  # record prints as compact JSON with no surrounding quotes --\n"
-            "  # the step's `jq -r '.id'` then reparses that line as an object.\n"
-            '  filter=""\n'
-            '  while [ "$#" -gt 0 ]; do\n'
-            '    if [ "$1" = "--jq" ]; then shift; filter="$1"; fi\n'
-            "    shift\n"
-            "  done\n"
-            f'  jq -r "$filter" "{comments_json}"\n'
-            "  exit 0\n"
-            "fi\n"
-            'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "comment" ]; then\n'
-            "  # --body-file <path> is the last pair.\n"
-            '  file=""\n'
-            '  while [ "$#" -gt 0 ]; do\n'
-            '    if [ "$1" = "--body-file" ]; then shift; file="$1"; fi\n'
-            "    shift\n"
-            "  done\n"
-            f'  cat "$file" >> "{created_log}"\n'
-            "  exit 0\n"
-            "fi\n"
-            'echo "unexpected gh call: $*" >&2\n'
-            "exit 9\n"
+            f"{lane['marker']}\n"
+            "## Review — 🔴 changes requested (blocking)\n"
+            "\n"
+            f"a completed review of `{sha}`.\n"
+            "\n"
+            f"{lane['stamp']} {sha}\n"
         )
 
-    def _run(
+    def _run_step(
         self,
+        lane: dict,
         tmp_path: Path,
         *,
-        comments: list[dict],
-        review_output: str | None,
-        lookup_fails: bool = False,
-    ) -> tuple[subprocess.CompletedProcess, Path, Path]:
+        existing_body: str | None,
+        kind: str,
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[Path, "subprocess.CompletedProcess[bytes]"]:
         bash = _bash()
-        if bash is None:
-            pytest.skip("the step is Bash; skip where Bash is absent")
-        if shutil.which("jq") is None:
-            pytest.skip("the step shells out to jq")
+        if bash is None or shutil.which("jq") is None:
+            pytest.skip("lane upsert tests require Bash and jq")
+        if lane["needs_perl"] and shutil.which("perl") is None:
+            pytest.skip("this lane's posting step redacts with perl")
+        if os.name == "nt":
+            pytest.skip("stubbed-PATH gh interception is exercised on POSIX runners")
 
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        comments_json = tmp_path / "comments.json"
-        comments_json.write_text(json.dumps(comments), encoding="utf-8")
-        patch_log = tmp_path / "patch.log"
-        patch_log.touch()
-        created_log = tmp_path / "created.log"
-        created_log.touch()
-
-        (bin_dir / "gh").write_text(
-            self._gh_stub(comments_json, patch_log, created_log, lookup_fails=lookup_fails),
-            encoding="utf-8",
-        )
-        (bin_dir / "gh").chmod(0o755)
-
-        # The step reads a cwd-relative codex-review-output.md to decide `kind`.
-        # Absent/empty output => incomplete; markers present => blocked/clear.
-        if review_output is not None:
-            (tmp_path / "codex-review-output.md").write_text(review_output, encoding="utf-8")
-
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        calls_dir = tmp_path / "calls"
+        calls_dir.mkdir()
         runner_temp = tmp_path / "runner-temp"
         runner_temp.mkdir()
+        cwd = tmp_path / "workspace"
+        cwd.mkdir()
 
-        # The step writes its new comment body to the workflow's HARDCODED
-        # `/tmp/fork-codex-comment.md` (a fork-lane idiom that is safe on an
-        # isolated CI runner). A test must not touch the operator's machine, so
-        # redirect that absolute path under `tmp_path` before running the real
-        # step (AGENTS.md: no test side effects, a spawn's writes stay under
-        # `tmp_path`). The step's other temp files already honour RUNNER_TEMP.
-        comment_file = tmp_path / "fork-codex-comment.md"
-        step = self._step().replace("/tmp/fork-codex-comment.md", str(comment_file))
-        assert "/tmp/fork-codex-comment.md" not in step
+        finder_file = tmp_path / "finder-comments.json"
+        if existing_body is None:
+            finder_file.write_text("[]", encoding="utf-8")
+        else:
+            finder_file.write_text(
+                json.dumps(
+                    [
+                        {"id": 999, "user": {"login": "mallory"}, "body": existing_body},
+                        {
+                            "id": 123,
+                            "user": {"login": "github-actions[bot]"},
+                            "body": existing_body,
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
-        proc = subprocess.run(
-            # GitHub executes run-blocks as `bash -e {0}`.
-            [bash, "-e", "-c", step],
+        if kind == "completed":
+            case_env = lane["completed"](cwd, runner_temp, self.HEAD)
+        elif kind == "incomplete":
+            case_env = lane["incomplete"](cwd, runner_temp, self.HEAD)
+        else:
+            case_env = {}
+
+        gh_stub = stub_dir / "gh"
+        gh_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Emulates the two gh surfaces the step uses; records mutations.\n"
+            "# The finder branch runs the step's REAL --jq filter with real jq\n"
+            "# over an array fixture, so a drift in the filter (dropped .id,\n"
+            "# changed author guard) fails these tests instead of hiding.\n"
+            'if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PATCH" ]; then\n'
+            '  printf \'%s\\n\' "$4" >> "$STUB_CALLS/patch-calls.txt"\n'
+            '  for a in "$@"; do\n'
+            '    case "$a" in body=*) printf \'%s\' "${a#body=}" > "$STUB_CALLS/patched-body.md";; esac\n'
+            "  done\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "api" ] && [ -n "${FINDER_FAIL:-}" ]; then\n'
+            "  # Every attempt at the COMMENT lookup fails, so the retry is\n"
+            "  # visible in the recorded call count; the step must not read a\n"
+            '  # lookup error as "no comment exists".\n'
+            '  case "$2" in\n'
+            "    */comments)\n"
+            '      printf \'%s\\n\' "$2" >> "$STUB_CALLS/comment-reads.txt"\n'
+            "      exit 4\n"
+            "      ;;\n"
+            "  esac\n"
+            "fi\n"
+            'if [ "$1" = "api" ]; then\n'
+            "  # The PR object, from which the step reads the CURRENT head sha.\n"
+            "  # STUB_PR_HEAD unset means the PR still points at this run;\n"
+            "  # set-but-empty means every read fails, so the retry is visible\n"
+            "  # in the recorded call count.\n"
+            '  case "$2" in\n'
+            "    */pulls/*)\n"
+            '      printf \'%s\\n\' "$2" >> "$STUB_CALLS/pr-head-reads.txt"\n'
+            '      if [ -z "${STUB_PR_HEAD-unset}" ]; then exit 5; fi\n'
+            "      printf '%s\\n' \"${STUB_PR_HEAD:-$HEAD}\"\n"
+            "      exit 0\n"
+            "      ;;\n"
+            "  esac\n"
+            "fi\n"
+            'if [ "$1" = "api" ]; then\n'
+            '  filter=""\n'
+            "  grab=0\n"
+            '  for a in "$@"; do\n'
+            '    if [ "$grab" = 1 ]; then filter="$a"; grab=0; fi\n'
+            '    [ "$a" = "--jq" ] && grab=1\n'
+            "  done\n"
+            '  jq -r "$filter" < "$FINDER_COMMENTS_FILE"\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then\n'
+            "  shift 3\n"
+            '  if [ "$1" = "--body-file" ]; then cp "$2" "$STUB_CALLS/created-body.md"; fi\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        gh_stub.chmod(0o755)
+
+        script = _step_script(_workflow(lane["workflow"]), lane["step"])
+        script_file = tmp_path / "step.sh"
+        script_file.write_text(script, encoding="utf-8")
+
+        env = {
+            **os.environ,
+            "PATH": f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "REPO": "example/repo",
+            "PR": "1",
+            "HEAD": self.HEAD,
+            "GH_TOKEN": "stub-token",
+            "RUNNER_TEMP": str(runner_temp),
+            "STUB_CALLS": str(calls_dir),
+            "FINDER_COMMENTS_FILE": str(finder_file),
+            "GITHUB_OUTPUT": str(tmp_path / "github-output.txt"),
+            **lane["env"],
+            **case_env,
+            **(extra_env or {}),
+        }
+        # GitHub runs `run:` blocks with `bash -e {0}` when no shell is set.
+        result = subprocess.run(
+            [bash, "-e", str(script_file)],
             check=False,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env={
-                **os.environ,
-                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-                "GH_TOKEN": "stub",
-                "REPO": "o/r",
-                "PR": "1",
-                "HEAD": self.HEAD,
-                "RUNNER_TEMP": str(runner_temp),
-            },
-            cwd=tmp_path,
+            cwd=cwd,
+            env=env,
         )
-        assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
-        return proc, patch_log, created_log
+        return calls_dir, result
 
-    def _fixture_comments(self, bot_body: str) -> list[dict]:
-        """An array with an impostor first, then the bot's marker comment.
-
-        The impostor plants the marker under a non-bot login: the author guard
-        (`.user.login == "github-actions[bot]"`) must reject it, so a match on
-        it would prove the guard is not exercised.
-        """
-        return [
-            {
-                "id": int(self.IMPOSTOR_COMMENT_ID),
-                "user": {"login": "mallory"},
-                "body": f"{self.MARKER}\nnice try",
-            },
-            {
-                "id": int(self.BOT_COMMENT_ID),
-                "user": {"login": "github-actions[bot]"},
-                "body": bot_body,
-            },
-        ]
-
-    def _blocking_verdict_body(self, head: str, *, extra: str = "") -> str:
-        """A prior completed BLOCK-MERGE verdict comment body, CRLF like GitHub."""
-        lines = [
-            self.MARKER,
-            "## GPT 5.6 Review (fork) — 🔴 changes requested (blocking)",
-            "",
-            f"_Reviewed `{head}` via the fork AI-review pipeline; updated in place on each push._",
-            "",
-            f"[GPT-REVIEWED] {head}",
-            f"[BLOCK-MERGE] {head}",
-            "",
-            "A real blocking finding lives here.",
-        ]
-        if extra:
-            lines.append(extra)
-        # GitHub returns bodies with CRLF; the step must normalize before grep.
-        return "\r\n".join(lines)
-
-    def test_incomplete_run_never_overwrites_a_posted_verdict(self, tmp_path: Path) -> None:
-        # A completed BLOCK-MERGE verdict already sits in the bot comment. An
-        # incomplete run must leave that comment ENTIRELY untouched: no PATCH,
-        # no create. Even a PATCH that "only" preserved the verdict and
-        # prepended a notice is itself the stale-read overwrite (#8350): the
-        # incomplete run read verdict V1, and PATCHing V1 (with a notice) back
-        # would clobber a newer run's V2 that landed in between. So no edit of
-        # any kind may target this comment.
-        verdict_body = self._blocking_verdict_body(self.OLD_HEAD)
-        comments = self._fixture_comments(verdict_body)
-        # review_output=None => the step's `kind` stays "incomplete".
-        _proc, patch_log, created_log = self._run(tmp_path, comments=comments, review_output=None)
-
-        # No PATCH targeted the bot comment (nor the impostor's), and no new
-        # comment was created. A revert to the old preserve-and-prepend PATCH
-        # would record a PATCH here and fail this assertion.
-        assert patch_log.read_text(encoding="utf-8") == ""
-        assert created_log.read_text(encoding="utf-8") == ""
-
-    def test_completed_verdict_still_replaces_the_comment_wholesale(self, tmp_path: Path) -> None:
-        # A completed run for the new HEAD must replace the old body outright:
-        # no stale-notice, old markers gone, new HEAD markers present.
-        old_body = self._blocking_verdict_body(self.OLD_HEAD)
-        comments = self._fixture_comments(old_body)
-        review_output = (
-            f"[GPT-REVIEWED] {self.HEAD}\n"
-            f"[BLOCK-MERGE] {self.HEAD}\n"
-            "Fresh blocking finding.\n"
-        )
-        _proc, patch_log, created_log = self._run(
-            tmp_path, comments=comments, review_output=review_output
+    @pytest.mark.parametrize("lane", _GUARDED_LANE_PARAMS)
+    def test_incomplete_run_never_overwrites_a_posted_verdict(
+        self, lane: dict, tmp_path: Path
+    ) -> None:
+        calls, result = self._run_step(
+            lane, tmp_path, existing_body=self._verdict_body(lane, self.OLD), kind="incomplete"
         )
 
-        patched = patch_log.read_text(encoding="utf-8")
-        # PATCH still targets the bot comment.
-        assert self.BOT_COMMENT_ID in patched
-        # New HEAD markers present; old HEAD markers gone.
-        assert f"[BLOCK-MERGE] {self.HEAD}" in patched
-        assert self.OLD_HEAD not in patched
-        # No stale-notice on a wholesale replace.
-        assert "codex-stale-notice-begin" not in patched
-        assert "did not produce a completed verdict" not in patched
-        assert created_log.read_text(encoding="utf-8") == ""
+        assert result.returncode == 0, result.stderr.decode()
+        # NOTHING was written: no PATCH of any comment, no new comment. The
+        # posted verdict is therefore still exactly what the completed run
+        # published, and no read-modify-write can restore a stale body over a
+        # verdict a concurrent run publishes in the meantime.
+        assert not (calls / "patch-calls.txt").exists()
+        assert not (calls / "patched-body.md").exists()
+        assert not (calls / "created-body.md").exists()
+        # The step says so, naming the comment it deliberately left alone --
+        # and it found that id through the real author-guarded --jq filter, so
+        # it is the bot's comment (123), never the impostor's (999).
+        stdout = result.stdout.decode()
+        assert "left existing comment #123 untouched" in stdout
+        assert "#999" not in stdout
 
-    def test_incomplete_run_never_overwrites_a_marker_absent_comment(self, tmp_path: Path) -> None:
-        # Stale-read race (#8292): overlapping runs for different SHAs. An older
-        # incomplete run reads the bot comment BEFORE a newer run PATCHes its
-        # verdict in, so at read time the body carries no `[GPT-REVIEWED]`
-        # marker yet. The older incomplete run must NOT PATCH -- doing so would
-        # clobber the newer run's just-published verdict with a "review
-        # incomplete" body, re-hiding the finding. An incomplete body never
-        # overwrites an existing comment, marker-present or not.
-        marker_absent_body = "\r\n".join(
-            [
-                self.MARKER,
-                "## GPT 5.6 Review (fork) — ⏳ review incomplete",
-                "",
-                "_No completed GPT verdict for this commit; see the Fork GPT 5.6 Review job logs._",
+    @pytest.mark.parametrize("lane", _GUARDED_LANE_PARAMS)
+    def test_incomplete_run_with_a_failed_lookup_posts_nothing(
+        self, lane: dict, tmp_path: Path
+    ) -> None:
+        # A lookup that errored cannot be read as "no comment exists": taking
+        # the create path there plants a second marker comment over a possibly
+        # live verdict, and a marker planted is not undone by a later run.
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="incomplete",
+            extra_env={"FINDER_FAIL": "1"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (calls / "patched-body.md").exists()
+        assert not (calls / "created-body.md").exists()
+        # Whether a comment exists is a gating input, so the read retries
+        # before the step concludes it could not be determined.
+        reads = (calls / "comment-reads.txt").read_text(encoding="utf-8").splitlines()
+        assert len(reads) == 3, reads
+        assert "comment lookup also failed" in result.stdout.decode()
+
+    @pytest.mark.parametrize("lane", _GUARDED_LANE_PARAMS)
+    def test_a_superseded_completed_verdict_leaves_the_comment_alone(
+        self, lane: dict, tmp_path: Path
+    ) -> None:
+        # The same loss arriving late: a run for an older head can COMPLETE
+        # after a newer run published its verdict into the shared slot -- the
+        # fork lanes' concurrency group is keyed per head so they are not
+        # cancelled, and a cancelled same-repo run still executes this
+        # if:always() step. Its verdict is real, but it is not this PR's
+        # verdict any more, so it must not replace the current one.
+        newer = "bbbb567890abcdef1234567890abcdef1234bbbb"
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, newer),
+            kind="completed",
+            extra_env={"STUB_PR_HEAD": newer},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (calls / "patched-body.md").exists()
+        assert not (calls / "created-body.md").exists()
+        stdout = result.stdout.decode()
+        assert "is no longer this PR's head" in stdout
+        assert "left existing comment #123 untouched" in stdout
+
+    @pytest.mark.parametrize("lane", _GUARDED_LANE_PARAMS)
+    def test_an_unreadable_pr_head_retries_then_withholds(self, lane: dict, tmp_path: Path) -> None:
+        # Writing is the destructive half of the guard, so it must not proceed
+        # on an unknown: a head that stays unreadable is NOT confirmed current
+        # and the shared slot is left alone. A single blip is not evidence
+        # about the PR, so the read retries first, as this lane's other gating
+        # reads do.
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="completed",
+            extra_env={"STUB_PR_HEAD": ""},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        reads = (calls / "pr-head-reads.txt").read_text(encoding="utf-8").splitlines()
+        assert len(reads) == 3, reads
+        assert not (calls / "patched-body.md").exists()
+        assert not (calls / "created-body.md").exists()
+        assert "unreadable after 3 attempts" in result.stdout.decode()
+
+    @pytest.mark.parametrize("lane", _GUARDED_LANE_PARAMS)
+    def test_completed_verdict_still_replaces_the_comment(self, lane: dict, tmp_path: Path) -> None:
+        calls, result = self._run_step(
+            lane, tmp_path, existing_body=self._verdict_body(lane, self.OLD), kind="completed"
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        # A completed verdict replaces the comment wholesale, exactly as before.
+        assert patched.startswith(f"{lane['marker']}\n")
+        assert f"{lane['stamp']} {self.HEAD}" in patched
+        assert f"{lane['stamp']} {self.OLD}" not in patched
+        assert not (calls / "created-body.md").exists()
+        # The author guard ran inside the real filter: the PATCH must target
+        # the bot's comment (123), not the marker-planting impostor's (999).
+        patch_calls = (calls / "patch-calls.txt").read_text(encoding="utf-8")
+        assert "/comments/123" in patch_calls
+        assert "/comments/999" not in patch_calls
+
+    @pytest.mark.parametrize("lane", _GUARDED_LANE_PARAMS)
+    def test_completed_verdict_creates_when_the_lookup_fails(
+        self, lane: dict, tmp_path: Path
+    ) -> None:
+        # The asymmetry that makes the guard safe in both directions: a
+        # duplicate comment is recoverable, an unposted verdict is not, so a
+        # completed verdict publishes even when the lookup could not confirm
+        # whether a comment already exists (#8350).
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="completed",
+            extra_env={"FINDER_FAIL": "1"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        created = (calls / "created-body.md").read_text(encoding="utf-8")
+        assert f"{lane['stamp']} {self.HEAD}" in created
+        assert not (calls / "patched-body.md").exists()
+
+    @pytest.mark.parametrize("lane", _GUARDED_LANE_PARAMS)
+    def test_incomplete_with_no_existing_comment_creates_as_before(
+        self, lane: dict, tmp_path: Path
+    ) -> None:
+        calls, result = self._run_step(lane, tmp_path, existing_body=None, kind="incomplete")
+
+        assert result.returncode == 0, result.stderr.decode()
+        created = (calls / "created-body.md").read_text(encoding="utf-8")
+        assert created.startswith(f"{lane['marker']}\n")
+        assert lane["incomplete_text"] in created
+        assert not (calls / "patched-body.md").exists()
+
+    def test_withheld_fork_fp_body_leaves_a_posted_verdict_alone(self, tmp_path: Path) -> None:
+        # The fork first-principles lane posts its withheld notice from a
+        # separate early site; it routes through the same guarded upsert, so a
+        # credential-shaped output discards the body without touching the
+        # previously posted verdict.
+        lane = next(entry for entry in _GUARDED_LANES if entry["id"] == "fork-first-principles")
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="none",
+            extra_env={"WITHHELD": "true", "VERDICT": "UNKNOWN", "REVIEW_OUTCOME": "success"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (calls / "patched-body.md").exists()
+        assert not (calls / "created-body.md").exists()
+        assert "left existing comment #123 untouched" in result.stdout.decode()
+
+    def test_skip_notice_still_replaces_the_comment_wholesale(self, tmp_path: Path) -> None:
+        # A skip notice is a COMPLETED determination about the current head
+        # (the revision ships no reviewable surface), not a review failure, so
+        # it deliberately keeps the unguarded replace: guarding it would pin a
+        # stale verdict onto a revision the lane has ruled out of scope.
+        lane = next(entry for entry in _GUARDED_LANES if entry["id"] == "ux")
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="none",
+            extra_env={"UI_SCOPE": "false", "EXEC_FILE": "", "REVIEW_OUTCOME": "success"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        assert "⏭️ skipped" in patched
+        assert f"{lane['stamp']} {self.OLD}" not in patched
+
+    def test_guard_function_is_byte_identical_across_all_lanes(self) -> None:
+        bodies = set()
+        for lane in _GUARDED_LANES:
+            script = _step_script(_workflow(lane["workflow"]), lane["step"])
+            bodies.add(_shell_function(script, "guarded_comment_upsert"))
+        assert len(bodies) == 1, (
+            "guarded_comment_upsert must stay byte-identical across every "
+            "review lane; edit all copies together"
+        )
+        canonical = bodies.pop()
+        code_lines = [line for line in canonical.splitlines() if not line.lstrip().startswith("#")]
+        # The lookup reads the id and nothing else. Capturing the current body
+        # is what a merge-and-PATCH shape needs, and the presence of a body in
+        # this function is the signature of that shape coming back.
+        assert "| .id" in canonical
+        assert not any("| {id, body}" in line for line in code_lines)
+        # The first id is selected off the CAPTURED output, never via a
+        # `| head -n1` inside the pipeline (SIGPIPE under pipefail).
+        assert not any("head -n1" in line for line in code_lines)
+        assert any("| awk 'NR == 1'" in line for line in code_lines)
+        # Exactly two conditions withhold the write, and each names itself.
+        assert 'if ! grep -Fq "$stamp $HEAD" "$out_file"; then' in canonical
+        assert 'withhold="run for $HEAD produced no completed verdict"' in canonical
+        # BOTH gating reads retry a transient failure before deciding.
+        assert canonical.count("for attempt in 1 2 3; do") == 2
+        assert canonical.count('if [ "$attempt" -lt 3 ]; then') == 2
+        assert 'pr_head="$(gh api "repos/$REPO/pulls/$PR" --jq \'.head.sha\')"' in canonical
+        # An unreadable head is NOT confirmed current: the destructive write
+        # must not proceed on an unknown, so this arm withholds like the others.
+        assert 'if [ -z "$pr_head" ]; then' in canonical
+        assert "unreadable after 3 attempts" in canonical
+        assert 'elif [ "$pr_head" != "$HEAD" ]; then' in canonical
+        assert 'withhold="$HEAD is no longer this PR\'s head ($pr_head)"' in canonical
+        # A withheld write returns before reaching any PATCH: both no-touch
+        # arms (lookup failed, comment exists) `return 0`, so the only write
+        # left on that path is creating a comment where none exists.
+        withheld = canonical.split('if [ -n "$withhold" ]; then', 1)
+        assert len(withheld) == 2, "the two withhold reasons must share one no-touch block"
+        block = withheld[1].split("\n  fi\n", 1)[0]
+        assert "--method PATCH" not in block
+        assert block.count("return 0") == 3
+        # A failed lookup on a COMPLETED verdict for the current head still
+        # falls through to CREATE, never to silence.
+        assert 'gh pr comment "$PR" --body-file "$out_file"' in canonical
+
+    def test_every_lane_calls_the_guard_and_fork_fp_covers_both_sites(self) -> None:
+        for lane in _GUARDED_LANES:
+            script = _step_script(_workflow(lane["workflow"]), lane["step"])
+            calls = [
+                line.strip()
+                for line in script.splitlines()
+                if line.strip().startswith("guarded_comment_upsert ")
             ]
-        )
-        comments = self._fixture_comments(marker_absent_body)
-        # review_output=None => the step's `kind` stays "incomplete".
-        _proc, patch_log, created_log = self._run(tmp_path, comments=comments, review_output=None)
-
-        # The incomplete run left the existing comment untouched: no PATCH, no
-        # new comment. A revert of the workflow fix (unconditional PATCH in the
-        # else branch) would record a PATCH here and fail this assertion.
-        assert patch_log.read_text(encoding="utf-8") == ""
-        assert created_log.read_text(encoding="utf-8") == ""
-
-    def test_incomplete_run_with_no_existing_comment_creates_as_before(
-        self, tmp_path: Path
-    ) -> None:
-        # No bot comment exists (only the impostor). An incomplete run creates a
-        # fresh comment carrying the marker and the incomplete verdict, with no
-        # stale-notice and no PATCH.
-        comments = [
-            {
-                "id": int(self.IMPOSTOR_COMMENT_ID),
-                "user": {"login": "mallory"},
-                "body": f"{self.MARKER}\nnice try",
-            },
-        ]
-        _proc, patch_log, created_log = self._run(tmp_path, comments=comments, review_output=None)
-
-        created = created_log.read_text(encoding="utf-8")
-        assert created.startswith(self.MARKER)
-        assert "⚠️ review incomplete" in created
-        assert "codex-stale-notice-begin" not in created
-        # No PATCH happened -- nothing to edit.
-        assert patch_log.read_text(encoding="utf-8") == ""
-
-    def test_step_source_carries_the_fix_and_leaves_finalize_untouched(self) -> None:
-        # Static guards: an incomplete run over an existing comment does NOTHING
-        # to it, and the fail-closed finalize step (the fork analogue of
-        # codex-review.yml's "Gate on findings") is untouched by the fix.
-        workflow = _workflow("fork-gpt-review.yml")
-        comment_step = _step_script(workflow, "Post/update summary comment")
-        # The incomplete branch leaves the comment untouched (diagnostic only),
-        # so only the else branch (blocked/clear) PATCHes the existing comment.
-        assert 'if [ "$kind" = "incomplete" ]; then' in comment_step
-        assert "left existing comment #$existing untouched" in comment_step
-        # No stale-notice construction survives anywhere in the step: nothing
-        # writes a notice, builds a merged body, or strips one with sed.
-        assert "codex-stale-notice" not in comment_step
-        assert "fork-codex-merged-comment" not in comment_step
-        assert "fork-codex-existing-comment" not in comment_step
-        # The fork lane has NO human-override footer.
-        assert "/ai-review override" not in comment_step
-
-        finalize_step = _step_script(workflow, "Finalize check-run (fail closed)")
-        assert "stale-notice" not in finalize_step
-
-    def test_incomplete_run_on_lookup_failure_neither_patches_nor_creates(
-        self, tmp_path: Path
-    ) -> None:
-        # An INCOMPLETE run: a transient comments-list API failure must NOT be
-        # read as "no existing comment", which would send it down the create
-        # path and post a fresh "review incomplete" marker over a verdict that
-        # is really still there. So an incomplete run whose lookup failed makes
-        # no edit of any kind (diagnostic only); the fail-closed finalize step
-        # still gates merge.
-        verdict_body = self._blocking_verdict_body(self.OLD_HEAD)
-        comments = self._fixture_comments(verdict_body)
-        proc, patch_log, created_log = self._run(
-            tmp_path, comments=comments, review_output=None, lookup_fails=True
-        )
-
-        assert patch_log.read_text(encoding="utf-8") == ""
-        assert created_log.read_text(encoding="utf-8") == ""
-        assert "lookup failed" in proc.stdout.lower() or "skipping" in proc.stdout.lower()
-
-    def test_completed_run_on_lookup_failure_still_publishes_the_verdict(
-        self, tmp_path: Path
-    ) -> None:
-        # A COMPLETED verdict (blocked/clear) must become visible. The lookup
-        # failure guard is scoped to the incomplete case ONLY: suppressing a
-        # completed verdict on a transient lookup error would trade away the
-        # very visibility this fix restores. A duplicate comment is far more
-        # recoverable than a real verdict that never posts, so a completed run
-        # whose lookup failed falls through to CREATE rather than staying
-        # silent.
-        review_output = f"[GPT-REVIEWED] {self.HEAD}\n[BLOCK-MERGE] {self.HEAD}\nblocking finding"
-        comments = self._fixture_comments(self._blocking_verdict_body(self.OLD_HEAD))
-        _proc, patch_log, created_log = self._run(
-            tmp_path, comments=comments, review_output=review_output, lookup_fails=True
-        )
-
-        # No PATCH (the lookup could not confirm a target), but the verdict WAS
-        # published via create -- not silently dropped.
-        assert patch_log.read_text(encoding="utf-8") == ""
-        assert created_log.read_text(encoding="utf-8") != ""
+            expected = 2 if lane["id"] == "fork-first-principles" else 1
+            assert len(calls) == expected, (lane["id"], calls)
+            for call in calls:
+                assert f'"{lane["stamp"]}"' in call
 
 
 class TestGptRefusalTerminalState:
@@ -5246,9 +5475,7 @@ class TestGptRefusalTerminalState:
         # to remove.
         assert "re-run the workflow or inspect" not in proc.stdout
 
-    def test_completed_verdict_quoting_the_marker_is_not_reclassified(
-        self, tmp_path: Path
-    ) -> None:
+    def test_completed_verdict_quoting_the_marker_is_not_reclassified(self, tmp_path: Path) -> None:
         # On the clean path codex-review-output.md is verbatim model prose. A
         # review that QUOTES the refusal marker — say, while reviewing this
         # workflow — must not flip a completed verdict into a refusal: the
