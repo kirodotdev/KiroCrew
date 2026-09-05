@@ -284,6 +284,186 @@ def test_install_falls_back_without_deps_when_the_package_step_is_refused(
     assert ["/n/pw", "install-browser", "chromium"] in calls
 
 
+# --- unwritable npm prefix ----------------------------------------------------
+
+# The head of the real npm failure, MEASURED on an Amazon Linux host whose global
+# node_modules is owned by ``nobody``. Kept verbatim because the retry is gated on
+# recognising it, and a paraphrase would not prove that.
+_EACCES_STDERR = (
+    "npm error code EACCES\n"
+    "npm error syscall mkdir\n"
+    "npm error path /usr/local/node-v22.12.0-linux-arm64/lib/node_modules/@playwright\n"
+    "npm error errno -13\n"
+    "npm error Error: EACCES: permission denied, mkdir "
+    "'/usr/local/node-v22.12.0-linux-arm64/lib/node_modules/@playwright'\n"
+    "npm error The operation was rejected by your operating system.\n"
+    "npm error It is likely you do not have the permissions to access this file "
+    "as the current user\n"
+)
+
+
+@pytest.fixture
+def private_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the private install prefix at a scratch dir, and $HOME with it.
+
+    Both, not just the prefix: the successful retry links a launcher into
+    ``~/.local/bin``, and a test must not write into the developer's real one.
+    """
+    prefix = tmp_path / "playwright-cli"
+    monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(prefix))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    return prefix
+
+
+def test_install_retries_into_a_private_prefix_when_the_npm_prefix_is_root_owned(
+    private_prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a root-owned npm prefix made the install button unwinnable.
+
+    ``npm install -g`` cannot succeed on such a host at all, so before the retry
+    the panel's only exit was the standalone installer -- which the operator had
+    to notice, copy and run in their own terminal. npm's own advice ("run as
+    root") is the one remedy that must not be taken.
+    """
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        mod, "find_node_tool", lambda name, base_path=None: {"npm": "/n/npm"}.get(name)
+    )
+    # Resolves only AFTER the retry has installed something, which is what makes
+    # the ordering assertion below meaningful.
+    monkeypatch.setattr(
+        mod,
+        "cli_path",
+        lambda: "/n/pw" if any("--prefix" in c for c in calls) else None,
+    )
+
+    def fake_run(argv: list[str], timeout: float) -> tuple[int, str, str]:
+        calls.append(list(argv))
+        if argv[0] == "/n/npm" and "--prefix" not in argv:
+            return 243, "", _EACCES_STDERR
+        return 0, "", ""
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+
+    result = mod.install()
+
+    assert result["ok"] is True
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "npm-install-private-prefix",
+        "install-browser",
+        "install-skills",
+    ]
+    # The refused attempt stays visible rather than being swallowed...
+    assert result["steps"][0]["ok"] is False
+    assert "EACCES" in result["steps"][0]["stderr"]
+    # ...but it must not veto an install the retry completed.
+    assert result["steps"][1]["ok"] is True
+    assert calls[0] == ["/n/npm", "install", "-g", "@playwright/cli@latest"]
+    assert calls[1] == [
+        "/n/npm",
+        "install",
+        "--global",
+        "--prefix",
+        str(private_prefix),
+        "@playwright/cli@latest",
+    ]
+    # Never as root: that would leave a tree the gateway cannot later upgrade.
+    assert all("sudo" not in argv for argv in calls)
+
+
+def test_install_does_not_retry_a_failure_a_different_prefix_cannot_fix(
+    private_prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registry rejection is not a permissions problem.
+
+    Retrying it elsewhere would repeat the same failure, hide the real error
+    behind a second one, and cost the operator a full registry round-trip.
+    """
+    calls = _wire(
+        monkeypatch,
+        {"npm": "/n/npm"},
+        {"/n/npm": (1, "", "npm error code E403\nnpm error 403 Forbidden - GET ...")},
+    )
+
+    result = mod.install()
+
+    assert result["ok"] is False
+    assert [s["name"] for s in result["steps"]] == ["npm-install-global"]
+    assert len(calls) == 1
+
+
+def test_a_private_prefix_install_is_discoverable_and_linked_onto_path(
+    private_prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two ways the private launcher has to be reachable.
+
+    ``cli_path`` covers the gateway (it searches the prefix bin dir by known
+    path); the ``~/.local/bin`` symlink covers the AGENT, which runs
+    ``playwright-cli`` as a plain shell command and so resolves the login PATH.
+    Without the first, a SUCCESSFUL install would still read as absent in the
+    panel -- failure with no error, and the offer never withdraws.
+
+    ``augmented_path`` is stubbed to contribute nothing, so the assertion is
+    about the prefix dir alone. Not tidiness: this suite runs on hosts that DO
+    have a real ``playwright-cli`` (including one installed by the very fallback
+    under test), and that launcher would otherwise satisfy ``cli_path`` and make
+    the test pass without the search-path change it exists to prove.
+    """
+    monkeypatch.setattr(mod, "augmented_path", lambda base: "")
+    bin_dir = mod.standalone_bin_dir()
+    assert bin_dir == private_prefix / "bin"
+    bin_dir.mkdir(parents=True)
+    launcher = bin_dir / "playwright-cli"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+
+    assert mod.cli_path() == str(launcher)
+    assert str(bin_dir) in mod.cli_env()["PATH"]
+
+    mod._link_private_launcher(bin_dir)
+    linked = Path.home() / ".local" / "bin" / "playwright-cli"
+    assert linked.is_symlink()
+    assert linked.resolve() == launcher
+
+    # Idempotent: re-running the installer must not fail on its own leftover link.
+    mod._link_private_launcher(bin_dir)
+    assert linked.resolve() == launcher
+
+
+def test_the_private_launcher_link_never_clobbers_a_real_file(private_prefix: Path) -> None:
+    """A non-symlink at the target is somebody else's and is not ours to remove."""
+    bin_dir = mod.standalone_bin_dir()
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "playwright-cli").write_text("#!/bin/sh\n")
+    target = Path.home() / ".local" / "bin" / "playwright-cli"
+    target.parent.mkdir(parents=True)
+    target.write_text("their own wrapper")
+
+    mod._link_private_launcher(bin_dir)
+
+    assert target.read_text() == "their own wrapper"
+
+
+def test_an_unwritable_private_prefix_fails_the_step_rather_than_raising(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The last fallback can itself be refused, and that must stay a step."""
+    monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(tmp_path / "nope"))
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+
+    step = mod._install_into_private_prefix("/n/npm")
+
+    assert step["ok"] is False
+    assert step["name"] == "npm-install-private-prefix"
+    assert "private install prefix" in step["stderr"]
+
+
 def test_a_zero_exit_carrying_the_host_validation_warning_is_a_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -506,12 +686,17 @@ def test_cli_env_layers_node_dirs_over_the_broad_path(monkeypatch: pytest.Monkey
     (node layer, outermost). The broad layer under it carries ``~/.local/bin`` /
     Homebrew's bin so a mise-managed npm's post-install ``mise reshim`` hook can
     find the ``mise`` binary instead of dying ``mise: command not found``.
+
+    The private install prefix comes LAST, so a system-wide ``npm install -g``
+    still wins whenever one exists -- it is a fallback for a host whose npm
+    prefix is root-owned, not a new preference.
     """
     monkeypatch.setattr(mod, "augmented_path", lambda base: f"/home/.local/bin:{base}")
     monkeypatch.setattr(mod, "node_augmented_path", lambda base: f"/node/bin:{base}")
+    monkeypatch.setattr(mod, "standalone_bin_dir", lambda: Path("/private/pw/bin"))
     monkeypatch.setenv("PATH", "/usr/bin")
 
-    assert mod.cli_env()["PATH"] == "/node/bin:/home/.local/bin:/usr/bin"
+    assert mod.cli_env()["PATH"] == "/node/bin:/home/.local/bin:/usr/bin:/private/pw/bin"
 
 
 @pytest.mark.skipif(
@@ -835,11 +1020,12 @@ class TestCliEnvIsPublic:
     ) -> None:
         monkeypatch.setattr(mod, "augmented_path", lambda base: base)
         monkeypatch.setattr(mod, "node_augmented_path", lambda base: f"/nvm/bin:{base}")
+        monkeypatch.setattr(mod, "standalone_bin_dir", lambda: Path("/private/pw/bin"))
         monkeypatch.setenv("PATH", "/usr/local/bin")
 
         env = mod.cli_env()
 
-        assert env["PATH"] == "/nvm/bin:/usr/local/bin"
+        assert env["PATH"] == "/nvm/bin:/usr/local/bin:/private/pw/bin"
 
 
 @pytest.mark.skipif(
