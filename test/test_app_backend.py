@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -1582,6 +1583,285 @@ def test_devfleet_repo_env_wins_repo_discovery(monkeypatch, tmp_path):
     # adopted only because it carries the Kiro Crew checkout markers.
     monkeypatch.delenv("KIROCREW_DEVFLEET_REPO")
     assert dfmod._default_main_repo() == str(proj)
+
+
+class TestGatewayOriginInjection:
+    """Bound-port-gated gateway-origin injection into entryPoint app backends.
+
+    The gateway hands each entryPoint child one generic variable so the child
+    can call BACK to this gateway (for example POST /api/notifications/push on a
+    declared channel): ``KIROCREW_GATEWAY_ORIGIN``. It is injected ONLY from hard
+    evidence of the port the gateway ACTUALLY bound -- the exported
+    ``KIROCREW_BOUND_PORT``, required to be numeric and in 1..65535. There is no
+    fallback to an inherited ``KIROCREW_PORT``, the app's own ``PORT``, a config
+    value, or a default: without bound-port evidence the origin is omitted and a
+    backend that needs a callback base fails closed (dormant). No app-specific
+    variable is ever injected.
+    """
+
+    _SECRET = "test-app-secret-0123456789abcdef"
+
+    def _install_backend_app(self, tmp_path, name="origin-app"):
+        src = _make_app_with_backend(tmp_path, name=name)
+        install_app(src)
+        return name
+
+    def _install_typed_backend_app(self, tmp_path, name, entry_rel, backend_type, body):
+        """Install an app whose backend declares an explicit ``type`` + entry file."""
+        src = tmp_path / "source" / name
+        (src / Path(entry_rel).parent).mkdir(parents=True, exist_ok=True)
+        (src / entry_rel).write_text(body)
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
+            "name": name, "version": "1.0.0",
+            "displayName": name, "description": "typed entry",
+            "author": "tester",
+            "backend": {"entryPoint": entry_rel, "type": backend_type,
+                        "healthCheck": "/health"},
+        }))
+        install_app(src)
+        return name
+
+    def _write_secret(self, name, *, mode=0o600, secret=None):
+        from kiro_crew.apps.manager import app_dir
+
+        path = app_dir(name) / ".app_secret"
+        path.write_text(secret if secret is not None else self._SECRET)
+        os.chmod(path, mode)
+        return path
+
+    def _capture_child_env(self, monkeypatch, app_name):
+        """Freeze the spawn at the Popen boundary and return the child env dict.
+
+        Mirrors ``test_a_fixed_port_app_claims_it_before_binding``: passthrough
+        wrap_argv (so a host without an OS sandbox still reaches this code) and a
+        spy Popen that records the env the gateway would hand the child, then
+        raises to stop before a real process is created.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        captured: dict[str, dict] = {}
+
+        def _spy_popen(*a, **k):
+            captured["env"] = dict(k.get("env") or {})
+            raise OSError("captured child env; stop before the real spawn")
+
+        monkeypatch.setattr(bmod, "wrap_argv", lambda argv, **kw: (list(argv), None))
+        monkeypatch.setattr(bmod.subprocess, "Popen", _spy_popen)
+        result = bmod.start_app_backend(app_name)
+        return result, captured.get("env")
+
+    def test_valid_bound_port_injects_exact_origin_distinct_from_app_port(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A valid KIROCREW_BOUND_PORT yields the exact origin, never the app's own PORT.
+
+        The origin must be the port THIS gateway bound (KIROCREW_BOUND_PORT),
+        not the app's own PORT (which lives in the 9100-9200 app range).
+        """
+        import kiro_crew.apps.backend as bmod
+
+        name = self._install_backend_app(tmp_path)
+        self._write_secret(name)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None, "the spawn never reached the Popen boundary"
+        assert env["KIROCREW_GATEWAY_ORIGIN"] == "http://127.0.0.1:8123"
+        # The origin is the GATEWAY port, never the app's own bound PORT.
+        assert env["PORT"] != "8123"
+        assert bmod._MIN_PORT <= int(env["PORT"]) <= bmod._MAX_PORT
+        # The proxy secret is still injected when a secret exists.
+        assert env["KIROCREW_PROXY_SECRET"] == self._SECRET
+
+    def test_no_bound_port_env_omits_the_origin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """With no KIROCREW_BOUND_PORT at all, the origin is omitted (fail closed)."""
+        name = self._install_backend_app(tmp_path)
+        self._write_secret(name)
+        monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None
+        assert "KIROCREW_GATEWAY_ORIGIN" not in env
+        # The unrelated proxy-secret behavior is unchanged.
+        assert env["KIROCREW_PROXY_SECRET"] == self._SECRET
+
+    def test_inherited_kirocrew_port_alone_does_not_produce_an_origin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """An inherited KIROCREW_PORT is NOT bound-port evidence: no fallback, origin omitted.
+
+        Proves the injected origin never derives from resolve_serving_port()'s
+        KIROCREW_PORT/default chain -- only the exported KIROCREW_BOUND_PORT counts.
+        """
+        name = self._install_backend_app(tmp_path)
+        self._write_secret(name)
+        monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
+        monkeypatch.setenv("KIROCREW_PORT", "5476")  # inherited / --port guess only
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None
+        assert "KIROCREW_GATEWAY_ORIGIN" not in env
+
+    @pytest.mark.parametrize("bad", ["", "   ", "notaport", "80.5", "0", "-1", "65536", "99999"])
+    def test_nonnumeric_zero_or_out_of_range_bound_port_omits_the_origin(
+        self, tmp_path, app_env, monkeypatch, bad
+    ):
+        """Nonnumeric, zero, negative, and out-of-range (>65535) bound ports all omit."""
+        name = self._install_backend_app(tmp_path)
+        self._write_secret(name)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", bad)
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None
+        assert "KIROCREW_GATEWAY_ORIGIN" not in env, (
+            f"KIROCREW_BOUND_PORT={bad!r} is not valid bound-port evidence"
+        )
+
+    def test_every_entrypoint_type_gets_the_same_generic_origin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """The origin is injected before type dispatch, so every entry type sees it identically.
+
+        Covers the file-based backend types (python, asgi, node, and -- on POSIX
+        -- exec). Module-style dotted entries are builtin-only and not installable
+        here. The value is the same generic origin regardless of type.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        # A node backend must find a node binary before it reaches the spawn; the
+        # binary is never executed (Popen is spied), so a stub path suffices.
+        monkeypatch.setattr(bmod, "_find_node_binary", lambda: sys.executable)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        cases = [
+            ("py-plain", "backend/server.py", "python",
+             'import http.server\n'),
+            ("py-asgi", "backend/app.py", "asgi",
+             'from fastapi import FastAPI\nimport uvicorn\napp = FastAPI()\n'),
+            ("node-app", "server.js", "node",
+             'require("http")\n'),
+        ]
+        if os.name == "posix":
+            cases.append(("exec-app", "start.sh", "exec", "#!/bin/sh\nsleep 30\n"))
+
+        origins = {}
+        for name, entry_rel, backend_type, body in cases:
+            self._install_typed_backend_app(tmp_path, name, entry_rel, backend_type, body)
+            _result, env = self._capture_child_env(monkeypatch, name)
+            assert env is not None, f"{backend_type} entry never reached the spawn boundary"
+            origins[backend_type] = env["KIROCREW_GATEWAY_ORIGIN"]
+
+        assert set(origins.values()) == {"http://127.0.0.1:8123"}, (
+            f"every entry type must get the same generic origin (saw {origins!r})"
+        )
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file-mode check")
+    def test_reading_the_secret_tightens_it_to_owner_only(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A .app_secret that lost its mode is re-locked to 0600 when the gateway reads it."""
+        name = self._install_backend_app(tmp_path)
+        secret_path = self._write_secret(name, mode=0o644)
+        assert secret_path.stat().st_mode & 0o777 == 0o644  # loosened on purpose
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        self._capture_child_env(monkeypatch, name)
+        assert secret_path.stat().st_mode & 0o777 == 0o600
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file-mode check")
+    def test_secret_is_0600_at_the_moment_read_text_observes_it(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """Order guarantee (M1): restrict_to_owner runs BEFORE read_text sees the secret.
+
+        Asserting the post-spawn mode is 0600 is not enough -- the tightening
+        must PRECEDE the read, or a pre-existing 0644 secret is read while still
+        group/world-readable. We spy Path.read_text and record the mode it sees
+        for .app_secret; it must already be 0600 at that instant.
+        """
+        import pathlib
+
+        name = self._install_backend_app(tmp_path)
+        secret_path = self._write_secret(name, mode=0o644)
+        assert secret_path.stat().st_mode & 0o777 == 0o644  # loosened on purpose
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        observed: list[int] = []
+        real_read_text = pathlib.Path.read_text
+
+        def _spy_read_text(self, *a, **k):
+            if self.name == ".app_secret":
+                observed.append(self.stat().st_mode & 0o777)
+            return real_read_text(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", _spy_read_text)
+        self._capture_child_env(monkeypatch, name)
+
+        assert observed == [0o600], (
+            f"secret read while mode was {[oct(m) for m in observed]}; "
+            "restrict_to_owner must run before read_text"
+        )
+
+    def test_missing_secret_is_tolerated_without_a_lockdown_warning(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        """A missing .app_secret stays a silent no-op: no lockdown attempt, no warning.
+
+        The lockdown+read are gated on secret_path.exists(), so a secret-less app
+        never reaches restrict_to_owner and never warns on every spawn. Only a
+        real lockdown failure on an EXISTING file warns.
+        """
+        import logging
+
+        from kiro_crew.apps.manager import app_dir
+
+        name = self._install_backend_app(tmp_path)
+        (app_dir(name) / ".app_secret").unlink()  # install writes one; remove it
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        with caplog.at_level(logging.WARNING):
+            _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None
+        assert "KIROCREW_PROXY_SECRET" not in env
+        assert not [
+            r for r in caplog.records if "owner-only mode" in r.getMessage()
+        ], "a missing secret must not emit a lockdown warning"
+
+    def test_missing_secret_still_injects_origin_but_no_secret(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A missing .app_secret is tolerated: origin still set (bound port valid), no secret."""
+        from kiro_crew.apps.manager import app_dir
+
+        name = self._install_backend_app(tmp_path)
+        (app_dir(name) / ".app_secret").unlink()  # install writes one; remove it
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None
+        assert env["KIROCREW_GATEWAY_ORIGIN"] == "http://127.0.0.1:8123"
+        assert "KIROCREW_PROXY_SECRET" not in env
+
+    def test_a_non_entrypoint_app_is_not_spawned_and_gets_no_injection(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """An app with no backend.entryPoint is never spawned, so nothing is injected."""
+        name = "no-entrypoint-app"
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
+            "name": name, "version": "1.0.0",
+            "displayName": "No Entry", "description": "no backend entryPoint",
+            "author": "tester",
+        }))
+        install_app(src)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        result, env = self._capture_child_env(monkeypatch, name)
+        assert result is None
+        assert env is None, "a non-entryPoint app must never reach the spawn boundary"
 
 
 class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
