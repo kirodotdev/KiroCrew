@@ -278,11 +278,12 @@ the file contains **only** shipped sections. The parser that renders it is
   frozen, that leaves exactly one legal shape for a changelog diff — prepend one new
   section — because there is nowhere to append a per-PR line to.
 - **One section per release, newest first**, headed exactly
-  `## [X.Y.Z] — YYYY-MM-DD`. Never a prerelease spelling: `0.3.0-insider.9` and
-  `0.3.0-rc.2` are drafts of `0.3.0`, are folded onto it by the parser, and must
-  not get their own heading. The gate refuses those too, so a release branch writes
-  its section once, under the release's final heading, rather than carrying a draft
-  it renames later.
+  `## [X.Y.Z] - YYYY-MM-DD` (a plain hyphen; the parser also accepts the em and
+  en dashes older sections carry, but new sections do not use them). Never a
+  prerelease spelling: `0.3.0-insider.9` and `0.3.0-rc.2` are drafts of `0.3.0`,
+  are folded onto it by the parser, and must not get their own heading. The gate
+  refuses those too, so a release branch writes its section once, under the
+  release's final heading, rather than carrying a draft it renames later.
 
 - **Never delete or edit a shipped section.** A release PR prepends one section
   and leaves every earlier one byte-identical. This has already gone wrong once:
@@ -290,15 +291,34 @@ the file contains **only** shipped sections. The parser that renders it is
   history went with it, which no test caught and a user reported as an empty
   Releases page.
 
-Format, which the `[0.2.0]` section is the reference for:
+Format, which the `[0.6.0]` section is the reference for:
 
-- A two-to-four line opening paragraph naming the release's theme. Not a count of
-  commits.
+- A one-to-three sentence opening paragraph naming the release's theme. Not a
+  count of commits.
 - Then `###` subsections grouped by **what the reader gets**, ordered most
   interesting first. Never group by commit type: nobody opens a changelog looking
   for the refactors.
-- Each bullet is `- **Short name** — what the user can now do`, one or two lines,
+- **Three sentences per subsection, at most.** A subsection is up to three
+  bullets of one sentence each, or one short paragraph. The budget is what
+  forces the edit: the three things a reader of that area most needs to know
+  survive, the rest is folded into one of them or dropped. Past three, split
+  the theme or cut.
+- Each bullet is `- **Short name**: what the user can now do`, one sentence,
   in plain language and the present tense.
+- **No em dashes or en dashes anywhere in the section**, in headings, bullets or
+  prose. Use a colon after the bolded name, a comma or a full stop elsewhere.
+- **Say where every feature lives, and how it is turned on.** Name the page,
+  panel and control, the composer button, the CLI command or the config key in
+  the same sentence ("under Developer → Agent Backend", "the composer's + menu
+  gains a Sketch row", "`kirocrew config defaults --adopt`"), and name the gate
+  when there is one (Developer Mode, Feature Previews, a default-off setting,
+  a required binary). Verify each location in the code, not from the commit
+  message: a panel that sits behind Developer Mode, a component that is never
+  mounted, or a label that differs from the commit subject are all things the
+  0.6.0 draft got wrong on the first pass. A reader who cannot find the switch
+  did not get the feature. A subsection whose whole surface sits behind
+  Developer Mode or Feature Previews carries `(Preview)` at the end of its
+  heading, so the reader knows before the first bullet that it is opt-in.
 - Describe the capability, not the mechanism. No commit hashes, PR numbers, file
   paths, module names, or internal vocabulary.
 - **Never generate the section from a commit dump.** A list of commit subjects, a
@@ -314,18 +334,16 @@ Format, which the `[0.2.0]` section is the reference for:
 - **A closing `### Notable fixes` section is allowed, and is not a commit dump.**
   It exists so a reader can check whether their particular annoyance is gone,
   written as what is now true ("Teams retries a rate-limited message instead of
-  dropping it"). Past roughly twenty items, group them by area into short prose
-  paragraphs under a bolded lead rather than a flat bullet list — eighty bullets
-  is a wall nobody scans. What makes it a dump instead is a total count, a bare
-  commit subject, a scope prefix, or an "and N more" tail; it carries none of
-  those, and a fix nobody would notice does not earn a line.
-- **The split, not a line budget, is what keeps it readable.** The showcase body
-  carries new surfaces, new capabilities, and perceptible performance changes;
-  everything fix-shaped goes to the grouped tail. A body growing past the
-  previous release's is a signal to move items into the tail or group them
-  harder — not a licence to keep adding, and not a reason to drop a real change.
-  A release covering substantially more shipped work will be longer, and that is
-  correct; an unedited one is not.
+  dropping it"). Group the fixes by area into prose paragraphs under a bolded
+  lead (`**Chat and sessions.** ...`), and hold each paragraph to the same
+  three-sentence budget as a subsection. What makes it a dump instead is a total
+  count, a bare commit subject, a scope prefix, or an "and N more" tail; it
+  carries none of those, and a fix nobody would notice does not earn a line.
+- **The budget, not the range, decides the length.** A release covering twice
+  the commits still gets three sentences per subsection; it earns more
+  subsections only when it shipped more distinct things a reader gets. The
+  showcase body carries new surfaces, new capabilities, and perceptible
+  performance changes; everything fix-shaped goes to the grouped tail.
 - **Verify coverage against the commit range, not against your memory of it.**
   Partition `git log <last-tag>..HEAD` and account for every commit, because the
   omissions are systematic rather than random: a change whose subject names one
@@ -334,17 +352,12 @@ Format, which the `[0.2.0]` section is the reference for:
   biased *against* the release's headline: the PR that lands a large surface is
   the least likely to have spent effort on a changelog line, so an accumulated
   file over-represents small fixes and omits the features people upgraded for.
-- **The section ends with `### Contributors`**, crediting everyone whose code
-  shipped in it — `@handle`, alphabetical by username case-insensitively, bots
-  left out. Derive it from the release's own range rather than by hand:
-  `gh api repos/kirodotdev/KiroCrew/releases/generate-notes -f tag_name=<tag>
-  -f previous_tag_name=<last-tag>` names the author of every merged PR, so nobody
-  is dropped for having a quiet commit subject. **This belongs to the changelog
-  only.** A GitHub Release page renders its own contributor block from the tag
-  range, natively, whatever its body says — so putting a list in the release notes
-  duplicates it on the page, immediately above GitHub's own. The changelog needs
-  its own because that copy is what ships inside the wheel and what the
-  dashboard's Releases page reads, where no such block exists.
+  Accounting for a commit does not mean writing it up: the budget above decides
+  what survives, and the rest is a deliberate, recorded cut.
+- **No `### Contributors` section.** The GitHub Release page renders its own
+  contributor block from the tag range, natively, so a list in the changelog
+  duplicates it. Older sections carry one; do not add one to a new section, and
+  do not hand-write one into the release notes either.
 
 ## The gate before you commit
 

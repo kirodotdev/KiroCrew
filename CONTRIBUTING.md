@@ -251,7 +251,7 @@ git push origin v0.2.0
 # put bare v0.2.1 on that candidate's exact commit and push it.
 ```
 
-Update `CHANGELOG.md` with a `## [X.Y.Z] — YYYY-MM-DD` section as part of the
+Update `CHANGELOG.md` with a `## [X.Y.Z] - YYYY-MM-DD` section as part of the
 release (see AGENTS.md → "Release Changelog" for the format), and land the
 changelog and any version bump through a normal PR — never push to `main` or a
 release branch directly.

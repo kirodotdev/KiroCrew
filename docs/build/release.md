@@ -169,14 +169,15 @@ there is no build step at stable-tag time to add it.
      makes the next RC a promotion candidate**; the 0.4.0 promotion was nearly
      tagged before it existed because this step lived only in the policy
      section, not here. The checklist in step 2 below verifies it landed.
-   - *CHANGELOG*: the release branch already carries `## [X.Y.Z] — <date>` (no
+   - *CHANGELOG*: the release branch already carries `## [X.Y.Z] - <date>` (no
      `[Unreleased]`, enforced by the changelog gate). Confirm at cut time.
    - *Version display*: the base-version fold above must be merged to `main`
      and cherry-picked to `release/X.Y` **before the RC is cut**, or stable will
      show the RC stamp.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
    `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
-   non-bare-release `##` headings; exactly one `### Contributors`;
+   non-bare-release `##` headings; no `### Contributors` (the GitHub Release
+   page renders its own); no em or en dash anywhere in the new section;
    `__version__ = "X.Y.Z"` **in all three version files** (`src/kiro_crew/__init__.py`,
    `pyproject.toml`, `website/electron/package.json` — the 0.4.0 promotion was
    nearly tagged on a commit still declaring `0.4.0-rc.9` because only the tag
@@ -1038,9 +1039,9 @@ Practical consequences when something goes wrong mid-release:
 
 ## Changelog
 
-Every release lands a `## [X.Y.Z] — YYYY-MM-DD` section in `CHANGELOG.md`
+Every release lands a `## [X.Y.Z] - YYYY-MM-DD` section in `CHANGELOG.md`
 through a normal PR, alongside any version bump. The section format (ordering,
-tone, contributor lines) is specified once in
+tone, the three-sentence budget per subsection) is specified once in
 [AGENTS.md](../../AGENTS.md) → "Release Changelog". The dashboard reads the
 changelog from `KIROCREW_PROJECT_DIR/CHANGELOG.md` for source installs and from
 the bundled copy inside the package for wheel installs.

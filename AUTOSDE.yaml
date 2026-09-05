@@ -455,7 +455,7 @@ custom-rules:
         its section once, under the release's final heading.
 
       Allowed (do NOT flag):
-      - A release PR that prepends one new `## [X.Y.Z] — YYYY-MM-DD` section
+      - A release PR that prepends one new `## [X.Y.Z] - YYYY-MM-DD` section
         and, in the same commit, bumps src/kiro_crew/__init__.py.
       - Correcting a genuine factual error inside an already-shipped section,
         when the PR body says that is what it is doing. Say it out loud; an
