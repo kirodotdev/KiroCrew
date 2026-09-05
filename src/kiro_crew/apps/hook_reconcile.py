@@ -1,7 +1,7 @@
 """Hook reconciler — reload app backend hooks when the CLI mutates them out-of-process.
 
-The problem this solves (issue #7880)
---------------------------------------
+The problem this solves
+-----------------------
 An app's ``backend.hooks`` (``on_startup``, ``on_shutdown``, ``routes``) run
 *inside the gateway process*. The gateway loads them once — at boot
 (:func:`kiro_crew.apps.hooks_integration.on_gateway_startup`) and on the
@@ -251,9 +251,9 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
     ``app_lifecycle_lock(name)`` via ``get_app``, because a dashboard
     enable/disable/uninstall or a trust withdrawal may have run between the
     snapshot and now. Holding the lock is what closes the revive-during-
-    trust-withdrawal race GPT flagged: a concurrent revoke either has not started
-    (we see it next tick) or has taken the lock first and we block until it is
-    done and then observe the withdrawn state.
+    trust-withdrawal race: a concurrent revoke either has not started (we see it
+    next tick) or has taken the lock first and we block until it is done and then
+    observe the withdrawn state.
     """
     async with app_lifecycle_lock(name):
         # Authoritative re-read under the lock. get_app touches disk, so off-loop.
@@ -544,9 +544,12 @@ async def stop_hook_reconciler() -> None:
 
     Drains any in-flight reconcile pass FIRST (a teardown's async ``on_shutdown``
     may be doing worker cleanup / a buffer flush), then cancels the loop and
-    awaits it so the coroutine has unwound before returning — an in-process
-    gateway restart can then start a fresh reconciler without the old one
-    lingering with stale service handles. After cancelling, runs ONE final
+    awaits it so the coroutine has normally unwound before returning — an
+    in-process restart can then start a fresh reconciler without the old one
+    lingering with stale service handles. Every wait here is bounded by the
+    shared drain budget, so that unwind is best-effort rather than guaranteed: a
+    hung teardown is left running and reclaimed by process exit rather than
+    holding up shutdown. After cancelling, runs ONE final
     reconcile pass so a CLI disable/uninstall that landed after the last poll is
     settled before ``on_gateway_shutdown`` (which only tears down what is still
     loaded) — otherwise that app's ``on_shutdown`` flush would be skipped and its
@@ -585,34 +588,28 @@ async def stop_hook_reconciler() -> None:
         # asyncio.shield keeps the pass RUNNING if we stop waiting (never cancelled
         # mid-teardown); process exit reclaims a true hang.
         pass_ = _active_pass
-        drained = True
         if pass_ is not None and not pass_.done():
             try:
                 await asyncio.wait_for(asyncio.shield(pass_), timeout=_remaining())
-            except asyncio.TimeoutError:
-                # The pass is hung. It stays running under the shield, but we must
-                # NOT wait on it again below -- the loop's cancel handler re-awaits
-                # _active_pass, which would block up to the 60s pass watchdog and
-                # blow the shared drain budget before backend cleanup.
-                drained = False
             except Exception:
                 pass
         task.cancel()
-        if drained:
-            # Pass already settled: awaiting the cancelled loop unwinds promptly,
-            # but still bound it to the shared deadline for safety.
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=_remaining())
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                pass
-        else:
-            # Hung pass: bound the unwind by whatever remains of the shared budget,
-            # so cancellation cannot re-await the straggler past it. The shielded
-            # pass keeps running; process exit reclaims a true hang.
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=_remaining())
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                pass
+        # Bound the cancel unwind by whatever remains of the shared budget, for the
+        # same reason every other step here is bounded: the drain must not spend
+        # more than SHUTDOWN_DRAIN_BUDGET_SECS in total, or it blows the ~10s
+        # gateway deadline and the backend cleanup after it is skipped. Whatever
+        # holds the unwind up -- the loop's own cancel handler, or a shielded pass
+        # still settling -- only gets what the earlier steps left.
+        #
+        # The bound applies on BOTH paths, and on the settled one it is not merely
+        # belt-and-braces: a pass that settled slowly can leave _remaining() at
+        # ~0, so this wait can expire before the coroutine has unwound. Expiry is
+        # accepted either way -- shutdown proceeds, the shielded work keeps
+        # running, and process exit reclaims a true hang.
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=_remaining())
+        except (asyncio.CancelledError, Exception):
+            pass
 
         # ONE-SHOT terminal drain: a CLI disable/uninstall landing in the window
         # between the last poll and this stop would otherwise never reach the
