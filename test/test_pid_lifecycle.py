@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
@@ -1001,7 +1002,7 @@ class TestSyncKillProvider:
         provider._proc = None
         provider._active_proc = None
 
-        with patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill:
+        with patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as mock_kill:
             _sync_kill_provider(provider)
 
         mock_kill.assert_not_called()
@@ -1011,15 +1012,13 @@ class TestSyncKillProvider:
         reason="POSIX SIGTERM→SIGKILL escalation; Windows uses single SIGKILL",
     )
     def test_posix_sigterm_then_sigkill(self) -> None:
-        """POSIX path: real child reaped via SIGTERM→waitpid→SIGKILL loop.
-
-        Spawns a real short-lived sleep subprocess, drives _sync_kill_provider
-        through the POSIX escalation loop (kill_pid is recorded, not real, so
-        the loop runs both iterations deterministically), then reaps the child.
-        """
+        """POSIX path escalates the provider's whole process group."""
         from kiro_crew.session_pid import _sync_kill_provider
 
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
         try:
             provider = MagicMock(spec=["_client", "_proc", "_active_proc"])
             provider._client = None
@@ -1035,16 +1034,67 @@ class TestSyncKillProvider:
                 return True
 
             with patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
+                "kiro_crew.session_pid.platform_compat.kill_process_tree",
                 side_effect=fake_kill,
             ):
                 _sync_kill_provider(provider)
 
-            # POSIX loop hits both SIGTERM and SIGKILL for our child PID
             assert sigs == [platform_compat.SIGTERM, platform_compat.SIGKILL]
         finally:
             proc.kill()
             proc.wait(timeout=5)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+    def test_posix_kills_sandbox_launcher_descendants(self, tmp_path: Path) -> None:
+        """A launcher hard-kill must not orphan its runtime child.
+
+        Linux sandboxing makes the provider PID a launcher/process-group leader,
+        with the real runtime beneath it. The launcher exits on SIGTERM while
+        the runtime ignores it, so SIGKILL must still reach the original group;
+        a PID-only kill leaves the child alive.
+        """
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        child_pid_file = tmp_path / "runtime.pid"
+        script = (
+            "import subprocess, sys, time; "
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)']); "
+            "open(sys.argv[1], 'w').write(str(child.pid)); "
+            "time.sleep(300)"
+        )
+        launcher = subprocess.Popen(
+            [sys.executable, "-c", script, str(child_pid_file)],
+            start_new_session=True,
+        )
+        child_pid = 0
+        try:
+            deadline = time.monotonic() + 5
+            while not child_pid_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert child_pid_file.exists(), "launcher did not publish its child PID"
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+            provider = MagicMock(spec=["_client", "_proc", "_active_proc"])
+            provider._client = None
+            provider._proc = MagicMock(returncode=None, pid=launcher.pid)
+            provider._active_proc = None
+
+            _sync_kill_provider(provider)
+            launcher.wait(timeout=5)
+
+            deadline = time.monotonic() + 5
+            while platform_compat.pid_exists(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert not platform_compat.pid_exists(child_pid), (
+                "provider teardown orphaned the sandbox runtime child"
+            )
+        finally:
+            if launcher.poll() is None:
+                os.killpg(launcher.pid, signal.SIGKILL)
+                launcher.wait(timeout=5)
+            if child_pid and platform_compat.pid_exists(child_pid):
+                os.kill(child_pid, signal.SIGKILL)
 
     @pytest.mark.skipif(
         sys.platform == "win32",
@@ -1068,7 +1118,7 @@ class TestSyncKillProvider:
             raise ProcessLookupError()
 
         with patch(
-            "kiro_crew.session_pid.platform_compat.kill_pid",
+            "kiro_crew.session_pid.platform_compat.kill_process_tree",
             side_effect=fake_kill,
         ):
             _sync_kill_provider(provider)

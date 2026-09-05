@@ -576,15 +576,14 @@ def _sync_kill_provider(provider: LLMProvider) -> None:
     if not isinstance(pid, int) or pid <= 1:
         logger.debug("_sync_kill_provider: refusing to signal invalid pid %r", pid)
         return
-    # On Windows there is no SIGTERM/SIGKILL distinction (taskkill /F is a hard
-    # kill) and no os.waitpid for non-child PIDs, so a single kill suffices.
+    # On Windows there is no SIGTERM/SIGKILL distinction (taskkill /T /F is a
+    # hard tree kill), so a single kill suffices.
     if platform_compat.IS_WINDOWS:
-        # kill_pid raises ProcessLookupError / PermissionError / OSError on a
-        # non-zero taskkill rc (same shape POSIX uses). Catch those so the
-        # audit log doesn't record a phantom "killed" when nothing was
-        # actually terminated.
+        # kill_process_tree raises ProcessLookupError / PermissionError / OSError
+        # on a non-zero taskkill rc (same shape POSIX uses). Catch those so the
+        # audit log doesn't record a phantom "killed" when descendants survived.
         try:
-            platform_compat.kill_pid(pid, platform_compat.SIGKILL)
+            platform_compat.kill_process_tree(pid, platform_compat.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError) as exc:
             logger.debug(
                 "_sync_kill_provider: taskkill did not terminate PID %d (%s)",
@@ -592,11 +591,15 @@ def _sync_kill_provider(provider: LLMProvider) -> None:
                 exc,
             )
             return
-        logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
+        logger.warning("_sync_kill_provider: killed PID %d tree for leaked provider", pid)
         return
     for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
         try:
-            platform_compat.kill_pid(pid, sig)
+            # Linux sandboxing inserts a launcher parent between the provider
+            # object and the real runtime. Killing only that PID reparents the
+            # kiro-cli + MCP tree to init and makes it unreachable by provider
+            # teardown, so escalation must target the launcher's process group.
+            platform_compat.kill_process_tree(pid, sig)
         except ProcessLookupError:
             return  # already dead
         except OSError:
@@ -607,7 +610,7 @@ def _sync_kill_provider(provider: LLMProvider) -> None:
                 os.waitpid(pid, os.WNOHANG)
             except ChildProcessError:
                 return
-    logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
+    logger.warning("_sync_kill_provider: killed PID %d tree for leaked provider", pid)
 
 
 def _cleanup_orphaned_mcp_servers() -> int:

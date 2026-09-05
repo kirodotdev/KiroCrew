@@ -1492,7 +1492,7 @@ class TestDiscardReaping:
         pid_one = _make_provider()
         pid_one._client = SimpleNamespace(_pid=1)
 
-        with patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill:
+        with patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as mock_kill:
             _sync_kill_provider(mock_provider)
             _sync_kill_provider(pid_one)
 
