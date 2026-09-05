@@ -140,7 +140,7 @@ export default function SideChat({ slot }: { slot: string }) {
    *  - An unconditional dispatch (no mode gate) would let any plan-shaped side
    *    answer cancel or advance the parent's real plan.
    *  Pinned by src/test/SideChat.planExclusion.test.tsx. */
-  const { followUpOptions } = useMemo(
+  const { followUpOptions, followUpRecommended } = useMemo(
     () => deriveFollowUpOptions(transcript, isStreaming),
     [transcript, isStreaming]
   )
@@ -635,6 +635,7 @@ export default function SideChat({ slot }: { slot: string }) {
         <div className="shrink-0 px-2 pb-1">
           <FollowUpBar
             options={followUpOptions}
+            recommended={followUpRecommended}
             picked={pickedOptions}
             onSelect={toggleOption}
             onSend={text => { void send(text) }}

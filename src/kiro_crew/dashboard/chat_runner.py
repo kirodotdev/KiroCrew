@@ -3379,6 +3379,8 @@ def _strip_yaml_frontmatter(content: str) -> str:
     return content
 
 
+# Same cross-surface dependent as the slash path: `splitRecommendation` refuses to strip a
+# marker off an `@`-leading label, so a sigil added here needs adding there too.
 def _resolve_prompt_mention(
     message: str,
     project_dir: Path | None,
@@ -10829,7 +10831,7 @@ async def _run_chat(
             try:
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
                     build_options_blocks,
-                    extract_options,
+                    extract_options_with_recommendation,
                     render_for_slack,
                 )
 
@@ -10838,7 +10840,13 @@ async def _run_chat(
                 # means whatever conversion did to the tail decides whether the
                 # controls render at all -- and a >39,000-char turn used to lose
                 # the tag entirely to to_slack_mrkdwn's self-truncation.
-                _mirror_body, _mirror_options = extract_options(assistant_text)
+                # One parse yields the marked label too: this turn ran on the dashboard,
+                # so the agent marked a chip instead of naming its pick in prose.
+                (
+                    _mirror_body,
+                    _mirror_options,
+                    _mirror_recommended,
+                ) = extract_options_with_recommendation(assistant_text)
 
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
@@ -10854,7 +10862,9 @@ async def _run_chat(
                     # with a conversation that never asked the question.
                     _mirror_token = await asyncio.to_thread(mint_options_token, state, session_key)
                     _mirror_blocks = build_options_blocks(
-                        _mirror_options, staleness_token=_mirror_token
+                        _mirror_options,
+                        staleness_token=_mirror_token,
+                        recommended=_mirror_recommended,
                     )
                     # The thread's owner BEFORE the post. A relink landing while
                     # post_blocks is in flight moves the conversation to another

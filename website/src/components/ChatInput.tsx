@@ -597,6 +597,8 @@ interface ChatInputProps {
   /** Identity of the transcript row the follow-up options were derived from.
    *  Forwarded to FollowUpBar so a chip click carries the row it acted on. */
   followUpSourceKey?: string | null
+  /** The option text carrying a `(recommended)` marker — a host's `followUpRecommended`. */
+  followUpRecommended?: string | null
   /** Collapsed paste blocks backing `⌜🗒 Pasted …⌟` tokens in `value`. */
   pasteBlocks?: PasteBlock[]
   /** Replace the current list of paste blocks (add/remove). */
@@ -917,6 +919,7 @@ function ChatInput({
   quickSend,
   followUpLayout,
   followUpSourceKey,
+  followUpRecommended,
   pasteBlocks = [],
   onPasteBlocksChange,
   knowledgeChip,
@@ -2990,7 +2993,7 @@ function ChatInput({
 
       {/* Ghost follow-up bubbles floating above input */}
       {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} />
+          <FollowUpBar options={followUpOptions} recommended={followUpRecommended} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

@@ -175,7 +175,7 @@ export default function ChatPane({
   // for the same reason as ChatPage: both would offer the same choices, and
   // only the card can answer the blocked tool call.
   const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
-  const { followUpOptions, followUpIsPlan, followUpSourceKey } = useMemo(
+  const { followUpOptions, followUpRecommended, followUpIsPlan, followUpSourceKey } = useMemo(
     () => deriveFollowUpOptions(allMessages, busy, !!pendingQuestion),
     [allMessages, busy, pendingQuestion],
   )
@@ -784,6 +784,7 @@ export default function ChatPane({
           followUpLayout={chatConfig.followUpLayout}
           quickSend={dashCfg?.quick_send}
           followUpSourceKey={followUpSourceKey}
+          followUpRecommended={followUpRecommended}
           onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
             // Mirrors ChatPage's wiring, plan branch included (#5893). Plan
             // options (Go / Go All / Cancel — the only labels the plan

@@ -2721,6 +2721,24 @@ parameter rather than a baked-in policy:
   cutting prose is permanent: a reply ending `see the [OPTIONS section` keeps its
   last four words.
 
+That parse also strips a leading `(recommended)` marker off each choice, because a
+choice is dispatched verbatim as the user's own next message and the marker is
+presentation, not content. The strip declines a label that would open with a
+reserved dispatch sigil, so stripping can never change whether a value is a slash
+command, a mention or reserved `[`-provenance.
+
+**Known asymmetry, deliberate and deferred.** Only the dashboard renders that
+marker (as a chip badge) and only the Slack mirror restates it in prose, through
+`slack.format.extract_options_with_recommendation`. The five other channels reached
+through `split_options_trailer` strip the marker and restate nothing, so a marked
+turn arrives there with the steer removed rather than shown. That is accepted for
+now, not overlooked: the agent-facing rule is retracted per turn for
+channel-started sessions, so the marker should not normally be produced on those
+surfaces at all, and the restatement helper is the reusable half when each renderer
+adopts it — each needs its own block vocabulary, which is why it is not one shared
+change. Wiring those five, or declining to strip where no substitute renders, is
+the follow-up.
+
 The default is `False` because the failure directions are asymmetric — a needless
 keep flashes markup for one frame, a needless cut deletes unrecoverable text — so a
 caller that forgets degrades toward the cosmetic failure, and every streaming caller

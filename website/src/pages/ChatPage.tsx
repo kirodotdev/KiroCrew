@@ -4724,7 +4724,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Swapping chats (activeSlot change) → messages change → memo recomputes fresh.
   // A pending question card suppresses them: both would offer the same choices in
   // the same band, and only the card can answer the blocked tool call.
-  const { followUpOptions, followUpIsPlan, followUpSourceKey } = useMemo(
+  const { followUpOptions, followUpRecommended, followUpIsPlan, followUpSourceKey } = useMemo(
     () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion),
     [messages, isStreaming, pendingQuestion],
   )
@@ -9662,6 +9662,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               quickSend={dashCfg?.quick_send}
               followUpLayout={chatConfig.followUpLayout}
               followUpSourceKey={followUpSourceKey}
+              followUpRecommended={followUpRecommended}
               onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
                 // Plan options (Go / Go All / Cancel) dispatch directly — no input fill.
                 // Non-protocol labels on a plan-shaped message keep the composer path:

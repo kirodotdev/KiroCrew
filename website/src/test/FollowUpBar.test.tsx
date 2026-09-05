@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import FollowUpBar, { FOLLOWUP_CHIP_DEBOUNCE_MS } from '../components/FollowUpBar'
+import { parseOptions } from '../app-sdk/protocol/options'
 
 // jsdom polyfill: scroll-layout uses ResizeObserver to track when the chip
 // strip can scroll left/right.
@@ -554,6 +555,106 @@ describe('FollowUpBar', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Send now: Go' }))
       expect(onSend).toHaveBeenCalledWith('Go', 'row-1')
       expect(onSelect).not.toHaveBeenCalled()
+    })
+  })
+
+  // ─── (recommended) badge ─────────────────────────────────────────────────
+  //
+  // The point of the badge is its POSITION. A marker left in the label sits
+  // inside the one clamped line and the ellipsis reaches it first, so these
+  // assert the badge is a SIBLING of the clamped span, never a descendant —
+  // an assertion on the text alone would pass either way and prove nothing.
+  describe('recommendation badge', () => {
+    const clamped = (root: HTMLElement) => root.querySelector('.truncate')
+
+    it('renders the marker text for a recommended option', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now', 'Show me the diff']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(container.textContent).toContain('recommended')
+    })
+
+    it('places the badge OUTSIDE the clamped span, so no label length can hide it', () => {
+      const long = 'Start the walk with the 4 badged items in board order, one per turn'
+      const { container } = render(
+        <FollowUpBar options={[long]} recommended={long} picked={new Set()} onSelect={() => {}} />,
+      )
+      const span = clamped(container)
+      expect(span).not.toBeNull()
+      // The clamped element carries ONLY the label...
+      expect(span!.textContent).toBe(long)
+      // ...and the badge is not inside it, so clamping cannot consume it.
+      expect(span!.textContent).not.toContain('recommended')
+      expect(container.textContent).toContain('recommended')
+    })
+
+    it('renders no badge for an unmarked option', () => {
+      const { container } = render(
+        <FollowUpBar options={['Show me the diff']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(container.textContent).toBe('Show me the diff')
+    })
+
+    it('renders no badge when the caller passes no map at all', () => {
+      const { container } = render(
+        <FollowUpBar options={['Alpha']} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(container.textContent).toBe('Alpha')
+      expect(clamped(container)!.textContent).toBe('Alpha')
+    })
+
+    it('still dispatches the clean option text, not the badge', () => {
+      const onSelect = vi.fn()
+      render(
+        <FollowUpBar options={['Merge it now']} recommended={'Merge it now'} picked={new Set()} onSelect={onSelect} />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /Merge it now/ }))
+      expect(onSelect).toHaveBeenCalledWith('Merge it now', expect.any(Object))
+    })
+
+    it('badges the recommended chip in a split-button row too', () => {
+      const { container } = render(
+        <FollowUpBar options={['Merge it now', 'Hold']} recommended={'Merge it now'} picked={new Set()} onSelect={() => {}} onSend={() => {}} />,
+      )
+      const spans = Array.from(container.querySelectorAll('.truncate')).map(n => n.textContent)
+      expect(spans).toEqual(['Merge it now', 'Hold'])
+      expect(container.textContent).toContain('recommended')
+    })
+
+    // REGRESSION, kept after the field became a `Set`. When this was a plain
+    // object, `recommended['__proto__']` returned the INHERITED value —
+    // `Object.prototype`, handed to React as a child, which throws and takes the
+    // whole chat down. A `Set` has no inherited keys, so the hazard is gone by
+    // construction; this pins that a prototype-named option still renders.
+    it('renders a prototype-keyed option instead of crashing', () => {
+      const { container } = render(
+        <FollowUpBar options={['__proto__', 'Safe']} recommended={'Safe'} picked={new Set()} onSelect={() => {}} />,
+      )
+      const spans = Array.from(container.querySelectorAll('.truncate')).map(n => n.textContent)
+      expect(spans).toEqual(['__proto__', 'Safe'])
+      // The prototype-keyed option carries no marker, so it must show no badge.
+      expect(container.textContent).toBe('__proto__recommendedSafe')
+    })
+
+    it('renders every prototype-shaped key without crashing', () => {
+      const keys = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']
+      const { container } = render(
+        <FollowUpBar options={keys} recommended={null} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(Array.from(container.querySelectorAll('.truncate')).map(n => n.textContent)).toEqual(keys)
+    })
+
+    // End-to-end: the map really produced by the parser, for the marker shape the
+    // finding names. Assigning to `__proto__` on a plain object hits the inherited
+    // SETTER and is silently dropped, so this covers the write side as well.
+    it('badges a prototype-keyed option parsed from a real marker', () => {
+      const { options, recommended } = parseOptions('[OPTIONS: (recommended) __proto__ | Safe]')
+      expect(options).toEqual(['__proto__', 'Safe'])
+      const { container } = render(
+        <FollowUpBar options={options} recommended={recommended} picked={new Set()} onSelect={() => {}} />,
+      )
+      expect(Array.from(container.querySelectorAll('.truncate')).map(n => n.textContent)).toEqual(['__proto__', 'Safe'])
+      expect(container.textContent).toContain('recommended')
     })
   })
 })

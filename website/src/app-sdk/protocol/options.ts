@@ -4,6 +4,7 @@ import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
 import { OPTION_MARKER_RE } from './optionMarker'
+import { splitRecommendation } from './recommendation'
 
 // A plan is recognised by BOTH its header and at least one stage line, so ordinary
 // prose that happens to mention a plan is not mistaken for one.
@@ -14,8 +15,31 @@ const STAGE_RE = /^Stage\s+\d+\s*:/m
 export interface ParsedOptions {
   /** `content` with every marker removed, trimmed — what a transcript should render. */
   text: string
-  /** Choices from the LAST marker, in the order the agent listed them. */
+  /**
+   * Choices from the LAST marker, in the order the agent listed them, each with
+   * its `(recommended)` marker removed — see `./recommendation`. These strings
+   * are canonical: a click sends one verbatim and every `picked` set is keyed on
+   * them, so the marker must be gone HERE rather than at render time, or the
+   * label a chip displays and the label its host tracks would disagree.
+   */
   options: string[]
+  /**
+   * The one label from `options` that carried a recommendation, or `null`.
+   *
+   * A single label rather than a set, because the only sanctioned producer says
+   * "Mark at most one option": a set would hedge a multi-recommendation producer
+   * that does not exist, and every host consumer only ever asks whether ONE chip
+   * is the recommended one. Narrowing later would be a breaking change for app
+   * authors, so it happens here, before this field is published SDK surface.
+   *
+   * A label, not the marker word: the grammar admits exactly one word, so a
+   * label-to-word map's value could only ever be that constant.
+   *
+   * When a producer breaks the contract and marks several, the FIRST wins and the
+   * rest render unmarked — a chip menu with two "recommended" badges recommends
+   * nothing, so collapsing to one is the reading that keeps the badge meaningful.
+   */
+  recommended: string | null
   /** `[OPTIONS:]` allows several picks; `[OPTION:]` is a single choice. */
   multi: boolean
   /** The message is a plan (header plus at least one stage line), not a plain question. */
@@ -28,21 +52,32 @@ export function parseOptions(content: string): ParsedOptions {
   // `.exec()` anywhere would make the scan start mid-string and miss the marker. Clone per call:
   // the cost is one regex construction, the alternative is a silent parse failure.
   for (const m of content.matchAll(new RegExp(OPTION_MARKER_RE))) last = m
-  if (!last || last.index === undefined) return { text: content, options: [], multi: true, isPlan: false }
+  if (!last || last.index === undefined) return { text: content, options: [], recommended: null, multi: true, isPlan: false }
   const multi = !!last[1] // [OPTIONS:] is the multi-select syntax; [OPTION:] is single
   const sep = last[2].includes('|') ? '|' : ','
-  const options = last[2].split(sep).map(o => o.trim()).filter(Boolean)
+  // Split the recommendation marker off each label BEFORE anything downstream sees it, so the
+  // strings the rest of the app keys on are the instruction alone. `filter(Boolean)` runs on the
+  // raw split (an empty label is not a choice); the marker cannot empty a label, because
+  // `splitRecommendation` declines to strip one that would.
+  let recommended: string | null = null
+  const options = last[2].split(sep).map(o => o.trim()).filter(Boolean).map(raw => {
+    const { label, hasMarker } = splitRecommendation(raw)
+    if (hasMarker && recommended === null) recommended = label
+    return label
+  })
   const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
   // Strip ALL markers from the displayed text (not just the last) so a stray earlier
   // marker can't leak as raw "[OPTION: …]" syntax to the user; options still come from
   // the LAST marker (computed above). OPTION_MARKER_RE is global, so replace removes
   // every occurrence while preserving the prose around them.
   const text = content.replace(OPTION_MARKER_RE, '').trim()
-  return { text, options, multi, isPlan }
+  return { text, options, recommended, multi, isPlan }
 }
 
 export interface FollowUpDerivation {
   followUpOptions: string[]
+  /** `ParsedOptions.recommended` for the row the options came from. */
+  followUpRecommended: string | null
   followUpIsPlan: boolean
   /**
    * Identity of the row the options were derived from — `meta.mid` when
@@ -155,7 +190,7 @@ export function deriveFollowUpOptions(
   isStreaming: boolean,
   questionPending = false,
 ): FollowUpDerivation {
-  if (isStreaming || questionPending) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+  if (isStreaming || questionPending) return { followUpOptions: [], followUpRecommended: null, followUpIsPlan: false, followUpSourceKey: null }
   // Errors were already transparent here (no branch matched them); the flag is
   // what makes that transparency mean something.
   let sawError = false
@@ -165,15 +200,15 @@ export function deriveFollowUpOptions(
     const m = messages[i]
     // A deliberate Stop ENDS the turn rather than interrupting it, so the choice is closed
     // by the user's own cancellation — the error licence below must not reach back past it.
-    if (isStopEvent(m)) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    if (isStopEvent(m)) return { followUpOptions: [], followUpRecommended: null, followUpIsPlan: false, followUpSourceKey: null }
     // Only a TERMINAL error licenses a crossing. A retry notice means the recovery is
     // already queued, so re-offering the pill would run the same choice a second time.
     if (m.role === 'error') { if (!isRetryNotice(m)) sawError = true; continue }
     // `queued` is an UNCONDITIONAL stop: its queue entry OUTLIVES the error (only a hard
     // kill clears the queue), so re-offering the pill would run the choice a second time.
-    if (m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    if (m.role === 'queued') return { followUpOptions: [], followUpRecommended: null, followUpIsPlan: false, followUpSourceKey: null }
     if (m.role === 'user') {
-      if (!sawError) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+      if (!sawError) return { followUpOptions: [], followUpRecommended: null, followUpIsPlan: false, followUpSourceKey: null }
       // Cross this failed turn and keep looking. Re-armed only by another error,
       // so a SUCCESSFUL turn further back still stops the scan.
       sawError = false
@@ -190,22 +225,22 @@ export function deriveFollowUpOptions(
         // only to dispatch /plan-action — so plan-shaped note text would let `Cancel` kill a plan.
         // A note row still gets an identity: the bar keys its render off it, and a note whose
         // options never re-key would let a later identical note reuse the earlier row's key.
-        return { followUpOptions: parsed.options, followUpIsPlan: false, followUpSourceKey: rowIdentity(m, i) }
+        return { followUpOptions: parsed.options, followUpRecommended: parsed.recommended, followUpIsPlan: false, followUpSourceKey: rowIdentity(m, i) }
       }
       continue
     }
     if (m.role === 'assistant' && m.content) {
-      const { options, isPlan } = parseOptions(m.content)
+      const { options, recommended, isPlan } = parseOptions(m.content)
       // A failed turn can flush the text it streamed as a real assistant row before the
       // error, and that option-less row shadowed the question exactly as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.
       if (!options.length && sawError) { crossedFailedTurn = true; continue }
       // Offer NOTHING for a plan row reached that way. Demoting to the composer path is not
       // enough: with Quick Send on, one click still sends `Go All` as orchestrator-run text.
-      if (isPlan && crossedFailedTurn) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+      if (isPlan && crossedFailedTurn) return { followUpOptions: [], followUpRecommended: null, followUpIsPlan: false, followUpSourceKey: null }
       const followUpSourceKey = options.length > 0 ? rowIdentity(m, i) : null
-      return { followUpOptions: options, followUpIsPlan: isPlan, followUpSourceKey }
+      return { followUpOptions: options, followUpRecommended: recommended, followUpIsPlan: isPlan, followUpSourceKey }
     }
   }
-  return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+  return { followUpOptions: [], followUpRecommended: null, followUpIsPlan: false, followUpSourceKey: null }
 }

@@ -128,7 +128,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
    *  need working plan chips, the parity option is wiring `usePlanActionMutation`
    *  plus a mode source into this file — a product decision, not an oversight.
    *  Pinned by the plan-exclusion test in src/test/ChatEmbed.test.tsx. */
-  const { followUpOptions } = useMemo(
+  const { followUpOptions, followUpRecommended } = useMemo(
     () => deriveFollowUpOptions(messages, running),
     [messages, running]
   )
@@ -276,6 +276,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         <div className={`shrink-0 px-3 ${frameless ? '' : 'bg-bg-accent'}`}>
           <FollowUpBar
             options={followUpOptions}
+            recommended={followUpRecommended}
             picked={picked}
             onSelect={toggleOption}
             onSend={text => send(text)}

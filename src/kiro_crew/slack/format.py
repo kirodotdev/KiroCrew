@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Callable, NamedTuple
 
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import OPTIONS_RE_LINE, strip_recommended_marker
 from kiro_crew.messaging.display_safety import redact_for_display, strip_ansi
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
@@ -39,16 +39,51 @@ SUBAGENT_ACK_ACTION_PREFIX = "subagent_ack_"
 LINK_DASHBOARD_ACTION = "mc_link_dashboard"
 
 
+def extract_options_with_recommendation(text: str) -> tuple[str, list[str], str | None]:
+    """Extract ``(cleaned_text, choices, recommended)`` from an ``[OPTIONS:]`` trailer.
+
+    The ONE Slack-side parse of that marker. A choice is echoed back as the user's
+    own message on submit, so the ``(recommended)`` marker is removed here; the
+    label it marked is returned as *recommended* so a caller that needs both does
+    not parse the trailer twice and cannot drift between the two readings.
+
+    *recommended* is first-wins on more than one marked choice, matching the
+    frontend contract (``ParsedOptions.recommended``), and is ``None`` when a
+    marker is present but the strip declines it -- a marker-only label, or one that
+    would open with a reserved dispatch sigil -- because nothing was stripped there
+    and the label the user sees still carries its own marker.
+    """
+    m = _OPTIONS_RE.search(text)
+    if not m:
+        return text, [], None
+    choices: list[str] = []
+    recommended: str | None = None
+    for raw in (c.strip() for c in m.group(1).split("|")):
+        if not raw:
+            continue
+        cleaned = strip_recommended_marker(raw)
+        if recommended is None and cleaned != raw:
+            recommended = cleaned
+        choices.append(cleaned)
+    return text[: m.start()].rstrip(), choices, recommended
+
+
 def extract_options(text: str) -> tuple[str, list[str]]:
     """Extract OPTIONS choices from LLM response and strip the tag.
 
     Returns (cleaned_text, choices). If no OPTIONS found, choices is empty.
+
+    This is the SLACK-side parse: its callers are Slack's own gateway, renderer and
+    handler plus the dashboard's Slack mirror, so a marker left in place is
+    dispatched verbatim on Slack. Telegram, Teams and Discord do not use it -- they
+    parse the same trailer through ``messaging.renderer.split_options_trailer``,
+    which strips the marker itself. ``strip_recommended_marker`` is a no-op on a
+    label that would become a slash command, a mention, or reserved provenance.
+
+    Callers needing the marked label too take
+    :func:`extract_options_with_recommendation`, which this delegates to.
     """
-    m = _OPTIONS_RE.search(text)
-    if not m:
-        return text, []
-    choices = [c.strip() for c in m.group(1).split("|") if c.strip()]
-    cleaned = text[: m.start()].rstrip()
+    cleaned, choices, _ = extract_options_with_recommendation(text)
     return cleaned, choices
 
 
@@ -85,6 +120,7 @@ def build_options_blocks(
     *,
     redactor: Callable[[str], str] | None = None,
     staleness_token: str | None = None,
+    recommended: str | None = None,
 ) -> list[dict]:
     """Build Slack Block Kit checkboxes + Send button for multi-select OPTIONS.
 
@@ -103,6 +139,11 @@ def build_options_blocks(
     the gateway remembering anything: see
     :func:`kiro_crew.slack.outbound.encode_options_token`. Omitting it posts a
     control that cannot be proven stale, so clicks on it are honoured.
+
+    *recommended* names the choice the agent marked. Slack renders no badge and the
+    marker is stripped off the label, so it is restated as a line ABOVE the controls
+    -- the dashboard shows a badge, Slack shows a sentence, and neither dispatches
+    the marker. Pass the CLEANED label: it is display text, matched against nothing.
     """
     # Circular import: slack/transport.py imports SLACK_MSG_LIMIT from this
     # module at top level, so the capabilities object must be imported lazily.
@@ -136,6 +177,19 @@ def build_options_blocks(
     if staleness_token:
         actions["block_id"] = staleness_token
     blocks: list[dict] = [actions]
+    if recommended:
+        # The ONLY mrkdwn field here -- the label and value sinks are plain_text, which
+        # Slack does not interpret. Slice then escape, as the selected-summary block does.
+        _rec = _redact_choices([recommended], redactor)[0]
+        blocks.insert(
+            0,
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"*Recommended:* {escape_mrkdwn(_rec[:150])}"}
+                ],
+            },
+        )
     if overflow:
         # Chunk instead of slicing: a single [:2900] would re-create the
         # silent data loss this cap exists to remove, one layer down. Slack
