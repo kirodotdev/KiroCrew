@@ -169,9 +169,17 @@ on passphrase-protected keys or hardware tokens use key files directly or leave
 `is_sensitive_write_path()` is its strict superset: it adds paths that stay
 readable but must not be modified by an agent tool (the data home's `config.json`
 / `config.local.json`, which carry resource ceilings, and the data-home migration
-marker, whose mere presence is a trust signal). Path matching checks the fully
-symlink-resolved target as well as the lexically normalized and raw forms, so a
-workspace symlink into a blocked directory is refused through the link.
+marker, whose mere presence is a trust signal). The generated Windows
+`trust/ca-bundle.pem`, which controls child-process TLS trust, sits inside the
+read+write-blocked governance trust-root directory. Path matching checks the
+fully symlink-resolved target as well as the lexically normalized and raw forms,
+so a workspace symlink into a blocked directory is refused through the link.
+Because non-Python TLS stacks locate that file through inherited environment
+variables, the shell gate also treats an explicit reference to
+`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, or the private managed-bundle marker as
+another spelling of the protected path. Ambient inheritance remains available
+to HTTPS clients; an agent command cannot dereference the aliases to rewrite the
+trust input.
 
 `hooks.safe_read_file()` is the guarded read used by Kiro Crew's own non-tool file
 access: it re-checks the resolved target and then opens the canonical path with
@@ -511,7 +519,8 @@ detection would extend it.
 
 **Write protection covers Kiro Crew's own trust root, not the user's shell
 startup files.** Credential directories and the keystone are read+write blocked,
-and `config.json` plus the migration marker are write-blocked, but ordinary
+and runtime trust inputs such as `config.json`, the migration marker, and the
+generated Windows CA bundle are write-blocked, but ordinary
 persistence targets such as `~/.bashrc` or `~/.zshrc` are not: they are not
 credential stores, and blocking the whole home directory would make the agent
 useless for its normal work. An agent write there is therefore a real persistence
