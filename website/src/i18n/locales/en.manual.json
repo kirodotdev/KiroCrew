@@ -3948,7 +3948,8 @@
       "session_color": "Session Color",
       "session_color_hint": "Sessions this agent starts use this color unless the session has a color of its own. Editing it re-tints those sessions. Leave empty for no agent color.",
       "session_color_hex": "Session color hex value",
-      "session_color_clear": "Clear"
+      "session_color_clear": "Clear",
+      "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options."
     },
     "knowledge": {
       "detailView": {
@@ -4084,7 +4085,8 @@
       "tail_off": "Tail: off",
       "tail_on": "Tail: on",
       "wrap_off": "Wrap: off",
-      "wrap_on": "Wrap: on"
+      "wrap_on": "Wrap: on",
+      "level_change_failed": "Failed to change log level"
     },
     "mcpManagement": {
       "assessment": {
@@ -4189,7 +4191,6 @@
       "clean_up_old_entry": "Clean up old entry",
       "cleaning_up": "Cleaning up…",
       "cleanup_failed": "Cleanup failed",
-      "dismiss_error": "Dismiss error",
       "failed_to_load_app_info": "Failed to load app info",
       "migration_guide_for": "Migration guide for {{name}}",
       "retry": "Retry"
@@ -4444,7 +4445,8 @@
     "projectDetailPage": {
       "export_yaml": "Export YAML",
       "exporting": "Exporting…",
-      "task_is_waiting_for_your_decision": "Task {{index}} \"{{title}}\" is waiting for your decision"
+      "task_is_waiting_for_your_decision": "Task {{index}} \"{{title}}\" is waiting for your decision",
+      "failed_to_update_task": "Failed to update task"
     },
     "projectsPage": {
       "default_workspace_folder": "Default workspace folder",
@@ -4453,7 +4455,8 @@
       "open_project": "Open project {{name}}",
       "planning_request_failed": "Planning request failed",
       "planning_timed_out_try_again": "Planning timed out. Try again.",
-      "project": "Project"
+      "project": "Project",
+      "action_failed": "Action failed"
     },
     "remoteArtifactDetailPage": {
       "fork_failed": "Fork failed",

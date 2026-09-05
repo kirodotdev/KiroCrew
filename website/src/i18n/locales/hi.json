@@ -10315,7 +10315,8 @@
       "session_color": "सत्र रंग",
       "session_color_hint": "इस एजेंट द्वारा शुरू किए गए सत्र इस रंग का उपयोग करते हैं, जब तक कि सत्र का अपना रंग न हो। इसे संपादित करने पर वे सत्र फिर से रंगे जाते हैं। कोई एजेंट रंग न रखने के लिए इसे खाली छोड़ दें।",
       "session_color_hex": "सत्र रंग हेक्स मान",
-      "session_color_clear": "साफ़ करें"
+      "session_color_clear": "साफ़ करें",
+      "editor_options_load_failed": "क्रू एडिटर के वर्कस्पेस, टेम्पलेट और मेमोरी स्टोर विकल्प लोड नहीं हो सके।"
     },
     "knowledge": {
       "detailView": {
@@ -10601,7 +10602,8 @@
       "tail_off": "टेल: बंद",
       "tail_on": "टेल: चालू",
       "wrap_off": "रैप: बंद",
-      "wrap_on": "रैप: चालू"
+      "wrap_on": "रैप: चालू",
+      "level_change_failed": "लॉग स्तर बदला नहीं जा सका"
     },
     "mcpGatewayCard": {
       "active_sessions": "सक्रिय सत्र",
@@ -10727,7 +10729,6 @@
       "cleanup_complete": "सफ़ाई पूरी हुई",
       "cleanup_failed": "सफ़ाई विफल",
       "coming_soon_this_app_is_not_yet_available_in_app": "जल्द आ रहा है — यह ऐप अभी ऐप्स में उपलब्ध नहीं है। अगले अपडेट के बाद फिर देखें।",
-      "dismiss_error": "त्रुटि खारिज करें",
       "failed_to_load_app_info": "ऐप जानकारी लोड नहीं हो सकी",
       "has_moved_to_a_standalone_app": "एक स्टैंडअलोन ऐप में चला गया है",
       "install_from_apps": "ऐप्स से इंस्टॉल करें",
@@ -11451,7 +11452,8 @@
       "phased": "चरणबद्ध",
       "task_is_waiting_for_your_decision": "कार्य {{index}} \"{{title}}\" आपके निर्णय की प्रतीक्षा कर रहा है",
       "tasks": "कार्य",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "प्लान तैयार होने पर DAG व्यू दिखाई देगा"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "प्लान तैयार होने पर DAG व्यू दिखाई देगा",
+      "failed_to_update_task": "कार्य अपडेट नहीं हो सका"
     },
     "projectsPage": {
       "agent": "एजेंट:",
@@ -11508,7 +11510,8 @@
       "workspace": "वर्कस्पेस:",
       "workspace_folder": "वर्कस्पेस फ़ोल्डर",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML फ़ाइलें \"YAML से\" टैब के ज़रिए अपलोड करनी चाहिए।",
-      "yaml_workflows_bypass_the_llm_decomposer": "YAML वर्कफ़्लो LLM डीकंपोज़र को बायपास करते हैं —"
+      "yaml_workflows_bypass_the_llm_decomposer": "YAML वर्कफ़्लो LLM डीकंपोज़र को बायपास करते हैं —",
+      "action_failed": "कार्रवाई विफल"
     },
     "remoteArtifactDetailPage": {
       "back": "वापस",

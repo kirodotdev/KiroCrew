@@ -10462,7 +10462,8 @@
       "session_color": "Color de sesión",
       "session_color_hint": "Las sesiones que inicia este agente usan este color a menos que la sesión tenga su propio color. Editarlo vuelve a colorear esas sesiones. Déjalo vacío para no tener color de agente.",
       "session_color_hex": "Valor hexadecimal del color de sesión",
-      "session_color_clear": "Borrar"
+      "session_color_clear": "Borrar",
+      "editor_options_load_failed": "No se pudieron cargar las opciones de espacio de trabajo, plantilla y almacén de memoria del editor de crew."
     },
     "knowledge": {
       "detailView": {
@@ -10754,7 +10755,8 @@
       "tail_off": "Seguimiento: desactivado",
       "tail_on": "Seguimiento: activado",
       "wrap_off": "Ajuste de línea: desactivado",
-      "wrap_on": "Ajuste de línea: activado"
+      "wrap_on": "Ajuste de línea: activado",
+      "level_change_failed": "No se pudo cambiar el nivel de registro"
     },
     "mcpGatewayCard": {
       "active_sessions": "Sesiones activas",
@@ -10882,7 +10884,6 @@
       "cleanup_complete": "Limpieza completada",
       "cleanup_failed": "Error al limpiar",
       "coming_soon_this_app_is_not_yet_available_in_app": "Próximamente — esta app todavía no está disponible en Apps. Vuelve a comprobarlo después de la próxima actualización.",
-      "dismiss_error": "Descartar el error",
       "failed_to_load_app_info": "No se pudo cargar la información de la app",
       "has_moved_to_a_standalone_app": "se ha convertido en una app independiente",
       "install_from_apps": "Instalar desde Apps",
@@ -11610,7 +11611,8 @@
       "phased": "Por fases",
       "task_is_waiting_for_your_decision": "Tarea {{index}} \"{{title}}\" está esperando tu decisión",
       "tasks": "Tareas",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "La vista DAG aparecerá cuando el plan esté listo"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "La vista DAG aparecerá cuando el plan esté listo",
+      "failed_to_update_task": "No se pudo actualizar la tarea"
     },
     "projectsPage": {
       "agent": "Agente:",
@@ -11667,7 +11669,8 @@
       "workspace": "Espacio de trabajo:",
       "workspace_folder": "Carpeta del espacio de trabajo",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Los archivos YAML deben subirse desde la pestaña \"Desde YAML\".",
-      "yaml_workflows_bypass_the_llm_decomposer": "Los flujos de trabajo YAML omiten el descompositor del LLM —"
+      "yaml_workflows_bypass_the_llm_decomposer": "Los flujos de trabajo YAML omiten el descompositor del LLM —",
+      "action_failed": "Acción fallida"
     },
     "remoteArtifactDetailPage": {
       "back": "Atrás",

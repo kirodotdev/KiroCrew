@@ -10462,7 +10462,8 @@
       "session_color": "Colore sessione",
       "session_color_hint": "Le sessioni avviate da questo agente usano questo colore a meno che la sessione non abbia un colore proprio. Modificarlo ricolora quelle sessioni. Lasciare vuoto per nessun colore agente.",
       "session_color_hex": "Valore esadecimale del colore sessione",
-      "session_color_clear": "Cancella"
+      "session_color_clear": "Cancella",
+      "editor_options_load_failed": "Impossibile caricare le opzioni di workspace, modello e archivio della memoria dell'editor del crew."
     },
     "knowledge": {
       "detailView": {
@@ -10754,7 +10755,8 @@
       "tail_off": "Tail: inattivo",
       "tail_on": "Tail: attivo",
       "wrap_off": "A capo: inattivo",
-      "wrap_on": "A capo: attivo"
+      "wrap_on": "A capo: attivo",
+      "level_change_failed": "Impossibile modificare il livello di log"
     },
     "mcpGatewayCard": {
       "active_sessions": "Sessioni attive",
@@ -10882,7 +10884,6 @@
       "cleanup_complete": "Pulizia completata",
       "cleanup_failed": "Pulizia non riuscita",
       "coming_soon_this_app_is_not_yet_available_in_app": "Prossimamente — questa app non è ancora disponibile in App. Ricontrolla dopo il prossimo aggiornamento.",
-      "dismiss_error": "Chiudi l'errore",
       "failed_to_load_app_info": "Caricamento delle informazioni dell'app non riuscito",
       "has_moved_to_a_standalone_app": "è passato a un'app standalone",
       "install_from_apps": "Installa da App",
@@ -11610,7 +11611,8 @@
       "phased": "A fasi",
       "task_is_waiting_for_your_decision": "Attività {{index}} \"{{title}}\" è in attesa della tua decisione",
       "tasks": "Attività",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "La vista DAG apparirà quando il piano sarà pronto"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "La vista DAG apparirà quando il piano sarà pronto",
+      "failed_to_update_task": "Impossibile aggiornare l'attività"
     },
     "projectsPage": {
       "agent": "Agente:",
@@ -11667,7 +11669,8 @@
       "workspace": "Workspace:",
       "workspace_folder": "Cartella del workspace",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "I file YAML devono essere caricati tramite la scheda \"Da YAML\".",
-      "yaml_workflows_bypass_the_llm_decomposer": "I workflow YAML aggirano il decompositore LLM —"
+      "yaml_workflows_bypass_the_llm_decomposer": "I workflow YAML aggirano il decompositore LLM —",
+      "action_failed": "Azione non riuscita"
     },
     "remoteArtifactDetailPage": {
       "back": "Indietro",

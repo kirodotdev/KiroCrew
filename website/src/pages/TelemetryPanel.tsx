@@ -6,6 +6,7 @@ import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
 
 import { api } from '../api/client'
+import ErrorNotice from '../components/ErrorNotice'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
 import { SettingRef } from '../components/settingRef/SettingRef'
@@ -704,9 +705,16 @@ function SessionTurnsDrilldown({ slot }: { slot: string }) {
     // A failed fetch must not read as "no rows": asserting the data does not
     // exist when the request failed sends the reader away with a wrong fact
     // and no reason to retry.
+    // askAgent on: a read of already-recorded usage rows; the drilldown holds
+    // nothing editable. Retry stays beside it — a different next step.
     return (
       <div className="flex items-center gap-2 px-2 py-1">
-        <span className="text-[11px] text-muted">{i18nT('pages.telemetryPanel.turns_error')}</span>
+        <ErrorNotice
+          variant="inline"
+          message={i18nT('pages.telemetryPanel.turns_error')}
+          askAgent
+          testId="telemetry-turns-error"
+        />
         <Btn className="px-1.5 py-0.5 text-[11px]" onClick={() => void q.refetch()}>
           {i18nT('pages.telemetryPanel.turns_retry')}
         </Btn>
@@ -1783,7 +1791,7 @@ function usePersistedChoice<T extends string>(
 }
 
 export default function TelemetryPanel() {
-  const { data, isLoading } = useQuery<Resp>({
+  const { data, isLoading, isError, error } = useQuery<Resp>({
     queryKey: ['telemetry-startup'],
     queryFn: () => api.telemetryStartup(),
     refetchInterval: 5000,
@@ -1791,6 +1799,18 @@ export default function TelemetryPanel() {
   const [tab, setTab] = usePersistedChoice<Tab>('telemetry:tab', TABS, 'spend')
 
   if (isLoading && !data) return <Notice>{i18nT('pages.telemetryPanel.loading_telemetry')}</Notice>
+  // A fetch that never produced data is a failure, not "nothing recorded": the
+  // no-data notice below would otherwise state a fact the request never
+  // established. Once data exists, a failed refetch keeps the last figures on
+  // screen (react-query retains `data`) and the 5s poll retries on its own.
+  // askAgent on: a read-only telemetry panel with nothing editable.
+  if (isError && !data) {
+    return (
+      <div className="py-12 px-4">
+        <ErrorNotice message={error?.message} askAgent testId="telemetry-startup-error" />
+      </div>
+    )
+  }
 
   const offBody = data ? (
     <Trans

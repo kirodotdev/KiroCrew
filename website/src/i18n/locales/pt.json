@@ -10462,7 +10462,8 @@
       "session_color": "Cor da sessão",
       "session_color_hint": "As sessões iniciadas por este agente usam esta cor, a menos que a sessão tenha uma cor própria. Editá-la recolore essas sessões. Deixe vazio para nenhuma cor de agente.",
       "session_color_hex": "Valor hexadecimal da cor da sessão",
-      "session_color_clear": "Limpar"
+      "session_color_clear": "Limpar",
+      "editor_options_load_failed": "Não foi possível carregar as opções de espaço de trabalho, modelo e armazenamento de memória do editor de crew."
     },
     "knowledge": {
       "detailView": {
@@ -10754,7 +10755,8 @@
       "tail_off": "Tail: desligado",
       "tail_on": "Tail: ligado",
       "wrap_off": "Quebra de linha: desligada",
-      "wrap_on": "Quebra de linha: ligada"
+      "wrap_on": "Quebra de linha: ligada",
+      "level_change_failed": "Falha ao alterar o nível de log"
     },
     "mcpGatewayCard": {
       "active_sessions": "Sessões ativas",
@@ -10882,7 +10884,6 @@
       "cleanup_complete": "Limpeza concluída",
       "cleanup_failed": "Falha na limpeza",
       "coming_soon_this_app_is_not_yet_available_in_app": "Em breve — este app ainda não está disponível em Apps. Volte após a próxima atualização.",
-      "dismiss_error": "Dispensar erro",
       "failed_to_load_app_info": "Falha ao carregar as informações do app",
       "has_moved_to_a_standalone_app": "foi movido para um app independente",
       "install_from_apps": "Instalar em Apps",
@@ -11610,7 +11611,8 @@
       "phased": "Em fases",
       "task_is_waiting_for_your_decision": "Tarefa {{index}} \"{{title}}\" está aguardando sua decisão",
       "tasks": "Tarefas",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "A visualização DAG aparecerá quando o plano estiver pronto"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "A visualização DAG aparecerá quando o plano estiver pronto",
+      "failed_to_update_task": "Falha ao atualizar a tarefa"
     },
     "projectsPage": {
       "agent": "Agente:",
@@ -11667,7 +11669,8 @@
       "workspace": "Workspace:",
       "workspace_folder": "Pasta do workspace",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Os arquivos YAML devem ser enviados pela aba \"De YAML\".",
-      "yaml_workflows_bypass_the_llm_decomposer": "Os fluxos de trabalho YAML ignoram o decompositor do LLM —"
+      "yaml_workflows_bypass_the_llm_decomposer": "Os fluxos de trabalho YAML ignoram o decompositor do LLM —",
+      "action_failed": "Ação falhou"
     },
     "remoteArtifactDetailPage": {
       "back": "Voltar",

@@ -10462,7 +10462,8 @@
       "session_color": "Couleur de session",
       "session_color_hint": "Les sessions lancées par cet agent utilisent cette couleur, sauf si la session a sa propre couleur. La modifier recolore ces sessions. Laisser vide pour aucune couleur d’agent.",
       "session_color_hex": "Valeur hexadécimale de la couleur de session",
-      "session_color_clear": "Effacer"
+      "session_color_clear": "Effacer",
+      "editor_options_load_failed": "Impossible de charger les options d'espace de travail, de modèle et de magasin de mémoire de l'éditeur de crew."
     },
     "knowledge": {
       "detailView": {
@@ -10754,7 +10755,8 @@
       "tail_off": "Suivi : désactivé",
       "tail_on": "Suivi : activé",
       "wrap_off": "Retour à la ligne : désactivé",
-      "wrap_on": "Retour à la ligne : activé"
+      "wrap_on": "Retour à la ligne : activé",
+      "level_change_failed": "Échec de la modification du niveau de journalisation"
     },
     "mcpGatewayCard": {
       "active_sessions": "Sessions actives",
@@ -10882,7 +10884,6 @@
       "cleanup_complete": "Nettoyage terminé",
       "cleanup_failed": "Échec du nettoyage",
       "coming_soon_this_app_is_not_yet_available_in_app": "Bientôt disponible — cette app n'est pas encore proposée dans Apps. Revenez après la prochaine mise à jour.",
-      "dismiss_error": "Ignorer l’erreur",
       "failed_to_load_app_info": "Échec du chargement des informations de l’application",
       "has_moved_to_a_standalone_app": "a été migré vers une app autonome",
       "install_from_apps": "Installer depuis Apps",
@@ -11610,7 +11611,8 @@
       "phased": "Par phases",
       "task_is_waiting_for_your_decision": "Tâche {{index}} \"{{title}}\" attend votre décision",
       "tasks": "Tâches",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "La vue DAG apparaîtra dès que le plan sera prêt"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "La vue DAG apparaîtra dès que le plan sera prêt",
+      "failed_to_update_task": "Échec de la mise à jour de la tâche"
     },
     "projectsPage": {
       "agent": "Agent :",
@@ -11667,7 +11669,8 @@
       "workspace": "Espace de travail :",
       "workspace_folder": "Dossier de l'espace de travail",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Les fichiers YAML doivent être importés via l'onglet « Depuis YAML ».",
-      "yaml_workflows_bypass_the_llm_decomposer": "Les workflows YAML contournent le décomposeur LLM —"
+      "yaml_workflows_bypass_the_llm_decomposer": "Les workflows YAML contournent le décomposeur LLM —",
+      "action_failed": "Action échouée"
     },
     "remoteArtifactDetailPage": {
       "back": "Retour",

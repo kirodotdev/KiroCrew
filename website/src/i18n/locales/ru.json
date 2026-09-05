@@ -10609,7 +10609,8 @@
       "session_color": "Цвет сессии",
       "session_color_hint": "Сессии, запущенные этим агентом, используют этот цвет, если у сессии нет собственного цвета. Его изменение перекрашивает такие сессии. Оставьте пустым, чтобы не задавать цвет агента.",
       "session_color_hex": "Шестнадцатеричное значение цвета сессии",
-      "session_color_clear": "Очистить"
+      "session_color_clear": "Очистить",
+      "editor_options_load_failed": "Не удалось загрузить параметры рабочей области, шаблона и хранилища памяти редактора crew."
     },
     "knowledge": {
       "detailView": {
@@ -10907,7 +10908,8 @@
       "tail_off": "Слежение: выкл",
       "tail_on": "Слежение: вкл",
       "wrap_off": "Перенос: выкл",
-      "wrap_on": "Перенос: вкл"
+      "wrap_on": "Перенос: вкл",
+      "level_change_failed": "Не удалось изменить уровень журнала"
     },
     "mcpGatewayCard": {
       "active_sessions": "Активные сессии",
@@ -11037,7 +11039,6 @@
       "cleanup_complete": "Очистка завершена",
       "cleanup_failed": "Очистка не удалась",
       "coming_soon_this_app_is_not_yet_available_in_app": "Скоро — это приложение пока недоступно в разделе «Приложения». Проверьте снова после следующего обновления.",
-      "dismiss_error": "Скрыть ошибку",
       "failed_to_load_app_info": "Не удалось загрузить сведения о приложении",
       "has_moved_to_a_standalone_app": "теперь доступно как отдельное приложение",
       "install_from_apps": "Установить из Приложений",
@@ -11769,7 +11770,8 @@
       "phased": "По этапам",
       "task_is_waiting_for_your_decision": "Задача {{index}} «{{title}}» ожидает вашего решения",
       "tasks": "Задачи",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "Представление DAG появится, когда план будет готов"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "Представление DAG появится, когда план будет готов",
+      "failed_to_update_task": "Не удалось обновить задачу"
     },
     "projectsPage": {
       "agent": "Агент:",
@@ -11826,7 +11828,8 @@
       "workspace": "Рабочая область:",
       "workspace_folder": "Папка рабочей области",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Файлы YAML нужно загружать на вкладке «Из YAML».",
-      "yaml_workflows_bypass_the_llm_decomposer": "YAML-воркфлоу обходят LLM-декомпозитор —"
+      "yaml_workflows_bypass_the_llm_decomposer": "YAML-воркфлоу обходят LLM-декомпозитор —",
+      "action_failed": "Действие не выполнено"
     },
     "remoteArtifactDetailPage": {
       "back": "Назад",
