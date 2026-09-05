@@ -13694,7 +13694,16 @@
       "driving_none": "현재 구동 중인 세션이 없습니다.",
       "driving_idle": "유휴",
       "driving_show_all": "모두 보기({{count}})",
-      "driving_show_less": "접기"
+      "driving_show_less": "접기",
+      "filter_starred": "즐겨찾기",
+      "filter_starred_description": "즐겨찾기한 멤버만 표시",
+      "filter_source_mine": "내가 만든",
+      "filter_source_builtin": "기본 제공",
+      "filter_source_package": "패키지 제공",
+      "filters_hide_all": "현재 필터로 모든 멤버가 숨겨졌습니다.",
+      "filters_clear": "필터 지우기",
+      "star": "{{name}} 즐겨찾기",
+      "unstar": "{{name}} 즐겨찾기 해제"
     }
   },
   "privacyDisclosure": {

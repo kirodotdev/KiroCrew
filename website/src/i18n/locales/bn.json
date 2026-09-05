@@ -13873,7 +13873,16 @@
       "driving_none": "এই মুহূর্তে কোনো সেশন পরিচালনা করছে না।",
       "driving_idle": "নিষ্ক্রিয়",
       "driving_show_all": "সব দেখুন ({{count}})",
-      "driving_show_less": "কম দেখুন"
+      "driving_show_less": "কম দেখুন",
+      "filter_starred": "তারকাচিহ্নিত",
+      "filter_starred_description": "শুধু তারকাচিহ্নিত সদস্য দেখান",
+      "filter_source_mine": "আমার",
+      "filter_source_builtin": "অন্তর্নির্মিত",
+      "filter_source_package": "প্যাকেজ থেকে",
+      "filters_hide_all": "সক্রিয় ফিল্টার সব সদস্যকে লুকিয়ে রাখছে।",
+      "filters_clear": "ফিল্টার মুছুন",
+      "star": "{{name}} তারকাচিহ্নিত করুন",
+      "unstar": "{{name}} এর তারকাচিহ্ন সরান"
     }
   },
   "privacyDisclosure": {

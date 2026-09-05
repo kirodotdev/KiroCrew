@@ -158,6 +158,11 @@ async def api_members(request: web.Request) -> web.Response:
                 # it cannot carry a credential-shaped value. Without it every
                 # Members surface silently falls back to the name-derived face.
                 "avatar": agent_cfg.avatar,
+                # Roster-filter inputs. `source` lets the page collapse the
+                # package-installed majority the agent sync writes; `starred`
+                # is the user's own favourite mark (PUT /api/agents/{name}).
+                "source": agent_cfg.source,
+                "starred": agent_cfg.starred,
             }
         )
 

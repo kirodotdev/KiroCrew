@@ -13872,7 +13872,16 @@
       "driving_none": "Steuert derzeit keine Sitzungen.",
       "driving_idle": "Inaktiv",
       "driving_show_all": "Alle anzeigen ({{count}})",
-      "driving_show_less": "Weniger anzeigen"
+      "driving_show_less": "Weniger anzeigen",
+      "filter_starred": "Markiert",
+      "filter_starred_description": "Nur markierte Mitglieder anzeigen",
+      "filter_source_mine": "Eigene",
+      "filter_source_builtin": "Integriert",
+      "filter_source_package": "Aus Paketen",
+      "filters_hide_all": "Die aktiven Filter verbergen alle Mitglieder.",
+      "filters_clear": "Filter zurücksetzen",
+      "star": "{{name}} markieren",
+      "unstar": "Markierung von {{name}} entfernen"
     }
   },
   "privacyDisclosure": {

@@ -7174,6 +7174,20 @@
       "defaultValue": "kirocrew"
     },
     {
+      "path": "agents.*.starred",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Starred",
+      "help": "Marks this crew as a favourite on the Crew Members page. Purely a roster preference: the page's star filter shows only starred crews, so the dozens of package-installed crews the agent sync writes here can be collapsed behind the few you actually drive. Never read by routing, spawning, or the orchestrator.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",
       "kind": "core",
       "type": "number",

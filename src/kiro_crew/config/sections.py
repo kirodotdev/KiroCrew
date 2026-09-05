@@ -2863,6 +2863,17 @@ class KiroCrewAgentConfig:
         default="kirocrew",
         metadata=_meta("Source", "Agent origin: kirocrew or builtin."),
     )
+    starred: bool = field(
+        default=False,
+        metadata=_meta(
+            "Starred",
+            "Marks this crew as a favourite on the Crew Members page. Purely a "
+            "roster preference: the page's star filter shows only starred "
+            "crews, so the dozens of package-installed crews the agent sync "
+            "writes here can be collapsed behind the few you actually drive. "
+            "Never read by routing, spawning, or the orchestrator.",
+        ),
+    )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
     # defaults (1h) are build-scale forbearance; an agent that never runs a long
     # build (a pure-LLM reviewer, read-only git) can declare much lower windows

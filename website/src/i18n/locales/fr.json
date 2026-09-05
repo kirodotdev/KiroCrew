@@ -14051,7 +14051,16 @@
       "driving_none": "Ne pilote aucune session pour le moment.",
       "driving_idle": "Inactif",
       "driving_show_all": "Tout afficher ({{count}})",
-      "driving_show_less": "Afficher moins"
+      "driving_show_less": "Afficher moins",
+      "filter_starred": "Favoris",
+      "filter_starred_description": "Afficher uniquement les membres favoris",
+      "filter_source_mine": "Les miens",
+      "filter_source_builtin": "Intégrés",
+      "filter_source_package": "Issus de packages",
+      "filters_hide_all": "Les filtres actifs masquent tous les membres.",
+      "filters_clear": "Effacer les filtres",
+      "star": "Ajouter {{name}} aux favoris",
+      "unstar": "Retirer {{name}} des favoris"
     }
   },
   "privacyDisclosure": {

@@ -13873,7 +13873,16 @@
       "driving_none": "अभी कोई सेशन संचालित नहीं कर रहा है।",
       "driving_idle": "निष्क्रिय",
       "driving_show_all": "सभी दिखाएँ ({{count}})",
-      "driving_show_less": "कम दिखाएँ"
+      "driving_show_less": "कम दिखाएँ",
+      "filter_starred": "तारांकित",
+      "filter_starred_description": "केवल तारांकित सदस्य दिखाएँ",
+      "filter_source_mine": "मेरे",
+      "filter_source_builtin": "अंतर्निहित",
+      "filter_source_package": "पैकेज से",
+      "filters_hide_all": "सक्रिय फ़िल्टर सभी सदस्यों को छिपा देते हैं।",
+      "filters_clear": "फ़िल्टर हटाएँ",
+      "star": "{{name}} को तारांकित करें",
+      "unstar": "{{name}} का तारांकन हटाएँ"
     }
   },
   "privacyDisclosure": {
