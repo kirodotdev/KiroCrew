@@ -517,26 +517,134 @@ class TestFactoryDropWarning:
         assert msgs == []
 
 
-class TestPoolEffortBypass:
-    """A requested reasoning effort must always reach the provider factory: a
-    pre-warmed provider was built without the override and the post-claim
-    fixups re-key and switch model but never touch effort, so the warm pool is
-    bypassed for it — keeping delivery correct and the factory's effort gate
-    the single drop authority on pooled installs too (#6186). Pinned
-    structurally, the same way the sibling disqualifiers are (see
-    test_browser_cli_launch's bypass_env pin)."""
+class TestPoolEffortPostClaim:
+    """A requested reasoning effort on a warm-pool claim is applied post-claim
+    via provider.change_effort, recovering pool-hit startup latency without
+    bypassing the pool."""
 
-    def test_disqualifier_present_and_metric_label_bounded(self):
-        import inspect
+    @pytest.mark.asyncio
+    async def test_pool_claim_with_effort_override_applies_effort_post_claim(self):
+        from unittest.mock import AsyncMock, MagicMock
 
-        from kiro_crew import session, session_allocation
+        from kiro_crew.providers.acp import AcpProvider
+        from kiro_crew.session import SessionManager
 
-        src = inspect.getsource(session_allocation)
-        assert 'pool_decision = "bypass_effort"' in src
-        assert 'extra_factory_kwargs.get("reasoning_effort_override")' in src
-        # The metric's outcome set is closed; an unlisted label folds to
-        # "other" and the decision becomes unobservable.
-        assert "bypass_effort" in session.POOL_DECISIONS
+        cfg = MagicMock()
+        cfg.session.pool_size = 2
+        cfg.session.pool_agent = "kirocrew"
+        cfg.session.pool_ttl_secs = 1800
+        cfg.session.timeout_secs = 3600
+        cfg.agent.default_agent = ""
+        cfg.agent.model = "auto"
+
+        pooled = MagicMock(spec=AcpProvider)
+        pooled.client = MagicMock()
+        pooled.client._model = "claude-sonnet-4.6"
+        pooled.client.rekey = MagicMock()
+        pooled.change_effort = AsyncMock(return_value=True)
+        pooled.is_process_alive = MagicMock(return_value=True)
+        pooled.cwd = ""
+
+        factory = MagicMock(return_value=pooled)
+        mgr = SessionManager(cfg, factory)
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+
+        provider, is_new, resumed = await mgr.get_or_create(
+            "slot-1",
+            agent=None,
+            reasoning_effort_override="high",
+        )
+
+        assert provider is pooled
+        mgr._drain_and_claim.assert_awaited_once()
+        pooled.change_effort.assert_awaited_once_with("high")
+        factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pool_claim_with_unsupported_model_logs_warning(self, caplog):
+        import logging
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.providers.acp import AcpProvider
+        from kiro_crew.session import SessionManager
+
+        cfg = MagicMock()
+        cfg.session.pool_size = 2
+        cfg.session.pool_agent = "kirocrew"
+        cfg.session.pool_ttl_secs = 1800
+        cfg.session.timeout_secs = 3600
+        cfg.agent.default_agent = ""
+        cfg.agent.model = "auto"
+
+        pooled = MagicMock(spec=AcpProvider)
+        pooled.client = MagicMock()
+        pooled.client._model = "deepseek-3.2"  # not effort-capable
+        pooled.client.rekey = MagicMock()
+        pooled.change_effort = AsyncMock(return_value=False)
+        pooled.is_process_alive = MagicMock(return_value=True)
+        pooled.cwd = ""
+
+        factory = MagicMock(return_value=pooled)
+        mgr = SessionManager(cfg, factory)
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+
+        with caplog.at_level(logging.WARNING):
+            provider, is_new, resumed = await mgr.get_or_create(
+                "slot-2",
+                agent=None,
+                reasoning_effort_override="high",
+            )
+
+        assert provider is pooled
+        pooled.change_effort.assert_awaited_once_with("high")
+        assert any(
+            "reasoning effort 'high' will not be applied (session slot-2)" in r.message
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_pool_claim_with_change_effort_exception_logs_warning_and_spares_session(
+        self, caplog
+    ):
+        import logging
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.providers.acp import AcpProvider
+        from kiro_crew.session import SessionManager
+
+        cfg = MagicMock()
+        cfg.session.pool_size = 2
+        cfg.session.pool_agent = "kirocrew"
+        cfg.session.pool_ttl_secs = 1800
+        cfg.session.timeout_secs = 3600
+        cfg.agent.default_agent = ""
+        cfg.agent.model = "auto"
+
+        pooled = MagicMock(spec=AcpProvider)
+        pooled.client = MagicMock()
+        pooled.client._model = "claude-sonnet-4.6"
+        pooled.client.rekey = MagicMock()
+        pooled.change_effort = AsyncMock(side_effect=RuntimeError("KAS effort unsupported"))
+        pooled.is_process_alive = MagicMock(return_value=True)
+        pooled.cwd = ""
+
+        factory = MagicMock(return_value=pooled)
+        mgr = SessionManager(cfg, factory)
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+
+        with caplog.at_level(logging.WARNING):
+            provider, is_new, resumed = await mgr.get_or_create(
+                "slot-3",
+                agent=None,
+                reasoning_effort_override="high",
+            )
+
+        assert provider is pooled
+        pooled.change_effort.assert_awaited_once_with("high")
+        assert any(
+            "Pool post-claim: failed to apply reasoning effort 'high' (session slot-3)" in r.message
+            for r in caplog.records
+        )
 
 
 class TestFactoryDefaultEffortFallback:
