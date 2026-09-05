@@ -365,6 +365,7 @@ CRED_WEIXIN_TOKEN = "WEIXIN_TOKEN"  # iLink bot credential from the Settings QR 
 CRED_FEISHU_APP_ID = "FEISHU_APP_ID"  # Feishu custom-app id (developer console)
 CRED_FEISHU_APP_SECRET = "FEISHU_APP_SECRET"
 CRED_JIRA_API_TOKEN = "JIRA_API_TOKEN"  # Jira Cloud/Server API token (resolved from .env)
+CRED_WAKATIME_API_KEY = "WAKATIME_API_KEY"  # vault-only; never loaded from .env
 # kiro-cli's OWN model credential. Unlike the gateway-owned channel tokens
 # above, its rightful consumer is the agent subprocess itself (and the whoami
 # identity probe), so it is deliberately NOT in sandbox._AGENT_DENIED_ENV_KEYS:
@@ -395,6 +396,23 @@ _CREDENTIAL_KEYS = (
 # injected via multiline env values from reaching the eval-based value reader
 # in the Docker entrypoint.
 _JIRA_TOKEN_RE = _re.compile(r"^JIRA_TOKEN_[0-9A-Fa-f]+$")
+
+
+def normalize_jira_host(host: str) -> str:
+    """Normalize a Jira host exactly as auth lookup and managed-slot discovery do."""
+    return host.strip().lower().removesuffix(":443")
+
+
+def jira_host_token_name(host: str) -> str:
+    """Return the collision-free per-host Jira token name for *host*."""
+    normalized = normalize_jira_host(host)
+    return f"JIRA_TOKEN_{normalized.encode().hex().upper()}"
+
+
+def jira_global_token_applicable(entry_count: int) -> bool:
+    """Whether the global Jira token may serve the configured raw entry set."""
+    return entry_count == 1
+
 
 # Keys from .env that were already warned about (fire once per gateway boot).
 _warned_env_keys: set[str] = set()
