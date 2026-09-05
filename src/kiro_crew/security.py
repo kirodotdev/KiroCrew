@@ -1270,20 +1270,53 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="local-destructive-rm-rf-root",
-        pattern="rm -rf /.*",
+        # Flag-variant tolerant, engine-lawful: only `(?:...)?` groups, so
+        # `_redos_prone` stays False and matching keeps exact semantics.
+        # Covers packed (-fr, -rfv), split (-r -f), and long-option
+        # (--recursive/--force/--no-preserve-root) spellings (#8237).
+        # Separators stay literal single spaces: multi-space padding is the
+        # pinned #8124 residual (`rm -rf " " /home/x` stays allowed).
+        pattern=(
+            "rm(?: --?[a-z-]+(?:[= ]\\S+)?)?(?: --?[a-z-]+(?:[= ]\\S+)?)? "
+            "(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*"
+            "|-r(?: --?[a-z-]+(?:[= ]\\S+)?)? -f|-f(?: --?[a-z-]+(?:[= ]\\S+)?)? -r"
+            "|--recursive(?: --?[a-z-]+(?:[= ]\\S+)?)? --force"
+            "|--force(?: --?[a-z-]+(?:[= ]\\S+)?)? --recursive"
+            "|-r(?: --?[a-z-]+(?:[= ]\\S+)?)? --force"
+            "|--force(?: --?[a-z-]+(?:[= ]\\S+)?)? -r"
+            "|--recursive(?: --?[a-z-]+(?:[= ]\\S+)?)? -f"
+            "|-f(?: --?[a-z-]+(?:[= ]\\S+)?)? --recursive)"
+            "(?: --?[a-z-]+(?:[= ]\\S+)?)?(?: --?[a-z-]+(?:[= ]\\S+)?)? /.*"
+        ),
         category="local-destructive",
         description=(
             "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which "
-            "can wipe the entire operating system and all data."
+            "can wipe the entire operating system and all data. The flag run accepts packed "
+            "(-fr, -rfv), split (-r -f), and long-option (--recursive/--force/--no-preserve-root) "
+            "spellings (#8237)."
         ),
     ),
     DeniedCommandRule(
         id="local-destructive-rm-rf-home",
-        pattern="rm -rf ~.*",
+        # Same flag-variant tolerance as the root rule above (#8237).
+        pattern=(
+            "rm(?: --?[a-z-]+(?:[= ]\\S+)?)?(?: --?[a-z-]+(?:[= ]\\S+)?)? "
+            "(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*"
+            "|-r(?: --?[a-z-]+(?:[= ]\\S+)?)? -f|-f(?: --?[a-z-]+(?:[= ]\\S+)?)? -r"
+            "|--recursive(?: --?[a-z-]+(?:[= ]\\S+)?)? --force"
+            "|--force(?: --?[a-z-]+(?:[= ]\\S+)?)? --recursive"
+            "|-r(?: --?[a-z-]+(?:[= ]\\S+)?)? --force"
+            "|--force(?: --?[a-z-]+(?:[= ]\\S+)?)? -r"
+            "|--recursive(?: --?[a-z-]+(?:[= ]\\S+)?)? -f"
+            "|-f(?: --?[a-z-]+(?:[= ]\\S+)?)? --recursive)"
+            "(?: --?[a-z-]+(?:[= ]\\S+)?)?(?: --?[a-z-]+(?:[= ]\\S+)?)? ~.*"
+        ),
         category="local-destructive",
         description=(
             "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which "
-            "would destroy all personal files and config."
+            "would destroy all personal files and config. The flag run accepts packed "
+            "(-fr, -rfv), split (-r -f), and long-option (--recursive/--force/--no-preserve-root) "
+            "spellings (#8237)."
         ),
     ),
     DeniedCommandRule(
@@ -1790,6 +1823,9 @@ _LEGACY_RULE_ID_BY_PATTERN: dict[str, str] = {
         "self-protection-cloud"
     ),
     ".*kiro.?crew gateway restart.*": "self-protection-gateway-restart",
+    # Pre-widening rm spellings (#8237): persisted pins keep resolving.
+    "rm -rf /.*": "local-destructive-rm-rf-root",
+    "rm -rf ~.*": "local-destructive-rm-rf-home",
 }
 
 

@@ -607,15 +607,15 @@
   },
   {
     "id": "local-destructive-rm-rf-root",
-    "pattern": "rm -rf /.*",
+    "pattern": "rm(?: --?[a-z-]+(?:[= ]\\S+)?)?(?: --?[a-z-]+(?:[= ]\\S+)?)? (?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*|-r(?: --?[a-z-]+(?:[= ]\\S+)?)? -f|-f(?: --?[a-z-]+(?:[= ]\\S+)?)? -r|--recursive(?: --?[a-z-]+(?:[= ]\\S+)?)? --force|--force(?: --?[a-z-]+(?:[= ]\\S+)?)? --recursive|-r(?: --?[a-z-]+(?:[= ]\\S+)?)? --force|--force(?: --?[a-z-]+(?:[= ]\\S+)?)? -r|--recursive(?: --?[a-z-]+(?:[= ]\\S+)?)? -f|-f(?: --?[a-z-]+(?:[= ]\\S+)?)? --recursive)(?: --?[a-z-]+(?:[= ]\\S+)?)?(?: --?[a-z-]+(?:[= ]\\S+)?)? /.*",
     "category": "local-destructive",
-    "description": "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which can wipe the entire operating system and all data."
+    "description": "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which can wipe the entire operating system and all data. The flag run accepts packed (-fr, -rfv), split (-r -f), and long-option (--recursive/--force/--no-preserve-root) spellings (#8237)."
   },
   {
     "id": "local-destructive-rm-rf-home",
-    "pattern": "rm -rf ~.*",
+    "pattern": "rm(?: --?[a-z-]+(?:[= ]\\S+)?)?(?: --?[a-z-]+(?:[= ]\\S+)?)? (?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*|-r(?: --?[a-z-]+(?:[= ]\\S+)?)? -f|-f(?: --?[a-z-]+(?:[= ]\\S+)?)? -r|--recursive(?: --?[a-z-]+(?:[= ]\\S+)?)? --force|--force(?: --?[a-z-]+(?:[= ]\\S+)?)? --recursive|-r(?: --?[a-z-]+(?:[= ]\\S+)?)? --force|--force(?: --?[a-z-]+(?:[= ]\\S+)?)? -r|--recursive(?: --?[a-z-]+(?:[= ]\\S+)?)? -f|-f(?: --?[a-z-]+(?:[= ]\\S+)?)? --recursive)(?: --?[a-z-]+(?:[= ]\\S+)?)?(?: --?[a-z-]+(?:[= ]\\S+)?)? ~.*",
     "category": "local-destructive",
-    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config."
+    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config. The flag run accepts packed (-fr, -rfv), split (-r -f), and long-option (--recursive/--force/--no-preserve-root) spellings (#8237)."
   },
   {
     "id": "iac-teardown-terraform-destroy",
