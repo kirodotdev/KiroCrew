@@ -356,7 +356,6 @@ src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
-src/kiro_crew/tips.py
 src/kiro_crew/vector_memory.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py

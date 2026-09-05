@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig, TelemetryConfig
     from kiro_crew.security import DeniedCommandRule
     from kiro_crew.skill_providers.base import SkillProvider
+    from kiro_crew.tips_pool import TipsPool
 
 
 class InterceptDecision(enum.Enum):
@@ -632,6 +633,68 @@ class SkillDiscoveryProvider(Protocol):
         site (fallback ``[]``). The public Default returns ``[]`` (discovery
         offers the built-in catalog only). v1 addition (no ``CONTRACT_VERSION``
         bump).
+        """
+        ...
+
+
+class TipsProvider(Protocol):
+    """The edition's feature-tip pool — the one REPLACE-capable edition seam.
+
+    Every other edition hook in this contract is ADD-only: an edition UNIONS its
+    contribution into the public set (``McpToolingProvider.extra_mcp_servers``,
+    ``SkillDiscoveryProvider.skill_providers``, ``DeniedRuleProvider``…).  Tips
+    cannot work that way.  A tip asserts that a feature exists and is worth
+    using, so a public tip shown on an edition build advertises a capability that
+    build may not have or may deliberately not expose — and the failure is
+    silent, because a tip is an unprompted suggestion nobody asked to verify.
+
+    Subtraction is not an alternative: a deny-list has to enumerate the public
+    pool to subtract from it, so every tip added to the public pool afterwards
+    would surface on the edition build until someone remembered to deny it — the
+    default would be leak, not withhold.  Hence full replacement: when an edition
+    supplies a pool, the public curated file and the public docs-scan catalog are
+    not consulted at all.
+    """
+
+    def tips_pool(self) -> "Optional[TipsPool]":
+        """The edition's COMPLETE tip pool, or ``None`` to keep the public one.
+
+        WIRED: ``tips.get_tips_cache`` calls this once per process when it builds
+        the tips cache.  ``None`` (the public Default) leaves today's behavior
+        byte-for-byte — bundled catalog, docs-scan fallback, bundled curated
+        file.  A :class:`TipsPool` REPLACES both the curated pool and the feature
+        catalog, so neither the public curated file nor ``docs/*.md`` is read and
+        no public feature is offered to the tip generator.  An empty pool is legal
+        and means this build shows no tips.
+
+        Scope of that guarantee: the prompt is built from the pool's catalog
+        alone, so a public feature is never put in front of the model, and a
+        generated tip whose ``doc`` is outside that catalog is dropped at parse
+        time (``tips._parse_tips``).  What remains is narrow: a tip could cite a
+        valid pool doc while its prose names something absent, because generated
+        text is checked for shape and provenance, not for subject.  Constrain the
+        pool; treat a generated tip's wording as unverified.
+
+        Pool entries are re-validated on the way into the cache through the same
+        checks the public pool's entries pass (``tips._sanitize_pool``); a
+        malformed entry is dropped and logged rather than served.
+
+        The pool's ``pool_id`` is persisted and compared on load: when it differs
+        from the stamp in ``tips_state.json``, tips generated against the previous
+        pool are discarded rather than re-served, which is what closes the leak on
+        a host that gains (or loses) the companion after tips were already
+        generated.  User dismissals and snoozes are deliberately NOT discarded —
+        they are keyed by tip id and doc, so an entry from another pool simply
+        never matches, and dropping them would silently un-dismiss tips the user
+        already refused.
+
+        Read fail-closed through ``safe_context_call`` at the call site, and the
+        degrade is profile-dependent: on ``standalone`` a failure falls back to the
+        public pool, because there is no other pool to prefer; on a non-standalone
+        build it WITHHOLDS tips (an empty pool stamped ``edition-unavailable``),
+        because falling back to public there would serve exactly the tips this
+        seam exists to keep off that build. A ``PlatformCompositionError`` is
+        re-raised on both. v1 addition (no ``CONTRACT_VERSION`` bump).
         """
         ...
 

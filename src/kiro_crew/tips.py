@@ -25,8 +25,19 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform import PROFILE_STANDALONE, current_context, safe_context_call
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+
+# Re-exported: ``tips.CatalogEntry`` is the historical import path, and the
+# dataclass moved to the import-light ``tips_pool`` so an edition composition
+# root can build a pool without importing this aiohttp-bearing module.
+from kiro_crew.tips_pool import (
+    PUBLIC_POOL_ID,
+    WITHHELD_POOL_ID,
+    CatalogEntry,
+    TipsPool,
+)
 from kiro_crew.tips_text import truncate_summary
 
 if TYPE_CHECKING:
@@ -109,16 +120,6 @@ Respond with ONLY a JSON array. No explanation, no markdown fences.
 # ── Catalog ──
 
 
-@dataclass
-class CatalogEntry:
-    """A feature discovered from docs/*.md."""
-
-    feature: str  # H1 title (without #)
-    summary: str  # first paragraph
-    doc: str  # filename (e.g. 'cron-and-scheduling.md')
-    mtime: float = 0.0  # file mtime for recency ordering
-
-
 def _scan_docs_catalog() -> list[CatalogEntry]:
     """Scan kiro_crew/docs/*.md for H1 + first paragraph."""
     docs_dir = Path(__file__).parent / "docs"
@@ -139,7 +140,7 @@ def _scan_docs_catalog() -> list[CatalogEntry]:
             continue
         title = m.group(1).strip()
         # First non-empty paragraph after H1
-        rest = text[m.end():].lstrip("\n")
+        rest = text[m.end() :].lstrip("\n")
         para = ""
         for block in rest.split("\n\n"):
             stripped = block.strip()
@@ -148,7 +149,9 @@ def _scan_docs_catalog() -> list[CatalogEntry]:
                 break
         if not para:
             continue
-        entries.append(CatalogEntry(feature=title, summary=truncate_summary(para), doc=md.name, mtime=mtime))
+        entries.append(
+            CatalogEntry(feature=title, summary=truncate_summary(para), doc=md.name, mtime=mtime)
+        )
     return entries
 
 
@@ -179,6 +182,12 @@ class TipsState:
     # loads as False and gets the repair. Without this, a new install's first
     # curated+generated dismissal pair would be lifted on the next load.
     relink_migrated: bool = True
+    # Provenance of the pool the cached ``tips``/``offered`` were produced from
+    # (see kiro_crew.tips_pool.TipsPool). A host that gains or loses an edition
+    # pool must not keep serving tips generated against the previous one — those
+    # describe features this build may not have. Defaults to the public pool
+    # because that is what every pre-stamp state file was generated from.
+    pool_id: str = PUBLIC_POOL_ID
     last_generated: float = 0.0
     last_shown_ts: float = 0.0  # cadence gate timestamp (set on feedback, not on serve)
     tips: list[dict] = field(default_factory=list)  # type: ignore[type-arg]
@@ -236,22 +245,26 @@ def _load_state() -> TipsState:
         # _is_eligible with a 500 on every request until repaired by hand.
         shown_raw = _typed("shown", dict, {})
         shown = {
-            k: v for k, v in shown_raw.items()
+            k: v
+            for k, v in shown_raw.items()
             if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
         }
         snoozed_raw = _typed("snoozed", dict, {})
         snoozed = {
-            k: f for k, v in snoozed_raw.items()
+            k: f
+            for k, v in snoozed_raw.items()
             if isinstance(k, str) and (f := _finite(v)) is not None
         }
         dismissed = [d for d in _typed("dismissed", list, []) if isinstance(d, str)]
         dismissed_docs = [d for d in _typed("dismissed_docs", list, []) if isinstance(d, str)]
         shown_docs = {
-            k: v for k, v in _typed("shown_docs", dict, {}).items()
+            k: v
+            for k, v in _typed("shown_docs", dict, {}).items()
             if isinstance(k, str) and isinstance(v, str)
         }
         snoozed_docs = {
-            k: fv for k, v in _typed("snoozed_docs", dict, {}).items()
+            k: fv
+            for k, v in _typed("snoozed_docs", dict, {}).items()
             if isinstance(k, str) and (fv := _finite(v)) is not None
         }
 
@@ -264,10 +277,12 @@ def _load_state() -> TipsState:
             snoozed=snoozed,
             opted_out=_typed("opted_out", bool, False),
             relink_migrated=_typed("relink_migrated", bool, False),
+            pool_id=_typed("pool_id", str, PUBLIC_POOL_ID) or PUBLIC_POOL_ID,
             last_generated=_finite(data.get("last_generated")) or 0.0,
             last_shown_ts=_finite(data.get("last_shown_ts")) or 0.0,
             tips=[
-                st_t for t in _typed("tips", list, [])
+                st_t
+                for t in _typed("tips", list, [])
                 if (st_t := _sanitize_persisted_tip(t)) is not None
             ],
             offered=_sanitize_persisted_tip(data.get("offered")),
@@ -346,6 +361,7 @@ def _save_state(st: TipsState) -> None:
                 "snoozed": st.snoozed,
                 "opted_out": st.opted_out,
                 "relink_migrated": st.relink_migrated,
+                "pool_id": st.pool_id,
                 "last_generated": st.last_generated,
                 "last_shown_ts": st.last_shown_ts,
                 "tips": st.tips,
@@ -397,6 +413,34 @@ _tips_init_lock = LoopBoundLock()
 _BUNDLED_CATALOG_FILE = Path(__file__).resolve().parent / "data" / "tips_catalog.json"
 
 
+def _clean_catalog_entry(
+    feature: object, summary: object, doc: object, mtime: object
+) -> CatalogEntry | None:
+    """Validate one catalog entry's fields; None if it cannot be trusted.
+
+    Shared by every catalog SOURCE — the bundled JSON and an edition-supplied
+    pool — because a catalog entry reaches the same places regardless of where it
+    came from: the generator prompt, the non-personalized fallback tip bodies,
+    and the mtime arithmetic in ``_select_tip``. A non-string field or a
+    non-finite mtime would surface there as a 500, so the check belongs with the
+    type, not with one loader.
+    """
+    if not (isinstance(feature, str) and isinstance(summary, str) and isinstance(doc, str)):
+        return None
+    if not (feature and summary and doc):
+        return None
+    if isinstance(mtime, bool) or not isinstance(mtime, (int, float)):
+        m = 0.0
+    else:
+        try:
+            m = float(mtime)
+        except (TypeError, ValueError, OverflowError):
+            m = 0.0
+    if not math.isfinite(m):
+        m = 0.0
+    return CatalogEntry(feature=feature, summary=truncate_summary(summary), doc=doc, mtime=m)
+
+
 def _load_bundled_catalog() -> list[CatalogEntry] | None:
     """Load the pre-generated tips catalog shipped with the package.
 
@@ -418,17 +462,11 @@ def _load_bundled_catalog() -> list[CatalogEntry] | None:
         for e in entries_raw:
             if not isinstance(e, dict):
                 continue
-            feature = e.get("feature", "")
-            summary = e.get("summary", "")
-            doc = e.get("doc", "")
-            if feature and summary and doc:
-                try:
-                    mtime = float(e.get("mtime", 0.0))
-                except (TypeError, ValueError, OverflowError):
-                    mtime = 0.0
-                if not math.isfinite(mtime):
-                    mtime = 0.0
-                entries.append(CatalogEntry(feature=feature, summary=truncate_summary(summary), doc=doc, mtime=mtime))
+            entry = _clean_catalog_entry(
+                e.get("feature", ""), e.get("summary", ""), e.get("doc", ""), e.get("mtime", 0.0)
+            )
+            if entry is not None:
+                entries.append(entry)
         return entries if entries else None
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         # ValueError covers json.JSONDecodeError; the rest are defense-in-depth
@@ -470,21 +508,190 @@ def _load_curated_tips() -> list[dict]:  # type: ignore[type-arg]
     return out
 
 
+def _degraded_pool() -> TipsPool | None:
+    """What to serve when the edition adapter could not answer.
+
+    Invoked only on the degrade path. The answer differs by profile, and getting
+    it wrong reintroduces the leak: on a NON-standalone build, falling back to
+    the public pool would serve exactly the tips this seam withholds, so a merely
+    broken adapter would advertise public features on an edition host. Withhold
+    instead — an empty pool is already a legal state.
+
+    On standalone there is no other pool to withhold in favour of, so ``None``
+    (the public pool) is both the correct and the only answer.
+    """
+    if current_context().profile == PROFILE_STANDALONE:
+        return None
+    return TipsPool(pool_id=WITHHELD_POOL_ID)
+
+
+def _resolve_pool() -> TipsPool | None:
+    """The edition's tip pool, or ``None`` for the public one.
+
+    Fail-closed per the CPP contract: a ``PlatformCompositionError`` (a
+    non-standalone host whose companion did not compose) propagates rather than
+    silently handing an internal build the public pool — which is precisely the
+    leak this seam exists to close. Any other adapter error degrades through
+    :func:`_degraded_pool`, so tips never take the endpoints down and an edition
+    host withholds rather than falling back to public tips.
+
+    A non-``TipsPool`` return degrades the same way: an adapter that answers with
+    the wrong type must not reach the cache as a half-applied override.
+    """
+    pool = safe_context_call(
+        lambda: current_context().tips.tips_pool(),
+        fallback_factory=_degraded_pool,
+        log_message="edition tips pool unavailable; degrading",
+    )
+    if pool is not None and not isinstance(pool, TipsPool):
+        logger.warning(
+            "TipsProvider.tips_pool() returned %s, expected TipsPool; degrading",
+            type(pool).__name__,
+        )
+        return _degraded_pool()
+    return pool
+
+
+def _sanitize_pool(pool: TipsPool) -> tuple[list[dict], list[CatalogEntry]]:  # type: ignore[type-arg]
+    """Validate an edition pool's entries through the SAME checks as public ones.
+
+    An edition adapter is in-process and trusted for INTENT, but not for shape:
+    it may load its pool from a packaged JSON file or build it in a composition
+    root, so it can carry the same malformed entries a bundled file can. The
+    public paths already gate that (``_load_curated_tips`` runs every entry
+    through ``_sanitize_persisted_tip``; the bundled loader validates catalog
+    fields), and skipping it here would mean a curated entry with a non-string
+    ``id`` reaching ``_is_eligible``, where the unhashable value raises inside the
+    snooze lookup and turns every ``/api/tips/*`` request into a 500. A bad entry
+    must be dropped, exactly as it is on the public path.
+
+    Drops are logged with counts: silently serving 3 of 5 tips would otherwise
+    look to an edition author like their pool loaded fine.
+    """
+    curated: list[dict] = []  # type: ignore[type-arg]
+    for t in pool.curated:
+        sanitized = _sanitize_persisted_tip(t)
+        if sanitized is not None:
+            curated.append(sanitized)
+    catalog: list[CatalogEntry] = []
+    for e in pool.catalog:
+        entry = _clean_catalog_entry(
+            getattr(e, "feature", None),
+            getattr(e, "summary", None),
+            getattr(e, "doc", None),
+            getattr(e, "mtime", 0.0),
+        )
+        if entry is not None:
+            catalog.append(entry)
+    dropped_curated = len(pool.curated) - len(curated)
+    dropped_catalog = len(pool.catalog) - len(catalog)
+    if dropped_curated or dropped_catalog:
+        logger.warning(
+            "tips pool %r: dropped %d malformed curated tip(s) and %d malformed "
+            "catalog entry/entries",
+            pool.pool_id,
+            dropped_curated,
+            dropped_catalog,
+        )
+    return curated, catalog
+
+
+def _reconcile_pool(st: TipsState, pool_id: str) -> bool:
+    """Drop cached tips that were generated against a DIFFERENT pool.
+
+    Returns True when state changed (caller persists). The generated pool,
+    the outstanding offered tip, and the generation timestamp go; a fresh
+    generation runs against the active catalog on the next refresh check.
+
+    The split here is between USER INTENT and CACHE, not between "old" and "new".
+
+    Dismissals and snoozes are intent, and they SURVIVE — but they are read
+    through :func:`_scoped`, so one pool's dismissal cannot suppress another
+    pool's same-named tip. Both halves are needed: clearing them would silently
+    un-dismiss tips the user already refused (and would refuse again if the host
+    switches back), while keeping them in one flat namespace would let a
+    dismissed public ``cron-tip`` suppress an unrelated edition ``cron-tip`` the
+    user never saw. Surviving is correct; being globally visible was not.
+
+    ``shown_docs`` is cache, and it is CLEARED. It maps a tip id to the doc it was
+    shown with, purely so a dismissal arriving after a regeneration can still
+    resolve its stable doc identity. Every entry in it necessarily describes a tip
+    from the pool being discarded, and tip ids are author-chosen slugs, so two
+    pools can name the same id. Keeping the map lets a docless tip in the NEW pool
+    resolve through a colliding id to the OLD pool's doc, and
+    ``api_tips_feedback`` then records that doc in ``dismissed_docs`` — a
+    permanent dismissal of an unrelated feature the user never refused. Nothing is
+    lost by dropping it: the offered slot is cleared in the same breath, so no tip
+    from the old pool can still be acted on.
+    """
+    if st.pool_id == pool_id:
+        return False
+    logger.info(
+        "tips pool changed (%s -> %s); discarding tips generated against the previous pool",
+        st.pool_id,
+        pool_id,
+    )
+    st.pool_id = pool_id
+    st.tips = []
+    st.offered = None
+    st.shown_docs = {}
+    st.last_generated = 0.0
+    return True
+
+
 async def get_tips_cache(state: DashboardState) -> TipsCache:
     """Get or create the tips cache on the state object (async: offloads IO)."""
     if not hasattr(state, "_tips_cache"):
         async with _tips_init_lock:
             if not hasattr(state, "_tips_cache"):
                 loop = asyncio.get_running_loop()
-                # Prefer bundled catalog; fall back to live docs scan if missing/corrupt
-                catalog = await loop.run_in_executor(None, _load_bundled_catalog)
-                if catalog is not None:
-                    logger.debug("Tips catalog loaded from bundled data (%d entries)", len(catalog))
+                pool = await loop.run_in_executor(None, _resolve_pool)
+                catalog: list[CatalogEntry]
+                if pool is not None:
+                    # Full replacement: neither the bundled/scanned public
+                    # catalog nor the bundled curated file is consulted, so no
+                    # public feature can be advertised on this build. Entries go
+                    # through the same validation as the public pool's.
+                    curated, catalog = await loop.run_in_executor(None, _sanitize_pool, pool)
+                    pool_id = pool.pool_id
+                    logger.debug(
+                        "Tips pool %r composed by the edition (%d curated, %d catalog)",
+                        pool_id,
+                        len(curated),
+                        len(catalog),
+                    )
                 else:
-                    logger.debug("Bundled tips catalog unavailable; falling back to live docs scan")
-                    catalog = await loop.run_in_executor(None, _scan_docs_catalog)
+                    pool_id = PUBLIC_POOL_ID
+                    # Prefer bundled catalog; fall back to live docs scan if missing/corrupt
+                    bundled = await loop.run_in_executor(None, _load_bundled_catalog)
+                    if bundled is not None:
+                        catalog = bundled
+                        logger.debug(
+                            "Tips catalog loaded from bundled data (%d entries)", len(catalog)
+                        )
+                    else:
+                        logger.debug(
+                            "Bundled tips catalog unavailable; falling back to live docs scan"
+                        )
+                        catalog = await loop.run_in_executor(None, _scan_docs_catalog)
+                    curated = await loop.run_in_executor(None, _load_curated_tips)
                 st = await loop.run_in_executor(None, _load_state)
-                curated = await loop.run_in_executor(None, _load_curated_tips)
+                if _reconcile_pool(st, pool_id):
+                    # The reconciliation that matters already happened IN MEMORY,
+                    # so a failed write costs only re-running it next boot. Before
+                    # this seam, get_tips_cache wrote nothing at all; letting the
+                    # write raise here would make an unwritable data home turn
+                    # every /api/tips/* request into a 500, which is strictly
+                    # worse than an unpersisted stamp.
+                    try:
+                        await loop.run_in_executor(None, _save_state, st)
+                    except Exception:
+                        logger.warning(
+                            "could not persist the tips pool stamp; continuing with "
+                            "the reconciled in-memory state (it will be redone next "
+                            "boot)",
+                            exc_info=True,
+                        )
                 cache = TipsCache()
                 cache.catalog = catalog
                 cache.curated = curated
@@ -537,9 +744,7 @@ def _select_tip(
     mtimes = {id(t): _tip_mtime(t, i) for i, t in enumerate(candidates)}
 
     # Sort candidates newest-first by mtime
-    sorted_candidates = sorted(
-        candidates, key=lambda t: mtimes[id(t)], reverse=True
-    )
+    sorted_candidates = sorted(candidates, key=lambda t: mtimes[id(t)], reverse=True)
 
     # Compute weights: recency_decay ** tier, where the tier is the rank of the
     # candidate's mtime among the DISTINCT mtimes (tier 0 = newest).
@@ -610,8 +815,28 @@ _TIP_ALLOWED_FIELDS = ("id", "feature", "title", "body", "why", "doc", "doc_link
 _TIP_OPTIONAL_FIELDS = ("doc_link",)
 
 
-def _parse_tips(text: str) -> list[dict]:  # type: ignore[type-arg]
-    """Parse LLM response into a list of tip dicts."""
+def _parse_tips(
+    text: str, allowed_docs: "set[str] | None" = None
+) -> list[dict]:  # type: ignore[type-arg]
+    """Parse LLM response into a list of tip dicts.
+
+    ``allowed_docs`` anchors a generated tip to the catalog it was generated
+    from: a tip whose ``doc`` is not one of these is dropped. Restricting the
+    catalog handed to the generator is what stops a public feature being OFFERED
+    to the model, but it does not constrain what the model writes — so without
+    this a hallucinated public feature comes back as a shape-valid tip and is
+    served, which on an edition build is the unreachable-feature card the pool
+    replacement exists to remove. The catalog is already in hand at the call
+    site, so the check is free.
+
+    A tip with no ``doc`` is dropped under this rule too: it carries no
+    verifiable provenance, and the prompt asks for a catalog filename.
+
+    ``None`` (the default) disables the check, which keeps the function usable
+    for callers that have no catalog to anchor against. This closes MOST of the
+    channel, not all of it — a tip's prose could still name something absent
+    while citing a valid doc.
+    """
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -621,6 +846,7 @@ def _parse_tips(text: str) -> list[dict]:  # type: ignore[type-arg]
         result = json.loads(text)
         if isinstance(result, list):
             valid = []
+            unanchored = 0
             for t in result:
                 if not isinstance(t, dict):
                     continue
@@ -632,7 +858,17 @@ def _parse_tips(text: str) -> list[dict]:  # type: ignore[type-arg]
                 # string-only redaction and reach persistence + the dashboard.
                 t = {k: t[k] for k in _TIP_ALLOWED_FIELDS}
                 _sanitize_tip_links(t)
+                # Applied AFTER link sanitization, so a doc this rejects cannot
+                # be smuggled past in a shape the sanitizer would have blanked.
+                if allowed_docs is not None and t.get("doc", "") not in allowed_docs:
+                    unanchored += 1
+                    continue
                 valid.append(t)
+            if unanchored:
+                logger.info(
+                    "dropped %d generated tip(s) naming a doc outside the active catalog",
+                    unanchored,
+                )
             return valid[:_MAX_GENERATED_TIPS]
     except (json.JSONDecodeError, TypeError):
         pass
@@ -663,8 +899,10 @@ def _sanitize_tip_links(t: dict) -> None:  # type: ignore[type-arg]
     """
     for link_field in ("doc", "doc_link"):
         val = t.get(link_field, "")
-        if isinstance(val, str) and val and not (
-            re.match(r"^https?://", val) or re.match(r"^[\w./-]+\.md$", val)
+        if (
+            isinstance(val, str)
+            and val
+            and not (re.match(r"^https?://", val) or re.match(r"^[\w./-]+\.md$", val))
         ):
             t[link_field] = ""
 
@@ -734,11 +972,7 @@ def _sanitize_tip_action(obj: object) -> dict | None:  # type: ignore[type-arg]
     if obj.get("kind") not in _TIP_ACTION_KINDS:
         return None
     label = obj.get("label")
-    if (
-        not isinstance(label, str)
-        or not label.strip()
-        or len(label) > _TIP_ACTION_LABEL_MAX
-    ):
+    if not isinstance(label, str) or not label.strip() or len(label) > _TIP_ACTION_LABEL_MAX:
         return None
     route = obj.get("route")
     if (
@@ -771,7 +1005,7 @@ def _fallback_tips(catalog: list[CatalogEntry], st: TipsState) -> list[dict]:  #
     tips = []
     for entry in catalog:
         tid = entry.doc.replace(".md", "-tip")
-        if tid in st.dismissed:
+        if _scoped(st, tid) in st.dismissed:
             continue
         tips.append(
             {
@@ -788,17 +1022,52 @@ def _fallback_tips(catalog: list[CatalogEntry], st: TipsState) -> list[dict]:  #
     return tips
 
 
+# Separator between a pool stamp and a dismissal key. A unit separator cannot
+# occur in a tip id (author-chosen slug) or a doc filename, so it cannot be
+# forged from either half.
+_SCOPE_SEP = "\x1f"
+
+
+def _scoped(st: TipsState, key: str) -> str:
+    """Namespace a dismissal/snooze key to the pool whose tip it identifies.
+
+    Dismissal state is persistent and GLOBAL, while a tip id is an author-chosen
+    slug and a doc is a filename — so two pools can independently name
+    ``cron-tip`` or ``channels.md``. Without scoping, dismissing one pool's tip
+    permanently suppresses the other pool's unrelated tip of the same name, which
+    the user never saw and never refused. That is why dismissals can survive a
+    pool switch (they are the user's intent, and must be honoured again if the
+    host switches back) yet must not be read across pools.
+
+    Public keys stay BARE. That keeps the public build byte-identical and makes
+    migration free: every state file written before this existed was the public
+    pool's, so its unprefixed entries are already correctly scoped.
+
+    ``shown`` is deliberately left unscoped — it is a display counter feeding the
+    generator prompt, gates nothing, and a collision there merely merges two
+    counts. Only the fields that decide ELIGIBILITY are namespaced.
+    """
+    if st.pool_id == PUBLIC_POOL_ID:
+        return key
+    return f"{st.pool_id}{_SCOPE_SEP}{key}"
+
+
 def _is_eligible(
     tip: dict, st: TipsState, now: float, snooze_hours: float  # type: ignore[type-arg]
 ) -> bool:
-    """Check if a tip is eligible (not dismissed, not actively snoozed)."""
-    tid = tip.get("id", "")
+    """Check if a tip is eligible (not dismissed, not actively snoozed).
+
+    Every lookup is scoped to the active pool (see :func:`_scoped`), so one
+    pool's dismissal cannot suppress another pool's same-named tip.
+    """
+    tid = _scoped(st, tip.get("id", ""))
     if tid in st.dismissed:
         return False
     # Doc-level dismissal: stable across LLM regenerations that invent new ids.
     # Keys on "doc" ONLY — "doc_link" is a rendering hint and never suppresses,
     # so a curated tip linking a catalog doc cannot take that doc's tip down.
-    doc = tip.get("doc", "")
+    raw_doc = tip.get("doc", "")
+    doc = _scoped(st, raw_doc) if raw_doc else ""
     if doc and doc in st.dismissed_docs:
         return False
     if tid in st.snoozed:
@@ -808,6 +1077,24 @@ def _is_eligible(
     if doc and doc in st.snoozed_docs and now - st.snoozed_docs[doc] < snooze_hours * 3600:
         return False
     return True
+
+
+def _active_pool_dismissals(st: TipsState) -> list[str]:
+    """The active pool's dismissed tip ids, with the pool scope stripped.
+
+    For the generator prompt only. Another pool's dismissals are irrelevant to
+    this pool's catalog, and handing the model raw scoped keys would put a
+    separator-joined internal string in the prompt.
+    """
+    prefix = "" if st.pool_id == PUBLIC_POOL_ID else f"{st.pool_id}{_SCOPE_SEP}"
+    out: list[str] = []
+    for key in st.dismissed:
+        if prefix:
+            if key.startswith(prefix):
+                out.append(key[len(prefix) :])
+        elif _SCOPE_SEP not in key:
+            out.append(key)
+    return out
 
 
 async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[type-arg]
@@ -825,7 +1112,7 @@ async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[ty
         catalog=catalog_text,
         context=context or "(no user context available)",
         shown_ids=", ".join(st.shown.keys()) or "none",
-        dismissed_ids=", ".join(st.dismissed) or "none",
+        dismissed_ids=", ".join(_active_pool_dismissals(st)) or "none",
     )
 
     loop2 = asyncio.get_running_loop()
@@ -844,7 +1131,7 @@ async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[ty
         logger.warning("Tips generation failed; using catalog fallback", exc_info=True)
         return _fallback_tips(cache.catalog, st)
 
-    tips = _parse_tips(text)
+    tips = _parse_tips(text, allowed_docs={e.doc for e in cache.catalog})
     if tips:
         tips = _redact_tips(tips)
         logger.info("Generated %d personalized tips", len(tips))
@@ -943,19 +1230,19 @@ async def api_tips_next(request: web.Request) -> web.Response:
         # Gather eligible candidates. Curated actionable tips (hand-authored,
         # action-first, for features with no docs entry) are the primary pool;
         # LLM-generated tips augment them. Dedupe by id — curated wins.
-        curated_candidates = [
-            t for t in cache.curated if _is_eligible(t, st, now, snooze_hours)
-        ]
+        curated_candidates = [t for t in cache.curated if _is_eligible(t, st, now, snooze_hours)]
         curated_ids = {t.get("id", "") for t in curated_candidates}
         generated_candidates = [
-            t for t in st.tips
+            t
+            for t in st.tips
             if _is_eligible(t, st, now, snooze_hours) and t.get("id", "") not in curated_ids
         ]
         candidates = curated_candidates + generated_candidates
         if not candidates:
             # Last resort: doc-scan catalog fallback (descriptive, not action-first)
             candidates = [
-                t for t in _fallback_tips(cache.catalog, st)
+                t
+                for t in _fallback_tips(cache.catalog, st)
                 if _is_eligible(t, st, now, snooze_hours)
             ]
 
@@ -971,7 +1258,8 @@ async def api_tips_next(request: web.Request) -> web.Response:
         tip: dict | None = None  # type: ignore[type-arg]
         if rng.random() < explore_ratio:
             explore_pool = curated_candidates or [
-                t for t in _fallback_tips(cache.catalog, st)
+                t
+                for t in _fallback_tips(cache.catalog, st)
                 if _is_eligible(t, st, now, snooze_hours)
             ]
             if explore_pool:
@@ -1053,9 +1341,7 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except ValueError:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     if not isinstance(body, dict):
         return web.json_response(
@@ -1085,9 +1371,7 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
 
     valid_actions = ("shown", "ack", "dismiss", "snooze", "helpful", "optout", "optin")
     if action not in valid_actions:
-        return web.json_response(
-            {"error": "invalid action", "code": "invalid_action"}, status=400
-        )
+        return web.json_response({"error": "invalid action", "code": "invalid_action"}, status=400)
 
     now = time.time()
 
@@ -1106,8 +1390,8 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
             st.last_shown_ts = now
             st.offered = None
         elif action in ("ack", "dismiss"):
-            if tip_id and tip_id not in st.dismissed:
-                st.dismissed.append(tip_id)
+            if tip_id and _scoped(st, tip_id) not in st.dismissed:
+                st.dismissed.append(_scoped(st, tip_id))
             # Also record the catalog doc (stable feature identity): LLM
             # regeneration invents fresh ids, so id-only dismissal would let
             # the same feature resurface.
@@ -1131,13 +1415,13 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
                         if entry.doc.replace(".md", "-tip") == tip_id:
                             doc = entry.doc
                             break
-                if doc and doc not in st.dismissed_docs:
-                    st.dismissed_docs.append(doc)
+                if doc and _scoped(st, doc) not in st.dismissed_docs:
+                    st.dismissed_docs.append(_scoped(st, doc))
             st.last_shown_ts = now
             st.offered = None
         elif action == "snooze":
             if tip_id:
-                st.snoozed[tip_id] = now
+                st.snoozed[_scoped(st, tip_id)] = now
                 doc = ""
                 if isinstance(st.offered, dict) and st.offered.get("id") == tip_id:
                     doc = st.offered.get("doc", "")
@@ -1154,7 +1438,7 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
                             doc = entry.doc
                             break
                 if isinstance(doc, str) and doc:
-                    st.snoozed_docs[doc] = now
+                    st.snoozed_docs[_scoped(st, doc)] = now
             st.last_shown_ts = now
             st.offered = None
         elif action == "helpful":

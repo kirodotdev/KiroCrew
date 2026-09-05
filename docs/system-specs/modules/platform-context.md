@@ -49,6 +49,7 @@ interface, the public edition is complete standalone.
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
 | `skill_discovery` | adapter | `DefaultSkillDiscoveryProvider` (`skill_providers()` → `[]`) | edition skill discovery providers for the multi-provider search |
+| `tips` | adapter | `DefaultTipsProvider` (`tips_pool()` → `None`) | the edition's feature-tip pool. The one **REPLACE-capable** seam: a supplied `TipsPool` takes over from the public curated file AND the docs-scan catalog instead of being unioned into them, because a public tip advertises a capability an edition build may not have or may not expose. An empty pool means "this build shows no tips" |
 | `denied_rules` | adapter | `DefaultDeniedRuleProvider` (`denied_rules()` → `[]`) | edition denied-command rules that are default-on but USER-DISABLEABLE (distinct from `security`, the un-weakenable overlay floor) |
 | `import_sources` | adapter | `DefaultImportSourceProvider` (`import_sources()` → `[]`) | edition onboarding-import sources |
 | `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package manager: MCP servers, skills, agent packages, and client plugins |
