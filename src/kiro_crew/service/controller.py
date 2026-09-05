@@ -77,7 +77,7 @@ def installed_service_has_managed_marker() -> "bool | None":
         if plat == Platform.SYSTEMD:
             expected = 'Environment="KIROCREW_SERVICE_MANAGED=1"'
             lines = path.read_text(encoding="utf-8").splitlines()
-            return expected in {line.strip() for line in lines}
+            return any(line.strip() == expected for line in lines)
         if plat == Platform.LAUNCHD:
             # Reuse the launchd reader so malformed XML (which plistlib exposes
             # as an ExpatError) fails closed just like every other service
@@ -127,7 +127,7 @@ def install_service() -> int:
         # started — the directive only applies at service start. Deliberately
         # non-fatal: a failure warns and leaves the service running.
         if profile.message:
-            print(f"   {'⚠️ ' if not profile.ok else ''}{profile.message}")
+            print(f"   {'' if profile.ok else '⚠️ '}{profile.message}")
         _print_headless_auth_warning()
         print()
         print("   Status: kirocrew service status")
@@ -170,7 +170,7 @@ def uninstall_service() -> int:
             return 1
         print("✅ kirocrew service stopped and removed.")
         if profile.message:
-            print(f"   {'⚠️ ' if not profile.ok else ''}{profile.message}")
+            print(f"   {'' if profile.ok else '⚠️ '}{profile.message}")
         return 0
     if plat == Platform.LAUNCHD:
         macos.uninstall()
@@ -209,7 +209,7 @@ def install_launcher_profile(exec_path: str | None = None) -> int:
         return 0
     outcome = linux.install_launcher_profile(exec_path)
     if outcome.message:
-        print(f"{'⚠️  ' if not outcome.ok else '✅ '}{outcome.message}")
+        print(f"{'✅ ' if outcome.ok else '⚠️  '}{outcome.message}")
     return 0 if outcome.ok else 1
 
 
@@ -219,11 +219,10 @@ def remove_launcher_profile() -> int:
         print("ℹ️  Nothing to remove — the AppArmor sandbox profile is Linux-only.")
         return 0
     outcome = linux.remove_launcher_profile()
-    print(
-        f"{'⚠️  ' if not outcome.ok else '✅ '}{outcome.message}"
-        if outcome.message
-        else "✅ No AppArmor sandbox profile was installed."
-    )
+    if outcome.message:
+        print(f"{'✅ ' if outcome.ok else '⚠️  '}{outcome.message}")
+    else:
+        print("✅ No AppArmor sandbox profile was installed.")
     return 0 if outcome.ok else 1
 
 

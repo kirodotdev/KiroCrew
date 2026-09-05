@@ -100,17 +100,42 @@ SENTINEL = _SENTINEL
 # above this bound instead, leaving headroom under the transport cap.
 MAX_DIRECTIVE_CHARS = 3800
 
-# Stamped on an oversized :func:`encode` result INSTEAD of the directive marker,
-# so the consumer can tell a deliberate refusal apart from a marker that was lost
-# in transport. Both cases decode to "no directive", but only the second is a
-# bug, and the consumer's diagnostic for a lost marker is a WARNING that exists
-# to catch rawOutput-envelope escaping regressions — a by-design refusal firing
-# it trains operators to ignore the one signal that matters.
+# The ACP layer truncates a joined tool result to this many characters before the
+# consumer sees it (``acp/_dispatch.py``, which imports this constant so the two
+# cannot drift). It lives HERE because both markers are tail-anchored and so must
+# survive it: :data:`MAX_DIRECTIVE_CHARS` is deliberately far below it, and
+# :func:`tag_refusal` bounds its text against it. An unbounded refusal was
+# reachable -- ``validate_tool_args`` echoes the argument NAME, which the model
+# chooses, so a 9,000-character name produced a 9,087-character result whose tail
+# tag the cut removed, and the decline read as a lost marker again (#8635).
+MAX_TOOL_RESULT_CHARS = 8000
+
+# Stamped on a directive tool's marker-less result INSTEAD of the directive
+# marker, so the consumer can tell a deliberate refusal apart from a marker that
+# was lost in transport. Both cases decode to "no directive", but only the second
+# is a bug, and the consumer's diagnostic for a lost marker is a WARNING that
+# exists to catch rawOutput-envelope escaping regressions — a by-design refusal
+# firing it trains operators to ignore the one signal that matters.
+#
+# Two producers stamp it, and together they make the invariant total: a directive
+# tool's result either carries the marker, or it is tagged a refusal. :func:`encode`
+# stamps its own oversized-payload refusal, and :func:`refuse_if_markerless`
+# stamps every OTHER marker-less return — a schema rejection before the handler
+# ran, a "this session can never carry the effect" refusal, an empty required
+# argument. Before that second producer existed, only the oversized case was
+# distinguishable and every other refusal read as a lost marker (#8635).
 #
 # Forgery-inert by construction: unlike the directive marker this token carries
 # no payload and grants no effect, so a model emitting the literal bytes can only
 # change how a log line reads, never what gets applied.
 _REFUSAL_SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE_REFUSED]]"
+# What :func:`neutralize_markers` substitutes for sentinel bytes that arrived from
+# outside this process. Deliberately NOT parseable as either sentinel and not a
+# prefix of one, so no consumer can be talked back into reading it as a marker.
+_DEFANGED = "[[kirocrew-marker-removed]]"
+# Substituted for the middle of an over-long refusal by :func:`tag_refusal`, so
+# the elision is visible rather than a silent cut.
+_ELIDED_NOTE = " [... {n} chars elided so the refusal tag survives delivery ...] "
 # A server-qualified canonical tool name separates server from tool with a RUN
 # of underscores, and the run length is transport-specific ("___" from kiro-cli,
 # "__" in the canonical MCP prefix form). Matching the run rather than one
@@ -135,13 +160,119 @@ def encode(kind: str, args: dict[str, Any], human: str) -> str:
     payload = json.dumps({"kind": kind, "args": args}, separators=(",", ":"), default=str)
     out = f"{human}\n{_SENTINEL}{payload}"
     if len(out) > MAX_DIRECTIVE_CHARS:
-        return (
+        return tag_refusal(
             f"Error: {kind} arguments are too large to deliver "
             f"({len(out)} chars, limit {MAX_DIRECTIVE_CHARS}). Shorten them "
             "(e.g. a briefer message / fewer items) and call the tool again — "
-            f"nothing was applied.\n{_REFUSAL_SENTINEL}"
+            "nothing was applied."
         )
     return out
+
+
+def neutralize_markers(text: str) -> str:
+    """Defang any directive/refusal sentinel bytes in *text*.
+
+    For text a caller KNOWS is not a directive — an error message, a rejection —
+    that nonetheless interpolates content this process does not control. An
+    argument NAME is such content: ``validate_tool_args`` reports an unknown field
+    by echoing the key, and a key carrying the sentinel plus a JSON payload plus a
+    newline makes the rejection string decode as a REAL directive under the
+    genuine tool's own authenticated identity, bypassing the very validation that
+    rejected it. Confirmed reachable, and reproducible on ``main`` — the marker is
+    model-visible text, so a rejection that echoes model input can imitate one.
+
+    Only the caller can know a string is not a directive, which is why this is not
+    applied centrally to every tool result: doing that would defang the genuine
+    marker too. Substitution rather than deletion so the operator reading a
+    transcript still sees that something marker-shaped was submitted.
+    """
+    for sentinel in (_SENTINEL, _REFUSAL_SENTINEL):
+        text = text.replace(sentinel, _DEFANGED)
+    return text
+
+
+def tag_refusal(text: str) -> str:
+    """Stamp *text* as a deliberate refusal: no directive was emitted, and the
+    model has been told so in *text* itself.
+
+    Idempotent, and appended on its OWN LAST line because :func:`strip_marker`
+    cuts from the sentinel to the end of the string — anything placed after it
+    would be dropped from the transcript the user reads.
+
+    Tail-anchored means transport-bounded: *text* is elided so the tag fits under
+    :data:`MAX_TOOL_RESULT_CHARS`. Without that, a long enough decline lost its
+    own tag to the ACP cut and read as a lost marker again — and the length is
+    model-reachable, since a rejection echoes the argument name it rejected.
+    """
+    if is_refusal(text):
+        return text
+    room = MAX_TOOL_RESULT_CHARS - len(_REFUSAL_SENTINEL) - 1
+    if len(text) > room:
+        # Elide visibly, and from the MIDDLE: the head carries "Error: <field>"
+        # and the tail carries the reason, so cutting either end alone throws
+        # away the half a reader needs in order to act.
+        #
+        # Count what is actually GONE, which includes the note's own footprint:
+        # the note occupies budget that would otherwise hold the caller's text, so
+        # reporting ``len(text) - room`` understated the loss by the note's own
+        # length. A note about a truncation has one job, and it is to be right
+        # about the truncation.
+        keep = max(room - len(_ELIDED_NOTE.format(n=len(text))), 0)
+        head = keep // 2
+        tail = keep - head
+        text = text[:head] + _ELIDED_NOTE.format(n=len(text) - keep) + text[len(text) - tail :]
+    return f"{text}\n{_REFUSAL_SENTINEL}"
+
+
+def preserve_tail_marker(full: str, truncated: str) -> str:
+    """Re-attach a tail-anchored marker that truncating *full* into *truncated* cut.
+
+    Both sentinels are tail-anchored, and the transport truncates AFTER redacting
+    -- and redaction can GROW the text, because a credential is replaced by a
+    longer placeholder. So bounding the text before redaction is necessary but not
+    sufficient: an 8,000-char rejection carrying an AKIA-shaped token expands past
+    the cut and loses its tag, and the decline reads as a lost marker again.
+
+    Mirrors the MCP App render marker's re-injection at the same seam, for the
+    same reason: a control token that decides how a frame is interpreted must not
+    be a casualty of a length cut applied to the frame's prose.
+    """
+    for sentinel in (_SENTINEL, _REFUSAL_SENTINEL):
+        idx = full.rfind(sentinel)
+        if idx < 0:
+            continue
+        tail = full[idx:]
+        if tail in truncated:
+            return truncated
+        room = MAX_TOOL_RESULT_CHARS - len(tail) - 1
+        if room <= 0:
+            # A payload that cannot fit at all: leave the cut alone rather than
+            # return a frame that is only a marker.
+            return truncated
+        return truncated[:room].rstrip("\n") + "\n" + tail
+    return truncated
+
+
+def refuse_if_markerless(tool_name: str, text: str) -> str:
+    """Tag a directive tool's marker-less result as a refusal (see
+    :data:`_REFUSAL_SENTINEL`). Any other tool's result is returned untouched.
+
+    The producer-side half of the invariant "a directive tool's result either
+    carries the marker, or it is a refusal". Called once, at the MCP server's
+    outermost return, so it covers every way a directive tool can decline
+    WITHOUT emitting a marker — including the ones its handler never sees,
+    because argument validation runs in the dispatch wrapper AHEAD of the
+    handler and returns a bare ``"Error: …"`` string.
+
+    Deliberately keyed on the tool NAME alone and therefore inert elsewhere: the
+    consumer honours a directive only from a call carrying this server's
+    :data:`CORE_MCP_SERVER` identity, so tagging text cannot grant anything.
+    Tagging is diagnostic; it changes how the consumer LOGS a result it was
+    already going to drop, never whether an effect applies.
+    """
+    if not text or tool_name not in DIRECTIVE_TOOLS or has_marker(text):
+        return text
+    return tag_refusal(text)
 
 
 def has_marker(text: str | None) -> bool:
@@ -158,9 +289,10 @@ def has_marker(text: str | None) -> bool:
 
 
 def is_refusal(text: str | None) -> bool:
-    """True iff *text* is an :func:`encode` refusal — a validated directive that
-    was deliberately NOT emitted because its payload exceeded
-    :data:`MAX_DIRECTIVE_CHARS`.
+    """True iff *text* is a tagged REFUSAL — a directive tool that deliberately
+    returned no marker and said so in the text, whether because :func:`encode`
+    would not fit the payload or because the call was declined before a directive
+    could be built (see :func:`refuse_if_markerless`).
 
     Distinguishes "refused before delivery, and the model was told" from "a marker
     was expected and did not arrive", which are otherwise indistinguishable at the

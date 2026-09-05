@@ -197,30 +197,98 @@ class CancellationCoordinator(ManagerComponent):
         self._manager._tasks[recovery_key] = _t
         _t.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
-    def _unqueue_impl(self, agent_id: str) -> bool:
-        """Drop a not-yet-started spawn from the stagger queue. True if removed.
+    def _unqueue_impl(self, agent_id: str) -> dict | None:
+        """Remove and return a not-yet-started spawn from the stagger queue.
 
-        The queue is the only record of a waiting run — `spawn` returns its queued
-        SubagentInfo without registering it in ``_agents`` — so removing the entry
-        is what makes a cancel take effect before the work exists. Also re-emits the
-        parent's queued depth, or the chip keeps counting an agent that will never
-        run.
+        The queue is the only record of a waiting run — ``spawn`` returns its
+        queued ``SubagentInfo`` without registering it in ``_agents``. Returning
+        the entry lets cancellation publish the same neutral stopped terminal
+        outcome as a run that had already started, including batch accounting.
         """
-        keep = [p for p in self._manager._queue if str(p.get("_preassigned_id") or "") != agent_id]
-        if len(keep) == len(self._manager._queue):
-            return False
-        dropped = [
-            p for p in self._manager._queue if str(p.get("_preassigned_id") or "") == agent_id
-        ]
-        self._manager._queue = keep
-        for p in dropped:
+        for index, params in enumerate(self._manager._queue):
+            if str(params.get("_preassigned_id") or "") != agent_id:
+                continue
+            dropped = self._manager._queue.pop(index)
             try:
                 self._manager._emit_queue_depth(
-                    str(p.get("parent_session_key", "")), str(p.get("batch_id", ""))
+                    str(dropped.get("parent_session_key", "")),
+                    str(dropped.get("batch_id", "")),
                 )
             except Exception:
                 logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
-        return True
+            return dropped
+        return None
+
+    def _report_queued_stop_impl(self, params: dict) -> None:
+        """Publish a neutral terminal record for work stopped before startup."""
+        info = SubagentInfo(
+            id=str(params.get("_preassigned_id") or ""),
+            task=str(params.get("task") or "(stopped before start)"),
+            parent_session_key=str(params.get("parent_session_key") or ""),
+            agent=str(params.get("agent") or ""),
+            user_stopped=True,
+            queued=True,
+            batch_id=str(params.get("batch_id") or ""),
+            batch_total=max(0, int(params.get("batch_total") or 0)),
+        )
+        if not info.id:
+            return
+        # Queued runs have no `_agents` record yet. Register every synthetic
+        # terminal before report tasks can run, leaving `done=False` until each
+        # task starts. That keeps earlier reports from treating themselves as
+        # the final batch member and flushing a partial digest while sibling
+        # queued-stop reports are still pending.
+        self._manager._agents[info.id] = info
+        if not self._manager._claim_finalize(info):
+            self._manager._agents.pop(info.id, None)
+            return
+        self._manager._spawn_terminal_report(
+            info,
+            source="Queued stop",
+            injection_timeout_reason="delivery timed out after queued subagent stop",
+            mark_delivered_on_success=False,
+            settle_digest=True,
+        )
+
+    async def cancel_for_parent_impl(self, parent_session_key: str) -> tuple[int, int]:
+        """Stop one parent's running and queued agents.
+
+        Queue entries are removed before the first suspending await, so a stagger
+        timer cannot start work after the user clicked Stop all. Agents parked on
+        a spawn-approval prompt remain pending because that prompt has its own
+        explicit reject action.
+        """
+        if not parent_session_key:
+            return (0, 0)
+        queued_ids = [
+            str(params.get("_preassigned_id") or "")
+            for params in self._manager._queue
+            if params.get("parent_session_key", "") == parent_session_key
+        ]
+        queued_stopped = 0
+        for agent_id in queued_ids:
+            if not agent_id:
+                continue
+            queued = self._manager._unqueue(agent_id)
+            if queued is None:
+                continue
+            self._manager._report_queued_stop(queued)
+            queued_stopped += 1
+
+        running_ids = [
+            info.id
+            for info in self._manager._agents.values()
+            if info.parent_session_key == parent_session_key
+            and not info.done
+            and not info.queued
+            and not (info._awaiting_approval and info._exec_started is None)
+        ]
+        results = await asyncio.gather(
+            *(self._manager.cancel(agent_id) for agent_id in running_ids),
+            return_exceptions=True,
+        )
+        running_stopped = sum(result is True for result in results)
+        return (running_stopped, queued_stopped)
 
     async def cancel_impl(self, agent_id: str) -> bool:
         """Cancel a single running subagent. Returns True if found and cancelled.
@@ -234,12 +302,12 @@ class CancellationCoordinator(ManagerComponent):
         if not info or info.done:
             # A run still WAITING behind the stagger has no `_agents` record at
             # all: `spawn` builds its queued SubagentInfo and returns it without
-            # registering. So this used to answer False and leave the entry in the
-            # queue, which the drain later started — the stop was reported as
-            # ineffective while the work ran anyway, and a purge on a deleted
-            # session could not reach it. Unqueueing IS the cancel for that state.
-            if self._manager._unqueue(agent_id):
+            # registering. Unqueueing prevents startup; the synthetic terminal
+            # report keeps its parent and batch accounting from waiting forever.
+            queued = self._manager._unqueue(agent_id)
+            if queued is not None:
                 logger.info("Cancelled queued subagent %s before it started", agent_id)
+                self._manager._report_queued_stop(queued)
                 return True
             return False
         info.user_stopped = True

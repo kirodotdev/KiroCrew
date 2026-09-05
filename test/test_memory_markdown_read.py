@@ -1224,3 +1224,87 @@ class TestEmptyIndexIsNotAbsence:
         out = capsys.readouterr().out
         assert "empty or unavailable" in out
         assert "No memory-history matches." not in out
+
+
+class TestLinkedWorkspaceAncestorGate:
+    """On Windows, a linked ANCESTOR of the workspace must be refused before
+    the leaf reparse-point checks -- those are lstats that resolve every
+    ancestor, so the probe itself would traverse the link and open the SMB
+    connection the lexical UNC gate exists to prevent (#5962)."""
+
+    def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import types
+
+        from kiro_crew import memory as memory_mod
+
+        # Patch ONLY memory.py's view of os (same rationale as the UNC gate
+        # tests above): patching the global os.name would make pathlib
+        # dispatch WindowsPath everywhere on a POSIX test host. lstat is
+        # carried so the read path's updated_at branch cannot surface a stub
+        # AttributeError masquerading as a product bug.
+        monkeypatch.setattr(memory_mod, "os", types.SimpleNamespace(name="nt", lstat=os.lstat))
+
+    def test_linked_ancestor_is_refused_before_any_leaf_lstat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering IS the property: the leaf predicate is wired to explode,
+        so a regression that lstats first fails loudly instead of silently."""
+        from kiro_crew import memory as memory_mod
+
+        ms = _populated_store(tmp_path)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(memory_mod, "first_linked_ancestor", lambda _p: str(tmp_path))
+
+        def _boom(_p: object) -> bool:  # pragma: no cover
+            raise AssertionError("leaf reparse check ran before the ancestor walk")
+
+        monkeypatch.setattr(memory_mod, "is_link_or_junction", _boom)
+        audits: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            ms,
+            "_audit_read_refusal",
+            lambda rule, path, reason: audits.append((rule, reason)),
+        )
+
+        snapshot = ms.markdown_snapshot()
+
+        assert snapshot["preferences"]["content"] == ""
+        assert snapshot["history"] == []
+        # The guard is consulted once per read surface (preferences, projects,
+        # history) and the refusal short-circuits before any per-entry work,
+        # so the multiplicity is bounded by the surface count -- a regression
+        # to per-entry consultation would blow this bound out.
+        assert len(audits) == 3
+        assert set(audits) == {("workspace_linked_ancestor", "a workspace ancestor is a link")}
+
+    def test_bypassing_the_guard_restores_the_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation check: with the walk reporting no link, the same store
+        reads again -- the refusal above is attributable to the guard."""
+        from kiro_crew import memory as memory_mod
+
+        ms = _populated_store(tmp_path)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(memory_mod, "first_linked_ancestor", lambda _p: None)
+
+        snapshot = ms.markdown_snapshot()
+
+        assert "- prefers pytest" in snapshot["preferences"]["content"]
+
+    def test_the_walk_is_not_consulted_on_posix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSIX linked ancestors stay deliberately unrejected (a symlinked
+        /home is a legitimate setup and those components are not
+        agent-writable), so the walk must not even run there."""
+        if os.name == "nt":
+            pytest.skip("gate is active on Windows by design")
+        from kiro_crew import memory as memory_mod
+
+        def _boom(_p: object) -> None:  # pragma: no cover
+            raise AssertionError("ancestor walk ran on POSIX")
+
+        monkeypatch.setattr(memory_mod, "first_linked_ancestor", _boom)
+        ms = _populated_store(tmp_path)
+        assert "- prefers pytest" in ms.markdown_snapshot()["preferences"]["content"]

@@ -5,6 +5,7 @@ const path = require("path");
 
 const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
 const { createRendererRecovery } = require("./renderer-recovery");
+const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide } = require("./hide-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
@@ -43,6 +44,7 @@ const {
   SYMBOL_LIGHT: WINDOWS_TITLEBAR_SYMBOL_LIGHT,
   OVERLAY_BACKGROUND: WINDOWS_TITLEBAR_BACKGROUND,
 } = require("./windows-titlebar");
+const { attachFrameLoadLogging } = require("./frame-load-log");
 const { createMemoryWatchLog } = require("./memory-watch-log");
 const { createCageTrace } = require("./cage-trace");
 const { profilingEnabled } = require("./perf-metrics");
@@ -943,6 +945,19 @@ function createWindowLifecycle(options) {
       });
     });
 
+    // Journal frame-level load outcomes into gateway-launch.log. The remote-crew
+    // panes are iframes of THIS webContents, and until this existed a pane that
+    // never became a live document left no evidence anywhere: the remote gateway
+    // keeps no HTTP access log and a packaged app has no devtools console. The
+    // navigation lines are what separate "never requested" from "requested and
+    // refused" — the two failures that look identical on screen.
+    //
+    // `backendUrl` is passed as the trusted origin: it is the ONE document whose
+    // `[pane]` journal lines are the dashboard's own. Being the top frame is not
+    // enough on its own, because a pane can navigate the top-level window to a
+    // remote document and inherit that position.
+    attachFrameLoadLogging(mainWindow.webContents, glog, backendUrl);
+
     const rendererRecovery = createRendererRecovery({
       isQuitting,
       log: glog,
@@ -990,12 +1005,31 @@ function createWindowLifecycle(options) {
       },
     });
 
+    // A renderer that HANGS never reaches the `render-process-gone` handler
+    // below: it emits `unresponsive` instead, and with no listener the window
+    // stayed frozen until the user rebooted (#8264). Convert a sustained hang
+    // into the crash the bounded recovery already heals; `responsive` within
+    // the grace window cancels the kill so a transient stall keeps its state.
+    const hangRecovery = createHangRecovery({
+      isQuitting,
+      log: glog,
+      forceCrash: () => {
+        if (mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+        mainWindow.webContents.forcefullyCrashRenderer();
+      },
+    });
+    mainWindow.webContents.on("unresponsive", () => hangRecovery.handleUnresponsive());
+    mainWindow.webContents.on("responsive", () => hangRecovery.handleResponsive());
+
     mainWindow.webContents.on("render-process-gone", (_event, details) => {
       // Flush the trajectory before the terminal event so the log stays causal.
       // An in-flight content trace is write-or-lose: stopRecording is the only
       // operation that lands it, and a renderer death is its most useful end.
       for (const line of memoryWatchLog.flush()) glog(line);
       void cageTrace.stopForCrash();
+      // A hung renderer can die on its own inside the grace window; the armed
+      // force-crash must not survive into the reloaded replacement renderer.
+      hangRecovery.handleGone();
       rendererRecovery.handleGone(details || {});
     });
 

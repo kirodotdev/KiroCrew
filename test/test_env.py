@@ -1250,10 +1250,13 @@ class TestSanitizeSpecEnvReservedNamespace:
     def test_caller_identity_keys_are_dropped(self) -> None:
         """The four vouched-for identity channels, and the shared secret.
 
-        ``KIROCREW_CLI`` is the admin-bypass flag (``_caller_is_cli``);
         ``KIROCREW_SESSION_KEY``/``KIROCREW_HOST_PID`` are two of the three
         sources ``_resolve_session_key_strict`` accepts *on the grounds that an
         agent cannot write them*; ``KIROCREW_OWNER_ID`` is the Slack owner.
+        ``KIROCREW_CLI`` was the cron admin-bypass flag, whose consumer #6624
+        deleted rather than re-grounded (nothing in ``src/`` set it); it is kept in
+        this list because the deny is on the NAMESPACE, and a key-by-key list is
+        exactly what would fail open for the next identity variable added.
         """
         out = env_mod.sanitize_spec_env(
             [

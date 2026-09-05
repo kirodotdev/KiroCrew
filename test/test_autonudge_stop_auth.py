@@ -63,7 +63,7 @@ def default_install(monkeypatch):
 # ── monitor_start ──
 
 
-def test_monitor_start_returns_directive_with_validated_payload(default_install):
+def test_monitor_start_returns_directive_with_validated_payload(default_install, gateway_posts):
     """A valid call returns a directive decoding to the validated payload with
     interval_secs mapped to idle_secs."""
     result = _call_tool_inner(
@@ -81,6 +81,9 @@ def test_monitor_start_returns_directive_with_validated_payload(default_install)
         # directive reads the same decision the ack reported.
         "gate": True,
     }
+    # BOTH halves of the delivery contract: the marker above, and the
+    # out-of-band record parked for a consumer that never sees the marker.
+    assert gateway_posts == [("/api/session-directive", {"kind": "monitor_start", "args": args})]
 
 
 def test_monitor_start_runtime_budget_passes_through(default_install):
@@ -130,13 +133,15 @@ def test_monitor_start_confirmation_states_idle_semantics_and_stop_duty(default_
     assert "backstop" in result.lower()
 
 
-def test_monitor_start_short_circuits_for_non_nudgeable_session(monkeypatch):
+def test_monitor_start_short_circuits_for_non_nudgeable_session(monkeypatch, gateway_posts):
     """A non-empty but non-nudge-able key (cron/subagent) yields a plain refusal
     and NO directive."""
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "cron:job-9")
     result = _call_tool_inner("monitor_start", {"message": "watch"})
     assert "only works" in result.lower()
     assert session_directive.decode(result, "monitor_start") is None
+    # A short-circuit must not publish: no marker, no parked record.
+    assert gateway_posts == []
 
 
 # ── monitor_update ──
@@ -193,19 +198,25 @@ def test_monitor_update_exposes_no_loop_id_parameter(default_install):
         _call_tool_inner("monitor_update", {"message": "x", "loop_id": "someone-elses-loop"})
 
 
-def test_monitor_update_short_circuits_for_non_nudgeable_session(monkeypatch):
+def test_monitor_update_short_circuits_for_non_nudgeable_session(monkeypatch, gateway_posts):
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "subagent:abc")
     result = _call_tool_inner("monitor_update", {"message": "x"})
     assert "only works" in result.lower()
     assert session_directive.decode(result, "monitor_update") is None
+    # A short-circuit must not publish: no marker, no parked record.
+    assert gateway_posts == []
 
 
 # ── autonudge_stop ──
 
 
-def test_autonudge_stop_returns_directive_with_stripped_reason(default_install):
+def test_autonudge_stop_returns_directive_with_stripped_reason(default_install, gateway_posts):
     result = _call_tool_inner("autonudge_stop", {"reason": "  PR is green  "})
     assert session_directive.decode(result, "autonudge_stop") == {"reason": "PR is green"}
+    # The published record carries the same stripped reason as the marker.
+    assert gateway_posts == [
+        ("/api/session-directive", {"kind": "autonudge_stop", "args": {"reason": "PR is green"}})
+    ]
 
 
 def test_autonudge_stop_empty_reason_yields_empty_string(default_install):
@@ -213,11 +224,13 @@ def test_autonudge_stop_empty_reason_yields_empty_string(default_install):
     assert session_directive.decode(result, "autonudge_stop") == {"reason": ""}
 
 
-def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch):
+def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch, gateway_posts):
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "cron:job-1")
     result = _call_tool_inner("autonudge_stop", {"reason": "x"})
     assert "only works" in result.lower()
     assert session_directive.decode(result, "autonudge_stop") is None
+    # A short-circuit must not publish: no marker, no parked record.
+    assert gateway_posts == []
 
 
 # ── Applier invariants (dashboard.session_directive_apply) ────────────────────

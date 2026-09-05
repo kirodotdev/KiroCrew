@@ -66,7 +66,12 @@ export default function BoardFrame({ html, title }: BoardFrameProps) {
             style={{
               width: `${BOARD_WIDTH}px`,
               height: `${intrinsicHeight}px`,
-              transform: `scale(${scale})`,
+              // `translateZ(0)` composed onto the scale, not instead of it: the
+              // scale is the board's whole geometry. A 2D transform makes a
+              // stacking context but does NOT force this frame onto its own
+              // compositing layer, so an engine can skip its first paint and
+              // leave the preview blank. Same remedy as ArtifactThumbs.
+              transform: `scale(${scale}) translateZ(0)`,
               transformOrigin: 'top left',
             }}
           />
@@ -114,7 +119,9 @@ export function BoardThumb({
         style={{
           width: `${BOARD_WIDTH}px`,
           height: `${BOARD_HEIGHT}px`,
-          transform: `scale(${width / BOARD_WIDTH})`,
+          // Composed onto the scale for the same reason as BoardFrame above:
+          // promotion without losing the thumbnail's geometry.
+          transform: `scale(${width / BOARD_WIDTH}) translateZ(0)`,
           transformOrigin: 'top left',
         }}
       />

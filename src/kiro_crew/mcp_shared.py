@@ -32,6 +32,7 @@ from kiro_crew.mcp_caller import (
     tenant_nonce_from_meta,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import neutralize_markers
 from kiro_crew.validation import (
     ValidationError,
     build_tool_response,
@@ -636,7 +637,14 @@ def call_tool_with_logging(
             downstream_service=downstream_service,
             error=str(e),
         )
-        return f"Error: {e}"
+        # A rejection is BY CONSTRUCTION not a directive, and this message
+        # interpolates content this process does not control: an unknown-field
+        # error echoes the argument KEY, so a key carrying the directive sentinel
+        # plus a JSON payload plus a newline turns a rejected call into a decodable
+        # directive under the genuine tool's authenticated identity - applying the
+        # arguments validation had just refused. Defang here, where "this is an
+        # error" is known, rather than centrally where the real marker lives.
+        return f"Error: {neutralize_markers(str(e))}"
 
     result = inner_fn(name, args)
     outcome = "failed" if result.startswith("Error:") else "completed"
@@ -904,7 +912,7 @@ def _run_stdio_dispatch_loop(
             _result_ready.set()
             return
         except Exception as exc:
-            result_text = f"Error: {exc}"
+            result_text = f"Error: {neutralize_markers(str(exc))}"  # not a directive: see call_tool_with_logging
             _tool_errored = True
         else:
             _tool_errored = False
@@ -1179,7 +1187,7 @@ def _run_stdio_dispatch_loop(
                 try:
                     result_text = call_tool_fn(tool_name, tool_args)
                 except Exception as exc:
-                    result_text = f"Error: {exc}"
+                    result_text = f"Error: {neutralize_markers(str(exc))}"  # not a directive: see call_tool_with_logging
                     _sel_audit(
                         "failed",
                         tool_name,

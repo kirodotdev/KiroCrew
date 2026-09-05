@@ -89,7 +89,37 @@ describe('Spec Builder collapsed rail, horizontal orientation', () => {
   })
 })
 
-describe('Spec Builder expanded rail', () => {
+describe('Spec Builder expanded rail grouping', () => {
+  it('labels in-progress specs as ACTIVE, not a hardcoded English leftover', () => {
+    const { getByText } = render(
+      <SpecRail
+        specs={[spec({ name: 'login', phase: 'design' }), spec({ name: 'billing', phase: 'tasks' })]}
+        sel="login"
+        setSel={() => {}}
+        onNew={() => {}}
+        width={250}
+      />,
+    )
+    expect(getByText('ACTIVE')).toBeTruthy()
+    expect(getByText('PLAN READY')).toBeTruthy()
+    cleanup()
+  })
+
+  it('says so when the filter matches nothing', () => {
+    const { getByLabelText, getByText } = render(
+      <SpecRail
+        specs={[spec({ name: 'login', phase: 'design' })]}
+        sel="login"
+        setSel={() => {}}
+        onNew={() => {}}
+        width={250}
+      />,
+    )
+    fireEvent.change(getByLabelText(/filter specs by name/i), { target: { value: 'zzzz' } })
+    expect(getByText('No specs match that filter')).toBeTruthy()
+    cleanup()
+  })
+
   it('keeps archived specs selectable and shows their title', () => {
     const setSel = vi.fn()
     renderBar({

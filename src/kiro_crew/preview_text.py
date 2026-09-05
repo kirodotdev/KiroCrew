@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import OPTIONS_RE_LINE, strip_control_comments
 
 # Fenced code blocks — ```lang ... ``` (or unterminated, running to the end
 # of the message). Replaced with a short placeholder; the code body would
@@ -26,6 +26,9 @@ from kiro_crew.constants import OPTIONS_RE_LINE
 _FENCE_RE = re.compile(r"```([^\n`]*)\n?[\s\S]*?(?:```|\Z)")
 # <mcwidget> bodies render as an iframe elsewhere; raw HTML is noise here.
 _MCWIDGET_RE = re.compile(r"<mcwidget\b[^>]*>[\s\S]*?(?:</mcwidget>|\Z)", re.IGNORECASE)
+# Control-tag comment stripping lives in ``constants.strip_control_comments``
+# (grammar + recognizer split documented on ``constants._TRAILING_CONTROL_LINES_RE``);
+# this module deliberately has no local spelling to drift.
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
@@ -91,6 +94,11 @@ def strip_markdown_preview(text: str) -> str:
     t = drop_format_chars(text)
     t = _FENCE_RE.sub(_fence_placeholder, t)
     t = _MCWIDGET_RE.sub(" (widget) ", t)
+    # Only RECOGNIZED control tags (keep-visible #7948, heartbeat deliver
+    # routing, plan_task_id anchors) — never all comments, and never inside
+    # inline code: a tag an assistant quotes in inline code renders literally
+    # and is visible content. Shared implementation; see constants.py.
+    t = strip_control_comments(t)
     t = _INLINE_CODE_RE.sub(r"\1", t)
     t = _IMAGE_RE.sub(lambda m: m.group(1) or "(image)", t)
     t = _LINK_RE.sub(r"\1", t)

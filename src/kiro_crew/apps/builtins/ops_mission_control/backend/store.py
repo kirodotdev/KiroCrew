@@ -351,16 +351,16 @@ def _read_index_for_update() -> dict[str, Incident]:
     logs survive on disk but nothing indexes them any more, and an open incident
     that is no longer listed is never swept, resolved, or answered.
 
-    Corruption propagates too, and that is a DELIBERATE divergence from the four
+    Corruption propagates too, which began as a DELIBERATE divergence from the four
     merged siblings of this idiom (``library.py``, ``shares.py``, ``secrets.py``,
-    ``policy_store.py``), which all still read an unparseable document as empty.
-    Their justification is real -- a document that failed to parse carries nothing
+    ``policy_store.py``), which then read an unparseable document as empty.
+    Their justification was real -- a document that failed to parse carries nothing
     to merge into -- but "cannot merge into" is not "safe to destroy". A truncated
     index still holds most of its records verbatim, and replacing it discards the
     operator's only chance to recover them by hand. Refusing costs one skipped
     mutation and a visible error; overwriting costs the records, silently. Found in
-    review (GPT 5.6). The siblings need the same treatment in a follow-up --
-    ``secrets.py`` most of all, since there the discarded bytes are credentials.
+    review (GPT 5.6). The siblings received the same treatment in #7805, so the
+    divergence is closed and this paragraph is its record, not its tracker.
     """
     try:
         raw = json.loads(index_path().read_text(encoding="utf-8"))

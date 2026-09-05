@@ -22,7 +22,7 @@ from kiro_crew.dashboard.state import (
     parse_cls_meta,
 )
 from kiro_crew.history import ConversationLog
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ToolHookResult
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHookResult, ToolHookResult
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -73,7 +73,17 @@ def _blocking_hook_store(reason: str, hook_name: str = "policy-hook") -> MagicMo
     hs = _make_hook_store()
     hs.fire = AsyncMock(
         return_value=[
-            MagicMock(exit_code=2, stderr=reason, stdout="", hook_name=hook_name)
+            # Real dataclass instance so a renamed production field fails
+            # loudly as a TypeError instead of silently configuring a stale
+            # attribute on a bare MagicMock.
+            ScriptHookResult(
+                hook_id="h-" + hook_name,
+                hook_name=hook_name,
+                event=HOOK_EVENT_PRE_TOOL_USE,
+                exit_code=2,
+                stderr=reason,
+                stdout="",
+            )
         ]
     )
     return hs
@@ -566,7 +576,17 @@ class TestApprovalModes:
         cb = _context_builder(ToolHookResult.auto_approve())
         hook_store = _make_hook_store()
         hook_store.fire = AsyncMock(
-            return_value=[MagicMock(hook_name="policy-gate", **result_kwargs)]
+            # A real ScriptHookResult (not a bare MagicMock) pins the test to
+            # the production dataclass: a renamed field fails loudly here as a
+            # TypeError instead of silently configuring a stale attribute.
+            return_value=[
+                ScriptHookResult(
+                    hook_id="h-policy-gate",
+                    hook_name="policy-gate",
+                    event=HOOK_EVENT_PRE_TOOL_USE,
+                    **result_kwargs,
+                )
+            ]
         )
         state, client = _make_state(tmp_path, context_builder=cb, hook_store=hook_store)
         slot = _make_slot()
@@ -593,7 +613,16 @@ class TestApprovalModes:
         hook_store = _make_hook_store()
         hook_store.fire = AsyncMock(
             return_value=[
-                MagicMock(exit_code=0, stdout="", stderr="", error="", hook_name="policy-gate")
+                # Real dataclass instance (see the no-verdict test above for why).
+                ScriptHookResult(
+                    hook_id="h-policy-gate",
+                    hook_name="policy-gate",
+                    event=HOOK_EVENT_PRE_TOOL_USE,
+                    exit_code=0,
+                    stdout="",
+                    stderr="",
+                    error="",
+                )
             ]
         )
         state, client = _make_state(tmp_path, context_builder=cb, hook_store=hook_store)

@@ -351,7 +351,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/backend/clone_setup.py::_gh_prefers_ssh",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_run",
         "apps/builtins/auto_improvement/backend/clone_setup.py::list_clone_branches",
-        "apps/builtins/auto_improvement/backend/clone_setup.py::setup_safe_clone",
+        # Renamed from ``setup_safe_clone`` when a thin public wrapper was added
+        # to convert IsolationProbeError into the (result, err) shape (#8151);
+        # the git-clone spawn itself is unchanged and its argv is built from
+        # validated owner/repo components, never raw user text.
+        "apps/builtins/auto_improvement/backend/clone_setup.py::_setup_safe_clone",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the async
         # ``SessionAgentRunner._approve`` coroutine from a synchronous test. No child

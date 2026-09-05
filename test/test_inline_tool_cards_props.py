@@ -373,7 +373,7 @@ class TestProperty7PrepareMessagesChunkCollapse:
         for chunk in trailing_chunks:
             messages.append({"role": "chunk", "content": chunk, "cls": "chunk"})
 
-        result = _prepare_messages(messages, running=True)
+        result = _prepare_messages(messages, running=True, live_child="")
 
         # Count roles in output
         result_roles = [m.get("role") for m in result]

@@ -14,6 +14,7 @@ import logging
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -204,13 +205,25 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
     return text
 
 
-def _build_stream_chunk(msg: dict) -> str:
-    """Build a JSON SSE chunk from a slot message, with meta redaction for permissions."""
+def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
+    """Build a JSON SSE chunk from a slot message, with meta redaction for permissions.
+
+    ``include_row_meta`` carries the row's own durable ``meta`` dict (tool
+    input/output, call identity) into the record. Off by default so the ordinary
+    SSE / OpenAI-compat stream keeps its "only permission rows carry meta"
+    contract; the RELAY drain turns it on, because a relay reader (``_apply_row``)
+    rebuilds the local row from this record and would otherwise lose that tool
+    correlation permanently on a local refresh (GPT #7693).
+    """
     try:
         meta = parse_cls_meta(msg.get("cls", "")) if msg.get("role") == "permission" else None
     except Exception:
         logger.warning("Failed to parse cls meta for permission message", exc_info=True)
         meta = None
+    if meta is None and include_row_meta:
+        row_meta = msg.get("meta")
+        if isinstance(row_meta, dict):
+            meta = row_meta
     if meta:
         meta = _redact_deep(meta)
     content = msg.get("content", "")
@@ -1562,6 +1575,23 @@ _EMPTY_AUTO_CONTINUE_MSG = (
     "conversation above and respond now — do NOT restart from scratch and do "
     "NOT re-run steps or tools that already completed successfully."
 )
+_ACTIVITY_NO_REPLY_CONTINUE_MSG = (
+    f"{EMPTY_RESPONSE_RECOVERY_PREFIX}\n"
+    "Your previous turn did work — it streamed text, called tools, or reasoned "
+    "— but ended without a closing reply, so the request looks unanswered. "
+    "Everything above already happened and its results are in the conversation: "
+    "answer now from what is there. Do NOT restart the request, and do NOT "
+    "re-run any tool or step that already completed."
+)
+#: Shares :data:`EMPTY_RESPONSE_RECOVERY_PREFIX` with
+#: :data:`_EMPTY_AUTO_CONTINUE_MSG` rather than minting a marker of its own. The
+#: marker is what ``RecoveryCard.tsx`` classifies a transcript row by, and both
+#: bodies are the same event to a reader ("the turn ended without an answer, and
+#: the runner continued it once"); a second marker would need a card row and a
+#: locale pair in twelve catalogs to say nothing new. The BODIES must differ,
+#: because this one is read by the MODEL: telling a turn that ran tools that it
+#: "produced no output" invites it to redo work whose side effects already
+#: landed, which is the failure this whole path exists to prevent.
 _PROMISE_ONLY_CONTINUE_MSG = (
     f"{PROMISE_ONLY_RECOVERY_PREFIX}\n"
     "Your previous turn ended right after you said you would perform an action "
@@ -1589,6 +1619,7 @@ _SYNTHETIC_RECOVERY_MSGS = (
     _BUSY_RECOVER_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
+    _ACTIVITY_NO_REPLY_CONTINUE_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
     _COMPACTION_CONTINUE_MSG,
 )
@@ -2028,6 +2059,165 @@ def should_notice_mixed_turn_leak(
     if prompt_depth != 0:
         return False
     return has_leaked_tool_call(final_segment_text)
+
+
+#: Normalised, CLOSED stop-reason vocabulary for the empty-turn diagnostic. The
+#: raw wire value is never logged: a backend is free to invent a reason string,
+#: and an unbounded value in a diagnostic is both a cardinality hazard and a
+#: place model- or user-derived text could appear.
+#:
+#: The three literals are spelled here rather than imported from
+#: ``kiro_crew.acp.types``, following the precedent in ``metrics/turns.py``:
+#: ``scripts/check_agent_sdk_boundary.py`` baselines this file at ONE ACP edge
+#: and a baselined file may not grow its count. Duplicating a wire constant is
+#: only safe with a guard, so ``test_dashboard_chat.py`` pins each against the
+#: ACP constant it mirrors — the test tree is outside the gate's scope, so the
+#: pin can import what this module may not.
+_STOP_END_TURN = "end_turn"
+_STOP_CANCELLED_REASON = "cancelled"
+_STOP_REFUSAL = "refusal"
+
+#: A terminal event arrived carrying NO stop reason at all. Deliberately its own
+#: value rather than folded onto ``end_turn``: ``metrics.turns.turn_outcome``
+#: reads absence as a clean turn (correct for latency accounting, where the acp
+#: path leaves it unset on every normal completion), but here the two are the
+#: whole question — "the provider said the turn ended and produced nothing" is a
+#: model-side event, while "the provider never said why it stopped" is a
+#: transport-side one, and the incident that motivated these diagnostics could
+#: not tell them apart.
+STOP_REASON_ABSENT = "absent"
+#: A terminal stop reason outside the closed set above.
+STOP_REASON_OTHER = "other"
+
+#: Causes for a turn that reached the empty-response verdict. Closed set,
+#: low-cardinality, content-free — safe for a log line and for a metric
+#: attribute if one is ever added.
+EMPTY_CAUSE_NO_TERMINAL = "no_terminal_event"
+EMPTY_CAUSE_SYNTHETIC = "synthetic_completion"
+EMPTY_CAUSE_VISIBLE_PARTIAL = "visible_partial"
+EMPTY_CAUSE_TOOL_ONLY = "tool_only"
+EMPTY_CAUSE_THINKING_ONLY = "thinking_only"
+EMPTY_CAUSE_PROVIDER_EMPTY = "provider_empty"
+EMPTY_CAUSE_OTHER = "other"
+
+#: Which rung of the empty-response ladder claimed the turn.
+EMPTY_RUNG_REPLAY = "replay"
+EMPTY_RUNG_CONTINUE = "continue"
+EMPTY_RUNG_GIVE_UP = "give_up"
+
+
+def normalize_stop_reason(stop_reason: str | None) -> str:
+    """Map a raw terminal stop reason onto the closed diagnostic vocabulary.
+
+    ``None`` and ``""`` both answer :data:`STOP_REASON_ABSENT` — an omitted
+    reason, which is a distinct observation from a clean ``end_turn`` and must
+    not be laundered into one. Anything unrecognised answers
+    :data:`STOP_REASON_OTHER`, so no raw backend string is ever logged.
+    """
+    raw = stop_reason or ""
+    if not raw:
+        return STOP_REASON_ABSENT
+    if raw in (_STOP_END_TURN, _STOP_CANCELLED_REASON, _STOP_REFUSAL):
+        return raw
+    if raw.startswith("error:"):
+        return "error"
+    return STOP_REASON_OTHER
+
+
+@dataclass(frozen=True)
+class EmptyTurnActivity:
+    """What a turn DID, in booleans only, as observed at the empty-response verdict.
+
+    Every field is a bool or a value from a closed set. There are deliberately no
+    counts, no durations, no token or credit numbers, no paths, no ids, and no
+    text: this object exists to be written to a log line, and the incident it was
+    built for is one where the interesting facts (did a tool run? did the user
+    already read something?) are exactly the facts a privacy-safe diagnostic can
+    carry. A count would answer no question the bool does not, and token counts
+    and costs are billing data that has no business in a warning.
+
+    ``billed`` is likewise a bool: whether the provider reported ANY billing
+    dimension for the turn (``llm_helpers.usage_has_billing``). It separates the
+    two shapes of "nothing came back" that look identical from the runner — a
+    turn the provider generated and charged for, versus one it never ran.
+    """
+
+    #: A terminal ``EVENT_COMPLETE`` arrived. False means the stream ended
+    #: without one, and every other field describes a turn nobody closed.
+    saw_terminal: bool = False
+    #: The terminal was SYNTHESIZED by the provider layer (watchdog, timeout,
+    #: cancel-unacked) rather than reported by the backend. Retained past the
+    #: event arm because the verdict below is reached long after it.
+    terminal_synthetic: bool = False
+    #: Normalised terminal stop reason — see :func:`normalize_stop_reason`.
+    stop_reason: str = STOP_REASON_ABSENT
+    #: At least one assistant text chunk streamed this turn.
+    saw_text: bool = False
+    #: A visible assistant segment was FLUSHED and persisted at a tool boundary,
+    #: so the user has already read text this turn even though the final segment
+    #: is empty. This is the incident's own shape.
+    flushed_visible: bool = False
+    #: At least one tool call was dispatched.
+    had_tools: bool = False
+    #: At least one thinking chunk arrived.
+    had_thinking: bool = False
+    #: The provider reported some billing dimension for the turn.
+    billed: bool = False
+
+    @property
+    def productive(self) -> bool:
+        """True when the turn did work that can carry state or side effects.
+
+        This is the load-bearing predicate: a turn that is productive must NEVER
+        have its originating message replayed verbatim, because the replay
+        re-executes tool calls that already completed and re-derives an answer
+        the user has already read. Text that merely STREAMED is not enough on its
+        own — an un-flushed partial segment is still in ``assistant_text`` and is
+        handled by the answer branch — so the three triggers are a flushed
+        visible segment, a dispatched tool call, and thinking, each of which
+        leaves the conversation in a state a replay would corrupt or duplicate.
+        """
+        return self.flushed_visible or self.had_tools or self.had_thinking
+
+
+def classify_empty_turn(activity: EmptyTurnActivity) -> str:
+    """Name the cause of an empty-response verdict, from the closed cause set.
+
+    Ordered most-specific first, and the order is the point: the causes overlap
+    (a synthesized terminal usually also has tool activity), so a flat set of
+    predicates would report whichever the code happened to check first. The
+    ranking is by what an operator must act on.
+
+    1. :data:`EMPTY_CAUSE_NO_TERMINAL` — nobody closed the turn, so no other
+       field can be trusted to describe a complete picture.
+    2. :data:`EMPTY_CAUSE_SYNTHETIC` — the provider layer closed it, so the
+       emptiness is ours, not the model's.
+    3. :data:`EMPTY_CAUSE_VISIBLE_PARTIAL` — the user read an answer that a tool
+       boundary flushed away; the turn is not empty in any sense the user would
+       recognise.
+    4. :data:`EMPTY_CAUSE_TOOL_ONLY` / :data:`EMPTY_CAUSE_THINKING_ONLY` — work
+       happened with nothing said.
+    5. :data:`EMPTY_CAUSE_PROVIDER_EMPTY` — a clean ``end_turn`` with no
+       activity at all. The genuine provider-side empty, and the only cause for
+       which replaying the original message is the right recovery.
+    6. :data:`EMPTY_CAUSE_OTHER` — a closed terminal with no activity and no
+       clean ``end_turn``, most importantly an OMITTED stop reason. Distinct
+       from ``provider_empty`` on purpose: the incident's third attempt looked
+       identical to a provider empty in the log and was not diagnosable.
+    """
+    if not activity.saw_terminal:
+        return EMPTY_CAUSE_NO_TERMINAL
+    if activity.terminal_synthetic:
+        return EMPTY_CAUSE_SYNTHETIC
+    if activity.flushed_visible:
+        return EMPTY_CAUSE_VISIBLE_PARTIAL
+    if activity.had_tools:
+        return EMPTY_CAUSE_TOOL_ONLY
+    if activity.had_thinking:
+        return EMPTY_CAUSE_THINKING_ONLY
+    if activity.stop_reason == _STOP_END_TURN:
+        return EMPTY_CAUSE_PROVIDER_EMPTY
+    return EMPTY_CAUSE_OTHER
 
 
 def should_recover_promise_only(
@@ -2523,48 +2713,148 @@ def _collapse_wire_rows(messages: list[dict]) -> list[dict]:
 # provably gone. Every ACP child is a subprocess of the gateway, so the loopback
 # listener and the PKCE verifier that made the banner's URL redeemable died with it.
 #
-# In-memory ON PURPOSE, and random rather than sequential. `connections.warm`
-# documents where a counter leads: its generation restarts at 0 every boot, so a
-# stored `generation=1` compares equal to a different boot's `generation=1` and the
-# row is judged live when it is dead -- that bug already withdrew a URL whose
-# process and session were both alive. A fresh random id cannot collide with a
-# previous boot's, so the comparison stays correct with no bookkeeping and no
-# persisted state to migrate.
-_GATEWAY_GENERATION = uuid.uuid4().hex[:16]
+def _live_child_instance(state: "DashboardState", slot: "_ChatSlot") -> str:
+    """Process-instance identity of the live ACP child serving *slot*, or ``""``.
+
+    The verdict `_prepare_messages` needs to judge an open MCP OAuth banner: a
+    banner's Authorize link is redeemable only while the child process that
+    minted it is alive, because that process holds the loopback callback
+    listener and the PKCE verifier (see `_expire_dead_child_oauth_meta`).
+    Resolved here — on the event loop, where the session pool is in scope —
+    because `_prepare_messages` itself is synchronous, may run in a worker
+    thread, and has no ACP access.
+
+    Resolves the ACTIVE TURN's session key first and the slot's routing only
+    as a fallback, for the reason `_cancel_target` documents: a running turn
+    owns a stable identity, while ``linked_session_key`` is mutable underneath
+    it (a cron injection can rebind a live slot mid-turn). A banner minted
+    during that turn belongs to the turn's own child; re-deriving the key from
+    the routing would compare it against a different or absent provider and
+    withdraw a link that still works.
+
+    ``""`` covers every no-live-child case in one answer: no session in the
+    pool (idle sweep, RSS recycle, reset, gateway restart), a session whose
+    process has exited on its own, and a provider not backed by a process at
+    all. Never raises: a probe failure answers ``""``, which withdraws a
+    possibly-dead button rather than failing the read it rides on.
+    """
+    try:
+        key = getattr(slot, "_active_turn_session_key", "") or effective_session_key(slot)
+        provider = state.sessions.get_provider(key)
+        if provider is None or not provider.is_process_alive():
+            return ""
+        return str(getattr(provider, "process_instance", "") or "")
+    except Exception:
+        logger.debug("live-child probe failed for slot %s", slot.key, exc_info=True)
+        return ""
 
 
-def gateway_generation() -> str:
-    """The generation id of the running gateway process."""
-    return _GATEWAY_GENERATION
+def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Push the read-time gate's current verdict on *slot*'s OAuth banners to open tabs.
+
+    The gate in `_prepare_messages` runs only when a client FETCHES, so an
+    already-open tab keeps rendering a dead Authorize link until its next
+    refetch. This closes that window for the teardowns the dashboard can see:
+    call it after any step that may have ended the slot's child (a session
+    reset, an agent switch, a conversation discard, a watchdog recycle) and it
+    re-broadcasts the withdrawal frame for every open banner the gate now
+    judges dead.
+
+    Verdict-driven, not ordering-driven: it resolves the live child at call
+    time and applies the SAME predicate as the read gate, so it needs no
+    pre-teardown snapshot and no outcome gating. Called after a teardown that
+    failed or was declined, the child is still alive, the stamps still match,
+    and nothing is broadcast; a successor session's banner names the successor
+    child and is never swept. That is what lets a caller invoke it
+    unconditionally where the old write-time retirement needed a doomed-set
+    snapshot and a confirmed-teardown gate.
+
+    Deliberately does NOT rewrite the stored rows — the read gate remains the
+    one liveness mechanism and this is presentation freshness only. The frame
+    carries ``oauth_url: ""`` (not an absent key) because the client merges
+    incoming meta over the row it already has, and pre-upgrade JS keeps
+    rendering a link whose key was merely omitted. Best-effort: teardowns the
+    dashboard never observes (the idle sweep, a child exiting on its own) are
+    still caught by the read gate on the tab's next refetch.
+    """
+    # Candidates first, pool second: almost every slot holds no open banner,
+    # and the live-child probe reads the session pool — a side effect the
+    # common case must not pay (and one that would burn a pool read at every
+    # teardown site this helper rides).
+    candidates = [
+        message
+        for message in slot.messages
+        if message.get("role") == "mcp_oauth"
+        for meta in (message.get("meta") or {},)
+        if meta.get("oauth_url")
+        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
+    ]
+    if not candidates:
+        return
+    live_child = _live_child_instance(state, slot)
+    for message in candidates:
+        meta = message.get("meta") or {}
+        verdict = _expire_dead_child_oauth_meta("mcp_oauth", meta, live_child)
+        if verdict is meta:
+            # The gate returns the input unchanged when nothing applies — the
+            # banner is live, already terminal, or has no link to withdraw.
+            continue
+        new_meta = _redact_meta_for_role("mcp_oauth", verdict)
+        new_meta.pop("oauth_url", None)
+        # Meta only, no content override: the read gate rewrites nothing but
+        # meta, so a refetch serves the stored content with `expired` set and
+        # the client renders the expired branch from the meta alone. A content
+        # override here would diverge from what the next fetch says.
+        state.broadcast_ws(
+            "chat_message_update",
+            {
+                "slot": slot.key,
+                "ts": message.get("ts", ""),
+                "mid": str(meta.get("mid") or ""),
+                "meta": {**new_meta, "oauth_url": ""},
+            },
+        )
 
 
-def _expire_stale_generation_oauth_meta(role: str, meta: dict) -> dict:
-    """Present an `mcp_oauth` banner minted by a dead generation as terminal.
+def _expire_dead_child_oauth_meta(role: str, meta: dict, live_child: str) -> dict:
+    """Present an ``mcp_oauth`` banner whose minting child is gone as terminal.
 
-    A read-time gate, and it has to be read-time. The case it exists for is a hard
-    gateway restart: no code of ours runs at the moment the flow dies, so nothing
-    can write the terminal state when it becomes true. Revalidating on every read
-    is the same discipline `connections.mint.expire_dead_holder` already applies to
-    the mint feed, instead of trying to catch every way a flow can end.
+    A read-time gate, and it has to be read-time. The entity whose death
+    invalidates an Authorize link is the ACP child process that minted it — that
+    process holds the loopback callback listener and the PKCE verifier the code
+    is exchanged with. A child can die without any code of ours running at a
+    site that knows about banners: a hard gateway restart, the idle sweep, the
+    RSS recycle, or the child simply exiting. Revalidating on every read is the
+    same discipline ``connections.mint.expire_dead_holder`` already applies to
+    the mint feed, instead of trying to enumerate every way a flow can end.
+
+    ``live_child`` is the process-instance identity of the child CURRENTLY
+    serving the slot, resolved by the caller (empty when there is no live
+    child). It is a per-spawn token, never the ACP session id: a resume carries
+    the same session id onto a NEW process, so a session-id comparison would
+    fail open exactly when the minting process is gone.
 
     Withdraws the link only when ALL of these hold:
 
-    * the row still carries an `oauth_url` -- there is a live-looking button to take
-      away. A row without one has nothing to withdraw and is left untouched, which
-      is what keeps the two rejected-URL banners and an already-retired row alone.
-    * the row is not already terminal. `completed` / `failed` / `superseded` are
-      authoritative outcomes recorded by the process that observed them, and a
-      later read must not reinterpret them.
-    * the row's `gen` is not this process's.
+    * the row still carries an ``oauth_url`` — there is a live-looking button to
+      take away. A row without one has nothing to withdraw and is left
+      untouched, which is what keeps the two rejected-URL banners and an
+      already-retired row alone.
+    * the row is not already terminal. ``completed`` / ``failed`` /
+      ``superseded`` are authoritative outcomes recorded by the process that
+      observed them, and a later read must not reinterpret them.
+    * the row's ``child`` stamp does not name the live child.
 
-    A row carrying NO `gen` is treated as stale, and that is a deduction rather than
-    a guess: the stamp is written by the same build that reads it, so an unstamped
-    row was persisted by an older build -- and running this build means this process
-    replaced the one that wrote that row. Its child cannot still be alive. The
-    effect is that the fix also retires banners that went stale before it shipped.
+    A row carrying NO ``child`` stamp is treated as stale, and that is a
+    deduction rather than a guess: the stamp is written by the same build that
+    reads it, so an unstamped row was persisted by an older build — and running
+    this build means this process replaced the one that hosted that row's
+    child. The effect is that the fix also retires banners that went stale
+    before it shipped, including rows carrying only the older gateway-``gen``
+    stamp.
 
-    Returns the input dict unchanged when nothing applies, so the caller can use the
-    result unconditionally; only the withdrawing path copies.
+    Returns the input dict unchanged when nothing applies, so the caller can use
+    the result unconditionally; only the withdrawing path copies.
     """
     if role != "mcp_oauth":
         return meta
@@ -2572,7 +2862,8 @@ def _expire_stale_generation_oauth_meta(role: str, meta: dict) -> dict:
         return meta
     if meta.get("completed") or meta.get("failed") or meta.get("superseded"):
         return meta
-    if meta.get("gen") == gateway_generation():
+    child = meta.get("child")
+    if child and live_child and child == live_child:
         return meta
     out = dict(meta)
     out.pop("oauth_url", None)
@@ -2580,8 +2871,18 @@ def _expire_stale_generation_oauth_meta(role: str, meta: dict) -> dict:
     return out
 
 
-def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
-    """Prepare messages for API response."""
+def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
+    """Prepare messages for API response.
+
+    ``live_child`` is the process-instance identity of the ACP child currently
+    serving the slot ("" when none is alive) — see
+    :func:`_expire_dead_child_oauth_meta`. REQUIRED and keyword-only on
+    purpose: a caller that forgot it would silently withdraw every live OAuth
+    banner it renders, and no test would see the omission. Resolve it with
+    :func:`_live_child_instance` on the event loop, as close to the render as
+    possible (a verdict sampled long before use can name a child that has
+    since died, serving one stale read).
+    """
     out: list[dict] = []
     for m in _collapse_wire_rows(messages):
         role = m.get("role", "")
@@ -2623,8 +2924,8 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
             ]
         meta = parse_cls_meta(m.get("cls", ""))
         if meta is not None:
-            msg_out["meta"] = _expire_stale_generation_oauth_meta(
-                role, _redact_meta_for_role(role, meta)
+            msg_out["meta"] = _expire_dead_child_oauth_meta(
+                role, _redact_meta_for_role(role, meta), live_child
             )
         elif isinstance(msg_out.get("meta"), dict):
             # Redact the STORED meta too. Without this branch the stored dict
@@ -2632,8 +2933,8 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
             # reach the client exactly as loaded. This is the only guard on
             # meta for the slot-detail response (the load path does not
             # redact meta).
-            msg_out["meta"] = _expire_stale_generation_oauth_meta(
-                role, _redact_meta_for_role(role, msg_out["meta"])
+            msg_out["meta"] = _expire_dead_child_oauth_meta(
+                role, _redact_meta_for_role(role, msg_out["meta"]), live_child
             )
         out.append(msg_out)
     return out

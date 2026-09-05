@@ -20,6 +20,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { render } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, {
@@ -50,8 +51,11 @@ function stalledRow({ tool = TOOL, idleSecs }: { tool?: string; idleSecs?: numbe
   store.dispatch(sseSubagentSpawn({ slot: SLOT, id: 'a1', task: 'task a1', agent: 'agent-a1' }))
   if (tool) store.dispatch(sseSubagentTool({ slot: SLOT, id: 'a1', tool, tool_count: 3 }))
   store.dispatch(sseSubagentStalled({ slot: SLOT, id: 'a1', stalled: true, idle_secs: idleSecs }))
+  const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   const { container } = render(
-    <Provider store={store}><SubagentProgressBar slot={SLOT} /></Provider>,
+    <QueryClientProvider client={queryClient}>
+      <Provider store={store}><SubagentProgressBar slot={SLOT} /></Provider>
+    </QueryClientProvider>,
   )
   return container
 }

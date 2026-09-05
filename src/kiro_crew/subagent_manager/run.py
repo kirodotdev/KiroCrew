@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
+from ..subagent_persistence import (
+    publish_live_cleanup_identity,
+    remember_live_cleanup_identity,
+)
 from ._component import ManagerComponent
 
 if TYPE_CHECKING:
@@ -25,6 +30,7 @@ if TYPE_CHECKING:
         FALLBACK_CANDIDATE_ATTEMPTS,
         FALLBACK_STORY_ATTR,
         HOOK_EVENT_POST_TOOL_USE,
+        PROVIDER_LABEL_DEFAULT,
         TOOL_AUTO_APPROVE,
         TOOL_DENY,
         TRANSIENT_RETRIES,
@@ -51,7 +57,6 @@ if TYPE_CHECKING:
         annotate_model_fallback,
         append_fallback_story,
         apply_completion_keep,
-        asyncio,
         cap_result_file,
         configured_fallback_chain,
         evict_completed_agents,
@@ -73,6 +78,8 @@ if TYPE_CHECKING:
 class RunEventCoordinator(ManagerComponent):
     """Own run transitions while state remains facade-owned."""
 
+    _publish_identity = staticmethod(publish_live_cleanup_identity)
+    _remember_identity = staticmethod(remember_live_cleanup_identity)
     __slots__ = ()
 
     def _effective_turn_limit_impl(self, info: SubagentInfo) -> int:
@@ -206,6 +213,54 @@ class RunEventCoordinator(ManagerComponent):
                         await asyncio.wait({writer}, timeout=remaining)
                     except asyncio.CancelledError:
                         pass  # repeated cancel: keep draining to the deadline
+            finally:
+                info._state_drain_active = False
+            raise
+
+    async def _remember_identity_off_loop(
+        self,
+        info: SubagentInfo,
+        *,
+        session_id: str,
+        provider: str,
+        cwd: str = "",
+        keep: bool | None = None,
+        conversation_key: str = "",
+    ) -> None:
+        """Persist protected cleanup identity off-loop and drain cancellation.
+
+        The live generation is already published synchronously, but restart
+        durability depends on this protected write. ``to_thread`` workers survive
+        cancellation, so shield the worker and delay re-raising until it settles;
+        otherwise terminal teardown can finish and restart before the authority
+        record exists.
+        """
+        writer = asyncio.ensure_future(
+            asyncio.to_thread(
+                self._remember_identity,
+                info.id,
+                session_id=session_id,
+                provider=provider,
+                cwd=cwd,
+                keep=keep,
+                conversation_key=conversation_key,
+            )
+        )
+        try:
+            await asyncio.shield(writer)
+        except asyncio.CancelledError:
+            info._state_drain_active = True
+            try:
+                while not writer.done():
+                    try:
+                        await asyncio.wait({writer})
+                    except asyncio.CancelledError:
+                        pass
+                if not writer.cancelled():
+                    try:
+                        writer.result()
+                    except Exception:
+                        pass
             finally:
                 info._state_drain_active = False
             raise
@@ -561,8 +616,15 @@ class RunEventCoordinator(ManagerComponent):
         )
         loop.create_task(self._manager._fire_event("subagent_queued", info, {"queued": depth}))
 
-    async def _run_inner_impl(self, info: SubagentInfo, session_key: str) -> None:
+    async def _run_inner_impl(
+        self,
+        info: SubagentInfo,
+        session_key: str,
+    ) -> None:
         """Inner execution — called within timeout wrapper."""
+        setattr(info, "_session_id", "")
+        setattr(info, "_session_provider", "")
+        setattr(info, "_session_cwd", "")
         # Mark the real start of execution BEFORE any await so the startup
         # watchdog measures from here, not from registration (which may include
         # an arbitrary spawn-approval wait). Must be the first statement.
@@ -730,23 +792,48 @@ class RunEventCoordinator(ManagerComponent):
                 approval_policy=parent_policy,
                 **extra_kwargs,
             )
-            # Fail CLOSED on a continuation that did not actually resume:
-            # get_or_create silently falls back to a FRESH session when
-            # session/load fails (lock held, corrupt files, backend refusal).
-            # Executing the follow-up on that fresh session would silently run
-            # it context-free — worse than an honest error the parent can react
-            # to (re-spawn with a summary). conversation_key is only set by
-            # continue_conversation, so first spawns are unaffected.
-            if info.conversation_key and not _resumed:
-                raise RuntimeError(
-                    "resume_failed: session/load did not restore conversation "
-                    f"{info.conversation_key} — refusing to execute the "
-                    "follow-up without its prior context. The conversation "
-                    "may be locked by a live process or its files corrupt; "
-                    "re-spawn with a fresh task carrying a summary."
-                )
-            # Detect CC provider to skip permission event loop
             is_cc = self._manager._is_cc_provider(client)
+
+        # Capture cleanup identity immediately after successful session
+        # acquisition. Every later step can fail and tombstone the run, so
+        # delaying this until the state write leaves provider files unidentified.
+        try:
+            cleanup_session_id = (
+                str(client.session_id or "") if hasattr(client, "session_id") else ""
+            )
+            cleanup_provider = self._manager._provider_label_of(client)
+            cleanup_cwd = ""
+            if is_cc:
+                cleanup_cwd = info.cwd
+                if not cleanup_cwd:
+                    inner = getattr(client, "client", None)
+                    work_dir = getattr(inner, "_work_dir", None)
+                    if work_dir:
+                        cleanup_cwd = str(work_dir)
+            setattr(info, "_session_id", cleanup_session_id)
+            setattr(info, "_session_provider", cleanup_provider)
+            setattr(info, "_session_cwd", cleanup_cwd)
+            self._publish_identity(
+                info.id,
+                session_id=cleanup_session_id,
+                provider=cleanup_provider,
+                cwd=cleanup_cwd,
+                keep=info.keep,
+                conversation_key=session_key if info.keep else "",
+            )
+        except Exception:
+            logger.debug("Failed to capture live cleanup identity for %s", info.id, exc_info=True)
+
+        # Fail CLOSED on a continuation that did not actually resume. Identity is
+        # already captured so the abnormal tombstone can reclaim the fresh session.
+        if info.conversation_key and not _resumed:
+            raise RuntimeError(
+                "resume_failed: session/load did not restore conversation "
+                f"{info.conversation_key} — refusing to execute the "
+                "follow-up without its prior context. The conversation "
+                "may be locked by a live process or its files corrupt; "
+                "re-spawn with a fresh task carrying a summary."
+            )
         # Intentionally check info.agent (not resolved `agent`) so only
         # explicitly requested agents skip _SYSTEM_PREFIX (defense-in-depth).
         named_agent = bool(info.agent and _AGENT_NAME_RE.fullmatch(info.agent))
@@ -847,6 +934,22 @@ class RunEventCoordinator(ManagerComponent):
                 logger.debug("Provenance write skipped (unreadable state) for %s", info.id)
             except Exception:
                 logger.debug("Failed to persist model provenance for %s", info.id, exc_info=True)
+        # The live generation was published synchronously at acquisition so
+        # terminal tombstones are cancellation-safe. Persist the sidecar only
+        # after the drained provenance write: cancellation during provenance must
+        # not prevent its required model fields from landing, and cancellation
+        # here still leaves the live tombstone snapshot complete.
+        try:
+            await self._remember_identity_off_loop(
+                info,
+                session_id=str(getattr(info, "_session_id", "")),
+                provider=str(getattr(info, "_session_provider", "")),
+                cwd=str(getattr(info, "_session_cwd", "")),
+                keep=info.keep,
+                conversation_key=session_key if info.keep else "",
+            )
+        except Exception:
+            logger.debug("Failed to persist cleanup identity for %s", info.id, exc_info=True)
         await self._manager._fire_event(
             "subagent_spawn",
             info,
@@ -882,44 +985,23 @@ class RunEventCoordinator(ManagerComponent):
         except Exception:
             logger.debug("Failed to record PID for %s", info.id, exc_info=True)
 
-        # Record session_id and provider type for session file cleanup
+        # Persist the cleanup identity captured immediately after session
+        # acquisition, together with mutable retention intent.
         try:
-            session_id = client.session_id if hasattr(client, "session_id") else ""
-            provider_type = self._manager._provider_label_of(client)
             state_update: dict[str, object] = {
-                "session_id": session_id,
-                "provider": provider_type,
+                "session_id": str(getattr(info, "_session_id", "")),
+                "provider": str(getattr(info, "_session_provider", "")),
                 # Model provenance (requested_model/resolved_model) is NOT
                 # re-written here: the crash-safe write BEFORE the
                 # subagent_spawn event above is the single owner of those two
                 # fields on the spawn path, and a transient failure there is
-                # handled by that write's own bounded retry (#5394). This write
-                # still performs the same read-merge-rewrite either way, so the
-                # point is one authoritative writer, not saved I/O. The CC-path
-                # refinement below still updates resolved_model when it first
-                # becomes known.
-                # keep marks this run's session files as resume material: the
-                # orphan reconciler and tombstone pruner skip file deletion
-                # for keep runs (restart-safe — read from disk, not memory).
+                # handled by that write's own bounded retry (#5394).
                 "keep": info.keep,
                 "conversation_key": session_key if info.keep else "",
             }
-            # Store CWD for CC cleanup (needed to derive project-key path).
-            # info.cwd is only set when a caller passes an explicit cwd
-            # override (disabled by default), so for the common case derive
-            # the project dir from the provider's own work dir — that is the
-            # same path sent as ACP `cwd`, hence the encoded project key under
-            # ~/.claude/projects. Without this, CC cleanup is skipped (no cwd)
-            # and the transcript leaks.
-            if is_cc:
-                cc_cwd = info.cwd
-                if not cc_cwd:
-                    inner = getattr(client, "client", None)
-                    work_dir = getattr(inner, "_work_dir", None)
-                    if work_dir:
-                        cc_cwd = str(work_dir)
-                if cc_cwd:
-                    state_update["cwd"] = cc_cwd
+            cleanup_cwd = str(getattr(info, "_session_cwd", ""))
+            if cleanup_cwd:
+                state_update["cwd"] = cleanup_cwd
             # Same off-loop, drained write as the PID record above (#6288,
             # #7302). This one also carries `keep`, the field the two remaining
             # on-loop writers (promote / release) contend for -- taking the
@@ -1656,7 +1738,10 @@ class RunEventCoordinator(ManagerComponent):
         return self._manager._sessions.is_session_sharing_eligible(info.parent_session_key)
 
     async def _create_shared_session_impl(
-        self, info: SubagentInfo, session_key: str, agent: str
+        self,
+        info: SubagentInfo,
+        session_key: str,
+        agent: str,
     ) -> "LLMProvider":
         """Create a subagent session on the parent's AcpRuntime.
 
@@ -1667,6 +1752,7 @@ class RunEventCoordinator(ManagerComponent):
         AcpSessionProvider. Marks info._session_sharing=True so cleanup calls
         provider.shutdown() instead of SessionManager.release/reset.
         """
+
         runtime = self._manager._get_parent_runtime(info.parent_session_key)
         if runtime is None:
             runtime = await self._manager._sessions.get_subagent_runtime(info.parent_session_key)
@@ -1677,21 +1763,54 @@ class RunEventCoordinator(ManagerComponent):
             agent=agent or None,
         )
         provider = AcpSessionProvider(handle, runtime)
-        # This consumer implements the low-fidelity child downgrade (interactive
-        # approver when configured, reject when headless) — opt in so the
-        # handle-level fail-close gate yields those events instead of rejecting.
+        # The handle exists now. Publish ownership before any cancellable await so
+        # force-reap always takes the shared-session branch and destroys this handle
+        # instead of resetting a nonexistent dedicated session.
         provider.child_fidelity_aware = True
         info._session_sharing = True
         info._shared_provider = provider
+        # Capture cleanup identity before persistence or later setup can fail,
+        # otherwise the live handle becomes an untracked ghost.
+        cleanup_session_id = str(handle.session_id or "")
+        cleanup_provider = PROVIDER_LABEL_DEFAULT
+        setattr(info, "_session_id", cleanup_session_id)
+        setattr(info, "_session_provider", cleanup_provider)
+        self._publish_identity(
+            info.id,
+            session_id=cleanup_session_id,
+            provider=cleanup_provider,
+            keep=info.keep,
+            conversation_key=session_key if info.keep else "",
+        )
+        try:
+            await self._remember_identity_off_loop(
+                info,
+                session_id=cleanup_session_id,
+                provider=cleanup_provider,
+                keep=info.keep,
+                conversation_key=session_key if info.keep else "",
+            )
+        except (OSError, ValueError, RecursionError):
+            logger.debug(
+                "Shared-session identity persistence failed for %s",
+                info.id,
+                exc_info=True,
+            )
         if runtime.pid:
             info._pid = runtime.pid
-            # Same off-loop, drained write as the non-shared spawn path's PID
-            # record (#6288, #7302). Unguarded here as before: this method has no
-            # best-effort contract, so an _atomic_write failure still propagates
-            # to the caller rather than yielding a session with no recorded pid.
-            await self._manager._write_state_off_loop(
-                info, "PID record", pid=runtime.pid, pid_recorded_at=time.time()
-            )
+            try:
+                # Keep the shared handle alive on a storage error, but route the
+                # write through the run-owned off-loop drain so cancellation
+                # cannot detach a stale whole-file writer (#6288, #7302).
+                await self._manager._write_state_off_loop(
+                    info, "PID record", pid=runtime.pid, pid_recorded_at=time.time()
+                )
+            except Exception:
+                logger.debug(
+                    "Shared-session PID persistence failed for %s",
+                    info.id,
+                    exc_info=True,
+                )
         logger.info(
             "Subagent %s using session sharing on runtime PID %s (session %s, key %s)",
             info.id,

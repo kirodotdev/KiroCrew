@@ -1275,6 +1275,7 @@ class _FakeLocalSession:
         prepare_events=(),
         feed_events=(),
         final_text="",
+        final_event=None,
         prepare_gate=None,
     ):
         self.kwargs: dict = {}
@@ -1290,6 +1291,10 @@ class _FakeLocalSession:
         self._prepare_events = list(prepare_events)
         self._feed_events = [list(batch) for batch in feed_events]
         self._final_text = final_text
+        #: What ``finish()`` answers when it is not a plain final. The real session
+        #: returns an ``error`` event when the whole-buffer decode FAILED, which is a
+        #: different outcome from the empty final a silent room produces.
+        self._final_event = final_event
         self._prepare_gate = prepare_gate
         self._ended = False
         #: True once audio has been fed that no final has covered. Reset by a final,
@@ -1329,6 +1334,8 @@ class _FakeLocalSession:
         self.finished = True
         self._ended = True
         self._pending_audio = False
+        if self._final_event is not None:
+            return self._final_event
         return stt.SttEvent(stt.KIND_FINAL, text=self._final_text)
 
     def cancel(self) -> None:
@@ -1464,6 +1471,49 @@ class TestLocalStreamingSession:
             }
             await ws.close()
         assert session.finished is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_final_decode_reaches_the_client_before_the_close(self, monkeypatch):
+        """The teardown decode is the LAST thing a session does, so its failure must
+        make it out ahead of the close.
+
+        A dropped empty final and a failed decode used to look identical from here:
+        the socket closed with no frame at all, and the client cleared the partial it
+        was showing. The frame carries the code because the browser renders localised
+        text; the audit records ``error`` because a session that died must not be
+        filed as one that finished.
+        """
+        outcomes = self._record_end_audits(monkeypatch)
+        session = self._install(
+            monkeypatch,
+            _FakeLocalSession(
+                final_event=stt.SttEvent(
+                    stt.KIND_ERROR,
+                    text=stt.DECODE_FAILED_ADVISORY,
+                    code=stt.CODE_DECODE_FAILED,
+                )
+            ),
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json()) == {"type": "ready"}
+            await ws.send_bytes(b"\x00\x01" * 16)
+            await ws.send_str('{"type":"stop"}')
+            assert (await ws.receive_json()) == {
+                "type": "error",
+                "message": stt.DECODE_FAILED_ADVISORY,
+                "code": stt.CODE_DECODE_FAILED,
+            }
+            await ws.close()
+        assert session.finished is True
+        # Waited on rather than asserted straight after the context exits: neither
+        # receiving the frame nor leaving `TestClient` orders this after the handler's
+        # remaining steps.
+        for _ in range(200):
+            if outcomes:
+                break
+            await asyncio.sleep(0.01)
+        assert outcomes == ["error"]
 
     @pytest.mark.asyncio
     async def test_the_vad_ending_an_utterance_emits_final_not_endpoint(self, monkeypatch):

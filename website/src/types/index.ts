@@ -403,6 +403,15 @@ export interface CronJob {
   skip_dates?: string[] | null
   script?: string | null; command?: string | null; last_result?: string | null; last_error?: string | null
   is_running?: boolean; running_since?: number | null
+  /** Operator-granted vault secrets injected into a script/command job's env at
+   * fire time: env-var name -> vault secret NAME (values never leave the vault).
+   * Absent/null when the job holds no grant. */
+  secret_env?: Record<string, string> | null
+  /** Agent-requested grant awaiting the operator's approve/deny. Approving
+   * re-verifies the request's code pin server-side, so a job whose script or
+   * command changed after the request refuses with `code_changed`. */
+  secret_env_pending?: Record<string, string> | null
+  secret_env_pending_ts?: number | null
   folder_id?: string
   /** Chat session that owns this job — ownership decides chat-side reachability
    * (cron_list only lists a session its own jobs). Null for an ownerless job,
@@ -815,6 +824,38 @@ export interface ConfiguredChannelTarget {
   unavailable_reason: string
 }
 
+/**
+ * What a connected crew offers a session bound to it for execution.
+ *
+ * Every field mirrors a gateway-wide read the chat shelf normally makes
+ * same-origin against THIS machine (`/api/agents`, `/api/models`,
+ * `/api/effort-levels`, `/api/workspaces`). A peer-bound session must offer the
+ * PEER's options instead: a model or crew that exists only here would be accepted
+ * by the picker and then fail on the first send, which is worse than not offering
+ * it at all.
+ */
+export interface RemoteCrewCapabilities {
+  instance_id: string
+  /** The peer's gateway version, or "" when it could not be read. */
+  version: string
+  local_version: string
+  /** The equality gate the backend enforces on every dispatch. False also covers
+   *  "could not be read": an unknown version cannot be proven equal. */
+  version_match: boolean
+  agents: { name: string; description: string; scope: string; model: string }[]
+  /** The agent the PEER falls back to when the session has picked none. "" when
+   *  the roster read failed — never substitute this machine's default, which
+   *  names a crew from a roster the peer does not share. */
+  default_agent: string
+  models: { model_name: string; display_name: string; description: string; context_window: number }[]
+  effort_levels: string[]
+  workspaces: { name: string; path: string }[]
+  default_workspace: string
+  /** Per-field failure codes for the reads that did not land, so one unreachable
+   *  roster disables its own control rather than blanking the whole shelf. */
+  unavailable: Record<string, string>
+}
+
 export interface ChatSlot {
   /** The agent that will actually answer, when it is NOT the requested `agent`;
    *  "" / absent means nothing to report. The backend stores `agent` verbatim
@@ -831,6 +872,15 @@ export interface ChatSlot {
    *  the absence of an answer, never a denial. DISPLAY only — the pin is
    *  deliberately kept when withheld, so this must not drive a write. */
   model_withheld?: boolean | null
+  /** Remote-execution binding. `executor` is "local" for an ordinary session and
+   *  "remote" for one whose turns run on a connected crew; `instance_id` names
+   *  that crew. The backend ships BOTH on every slot so "runs locally" is a
+   *  positive value rather than an absent key — otherwise an older gateway's
+   *  payload would read as local for a session that is not. The binding's third
+   *  field, the peer's own slot key, stays server-side: it is meaningful only
+   *  inside a request routed back through that instance. */
+  executor?: 'local' | 'remote'
+  instance_id?: string
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
@@ -838,6 +888,12 @@ export interface ChatSlot {
    * task-runner slot, or an app/cron-minted session (which can share the
    * `chat-<n>-<ts>` key shape) never triggers it. */
   origin?: string
+  /** Slot key of the session that asked for this one via the session-control
+   * create verb; "" / absent for a person's own tab, a fork, a restore. Durable
+   * (written at birth, rehydrated), so it is the one link from a crew member's
+   * DM thread to the worker sessions it drives — the Crew Members drawer
+   * filters the live slots on it. */
+  created_by?: string
   /** Artifact companion binding: slug of the artifact this slot is a companion
    * chat for. Set at slot create and persisted in the history meta line, so the
    * binding survives a gateway restart and a History-page resume. */

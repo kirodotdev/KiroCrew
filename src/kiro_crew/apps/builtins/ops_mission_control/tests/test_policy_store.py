@@ -83,9 +83,7 @@ class TestTheCeilingIsOnTheKeystoneFloor(_HomeIsolated):
         from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store, rotation
 
         policy_store.set_mode("act")
-        policy_store.set_rules(
-            [{"mode": "act", "source": "cloudwatch", "resource_glob": "prod-*"}]
-        )
+        policy_store.set_rules([{"mode": "act", "source": "cloudwatch", "resource_glob": "prod-*"}])
         self.assertEqual(rotation.app_mode(), "act")
         rules = rotation.load_rules()
         self.assertEqual(len(rules), 1)
@@ -396,10 +394,12 @@ class TestActRulesAreAuthorable(_HomeIsolated):
         """A ten-rule submission with one bad entry must say WHICH one."""
         from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
 
-        ok, code, _ = rotation.save_rules([
-            {"source": "cloudwatch", "mode": "act", "resource_glob": "prod-*"},
-            {"source": "datadog", "mode": "act"},
-        ])
+        ok, code, _ = rotation.save_rules(
+            [
+                {"source": "cloudwatch", "mode": "act", "resource_glob": "prod-*"},
+                {"source": "datadog", "mode": "act"},
+            ]
+        )
         self.assertFalse(ok)
         self.assertEqual(code, "rule_1_invalid")
 
@@ -687,7 +687,8 @@ class TestPolicyLockdownOrdering(_HomeIsolated):
 
         self.assertTrue(sizes, "premise: the lockdown ran at all")
         self.assertEqual(
-            sizes[0], 0,
+            sizes[0],
+            0,
             f"the file already held payload bytes when it was locked down: {sizes[0]} bytes",
         )
 
@@ -708,11 +709,13 @@ class TestPolicyLockdownOrdering(_HomeIsolated):
                 policy_store.set_mode(models.MODE_ACT)
 
         self.assertEqual(
-            policy_store.policy_path().read_bytes(), before,
+            policy_store.policy_path().read_bytes(),
+            before,
             "the previous ceiling was altered",
         )
         self.assertEqual(
-            policy_store.read_mode("unset"), models.MODE_OBSERVE,
+            policy_store.read_mode("unset"),
+            models.MODE_OBSERVE,
             "a failed new write destroyed the previously recorded ceiling",
         )
 
@@ -740,11 +743,13 @@ class TestPolicyLockdownOrdering(_HomeIsolated):
                 policy_store.set_mode(models.MODE_ACT)
 
         self.assertEqual(
-            policy_store.policy_path().read_bytes(), before,
+            policy_store.policy_path().read_bytes(),
+            before,
             "the previous ceiling was altered",
         )
         self.assertEqual(
-            policy_store.read_mode("unset"), models.MODE_OBSERVE,
+            policy_store.read_mode("unset"),
+            models.MODE_OBSERVE,
             "a transient write failure destroyed the previously recorded ceiling",
         )
 
@@ -803,15 +808,18 @@ class TestTheCeilingIsNeverPublishedOverAFailedRead(_HomeIsolated):
                 policy_store.put("primary_instance", True)
 
         self.assertEqual(
-            policy_store.policy_path().read_bytes(), before,
+            policy_store.policy_path().read_bytes(),
+            before,
             "a failed read was published back over the ceiling",
         )
         self.assertEqual(
-            policy_store.get("slack_channel"), "#ops-the-operator-chose",
+            policy_store.get("slack_channel"),
+            "#ops-the-operator-chose",
             "a failed read dropped the operator's outbound destination",
         )
         self.assertEqual(
-            policy_store.get("ledger_sync_remote"), "https://git.example/ops-ledger.git",
+            policy_store.get("ledger_sync_remote"),
+            "https://git.example/ops-ledger.git",
             "a failed read dropped the operator's ledger remote",
         )
 
@@ -842,12 +850,140 @@ class TestTheCeilingIsNeverPublishedOverAFailedRead(_HomeIsolated):
         policy_store.set_ceiling(mode="act")
         self.assertEqual(policy_store.read_mode("observe"), "act")
 
-    def test_a_corrupt_ceiling_still_repairs_on_write(self):
-        """Existing tolerance, pinned so the unreadable-file guard is not
-        mistaken for a licence to start failing on corruption too."""
+    def test_a_corrupt_ceiling_refuses_the_write_and_is_left_intact(self):
+        """#7805: a corrupt policy file is refused, never rewritten.
+
+        The old tolerance read an unparseable document as empty and let the
+        write publish over it -- and for THIS file a rewrite-from-empty reverts
+        every fenced key to a value the constrained party can influence, which
+        is the exact bypass the keystone floor exists to prevent. A truncated
+        document still holds the operator's keys verbatim; refusing keeps them
+        recoverable.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+        from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
+            CorruptDocumentError,
+        )
+
+        policy_store.policy_path().parent.mkdir(parents=True, exist_ok=True)
+        corrupt = '{"mode": "observe", "slack_channel": "#ops-the-operator-chose"'
+        policy_store.policy_path().write_text(corrupt, encoding="utf-8")
+        # The NAMED type, not just the base class: every corruption door of this
+        # reader is contracted to raise CorruptDocumentError, and asserting only
+        # json.JSONDecodeError would keep a regression to the bare parser
+        # exception green. (It still IS a JSONDecodeError, which is what the
+        # callers' corruption arms catch.)
+        with self.assertRaises(CorruptDocumentError):
+            policy_store.set_ceiling(mode="act")
+        with self.assertRaises(CorruptDocumentError):
+            policy_store.put("slack_channel", "#somewhere-else")
+        self.assertEqual(
+            policy_store.policy_path().read_text(encoding="utf-8"),
+            corrupt,
+            "the write rewrote a corrupt policy file instead of refusing",
+        )
+        # The gate readers stay lenient: the degraded answer is the most
+        # restrictive state, and failing them would wedge the app on a file
+        # only a person can repair.
+        self.assertEqual(policy_store.read_mode("observe"), "observe")
+
+    def test_a_ceiling_that_is_not_utf8_takes_the_corruption_path(self):
+        """``UnicodeDecodeError`` is a ``ValueError`` but NOT a
+        ``JSONDecodeError``; unwrapped it would slip past every corruption
+        clause at the callers."""
         from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
 
         policy_store.policy_path().parent.mkdir(parents=True, exist_ok=True)
-        policy_store.policy_path().write_text("{ not json", encoding="utf-8")
-        policy_store.set_ceiling(mode="act")
-        self.assertEqual(policy_store.read_mode("observe"), "act")
+        policy_store.policy_path().write_bytes(b"\xff\xfe not utf8")
+        with self.assertRaises(json.JSONDecodeError):
+            policy_store.put("slack_channel", "#anywhere")
+        self.assertEqual(policy_store.policy_path().read_bytes(), b"\xff\xfe not utf8")
+
+    def test_a_ceiling_that_parses_to_a_non_object_refuses_the_write(self):
+        """A bare array parses without raising, so coercing it to ``{}`` would
+        let the rewrite destroy a document nobody could read -- the same loss,
+        reached without a parse failure."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        policy_store.policy_path().parent.mkdir(parents=True, exist_ok=True)
+        policy_store.policy_path().write_text('["not", "an", "object"]', encoding="utf-8")
+        with self.assertRaises(json.JSONDecodeError):
+            policy_store.set_ceiling(mode="act")
+        self.assertEqual(
+            policy_store.policy_path().read_text(encoding="utf-8"), '["not", "an", "object"]'
+        )
+
+    def test_an_unreadable_or_corrupt_ceiling_refuses_primary_authority(self):
+        """A corrupt policy file must never GRANT prune authority.
+
+        ``PRIMARY_KEY`` is the one operator-only key whose default is
+        permissive (True), so the lenient gate read turned a truncated policy
+        file into granted ledger-prune authority -- the corrupt file becoming
+        the key that unlocks destroying shared knowledge, the exact
+        corruption-enables-destruction failure #7805 removes. Found in review
+        (GPT 5.6), two rounds. Authority decisions now go through the STRICT
+        :func:`policy_store.read_authority`, and ``rotation.is_primary``
+        answers False when it cannot read its input.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import (
+            policy_store,
+            rotation,
+        )
+
+        policy_store.policy_path().parent.mkdir(parents=True, exist_ok=True)
+        for corrupt_bytes in (
+            b'{"primary_instance": true',  # truncated JSON
+            b"\xff\xfe not utf8",  # not UTF-8
+            b'["not", "an", "object"]',  # wrong root
+        ):
+            policy_store.policy_path().write_bytes(corrupt_bytes)
+            with self.assertRaises(ValueError, msg=corrupt_bytes):
+                policy_store.read_authority(policy_store.PRIMARY_KEY, True)
+            self.assertFalse(
+                rotation.is_primary(),
+                f"a corrupt policy file ({corrupt_bytes!r}) granted primary authority",
+            )
+        # A MISSING file is genuinely the default state: solo installs keep
+        # working (the flag defaults True on a file that never existed).
+        policy_store.policy_path().unlink()
+        self.assertTrue(policy_store.read_authority(policy_store.PRIMARY_KEY, True))
+
+    def test_a_non_boolean_primary_flag_refuses_authority(self):
+        """Type-exact, not truthiness: ``bool("false")`` is True, so a
+        hand-repaired file holding the STRING "false" would grant the authority
+        its author meant to withhold -- and hand-repair is exactly where the
+        corruption refusals send the operator. Found in review (GPT 5.6)."""
+        import json as _json
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import (
+            policy_store,
+            rotation,
+        )
+
+        policy_store.policy_path().parent.mkdir(parents=True, exist_ok=True)
+        for bad in ('"false"', '"true"', "1", "0", "null"):
+            policy_store.policy_path().write_text(
+                f'{{"primary_instance": {bad}}}', encoding="utf-8"
+            )
+            self.assertFalse(
+                rotation.is_primary(),
+                f"a non-boolean primary_instance ({bad}) granted primary authority",
+            )
+        # Real booleans keep their meaning in both directions.
+        for real, expected in ((True, True), (False, False)):
+            policy_store.policy_path().write_text(
+                _json.dumps({"primary_instance": real}), encoding="utf-8"
+            )
+            self.assertEqual(rotation.is_primary(), expected, real)
+
+    def test_the_display_read_still_degrades_restrictively_on_any_failure(self):
+        """The lenient read stays lenient for the restrictive-default keys:
+        failing ``read_mode`` on a transient fault would wedge every
+        authorization gate to protect keys whose degraded answer is already
+        the safe one."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+
+        policy_store.policy_path().parent.mkdir(parents=True, exist_ok=True)
+        for corrupt_bytes in (b"{ not json", b"\xff\xfe not utf8", b'["wrong root"]'):
+            policy_store.policy_path().write_bytes(corrupt_bytes)
+            self.assertEqual(policy_store.read_mode("observe"), "observe", corrupt_bytes)

@@ -128,9 +128,9 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.hooks import _fd_real_path
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
+    fd_real_path,
     is_reparse_point,
     open_in_pinned_parent,
     supports_pinned_walk,
@@ -2708,7 +2708,7 @@ def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str
         # the POSIX hosts the tests run on) and require it to still sit under
         # the resolved root. Fail closed when it cannot be read — on this
         # branch the descriptor is the only trustworthy witness.
-        fd_real = _fd_real_path(fd)
+        fd_real = fd_real_path(fd)
         if fd_real is None:
             os.close(fd)
             return "not_found"
@@ -2868,6 +2868,17 @@ async def handle_app_dev_mode(request: web.Request) -> web.Response:
 
     Metadata-only change (installed.json); the dev-mode watcher picks it up
     within one poll interval, so no gateway restart is needed.
+
+    This route deliberately carries NO way to confirm an out-of-install ui
+    root: app UI bundles run as same-origin modules with the dashboard's own
+    credentials, so any request-body confirmation flag would be data the app
+    controls, not operator attestation — an app could self-grant serving an
+    arbitrary non-sensitive directory over the unauthenticated UI route by
+    POSTing to its own toggle. Enabling dev mode on such a root therefore
+    always answers 400 here (``code:
+    "dev_mode_out_of_install_confirmation_required"``, naming the CLI
+    command); confirmation is supplied only from the gateway host via
+    ``kirocrew app dev <name> --confirm-out-of-install-root``.
     """
     from kiro_crew.apps.dev_mode import set_dev_mode
 

@@ -161,25 +161,21 @@ class ServiceInstallError(RuntimeError):
 def _write_plist_atomic(contents: str) -> None:
     """Write the plist atomically.
 
-    Writes to a sibling temp file in the same directory, then
-    ``os.replace`` to swap into place. ``os.replace`` is atomic on POSIX
-    when source and destination are on the same filesystem, so a SIGINT
-    or crash mid-write leaves either the old plist or no plist at all —
-    never a partial XML document that ``launchctl load`` would reject.
+    Delegates to :func:`kiro_crew.atomic_write.atomic_write`: it writes a
+    sibling temp file in the same directory, then ``os.replace``s it into
+    place. ``os.replace`` is atomic on POSIX when source and destination are
+    on the same filesystem, so a SIGINT or crash never leaves a partial XML
+    document that ``launchctl load`` would reject: the final path holds the old
+    plist before the rename, the new one after it, or nothing where there was no
+    plist to begin with. The shared helper also cleans the temp file up on
+    ``BaseException`` (so that SIGINT leaves no scratch file) and retries the
+    rename past a Windows sharing violation. ``fsync`` is off.
 
-    Delegates to :func:`kiro_crew.atomic_write.atomic_write`, which is that
-    exact shape. Two deliberate strengthenings come with it: the temp cleanup
-    moves from ``except Exception`` to ``except BaseException``, so the SIGINT
-    this docstring already promised to survive also stops leaving a scratch
-    file behind, and the shared helper adds the Windows sharing-violation
-    rename retry. ``fsync`` stays off, as before.
-
-    ``mode=0o600`` preserves rather than tightens: ``mkstemp`` creates its file
-    owner-only and the hand-rolled form never chmod'd it, so the plist has
-    always landed at ``0o600``. It has to be explicit, because ``atomic_write``
-    with no *mode* applies the umask default and would publish the plist
-    world-readable instead. launchd loads the agent as the owning user, so
-    nothing else needs to read it.
+    ``mode=0o600`` has to be explicit: with no *mode*, ``atomic_write`` applies
+    the umask default, so the plist's permissions would follow the operator's
+    umask — world-readable under a common ``022``, owner-only only if they happen
+    to run something as tight as ``077``. launchd loads the agent as the owning
+    user, so nothing else needs to read it.
     """
     atomic_write(PLIST_PATH, contents, mode=0o600)
 
@@ -234,12 +230,12 @@ def write_live_program(contents: str, path: Path | None = None) -> None:
     disagree about which file is authoritative.
 
     Atomic because the agent may be kickstarted at any moment: a partially
-    written launcher would exec a truncated script. The mode is applied to the
-    temp file BEFORE the rename so the file is never visible at the final path
-    without its exec bit -- :func:`kiro_crew.atomic_write.atomic_write` applies
-    *mode* to the descriptor before any content reaches it, which is if anything
-    tighter than the ``os.chmod``-after-write this used to hand-roll. The temp
-    cleanup also widens from ``except Exception`` to ``except BaseException``.
+    written launcher would exec a truncated script.
+    :func:`kiro_crew.atomic_write.atomic_write` applies *mode* to the
+    descriptor before any content reaches it, so the file is never visible at
+    the final path without its exec bit — and never visible anywhere with
+    content but a wider mode. It also cleans the temp file up on
+    ``BaseException``.
 
     ``0o700``, not ``0o755``: launchd runs the agent as the owning user, so
     nobody else needs to read or execute it, and it lives in that user's own
@@ -429,12 +425,12 @@ def restart() -> bool:
     and the respawn ITSELF, so this is safe to call from inside the process being
     restarted.
 
-    The previous implementation (``unload`` then ``load``) could not do that. Run
-    from the gateway, the ``unload`` half SIGTERMs the caller, so the ``load``
-    half never executes and the agent stays down — the exact failure mode that
-    made Dev Fleet's Restart unimplementable on macOS. ``launchctl restart`` is
-    deprecated and behaves like ``stop``; ``KeepAlive`` immediately respawns the
-    loaded job definition rather than re-reading anything.
+    ``unload`` + ``load`` cannot: run from the gateway, the ``unload`` half
+    SIGTERMs the caller, so the ``load`` half never executes and the agent stays
+    down — which is what makes Dev Fleet's Restart unimplementable that way on
+    macOS. ``launchctl restart`` is deprecated and behaves like ``stop``;
+    ``KeepAlive`` immediately respawns the loaded job definition rather than
+    re-reading anything.
 
     Returns False when the plist is absent or launchd rejects the kickstart, so
     callers never report a restart that never happened.

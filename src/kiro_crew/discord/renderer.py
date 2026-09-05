@@ -449,7 +449,7 @@ class DiscordRenderer(Renderer):
         capabilities: TransportCapabilities,
         *,
         session_key: str = "",
-        uploads_allowed: bool = True,
+        uploads_allowed: bool = False,
         upload_root: str = "",
         react_message_id: str = "",
         reactions_enabled: bool = True,

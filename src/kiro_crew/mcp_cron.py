@@ -10,6 +10,9 @@ Tools:
     cron_remove_all — remove all jobs
     cron_pause      — pause a job
     cron_resume     — resume a paused job
+    cron_secret_request — request vault secrets for an owned script cron
+                          job (records a PENDING grant; operator approves in
+                          the dashboard — this tool never grants)
 """
 
 from __future__ import annotations
@@ -36,12 +39,17 @@ from kiro_crew.cron import (
     is_valid_skip_date,
     is_valid_timezone,
 )
-from kiro_crew.cron_script import resolve_script_path
+from kiro_crew.cron_script import (
+    compute_secret_env_pin,
+    delivery_fingerprint,
+    resolve_script_path,
+    validate_secret_env_grant,
+)
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_core import (
     _resolve_session_key,
-    _resolve_session_key_strict,
+    require_strict_session_key,
     strict_identity_diagnosis,
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
@@ -55,6 +63,7 @@ from kiro_crew.security import (
     enabled_rule_ids,
     is_sensitive_bash_command,
     is_sensitive_path,
+    is_sensitive_source_body,
     scan_exfiltration_urls,
 )
 from kiro_crew.sel import sel
@@ -133,9 +142,9 @@ _CRON_SECRET_NAME_RE = re.compile(
 # backtick pairs. We deliberately reject a lone backtick too — a stray one means
 # unmatched-quoting confusion, not a benign literal.
 _CRON_CMD_SUBST_RE = re.compile(
-    r"\$\(|"     # $( ... ) and $(( ... )) (`\(` covers both since $((… starts with $()
-    r"\$'|"      # $'...' ANSI-C quoting: `$'\x2e\x73\x73\x68'` decodes to ".ssh"
-    r"`",        # backtick — matches EITHER end of a pair, and unmatched too
+    r"\$\(|"  # $( ... ) and $(( ... )) (`\(` covers both since $((… starts with $()
+    r"\$'|"  # $'...' ANSI-C quoting: `$'\x2e\x73\x73\x68'` decodes to ".ssh"
+    r"`",  # backtick — matches EITHER end of a pair, and unmatched too
 )
 # A ``${...}`` that is NOT a plain ``${NAME}`` reference. Every other brace form
 # COMPOSES a string at expansion time, which is the same hazard as command
@@ -178,9 +187,7 @@ _CRON_POSITIONAL_PARAM_RE = re.compile(r"\$[0-9@*#]|\$\{[0-9@*#]")
 # start-of-command / after a separator / after `do`/`then` and word-bounded, so
 # `git log --format=for` (keyword as an argument) and a quoted `'while ...'` are
 # NOT matched. `case` is included because its patterns compose the same way.
-_CRON_SHELL_KEYWORD_RE = re.compile(
-    r"(?:^|[;&|]|\bdo\b|\bthen\b)\s*\b(?:for|while|until|case)\b"
-)
+_CRON_SHELL_KEYWORD_RE = re.compile(r"(?:^|[;&|]|\bdo\b|\bthen\b)\s*\b(?:for|while|until|case)\b")
 # Pathname expansion (globbing) is a FOURTH way to compose a sensitive path that
 # never appears literally: ``cat ~/.s?h/id_rsa`` reads ``~/.ssh/id_rsa`` (verified
 # against real sh, all three metacharacters). Blanket-refusing ``*``/``?``/``[``
@@ -211,10 +218,10 @@ _CRON_MAX_GLOB_WORD = 256
 # ``a=b`` as an assignment is harmless here: this map is only ever used to make
 # the credential-path scan see MORE, never to permit something.
 _CRON_LOCAL_ASSIGN_RE = re.compile(
-    r"(?:^|[;&|\s])\s*"          # start-of-command, a separator, or whitespace
+    r"(?:^|[;&|\s])\s*"  # start-of-command, a separator, or whitespace
     r"([A-Za-z_][A-Za-z0-9_]*)"  # variable name
-    r"="                         # literal =
-    r"([^\s;&|]*)",             # value up to next separator
+    r"="  # literal =
+    r"([^\s;&|]*)",  # value up to next separator
 )
 # A backslash escaping any character. sh drops the backslash and keeps the
 # character during word expansion, so the scan must do the same to see the string
@@ -329,7 +336,7 @@ def _glob_could_reach_credentials(command: str) -> bool:
             # stripped above). Both fnmatch directions so a glob in EITHER the
             # command or the sensitive name is caught.
             for start in range(len(cand_segments) - depth + 1):
-                win_segs = cand_segments[start:start + depth]
+                win_segs = cand_segments[start : start + depth]
                 # sh does NOT let a leading `*`/`?`/`[` match a leading dot — a
                 # hidden file is excluded from globbing unless the pattern spells
                 # the dot literally. Every sensitive name here is a dotfile
@@ -729,9 +736,7 @@ def _vet_shell_command(command: str) -> str | None:
     # fragment). `resolved` already has the tracked `A=.s; ... $A` cases expanded,
     # so this does not fire on those.
     leftover = {
-        name
-        for name in _CRON_VAR_REF_RE.findall(resolved)
-        if name not in _CRON_VAR_REF_ALLOWED
+        name for name in _CRON_VAR_REF_RE.findall(resolved) if name not in _CRON_VAR_REF_ALLOWED
     }
     if leftover:
         return (
@@ -766,6 +771,29 @@ def _vet_script_contents(text: str) -> str | None:
     covered by the now-required ``cron_add`` approval prompt. Credential
     exfiltration — which a human rubber-stamping the prompt would not catch — is
     the threat this gate closes.
+
+    ``is_sensitive_source_body`` is the same carve-out for the same reason,
+    one pass further in: ``is_sensitive_bash_command``'s pass 1b collapses
+    separator RUNS because a Win32 shell treats them as redundant, but in Python
+    source a backslash run is an ESCAPE. Collapsing strips it, so a body that
+    merely REDACTS or NAMES a fenced store — a ``re`` pattern, a docstring —
+    reads as an access to it and the job is denied at every fire, permanently
+    (the fire-time gate deliberately does not auto-pause).
+
+    Dropping that pass outright would reopen the doubled-separator fence bypass
+    INSIDE a script, so it is REPLACED rather than removed:
+    ``is_sensitive_source_body`` owns that pairing in ``security.py`` — it applies
+    the same three checks to each
+    DECODED string literal, which is where the run still exists —
+    ``open(r"...\\\\kiro-cli\\\\c.json")`` hands the OS two backslashes and Win32
+    collapses them. A literal is exonerated only when it provably flows into the
+    PATTERN operand of a pattern-consuming call, so an unknown sink over-blocks. A
+    body that does not
+    parse yields no literals to inspect, and then the raw shell scan runs WITH the
+    collapse, so an unparseable body is never quietly exonerated.
+
+    Every other pass still runs, and ``_vet_script_file`` keeps its own
+    ``is_sensitive_path`` on the resolved path.
     """
     if _CRON_CRED_PATH_RE.search(text):
         return (
@@ -774,7 +802,10 @@ def _vet_script_contents(text: str) -> str | None:
         )
     if _CRON_SECRET_ENV_RE.search(text) or _CRON_SECRET_NAME_RE.search(text):
         return "Error: cron script blocked: references a protected secret environment variable"
-    reason = is_sensitive_bash_command(text)
+    # One entry point owns the pairing: the literal scan replaces pass 1b for a source
+    # subject, and a body that did not parse keeps the raw-text collapse. See
+    # ``is_sensitive_source_body``.
+    reason = is_sensitive_source_body(text)
     if reason:
         safe_reason = redact(reason)
         return f"Error: cron script blocked by security policy: {safe_reason}"
@@ -1265,6 +1296,37 @@ def _list_tools() -> list[dict[str, Any]]:
                 "required": ["job_id"],
             },
         },
+        {
+            "name": "cron_secret_request",
+            "description": (
+                "Request vault secrets for a SCRIPT cron job you own. "
+                "This does NOT grant anything: it records a PENDING request "
+                "(env-var name -> vault secret name, pinned to the job's "
+                "current code) that the operator must approve in the dashboard "
+                "(Schedule > job > Secrets) before the values are injected "
+                "into the job's subprocess env at fire time. Tell the user to "
+                "approve it. Secrets must already exist in the vault "
+                "(Settings > Secrets). An empty 'secrets' object withdraws a "
+                "pending request."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string", "description": "Job ID to request secrets for"},
+                    "secrets": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": (
+                            "Mapping of env-var name (e.g. 'MY_SANDBOX_TOKEN', "
+                            "[A-Z][A-Z0-9_]*) to the vault secret name to "
+                            "inject under it. Empty object withdraws the "
+                            "pending request."
+                        ),
+                    },
+                },
+                "required": ["job_id", "secrets"],
+            },
+        },
     ]
 
 
@@ -1496,11 +1558,6 @@ def _caller_channel_id() -> str:
     return ctx.channel_id if ctx is not None else ""
 
 
-def _caller_is_cli() -> bool:
-    """True for the admin CLI surface, which bypasses per-session ownership."""
-    return os.environ.get("KIROCREW_CLI", "") == "1"
-
-
 def _authz_session_key() -> str:
     """The session key an ownership decision may be made from, or ``""``.
 
@@ -1519,7 +1576,10 @@ def _authz_session_key() -> str:
     sandbox launcher ran). It is NOT the same as "single user, so anything goes":
     see :func:`_unidentified_caller_refusal`.
     """
-    return _resolve_session_key_strict()
+    # Resolve-half of the shared strict gate only: the refusal text (and its
+    # diagnosis) lives in :func:`_unidentified_caller_refusal`, which each
+    # mutating tool composes itself.
+    return require_strict_session_key("cron ownership authorization")[0]
 
 
 #: A job with no recorded owner. Written by every creation path that has no
@@ -1563,8 +1623,11 @@ def _unidentified_caller_refusal(tool_name: str) -> str:
     stub registers without a session key and peer resolution fails, so an
     unidentifiable caller can be sharing a pooled backend with identified ones.
     It is not necessarily alone, so it gets neither their rows nor authority over
-    them. The CLI keeps its admin bypass, so the refusal never strands an
-    operator -- it names that route.
+    them. The refusal never strands an operator, and it names the route that does
+    work: ``kirocrew cron ...`` drives :class:`CronService` directly and never
+    arrives here, so its authority does not depend on anything this server reads.
+    No ambient environment value grants scope on this path; identity comes from
+    the sources :func:`_authz_session_key` accepts, and nothing else.
     """
     try:
         sel().log_tool_invocation(
@@ -1655,8 +1718,6 @@ def _audit_list_scope(
 
 def _check_cron_job_ownership(svc: "CronService", job_id: str) -> str | None:
     """Return an error string if the caller doesn't own this job, else None."""
-    if _caller_is_cli():
-        return None  # CLI admin bypass
     session_key = _authz_session_key()
     if not session_key:
         return _unidentified_caller_refusal(f"cron:{job_id}")
@@ -1742,18 +1803,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         jobs = svc.list_jobs(include_disabled=True)
         if not jobs:
             return "No cron jobs."
-        # Ownership filter: a non-CLI caller sees ONLY the rows it owns. Not
-        # ownerless rows (they belong to the admin surface, and an identified
-        # session is not necessarily the operator -- see _UNOWNED), and an
-        # UNIDENTIFIABLE caller sees nothing rather than everything, because
-        # gatewayd can forward caller=None on a pooled connection.
-        if not _caller_is_cli():
-            session_key = _authz_session_key()
-            jobs = _audit_list_scope(_owned_by(jobs, session_key), jobs, session_key)
-            if not jobs:
-                # NOT the store-empty string above: rows exist, they are just out
-                # of scope. See _SCOPED_EMPTY for why the two must differ.
-                return _SCOPED_EMPTY
+        # Ownership filter: a caller sees ONLY the rows it owns. Not ownerless
+        # rows (they belong to the admin surface, and an identified session is not
+        # necessarily the operator -- see _UNOWNED), and an UNIDENTIFIABLE caller
+        # sees nothing rather than everything, because gatewayd can forward
+        # caller=None on a pooled connection.
+        session_key = _authz_session_key()
+        jobs = _audit_list_scope(_owned_by(jobs, session_key), jobs, session_key)
+        if not jobs:
+            # NOT the store-empty string above: rows exist, they are just out
+            # of scope. See _SCOPED_EMPTY for why the two must differ.
+            return _SCOPED_EMPTY
         # Drill-in: ids filter forces full bodies for matching jobs only.
         if ids_filter:
             id_set = set(ids_filter)
@@ -1854,12 +1914,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         silent = args.get("silent", False)
         approval_mode = args.get("approval_mode", "")
         session_key = _authz_session_key()
-        if not session_key and not _caller_is_cli():
+        if not session_key:
             # Refuse rather than mint another ownerless row. A job whose owner is
             # unknown is precisely what made the ownership gate unenforceable, and
             # every such row is then visible-but-not-mutable through MCP (see
-            # _UNOWNED). The CLI keeps creating jobs; so does any session the
-            # gateway can name.
+            # _UNOWNED). Any session the gateway can name keeps creating jobs; so
+            # does `kirocrew cron add`, which reaches the store directly.
             return _unidentified_caller_refusal("cron_add")
         persistent_session = args.get("persistent_session")
         minimal_context = args.get("minimal_context")
@@ -2022,36 +2082,25 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if not jobs:
             return "No cron jobs to remove."
         session_key = _authz_session_key()
-        is_cli = _caller_is_cli()
-        if not is_cli:
-            if not session_key:
-                return _unidentified_caller_refusal("cron_remove_all")
-            jobs = _owned_by(jobs, session_key)
-            if not jobs:
-                return "No cron jobs owned by this session."
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="mcp",
-                tool_name="cron_remove_all",
-                tool_kind="authz",
-                outcome="scoped",
-                resources=f"session={session_key} count={len(jobs)}",
-            )
-        else:
-            sel().log_tool_invocation(
-                session_key="mcp_cron",
-                source="mcp",
-                tool_name="cron_remove_all",
-                tool_kind="authz",
-                outcome="cli_admin",
-                resources=f"count={len(jobs)}",
-            )
+        if not session_key:
+            return _unidentified_caller_refusal("cron_remove_all")
+        jobs = _owned_by(jobs, session_key)
+        if not jobs:
+            return "No cron jobs owned by this session."
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="mcp",
+            tool_name="cron_remove_all",
+            tool_kind="authz",
+            outcome="scoped",
+            resources=f"session={session_key} count={len(jobs)}",
+        )
         try:
             # Distinct from the ``removed: bool`` that ``cron_remove``'s
             # single-job path binds above: this is the batch's removed-id LIST,
             # and reusing the name would rebind one variable to two types.
             removed_ids, _missing = svc.remove_jobs_sync(
-                [j.id for j in jobs], actor=session_key or "mcp", source="mcp"
+                [j.id for j in jobs], actor=session_key, source="mcp"
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
@@ -2124,6 +2173,92 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if ok:
             return f"{msg} - executing now."
         return msg
+
+    if name == "cron_secret_request":
+        jid = args["job_id"]
+        # Ownership check — a session may only request secrets for a job it owns.
+        own_err = _check_cron_job_ownership(svc, jid)
+        if own_err:
+            return own_err
+        secrets = args.get("secrets")
+        if not isinstance(secrets, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in secrets.items()
+        ):
+            return "Error: secrets must be an object mapping env-var names to vault secret names"
+        sjob = svc.get_job(jid)
+        if sjob is None:
+            return f"Error: job not found: {jid}"
+        if not secrets:
+            try:
+                svc.update_job(jid, secret_env_pending={})
+            except CronStoreBusy:
+                return "Error: cron store busy, please retry"
+            return "Withdrew the pending secret request."
+        if not sjob.script:
+            return (
+                "Error: secret grants apply only to SCRIPT jobs. An agent "
+                "job's session would expose the plaintext to the model; a "
+                "command job's pin can cover only the command text, not the "
+                "bytes of any helper file the command invokes."
+            )
+        try:
+            validate_secret_env_grant(secrets)
+        except ValueError as exc:
+            return f"Error: {redact(str(exc))}"
+        # Deliberately NO vault-name existence probe here: distinguishing
+        # "stored" from "not stored" to an agent caller would let it enumerate
+        # the owner's vault names by guessing. Names are validated on the
+        # owner-only approval surfaces, where the operator sees the vault and
+        # the request side by side; a request naming a missing secret is
+        # simply refused there.
+        try:
+            # Pin the REQUEST to the job's current code. Approval re-verifies
+            # this pin against the code at approval time, so what the operator
+            # blesses is exactly what the agent showed them.
+            pin = compute_secret_env_pin(
+                sjob.script,
+                sjob.command,
+                sjob.message,
+                job_id=sjob.id,
+                grant=secrets,
+                domain="pending",
+                delivery=delivery_fingerprint(
+                    sjob.session_key, sjob.silent, sjob.channel or "", sjob.thread_ts or ""
+                ),
+            )
+        except (ValueError, FileNotFoundError, PermissionError, RuntimeError) as exc:
+            return f"Error: {redact(str(exc))}"
+        try:
+            svc.update_job(
+                jid,
+                secret_env_pending=dict(secrets),
+                secret_env_pending_pin=pin,
+                secret_env_pending_ts=time.time(),
+            )
+        except CronStoreBusy:
+            return "Error: cron store busy, please retry"
+        except CronStoreUnreadable as exc:
+            return f"Error: {exc}"
+        except ValueError as exc:
+            return f"Error: {redact(str(exc))}"
+        sel().log_api_access(
+            caller="mcp",
+            operation="cron.secret_request",
+            outcome="allowed",
+            source="mcp",
+            resources=f"job_id={jid}:{','.join(sorted(secrets))}",
+        )
+        # No in-chat approval surface, deliberately: an approval record
+        # reachable from generic chat resolution paths kept widening the
+        # owner-only boundary in review, so approval lives EXCLUSIVELY on the
+        # owner-gated Schedule page. The durable pending record above is the
+        # source of truth.
+        return (
+            f"Recorded a PENDING secret request for job {jid} "
+            f"({', '.join(sorted(secrets))}). Nothing is granted yet: the "
+            "operator must approve it in the dashboard under Schedule > this "
+            "job > Secrets. Tell the user to review and approve it there."
+        )
 
     return f"Unknown tool: {name}"
 

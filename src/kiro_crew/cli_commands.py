@@ -615,30 +615,36 @@ def _register_app_crons_to_scheduler(app_name: str) -> list[str]:
 
 
 def _warn_hooks_need_restart(app_name: str) -> bool:
-    """Say plainly that a running gateway will not pick up this app's backend hooks.
+    """Tell the operator how a CLI enable's backend-hook change reaches a gateway.
 
     Everything else a CLI enable writes is re-read by a running gateway:
     ``enable_app`` writes ``installed.json``, ``register_app`` writes agent and
     skill files, and ``_register_app_crons_to_scheduler`` writes through the
     shared cron store that the gateway's timer tick re-syncs by content digest.
-    Backend hooks are the exception -- they are Python modules imported INTO the
-    gateway process, and only the gateway can replace them (``on_app_enable`` ->
+    Backend hooks are Python modules imported INTO the gateway process, and only
+    the gateway can replace them (``on_app_enable`` ->
     ``RouteRegistry.register_app_routes`` -> ``load_app_module``, reached by the
-    HTTP enable route and by ``on_gateway_startup``). This process has no handle
-    on that one's ``sys.modules``, so a CLI enable cannot load them.
+    HTTP enable route and by ``on_gateway_startup``). This CLI process has no
+    handle on that one's ``sys.modules``, so it cannot load them directly --
+    but it no longer needs to: the gateway runs a hook reconciler
+    (``apps/hook_reconcile.py``) that notices an on-disk hook change this CLI
+    made and reloads it in-process within a poll interval (issue #7880). A
+    stopped gateway loads the new code on its next start.
 
-    Printing only "enabled <app>" reads as though it had. The operator then
-    verifies a hook change against the code the gateway imported earlier and
-    concludes the change did not work -- or that it did, when it never ran
-    (issue #7880).
+    Printing only "enabled <app>" reads as though the change were already live in
+    a running gateway, when in fact it lands a few seconds later; and pre-#7880
+    it never landed at all until a manual restart. This notice states the actual
+    timing so an operator does not verify a hook change against stale code and
+    draw the wrong conclusion.
 
     Deliberately NOT gated on a live-gateway probe. ``_marker_port`` is the only
     verified one available here, and it writes its own multi-gateway warning to
     stderr, which would surface out of context on an app enable. The notice is
-    phrased conditionally instead, so it stays true when no gateway is up.
+    phrased conditionally instead, so it stays true whether or not a gateway is
+    up.
 
-    Only for apps that declare ``backend.hooks``: there is nothing stale to warn
-    about otherwise. Returns whether the notice was printed.
+    Only for apps that declare ``backend.hooks``: there is nothing to say
+    otherwise. Returns whether the notice was printed.
     """
     info = get_app(app_name)
     manifest = info.get("manifest") if isinstance(info, dict) else None
@@ -649,10 +655,9 @@ def _warn_hooks_need_restart(app_name: str) -> bool:
     declared = ", ".join(sorted(str(k) for k in hooks))
     print(
         f"  note: this app declares backend hooks ({declared}).\n"
-        "  A gateway that is already running keeps executing the hook code it\n"
-        "  imported earlier; this command cannot replace it. Run `kirocrew\n"
-        "  restart`, or disable and re-enable the app from the dashboard, for\n"
-        "  hook changes to take effect."
+        "  A gateway that is already running reloads them automatically within a\n"
+        "  few seconds (the gateway reconciles hook changes it did not perform\n"
+        "  itself); if the gateway is stopped, they load on its next start."
     )
     return True
 
@@ -799,7 +804,22 @@ def _handle_app(args: argparse.Namespace) -> None:
         from kiro_crew.apps.dev_mode import set_dev_mode
 
         enabled = not getattr(args, "off", False)
-        dev_result = set_dev_mode(args.name, enabled)
+        confirm_root = getattr(args, "confirm_out_of_install_root", False)
+        if confirm_root and not enabled:
+            # The confirmation only applies to enabling: a disable never
+            # grants. Say so rather than silently ignoring the flag — an
+            # operator who reaches for it on the wrong invocation would
+            # otherwise read the exit-0 as "confirmed".
+            print(
+                "⚠️  --confirm-out-of-install-root has no effect with --off "
+                "(disabling grants nothing)",
+                file=sys.stderr,
+            )
+        dev_result = set_dev_mode(
+            args.name,
+            enabled,
+            confirm_out_of_install_root=confirm_root,
+        )
         if "error" in dev_result:
             print(f"❌ {dev_result['error']}", file=sys.stderr)
             sys.exit(1)

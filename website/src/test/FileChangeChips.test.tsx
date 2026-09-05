@@ -5,17 +5,16 @@ import FileChangeChips, { countLines, headerClickAction, type FileChangeEntry } 
 const change = (path: string, before: string, after: string) => ({ path, before, after })
 const rows = (c: HTMLElement) => c.querySelectorAll('[data-testid^="fcc-row-"]')
 
-/* The expanded style renders ONE Pierre diff per file, collapsed to Pierre's
- * own native header. Two consequences for this suite:
+/* The expanded style renders a lightweight header per closed file and mounts
+ * Pierre only after disclosure. Two consequences for this suite:
  *
- *  - The filename, ±counts, diffstat cells, Open button and chevron all live
- *    in Pierre's header (a shadow root, and its slot content is a prop of the
- *    lazy Pierre chunk that never resolves under vitest) — so none of them are
- *    assertable here. Row PRESENCE is, via `data-testid="fcc-row-<path>"`.
- *  - The line counting that used to be read off the row is a pure exported
- *    function, so it is tested directly instead of through the DOM.
+ *  - Closed filenames, counts, diffstat cells and controls are ordinary DOM and
+ *    covered by the focused header tests. Pierre's open header still lives in a
+ *    shadow root behind a lazy chunk that never resolves in this suite.
+ *  - The line counting used by both header forms is a pure exported function,
+ *    so it is tested directly instead of through presentation details.
  *
- * Header/metadata rendering is Playwright's job; see the note in the panel spec. */
+ * Header parity and mount lifecycle are covered in the focused companion tests. */
 describe('countLines', () => {
   it('counts pure additions', () => {
     expect(countLines('a', 'a\nb\nc')).toEqual({ added: 2, removed: 0 })
@@ -175,6 +174,14 @@ describe('FileChangeChips', () => {
 
   it('routes header whitespace to toggling, so the row has no dead zone', () => {
     expect(headerClickAction(pathOf('data-diffs-header'))).toBe('toggle')
+  })
+
+  it('routes lightweight header whitespace to toggling', () => {
+    expect(headerClickAction(pathOf('data-fcc-header'))).toBe('toggle')
+  })
+
+  it('routes a lightweight filename to opening the file', () => {
+    expect(headerClickAction(pathOf('data-fcc-filename', 'data-fcc-header'))).toBe('open')
   })
 
   it('ignores clicks below the header, so selecting code never collapses it', () => {

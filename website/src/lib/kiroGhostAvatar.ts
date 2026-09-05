@@ -560,6 +560,30 @@ export function compose(t: KiroGhostTraits, working?: WorkingIntensity | null): 
   )
 }
 
+/**
+ * Corner radius, as DiceBear's percent-of-viewport `radius` option and the
+ * equivalent rect `rx` in the mark's 1200-unit space. Both spellings exist
+ * because the seeded avatar path goes through DiceBear (which clips) while a
+ * pinned face is composed directly and must clip itself identically.
+ */
+export const GHOST_RADIUS_PCT = 12
+const GHOST_RADIUS_UNITS = (1200 * GHOST_RADIUS_PCT) / 100
+
+/**
+ * Compose explicit traits into the same data-URI form the seeded DiceBear
+ * path emits. Lives here (a `.ts` module, beside `compose`) rather than in a
+ * component: the use-lucide-icons rule bans an `<svg>` literal in any `.tsx`
+ * file unconditionally, and this wrapper is brand-mark geometry, which is
+ * exactly what this module already owns.
+ */
+export function ghostDataUri(traits: KiroGhostTraits, working?: WorkingIntensity | null): string {
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200">` +
+    `<clipPath id="r"><rect width="1200" height="1200" rx="${GHOST_RADIUS_UNITS}"/></clipPath>` +
+    `<g clip-path="url(#r)">${compose(traits, working)}</g></svg>`
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+
 export const kiroGhost: Style<KiroGhostOptions> = {
   /**
    * `creator` only, deliberately. `@dicebear/core` always emits a Dublin Core

@@ -18,6 +18,7 @@ from kiro_crew.acp.client import (
     AcpError,
     advertised_model_ids,
     model_is_unusable,
+    resolve_pin_spelling,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -304,7 +305,6 @@ class AcpProvider(LLMProvider):
         tool_search_min_pct: object = None,
         tool_search_min_tokens: object = None,
         mcp_gateway_overlay: str | Path | None = None,
-        mcp_gateway_settings_mcp_json: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
         crew_agent: str | None = None,
@@ -326,7 +326,6 @@ class AcpProvider(LLMProvider):
             "extra_env": extra_env,
             "acp_backend": acp_backend,
             "mcp_gateway_overlay": mcp_gateway_overlay,
-            "mcp_gateway_settings_mcp_json": mcp_gateway_settings_mcp_json,
             "mcp_gateway_socket": mcp_gateway_socket,
             # Claude permission mode (Auto-mode/permission-UI parity). None on the
             # kiro-cli path — fully inert; a companion-registered backend threads
@@ -792,9 +791,6 @@ class AcpProvider(LLMProvider):
         sandbox_mode = getattr(self._client, "_sandbox_mode", "auto")
         extra_env = getattr(self._client, "_extra_env", None) or {}
         mcp_gateway_overlay = getattr(self._client, "_mcp_gateway_overlay", None)
-        mcp_gateway_settings_mcp_json = getattr(
-            self._client, "_mcp_gateway_settings_mcp_json", None
-        )
         mcp_gateway_socket = getattr(self._client, "_mcp_gateway_socket", None)
 
         # Check for session resume
@@ -812,7 +808,6 @@ class AcpProvider(LLMProvider):
             sandbox_mode=sandbox_mode,
             extra_env=extra_env,
             mcp_gateway_overlay=mcp_gateway_overlay,
-            mcp_gateway_settings_mcp_json=mcp_gateway_settings_mcp_json,
             mcp_gateway_socket=mcp_gateway_socket,
             acp_backend=self._client.backend,
             crew_agent=self._crew_agent,
@@ -913,7 +908,6 @@ class AcpProvider(LLMProvider):
                         sandbox_mode=sandbox_mode,
                         extra_env=extra_env,
                         mcp_gateway_overlay=mcp_gateway_overlay,
-                        mcp_gateway_settings_mcp_json=mcp_gateway_settings_mcp_json,
                         mcp_gateway_socket=mcp_gateway_socket,
                         acp_backend=self._client.backend,
                         crew_agent=self._crew_agent,
@@ -957,7 +951,15 @@ class AcpProvider(LLMProvider):
                 # Leaving it unset keeps the session on the backend's own
                 # default, so the turn succeeds.
                 _advertised = advertised_model_ids(handle.available_models)
+                _send_model = configured_model
                 if model_is_unusable(configured_model, _advertised):
+                    # A literal miss can be a stale `<namespace>::` qualifier on
+                    # a model the backend fully serves (#8521): resolve to the
+                    # advertised spelling and send THAT — same fold the display
+                    # verdict uses, so chip and wire agree. A pin absent under
+                    # either spelling still takes the withhold.
+                    _send_model = resolve_pin_spelling(configured_model, _advertised)
+                if not _send_model:
                     logger.warning(
                         "Configured model %s is not available to this account; "
                         "leaving the session on the backend default (advertised: %s)",
@@ -967,12 +969,12 @@ class AcpProvider(LLMProvider):
                 else:
                     _t_model = time.monotonic()
                     try:
-                        await handle.set_model(configured_model)
-                        logger.info("Kiro runtime model set: %s", configured_model)
+                        await handle.set_model(_send_model)
+                        logger.info("Kiro runtime model set: %s", _send_model)
                     except Exception:
                         logger.warning(
                             "Failed to set model %s on kiro runtime session",
-                            configured_model,
+                            _send_model,
                             exc_info=True,
                         )
                     finally:
@@ -1580,6 +1582,16 @@ class AcpProvider(LLMProvider):
     def is_process_alive(self) -> bool:
         """True if the underlying OS process has not exited (ignores I/O staleness)."""
         return self._client.is_process_alive()
+
+    @property
+    def process_instance(self) -> str:
+        """Per-spawn identity of the client's current child process (see base).
+
+        A direct read on purpose: a `getattr` hedge would convert a future
+        wiring break into "no banner is ever live", indistinguishable from
+        correct expiry.
+        """
+        return self._client.process_instance
 
     def has_active_turn(self) -> bool:
         """True if a prompt is in flight (and not yet cancelled) on the client."""

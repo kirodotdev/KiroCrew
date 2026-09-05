@@ -542,8 +542,17 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
 
             if (snap / "crons.json").is_file():
                 if (mc / "crons.json").is_file():
-                    _merge_crons(snap / "crons.json", mc / "crons.json")
-                    summary["items"].append("crons (merged)")
+                    if _merge_crons(snap / "crons.json", mc / "crons.json"):
+                        summary["items"].append("crons (merged)")
+                    else:
+                        # A refused merge imported zero jobs. Appending
+                        # "crons (merged)" here regardless was issue #8217: the
+                        # dashboard rendered a success over a restore that
+                        # brought no job back. The refusal is named in the
+                        # items and flagged machine-readably so the handler can
+                        # log the import as partial rather than a flat ok.
+                        summary["items"].append("crons (skipped: unreadable or invalid cron store)")
+                        summary.setdefault("refused_merges", []).append("crons")
                 else:
                     shutil.copy2(str(snap / "crons.json"), str(mc / "crons.json"))
                     summary["items"].append("crons (copied)")

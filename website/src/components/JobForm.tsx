@@ -58,11 +58,41 @@ function parseJobDefaults(job?: CronJob) {
   if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([sh])/); if (!m) return 3600; return m[2] === 'h' ? parseInt(m[1]) * 3600 : parseInt(m[1]) })()
-  const intUnit = secs >= 86400 ? 'days' as const : secs >= 3600 ? 'hours' as const : 'minutes' as const
+  // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
+  // <= `secs`. The magnitude test sent 5400s to 'hours', where Math.round(1.5) is
+  // 2, and buildBody re-serialises `intVal * 3600` — so opening a 90-minute job
+  // and saving an unrelated field silently rewrote its schedule to 2 hours. That
+  // is the #8469 class on the interval side: 90 minutes IS representable here, and
+  // the magnitude choice discarded that representation before rounding ever ran.
+  const evenUnit = secs % 86400 === 0 ? 'days' as const
+    : secs % 3600 === 0 ? 'hours' as const
+    : secs % 60 === 0 ? 'minutes' as const
+    : null
+  // Nothing divides evenly (e.g. 90s): no unit offered here can represent that
+  // schedule, so keep the pre-existing nearest-magnitude choice rather than widen
+  // the unit set. Sub-minute precision is a separate question from this defect.
+  const intUnit = evenUnit ?? (secs >= 86400 ? 'days' as const : secs >= 3600 ? 'hours' as const : 'minutes' as const)
   const intVal = Math.max(1, Math.round(intUnit === 'days' ? secs / 86400 : intUnit === 'hours' ? secs / 3600 : secs / 60))
   const cronRaw = job.cron_expr || ''
   const cronParts = cronRaw.split(/\s+/)
+  // Weekly mode can only represent a single plain minute/hour pair plus a day
+  // set expandDow understands. A list, range, or step in the minute or hour
+  // field (e.g. `0 9,12,15 * * 1-5`) must fall through to cron mode, where the
+  // raw expression round-trips verbatim — parseInt would silently truncate
+  // '9,12,15' to 9 and a save would drop the other run times (#8469).
+  // /^\d{1,2}$/ matches cronClock's plain-field grammar in cronUtils so the
+  // list view and the editor classify the same job the same way.
+  const isPlainField = (s: string, max: number) => /^\d{1,2}$/.test(s) && parseInt(s, 10) <= max
+  // The day-of-week field must be FULLY representable: expandDow drops
+  // segments it cannot parse (`1,3-5/2` expands to just [1]), so a whole-field
+  // non-empty check would still collapse the unsupported part on save. Each
+  // comma segment must expand on its own, and numeric tokens must stay in
+  // cron's 0-7 range — parseDowToken wraps 8 to Monday via % 7, which would
+  // silently rewrite the expression.
+  const isRepresentableDow = (field: string) => field.split(',').every(seg =>
+    !seg.split('-').some(tok => /^\d+$/.test(tok) && parseInt(tok, 10) > 7) && expandDow(seg).length > 0)
   const isWeekly = !isInterval && cronParts.length === 5 && cronParts[4] !== '*' && cronParts[2] === '*' && cronParts[3] === '*'
+    && isPlainField(cronParts[0], 59) && isPlainField(cronParts[1], 23) && isRepresentableDow(cronParts[4])
   const schedMode = isInterval ? 'interval' as const : isWeekly ? 'weekly' as const : 'cron' as const
   // Read cron time and days directly (stored in job timezone, not UTC)
   let weekDays: number[] = []

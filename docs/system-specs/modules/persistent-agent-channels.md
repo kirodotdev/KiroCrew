@@ -60,13 +60,15 @@ A new orchestrator posts a ready system message, while a new specialist posts it
 
 ## Approval Boundary
 
-`ApprovalPolicy` accepts `all`, `writes`, and `trusted`, and `run_channel_agent` stores the selected value through `SessionManager.get_or_create`. In this module, all three values have the same approval handling: `_stream_task` does not classify read versus write calls or translate `trusted` into an auto-approval grant. Every `EVENT_PERMISSION_REQUEST` that reaches `_stream_task` is interactive unless global YOLO is active or `Channel.trusted` is already set. This is the current gap; the field names do not provide a stronger per-agent guarantee.
+`ApprovalPolicy` accepts `all`, `writes`, and `trusted`, and `run_channel_agent` stores the selected value through `SessionManager.get_or_create`. In this module, all three values have the same initial approval handling: `_stream_task` does not classify read versus write calls or translate `trusted` into an auto-approval grant. An `EVENT_PERMISSION_REQUEST` stays interactive unless global YOLO, persisted channel trust, or a separately granted agent-scoped command literal authorizes it. The policy field names themselves do not provide a stronger per-agent guarantee.
 
-For each permission request that reaches `_stream_task`, the channel waits for a human decision unless global YOLO is active or `Channel.trusted` is already set. The approval endpoint accepts only `approved`, `rejected`, or `trust`; a missing, invalid, denied, or timed-out decision rejects the provider request. `asyncio.wait_for` supplies the timeout and `_stream_task` audits the resulting decision through `sel().log_tool_invocation()`.
+For each permission request that reaches `_stream_task`, the channel waits for a human decision unless global YOLO is active, `Channel.trusted` is already set, or an agent-scoped command grant matches. The approval endpoint accepts `approved`, `rejected`, `trust`, `trust_command`, and `trust_base`; a missing, invalid, denied, or timed-out decision rejects the provider request. `asyncio.wait_for` supplies the timeout and `_stream_task` audits the resulting decision through `sel().log_tool_invocation()`.
 
-A `trust` decision sets and persists `Channel.trusted`, so subsequent permission requests in that channel auto-approve. The grant is channel-wide rather than agent-specific, and global YOLO also bypasses the interactive channel prompt. Neither bypass defeats the containment denylist: `_blocked_tool_named` rejects direct-to-user messaging and session-control tools before either auto-approval branch. `test/test_channel_blocked_tools.py::test_blocked_tool_rejected_even_on_trusted_channel` pins that ordering.
+A `trust` decision sets and persists `Channel.trusted`, so subsequent permission requests in that channel auto-approve. `trust_command` and `trust_base` are runtime-only, agent-scoped shell grants. The server derives their authority from the pending provider-classified shell event's canonical `tool_input`; the request pattern is only a consent proof and a stale or divergent card fails closed. Exact grants use case-sensitive literal equality, and base grants are available only for one simple, unambiguous invocation. Non-shell, redacted, compound, quoted-executable, environment-prefixed, and unparseable commands remain allow-once/reject only where a safe base cannot be derived.
 
-The approval card exposes sanitized, truncated tool input and only renders action buttons while the dashboard is in normal approval mode. A channel agent must communicate through channel posts; it is prompted not to use direct messaging or subagent spawning, and blocked tool names are enforced rather than treated as prompt-only guidance.
+Global YOLO, channel-wide trust, and agent-scoped command trust all run after the containment denylist: `_blocked_tool_named` rejects direct-to-user messaging and session-control tools before every auto-approval branch. `test/test_channel_blocked_tools.py::test_blocked_tool_rejected_even_on_trusted_channel` pins that ordering.
+
+The approval card exposes sanitized, truncated tool input and only renders action buttons while the dashboard is in normal approval mode. Shell cards whose command remains fully visible offer exact-command and base-command tiers; other cards offer only channel-wide trust. Failed decision requests restore the controls and focus rather than displaying an optimistic success. A channel agent must communicate through channel posts; it is prompted not to use direct messaging or subagent spawning, and blocked tool names are enforced rather than treated as prompt-only guidance.
 
 ## Presets and Configuration
 
@@ -92,7 +94,7 @@ The handler does not take a per-channel lock. A post concurrent with an all-scop
 
 - `_stream_task` redacts credentials and exfiltration URLs from streamed agent output, tool status, and approval content before channel publication.
 - `CHANNEL_AGENT_BLOCKED_TOOLS` and `_blocked_tool_named` contain direct-to-user messaging and session-control operations so a channel agent cannot move channel content into a private dashboard session or take control of one.
-- `api_channel_approve_agent` validates the decision allowlist, and `_stream_task` repeats the allowlist check before acting on the approval future.
+- `api_channel_approve_agent` validates the decision allowlist. Per-command trust requires a pattern matching the server-bound pending command, records grants as opaque literals, audits both grants and refusals, and resolves the current request as a one-time approval. `_stream_task` repeats the result allowlist check before acting on the approval future.
 - `_json_object` rejects invalid JSON and non-object request bodies before channel handlers read fields.
 - Channel approval and trust decisions are logged through `sel().log_tool_invocation`; context-clear requests are logged through `sel().log_api_access`.
 
@@ -117,7 +119,7 @@ The page renders pending, working, listening, done, failed, and tool-running sta
 | PATCH | `/api/channels/{id}/agents/{aid}` | Update an agent approval policy or listen mode. |
 | DELETE | `/api/channels/{id}/agents/{aid}` | Dismiss an agent. |
 | POST | `/api/channels/{id}/agents/{aid}/wake` | Restart a terminal agent. |
-| POST | `/api/channels/{id}/agents/{aid}/approve` | Resolve a pending provider permission request. |
+| POST | `/api/channels/{id}/agents/{aid}/approve` | Resolve a pending provider permission request; command/base trust decisions include a consent-proof `pattern`. |
 
 `src/kiro_crew/dashboard/routes/connections.py::register_connection_routes` registers these routes.
 

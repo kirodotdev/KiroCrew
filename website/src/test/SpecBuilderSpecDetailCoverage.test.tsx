@@ -6,7 +6,7 @@
 // surfacing.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import React from 'react'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -39,6 +39,7 @@ vi.mock('../apps/spec-builder/components/DocView', () => ({
     addComment: (c: { file: string; quote: string; note: string }) => void
   }) => (
     <div data-testid="doc-view" data-tab={tab} data-running={String(!!running)}>
+      <input data-testid="doc-comment-draft" aria-label="comment draft" />
       <button
         type="button"
         data-testid="add-requirements-comment"
@@ -109,11 +110,17 @@ function installFetch(
 function renderDetail(
   name = 'checkout',
   setErr: (m: string) => void = () => {},
+  onDeleted?: () => void,
   onDuplicated?: (name: string) => void,
 ) {
   return render(
     <QueryClientProvider client={queryClient}>
-      <SpecDetail name={name} setErr={setErr} onDuplicated={onDuplicated} />
+      <SpecDetail
+        name={name}
+        setErr={setErr}
+        onDeleted={onDeleted}
+        onDuplicated={onDuplicated}
+      />
     </QueryClientProvider>,
   )
 }
@@ -262,7 +269,7 @@ describe('SpecDetail header', () => {
     installFetch(BASE, (url) => (url.includes('/duplicate')
       ? Promise.resolve(okRes('{"name":"checkout-v2"}'))
       : undefined))
-    renderDetail('checkout', () => {}, onDuplicated)
+    renderDetail('checkout', () => {}, undefined, onDuplicated)
 
     await user.click(await screen.findByRole('button', { name: /more actions/i }))
     await user.click(await screen.findByRole('menuitem', { name: /duplicate this spec/i }))
@@ -356,11 +363,32 @@ describe('SpecDetail review overlay', () => {
 
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toHaveAttribute('aria-modal', 'true')
-    // The overlay mounts its own copy of the document pane.
-    expect(screen.getAllByTestId('doc-view')).toHaveLength(2)
+    // One document pane: a second copy behind the overlay doubled markdown
+    // parse cost and ran two selection listeners on the same window selection.
+    expect(screen.getAllByTestId('doc-view')).toHaveLength(1)
 
     fireEvent.keyDown(window, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('does not steal focus from the comment composer when the spec poll ticks', async () => {
+    installFetch(BASE)
+    renderDetail()
+
+    await screen.findByTestId('doc-view')
+    fireEvent.click(screen.getByRole('button', { name: 'Expand document for review' }))
+    await screen.findByRole('dialog')
+
+    const draft = screen.getByTestId('doc-comment-draft')
+    draft.focus()
+    expect(draft).toHaveFocus()
+
+    // A poll that returns new object identity re-renders SpecDetail. The overlay
+    // used an inline callback ref that focused the dialog on every such tick.
+    act(() => {
+      queryClient.setQueryData(['spec-builder', 'spec', 'checkout'], { ...BASE, running: true })
+    })
+    expect(draft).toHaveFocus()
   })
 
   it('closes the fullscreen review from its own close button', async () => {
@@ -376,6 +404,19 @@ describe('SpecDetail review overlay', () => {
     // An unrelated key while collapsed is a no-op rather than a crash.
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('keeps phase actions reachable in the overlay so a review can approve', async () => {
+    installFetch(BASE)
+    renderDetail()
+
+    await screen.findByTestId('doc-view')
+    fireEvent.click(screen.getByRole('button', { name: 'Expand document for review' }))
+    const dialog = await screen.findByRole('dialog')
+    // The column header hides its copy while the overlay is up, so this is
+    // the only Approve on the page — expanding used to hide the action entirely.
+    expect(dialog).toHaveAccessibleName('Review requirements.md for checkout')
+    expect(screen.getByRole('button', { name: /Approve → Design/ })).toBeInTheDocument()
   })
 })
 
@@ -676,6 +717,83 @@ describe('SpecDetail review comment tray', () => {
     // The comment survives so the review can be retried.
     expect(screen.getByText('1 pending comment')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /Send all to agent/ })).not.toBeDisabled())
+  })
+})
+
+describe('SpecDetail delete', () => {
+  async function openRemoveConfirmation() {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(await screen.findByRole('button', { name: /more actions/i }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove spec checkout' }))
+  }
+
+  it('asks first, then removes the spec and notifies the workspace', async () => {
+    const onDeleted = vi.fn()
+    installFetch(BASE)
+    renderDetail('checkout', () => {}, onDeleted)
+
+    await openRemoveConfirmation()
+    expect(await screen.findByRole('dialog', { name: 'Remove this spec?' })).toBeInTheDocument()
+    expect(screen.getByText(/markdown files stay in the project/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove this spec' }))
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1))
+    const deleted = calls.filter((c) => c.method === 'DELETE')
+    expect(deleted).toHaveLength(1)
+    expect(deleted[0].url).toContain('/specs/checkout')
+    expect(deleted[0].url).toContain('spec_dir=')
+    expect(deleted[0].url).toContain('slot_key=')
+  })
+
+  it('removes the confirmed spec, not a replacement that landed while the dialog was open', async () => {
+    const onDeleted = vi.fn()
+    installFetch(BASE)
+    renderDetail('checkout', () => {}, onDeleted)
+
+    await openRemoveConfirmation()
+    await screen.findByRole('dialog', { name: 'Remove this spec?' })
+
+    act(() => {
+      queryClient.setQueryData(['spec-builder', 'spec', 'checkout'], {
+        ...BASE,
+        spec_dir: '/proj/other/.kiro/specs/checkout',
+        slot_key: 'spec-builder-checkout-replacement',
+      })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove this spec' }))
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1))
+    const deleted = calls.filter((c) => c.method === 'DELETE')
+    expect(deleted).toHaveLength(1)
+    expect(deleted[0].url).toContain(encodeURIComponent(BASE.spec_dir))
+    expect(deleted[0].url).toContain('spec-builder-checkout-99')
+    expect(deleted[0].url).not.toContain('replacement')
+  })
+
+  it('dismisses the confirm without sending a delete', async () => {
+    installFetch(BASE)
+    renderDetail()
+
+    await openRemoveConfirmation()
+    await screen.findByRole('dialog', { name: 'Remove this spec?' })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove this spec?' })).not.toBeInTheDocument())
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
+  })
+
+  it('surfaces a refused delete and leaves the spec open', async () => {
+    const setErr = vi.fn()
+    const onDeleted = vi.fn()
+    installFetch(BASE, (url) => (url.includes('/specs/checkout')
+      ? Promise.resolve({ ok: false, status: 409, json: () => Promise.resolve({ error: 'stale client' }) })
+      : undefined))
+    renderDetail('checkout', setErr, onDeleted)
+
+    await openRemoveConfirmation()
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove this spec' }))
+    await waitFor(() => expect(setErr).toHaveBeenCalledWith('stale client'), { timeout: 5_000 })
+    expect(onDeleted).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Remove this spec?' })).toBeInTheDocument()
   })
 })
 

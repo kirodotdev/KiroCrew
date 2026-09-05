@@ -29,10 +29,22 @@ from aiohttp.test_utils import TestClient, TestServer
 # resolves to the stdlib `test` and fails with ModuleNotFoundError on CI.
 from chat_test_helpers import _make_ready_kiro_prerequisite
 
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import _SLOTS_BROADCAST_INTERVAL_S, DashboardState
 from kiro_crew.history import ConversationLog
 
 FOLDER_ID = "f-design"
+
+
+def _raise_on_slots(payload):
+    """A ``_broadcast`` double that fails the way the evidenced defect does.
+
+    The exception TYPE is incidental — ``json.dumps`` on a non-serializable slot
+    value is the shape #6522 hit — so these tests pin the ordering instead: any
+    raise out of the flush must not unwind past the durable write.
+    """
+    if payload.get("_type") == "slots":
+        raise TypeError("Object of type object is not JSON serializable")
 
 
 def _make_state(tmp_path):
@@ -453,3 +465,76 @@ class TestFolderTagInheritance:
             assert resp.status == 200
             assert (await resp.json())["tags"] == ["t1"]
         assert state._slots["fresh"].tags == ["t1"]
+
+
+class TestDurableWriteOrdering:
+    """The durable write runs INSIDE the suspension, ahead of the broadcast.
+
+    ``suspend_slots_push``'s ``__exit__`` flushes the owed push, and on the
+    coalescing window's LEADING edge that flush broadcasts synchronously — so an
+    exception there escapes ``__exit__`` and unwinds the rest of the handler.
+    With the forced save sitting after the ``with`` block, that unwind skipped a
+    metadata mutation the request had already acknowledged, and this save is the
+    only durable record of a recreate's folder filing or pinned title.
+
+    ``session_control.py``'s create span already keeps its persist inside the
+    suspension for the same reason ("a slot whose birth write fails is never
+    broadcast at all"); these pin the ordering here, not the exception, so any
+    future raise from the flush is covered too.
+    """
+
+    @pytest.mark.asyncio
+    async def test_raising_exit_broadcast_cannot_skip_the_folder_write(self, tmp_path):
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            # A session that has been used, which is the case the forced save is
+            # the only durable record for: re-filing an EXISTING slot. Its
+            # window is non-empty, so the save takes the full-save path.
+            slot = state.get_or_create_slot("s1")
+            slot.append("user", "hello")
+            slot.drain()
+            pinned = slot_history_key(slot)
+
+            # get_or_create_slot above already consumed a leading edge. Wait the
+            # window out, or the flush below is deferred to the trailing timer,
+            # the handler returns 200, and this test proves nothing.
+            await asyncio.sleep(_SLOTS_BROADCAST_INTERVAL_S + 0.05)
+            state._broadcast = _raise_on_slots  # type: ignore[method-assign]
+
+            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID})
+
+        # The failure still reaches the caller: this is an ordering fix, not a
+        # swallow. Whether an already-committed create should answer 500 at all
+        # is the half of #6532 that was declined, and folding it in here would
+        # resurrect it.
+        assert resp.status == 500
+        # But the acknowledged mutation is on disk. Outside the suspension, the
+        # escaping exception skipped this write entirely and nothing reconciled
+        # the in-memory slot against it.
+        meta = state.conversation_log._read_metadata(pinned) or {}
+        assert meta.get("folder_id") == FOLDER_ID, (
+            "the folder filing never reached disk — a broadcast failure unwound "
+            "past the durable write, so a restart resurrects the old placement"
+        )
+
+    @pytest.mark.asyncio
+    async def test_raising_exit_broadcast_cannot_skip_the_pinned_title_write(self, tmp_path):
+        """Same ordering, via the other field that reaches disk only here."""
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            slot = state.get_or_create_slot("s1")
+            slot.append("user", "hello")
+            slot.drain()
+            pinned = slot_history_key(slot)
+
+            await asyncio.sleep(_SLOTS_BROADCAST_INTERVAL_S + 0.05)
+            state._broadcast = _raise_on_slots  # type: ignore[method-assign]
+
+            resp = await client.post("/api/chat/slots", json={"name": "s1", "title": "Pinned"})
+
+        assert resp.status == 500
+        meta = state.conversation_log._read_metadata(pinned) or {}
+        assert meta.get("title") == "Pinned", (
+            "the pinned title never reached disk — a restart rehydrates the old "
+            "title with a refreshable 'auto' origin"
+        )

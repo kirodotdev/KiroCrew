@@ -55,7 +55,9 @@ def _facade_strip_markdown_preview(text: str) -> str:
     return _history_facade().strip_markdown_preview(text)
 
 
-def drop_persisted_tail_prefix(full_disk: list[dict], tail: list[dict]) -> list[dict]:
+def drop_persisted_tail_prefix(
+    full_disk: list[dict], tail: list[dict], *, require_mid: bool = False
+) -> list[dict]:
     """`tail` minus whatever of its head `full_disk` already ends with.
 
     Two callers, one shape: a corpus read from disk, followed by rows that MAY
@@ -93,6 +95,13 @@ def drop_persisted_tail_prefix(full_disk: list[dict], tail: list[dict]) -> list[
         b_mid = b_meta.get("mid") if isinstance(b_meta, dict) else None
         if a_mid and b_mid:
             return bool(a_mid == b_mid)
+        if require_mid:
+            # A match here DELETES a row. Callers whose overlap can only come
+            # from a re-archived prefix (whose rows always carry mids) opt in
+            # to mid-proven matching: an id-less coincidence on the fallback
+            # triple must be preserved, because deleting a genuine row is
+            # strictly worse than serving a duplicate.
+            return False
         return (
             a.get("ts", "") == b.get("ts", "")
             and a.get("role") == b.get("role")
@@ -376,6 +385,7 @@ class TranscriptReadProjection:
         if hit is not None and hit[0] == sig:
             return hit[1]
         rows: list[dict] = []
+        prev_seg_rows: list[dict] = []
         # A transient per-segment read failure must not be CACHED as "no
         # archived rows": the stat signature of a finished rotation never
         # changes again, so a poisoned empty entry would outlive the incident
@@ -432,6 +442,7 @@ class TranscriptReadProjection:
                 # (see the docstring). A healthy read skips these too, so this one
                 # must stay a plain skip.
                 continue
+            seg_rows: list[dict] = []
             for ln in lines[1:]:
                 if not ln.strip():
                     continue
@@ -451,7 +462,52 @@ class TranscriptReadProjection:
                 if "_type" not in row:
                     # `_type` rows are deliberate control records, not messages --
                     # skipping them IS the classification this corpus wants.
-                    rows.append(row)
+                    seg_rows.append(row)
+            # Rotation archives the live file's head BEFORE rewriting the live
+            # file. A hard crash between those two writes leaves the archived
+            # rows at the head of the live file too, so the NEXT rotation
+            # re-archives them: this corpus is the index space pagination
+            # cursors and fork indices resolve against, and a duplicated row
+            # silently shifts every index above it. Two proofs may drop a
+            # row here, and an id-less interior coincidence satisfies
+            # neither, because deleting a genuine row is strictly worse than
+            # serving a duplicate:
+            #
+            # 1. PROVENANCE. A failed rewrite leaves segment N's rows at the
+            #    live file's head, so the next rotation re-archives them
+            #    field-for-field: segment N+1 either begins with ALL of N
+            #    (enough new rows accrued) or is itself a shorter verbatim
+            #    prefix of N (the rotation kept a tail). Both reduce to the
+            #    first min(len) rows of ADJACENT segments being identical
+            #    records -- a shape an organic transcript cannot reproduce,
+            #    and one that needs no row ids.
+            # 2. IDENTITY. Beyond that shared prefix, a row is dropped only
+            #    when proven by stable ``meta.mid`` equality
+            #    (``require_mid=True``); the ``(ts, role, content)`` fallback
+            #    does not apply at this seam.
+            #
+            # This covers segment-to-segment overlap only: the archive-to-live
+            # seam in read_messages_chained_full still needs its own
+            # drop_persisted_tail_prefix call.
+            provenance = 0
+            k = min(len(prev_seg_rows), len(seg_rows))
+            if k and seg_rows[:k] == prev_seg_rows[:k]:
+                provenance = k
+            remainder = seg_rows[provenance:]
+            merged = drop_persisted_tail_prefix(rows, remainder, require_mid=True)
+            dropped = provenance + (len(remainder) - len(merged))
+            if dropped:
+                # A fired dedupe is the on-disk signature of a rotation that
+                # crashed inside the archive-to-rewrite window. Every other
+                # anomaly in this reader logs; dropping rows silently would
+                # make a genuine (mis)drop unattributable in the field.
+                _HISTORY_LOGGER.warning(
+                    "rotated segment %s overlaps the corpus: dropped %d duplicate row(s)",
+                    p.name,
+                    dropped,
+                )
+            rows.extend(merged)
+            prev_seg_rows = seg_rows
         if complete:
             if not rows:
                 # Segments exist yet no rotate rows parsed — the exact signature

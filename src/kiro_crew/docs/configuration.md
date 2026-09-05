@@ -14,6 +14,7 @@ kirocrew config get agent.model        # print a specific value
 kirocrew config set agent.model auto   # set a value (auto type detection)
 kirocrew config set --local agent.model auto   # write config.local.json instead
 kirocrew config edit                   # open in $EDITOR
+kirocrew config defaults               # stored values holding a superseded default
 ```
 
 Every config change is audit-logged to the security event log.
@@ -22,6 +23,33 @@ Every config change is audit-logged to the security event log.
 `--local` writes to. Its values win over `config.json`.
 
 The dashboard port is **not** a config key: set `KIROCREW_PORT` instead.
+
+## When a Shipped Default Changes
+
+`config.json` is written as a full materialization of the schema, so every key is
+on disk even if you never set it — and a stored value always beats the shipped
+default. Changing a default therefore reaches new installs only: yours keeps
+whatever was written the last time it saved. On startup Kiro Crew prints one line
+naming any key still holding an old default.
+
+`kirocrew config defaults` shows each one with its stored value, the current
+default, and the release that changed it. Two ways to answer it:
+
+```bash
+kirocrew config defaults --adopt       # take the current defaults
+kirocrew config defaults --keep        # affirm your values, stop the notice
+```
+
+Both accept specific keys — `kirocrew config defaults --keep session.autocompact_pct`
+if you chose 90 on purpose and want the rest adopted. `--adopt` removes the keys so
+the current defaults apply from the next start; `--keep` records the exact values
+you affirmed, so changing one later brings the notice back. `kirocrew doctor` lists
+everything, affirmed values included.
+
+The same command also clears a stored value Kiro Crew has to replace — a retired
+`stt.provider` such as `whisper`, which already runs on `local`. That one cannot be
+kept, because the stored name has no engine behind it; `--adopt` drops the dead
+value and the notice with it.
 
 ## Sandbox
 
@@ -303,8 +331,14 @@ AWS client are the optional `voice` extra, installed as its own dependencies
 - Compressed audio still passes through ffmpeg internally: a voice note arrives
   as ogg/Opus and a browser recording as webm. Desktop releases bundle and verify
   a pinned decoder, so there is no separate FFmpeg installation step. Source
-  environments use a system FFmpeg from the fixed platform paths instead of an
-  executable inside an agent-writable project venv.
+  environments use a system FFmpeg from the fixed platform paths — never an
+  executable inside an agent-writable project venv — and where the host packages
+  none, **Settings > Voice offers a one-click decoder download** that fetches the
+  same pinned upstream bytes into `<data home>/models/ffmpeg/` and verifies them
+  against a built-in SHA-256 digest before anything is executed. The digest is the
+  trust anchor, so `~/.local/bin` is still not a place a decoder can be installed
+  for Kiro Crew's use. If that download fails, the page offers to hand the failure
+  to a chat session, which is given the host details and the trusted locations.
 
 #### Retired providers
 

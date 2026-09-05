@@ -39,6 +39,22 @@ class _FakeClient:
 
     instances: list["_FakeClient"] = []
     next_pid = 424242
+    #: Scripted (`/mcp`, `/tools`) results for the grant-validation path, class-wide
+    #: so a test can arm it before the mint spawns any instance. Defaults to a
+    #: usable Notion server -- most tests never touch validation and must not have
+    #: to script it just to reach the mint spawn loop.
+    command_results: dict[str, dict[str, Any]] = {
+        "/mcp": {
+            "data": {
+                "servers": [
+                    {"name": "notion", "status": "running", "toolCount": 1, "authenticating": False}
+                ]
+            }
+        },
+        "/tools": {
+            "data": {"tools": [{"name": "search", "source": "mcp:notion", "status": "allowed"}]}
+        },
+    }
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -50,10 +66,18 @@ class _FakeClient:
         self.requests: list[dict[str, str]] = [
             {"serverName": "notion", "oauthUrl": _AUTHORIZE},
         ]
+        self.commands: list[str] = []
         _FakeClient.instances.append(self)
 
     async def ensure_ready(self) -> None:
         self.ready = True
+
+    async def command_result(self, command: str, args: dict | None = None) -> dict[str, Any]:
+        self.commands.append(command)
+        outcome = _FakeClient.command_results.get(command, {})
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
     def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
         out = list(self.requests)
@@ -112,6 +136,18 @@ def _isolated_mint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(mint, "_mints", {})
     monkeypatch.setattr(mint, "_mints_lock", asyncio.Lock())
     _FakeClient.instances.clear()
+    _FakeClient.command_results = {
+        "/mcp": {
+            "data": {
+                "servers": [
+                    {"name": "notion", "status": "running", "toolCount": 1, "authenticating": False}
+                ]
+            }
+        },
+        "/tools": {
+            "data": {"tools": [{"name": "search", "source": "mcp:notion", "status": "allowed"}]}
+        },
+    }
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _FakeClient)
     return agents_dir
 
@@ -164,7 +200,7 @@ async def test_the_mint_runs_on_a_dedicated_single_server_spec():
 
 
 @pytest.mark.asyncio
-async def test_an_existing_grant_short_circuits_without_spawning(
+async def test_an_existing_grant_short_circuits_only_after_validating_it(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
@@ -172,7 +208,395 @@ async def test_an_existing_grant_short_circuits_without_spawning(
     await mint.start_oauth_mint("notion", _URL)
 
     assert _state_only(mint.pending_mint_for("notion")) == {"state": "granted"}
-    assert _FakeClient.instances == []
+    # The validation spawn happened -- it is the process that got shut down --
+    # and it asked the same two commands the Test button asks, promptless.
+    assert len(_FakeClient.instances) == 1
+    validator = _FakeClient.instances[-1]
+    assert validator.commands == ["/mcp", "/tools"]
+    assert validator.shutdowns == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stale_grant_on_disk_falls_through_to_a_fresh_mint_instead_of_lying(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The artifact pair exists (a provider-side revoke never touches it), but the
+    # authenticated check proves the server is not actually usable. Reporting
+    # `granted` here is exactly the defect: Connect flips to Connected, then Test
+    # later reveals the pair was dead all along.
+    monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
+    _FakeClient.command_results["/mcp"] = {
+        "data": {
+            "servers": [
+                {"name": "notion", "status": "failed", "toolCount": 0, "authenticating": False}
+            ]
+        }
+    }
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    # Fell through to a REAL fresh mint: a second process was spawned (the
+    # validator, then the cold mint) and the card gets an approval URL, not a
+    # coarse failure -- exactly what a user clicking Connect on a dead grant
+    # expects the button to do.
+    assert len(_FakeClient.instances) == 2
+    validator, fresh = _FakeClient.instances
+    assert validator.commands == ["/mcp", "/tools"]
+    assert validator.shutdowns == 1
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "waiting",
+        "oauth_url": _AUTHORIZE,
+    }
+    assert fresh.shutdowns == 0
+    await mint._dispose_mint(mint._mints["notion"])
+
+
+@pytest.mark.asyncio
+async def test_a_grant_with_zero_exposed_tools_is_proven_working_not_reconsented(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # `no_tools` is reported only once the MCP server reached status `running`,
+    # which for an OAuth provider means kiro-cli authenticated and completed
+    # tools/list with the stored bearer. The credential WORKS; a zero-tools server
+    # is a provider-prerequisite question. Sending this user to a consent page
+    # would ask them to re-authorize something already authorized, and could not
+    # fix what they actually have.
+    monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
+    _FakeClient.command_results["/tools"] = {"data": {"tools": []}}
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {"state": "granted"}
+    # One process -- the validator -- and no fresh consent spawn behind it.
+    assert len(_FakeClient.instances) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_spec_write_failure_during_validation_never_strands_the_row(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # `_write_mint_agent_spec` raises OSError on an unusable main spec or an
+    # unrecordable manifest row, and the validation runs on a fire-and-forget task
+    # BEFORE the caller's own try. An escape would kill the flow and leave the row
+    # at `minting` forever -- a card spinning with no terminal state to read.
+    monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
+    calls: list[str] = []
+    real = mint._write_mint_agent_spec
+
+    def _fail_first(slug: str):
+        calls.append(slug)
+        if len(calls) == 1:
+            raise OSError("main agent spec unusable")
+        return real(slug)
+
+    monkeypatch.setattr(mint, "_write_mint_agent_spec", _fail_first)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    # The flow survived the raise and reached a terminal state the card can act on.
+    view = mint.pending_mint_for("notion")
+    assert view is not None
+    assert view["state"] != "minting"
+    assert _state_only(view) == {"state": "waiting", "oauth_url": _AUTHORIZE}
+    await mint._dispose_mint(mint._mints["notion"])
+
+
+@pytest.mark.asyncio
+async def test_validation_bounds_readiness_and_both_commands_with_one_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Each command carries its own transport timeout, so bounding only readiness
+    # would let a provider that answers slowly three times over hold Connect in
+    # `minting` for the sum of all three waits.
+    monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
+    monkeypatch.setattr(mint, "_MINT_READY_TIMEOUT_SECONDS", 0.05)
+
+    class _SlowCommand(_FakeClient):
+        async def command_result(self, command: str, args: dict | None = None):
+            await asyncio.sleep(10)
+            raise AssertionError("unreachable")
+
+    attempts = iter([_SlowCommand, _FakeClient])
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
+
+    await asyncio.wait_for(mint.start_oauth_mint("notion", _URL), timeout=5)
+
+    # The deadline fired inside the commands, the verdict read as unproven, and the
+    # flow fell through to a real consent mint instead of hanging.
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "waiting",
+        "oauth_url": _AUTHORIZE,
+    }
+    await mint._dispose_mint(mint._mints["notion"])
+
+
+# ── the watcher must not resurrect a disproven pair ──
+
+
+@pytest.mark.asyncio
+async def test_the_watcher_never_reports_granted_from_the_pair_it_disproved(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
+):
+    # THE regression these fixes exist to prevent. Nothing deletes a credential on
+    # one failed check, so the disproven pair is still on disk. A watcher polling
+    # bare presence sees it on its FIRST tick, five seconds in, flips the row to
+    # `granted` and disposes the process holding the PKCE verifier -- reproducing
+    # the exact lie AND destroying the consent URL.
+    monkeypatch.setattr(mint, "_MINT_GRANT_POLL_SECONDS", 0.001)
+    _write_paired_grant_artifacts(_URL)
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+
+    await mint.start_oauth_mint("notion", _URL)
+    entry = mint._mints["notion"]
+    assert entry["state"] == "waiting"
+    fresh = _FakeClient.instances[-1]
+
+    # Several poll intervals with the disproven pair sitting on disk, untouched.
+    await asyncio.sleep(0.05)
+
+    assert mint._mints["notion"]["state"] == "waiting"
+    assert mint._mints["notion"]["oauth_url"] == _AUTHORIZE
+    # The process holding the verifier and the loopback listener is still alive,
+    # so the URL the card is showing can still actually be redeemed.
+    assert fresh.shutdowns == 0
+    await mint._dispose_mint(entry)
+
+
+@pytest.mark.asyncio
+async def test_the_watcher_reports_granted_once_the_disproven_artifact_changes(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
+):
+    # Completing the exchange makes kiro-cli REWRITE the token artifact, so a
+    # changed fingerprint is the honest completion signal -- the flow must still
+    # resolve, or a real consent would hang to the TTL.
+    monkeypatch.setattr(mint, "_MINT_GRANT_POLL_SECONDS", 0.001)
+    _write_paired_grant_artifacts(_URL)
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+
+    await mint.start_oauth_mint("notion", _URL)
+    entry = mint._mints["notion"]
+    assert entry["state"] == "waiting"
+
+    # The user completes consent: the token artifact is rewritten.
+    key = mcp_grant.grant_key(_URL)
+    token_path = mcp_grant.kiro_oauth_cache_dir() / f"{key}.token.json"
+    token_path.write_text('{"fresh": true, "padding": "xxxxxxxx"}', encoding="utf-8")
+    later = time.time() + 5
+    os.utime(token_path, (later, later))
+
+    await asyncio.wait_for(entry["watcher"], timeout=5)
+
+    assert mint._mints["notion"]["state"] == "granted"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_fingerprint_still_fails_closed_after_a_disproof(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
+):
+    # The disproof and the fingerprint are SEPARATE facts. `grant_fingerprint`
+    # answers None on any failed stat, so keying the watcher's proof requirement on
+    # "fingerprint is not None" let an unreadable capture read as "nothing was
+    # disproved" -- reopening the resurrection path the fingerprint exists to close.
+    monkeypatch.setattr(mint, "_MINT_GRANT_POLL_SECONDS", 0.001)
+    _write_paired_grant_artifacts(_URL)
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    # The capture stat fails, so no baseline can be recorded.
+    monkeypatch.setattr(mint, "grant_fingerprint", lambda url, **kw: None)
+
+    await mint.start_oauth_mint("notion", _URL)
+    entry = mint._mints["notion"]
+    assert entry["state"] == "waiting"
+    fresh = _FakeClient.instances[-1]
+
+    await asyncio.sleep(0.05)
+
+    # No baseline and no proven revalidation: the stale pair must NOT be published,
+    # and the process holding the redeemable URL must survive.
+    assert mint._mints["notion"]["state"] == "waiting"
+    assert mint._mints["notion"]["oauth_url"] == _AUTHORIZE
+    assert fresh.shutdowns == 0
+    await mint._dispose_mint(entry)
+
+
+@pytest.mark.asyncio
+async def test_no_baseline_grants_only_on_a_positive_revalidation(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
+):
+    # With no baseline, change cannot be observed, so the ONLY admissible proof is
+    # a fresh authenticated validation -- and it must actually be consulted, or a
+    # real consent completed in this window could never resolve.
+    monkeypatch.setattr(mint, "_MINT_GRANT_POLL_SECONDS", 0.001)
+    _write_paired_grant_artifacts(_URL)
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    monkeypatch.setattr(mint, "grant_fingerprint", lambda url, **kw: None)
+
+    await mint.start_oauth_mint("notion", _URL)
+    entry = mint._mints["notion"]
+    assert entry["state"] == "waiting"
+
+    # The user completes consent; a fresh validation now proves it works. The
+    # fallback is rate-limited, not once-only, so a consent that lands after the
+    # first probe still resolves.
+    monkeypatch.setattr(mint, "_GRANT_REVALIDATION_INTERVAL_SECONDS", 0.0)
+    verdicts = iter([False, True, True, True])
+    monkeypatch.setattr(
+        mint, "_validate_existing_grant", lambda slug, url: _async_value(next(verdicts))
+    )
+
+    await asyncio.wait_for(entry["watcher"], timeout=5)
+
+    assert mint._mints["notion"]["state"] == "granted"
+
+
+@pytest.mark.asyncio
+async def test_the_revalidation_fallback_is_rate_limited(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
+):
+    # Each fallback spawns a process, so it must not fire on every grant poll for
+    # the whole TTL. With the interval left at its real value, many ticks yield
+    # exactly one probe.
+    monkeypatch.setattr(mint, "_MINT_GRANT_POLL_SECONDS", 0.001)
+    _write_paired_grant_artifacts(_URL)
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    monkeypatch.setattr(mint, "grant_fingerprint", lambda url, **kw: None)
+
+    await mint.start_oauth_mint("notion", _URL)
+    entry = mint._mints["notion"]
+    calls: list[str] = []
+
+    def _never_proves(slug: str, url: str):
+        calls.append(slug)
+        return _async_value(False)
+
+    monkeypatch.setattr(mint, "_validate_existing_grant", _never_proves)
+
+    await asyncio.sleep(0.05)
+
+    assert len(calls) == 1
+    assert mint._mints["notion"]["state"] == "waiting"
+    await mint._dispose_mint(entry)
+
+
+@pytest.mark.asyncio
+async def test_a_refuted_grant_with_no_challenge_is_not_republished_as_granted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The fresh spawn producing no challenge is not proof either: publishing
+    # `granted` from it republishes the exact authorization this attempt just
+    # refuted. It has to be the retryable failure instead.
+    _write_paired_grant_artifacts(_URL)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        mint,
+        "_log_mint_outcome",
+        lambda slug, outcome, detail: logged.append(f"{outcome} {detail}"),
+    )
+
+    class _RefutedThenSilent(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []  # no challenge on the fresh spawn
+
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    attempts = iter([_FakeClient, _RefutedThenSilent])
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    view = mint.pending_mint_for("notion")
+    assert view is not None
+    assert _state_only(view) == {"state": "failed", "reason": "mint_grant_unproven"}
+    assert logged == ["error reason=mint_grant_unproven"]
+
+
+def _async_value(value: bool):
+    """A ready coroutine returning ``value``, for patching an async predicate."""
+
+    async def _coro() -> bool:
+        return value
+
+    return _coro()
+
+
+def test_the_grant_fingerprint_changes_when_the_token_artifact_is_rewritten(tmp_path: Path):
+    key = mcp_grant.grant_key(_URL)
+    token = tmp_path / f"{key}.token.json"
+    (tmp_path / f"{key}.registration.json").write_text("{}", encoding="utf-8")
+
+    # Absent reads as None -- "no evidence of change", never a sentinel a caller
+    # could mistake for a real reading.
+    assert mcp_grant.grant_fingerprint(_URL, cache_dir=tmp_path) is None
+
+    token.write_text("{}", encoding="utf-8")
+    first = mcp_grant.grant_fingerprint(_URL, cache_dir=tmp_path)
+    assert first is not None
+
+    token.write_text('{"rotated": true}', encoding="utf-8")
+    later = time.time() + 5
+    os.utime(token, (later, later))
+
+    assert mcp_grant.grant_fingerprint(_URL, cache_dir=tmp_path) != first
+
+
+@pytest.mark.asyncio
+async def test_a_validation_spawn_that_never_completes_falls_through_rather_than_raising(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
+
+    class _ValidatorBoom(_FakeClient):
+        async def ensure_ready(self) -> None:
+            raise RuntimeError("provider unreachable")
+
+    attempts = iter([_ValidatorBoom, _FakeClient])
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    # The validator's own failure never raises out of the mint flow, and the
+    # fresh cold mint that follows still succeeds normally.
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "waiting",
+        "oauth_url": _AUTHORIZE,
+    }
+    await mint._dispose_mint(mint._mints["notion"])
+
+
+@pytest.mark.asyncio
+async def test_validation_never_holds_its_own_process_win_or_lose(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
+):
+    # Unlike a cold mint's URL-holding process, the validation session has no
+    # consent to protect once it answers -- it must always dispose itself, on
+    # both a usable and an unusable verdict, and never leave a PID shielded.
+    monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
+
+    await mint.start_oauth_mint("notion", _URL)  # usable verdict
+
+    assert protected_pids == set()
+    await mint._dispose_mint(mint._mints["notion"])
+    protected_pids.clear()
+
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    await mint.start_oauth_mint("notion", _URL)  # unusable verdict, falls through
+
+    validator = _FakeClient.instances[0]
+    assert validator._pid not in protected_pids
+    await mint._dispose_mint(mint._mints["notion"])
 
 
 @pytest.mark.asyncio
@@ -1166,7 +1590,11 @@ async def test_the_reconnect_short_circuit_reads_a_real_grant_off_the_loop(
     await mint.start_oauth_mint("notion", _URL)
 
     assert _state_only(mint.pending_mint_for("notion")) == {"state": "granted"}
-    assert _FakeClient.instances == []
+    # The artifact stat is still what decides whether to VALIDATE at all -- it
+    # spawns no process by itself. Validation itself spawns one (and disposes it
+    # once the verdict is in), which is a separate, deliberate cost from this stat.
+    assert len(_FakeClient.instances) == 1
+    assert _FakeClient.instances[-1].shutdowns == 1
     assert seen and threading.get_ident() not in seen
 
 
@@ -1555,7 +1983,7 @@ _FS_ATTRS = frozenset(
 # that create the directory they answer for, and the audit singleton -- whose FIRST
 # call in a process constructs the log (trust dir, key, backward scan) on the
 # caller's thread, even though every call after that only enqueues.
-_FS_NAMES = frozenset({"open", "data_home", "sel"})
+_FS_NAMES = frozenset({"open", "data_home", "sel", "grant_fingerprint"})
 
 
 def _called_names(node: Any) -> set[str]:
@@ -2160,7 +2588,7 @@ async def test_a_cold_spawn_records_that_it_minted_a_url(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_a_reconnect_with_a_live_grant_records_already_granted(
+async def test_a_reconnect_with_a_validated_grant_records_validated_grant(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _write_paired_grant_artifacts(_URL)  # kiro-cli already holds a grant
@@ -2171,4 +2599,4 @@ async def test_a_reconnect_with_a_live_grant_records_already_granted(
 
     await mint.start_oauth_mint("notion", _URL)
 
-    assert any("reason=already_granted" in detail for detail in details)
+    assert any("reason=validated_grant" in detail for detail in details)

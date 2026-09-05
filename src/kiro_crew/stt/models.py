@@ -268,6 +268,81 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def stream_pinned_payload(
+    url: str,
+    *,
+    label: str,
+    expected_size: int,
+    expected_sha256: str,
+    write: Callable[[bytes], object],
+    on_progress: ProgressFn | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> None:
+    """Stream *url* into *write*, refusing anything but the pinned payload.
+
+    Shared by the whisper weights and by the ffmpeg decoder wheel
+    (:mod:`kiro_crew.stt.decoder`), because every property below is a property of
+    "fetching a sha256-pinned artifact over the network" rather than of either
+    artifact: the https floor, the per-socket stall timeout, the digest computed
+    while streaming, and the size enforced as a CEILING before each write. A
+    second copy of this is a second place for one of them to be missing.
+
+    *write* is a callable rather than a path, so the caller owns where the bytes
+    land -- an exclusively-created staging descriptor in both cases -- and this
+    function never opens or names a file.
+
+    Raises :class:`ModelDownloadError` on a refusal; the transport's own errors
+    (an unreachable host, an HTTP status, the stall timeout) propagate unchanged
+    so a caller can tell a network failure from a rejected payload.
+    """
+    if not url.startswith("https://"):
+        # The pin bounds what we accept, but plaintext would still leak which
+        # artifact an operator uses and let a network attacker waste the transfer.
+        raise ModelDownloadError(f"{label}: refusing a non-https URL: {url}")
+    digest = hashlib.sha256()
+    written = 0
+    with (
+        # Inside the parentheses, immediately above the call: `nosemgrep` only
+        # covers its own line and the next one.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https enforced above and the payload is sha256-pinned
+        urllib.request.urlopen(url, timeout=_NETWORK_STALL_TIMEOUT_SECS) as response,
+    ):
+        while True:
+            if should_cancel is not None and should_cancel():
+                raise ModelDownloadError("cancelled")
+            chunk = response.read(_CHUNK_BYTES)
+            if not chunk:
+                break
+            # Refused BEFORE the write, because the pinned size is a ceiling on
+            # what we are willing to store and not merely something to check
+            # afterwards. Streaming to EOF first and comparing the total lets a
+            # hostile or misconfigured mirror fill the disk: nothing about an
+            # HTTPS response bounds its length, and `Content-Length` is not
+            # consulted (it is the server's claim, not the pin). Failing on the
+            # first excess chunk caps the damage at one `_CHUNK_BYTES` over the
+            # size we already agreed to.
+            if written + len(chunk) > expected_size:
+                raise ModelDownloadError(
+                    f"{label}: response exceeds the pinned "
+                    f"{expected_size} bytes; refusing to keep writing"
+                )
+            write(chunk)
+            digest.update(chunk)
+            written += len(chunk)
+            if on_progress is not None:
+                on_progress(written, expected_size)
+    # Only a SHORT response can reach this now; the oversized case fails inside the
+    # loop. Kept as a distinct check because a truncated transfer is the common
+    # failure (a dropped connection) and deserves its own message.
+    if written != expected_size:
+        raise ModelDownloadError(f"{label}: expected {expected_size} bytes, received {written}")
+    actual = digest.hexdigest()
+    if actual != expected_sha256:
+        raise ModelDownloadError(
+            f"{label}: sha256 mismatch (got {actual[:16]}…, expected {expected_sha256[:16]}…)"
+        )
+
+
 def _download_blocking(
     model: WhisperModel,
     on_progress: ProgressFn | None = None,
@@ -281,6 +356,8 @@ def _download_blocking(
     """
     target = model_path(model)
     target.parent.mkdir(parents=True, exist_ok=True)
+    url = _model_url(model)
+
     # `mkstemp`, not a name this function composes. Two properties matter and neither
     # is available from `open(path, "wb")`:
     #
@@ -298,76 +375,32 @@ def _download_blocking(
     # Created in the TARGET directory so the finishing rename stays same-filesystem
     # and therefore atomic; a system-temp staging area can land on another device,
     # where the rename degrades into a copy a reader can observe half-finished.
-    url = _model_url(model)
-    if not url.startswith("https://"):
-        # The pin bounds what we accept, but plaintext would still leak which
-        # model an operator uses and let a network attacker waste the transfer.
-        raise ModelDownloadError(f"refusing a non-https model URL: {url}")
-
-    digest = hashlib.sha256()
-    written = 0
     staging_fd, staging_name = tempfile.mkstemp(
         dir=target.parent, prefix=f"{target.name}.", suffix=_STAGING_SUFFIX
     )
     staging = Path(staging_name)
     try:
-        with (
-            # The descriptor is adopted FIRST, and the order is load-bearing even
-            # though opening the connection first reads more naturally. `mkstemp`
-            # hands back an unowned fd and nothing else here closes one -- the
-            # `finally` below unlinks the PATH -- so with `urlopen` in front, every
-            # unreachable host, HTTP error and stall timeout leaked one descriptor
-            # per attempt, because a context manager that never gets evaluated never
-            # gets exited. On Windows it also stranded the partial file, since the
-            # unlink cannot remove a file that still has a live handle.
-            #
-            # Written through the DESCRIPTOR `mkstemp` returned, never reopened by
-            # name: reopening would reintroduce the very race the exclusive create
-            # closed, since the path is public the moment it exists.
-            os.fdopen(staging_fd, "wb") as fh,
-            # Inside the parentheses, immediately above the call: `nosemgrep` only
-            # covers its own line and the next one, and adding the timeout argument
-            # made black split this `with` into the parenthesized form, which moved
-            # the call two lines below a suppression that had been adjacent to it.
-            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https enforced above and the payload is sha256-pinned
-            urllib.request.urlopen(url, timeout=_NETWORK_STALL_TIMEOUT_SECS) as response,
-        ):
-            while True:
-                if should_cancel is not None and should_cancel():
-                    raise ModelDownloadError("cancelled")
-                chunk = response.read(_CHUNK_BYTES)
-                if not chunk:
-                    break
-                # Refused BEFORE the write, because the pinned size is a ceiling on
-                # what we are willing to store and not merely something to check
-                # afterwards. Streaming to EOF first and comparing the total lets a
-                # hostile or misconfigured mirror fill the disk: nothing about an
-                # HTTPS response bounds its length, `Content-Length` is not consulted
-                # (it is the server's claim, not the pin), and the operator can point
-                # MODEL_URL_ENV at any host. Failing on the first excess chunk caps
-                # the damage at one `_CHUNK_BYTES` over the size we already agreed to.
-                if written + len(chunk) > model.size_bytes:
-                    raise ModelDownloadError(
-                        f"{model.name}: response exceeds the pinned "
-                        f"{model.size_bytes} bytes; refusing to keep writing"
-                    )
-                fh.write(chunk)
-                digest.update(chunk)
-                written += len(chunk)
-                if on_progress is not None:
-                    on_progress(written, model.size_bytes)
-        # Only a SHORT response can reach this now; the oversized case fails inside the
-        # loop. Kept as a distinct check because a truncated transfer is the common
-        # failure (a dropped connection) and deserves its own message.
-        if written != model.size_bytes:
-            raise ModelDownloadError(
-                f"{model.name}: expected {model.size_bytes} bytes, received {written}"
-            )
-        actual = digest.hexdigest()
-        if actual != model.sha256:
-            raise ModelDownloadError(
-                f"{model.name}: sha256 mismatch (got {actual[:16]}…, "
-                f"expected {model.sha256[:16]}…)"
+        # The descriptor is adopted FIRST, and the order is load-bearing even
+        # though opening the connection first reads more naturally. `mkstemp`
+        # hands back an unowned fd and nothing else here closes one -- the
+        # `finally` below unlinks the PATH -- so with the transfer in front, every
+        # unreachable host, HTTP error and stall timeout leaked one descriptor per
+        # attempt, because a context manager that never gets evaluated never gets
+        # exited. On Windows it also stranded the partial file, since the unlink
+        # cannot remove a file that still has a live handle.
+        #
+        # Written through the DESCRIPTOR `mkstemp` returned, never reopened by
+        # name: reopening would reintroduce the very race the exclusive create
+        # closed, since the path is public the moment it exists.
+        with os.fdopen(staging_fd, "wb") as fh:
+            stream_pinned_payload(
+                url,
+                label=model.name,
+                expected_size=model.size_bytes,
+                expected_sha256=model.sha256,
+                write=fh.write,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
             )
         # replace_with_retry, not os.replace: on Windows the rename fails with a
         # PermissionError while ANY other handle is open on either path, and a
@@ -395,6 +428,10 @@ class ModelStore:
 
     def __init__(self) -> None:
         self._lock: asyncio.Lock | None = None
+        #: Strong references to detached decoder fetches. A task nobody references
+        #: can be collected mid-await, and the set is per-store so a test with its
+        #: own store cannot be handed another one's pending work.
+        self._decoder_tasks: set[asyncio.Task[None]] = set()
         self.status: dict[str, object] = {
             "step": "idle",
             "model": "",
@@ -402,6 +439,45 @@ class ModelStore:
             "total_bytes": 0,
             "error": "",
         }
+
+    def _start_decoder_autofetch(self) -> None:
+        """Fetch the ffmpeg decoder in the background, if this install needs one.
+
+        Started here because a completed model download is the one moment a second
+        transfer reads as part of the same setup: the user has just committed to
+        local speech-to-text, and a source install with no system FFmpeg cannot
+        decode a browser recording or a voice memo at all. The alternative is
+        discovering that at the first upload, which is where the shell command the
+        settings page used to print came from.
+
+        Detached rather than awaited: the caller is a voice session or a settings
+        poll waiting on the WEIGHTS, and live PCM never touches the decoder.
+        Failures are the decoder store's to report through its own status, so this
+        only has to keep the task alive and its exception retrieved.
+        """
+        # Imported here, not at module scope: decoder imports this module, so a
+        # module-scope import back would be a cycle.
+        from kiro_crew.stt import decoder as stt_decoder
+
+        try:
+            task = asyncio.ensure_future(stt_decoder.maybe_autofetch())
+        except RuntimeError:
+            # No running loop. `ensure` is always awaited, so this is not reachable
+            # from production; it keeps a synchronous caller in a test from turning
+            # a successful model download into a failure.
+            logger.debug("No event loop for the decoder autofetch", exc_info=True)
+            return
+        self._decoder_tasks.add(task)
+        task.add_done_callback(self._decoder_task_done)
+
+    def _decoder_task_done(self, task: asyncio.Task[None]) -> None:
+        """Drop the reference and retrieve the exception, so neither is a warning."""
+        self._decoder_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("Background ffmpeg decoder fetch failed: %s", exc)
 
     async def ensure(self, model: WhisperModel) -> Path | None:
         """Return the on-disk path of *model*, downloading it if absent.
@@ -446,6 +522,7 @@ class ModelStore:
                 self._set(step="failed", model=model.name, error=str(exc))
                 return None
             self._set(step="ready", model=model.name, total=model.size_bytes)
+            self._start_decoder_autofetch()
             return path
 
     async def _accept_existing(self, model: WhisperModel) -> Path | None:

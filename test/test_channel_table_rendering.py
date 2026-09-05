@@ -1058,7 +1058,11 @@ class TestTableCardNeverBuriesAnUpload:
     @staticmethod
     def _uploading_renderer() -> tuple[FakeDiscordClient, DiscordRenderer]:
         client = FakeDiscordClient()
-        renderer = DiscordRenderer(client, "chan", DISCORD_CAPABILITIES, session_key="sk")
+        # Explicit opt-in: the renderer defaults to deny, so upload-exercising
+        # fixtures must pass the gate like production does.
+        renderer = DiscordRenderer(
+            client, "chan", DISCORD_CAPABILITIES, session_key="sk", uploads_allowed=True
+        )
         renderer.authorize_upload_root("/tmp")  # string only; touches no filesystem
         assert renderer._uploads_enabled(), "fixture must model an upload-capable transport"
         return client, renderer
@@ -1105,7 +1109,9 @@ class TestTableCardNeverBuriesAnUpload:
         image = tmp_path / "cat.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 128)
         client = FakeDiscordClient()
-        renderer = DiscordRenderer(client, "chan", DISCORD_CAPABILITIES, session_key="sk")
+        renderer = DiscordRenderer(
+            client, "chan", DISCORD_CAPABILITIES, session_key="sk", uploads_allowed=True
+        )
         renderer.authorize_upload_root(str(tmp_path))
         rows = "\n".join(
             "| Provider "

@@ -532,7 +532,7 @@ function SwitcherMenu({
       <DropdownMenuContent
         align="start"
         aria-label={i18nT('components.instanceTabBar.instances')}
-        className="min-w-[240px] max-w-[340px] max-h-[60vh] overflow-y-auto"
+        className="min-w-[240px] max-w-[340px]"
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
           {entries.map((entry, i) => (

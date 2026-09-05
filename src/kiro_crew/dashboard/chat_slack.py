@@ -9,6 +9,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import strip_control_comments
 from kiro_crew.dashboard import state as dashboard_state
 from kiro_crew.dashboard.chat_backfill import (
     backfill_content,
@@ -88,7 +89,9 @@ def _format_backfill_parts(content: str, icon: str) -> list[str]:
     maximally-sized part after the split pushed it past ``SLACK_MSG_LIMIT`` by
     the width of the icon plus its space.
     """
-    return render_for_slack(content, prefix=f"{icon} ", redactor=redact_via_context)
+    return render_for_slack(
+        strip_control_comments(content), prefix=f"{icon} ", redactor=redact_via_context
+    )
 
 
 async def drain_slack_backfill(

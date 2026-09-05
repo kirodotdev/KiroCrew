@@ -11,6 +11,7 @@ import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './Art
 import { useFileArtifactComments } from './FileArtifactComments'
 import { formatArtifactCommentsMessage } from './CommentOverlay'
 import { copyToClipboard } from '../utils/clipboard'
+import { offlineProps } from '../utils/offline'
 import { api } from '../api/client'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import type { Artifact } from '../types'
@@ -34,6 +35,11 @@ interface Props {
    *  the chat session the panel was opened from (panel.slot). When omitted the
    *  submit-to-chat affordance is hidden (read-only embedding). */
   onSubmitComments?: (message: string) => void
+  /** Gateway connection flag. Gates the submit-to-chat affordance (mirrors
+   *  ChatInput's Send gating) so a batch submit can't fire while the chat
+   *  send path would silently refuse it. Defaults true for embeddings
+   *  without a chat send path. */
+  connected?: boolean
   /** Render as a SidePanel tab body (fills parent, no resize handle/border). */
   embedded?: boolean
   /** Stable cross-remount identity (slot + tab id) for the embedded body's
@@ -52,11 +58,13 @@ const STACKED_SIDEBAR_STYLE: React.CSSProperties = { maxHeight: 280, minHeight: 
 /** Submit-to-chat bar with an optional "Add instruction" affordance. The
  *  free-form note is threaded through as the `extraPrompt` arg only when the
  *  toggle is open, and cleared after submit. */
-function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
+function SubmitBar({ count, submitting, onSubmit, bleed = false, connected = true }: {
   count: number; submitting: boolean; onSubmit: (extraPrompt?: string) => void
   /** Bleed to the panel edges (non-fullscreen, inside the negative-margin
    *  content wrapper). Fullscreen uses its own padding, so omit it there. */
   bleed?: boolean
+  /** Gateway connection flag — disables Submit while offline. */
+  connected?: boolean
 }) {
   const [extraPrompt, setExtraPrompt] = useState('')
   const [showExtraPrompt, setShowExtraPrompt] = useState(false)
@@ -82,7 +90,7 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
             className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium border cursor-pointer transition-all shrink-0 ${showExtraPrompt ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
           ><MessageSquarePlus className="lucide-inline" /> {i18nT('components.artifactPanel.add_instruction')}</button>
         </div>
-        <SendBtn onClick={submit} disabled={submitting}>
+        <SendBtn onClick={submit} disabled={submitting || !connected} {...offlineProps(connected, i18nT('utils.offline.submit_comments'), i18nT('components.artifactPanel.submit'))}>
           {i18nT('components.artifactPanel.submit')} <Send className="lucide-inline" />
         </SendBtn>
       </div>
@@ -113,7 +121,7 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
  * `onSubmitComments` (the local-file user-message path) rather than the
  * full-page `iterateWithAgent` navigate — and only for human comments.
  */
-export default memo(function ArtifactPanel({ slug, kind, content, onClose, active: visible = true, onSubmitComments, embedded, scrollMemoryKey }: Props) {
+export default memo(function ArtifactPanel({ slug, kind, content, onClose, active: visible = true, onSubmitComments, connected = true, embedded, scrollMemoryKey }: Props) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const navigate = useNavigate()
   const previewRef = useRef<HTMLDivElement>(null)
@@ -185,7 +193,10 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   // outlives the test environment under --coverage timing).
   const submitResetTimer = useRef<ReturnType<typeof setTimeout>>()
   const submitToChat = useCallback((extraPrompt?: string) => {
-    if (!onSubmitComments || humanComments.length === 0) return
+    // Bail while offline: the chat send path silently refuses messages in
+    // that state, so firing the fake "submitting" spinner would just mislead.
+    // The Submit button is disabled offline too — this is the backstop.
+    if (!connected || !onSubmitComments || humanComments.length === 0) return
     setSubmitting(true)
     try {
       onSubmitComments(formatArtifactCommentsMessage(slug, name, humanComments, extraPrompt))
@@ -194,7 +205,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
       clearTimeout(submitResetTimer.current)
       submitResetTimer.current = setTimeout(() => setSubmitting(false), 400)
     }
-  }, [onSubmitComments, humanComments, slug, name])
+  }, [connected, onSubmitComments, humanComments, slug, name])
   useEffect(() => () => clearTimeout(submitResetTimer.current), [])
 
   // Esc closes fullscreen first, then the panel; lock body scroll while the
@@ -358,7 +369,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           <div className="mt-3 pr-2 shrink-0">{fa.sidebar}</div>
         )}
         {showSubmitBar && (
-          <SubmitBar count={humanComments.length} submitting={submitting} onSubmit={submitToChat} bleed />
+          <SubmitBar count={humanComments.length} submitting={submitting} onSubmit={submitToChat} connected={connected} bleed />
         )}
       </div>
       {!usesIframe && !fullscreen && <SelectionToolbar containerRef={scrollRef} actions={selectionActions} />}
@@ -419,7 +430,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
         {faFull.popovers}
         {showSubmitBar && (
           <div className="shrink-0 px-16 pb-3">
-            <SubmitBar count={humanComments.length} submitting={submitting} onSubmit={submitToChat} />
+            <SubmitBar count={humanComments.length} submitting={submitting} onSubmit={submitToChat} connected={connected} />
           </div>
         )}
         <Clickable className="shrink-0 flex items-center px-16 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.artifactPanel.click_to_copy_slug')} onClick={() => copyToClipboard(slug)}>{i18nT('components.artifactPanel.artifacts')}{slug}</Clickable>

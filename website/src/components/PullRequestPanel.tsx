@@ -49,6 +49,20 @@ import { SettingsLink } from './SettingsLink'
 import ErrorNotice from './ErrorNotice'
 const CHECK_POLL_BASE_MS = 10_000
 const CHECK_POLL_MAX_MS = 60_000
+/** How long an UNMOUNTED detail payload survives in the query cache. React
+ *  Query's default is five minutes, which is shorter than a typical gap between
+ *  two looks at the same pull request — so reopening the panel after a coffee
+ *  break started from a spinner and re-ran the provider fanout although nothing
+ *  had changed. A remount now renders the retained payload at once and
+ *  revalidates in the background (`refetchOnMount: 'always'` on the detail
+ *  query), so a long retention buys instant paint without presenting stale
+ *  data as final. Bounded so a day of browsing PRs cannot grow the cache
+ *  without limit. */
+export const SOURCE_DETAIL_GC_MS = 60 * 60_000
+/** Retained detail data older than this is revalidated in the background when
+ *  the panel mounts. Matches the gateway's full-payload cache window: inside
+ *  it a refetch would return the same cached bytes, so it is not sent. */
+export const SOURCE_REMOUNT_REVALIDATE_MS = 30_000
 // Strip-wide status poll. Steady state is paced by the TTL the server reports
 // for its chip-status cache (falling back to 60s when absent), so the client
 // never hardcodes a copy of it. While the server says a background refresh is in
@@ -591,7 +605,10 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   const isGitHub = meta.pullRequestWording
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['pull-request-source'] })
+    // The mutation knows exactly which pull request it changed; marking the
+    // whole family stale would make every other session's panel refetch on its
+    // next open for a click that touched none of them.
+    void queryClient.invalidateQueries({ queryKey: ['pull-request-source', source.url] })
     void queryClient.invalidateQueries({ queryKey: ['pull-request-statuses'] })
   }
   const readyMutation = useMutation({
@@ -852,6 +869,24 @@ export default function PullRequestPanel({
     },
     enabled: !!selected,
     staleTime: Infinity,
+    gcTime: SOURCE_DETAIL_GC_MS,
+    // Stale-while-revalidate on open: the retained payload renders at once
+    // (`isLoading` stays false while data exists, so no spinner) and a
+    // background refetch runs on mount whenever the retained data is older
+    // than the gateway's own cache window — not only after an event. Events
+    // from this gateway (turn boundary, status delta) cannot see a teammate's
+    // review or comment, so without this a reopened panel could present an
+    // hour-old discussion as current. Younger data is NOT refetched: the
+    // gateway would answer from its cache with the same bytes, and a sibling
+    // view that shares this key (Code Review Sage mounts its pane and this
+    // panel together) would otherwise pay two provider reads per open. Past
+    // that window the refetch is cheap by construction: the gateway
+    // revalidates with conditional GETs, so an unchanged pull request costs no
+    // provider fanout and no rate limit. Returns 'always' rather than true:
+    // with `staleTime: Infinity` a plain true would still defer to staleness
+    // and never refetch.
+    refetchOnMount: query =>
+      Date.now() - query.state.dataUpdatedAt > SOURCE_REMOUNT_REVALIDATE_MS ? 'always' : false,
     // Provider errors (auth, missing PR, bad payload) stay fail-fast: retrying
     // them only delays a message the user has to act on. Capacity pressure is
     // the one retryable case -- the gateway is holding its concurrent-fetch
@@ -1089,7 +1124,14 @@ export default function PullRequestPanel({
       )}
 
       {query.isLoading && <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-muted"><Loader className="lucide-inline animate-spin" />{i18nT('components.pullRequestPanel.loading_source_provider')}</div>}
-      {query.error && (
+      {/* The full-height error card is for a panel with NOTHING to show. Once a
+          payload has loaded, a failed background revalidation (expired provider
+          login, registry outage) must not stack "could not load" over a pull
+          request that is visibly on screen: it renders as a compact notice above
+          the retained content instead, naming the login command when there is
+          one, so the user knows the data is the last loaded version and how to
+          fix the refresh. */}
+      {query.error && !source && (
         <div className="flex-1 flex items-center justify-center px-6">
           <div role="alert" className="max-w-md flex flex-col items-center">
             <AlertCircle className={`lucide-inline mb-2 ${queryError.loginCommand ? 'text-warn' : 'text-danger'}`} />
@@ -1115,6 +1157,16 @@ export default function PullRequestPanel({
 
       {source && (
         <>
+          {query.error && (
+            <div role="status" className="shrink-0 flex items-center gap-2 px-4 py-1.5 border-b border-border bg-bg-hover/40 text-[11px] text-muted">
+              <AlertCircle className="lucide-inline shrink-0 text-warn" />
+              <span className="min-w-0 truncate">{i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')}</span>
+              {/* The login command is the one actionable fix, so it must survive a narrow
+                  panel: it sits outside the truncating span and never clips. */}
+              {queryError.loginCommand && <code className="shrink-0 text-text" title={queryError.loginCommand}>{queryError.loginCommand}</code>}
+              <Btn type="button" onClick={handleRefresh} className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" />{i18nT('components.pullRequestPanel.retry')}</Btn>
+            </div>
+          )}
           <div className="shrink-0 px-4 py-3 border-b border-border">
             <div className="flex items-center gap-2 text-[11px] text-muted">
               <span className={`px-1.5 py-0.5 rounded font-medium ${stateTone(source)}`}>{stateLabel(source)}</span>

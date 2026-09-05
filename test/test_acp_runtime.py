@@ -6147,6 +6147,7 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent.sock")
     monkeypatch.setenv("PYTHONPATH", "/gateway/pythonpath")
     monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/gateway/pycache")
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
     monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
 
@@ -6193,6 +6194,7 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
         "SSH_AUTH_SOCK",
         "PYTHONPATH",
         "PYTHONPYCACHEPREFIX",
+        "PYTHONDONTWRITEBYTECODE",
     ):
         assert key not in env, f"{key} leaked into runtime child env"
     assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
@@ -7815,6 +7817,112 @@ async def test_handle_owned_rejections_are_sel_audited():
 
     assert audited, "pre-turn drain reject was not SEL-audited"
     assert audited[0][2] == "stranded_request_pre_turn_drain"
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_counts_discarded_frames_without_logging_content(caplog):
+    """The pre-turn drain destroys leftover frames; it must SAY how many, and
+    nothing else.
+
+    A dropped frame is invisible to every layer above: the abandoned turn's
+    output vanishes with nothing to show it existed, and a turn that loses its
+    terminal this way reaches the dashboard as an empty response with no
+    attributable cause. So the drain reports a COUNT — and only a count. Frame
+    text, tool arguments, tool results and even frame SIZE are all excluded:
+    a size leaks response length, and the kiro-cli data dir this material comes
+    from is fenced precisely because it holds credentials.
+    """
+    import contextlib
+    import logging
+
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    # Three leftover NOTIFICATIONS from a prior abandoned turn. Not permission
+    # requests: those are answered rather than dropped, and must not be counted.
+    for _i, _secret in enumerate(("SECRETALPHA", "SECRETBETA", "SECRETGAMMA")):
+        q["sA"].put_nowait(
+            JsonRpcMessage.from_dict(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "sA",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": _secret},
+                        },
+                    },
+                }
+            )
+        )
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.session_handle"):
+        gen = handle.prompt("hi", timeout=0.2)
+        with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+            await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        await gen.aclose()
+
+    _drain_lines = [
+        rec.getMessage() for rec in caplog.records if "pre-turn drain discarded" in rec.getMessage()
+    ]
+    # ONE line per turn, not one per frame: a burst must not flood the log.
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "3 leftover frame(s)" in _drain_lines[0]
+    for _secret in ("SECRETALPHA", "SECRETBETA", "SECRETGAMMA"):
+        assert _secret not in _drain_lines[0], f"{_secret!r} leaked into the drain warning"
+
+
+@pytest.mark.asyncio
+async def test_prompt_warns_when_the_stream_ends_without_a_terminal_event(caplog):
+    """A clean exhaustion with no EVENT_COMPLETE is reported; a consumer close is not.
+
+    The dashboard reads a missing terminal as an empty response and cannot tell
+    whether the backend never closed the turn or the consumer walked away. Only
+    the first is a fault, so only the first warns — which is what keeps this line
+    out of the log on every ordinary cancel and every abandoned generator.
+    """
+    import contextlib
+    import logging
+
+    from kiro_crew.acp.types import EVENT_TEXT_CHUNK, AcpEvent
+
+    _MARK = "ended without a terminal completion event"
+
+    # 1. The dispatch loop returns of its own accord having yielded no terminal.
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    async def _no_terminal(*a, **kw):
+        yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial")
+
+    handle._dispatch_events = _no_terminal  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.session_handle"):
+        async for _ev in handle.prompt("hi", timeout=0.2):
+            pass
+    assert any(_MARK in rec.getMessage() for rec in caplog.records)
+
+    # 2. The SAME stream, abandoned by the consumer after one event. Identical
+    #    absence of a terminal, but the consumer caused it — no warning.
+    caplog.clear()
+    rt2, _, _ = _make_runtime()
+    q2 = _register(rt2, "sB")
+    handle2 = AcpSessionHandle("sB", q2["sB"], rt2)
+    rt2.send_request = AsyncMock(return_value=9)
+    handle2._dispatch_events = _no_terminal  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.session_handle"):
+        gen = handle2.prompt("hi", timeout=0.2)
+        with contextlib.suppress(StopAsyncIteration):
+            await gen.__anext__()
+        await gen.aclose()
+    assert not any(_MARK in rec.getMessage() for rec in caplog.records), (
+        "a consumer close was reported as a lost terminal — this is the log-spam "
+        "case the guard exists to exclude"
+    )
 
 
 def test_missing_kind_is_not_a_resolved_shell_classification():

@@ -487,20 +487,21 @@ class TestMcpCronUserActions:
     # -- cron_remove_all --
 
     def test_remove_all(self):
-        with patch("kiro_crew.mcp_cron.CronService") as mock_svc, patch.dict(
-            "os.environ", {"KIROCREW_CLI": "1"}, clear=False
-        ) as env:
-            env.pop("KIROCREW_SESSION_KEY", None)
+        # Identity, not an ambient flag: this tool used to be reachable with no
+        # session at all by setting KIROCREW_CLI=1, which is the forgeable claim
+        # #6624 removed. The tool path being exercised here is unchanged; what
+        # changed is that reaching it requires a caller the gateway can name.
+        with patch("kiro_crew.mcp_cron.CronService") as mock_svc:
             svc = mock_svc.return_value
             job = MagicMock()
             job.id = "x"
-            job.session_key = ""
+            job.session_key = self._session_key
             svc.list_jobs.return_value = [job]
             svc.remove_jobs_sync.return_value = (["x"], [])
             result = self._simulate_tool_call("cron_remove_all", {})
         assert "Removed 1" in result
         svc.remove_jobs_sync.assert_called_once_with(
-            ["x"], actor="mcp", source="mcp"
+            ["x"], actor=self._session_key, source="mcp"
         )
 
 

@@ -168,6 +168,13 @@ _SCANNED_MODULES = [
     "src/kiro_crew/channel.py",
     "src/kiro_crew/dashboard/chat_runner.py",
     "src/kiro_crew/acp/_dispatch.py",
+    # Its near-twin: AcpClient carries a hand-copied tool-result extractor with
+    # the same shape, and its absence from this list is why the bound-then-redact
+    # ordering survived there (issue #7799). NOTE the scan would not have caught
+    # that instance -- the slice was a separate statement, not an argument to the
+    # redactor -- so the behavioural pin for it lives in
+    # test_acp_client.py::test_credential_straddling_the_bound_is_still_redacted.
+    "src/kiro_crew/acp/client.py",
     "src/kiro_crew/dashboard/handlers/artifacts.py",
     "src/kiro_crew/dashboard/handlers/discover.py",
     "src/kiro_crew/mcp_tools/control.py",

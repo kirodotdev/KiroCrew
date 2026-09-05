@@ -33,41 +33,64 @@ deciding to promote, and merging back are human steps the pipeline knows nothing
 about, which is why there is no cut/promote/rollback workflow (see "Deliberately
 not built").
 
-## Stable promotion: exact tested bytes, never a rebuild
+## Stable release: a fresh build at the bare version, never a byte republish
 
-Stable must ship the bytes insiders actually validated, not a same-commit
-rebuild that hopes for reproducibility. The mechanism:
+A stable release must ship bytes whose own embedded version is a bare `X.Y.Z`,
+with no prerelease suffix anywhere in the artifact, its filename, or the feed.
+That is what rules out republishing the candidate's bytes: they were stamped
+from the prerelease tag, and nothing downstream can re-stamp them without
+invalidating the recorded digests and the macOS signatures. So a bare tag
+rebuilds from the commit the candidate cleared, rather than reusing what the
+candidate produced. The mechanism:
 
-- **A successful prerelease run records the candidate.** After every publish
-  lane succeeds, `record-promotion` assembles the exact wheel/sdist, AppImage,
-  notarized zip/DMG, and the attested OCI manifest digest into a
+- **A successful prerelease run clears the candidate commit.** After every
+  publish lane succeeds, `record-promotion` assembles the exact wheel/sdist,
+  AppImage, notarized zip/DMG, and the attested OCI manifest digest into a
   `stable-promotion-<x.y.z>` GitHub artifact (90-day retention) whose manifest
   (`scripts/release_promotion.py create`) carries per-file SHA-256/SHA-512/size
-  plus the source SHA, tag, run id, and versions.
-- **A bare `vX.Y.Z` tag resolves and verifies that record.** The
-  `resolve-promotion` job finds the newest **successful** same-commit,
-  same-base-version prerelease run, verifies the artifact ZIP against GitHub's
-  API-recorded digest, safely extracts it, and verifies every manifest field
-  and file digest (`scripts/release_promotion.py verify`). Only then do the
-  publish lanes move stable pointers/tags to those bytes. The stable run never
-  invokes the build workflows, CDSigner, Apple notarization, or the OCI
-  builder.
-- **Everything fails closed.** A missing, expired, ambiguous, or
-  digest-mismatched record aborts the promotion: cut and validate a fresh RC
-  rather than rebuilding stable.
-- **Promoted binaries retain the candidate's embedded version** (see "Version
-  stamping"), because rewriting embedded metadata would produce bytes users
-  never baked and invalidate the recorded digests and macOS signatures. The
-  bare git tag, GitHub Release, and stable channel are the final release
-  identity. pip users selecting a promoted (prerelease-versioned) wheel by
-  version must allow prereleases; the stable channel feed remains
-  channel-sticky.
-- **Stable DISPLAYS a clean base version even though the bytes keep the RC
-  stamp.** The embedded version cannot change under promotion, so the remedy is
-  at the read layer, and it is a CONTRACT over every surface, not a fix at two
-  spots — the 0.4.0 promotion shipped with only the running-version fold wired,
-  and users then reported the raw stamp on four other surfaces one by one (the
-  About panel's available-update line, the version chip, the Settings footer,
+  plus the source SHA, tag, run id, and versions. Its primary role is evidence
+  that this commit shipped clean on insider; the bytes it carries are only
+  consumed by the byte-reuse escape hatch below.
+- **A bare `vX.Y.Z` tag rebuilds that commit at the bare version.** `stable-gate`
+  confirms a **successful** same-commit prerelease run exists, so stable still
+  only ships code that soaked. Then the ordinary build path runs on the stable
+  channel — `build-wheel.yml`, `build-desktop.yml`, `build-windows.yml`,
+  `sign-and-notarize.yml`, the OCI builder — receiving `X.Y.Z` exactly the way an
+  insider build receives `X.Y.Z-rc.N`. What a stable release gives up is byte
+  identity with the binary insiders ran; what it never gives up is that the
+  commit soaked.
+- **Byte-for-byte reuse remains available, and names its own cost.** Setting
+  `vars.STABLE_PROMOTE_BYTES` to exactly the base version being released takes
+  the promotion path instead: `resolve-promotion` verifies the recorded bundle
+  and the publish lanes move stable pointers to those exact bytes. Use it when
+  stable must run the identical binary that was validated. The cost is the whole
+  reason it is not the default — those bytes advertise the candidate's `rcN`
+  stamp in the wheel name, the feed, `pip show`, and `kirocrew --version`. The
+  variable is scoped to one version so it cannot be left switched on, and the
+  gate prints a warning naming the consequence.
+- **Everything fails closed.** No successful same-commit prerelease run, an
+  undocumented version, or a release branch still declaring the RC spelling all
+  abort the release before any lane publishes. On the byte-reuse path a missing,
+  expired, ambiguous, or digest-mismatched record aborts it too.
+- **The bare version is stamped in at build time, not patched afterwards** (see
+  "Version stamping"). There is no metadata-rewrite step to trust. `stable-gate`
+  additionally compares the tag against all three declaration files, because a
+  rebuild would otherwise paper over a release branch that never landed its
+  drop-RC-suffix PR: the artifact would be right while every source install and
+  every later RC on that branch still read the stale spelling. The 0.4.0
+  promotion was nearly tagged in exactly that state, because only the tag name
+  was checked.
+- **A stable wheel installs without `--pre`**, because its own version carries no
+  prerelease suffix. A wheel published through the byte-reuse hatch does need it.
+- **The display fold still exists, and stable is no longer its main job.** A
+  rebuilt stable has nothing to fold — its stamp is already bare. The fold
+  remains load-bearing for insider and nightly, where the prerelease number is
+  meaningful information, and for any install shipped before this policy that is
+  still running promoted RC-stamped bytes. It is a CONTRACT over every surface,
+  not a fix at two spots — the 0.4.0 promotion shipped with only the
+  running-version fold wired, and users then reported the raw stamp on four other
+  surfaces one by one (the About panel's available-update line, the version chip,
+  the Settings footer,
   and the proactive update popup), each needing its own hotfix.
 
   The contract:
@@ -103,10 +126,13 @@ rebuild that hopes for reproducibility. The mechanism:
   `update_latest_version_display` tests in
   `test/test_dashboard_status_snapshot.py`, and the AboutPanel /
   UpdateFoundModal / SettingsPage frontend tests are the regression gates.
-  **The whole fold family must ride in the RC bytes**: promotion never
-  rebuilds, so a display change added after the RC is cut can never reach the
-  promoted stable. Land it before the RC is cut, or stable shows the RC stamp
-  with no in-band remedy.
+  **A display change still wants to land before the RC is cut**, so the surface
+  it fixes is exercised during the soak rather than first appearing in the
+  release. It is no longer unrecoverable if it does not: stable is rebuilt from
+  the commit, so a fold landed on the release branch before the bare tag does
+  reach stable. Under the byte-reuse hatch the original constraint holds in
+  full — those bytes are the RC's, so a fold added after the RC was cut can
+  never reach that release.
 - **Hot patches follow the same rule**: at least one recorded RC before the
   bare patch tag. A hot patch is the NEXT three-segment version (`0.4.0` →
   `0.4.1`): the release workflow's Derive-Version step rejects a four-segment
@@ -125,8 +151,9 @@ rebuild that hopes for reproducibility. The mechanism:
   has seen — judged against the live feed (via the public CDN; the publish
   role is Put-only on `feed/*`) AND the repo's tags, which close the CDN's
   `max-age` staleness window. Equal versions advance, so re-running a
-  half-finished publish stays idempotent. Promotion is unaffected: a stable
-  bare tag is newer than everything the stable feed has served.
+  half-finished publish stays idempotent. A stable release is unaffected either
+  way: whether it rebuilds or republishes the candidate's bytes, its version is
+  newer than everything the stable feed has served.
   `test/test_check_feed_advance.py` pins the verdicts and the wiring.
 
 ### Runbook: promoting an RC to stable
@@ -142,14 +169,15 @@ there is no build step at stable-tag time to add it.
      makes the next RC a promotion candidate**; the 0.4.0 promotion was nearly
      tagged before it existed because this step lived only in the policy
      section, not here. The checklist in step 2 below verifies it landed.
-   - *CHANGELOG*: the release branch already carries `## [X.Y.Z] — <date>` (no
+   - *CHANGELOG*: the release branch already carries `## [X.Y.Z] - <date>` (no
      `[Unreleased]`, enforced by the changelog gate). Confirm at cut time.
    - *Version display*: the base-version fold above must be merged to `main`
      and cherry-picked to `release/X.Y` **before the RC is cut**, or stable will
      show the RC stamp.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
    `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
-   non-bare-release `##` headings; exactly one `### Contributors`;
+   non-bare-release `##` headings; no `### Contributors` (the GitHub Release
+   page renders its own); no em or en dash anywhere in the new section;
    `__version__ = "X.Y.Z"` **in all three version files** (`src/kiro_crew/__init__.py`,
    `pyproject.toml`, `website/electron/package.json` — the 0.4.0 promotion was
    nearly tagged on a commit still declaring `0.4.0-rc.9` because only the tag
@@ -160,17 +188,25 @@ there is no build step at stable-tag time to add it.
    available-update line, AND the update popup); no existing bare
    `vX.Y.Z` tag. Then tag `vX.Y.Z-insider.N`.
 3. **Soak.** Ship the RC on insider and let real users run it. **Do not push any
-   byte-affecting change to the release branch between soak and promote** — the
-   guarantee is that stable gets exactly the soaked bytes.
-4. **Promote (bare tag).** Confirm the `vX.Y.Z-insider.N` run at the target
-   commit is SUCCESS (`resolve-promotion` finds the candidate by it). Push a bare
-   `vX.Y.Z` tag on that commit. The build lanes skip; `resolve-promotion`
-   re-verifies the recorded bundle and republishes it to stable.
-   `Create GitHub Release` runs (the `if:` fix) and renders GitHub's own
-   contributor block — **do not hand-write a contributors list in the body**
-   (that duplicated the native block on v0.3.0). Verify: stable feed points at
-   the RC's version, About shows the clean `X.Y.Z` via the fold, CHANGELOG shows
-   no draft heading.
+   change to the release branch between soak and release** — stable is rebuilt
+   from this commit, so a commit that lands after the soak ships code nobody ran.
+4. **Release (bare tag).** Confirm the `vX.Y.Z-insider.N` run at the target
+   commit is SUCCESS — `stable-gate` requires it, so a candidate whose run was
+   cancelled or failed cannot be released. Push a bare `vX.Y.Z` tag on that
+   commit. The build lanes RUN: stable is rebuilt from this commit with `X.Y.Z`
+   stamped in, so the shipped wheel is `kirocrew-X.Y.Z-py3-none-any.whl` and
+   `kirocrew --version` prints `X.Y.Z`. Expect the full build time, not a
+   pointer move. `Create GitHub Release` runs (the `if:` fix) and renders
+   GitHub's own contributor block — **do not hand-write a contributors list in
+   the body** (that duplicated the native block on v0.3.0). Verify: stable feed
+   carries the bare `X.Y.Z`, the wheel filename has no `rc`, About shows
+   `X.Y.Z`, CHANGELOG shows no draft heading.
+
+   To ship the candidate's exact bytes instead — the only mode where stable runs
+   the identical binary that was validated — set `vars.STABLE_PROMOTE_BYTES` to
+   exactly `X.Y.Z` before pushing the tag, and unset it afterwards. That release
+   will advertise the candidate's `rcN` version everywhere its bytes are read,
+   and the gate warns about it in the run log.
 
 ## Workflows in the release path
 
@@ -183,7 +219,7 @@ concurrency group, and their version derivation.
 |---|---|---|
 | `nightly.yml` | trigger (schedule + dispatch) | Derives the date stamp, then calls everything below. `concurrency: nightly-build` with `cancel-in-progress: true`. |
 | `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle; a bare tag verifies that same-commit bundle and promotes the exact files/OCI digest to stable without building. Then creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
-| `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. Runs first; every build job needs it. |
+| `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. |
 | `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
@@ -769,10 +805,15 @@ nothing to re-download.
 the bytes.** `channelForVersion()` classifies the version stamp and `nightly`
 stays pinned by it, but for the two production lanes `resolveChannel()` honours
 the persisted Settings → About preference and defaults to **stable** when none is
-set. It cannot read the lane out of the stamp, because stable is PROMOTED: the
-stable and insider downloads of a promoted version are the same notarized file
-carrying the same `-insider.N` stamp, so a stamp-derived channel would send every
-promoted-stable install to the insider feed. The consequences to know:
+set. It cannot read the lane out of the stamp, and a rebuilt stable does not
+change that. For every install shipped while stable was PROMOTED, the stable and
+insider downloads of a release were the same notarized file carrying the same
+`-insider.N` stamp, so a stamp-derived channel would send all of those installs
+to the insider feed. Those binaries are still in the field, and `resolveChannel()`
+has to keep answering correctly for them. A stable build produced by a rebuild
+does carry its own bare stamp, but reading the lane from it would only be safe
+once no promoted install remains — which is not a condition this code can check.
+The consequences to know:
 
 - **Insider is an explicit opt-in.** Any install with no recorded preference
   follows stable — including one installed from the insider DMG, and including an
@@ -998,9 +1039,9 @@ Practical consequences when something goes wrong mid-release:
 
 ## Changelog
 
-Every release lands a `## [X.Y.Z] — YYYY-MM-DD` section in `CHANGELOG.md`
+Every release lands a `## [X.Y.Z] - YYYY-MM-DD` section in `CHANGELOG.md`
 through a normal PR, alongside any version bump. The section format (ordering,
-tone, contributor lines) is specified once in
+tone, the three-sentence budget per subsection) is specified once in
 [AGENTS.md](../../AGENTS.md) → "Release Changelog". The dashboard reads the
 changelog from `KIROCREW_PROJECT_DIR/CHANGELOG.md` for source installs and from
 the bundled copy inside the package for wheel installs.

@@ -1851,3 +1851,55 @@ class TestNotificationMergeWriteSideContract:
         with pytest.raises(UndecodableRecord):
             snapshot_mod._merge_notifications(src, dst)
         assert dst.read_bytes() == self.LIVE, "the retry appended something"
+
+
+# ── Issue #8217: the restore status line must not claim success over a refused
+# cron merge ───────────────────────────────────────────────────────────────────
+
+
+class TestARefusedCronMergeIsVisibleInTheRestoreStatus:
+    """`_do_merge` printed "✅ crons" whatever `_merge_crons` decided.
+
+    The terminal shows the merger's own warning right above, but the status
+    line is the summary an operator scans — a checkmark over a refusal is the
+    same false success the import summary had (#8217).
+    """
+
+    @staticmethod
+    def _job(name: str) -> dict:
+        return {
+            "id": "j1",
+            "name": name,
+            "message": "check",
+            "schedule": {"kind": "cron", "cron_expr": "0 9 * * *"},
+        }
+
+    def test_a_refused_merge_prints_a_skip_not_a_checkmark(self, tmp_path, capsys):
+        snap = tmp_path / "snap"
+        home = tmp_path / "home"
+        snap.mkdir()
+        home.mkdir()
+        (snap / "crons.json").write_text(json.dumps({"jobs": [self._job("imported")]}))
+        (home / "crons.json").write_text("{not json")
+
+        snapshot_mod._do_merge(snap, home, ["crons"], allow_unpinned=bool(unpinnable_argv()))
+
+        out = capsys.readouterr().out
+        assert "✅ crons" not in out, out
+        assert "crons: merge skipped" in out, out
+        # The refusal wrote nothing.
+        assert (home / "crons.json").read_text() == "{not json"
+
+    def test_a_genuine_merge_still_prints_the_checkmark(self, tmp_path, capsys):
+        snap = tmp_path / "snap"
+        home = tmp_path / "home"
+        snap.mkdir()
+        home.mkdir()
+        (snap / "crons.json").write_text(json.dumps({"jobs": [self._job("imported")]}))
+        (home / "crons.json").write_text(json.dumps({"jobs": [self._job("existing")]}))
+
+        snapshot_mod._do_merge(snap, home, ["crons"], allow_unpinned=bool(unpinnable_argv()))
+
+        out = capsys.readouterr().out
+        assert "✅ crons" in out, out
+        assert "crons: merge skipped" not in out, out

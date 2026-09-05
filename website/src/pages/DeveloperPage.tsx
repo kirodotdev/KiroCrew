@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, TestTubeDiagonal, Cpu } from 'lucide-react'
+import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, TestTubeDiagonal, Cpu, Bug } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { ContentSkeleton } from '../components/ui'
 import { LogViewer } from './LogsPage'
@@ -11,6 +11,7 @@ import { McpManagement } from './settings/McpManagement'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
 import { AgentBackendTab } from './developer/AgentBackendTab'
 import { FeaturePreviewsTab } from './developer/FeaturePreviewsTab'
+import { DebugToolsTab } from './developer/DebugToolsTab'
 
 /**
  * Lazy: MemoryGraphTab is the only eager owner of the sigma/graphology stack
@@ -41,6 +42,7 @@ function buildTabs() {
     { key: 'config', label: i18nT('pages.developerPage.tabs.config.label'), icon: <FileCode2 size={16} />, description: i18nT('pages.developerPage.tabs.config.description') },
     { key: 'agent-backend', label: i18nT('pages.developerPage.tabs.agentBackend.label'), icon: <Cpu size={16} />, description: i18nT('pages.developerPage.tabs.agentBackend.description') },
     { key: 'feature-previews', label: i18nT('pages.developerPage.tabs.featurePreviews.label'), icon: <TestTubeDiagonal size={16} />, description: i18nT('pages.developerPage.tabs.featurePreviews.description') },
+    { key: 'debug-tools', label: i18nT('pages.developerPage.tabs.debugTools.label'), icon: <Bug size={16} />, description: i18nT('pages.developerPage.tabs.debugTools.description') },
     { key: 'archive', label: i18nT('pages.developerPage.tabs.archive.label'), icon: <Archive size={16} />, description: i18nT('pages.developerPage.tabs.archive.description') },
   ]
 }
@@ -74,6 +76,7 @@ export default function DeveloperPage() {
         )}
         {tab === 'agent-backend' && <AgentBackendTab />}
         {tab === 'feature-previews' && <FeaturePreviewsTab />}
+        {tab === 'debug-tools' && <DebugToolsTab />}
         {tab === 'archive' && <SessionArchive />}
       </>}
     </SidePanelLayout>

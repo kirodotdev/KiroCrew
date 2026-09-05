@@ -1311,3 +1311,169 @@ class TestGatewayShutdownBackendSweep:
         finally:
             release.set()
             pool.shutdown(wait=True)
+
+
+# ---------------------------------------------------------------------------
+# Shutdown resolves the LOADED code, not disk (issue #7880 reconciler teardown)
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownResolvesLoadedCode:
+    @pytest.mark.asyncio
+    async def test_shutdown_prefers_cached_module_over_disk(self, monkeypatch) -> None:
+        """GPT [BLOCKING]: on_shutdown must stop the code that is actually
+        running. A same-path v2 reinstall leaves v2 on disk while v1's task is
+        still live; resolving from disk would run v2's on_shutdown and orphan v1.
+        _invoke(phase='shutdown') resolves the ALREADY-LOADED (cached) callable
+        first, falling back to the disk loader only when nothing is cached."""
+        import sys
+        from types import SimpleNamespace
+
+        import kiro_crew.apps.module_loader as ml
+        from kiro_crew.apps.lifecycle import LifecycleDispatcher
+
+        app_name = "reload-app"
+        hook_path = "backend.hooks:on_shutdown"
+        ran: list[str] = []
+
+        # v1 is the LOADED module: register it in sys.modules under the app's key.
+        v1 = SimpleNamespace(on_shutdown=lambda ctx: ran.append("v1"))
+        key = ml._module_namespace(app_name, "backend.hooks")
+        sys.modules[key] = v1  # type: ignore[assignment]
+
+        dispatcher = LifecycleDispatcher()
+        # The disk loader would return v2 (the replacement) -- it must NOT be used.
+        monkeypatch.setattr(
+            dispatcher, "_resolve_hook", lambda a, h: (lambda ctx: ran.append("v2"))
+        )
+        ctx = SimpleNamespace(health=SimpleNamespace(mark_degraded=lambda *a, **k: None))
+        try:
+            ok = await dispatcher._invoke(app_name, hook_path, ctx, phase="shutdown")
+        finally:
+            sys.modules.pop(key, None)
+
+        assert ok is True
+        assert ran == ["v1"], "shutdown must run the loaded (cached) code, not disk v2"
+
+    @pytest.mark.asyncio
+    async def test_shutdown_falls_back_to_disk_when_nothing_cached(self, monkeypatch) -> None:
+        """When no module is cached (e.g. a builtin, or never imported), shutdown
+        falls back to the normal disk/dotted resolver."""
+        from types import SimpleNamespace
+
+        from kiro_crew.apps.lifecycle import LifecycleDispatcher
+
+        ran: list[str] = []
+        dispatcher = LifecycleDispatcher()
+        monkeypatch.setattr(
+            dispatcher, "_resolve_hook", lambda a, h: (lambda ctx: ran.append("disk"))
+        )
+        ctx = SimpleNamespace(health=SimpleNamespace(mark_degraded=lambda *a, **k: None))
+        ok = await dispatcher._invoke(
+            "uncached-app", "backend.hooks:on_shutdown", ctx, phase="shutdown"
+        )
+        assert ok is True
+        assert ran == ["disk"]
+
+
+class TestCacheShutdownForNeverLoadsOnTheEventLoop:
+    """GPT rounds 8-9 (lifecycle.py shutdown cache): enable-time caching must not
+    BLOCK the event loop (r8 F2) nor re-import a same-module app (r8 F1), and must
+    still RETAIN a separate shutdown module startup never imported (r9). The
+    resolution: resolve an already-loaded module in-memory (no disk, no re-import),
+    and load a genuinely-separate module OFF the loop via asyncio.to_thread."""
+
+    @pytest.mark.asyncio
+    async def test_loaded_module_is_resolved_in_memory_without_reimport(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        import kiro_crew.apps.lifecycle as lc
+        import kiro_crew.apps.module_loader as ml
+
+        ml._shutdown_callables.pop("loaded-app", None)
+        key = ml._module_namespace("loaded-app", "backend.hooks")
+        mod = ModuleType(key)
+
+        def _on_shutdown(ctx):
+            return None
+
+        mod.on_shutdown = _on_shutdown
+        sys.modules[key] = mod
+
+        # A same/loaded module must be resolved via sys.modules ONLY: no disk load
+        # (would block the loop) and no re-import (would detach the running state).
+        def _boom(*a, **kw):
+            raise AssertionError("a loaded module must not be disk-loaded / re-imported")
+
+        monkeypatch.setattr(lc, "load_app_module", _boom, raising=False)
+
+        try:
+            disp = lc.LifecycleDispatcher()
+            await disp.cache_shutdown_for(
+                {
+                    "name": "loaded-app",
+                    "manifest": {"backend": {"hooks": {"on_shutdown": "backend.hooks:on_shutdown"}}},
+                }
+            )
+            # Snapshotted from sys.modules (pure getattr), generation-tagged.
+            assert ml.resolve_loaded_callable("loaded-app", "backend.hooks:on_shutdown") is _on_shutdown
+        finally:
+            sys.modules.pop(key, None)
+            ml._shutdown_callables.pop("loaded-app", None)
+
+    @pytest.mark.asyncio
+    async def test_separate_module_is_retained_via_off_loop_load(self, monkeypatch):
+        import kiro_crew.apps.lifecycle as lc
+        import kiro_crew.apps.module_loader as ml
+
+        ml._shutdown_callables.pop("sep-app", None)
+
+        def _sep_shutdown(ctx):
+            return None
+
+        # _resolve_hook does the disk load for a separate module; it MUST be reached
+        # only through asyncio.to_thread (off the event loop), never called inline.
+        offloaded = {"via_thread": False}
+        monkeypatch.setattr(lc.LifecycleDispatcher, "_resolve_hook", lambda self, n, p: _sep_shutdown)
+
+        real_to_thread = asyncio.to_thread
+
+        async def _tracking_to_thread(fn, *a, **kw):
+            offloaded["via_thread"] = True
+            return await real_to_thread(fn, *a, **kw)
+
+        monkeypatch.setattr(lc.asyncio, "to_thread", _tracking_to_thread)
+
+        disp = lc.LifecycleDispatcher()
+        # on_shutdown lives in a module startup never imported -> not in sys.modules,
+        # so it is loaded off-loop and RETAINED (r9: separate modules must be kept).
+        await disp.cache_shutdown_for(
+            {
+                "name": "sep-app",
+                "manifest": {"backend": {"hooks": {"on_shutdown": "backend.never_loaded:on_shutdown"}}},
+            }
+        )
+        assert offloaded["via_thread"] is True, "separate-module load must go off-loop via to_thread"
+        assert ml._shutdown_callables.get("sep-app") == (ml._current_generation("sep-app"), _sep_shutdown)
+        ml._shutdown_callables.pop("sep-app", None)
+
+    @pytest.mark.asyncio
+    async def test_stale_generation_callable_is_not_used(self, monkeypatch):
+        import kiro_crew.apps.module_loader as ml
+
+        ml._shutdown_callables.pop("gen-app", None)
+        ml._app_load_generation.pop("gen-app", None)
+
+        def _v1(ctx):
+            return None
+
+        # Cache a v1 callable at generation 0.
+        ml.cache_shutdown_callable("gen-app", _v1)
+        assert ml.resolve_loaded_callable("gen-app", "backend.hooks:on_shutdown") is _v1
+
+        # A reload (unload bumps the generation) invalidates the stale v1 entry.
+        ml._app_load_generation["gen-app"] = ml._current_generation("gen-app") + 1
+        assert ml.resolve_loaded_callable("gen-app", "backend.hooks:on_shutdown") is None
+        ml._shutdown_callables.pop("gen-app", None)
+        ml._app_load_generation.pop("gen-app", None)

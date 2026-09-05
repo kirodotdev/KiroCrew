@@ -31,6 +31,7 @@ export const ROUND_TRIP = new Map([
   ['utils/tz.ts', 'UTC±HH:MM offset token, and en-US pins that derive cron day-of-week numbers'],
   ['components/fileChangeChipsCss.ts', 'CSS animation durations parsed by the browser stylesheet parser, not read as text'],
   ['lib/kiroGhostAvatar.ts', 'CSS animation durations/keyframes inside the generated SVG <style>, parsed by the browser stylesheet parser, not read as text'],
+  ['dev/scrollInspector.ts', 'Developer overlay whose every string is a fixed-format diagnostic compared against an earlier frame -- the format IS the interface, so a localised copy would destroy the only property that makes it useful. Assigns its own textContent, which no callee or CSS rule can see. Inert unless a developer turns the overlay on; renders no product copy'],
 ])
 
 /** Measurement units this UI renders. Symbols only. */
@@ -148,10 +149,22 @@ function inCssContext(chain, sf) {
   for (const n of chain) {
     // style={{ ... }} or style="..."
     if (ts.isJsxAttribute(n) && CSS_JSX_ATTR.has(n.name.getText(sf))) return true
-    // { width: `...` }
+    // { width: `...` }, and { ['--x']: `...` } -- a key starting with `--` is a CSS
+    // CUSTOM PROPERTY by definition, so its value is a stylesheet declaration
+    // whatever the name. Named separately from CSS_PROPERTY because that set can
+    // only ever list properties someone thought of, while `--*` is closed.
     if (ts.isPropertyAssignment(n)) {
-      const key = ts.isIdentifier(n.name) || ts.isStringLiteral(n.name) ? n.name.text : ''
-      if (CSS_PROPERTY.has(key)) return true
+      // A COMPUTED key -- `{ ['--x']: ... }` -- is read off the assignment's own
+      // name, not from the chain: the bracketed literal is a sibling of the value,
+      // never an ancestor of it, so walking ancestors alone never sees it.
+      const nm = n.name
+      const key = ts.isIdentifier(nm) || ts.isStringLiteral(nm)
+        ? nm.text
+        : ts.isComputedPropertyName(nm)
+            && (ts.isStringLiteral(nm.expression) || ts.isNoSubstitutionTemplateLiteral(nm.expression))
+          ? nm.expression.text
+          : ''
+      if (CSS_PROPERTY.has(key) || key.startsWith('--')) return true
     }
     // el.style.height = ... / setProperty('--x', ...)
     if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
@@ -160,6 +173,12 @@ function inCssContext(chain, sf) {
     if (ts.isCallExpression(n)) {
       const callee = n.expression.getText(sf)
       if (/setProperty$/.test(callee) || /useMotionTemplate$/.test(callee)) return true
+      // `devLog(tag, detail)` is the scroll inspector's diagnostic sink. Its detail
+      // is a fixed-format line read by comparing it against the same line in an
+      // earlier frame (`SETTLE.end 34 frames 617ms`), so the `ms` in it is not copy
+      // any more than a `console.log`'s is -- the same reasoning, and the same
+      // exemption, as `callees.exclude` gives it in eslint.i18n.config.js.
+      if (/^devLog$/.test(callee)) return true
     }
     // Tagged template: useMotionTemplate`...`
     if (ts.isTaggedTemplateExpression(n) && /MotionTemplate/.test(n.tag.getText(sf))) return true

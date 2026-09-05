@@ -6,6 +6,7 @@ system is built, see [../architecture/](../architecture/README.md).
 | Guide | Covers |
 |---|---|
 | [install.md](install.md) | Installing and building Kiro Crew: source, wheel, and first run. |
+| [worktree-verification-recipes.md](worktree-verification-recipes.md) | Copy-pasteable backend, frontend, agent-driving, diagnosis, and reclamation traces against an isolated worktree pod. |
 | [windows-install.md](windows-install.md) | Native Windows setup, and the per-feature status on Windows. |
 | [macos-troubleshooting.md](macos-troubleshooting.md) | macOS desktop app issues — a CLI that resolves in Terminal but is `command not found` inside the app, and the `launchctl setenv PATH` recipe that fixes it. |
 | [docker.md](docker.md) | Running Kiro Crew as a container. |

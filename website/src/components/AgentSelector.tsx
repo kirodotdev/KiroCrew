@@ -28,6 +28,9 @@ export interface KiroCrewAgent {
   /** Default session color (#rrggbb hex) applied to new sessions using this
    *  agent. Empty or absent means no agent color. */
   session_color?: string
+  /** Per-crew avatar override, verbatim from the backend. `{}`/absent means
+   *  the face is derived from the crew name; interpreted by ghostTraitsFrom. */
+  avatar?: unknown
 }
 
 interface Props {

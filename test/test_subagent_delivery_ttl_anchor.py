@@ -315,7 +315,10 @@ class TestConsumptionSignalIsPerTurn:
         # The retraction lives in the FIRST empty-response branch and happens
         # BEFORE the verbatim re-queue copies the callback. Reversing that order
         # drops the callback and strands the delivery after a successful replay.
-        first_empty_at = src.index("if _prompt_depth == 0 and slot._empty_response_retries < 1:")
+        # Anchored on the rung marker rather than the branch condition: that
+        # condition carries the productive-turn guard and is reformatted whenever
+        # it grows a term, while the marker names the rung this invariant is about.
+        first_empty_at = src.index("_empty_rung = EMPTY_RUNG_REPLAY")
         first_empty_end = src.index("            elif (", first_empty_at)
         first_empty = src[first_empty_at:first_empty_end]
         assert first_empty.count("await _report_consumed(False)") == 1

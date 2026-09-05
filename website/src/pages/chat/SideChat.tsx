@@ -658,6 +658,9 @@ export default function SideChat({ slot }: { slot: string }) {
             promptOptimizer={false}
             connected={connected}
           />
+          <div role="note" className="px-1 pt-1.5 text-[11px] leading-4 text-muted">
+            {i18nT('pages.chat.sideChat.context_only_tools_unavailable')}
+          </div>
         </SlotProvider>
       </div>
     </div>

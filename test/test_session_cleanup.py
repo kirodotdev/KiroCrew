@@ -31,6 +31,7 @@ from kiro_crew.subagent_persistence import (
     create_agent_folder,
     prune_stale_tombstones,
     read_state,
+    remember_live_cleanup_identity,
     update_state,
     write_tombstone,
 )
@@ -553,9 +554,15 @@ class TestTombstonePruningCleansSessionFiles:
         if d.exists():
             shutil.rmtree(d)
 
-        # Create subagent folder with session_id in state
+        # Create a plain subagent folder with explicit non-retention and session identity.
         create_agent_folder(agent_id, task="old task")
-        update_state(agent_id, session_id=session_id, provider="acp")
+        update_state(agent_id, session_id=session_id, provider="acp", keep=False)
+        remember_live_cleanup_identity(
+            agent_id,
+            session_id=session_id,
+            provider="acp",
+            keep=False,
+        )
 
         # Write an old tombstone (8 days ago)
         write_tombstone(agent_id, cause="timeout", recovery_action="delivered")

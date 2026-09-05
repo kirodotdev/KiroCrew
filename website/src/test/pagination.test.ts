@@ -1,7 +1,7 @@
 // Feature: chat-older-history
 // The whole gate: provenance and scrollability checks were removed, not relocated.
 import { describe, it, expect } from 'vitest'
-import { shouldPaginateOlder, canForkAtWindow, searchScopeIsLimited, shouldContinueOlderWalk } from '../pages/chat/pagination'
+import { shouldPaginateOlder, canForkAtWindow, searchScopeIsLimited, shouldContinueOlderWalk, OLDER_WALK_MAX_PAGES_PER_INPUT } from '../pages/chat/pagination'
 
 describe('shouldPaginateOlder', () => {
   it('paginates when the server reported more history and nothing is in flight', () => {
@@ -84,8 +84,13 @@ describe('shouldContinueOlderWalk', () => {
     // The `walking` latch is still true here — each landing re-establishes it —
     // so ONLY the budget can end the walk. Without it, one wheel event walked
     // the whole archive and the spinner never cleared.
-    expect(shouldContinueOlderWalk({ ...base, pagesSinceInput: 4 })).toBe(false)
-    expect(shouldContinueOlderWalk({ ...base, pagesSinceInput: 3 })).toBe(true)
+    // Expressed against the CONSTANT, not a literal: the budget is a measured
+    // trade-off that has already moved once (four pages let history keep arriving
+    // after the finger left the glass), and a test pinned to the old number reports
+    // a deliberate retune as a regression while proving nothing about the boundary.
+    const budget = OLDER_WALK_MAX_PAGES_PER_INPUT
+    expect(shouldContinueOlderWalk({ ...base, pagesSinceInput: budget })).toBe(false)
+    expect(shouldContinueOlderWalk({ ...base, pagesSinceInput: budget - 1 })).toBe(true)
   })
 
   it('refills the budget on fresh input, so a climbing reader is continuous', () => {

@@ -242,7 +242,7 @@ describe("gateway supervisor wiring (source pins)", () => {
     );
     assert.match(
       IPC_REGISTRAR_JS,
-      /onInstallFailed: \(\) => gateway\.onInstallFailed\(\)/,
+      /onInstallFailed:\s*\(\)\s*=>\s*\{[\s\S]{0,200}?gateway\.onInstallFailed\(\)/,
       "the updater failure hook must still reach supervisor recovery",
     );
   });

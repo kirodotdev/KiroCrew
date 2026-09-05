@@ -127,6 +127,26 @@ The `is_yolo()` read happens once, when `parent_policy` is resolved at
 `_run_inner` start — a YOLO toggle mid-execution takes effect on the next
 subagent run, not on the current run's remaining tools.
 
+### `cancel_for_parent(parent_session_key) -> (running, queued)`
+Stops every running agent and removes every not-yet-started stagger/concurrency
+queue entry owned by one parent session. Queue removal happens before the first
+suspending await, so a scheduled drain cannot start work after the stop request.
+Each removed queue entry emits a neutral stopped terminal record through the
+normal completion consumer, which closes batch accounting instead of stranding a
+wave. Those synthetic records remain marked as never started while their terminal
+reports are pending, so bulk cancellation cannot rediscover them as running work.
+Agents waiting on spawn approval are excluded; their approval card remains the
+authority for approve/reject.
+
+The dashboard exposes this through `POST /api/spawn/stop-all` with a validated
+slot name. App tokens are denied before slot lookup because ownership of an app
+slot does not imply ownership of its linked session; a request missing the
+authentication middleware's app claim is denied on the same fail-closed path.
+This bulk control remains a dashboard-only capability. The server resolves that
+slot's effective session key, including channel-linked chats, rather than
+accepting a client-supplied parent key. The in-chat Stop all control uses this
+endpoint and remains available for queued-only waves.
+
 ### `cancel_all() -> None`
 Cancels all running subagents, stops the reaper loop, and awaits their cleanup. Handles `CancelledError` gracefully — sessions released, count decremented.
 
@@ -546,10 +566,133 @@ On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:
 - Created on: process death without result, delivery failure, timeout (`cause` =
   `error` / `timeout` / `cancelled` / `reaped` / `gateway_restart`), **and on
   successful delivery** (`cause="delivered"`, via `mark_delivered`) so `result.txt`
-  is retained for the grace window instead of deleted immediately.
+  is retained for the grace window instead of deleted immediately. The generic
+  writer snapshots any non-empty session ID, provider, and CWD from readable
+  state; live abnormal-exit values captured immediately after session acquisition
+  (before resume validation and context construction) override that fallback.
+  Cancel recovery can acquire multiple sessions under one run ID, so persistence
+  atomically records complete per-session cleanup generations in an owner-only
+  record below the file-gated `trust/` root, outside the agent-writable run folder.
+  Every read and write first applies the repository's fail-loud owner-only directory
+  restriction, including inheritable Windows DACLs, and re-locks an existing record
+  because tightening its parent does not retrofit an older file ACL. Only a missing
+  record reads as empty; I/O, parse, or schema failures propagate, so an append can
+  never rewrite unreadable history as a fresh one-generation record. Prune catches
+  those failures per tombstone and continues later entries without altering the
+  corrupt record; shared-session setup logs them as best-effort and keeps the live
+  handle instead of falling into dedicated fallback.
+  Each generation also records the run's retention intent and continuation owner
+  key before the later best-effort combined state update. Protected generation
+  ownership is authoritative even when readable agent-writable state supplies an
+  empty or conflicting key; only the referenced owner's current readable state
+  decides retention. The generation `keep` value is a fallback when local state
+  lacks that field. Session acquisition publishes the new generation
+  synchronously in memory before submitting durable work, so executor
+  saturation or cancellation cannot prevent a terminal tombstone from seeing it.
+  The in-memory fallback is append-only; the worker deduplicates only while
+  serializing the protected record off-loop and never replaces the live list, so
+  an older writer cannot discard a concurrent recovery SID. On the dedicated arm,
+  durable generation persistence follows the cancellation-drained provenance
+  write; both dedicated and shared identity workers are shielded and fully drained
+  before cancellation is re-raised, so restart cannot precede protected authority.
+  Cancellation cannot skip required model fields, and the already-published
+  memory record still feeds the terminal tombstone. Slow storage therefore cannot
+  stall chat/heartbeat or hide a just-acquired session from a contending tombstone,
+  and a transient SID1 generation-write failure cannot be lost when SID2 later
+  succeeds. Shared-handle ownership and provider references are attached
+  immediately after handle creation, before any cancellable persistence
+  await, so force-reap always destroys the shared handle rather than resetting a
+  nonexistent dedicated session. Identity persistence errors are logged without
+  triggering dedicated fallback or abandoning the live handle. Event-loop tombstone snapshots are memory-only: they acquire the identity
+  lock non-blocking and use already-published in-memory generations, never reading
+  the protected durable record. Executor-owned prune independently merges that
+  record after restart before cleanup. The protected record and in-memory fallback
+  are evicted when prune or explicit folder deletion succeeds. Tombstones expose
+  the latest identity in compatibility fields and snapshot the full list for
+  diagnostics/restart hints, but those agent-folder fields cannot authorize
+  provider deletion. Prune's deletion set comes only from the protected record
+  and synchronous live gateway publication, and reclaims every trusted generation.
+  Retention fallback selects a protected generation matching the current readable-state
+  SID, or the latest protected generation when the SID is absent or mismatched;
+  agent-writable state/tombstone SID and owner fields never select a victim identity
+  or suppress trusted owner/`keep` metadata.
+- For readable state, only a literal current `keep is True` is retained; strings
+  such as `"false"` are non-retention rather than truthy policy. `true` preserves
+  the identity folder for restart registry rebuild; release writes `false`,
+  allowing prune to retry provider cleanup.
+  Every completed plain run records `false`; a readable legacy/failed-write
+  record with no key is treated as non-retained and prunes at the normal cutoff.
+  Readable `true` always defers disk prune; release or the conversation TTL writes
+  `false` and owns deletion. This arbitration is part of the cleanup fix rather
+  than a separate retention feature: once durable identity makes provider files
+  reachable, a stale `keep=False` prune racing a continuation promotion could
+  destroy the newly reachable resume material. Within the single gateway process,
+  promotion and prune arbitrate under per-agent short-held state transactions.
+  When a continuation tombstone points at an original owner, prune pre-resolves
+  that owner and acquires both per-agent locks in stable order, then re-reads under
+  lock; unrelated agents never contend. Promotion writes `true` before that locked
+  read, or prune keeps arbitration through provider cleanup and folder removal so a
+  later promotion returns retryable instead of racing deletion. On the event loop,
+  promotion probes arbitration and the per-agent off-loop-writer lock non-blocking.
+  Contention returns retryable `conversation_busy`, so a later retry writes
+  `keep=True` only after every older writer completes.
+  Off-loop promotion lets `update_state` acquire that non-reentrant writer lock
+  normally, avoiding self-deadlock while preserving serialization.
+  Transient persistence errors likewise return retryable without dispatch. Retry
+  restores the exact pre-attempt SessionManager and TTL-registry ownership; an
+  already-retained conversation is never unmarked. The facade returns the result
+  directly, so concurrent callers carry independent outcomes without a hidden
+  clear/call/read side channel. A process crash leaves no half-committed claim
+  format: the next prune re-reads the current owner state under arbitration.
+  If state and a rewritten tombstone both lack a top-level SID, prune derives
+  retention and owner from the latest valid durable cleanup generation instead of
+  treating the record as non-retained. Provider cleanup runs before lock release;
+  folder and protected-record removal follow only when every trusted generation
+  reports success. Unsupported providers and transient deletion failures preserve
+  both retry surfaces for later sweeps, capped at 90 days so a permanently missing
+  cleanup route cannot accumulate private run folders forever. A legacy SID present
+  only in agent-folder state/tombstone likewise preserves the folder inside that
+  window: it cannot authorize deletion, but the lookup gives a later trusted
+  migration time to reclaim the transcript. At the hard ceiling, only the run
+  folder and protected metadata are reaped; untrusted identity is never used for
+  provider-file deletion. Restart registry rebuild likewise accepts only literal
+  `keep is True`, requires the state SID and conversation owner to match a
+  protected/live generation, and sources provider/CWD from that trusted record;
+  agent-folder state cannot seed a victim SID into the later TTL release path. An
+  explicitly injected noncanonical state reader is an application-owned trusted
+  seam; the canonical disk reader never takes that compatibility fallback.
+  A continuation follows its original conversation's
+  readable `keep` value directly: `false` or a missing key is non-retention, while
+  unreadable owner state receives the bounded grace below instead of inheriting
+  the continuation's stale local `true`. Registry rebuild, prune, and TTL sweep
+  share `subagent_id_from_conversation_key`; malformed keys are dropped per entry
+  so one corrupt record cannot abort later cleanup.
 - Pruned by reaper: `delivered` tombstones after `agent.subagent_result_ttl_secs`
   (default 1h); all other tombstones after 7 days. `prune_stale_tombstones` takes
-  a per-cause cutoff for this.
+  a per-cause cutoff for this and treats timestamps exactly at the cutoff as
+  eligible, avoiding platform clock-resolution gaps. Tombstone `died` must be numeric, positive, and
+  non-future; string, NaN, infinity, future, and oversized values fall back to the
+  validated tombstone-file mtime, or the current sweep time when no valid bounded
+  time exists. That final fallback preserves unknown-retention grace across wall-clock
+  rollback instead of making the record immediately eligible.
+  Missing, malformed, deeply nested, or non-object tombstones are skipped for that
+  entry without aborting later entries in the sweep.
+  Missing, malformed, deeply nested, Unicode-invalid, or non-object `state.json`
+  is unreadable. An acquisition-time `keep=false` generation remains unknown in
+  this branch because a later promotion may have landed only in the now-unreadable
+  state; only `keep=true` may collapse uncertainty, since it can only preserve data.
+  A tombstone with a SID publishes only a SID-less in-memory retention hint, so the
+  SessionManager file-deletion exemption performs no tombstone read on the gateway
+  event loop without laundering agent-folder identity into provider-deletion
+  authority; the executor-owned restart scan
+  rehydrates that hint from durable tombstones before registry rebuild completes.
+  A readable legacy continuation whose owner
+  state is unreadable uses its resolved local-state SID for the same bounded
+  protection, even when its pre-upgrade tombstone has no SID. A malformed
+  continuation owner ID is likewise bounded as unknown retention for that entry;
+  it cannot abort processing of later tombstones. At the cutoff, unknown intent receives one extra 24-hour grace anchored on tombstone death time;
+  after that bounded window, trusted cleanup-generation metadata drives best-effort
+  provider cleanup while tombstone metadata drives folder removal eligibility.
 - `spawn_status` falls back to persistence layer for completed/tombstoned agents,
   reading the retained `result.txt` (and honoring offset/limit/grep).
 

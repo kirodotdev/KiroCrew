@@ -254,7 +254,7 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
         f"   to {dotenv} (0600) and restart the service:",
         "",
         f"     {remedy}",
-        "     kirocrew service restart",
+        f"     {restart_command_hint()}",
     ]
     if _home_override_is_set(environ):
         lines.append("")

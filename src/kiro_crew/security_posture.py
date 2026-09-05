@@ -1209,6 +1209,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "chokepoint that applies the credential + exfiltration-URL chain before the "
         "text reaches the dashboard.",
     ),
+    (
+        "Relayed remote-crew turn output",
+        "dashboard/remote_relay.py",
+        "Every string in a turn relayed from a bound remote crew: the assistant "
+        "text, and each mirrored frame's tool inputs and outputs. The peer is a "
+        "SEPARATE machine with its own agents, environment and secrets, so its "
+        "reply can quote a credential or an exfiltration URL that no local "
+        "redaction pass has ever seen. The peer redacts its own copy with this "
+        "same chain, but a hub that trusted that would inherit whatever an older "
+        "or misconfigured peer failed to scrub -- so the boundary where the "
+        "peer's bytes become this dashboard's transcript re-applies the "
+        "credential + exfiltration-URL chain itself, before any broadcast.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -1308,6 +1321,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # no output of its own -- the registered sinks are the modules that call
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
+        # ``autonudge.py``'s ``_load`` credential-scrubs a persisted ``banner`` in
+        # memory and attempts to persist the masked value back, so a banner
+        # written to the store out-of-band (a hand-edited file, or a direct
+        # ``AutoNudgeService.add`` that skips the authorizer) is masked on the next
+        # load rather than served raw — best-effort, since a failed re-persist
+        # leaves the raw value on disk until the following load. It owns no output
+        # of its own — the egress that serves the banner is the registered
+        # ``dashboard/handlers/autonudge.py`` serializer and the gateway broadcast;
+        # this is at-rest sanitisation at the trust boundary where the store is
+        # read, not an egress pass.
+        "autonudge.py",
         "autonudge_authz.py",
         # Gate-side log hygiene for a channel whose user identity IS a phone
         # number or an Apple Account email. ``redact_handle`` shortens a handle

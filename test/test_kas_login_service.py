@@ -7,6 +7,7 @@ scripted fake aiohttp session, so no test touches the real auth service.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -178,6 +179,40 @@ async def test_poll_authorized_saves_token_and_forgets(tmp_path, monkeypatch):
         await service.poll_device(login_id)
 
 
+async def test_cancel_during_an_authorized_device_poll_never_persists(tmp_path, monkeypatch):
+    """A cancel that lands while the approving network call is in flight wins.
+
+    The poll learns 'authorized' only after the round-trip; by then the user may
+    have clicked 'start over'. The persist step re-checks registration under the
+    pending lock, so the abandoned credential is never written and the poll ends
+    as an unknown login rather than a silent sign-in.
+    """
+    release = asyncio.Event()
+
+    class _SlowAuthorized(_FakeResp):
+        async def json(self, *, content_type: str | None = "application/json"):
+            await release.wait()
+            return self._payload
+
+    payload = {
+        "status": "authorized",
+        "accessToken": "at-1",
+        "refreshToken": "rt-1",
+        "profileArn": "arn:aws:profile/x",
+        "identityProvider": "google",
+        "expiresIn": 3600,
+    }
+    service, _ = _service(tmp_path, [_SlowAuthorized(200, payload)])
+    login_id = (await _begin(service, monkeypatch, _device_auth()))["login_id"]
+    poll = asyncio.create_task(service.poll_device(login_id))
+    await asyncio.sleep(0.05)  # the poll is now blocked inside the network call
+    await service.cancel(login_id)
+    release.set()
+    with pytest.raises(UnknownLoginError):
+        await poll
+    assert TokenStore(tmp_path).resolve() is None
+
+
 async def test_poll_malformed_json_stays_pending(tmp_path, monkeypatch):
     # A 200 with an undecodable body must not crash the poll; treat as pending
     # (the flow's own expiry bounds the caller's retries).
@@ -218,7 +253,9 @@ async def test_poll_authorized_store_write_failure_is_error(tmp_path, monkeypatc
 
     monkeypatch.setattr(service._store, "save", _boom)
     # Approved but unpersistable: error (not authorized), and the login is dropped.
-    assert await service.poll_device(login_id) == {"status": "error"}
+    # The code tells the dashboard not to retry on another transport — the store
+    # itself is the failure, so every flavor would hit it.
+    assert await service.poll_device(login_id) == {"status": "error", "code": "token_store_failed"}
     with pytest.raises(UnknownLoginError):
         await service.poll_device(login_id)
 

@@ -322,3 +322,34 @@ describe("window lifecycle source contracts", () => {
     }
   });
 });
+
+describe("main window frame-load diagnostics", () => {
+  it("journals frame loads on the dashboard webContents", () => {
+    const createWindow = SOURCE.match(/function createWindow\(\) \{([\s\S]*?)\n  \}\n/);
+    assert.ok(createWindow, "createWindow missing");
+    assert.match(
+      createWindow[1],
+      /attachFrameLoadLogging\(\s*mainWindow\.webContents,\s*glog,\s*backendUrl,?\s*\)/,
+      "a crew pane that never navigates must leave evidence in gateway-launch.log",
+    );
+  });
+
+  it("passes the dashboard's own URL as the trusted origin", () => {
+    // Without the third argument the `[pane]` journal is disabled rather than
+    // granted to whoever happens to be the top frame — so the wiring, not just
+    // the gate inside the module, is what has to be pinned here.
+    assert.match(
+      SOURCE,
+      /attachFrameLoadLogging\([^)]*backendUrl/,
+      "the [pane] allowlist must be anchored to the origin the window was loaded with",
+    );
+  });
+
+  it("writes those lines through the launch log, not console only", () => {
+    assert.match(
+      SOURCE,
+      /require\("\.\/frame-load-log"\)/,
+      "frame diagnostics must come from the shared, unit-tested module",
+    );
+  });
+});

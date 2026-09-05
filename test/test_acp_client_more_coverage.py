@@ -28,6 +28,7 @@ from kiro_crew.acp.client import (
     AcpError,
     AcpProcessDied,
     AcpTimeoutError,
+    AcpToolGateUnroutable,
     OversizeLineUnrecoverable,
     _direct_children,
     _drain_oversize_line,
@@ -676,6 +677,70 @@ class TestEnsureReady:
             await client.ensure_ready()
 
         assert client._kill_process.await_count == 2  # once per attempt
+
+    @pytest.mark.asyncio
+    async def test_tool_gate_refusal_does_not_retry_the_spawn(self, tmp_path):
+        """A gate refusal is a configuration fact, so a respawn re-reads it.
+
+        ``AcpToolGateUnroutable`` documents itself Non-retryable, but it subclasses
+        ``AcpError``, so the generic transport ladder used to retry it: attempt 0
+        tore the child down, respawned, hit the identical refusal, and only then
+        raised. That is one wasted spawn plus teardown, and it spends the reconnect
+        budget the distinct type exists to protect.
+
+        Revert-verified: dropping the dedicated handler makes both counters 2.
+        """
+        client = _client(tmp_path)
+        spawns = {"n": 0}
+
+        async def _spawn():
+            spawns["n"] += 1
+            client._process = _live_process()
+
+        async def _init():
+            raise AcpToolGateUnroutable("codex routes tool calls around the gate")
+
+        def _reset():
+            # Faithful to production: the real _reset_state drops the process
+            # handle, which is what makes the retry actually RESPAWN. A bare
+            # MagicMock leaves it set, so _spawn runs once either way and the
+            # spawn assertion below could never fail.
+            client._process = None
+
+        client._spawn = _spawn
+        client._initialize_session = _init
+        client._snapshot_process_tree = AsyncMock()
+        client._kill_process = AsyncMock()
+        client._reset_state = _reset
+
+        with pytest.raises(AcpToolGateUnroutable):
+            await client.ensure_ready()
+
+        assert spawns["n"] == 1, "the refusal was retried with a fresh process"
+        assert client._kill_process.await_count == 1
+
+    def test_sandbox_preflight_translates_the_gate_refusal(self, monkeypatch):
+        """The RAW gate exception must not escape the preflight.
+
+        ``acp_tool_gate`` is a leaf module that cannot import this one, so its
+        ``ToolGateUnroutable`` is a plain ``Exception``. That makes it invisible to
+        BOTH handlers around the spawn: it is not an ``AcpError``, so the transport
+        ladder cannot see it, and it is not ``AcpToolGateUnroutable``, so the
+        dedicated non-retrying handler cannot either. Raised raw, a sandbox-floor
+        refusal escaped ``ensure_ready`` entirely and skipped the cleanup every
+        other refusal path runs.
+
+        Revert-verified: dropping the translation raises the raw type and fails here.
+        """
+        from kiro_crew import acp_tool_gate
+
+        def _refuse(backend, mode):
+            raise acp_tool_gate.ToolGateUnroutable("no sandbox backend on this host")
+
+        monkeypatch.setattr(acp_tool_gate, "enforce_sandbox_floor", _refuse)
+
+        with pytest.raises(AcpToolGateUnroutable, match="no sandbox backend"):
+            acp_client._sandbox_preflight("codex", "standard")
 
     @pytest.mark.asyncio
     async def test_shutdown_kills_and_resets(self, tmp_path):

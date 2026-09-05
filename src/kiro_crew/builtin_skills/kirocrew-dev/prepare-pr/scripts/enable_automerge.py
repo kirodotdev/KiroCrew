@@ -21,6 +21,7 @@ Exit:   0  auto-merge enabled (or already enabled)
            rule, method not permitted, missing permission, or PR closed/merged)
         2  environment / usage error (gh missing, not authed, no PR resolved)
 """
+
 import json
 import subprocess
 import sys

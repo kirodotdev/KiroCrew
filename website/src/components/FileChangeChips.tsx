@@ -1,11 +1,15 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FileDiff, ChevronDown, ChevronUp, ChevronRight, Columns2 } from 'lucide-react'
 import type { FileChipStyle } from '../pages/chat/ChatSettings'
 import { useRowDisclosure } from '../pages/chat/rowDisclosure'
 import { PierreFilePair } from '../pierre'
-import { ROW_ANIM_MS, ROW_CSS_CLICKABLE_TITLE, ROW_CSS_CLOSING, ROW_CSS_OPEN } from './fileChangeChipsCss'
+import {
+  ROW_ANIM_MS,
+  ROW_CSS_CLICKABLE_TITLE,
+  ROW_CSS_CLOSING,
+  ROW_CSS_OPEN,
+} from './fileChangeChipsCss'
 import { countLines } from '../utils/diffLineCounts'
-import { useStagedMount } from './pierreStaging'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 
 import { i18nT } from '../i18n/t'
@@ -70,27 +74,94 @@ function DiffStatBar({ added, removed }: { added: number; removed: number }) {
  *  never collapses it. */
 export function headerClickAction(path: readonly EventTarget[]): 'open' | 'toggle' | 'ignore' {
   const has = (sel: string) => path.some(n => n instanceof Element && n.matches(sel))
-  if (!has('[data-diffs-header]')) return 'ignore'
-  return has('[data-title]') ? 'open' : 'toggle'
+  if (!has('[data-diffs-header], [data-fcc-header]')) return 'ignore'
+  return has('[data-title], [data-fcc-filename]') ? 'open' : 'toggle'
 }
 
-/** Height of a mounted COLLAPSED Pierre file-pair row, in px.
- *
- *  Load-bearing, not cosmetic: a staged row reserves exactly this, so releasing
- *  it swaps content at an unchanged height and the transcript does not move
- *  under the reader. Measured on a real browser against a session carrying 28
- *  such rows — every one of them 36px — and `.fcc-row` contributes no box of its
- *  own, so the placeholder's own 36px IS the row's height. A drift here is a
- *  scroll jump per released row, so `FileChangeChips.staging.test.tsx` pins the
- *  placeholder to it rather than trusting the class to stay `h-9`. */
-export const STAGED_ROW_HEIGHT_PX = 36
+function RowMetadata({ added, removed, isArtifact }: {
+  added: number
+  removed: number
+  isArtifact?: boolean
+}) {
+  return (
+    <span
+      data-testid="fcc-metadata"
+      className="ml-auto flex min-w-0 items-center gap-2"
+    >
+      <span className="flex items-center gap-2">
+        {isArtifact && (
+          <span
+            data-fcc-artifact-badge
+            className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-border text-muted font-medium"
+            title={i18nT('components.fileChangeChips.this_document_is_tracked_as_a_session_artifact_n')}
+          >
+            {i18nT('components.fileChangeChips.artifact')}
+          </span>
+        )}
+        <span
+          data-fcc-secondary-metadata
+          className={isArtifact ? 'flex max-[420px]:hidden' : 'flex'}
+        >
+          <DiffStatBar added={added} removed={removed} />
+        </span>
+      </span>
+    </span>
+  )
+}
 
-/**
- * Whether this row may mount its Pierre file-pair yet.
- *
- * `immediate` bypasses staging entirely for the rows where a placeholder would
- * be wrong rather than merely early — see the call site for which those are.
- */
+function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onToggle }: {
+  fc: FileChangeEntry
+  added: number
+  removed: number
+  isArtifact?: boolean
+  onFileOpen?: (path: string) => void
+  onToggle: () => void
+}) {
+  const name = basename(fc.path)
+  return (
+    /* Header whitespace delegates through ExpandedRow's outer click listener;
+       the chevron remains the keyboard disclosure control and the filename
+       remains a separate file-open action. */
+    <div
+      data-fcc-header
+      data-testid={`fcc-header-${fc.path}`}
+      className="flex items-center gap-2 min-h-[36px] px-[10px] py-1.5 bg-[color-mix(in_srgb,var(--bg-elevated)_50%,var(--bg))] font-mono text-[12px] leading-[18px] text-muted"
+    >
+      <button
+        data-testid={`fcc-toggle-${fc.path}`}
+        onClick={e => { e.stopPropagation(); onToggle() }}
+        aria-expanded={false}
+        aria-label={i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })}
+        className="shrink-0 flex items-center justify-center w-[16px] h-[16px] rounded text-muted hover:text-text cursor-pointer bg-transparent border-none"
+      >
+        <ChevronRight size={13} />
+      </button>
+      <FileDiff size={13} className="shrink-0 text-muted" aria-hidden />
+      {onFileOpen ? (
+        <button
+          type="button"
+          data-fcc-filename
+          className="min-w-0 truncate text-left text-muted hover:text-accent cursor-pointer bg-transparent border-none p-0 font-mono text-[12px]"
+          onClick={e => { e.stopPropagation(); onFileOpen(fc.path) }}
+          title={fc.path}
+          aria-label={i18nT('components.fileChangeChips.open_in_side_panel', { path: fc.path })}
+        >
+          {name}
+        </button>
+      ) : (
+        <span className="min-w-0 truncate" title={fc.path} data-fcc-filename>{name}</span>
+      )}
+      <RowMetadata added={added} removed={removed} isArtifact={isArtifact} />
+      <span className="flex min-w-[8ch] items-center justify-end gap-1">
+        <Stats added={added} removed={removed} />
+      </span>
+    </div>
+  )
+}
+
+const ROW_WARM_FALLBACK_MAX_CHARS = 8_000
+const ROW_WARM_FALLBACK_ELLIPSIS = String.fromCodePoint(0x2026)
+
 function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey, sideBySide }: {
   fc: FileChangeEntry
   added: number
@@ -105,26 +176,17 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
   // Held mounted for one animation after `open` goes false, so collapsing has
   // a frame to animate in before Pierre drops the body.
   const [closing, setClosing] = useState(false)
-  // Two kinds of row must never be staged, both for height stability:
-  //  - one the reader has expanded (or is collapsing): its body is the point,
-  //    and a placeholder would take it away mid-gesture;
-  //  - a degenerate change whose two sides are identical, which Pierre renders
-  //    as an EMPTY container measuring 0px. Reserving a header's height for that
-  //    one would ADD height on release rather than match it — the scroll jump
-  //    this design exists to avoid, inverted.
-  const degenerate = fc.before === fc.after
-  // Latch identity: stable across virtualizer remounts of the same change row.
-  // Path + side lengths distinguishes rows well enough; a collision merely
-  // mounts a row without queueing, which is the latch's effect anyway.
-  const mounted = useStagedMount(
-    open || closing || degenerate,
-    `${fc.path}\u0000${fc.before.length}\u0000${fc.after.length}`,
-  )
   const rowRef = useRef<HTMLDivElement>(null)
+  const pierreToggleRef = useRef<HTMLButtonElement | null>(null)
+  const openFocusPending = useRef(false)
+  const collapseFocusPending = useRef(false)
+  const [focusProxy, setFocusProxy] = useState(false)
+  const renderPierre = open || closing
   // Pierre titles the header from `name`; the full path would wrap the row and
   // bury the filename, so the row shows the basename and the path stays on the
   // Open button's tooltip.
   const name = basename(fc.path)
+  const toggleLabel = i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })
   const oldFile = useMemo(() => ({ name, contents: fc.before }), [name, fc.before])
   const newFile = useMemo(() => ({ name, contents: fc.after }), [name, fc.after])
   // Depend on WHETHER a file-open handler exists, never on its identity: the
@@ -135,16 +197,24 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
   const clickableTitle = !!onFileOpen
   const options = useMemo(
     () => ({
-      collapsed: !open && !closing,
+      collapsed: false,
       diffStyle: (sideBySide ? 'split' : 'unified') as 'split' | 'unified',
       overflow: 'wrap' as const,
       disableFileHeader: false,
       unsafeCSS: (closing ? ROW_CSS_CLOSING : ROW_CSS_OPEN) + (clickableTitle ? ROW_CSS_CLICKABLE_TITLE : ''),
     }),
-    [open, closing, clickableTitle, sideBySide],
+    [closing, clickableTitle, sideBySide],
   )
   useEffect(() => {
-    if (!closing) return
+    if (!closing) {
+      if (collapseFocusPending.current) {
+        collapseFocusPending.current = false
+        rowRef.current?.querySelector<HTMLElement>('[data-testid^="fcc-toggle-"]')?.focus()
+        rowRef.current?.removeAttribute('tabindex')
+        setFocusProxy(false)
+      }
+      return
+    }
     const t = setTimeout(() => setClosing(false), ROW_ANIM_MS)
     return () => clearTimeout(t)
   }, [closing])
@@ -154,22 +224,66 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
     // so a stale `closing` keeps hiding a row that is now open — the row snaps
     // shut and springs back. `setClosing(open)` arms it on collapse and disarms
     // it on reopen, and the effect above cancels the pending timer either way.
+    const focusInside = !!rowRef.current?.contains(document.activeElement)
+    openFocusPending.current = !open && focusInside
+    collapseFocusPending.current = open && focusInside
+    const handoffPending = openFocusPending.current || collapseFocusPending.current
+    setFocusProxy(handoffPending)
+    if (handoffPending && rowRef.current) {
+      rowRef.current.tabIndex = -1
+      rowRef.current.focus({ preventScroll: true })
+    }
     setClosing(open)
     setOpen(v => !v)
     // The transcript may be pinned to the bottom, so growing content pushes the
     // header up and out. `nearest` reveals it again with the smallest possible
     // correction rather than fighting the auto-follow.
-    if (!open) requestAnimationFrame(() => rowRef.current?.scrollIntoView({ block: 'nearest' }))
+    if (!open) {
+      requestAnimationFrame(() => {
+        rowRef.current?.scrollIntoView({ block: 'nearest' })
+        completeOpenFocus()
+      })
+    }
   }
+  const onRowBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    // A delayed lazy mount or collapse timer may finish after the user has
+    // deliberately moved elsewhere. Keep the handoff only while focus moves
+    // within this row; never reclaim a different control's focus later.
+    if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return
+    openFocusPending.current = false
+    collapseFocusPending.current = false
+    setFocusProxy(false)
+    e.currentTarget.removeAttribute('tabindex')
+  }
+  const onRowKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!focusProxy || e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+    e.preventDefault()
+    toggle()
+  }
+  const completeOpenFocus = useCallback(() => {
+    const el = pierreToggleRef.current
+    if (!el || !openFocusPending.current) return
+    if (typeof window !== 'undefined' && window.getComputedStyle(el).visibility === 'hidden') return
+    el.focus()
+    if (!el.matches(':focus')) return
+    openFocusPending.current = false
+    setFocusProxy(false)
+    rowRef.current?.removeAttribute('tabindex')
+  }, [])
+  const setPierreToggle = useCallback((el: HTMLButtonElement | null) => {
+    pierreToggleRef.current = el
+    completeOpenFocus()
+  }, [completeOpenFocus])
   // The chevron is the explicit toggle; header whitespace toggles too (see
   // `headerClickAction`), while the filename opens the file — so clicking the
   // filename never collapses the diff out from under it.
   const prefix = () => (
     <button
+      ref={setPierreToggle}
       data-testid={`fcc-toggle-${fc.path}`}
       onClick={toggle}
       aria-expanded={open}
-      aria-label={i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })}
+      aria-label={toggleLabel}
       className="shrink-0 flex items-center justify-center w-[16px] h-[16px] rounded text-muted hover:text-text cursor-pointer bg-transparent border-none"
     >
       {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -218,11 +332,12 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
     </span>
   )
   return (
-    /* This wrapper delegates clicks to Pierre's shadow-DOM filename; it is not
-       itself the control, so a role and tab stop here would announce a button
-       that spans the whole diff. The keyboard and screen-reader path is the
-       visually-hidden Open button in the filename-suffix slot above. */
-    /* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */
+    /* This wrapper delegates clicks to Pierre's shadow-DOM filename and is
+       normally not a control. While a lazy/animated mount swap parks focus on
+       the persistent row, it temporarily exposes the chevron's disclosure
+       semantics and keyboard handling; the real chevron retakes focus and the
+       proxy semantics are removed as soon as the handoff completes. */
+    /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
       ref={rowRef}
       data-testid={`fcc-row-${fc.path}`}
@@ -233,32 +348,35 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
          flat tree, so hovering the filename picks this up. */
       title={fc.path}
       onClick={onRowClick}
-      aria-busy={!mounted}
+      onBlur={onRowBlur}
+      onKeyDown={onRowKeyDown}
+      role={focusProxy ? 'button' : undefined}
+      aria-label={focusProxy ? toggleLabel : undefined}
+      aria-expanded={focusProxy ? open : undefined}
     >
-      {mounted ? (
+      {renderPierre ? (
         <PierreFilePair
           oldFile={oldFile}
           newFile={newFile}
           options={options}
+          fallbackText={fc.after.length > ROW_WARM_FALLBACK_MAX_CHARS
+            ? `${fc.after.slice(0, ROW_WARM_FALLBACK_MAX_CHARS)}\n${ROW_WARM_FALLBACK_ELLIPSIS}`
+            : fc.after}
+          fallbackClassName="max-h-[376px] overflow-auto"
+          onVisible={completeOpenFocus}
           renderHeaderPrefix={prefix}
           renderHeaderFilenameSuffix={filenameSuffix}
           renderHeaderMetadata={metadata}
         />
       ) : (
-        /* The staged stand-in. Same height, same three things in the same
-           places, so releasing the row reads as the text sharpening rather than
-           as the layout moving. The chevron is the live control: pressing it
-           sets `open`, which makes the row immediate and mounts it at once. */
-        <div
-          className="flex items-center gap-2 px-2 font-mono text-[13px] text-muted animate-pulse motion-reduce:animate-none"
-          style={{ height: STAGED_ROW_HEIGHT_PX }}
-        >
-          {prefix()}
-          <span className="truncate min-w-0">{name}</span>
-          <span className="ml-auto shrink-0">
-            <DiffStatBar added={added} removed={removed} />
-          </span>
-        </div>
+        <CollapsedRowHeader
+          fc={fc}
+          added={added}
+          removed={removed}
+          isArtifact={isArtifact}
+          onFileOpen={onFileOpen}
+          onToggle={toggle}
+        />
       )}
     </div>
   )
@@ -374,9 +492,10 @@ function MinimalChip({ fc, onClick }: { fc: FileChangeEntry; onClick: () => void
 /**
  * Renders the file-change block below an assistant message.
  *
- * - `expanded` (default): one card, one Pierre diff per changed file collapsed
- *   to its native header. Clicking a header expands that file's diff INLINE;
- *   the header's Open button routes to the side-panel file tab instead.
+ * - `expanded` (default): one card with a lightweight summary header per
+ *   changed file. Closed rows never load Pierre. Clicking a header expands the
+ *   file inline and mounts Pierre until the row finishes collapsing; the
+ *   filename opens the side-panel file tab when that action is available.
  * - `minimal`: stats-only glass pills that wrap, filename on hover. Clicking
  *   one still opens the standalone diff tab via `onOpenDiff`.
  */

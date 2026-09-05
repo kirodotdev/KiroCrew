@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "fixture-healthy": {
+      "command": "python3",
+      "args": [
+        "-u",
+        "-c",
+        "import sys; sys.stdin.buffer.read()"
+      ],
+      "env": {}
+    },
+    "fixture-broken": {
+      "command": "kirocrew-fixture-missing-binary",
+      "args": [],
+      "env": {
+        "FIXTURE_API_TOKEN": "fixture-placeholder-not-secret"
+      },
+      "disabled": true
+    }
+  }
+}

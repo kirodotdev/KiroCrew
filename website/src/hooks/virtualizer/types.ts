@@ -18,6 +18,14 @@ export interface UseVirtualChatOptions<T> {
    */
   getStableId?: (item: T, index: number) => string
   /**
+   * SECOND stable id for the same row, from its LEAD message. Persisted
+   * alongside `getStableId`'s value so a saved reading position resolves when
+   * EITHER end of the row survived: appends rename the tail, an older page
+   * landing renames the lead. Optional -- without it a restore matches on the
+   * tail id alone, which is the previous behaviour.
+   */
+  getAltId?: (item: T, index: number) => string
+  /**
    * Display index at (or below) which the older-history prefetch fires — the
    * caller's own notion of "close enough to the top". ChatPage passes the
    * index of the SECOND USER MESSAGE from the top of the loaded transcript,
@@ -215,4 +223,8 @@ export interface UseVirtualChatReturn<T> {
   mountIndex: (index: number) => boolean
   /** Ref callback used per-item to register ResizeObserver measurement. */
   measureRef: (index: number) => (el: HTMLElement | null) => void
+  /** True while an anchored entry is still waiting for its row to hydrate, so a
+   *  caller can cover the transcript instead of letting the reader watch it
+   *  assemble and then jump. Always false for an entry with no saved anchor. */
+  restoreGate: boolean
 }

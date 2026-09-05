@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 
 import pytest
 
 from kiro_crew.subagent_persistence import (
+    _CLEANUP_IDENTITY_LOCK,
+    _LIVE_CLEANUP_IDENTITIES,
     create_agent_folder,
     delete_agent_folder,
     list_orphans,
     mark_delivered,
     prune_stale_tombstones,
     read_state,
+    read_tombstone,
     record_slow_command,
+    remember_live_cleanup_identity,
     update_state,
     write_result_chunk,
     write_tombstone,
@@ -28,9 +33,11 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 @pytest.fixture()
 def agent_root(tmp_path, monkeypatch):
-    """Point persistence at a temp directory."""
-    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", tmp_path)
-    return tmp_path
+    """Point persistence at a registry below this test's temp directory."""
+    root = tmp_path / "subagents"
+    root.mkdir()
+    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", root)
+    return root
 
 
 # ── create_agent_folder ──────────────────────────────────────────────
@@ -73,6 +80,21 @@ class TestUpdateState:
         assert state["task"] == "original"
         assert state["pid"] == 99
 
+    def test_corrupt_or_nonobject_state_skips_update(self, agent_root, monkeypatch):
+        import kiro_crew.subagent_persistence as sp
+
+        create_agent_folder("u-corrupt", task="t")
+        path = agent_root / "u-corrupt" / "state.json"
+        path.write_bytes(b"\xff")
+        assert update_state("u-corrupt", pid=1) is False
+
+        path.write_text("[]", encoding="utf-8")
+        assert update_state("u-corrupt", pid=1) is False
+
+        path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(sp.json, "loads", lambda _text: (_ for _ in ()).throw(RecursionError()))
+        assert update_state("u-corrupt", pid=1) is False
+
     def test_missing_folder_logs_no_crash(self, agent_root):
         # Should not raise
         update_state("nonexistent", pid=1)
@@ -96,6 +118,50 @@ class TestReadState:
         folder.mkdir()
         (folder / "state.json").write_text("{corrupt")
         assert read_state("bad") is None
+
+    def test_invalid_encoding_depth_and_nonobject_return_none(
+        self, agent_root, monkeypatch
+    ):
+        import kiro_crew.subagent_persistence as sp
+
+        folder = agent_root / "bad-shapes"
+        folder.mkdir()
+        path = folder / "state.json"
+        path.write_bytes(b"\xff")
+        assert read_state("bad-shapes") is None
+
+        path.write_text("[]", encoding="utf-8")
+        assert read_state("bad-shapes") is None
+
+        path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            sp.json,
+            "loads",
+            lambda _text: (_ for _ in ()).throw(RecursionError()),
+        )
+        assert read_state("bad-shapes") is None
+
+
+class TestReadTombstone:
+    def test_reads_only_valid_tombstone_objects(self, agent_root):
+        create_agent_folder("rt1", task="t")
+        assert read_tombstone("rt1") is None
+
+        write_tombstone(
+            "rt1",
+            cause="timeout",
+            recovery_action="notified",
+            session_id="sid-read",
+        )
+        assert (read_tombstone("rt1") or {})["session_id"] == "sid-read"
+
+        path = agent_root / "rt1" / "tombstone.json"
+        path.write_text("{corrupt", encoding="utf-8")
+        assert read_tombstone("rt1") is None
+        path.write_text("[]", encoding="utf-8")
+        assert read_tombstone("rt1") is None
+        path.write_text("[" * 1100 + "0" + "]" * 1100, encoding="utf-8")
+        assert read_tombstone("rt1") is None
 
 
 # ── write_result_chunk ───────────────────────────────────────────────
@@ -128,6 +194,172 @@ class TestWriteTombstone:
         ts = json.loads((agent_root / "t2" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["pid"] == 999
         assert ts["turns"] == 12
+
+    def test_live_identity_snapshot_never_reads_sidecar(self, agent_root):
+        from unittest.mock import patch
+
+        import kiro_crew.subagent_persistence as sp
+
+        agent_id = "t-memory-only-snapshot"
+        create_agent_folder(agent_id, task="t")
+        with _CLEANUP_IDENTITY_LOCK:
+            _LIVE_CLEANUP_IDENTITIES[agent_id] = [
+                {"session_id": "sid-memory", "provider": "acp"}
+            ]
+        with patch.object(
+            sp,
+            "_read_cleanup_identities_file",
+            side_effect=AssertionError("event-loop snapshot read sidecar"),
+        ):
+            write_tombstone(agent_id, cause="error", recovery_action="none")
+        assert (read_tombstone(agent_id) or {})["session_id"] == "sid-memory"
+
+    def test_live_identity_snapshot_does_not_wait_and_delete_clears_fallback(
+        self, agent_root
+    ):
+        agent_id = "t-identity-lock"
+        create_agent_folder(agent_id, task="t")
+        with _CLEANUP_IDENTITY_LOCK:
+            _LIVE_CLEANUP_IDENTITIES[agent_id] = [
+                {"session_id": "sid-lock", "provider": "acp"}
+            ]
+            write_tombstone(agent_id, cause="error", recovery_action="none")
+        assert (read_tombstone(agent_id) or {})["session_id"] == "sid-lock"
+
+        delete_id = "t-delete-fallback"
+        create_agent_folder(delete_id, task="t")
+        with _CLEANUP_IDENTITY_LOCK:
+            _LIVE_CLEANUP_IDENTITIES[delete_id] = [{"session_id": "sid-delete"}]
+        delete_agent_folder(delete_id)
+        assert delete_id not in _LIVE_CLEANUP_IDENTITIES
+
+    def test_live_identity_published_before_sidecar_read(self, agent_root):
+        from unittest.mock import patch
+
+        import kiro_crew.subagent_persistence as sp
+
+        agent_id = "t-prepublish"
+        create_agent_folder(agent_id, task="t")
+        entered_read = threading.Event()
+        allow_read = threading.Event()
+        errors: list[BaseException] = []
+        original_read = sp._read_cleanup_identities_file
+
+        def blocked_read(run_id: str):
+            entered_read.set()
+            assert allow_read.wait(timeout=5)
+            return original_read(run_id)
+
+        def remember() -> None:
+            try:
+                sp.remember_live_cleanup_identity(
+                    agent_id, session_id="sid-prepublish", provider="acp"
+                )
+            except BaseException as exc:  # surfaced after unconditional join
+                errors.append(exc)
+
+        worker = threading.Thread(target=remember)
+        with patch.object(sp, "_read_cleanup_identities_file", blocked_read):
+            worker.start()
+            assert entered_read.wait(timeout=5)
+            try:
+                write_tombstone(agent_id, cause="error", recovery_action="none")
+                assert (read_tombstone(agent_id) or {})["session_id"] == "sid-prepublish"
+                sp.publish_live_cleanup_identity(
+                    agent_id,
+                    session_id="sid-concurrent",
+                    provider="acp",
+                )
+            finally:
+                allow_read.set()
+                worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert errors == []
+        durable = json.loads(sp._cleanup_identities_path(agent_id).read_text())
+        assert [item["session_id"] for item in durable["identities"]] == [
+            "sid-prepublish",
+            "sid-concurrent",
+        ]
+
+    def test_protected_record_stays_inside_test_temp_root(self, agent_root):
+        import kiro_crew.subagent_persistence as sp
+
+        agent_id = "protected-test-root"
+        create_agent_folder(agent_id, task="t")
+        sp.remember_live_cleanup_identity(
+            agent_id,
+            session_id="sid-contained",
+            provider="acp",
+            keep=False,
+        )
+        protected_path = sp._cleanup_identities_path(agent_id)
+        assert protected_path.is_relative_to(agent_root.parent)
+        assert protected_path.exists()
+
+    def test_concurrent_publish_during_sidecar_write_is_not_overwritten(
+        self, agent_root
+    ):
+        from unittest.mock import patch
+
+        import kiro_crew.subagent_persistence as sp
+
+        agent_id = "t-append-only-publish"
+        create_agent_folder(agent_id, task="t")
+        entered_write = threading.Event()
+        allow_write = threading.Event()
+        errors: list[BaseException] = []
+        original_write = sp._atomic_write
+
+        def blocked_write(path, data):  # type: ignore[no-untyped-def]
+            if path.name == sp._CLEANUP_IDENTITIES_FILE:
+                entered_write.set()
+                assert allow_write.wait(timeout=5)
+            return original_write(path, data)
+
+        def remember_first() -> None:
+            try:
+                sp.remember_live_cleanup_identity(
+                    agent_id,
+                    session_id="sid-first",
+                    provider="acp",
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=remember_first)
+        with patch.object(sp, "_atomic_write", side_effect=blocked_write):
+            worker.start()
+            assert entered_write.wait(timeout=5)
+            try:
+                sp.publish_live_cleanup_identity(
+                    agent_id,
+                    session_id="sid-second",
+                    provider="acp",
+                )
+                write_tombstone(agent_id, cause="error", recovery_action="none")
+            finally:
+                allow_write.set()
+                worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert errors == []
+        tombstone = read_tombstone(agent_id) or {}
+        assert [item["session_id"] for item in tombstone["cleanup_identities"]] == [
+            "sid-first",
+            "sid-second",
+        ]
+        assert [
+            item["session_id"] for item in sp._live_cleanup_identities(agent_id)
+        ] == ["sid-first", "sid-second"]
+
+    def test_snapshots_cleanup_identity_from_readable_state(self, agent_root):
+        create_agent_folder("t3", task="t")
+        update_state("t3", session_id="sid-state", provider="claude_code", cwd="/project")
+        write_tombstone("t3", cause="gateway_restart", recovery_action="delivered")
+        ts = json.loads((agent_root / "t3" / "tombstone.json").read_text(encoding="utf-8"))
+        assert ts["session_id"] == "sid-state"
+        assert ts["provider"] == "claude_code"
+        assert ts["cwd"] == "/project"
 
 
 # ── delete_agent_folder ──────────────────────────────────────────────
@@ -188,6 +420,243 @@ class TestPruneStaleTombstones:
         write_tombstone("new1", cause="timeout", recovery_action="delivered")
         prune_stale_tombstones(max_age_days=7)
         assert (agent_root / "new1").exists()
+
+    @pytest.mark.parametrize(
+        "died_case",
+        ["string", "nan", "infinity", "future", "oversized"],
+    )
+    def test_invalid_tombstone_died_uses_mtime_fallback(
+        self, agent_root, monkeypatch, died_case
+    ):
+        agent_id = f"invalid-died-{died_case}"
+        create_agent_folder(agent_id, task="t")
+        update_state(agent_id, session_id="sid-died", provider="acp", keep=False)
+        remember_live_cleanup_identity(
+            agent_id,
+            session_id="sid-died",
+            provider="acp",
+            keep=False,
+        )
+        write_tombstone(
+            agent_id,
+            cause="delivered",
+            recovery_action="notified",
+            session_id="sid-died",
+        )
+        ts_path = agent_root / agent_id / "tombstone.json"
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
+        ts["died"] = {
+            "string": "invalid",
+            "nan": float("nan"),
+            "infinity": float("inf"),
+            "future": time.time() + 86400,
+            "oversized": 10**400,
+        }[died_case]
+        ts_path.write_text(json.dumps(ts), encoding="utf-8")
+        fallback = time.time() - (2 * 86400)
+        os.utime(ts_path, (fallback, fallback))
+
+        cleaned: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.subagent_persistence._cleanup_session_files_sync",
+            lambda sid, provider, *, cwd="": cleaned.append(sid),
+        )
+        assert prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 1
+        assert cleaned == ["sid-died"]
+        assert not (agent_root / agent_id).exists()
+
+    def test_mtime_fallback_at_cutoff_is_eligible(self, agent_root, monkeypatch):
+        import kiro_crew.subagent_persistence as sp
+
+        agent_id = "mtime-at-cutoff"
+        create_agent_folder(agent_id, task="t")
+        update_state(agent_id, session_id="sid-cutoff", provider="acp", keep=False)
+        remember_live_cleanup_identity(
+            agent_id,
+            session_id="sid-cutoff",
+            provider="acp",
+            keep=False,
+        )
+        write_tombstone(
+            agent_id,
+            cause="delivered",
+            recovery_action="notified",
+            session_id="sid-cutoff",
+        )
+        ts_path = agent_root / agent_id / "tombstone.json"
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
+        ts["died"] = 0
+        ts_path.write_text(json.dumps(ts), encoding="utf-8")
+        os.utime(ts_path, (100.0, 100.0))
+        monkeypatch.setattr(sp.time, "time", lambda: 100.0)
+
+        cleaned: list[str] = []
+        monkeypatch.setattr(
+            sp,
+            "_cleanup_session_files_sync",
+            lambda sid, provider, *, cwd="": cleaned.append(sid),
+        )
+        assert prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 1
+        assert cleaned == ["sid-cutoff"]
+        assert not (agent_root / agent_id).exists()
+
+    def test_future_died_and_mtime_preserve_unreadable_state_grace(
+        self, agent_root, monkeypatch
+    ):
+        """Clock rollback must not turn unknown retention into immediate cleanup."""
+        import kiro_crew.subagent_persistence as sp
+
+        agent_id = "future-died-and-mtime"
+        create_agent_folder(agent_id, task="t")
+        update_state(agent_id, session_id="sid-future", provider="acp", keep=False)
+        write_tombstone(
+            agent_id,
+            cause="delivered",
+            recovery_action="notified",
+            session_id="sid-future",
+        )
+        state_path = agent_root / agent_id / "state.json"
+        state_path.write_text("{corrupt", encoding="utf-8")
+        ts_path = agent_root / agent_id / "tombstone.json"
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
+        ts["died"] = 200.0
+        ts_path.write_text(json.dumps(ts), encoding="utf-8")
+        os.utime(ts_path, (200.0, 200.0))
+        monkeypatch.setattr(sp.time, "time", lambda: 100.0)
+
+        cleaned: list[str] = []
+        monkeypatch.setattr(
+            sp,
+            "_cleanup_session_files_sync",
+            lambda sid, provider, *, cwd="": cleaned.append(sid),
+        )
+        assert prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 0
+        assert cleaned == []
+        assert (agent_root / agent_id).exists()
+
+    @pytest.mark.parametrize(
+        ("state_case", "expect_cleanup"),
+        [
+            pytest.param("partial-nonkeep", True, id="partial-state-cleans"),
+            pytest.param(
+                "initial-keep-write-missed", True, id="missing-keep-in-readable-state-cleans"
+            ),
+            pytest.param("corrupt", False, id="corrupt-state-skips-cleanup"),
+            pytest.param("non-object", False, id="non-object-state-skips-cleanup"),
+            pytest.param("promoted-keep", False, id="promoted-state-retains"),
+            pytest.param("string-false", True, id="string-false-cleans"),
+        ],
+    )
+    def test_prune_uses_trusted_identity_with_safe_live_state(
+        self, agent_root, monkeypatch, state_case, expect_cleanup
+    ):
+        """Gateway publication supplies identity; live state owns retention intent."""
+        agent_id = "retention-case"
+        session_id = "session-retention"
+        create_agent_folder(agent_id, task="t")
+        if state_case == "initial-keep-write-missed":
+            update_state(agent_id, provider="acp")
+        else:
+            update_state(agent_id, provider="acp", keep=False)
+        remember_live_cleanup_identity(
+            agent_id,
+            session_id=session_id,
+            provider="acp",
+            keep=False,
+        )
+        write_tombstone(
+            agent_id,
+            cause="timeout",
+            recovery_action="notified",
+            session_id=session_id,
+        )
+
+        state_path = agent_root / agent_id / "state.json"
+        if state_case == "corrupt":
+            state_path.write_text("{corrupt", encoding="utf-8")
+        elif state_case == "non-object":
+            state_path.write_text("[]", encoding="utf-8")
+        elif state_case == "promoted-keep":
+            update_state(agent_id, keep=True)
+        elif state_case == "string-false":
+            update_state(agent_id, keep="false")
+
+        ts_path = agent_root / agent_id / "tombstone.json"
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
+        ts["died"] = time.time() - ((7 * 86400) + (12 * 3600))
+        ts_path.write_text(json.dumps(ts), encoding="utf-8")
+        cleaned: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.subagent_persistence._cleanup_session_files_sync",
+            lambda sid, provider, *, cwd="": cleaned.append(sid),
+        )
+
+        invalid_state = state_case in {"corrupt", "non-object"}
+        bounded_grace = invalid_state
+        if bounded_grace:
+            assert prune_stale_tombstones(max_age_days=7) == 0
+            assert cleaned == []
+            assert (agent_root / agent_id).exists()
+            quarantined = json.loads(ts_path.read_text(encoding="utf-8"))
+            assert "state_unreadable_at" not in quarantined
+            quarantined["died"] = time.time() - (9 * 86400)
+            ts_path.write_text(json.dumps(quarantined), encoding="utf-8")
+
+            assert prune_stale_tombstones(max_age_days=7) == 1
+            assert cleaned == [session_id]
+            assert not (agent_root / agent_id).exists()
+        elif state_case == "promoted-keep":
+            assert prune_stale_tombstones(max_age_days=7) == 0
+            assert cleaned == []
+            assert (agent_root / agent_id).exists()
+            update_state(agent_id, keep=False)
+            assert prune_stale_tombstones(max_age_days=7) == 1
+            assert cleaned == [session_id]
+            assert not (agent_root / agent_id).exists()
+        else:
+            assert prune_stale_tombstones(max_age_days=7) == 1
+            assert cleaned == ([session_id] if expect_cleanup else [])
+            assert not (agent_root / agent_id).exists()
+
+    @pytest.mark.parametrize(
+        ("state_case", "expected_cleanup"),
+        [
+            pytest.param("corrupt", [], id="unreadable-without-tombstone-id"),
+            pytest.param("readable", ["sid-state-only"], id="state-only-id-no-grace"),
+        ],
+    )
+    def test_extra_grace_requires_trusted_cleanup_identity(
+        self, agent_root, monkeypatch, state_case, expected_cleanup
+    ):
+        agent_id = f"no-tombstone-id-{state_case}"
+        create_agent_folder(agent_id, task="t")
+        write_tombstone(agent_id, cause="timeout", recovery_action="notified")
+        update_state(agent_id, session_id="sid-state-only", provider="acp")
+        if state_case == "readable":
+            remember_live_cleanup_identity(
+                agent_id,
+                session_id="sid-state-only",
+                provider="acp",
+                keep=False,
+            )
+        state_path = agent_root / agent_id / "state.json"
+        if state_case == "corrupt":
+            state_path.write_text("{corrupt", encoding="utf-8")
+
+        ts_path = agent_root / agent_id / "tombstone.json"
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
+        assert "session_id" not in ts
+        ts["died"] = time.time() - (8 * 86400)
+        ts_path.write_text(json.dumps(ts), encoding="utf-8")
+        cleaned: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.subagent_persistence._cleanup_session_files_sync",
+            lambda sid, provider, *, cwd="": cleaned.append(sid),
+        )
+
+        assert prune_stale_tombstones(max_age_days=7) == 1
+        assert cleaned == expected_cleanup
+        assert not (agent_root / agent_id).exists()
 
     def test_keeps_non_tombstoned_folders(self, agent_root):
         create_agent_folder("running1", task="t")
@@ -441,6 +910,7 @@ class TestPerTurnStateUpdates:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.session_id = "session-live"
 
         async def _stream(*_a, **_kw):
             yield LLMEvent(kind=EVENT_COMPLETE)
@@ -466,6 +936,9 @@ class TestPerTurnStateUpdates:
 
         state = json.loads((agent_root / info.id / "state.json").read_text(encoding="utf-8"))
         assert state["pid"] == 42
+        assert state["session_id"] == "session-live"
+        assert info._session_id == "session-live"
+        assert info._session_provider == state["provider"]
         assert "pid_recorded_at" in state
         assert isinstance(state["pid_recorded_at"], float)
 
@@ -539,7 +1012,19 @@ class TestTombstoneOnAbnormalExit:
         manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
 
         info = SubagentInfo(id="timeout1", task="t", parent_session_key="dashboard:default")
+        info._session_id = "session-live"
+        info._session_provider = "claude_code"
+        info._session_cwd = "/project"
+        info.keep = True
         create_agent_folder("timeout1", task="t")
+        from kiro_crew.subagent_persistence import remember_live_cleanup_identity
+
+        remember_live_cleanup_identity(
+            "timeout1",
+            session_id="session-live",
+            provider="claude_code",
+            cwd="/project",
+        )
         manager._agents["timeout1"] = info
         manager._running_count = 1
 
@@ -549,6 +1034,10 @@ class TestTombstoneOnAbnormalExit:
 
         ts = json.loads((agent_root / "timeout1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "timeout"
+        assert ts["session_id"] == "session-live"
+        assert ts["provider"] == "claude_code"
+        assert ts["cwd"] == "/project"
+        assert "keep" not in ts
 
     @pytest.mark.asyncio
     async def test_timeout_skipped_when_already_reaped(self, agent_root):

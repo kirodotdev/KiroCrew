@@ -1236,7 +1236,9 @@ async def _worktree_remove_locked(
                         force,
                         (verdict_oid or "").strip()[:12] if verdict_oid else "none",
                     )
-                _err = runtime._redact((stderr or stdout).strip()[:300])
+                # Redact the FULL text, then bound: slicing first can cut a
+                # credential into fragments no redaction regex matches.
+                _err = runtime._redact((stderr or stdout).strip())[:300]
                 if pending_discard is not None:
                     # The discard already ran. Every failure mode we can name in
                     # advance is refused earlier (lock, protection, dirt), but a
@@ -1992,7 +1994,9 @@ async def _rebase_locked(target: dict) -> dict:
         g = await repository._git_info(path)
         return {"ok": True, "rebased": True, "head": g["head"], "behind": g["behind"]}
     abort_res = await repository._git(path, "rebase", "--abort", timeout=30, mode="strict")
-    tail = runtime._redact((stdout + stderr).strip()[-200:])
+    # Redact the FULL text, then take the tail: a tail cut of already-redacted
+    # text can at worst split a redaction marker, never a secret.
+    tail = runtime._redact((stdout + stderr).strip())[-200:]
     if abort_res is None:
         # Abort itself failed/timed out — the worktree is still mid-rebase.
         # Never report "aborted" when it is not; manual recovery required.

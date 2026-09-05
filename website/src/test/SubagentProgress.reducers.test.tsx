@@ -10,9 +10,16 @@
  */
 import { describe, it, expect } from 'vitest'
 import { createTestStore } from './helpers'
-import { sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentSnapshot } from '../store/chatSlice'
+import { setActiveSlot, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentSnapshot } from '../store/chatSlice'
 
 const ID = 'a1b2c3d4'
+const SNAPSHOT_SLOT = 'chat-subagent-progress'
+
+function snapshotStore() {
+  const store = createTestStore()
+  store.dispatch(setActiveSlot(SNAPSHOT_SLOT))
+  return store
+}
 
 function spawn(store: ReturnType<typeof createTestStore>) {
   const SLOT = store.getState().chat.activeSlot
@@ -79,8 +86,8 @@ describe('subagent progress reducers', () => {
   })
 
   it('sseSubagentSnapshot keeps the idle span across a reconnect', () => {
-    const store = createTestStore()
-    const SLOT = store.getState().chat.activeSlot
+    const store = snapshotStore()
+    const SLOT = SNAPSHOT_SLOT
     store.dispatch(sseSubagentSnapshot(snap({ slot: SLOT, stalled: true, idle_secs: 117 })))
     const a = sub(store)
     expect(a.stalled).toBe(true)
@@ -91,8 +98,8 @@ describe('subagent progress reducers', () => {
   })
 
   it('sseSubagentSnapshot leaves a healthy row without an idle span', () => {
-    const store = createTestStore()
-    const SLOT = store.getState().chat.activeSlot
+    const store = snapshotStore()
+    const SLOT = SNAPSHOT_SLOT
     store.dispatch(sseSubagentSnapshot(snap({ slot: SLOT, stalled: false, idle_secs: 117 })))
     const a = sub(store)
     expect(a.stalled).toBe(false)
@@ -104,8 +111,8 @@ describe('subagent progress reducers', () => {
     // The fallback wording must stay reachable: an older gateway sends
     // `stalled` with no span, and the row should say "no activity" rather than
     // "no activity for undefineds".
-    const store = createTestStore()
-    const SLOT = store.getState().chat.activeSlot
+    const store = snapshotStore()
+    const SLOT = SNAPSHOT_SLOT
     store.dispatch(sseSubagentSnapshot(snap({ slot: SLOT, stalled: true })))
     const a = sub(store)
     expect(a.stalled).toBe(true)

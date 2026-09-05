@@ -98,6 +98,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -205,6 +206,14 @@ _RUN_ID_LEN = 32
 #: a runner that never polls its handle must not be able to block an app's
 #: disable indefinitely, so it is reported instead.
 _CLEANUP_JOIN_SECS = 5.0
+
+#: Upper bound on a record file the disable scan will open. A ``JobRun`` is a
+#: small flat JSON document (its one free-text field is clipped at ingest), so
+#: a megabyte is generous headroom; anything larger in the runs directory is
+#: not a record this SDK wrote and is refused unopened -- the scan's reads walk
+#: agent-writable filenames, and the bound is what keeps a planted giant file
+#: (or a device node reached some other way) from stalling disable.
+_MAX_RECORD_BYTES = 1 << 20
 
 _RUNS_DIRNAME = "jobs"
 
@@ -603,6 +612,14 @@ class JobHandle:
     @property
     def run_id(self) -> str:
         return self._run.run_id
+
+    @property
+    def kind(self) -> str:
+        return self._run.kind
+
+    @property
+    def status(self) -> str:
+        return self._run.status
 
 
 #: A runner receives its handle and nothing else. P1 has no parameter channel:
@@ -1415,6 +1432,14 @@ class JobSDK:
         killed, and abandoning it is the defect rather than the fix.
 
         A worker that outlives the deadline is reported, not waited on forever.
+        Every run this call kills leaves one SEL line (``job_killed_on_disable``)
+        carrying its id and kind before the record is deleted, so "which runs
+        did the disable kill" stays answerable after the records are gone. The
+        trace is fail-closed: if it cannot be written durably, the deletion is
+        refused and reported as a failed cleanup; the surviving records are
+        retried by the next cleanup on a fresh instance (disable also forgets
+        the SDK, so that means after a re-enable, or by ``reconcile`` at the
+        next start).
         Gateway shutdown is a separate case left as accepted residue: these are
         daemon threads, so the interpreter reaps them at exit without a chance
         to finish, and draining every app's runs there would delay shutdown for
@@ -1450,12 +1475,164 @@ class JobSDK:
         if stubborn:
             logger.warning(
                 "App %s: %d job worker(s) did not stop within %.0fs and are still "
-                "running with their records removed: %s",
+                "running with their records removed; run id(s): %s",
                 self._app_name,
                 len(stubborn),
                 _CLEANUP_JOIN_SECS,
                 ", ".join(stubborn),
             )
+
+        # One durable SEL line per run this disable kills, BEFORE the records
+        # are deleted -- deletion is the last moment the identities exist, and
+        # the count-only summary below cannot answer "which runs were killed".
+        # Mirrors the per-run precedent ``reconcile`` set with
+        # ``job_interrupted``. The marker comes from the SAME observation that
+        # feeds the summary's stubborn count -- ``_join_workers`` captures the
+        # run ids alive at their join deadline -- so the summary can never say
+        # "one was stubborn" while no line names it. Stale records are read
+        # once, off the loop; a live entry is skipped only on its IN-MEMORY
+        # terminal status (its worker finished on its own before the discard
+        # landed, so nothing was killed) -- never on its disk record, which an
+        # agent can write.
+        stubborn_ids = set(stubborn)
+        live_ids = {entry.handle.run_id for entry in live}
+
+        def _safe_read(run_id: str) -> JobRun | None:
+            # The scan walks *.json names in an app-writable directory, so a
+            # path here is agent-influenced input: a planted symlink
+            # ``<id>.json -> /dev/zero`` would hang an unbounded follow and
+            # make disable unreachable, and one pointed at a sensitive file
+            # would pull its bytes into a parse attempt. The read goes through
+            # the repository's centralized funnel rather than a hand-rolled
+            # check: ``safe_read_file_bytes_nolink`` opens with ``O_NOFOLLOW``,
+            # validates the OPENED descriptor (regular, non-hardlinked, real
+            # path contained in ``within_root`` -- which also refuses a PARENT
+            # directory swapped for a symlink, the case a final-component
+            # check alone misses), and bounds the read. Every refusal --
+            # permission denied, a Windows sharing violation, a refused link,
+            # an oversized record -- classifies the record unreadable rather
+            # than propagating: an unreadable record must not abort the
+            # disable, and its identity still leaves an ``unreadable`` line.
+            path = self._store.dir / f"{run_id}.json"
+            try:
+                raw = safe_read_file_bytes_nolink(
+                    str(path),
+                    within_root=str(self._store.dir),
+                    max_bytes=_MAX_RECORD_BYTES,
+                )
+            except FileTooLargeError:
+                return None
+            if raw is None:
+                return None
+            try:
+                return JobRun.from_dict(json.loads(raw.decode("utf-8")))
+            except (TypeError, ValueError):
+                return None
+
+        def _scan() -> tuple[list[tuple[str, JobRun]], list[str]]:
+            # Every record is read by CANONICAL FILENAME -- never from an
+            # id-keyed index over parsed bodies: a record file whose BODY
+            # claims another run's id would shadow the real record in such an
+            # index and suppress that run's kill line. A file the guarded
+            # read refuses (symlink, non-file, oversized, unparseable, or a
+            # name that is not a valid run id) still gets deleted by
+            # ``remove_all`` below, so its FILENAME is returned for an
+            # ``unreadable`` line -- an identity must not vanish just because
+            # its record went hostile or corrupt. Live runs' records are
+            # deliberately NOT read at all: the record files sit in an
+            # app-writable directory, so a planted ``status=done`` body would
+            # be an agent-writable veto over its own run's kill line. Whether
+            # a live run was killed is decided purely from in-process state
+            # below.
+            stale: list[tuple[str, JobRun]] = []
+            unreadable: list[str] = []
+            if self._store.dir.is_dir():
+                for path in sorted(self._store.dir.glob("*.json")):
+                    stem = path.stem
+                    if stem in live_ids:
+                        continue
+                    record = _safe_read(stem)
+                    if record is None:
+                        unreadable.append(stem)
+                    elif not record.is_terminal:
+                        stale.append((stem, record))
+            return stale, unreadable
+
+        stale_runs, unreadable_stems = await asyncio.to_thread(_scan)
+        killed: list[str] = []
+        for entry in live:
+            # Whether this run finished on its own is read ONLY from the
+            # in-memory handle -- never from its disk record, which lives in
+            # an app-writable directory where a planted terminal status would
+            # silently suppress the run's kill line. The in-memory status is
+            # set by the worker wrapper itself, post-join, so it is the one
+            # observation an agent cannot forge. A worker
+            # that computed DONE/FAILED before the cancel landed, but whose
+            # terminal write the discard guard then refused, has already
+            # audited its own completion (``job_done``/``job_failed``) while
+            # its record stays non-terminal on disk. Reading the in-memory
+            # status closes that window -- the SEL trail must not carry both a
+            # completion and a kill for one run. Two deliberate exceptions:
+            # CANCELLED means the disable's own signal stopped the worker,
+            # which is exactly a killed run; and a run observed STUBBORN at its
+            # join deadline keeps its line no matter what its status became
+            # afterwards (a post-deadline raise flips it to FAILED), because
+            # the summary already counted it from that same observation and
+            # the count must never name a stubborn run no line identifies.
+            if entry.handle.run_id not in stubborn_ids and entry.handle.status in (DONE, FAILED):
+                continue
+            # An entry whose thread never started is NOT skipped -- its record
+            # is deleted by the same call and skipping would lose the identity
+            # with no line at all (the stale scan excludes live ids). But no
+            # worker existed, so "killed" must not imply one: the line carries
+            # ``never_started`` instead of a kill-shaped claim.
+            if not entry.started:
+                marker = " never_started"
+            elif entry.handle.run_id in stubborn_ids:
+                marker = " still_running"
+            else:
+                marker = ""
+            # The kind is clipped BEFORE the marker is appended: ``_audit``
+            # truncates long lines from the right, and an oversized kind
+            # would push ``still_running``/``never_started`` off the end --
+            # the summary would then count a stubborn run no line marks.
+            killed.append(f"{entry.handle.run_id} kind={entry.handle.kind[:32]}{marker}")
+        # A non-terminal record with no live worker (a foreign process's run
+        # that never got reconciled) vanishes in the same delete, so it gets
+        # the same line, marked ``stale`` because nothing was killed: there was
+        # no worker to kill. Identity comes from the FILENAME stem (the
+        # canonical id), and ``kind`` comes off disk -- the one input here not
+        # minted by this process -- so both are redacted, bounded, or
+        # repr-quoted rather than interpolated raw into a durable SEL field.
+        for stem, record in stale_runs:
+            killed.append(f"{stem[:_RUN_ID_LEN]} kind={_redact(record.kind)[:32]!r} stale")
+        # A file the store cannot parse is deleted by the same ``remove_all``,
+        # and "which file was that" must survive the delete too.
+        for stem in unreadable_stems:
+            killed.append(f"{_redact(stem)[:_RUN_ID_LEN]!r} unreadable stale")
+        if killed:
+            # The kill trace is the ONLY durable answer to "which runs did this
+            # disable kill", so it is fail-closed: each line is written
+            # synchronously (``critical=True``) and a write failure REFUSES the
+            # record deletion below. The records stay on disk -- still
+            # non-terminal, since their handles are discarded -- so a later
+            # cleanup on a fresh instance (after a re-enable, or ``reconcile``
+            # at the next start) resolves them instead of deleting identities
+            # nothing recorded. Reported through the existing partial-cleanup
+            # contract instead of raising into the disable route.
+            def _emit() -> None:
+                for line in killed:
+                    self._audit("job_killed_on_disable", line, "ok", critical=True)
+
+            try:
+                await asyncio.to_thread(_emit)
+            except Exception:  # noqa: BLE001 - refusing the delete IS the handling
+                logger.exception(
+                    "App %s: could not durably audit killed job run(s); record "
+                    "deletion refused so their identities are not lost",
+                    self._app_name,
+                )
+                return CleanupResult(removed=0, failed=len(killed), still_running=len(stubborn))
 
         removed, failed = await asyncio.to_thread(self._store.remove_all)
         if removed or failed:
@@ -1471,7 +1648,11 @@ class JobSDK:
 
     def _join_workers(self, live: list[_Live]) -> list[str]:
         """Wait for each STARTED worker, bounded. Runs on a worker thread, never
-        the loop.
+        the loop. Returns the RUN IDS of workers still alive at their deadline:
+        run ids are unique where thread names are minted per kind, and this one
+        observation feeds the count, the log line, and the per-run SEL marker --
+        two observations taken at different times could disagree, reporting a
+        stubborn count with no line saying which run it was.
 
         An entry whose thread never started is skipped rather than joined, and it
         cannot be stubborn: no code of the app is executing, so there is nothing
@@ -1487,12 +1668,20 @@ class JobSDK:
                 continue
             entry.thread.join(timeout=_CLEANUP_JOIN_SECS)
             if entry.thread.is_alive():
-                stubborn.append(entry.thread.name)
+                stubborn.append(entry.handle.run_id)
         return stubborn
 
     # ── Audit ──
 
-    def _audit(self, operation: str, resources: str, outcome: str, *, error: str = "") -> None:
+    def _audit(
+        self,
+        operation: str,
+        resources: str,
+        outcome: str,
+        *,
+        error: str = "",
+        critical: bool = False,
+    ) -> None:
         try:
             sel().log_api_access(
                 caller=f"app:{self._app_name}",
@@ -1501,8 +1690,13 @@ class JobSDK:
                 source=self._app_name,
                 resources=resources[:200],
                 error=error[:200],
+                critical=critical,
             )
         except Exception:  # noqa: BLE001 - an audit failure must not fail the job
+            # ... unless the caller said it must: ``critical`` re-raises so a
+            # fail-closed audit can refuse the action it was auditing.
+            if critical:
+                raise
             logger.debug("job SEL audit failed", exc_info=True)
 
 

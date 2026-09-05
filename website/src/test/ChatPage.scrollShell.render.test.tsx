@@ -144,7 +144,11 @@ describe('ChatPage invocation: slot membership and prop threading', () => {
       'onScroll={onScrollPin}',
       'virt={virt}',
       'loadingOlder={loadingOlder}',
-      'scrollerStyle={{ paddingBottom: 16 }}',
+      // A PREFIX, not the whole literal: the style object also carries the
+      // restore-gate visibility flip, so pinning the closing braces would pin the
+      // gate's presence into a test about prop THREADING. This still fails on a
+      // duplicated prop and still requires the padding the shell contract needs.
+      'scrollerStyle={{ paddingBottom: 16',
     ]) {
       expect(inv.split(pin).length - 1, pin).toBe(1)
     }

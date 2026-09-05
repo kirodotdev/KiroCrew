@@ -2,6 +2,255 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.6.0] - 2026-09-05
+
+Kiro Crew stops being one agent on one machine: choose the harness that runs
+your sessions, start a chat on another crew you are connected to, and let crew
+members dispatch workers of their own. Chat gets quieter, with folded diffs,
+resumed sessions that stop re-reading their own context, and refused commands
+that tell the agent what it may do instead. Python 3.12 is the new floor.
+
+### Before you upgrade
+
+- **Python 3.12 is now the floor**: a host on 3.10 or 3.11 must move up before
+  installing or updating, and every installer provisions 3.12 itself when the
+  system package manager has none.
+
+### Pick the harness that runs your sessions (Preview)
+
+- **Claude Code, Codex and KAS are selectable harnesses**: turn on Developer
+  Mode in Settings → Developer (off by default), then pick one under
+  Developer → Agent Backend, where each option says whether it is installed,
+  missing on this machine, or waiting on a gateway restart.
+- **A tool pre-approved in Claude's own settings never reaches Crew's approval
+  path**, so its deny rules and audit log do not see that call, and Codex
+  refuses to start while the sandbox is off.
+- **Monitor loops, project changes, follow-up cards and conversation reset work
+  on every backend**, where they previously failed closed outside Kiro CLI.
+
+### Remote crews become one dashboard (Preview)
+
+- **Run a chat on another crew you are connected to**: set `instances.enabled`
+  in `config.json` and turn on Developer → Feature Previews → Chat on a crew
+  (both off by default), then pick the peer under New chat on crew in the
+  sidebar's new-chat menu; the transcript stays local while every turn runs on
+  that crew.
+- **A session that runs elsewhere carries a server badge and the crew's name
+  in your sidebar**, so remote work is openable from the list you already read.
+- **Crews connect themselves** on app load and on tab focus, on by default and
+  switchable at Settings → Remote Instances → Auto-connect crews.
+
+### Chat that stays out of the way
+
+- **Diffs start folded** as a chip naming the file and its +N/-M counts, and
+  Settings → Display → Plain diffs (off by default) renders patches as plain
+  monospace text instead.
+- **A sketch pad and a share action**: the composer's + menu gains a Sketch row
+  that draws an image and attaches it, and an assistant reply's Share as image
+  action exports a branded PNG or prefills an X or LinkedIn post.
+- **The composer says where you are and when it will compact**: its footer
+  shows the project's branch and uncommitted file count, and the context
+  popover's threshold slider sets compaction for this session alone.
+
+### Sessions you can find, file and leave open
+
+- **Search sessions by the pull request, review or issue on their badge** from
+  the sidebar search box, not just by title.
+- **A resumed session no longer re-injects its full memory, lessons and skills
+  block**, so an idle session that comes back reaches compaction far later.
+- **Folders auto-tag the chats you start in them**, set under the folder
+  menu's Folder settings, and the sidebar's Collapse dormant sessions picker
+  now defaults to 7 days instead of 2.
+
+### Agents that dispatch and watch
+
+- **Agents arm their own watch**: an agent can start, revise and stop a
+  monitoring loop on its own session from the dashboard, a Slack thread or a
+  Discord DM, and a loop that names one pull request wakes the agent only when
+  that pull request moves.
+- **Crew members dispatch work into worker sessions** from their own thread on
+  the Claude and KAS backends, and each worker inherits its creator's trust
+  posture so it no longer stalls on a first tool call.
+- **Session control is on by default**; set `agent.session_control` to false
+  in `config.json` to withdraw it from every agent at once.
+
+### Crew members get faces (Preview)
+
+- **Give a crew a face**: build its ghost avatar trait by trait or upload a
+  picture at Agent Capabilities → Agents → Avatar → Customize.
+- **The member drawer shows recent activity and the schedules and webhooks
+  that can wake it** when you pick a member on the Crew Members page, and the
+  desktop-only Crew Companion app, enabled from Apps → Library, shows one
+  avatar across all displays.
+- **Crew is a preview opt-in**: turn on Developer Mode in Settings →
+  Developer, then Developer → Feature Previews → Crew, to get the Crew Members
+  entry and the new-crew-chat entry back.
+
+### Apps get a Launchpad
+
+- **Installed apps show as a Launchpad grid** under Apps → Library, each an
+  icon tile with a pin badge for the sidebar, an Open button and a menu for
+  Details, Update, Disable and Uninstall.
+- **An app can own background work, Command Bar rows and an embedded chat**:
+  its manifest declares `permissions.jobs` for server-side runs that continue
+  when you navigate away and `contributes.commands` for rows in the Cmd+K
+  Command Bar, and its page can embed the conversation without the sessions
+  rail.
+- **Dev mode for a UI folder outside an app's install now needs the terminal**:
+  the dashboard and the API refuse it, and only
+  `kirocrew app dev <name> --confirm-out-of-install-root` grants it.
+
+### Your cloud drive, inside the app
+
+- **AWS Control navigates by Files, Library, Backup and Access**, each with its
+  own URL, with Accounts & credentials and Usage & costs at the rail's foot;
+  the app ships off, so enable it from Apps → Library first.
+- **The Files pane lists what is actually in the bucket**, with real
+  thumbnails, drag to move, drop to upload and delete behind an inline confirm,
+  and a storage meter sits on the Usage & costs pane.
+- **A running backup survives leaving the page**: coming back to Backup shows
+  it still going, and a run orphaned by a gateway that is gone reads as
+  interrupted instead of running forever.
+
+### Meetings, Jira and the Changes panel
+
+- **Meeting minutes are editable in place**: press Edit this output on an
+  agent's card, then Save, or Discard my edits to get the agent's version back.
+- **Meetings prepares the meeting about to start** once you set a calendar
+  under Meetings → Settings → Calendar; the background polling is already on.
+- **A Jira issue keeps its formatting and shows its Fix Version** in the Issues
+  panel once a Jira API token is in your environment, and the Changes panel
+  now opens instantly from what it already holds and refreshes behind you.
+
+### Channels and MCP servers
+
+- **Saving an MCP server no longer resets your session** on Kiro CLI 2.10.0 or
+  newer, and the chat session menu's MCP servers view reports what this
+  session actually mounted.
+- **An agent can message a channel by name** with `send_message`, reaching
+  Slack, Discord, Telegram, WhatsApp, Webex, Teams, iMessage and Feishu.
+- **Search your sessions from Telegram** with `/sessions <words>` in a direct
+  message; with no words it lists the ten most recent.
+
+### A gate that explains itself
+
+- **A blocked tool call now explains the way forward**, so the agent stops
+  retrying the same blocked shape, and `kirocrew doctor` prints a Credentials
+  section that lists your AWS profiles without opening a secret.
+- **Deny rules survive re-spelling**: quoting, escapes, command substitution,
+  line continuations, `find` and `grep -r` traversals and wildcard-spelled
+  program names all reach the rule they used to dodge, and a recursive content
+  read rooted at the crew data home is refused.
+- **A host that cannot sandbox refuses to run the agent**: armv7l, riscv64,
+  ppc64le and s390x Linux, a libc without `prctl`, and Windows with Kiro CLI's
+  internal sandbox off all fail closed unless you set `agent.sandbox` to `off`
+  or `agent.sandbox_allow_unsandboxed_exec` to true in `config.json`.
+
+### Approvals you can shape
+
+- **A sandboxed command can no longer rewrite your ceiling**: the security
+  policy, admission policy, profiles and denied-command list are sealed
+  read-only in every sandbox mode, so an app script, a hook or a command cron
+  cannot grant itself more than you did.
+- **A restart says when it dropped your auto-approve grant**, and Settings →
+  Security → Denied Commands tags any deny rule your edition contributed so
+  you can switch it off by id.
+
+### The terminal, themes and artifacts
+
+- **The built-in terminal draws all sixteen ANSI colours from your theme**, and
+  setting `dashboard.terminal.completion.enabled` to false in `config.json`
+  silences its inline completion menus.
+- **An installed theme pack can rebrand the whole dashboard shell**, product
+  name, logo and favicon included, once you add a pack that declares branding
+  at Settings → Display → Install Theme.
+- **Saving an artifact warns when its colours are hardcoded**, in the agent's
+  tool result and on `kirocrew artifact save`, which now takes `--slug` for an
+  exact handle and refuses a taken one instead of renaming it.
+
+### Faster, lighter, and measured
+
+- **Every turn reports its tokens, spend and latency across cron, heartbeat,
+  subagents, workflows and every messaging channel**, on Developer → Telemetry
+  with Developer Mode on; the latency and fault-rate charts also need
+  `telemetry.enabled` set to true (off by default).
+- **Semantic memory uses about 1.2 GB less**, the session list is over twice
+  as fast on a large store, and credential scanning is 2.6 to 2.9x faster,
+  with nothing to turn on.
+- **The command gate decides a very long command in milliseconds** instead of
+  seconds, and the gateway stays responsive while other sessions read large
+  transcripts or synthesize speech.
+
+### Installing and the desktop app
+
+- **Setup catches a Kiro CLI too old for agent sessions**: the startup gate
+  shows Kiro CLI update needed with an Update Kiro CLI button that runs the
+  update for you.
+- **Answer a default that changed under you**: `kirocrew config defaults`
+  lists stored values still holding a superseded default, `--adopt` takes the
+  new defaults and `--keep` records yours as intentional.
+- **The desktop app raises OS notifications for alerts and approvals** with
+  nothing to switch on, and an externally managed install now reads its update
+  commands only from a marker file this user cannot rewrite.
+
+### Around the dashboard
+
+- **Write your own prompts, and see and set each steering document's inclusion
+  mode**, on the Prompts and Steering tabs of the Agent Capabilities page.
+- **`.docx` and `.pptx` files show their text inline in the file viewer**,
+  in-page tab strips are all one pill control, and the PR and issue chips on
+  session cards switch off at Settings → Chat.
+- **Automatic knowledge folders are gone**: a folder enters the Library only
+  when you add and confirm it, and a folder an older install registered by
+  itself is held pending until you do.
+
+### Notable fixes
+
+For anyone checking whether their particular annoyance is gone.
+
+**Chat and sessions.** The transcript holds your place through new messages,
+reloads and a reply that grows, and each turn renders exactly once. Cancelling
+a queued message returns exactly what you typed with your files re-staged. A
+backend that cannot compact says so at once instead of hanging for five
+minutes.
+
+**Approvals and the sandbox.** Denying one tool call denies that call only, so
+the agent can revise and ask again. Sandboxed commands run on hosts that
+restrict unprivileged namespaces, and the sandbox reclaims its leftover mount
+directories. Ordinary commands that merely mention a credential variable now
+run.
+
+**Credentials.** Credentials are redacted before long text is shortened
+anywhere, so a key straddling the cut no longer survives. Log output escapes
+every control character. A URL carrying genuine sign-in parameters is no longer
+refused as a bare secret.
+
+**The gateway.** It restarts itself when a package update prunes the running
+install, and survives a workspace on a synced or network volume. An interrupted
+first start can no longer leave an empty signing key that fails every signed
+action forever. Knowledge ingestion, embedding and session teardown do their
+disk work off the gateway loop.
+
+**Sub-agents and jobs.** A run parked on an unanswered spawn approval says so
+everywhere it is listed. A task run keeps its worktree, branch and lessons
+across a gateway restart. A script job can perform state-mutating tool calls
+instead of reporting success while writing nothing.
+
+**MCP and channels.** The built-in tool surface comes back within minutes when
+a long-lived helper goes stale. A Slack turn that dies mid-reply keeps the
+partial answer you already saw. A rerouted thread keeps the agent you bound to
+it.
+
+**Knowledge and skills.** Keyword search finds Chinese, Japanese and Korean
+text on its own. The skill editor preserves comments, quoted keys and
+indentation it does not own. A negative retention value is clamped instead of
+wiping all daily memory.
+
+**Windows, desktop and CLI.** A non-ASCII account name or path no longer breaks
+diagnostics, the service install or a network-drive permission check. The
+signed macOS app no longer reports itself as damaged on a managed Mac. Kiro Crew
+imports on Python 3.13 and 3.14, and setup finishes under a C or POSIX locale.
+
 ## [0.5.0] — 2026-08-29
 
 Your AWS account gets a control room and your whole fleet gets one centrally

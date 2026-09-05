@@ -336,7 +336,7 @@ async def test_the_windows_branch_validates_the_OPENED_descriptor_path(
     monkeypatch.setattr(app_routes, "apps_dir", lambda: root)
     monkeypatch.setattr(app_routes, "supports_pinned_walk", lambda: False)
     monkeypatch.setattr(
-        app_routes, "_fd_real_path", lambda fd: str(tmp_path / "elsewhere" / "app.js")
+        app_routes, "fd_real_path", lambda fd: str(tmp_path / "elsewhere" / "app.js")
     )
     status, body = await _get(f"/apps/{APP}/ui/app.js")
     assert status == 404
@@ -355,7 +355,7 @@ async def test_the_windows_branch_fails_closed_when_the_fd_path_is_unreadable(
     (ui / "app.js").write_bytes(b"const x = 1\n")
     monkeypatch.setattr(app_routes, "apps_dir", lambda: root)
     monkeypatch.setattr(app_routes, "supports_pinned_walk", lambda: False)
-    monkeypatch.setattr(app_routes, "_fd_real_path", lambda fd: None)
+    monkeypatch.setattr(app_routes, "fd_real_path", lambda fd: None)
     status, _body = await _get(f"/apps/{APP}/ui/app.js")
     assert status == 404
 

@@ -783,8 +783,12 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
         assert outputs["state"] == "action_required"
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
+        # Four, not three: Fast Gate joined CI, Build and Code Review as a
+        # monitored lane when the cheap blocking gates were split out of ci.yml.
+        # The stub routes every non-ci.yml workflow to green_runs.json, so it is
+        # covered by the same `action_required` fixture as the other two.
         assert outputs["description"] == (
-            "3 workflow(s) awaiting maintainer approval; none has run yet"
+            "4 workflow(s) awaiting maintainer approval; none has run yet"
         )
         assert len(outputs["description"]) <= 140
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
@@ -793,7 +797,9 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
         assert "**Waiting**" in summary
         log_line = self._lane_state(proc)
         assert "failed=[]" in log_line
-        assert "awaiting_approval=[CI Build Code Review]" in log_line
+        # Fast Gate sits between CI and Build in the spec order, matching the
+        # order pr-readiness.yml appends the lanes.
+        assert "awaiting_approval=[CI Fast Gate Build Code Review]" in log_line
 
     def test_real_failure_and_approval_wait_are_reported_separately(self, runner: Runner):
         (runner.fixtures / "ci_runs.json").write_text(
@@ -807,8 +813,10 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
 
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
+        # Three awaiting, not two: ci.yml is the one blocking item here, and
+        # Build, Code Review and Fast Gate are the lanes left waiting.
         assert outputs["description"] == (
-            "1 blocking readiness item(s); 2 awaiting maintainer approval"
+            "1 blocking readiness item(s); 3 awaiting maintainer approval"
         )
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert "**Blocking**" in summary

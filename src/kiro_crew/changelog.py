@@ -161,17 +161,47 @@ def running_release(version: str) -> tuple[str, bool]:
     ``is_prerelease`` comes from an actual prerelease MARKER rather than from
     ``base != version``: a bare build/local segment (``0.2.0+abc123``) is not a
     prerelease, and testing inequality would badge it "Unreleased".
+
+    A distribution build stamp (``0.6.0.12`` -- a ``BUILD_VERSION`` file beside
+    ``kiro_crew/__init__.py``, see there) is a build OF the ``0.6.0`` release,
+    and the release's notes are its notes: the segments past the third are
+    folded off here so the running build marks the ``0.6.0`` row instead of
+    opening an empty ``0.6.0.12`` row above it. Headings never carry a fourth
+    segment, so nothing a heading names can be shadowed by the fold.
     """
     v = version.strip()
     if not v:
         return "", False
     m = _BASE_RE.fullmatch(v)
     if m:
-        return m.group("base"), bool(m.group("pre"))
+        return release_of_build(m.group("base")), bool(m.group("pre"))
     loose = _RUNNING_RE.fullmatch(v)
     if loose:
-        return loose.group("base"), bool(loose.group("pre"))
+        return release_of_build(loose.group("base")), bool(loose.group("pre"))
     return v, False
+
+
+def release_of_build(version: str) -> str:
+    """``0.6.0.12`` -> ``0.6.0``; anything that is not a build stamp is itself.
+
+    The one fold that treats a distribution build stamp as a build OF its
+    release. Shared with the update check's channel-move compare, which asks
+    whether the running RELEASE is ahead of the lane -- a stamped build is not.
+
+    Folds ONLY the stamp shape the stamp rule admits: exactly one ASCII-numeric
+    fourth segment over a three-segment numeric release. The release lanes' own
+    dotted spellings -- the nightly wheel ``X.Y.Z.devN`` and a ``X.Y.Z.postN``
+    -- also carry a fourth dot-segment and MUST NOT fold: a nightly
+    ``0.6.0.dev0906`` compared as ``0.6.0`` against its own lane's
+    ``0.6.0.dev0907`` would read as permanently ahead, the exact false
+    channel-move this fold exists to prevent for stamps.
+    """
+    segments = version.split(".")
+    if len(segments) != 4:
+        return version
+    if not all(seg.isascii() and seg.isdigit() for seg in segments):
+        return version
+    return ".".join(segments[:3])
 
 
 def _sort_key(version: str) -> tuple[int, ...]:

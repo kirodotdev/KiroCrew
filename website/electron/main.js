@@ -39,7 +39,25 @@ const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { initMochi, shutdownMochi } = require("./mochi/index");
 const { borrowSessionToken } = require("./mochi-session-token");
-const { initCrewCompanion, shutdownCrewCompanion } = require("./crew-companion/index");
+const {
+  initCrewCompanion,
+  shutdownCrewCompanion,
+  suspendCrewCompanion,
+  resumeCrewCompanion,
+} = require("./crew-companion/index");
+
+// An update install stops the gateway and quits the app. Close the Crew
+// Companion overlay at dispatch so it does not float orphaned over the vanished
+// dashboard during the quit handoff, and reopen it if the install fails and the
+// gateway is restored. suspend/resume keep the companion's loop and IPC handlers
+// intact, so the failure path needs no re-init. Both are best-effort — a
+// companion teardown must never block an update or its recovery.
+function closeCrewCompanionForUpdate() {
+  try { suspendCrewCompanion(); } catch { /* best effort */ }
+}
+function reopenCrewCompanionAfterUpdate() {
+  try { resumeCrewCompanion(); } catch { /* best effort */ }
+}
 const { createGatewaySupervisor } = require("./gateway-supervisor");
 const { createWindowLifecycle } = require("./window-lifecycle");
 const { createIpcRegistrar } = require("./ipc-registrar");
@@ -260,6 +278,8 @@ const ipcRegistrar = createIpcRegistrar({
   windows,
   gateway,
   glog,
+  closeCrewCompanionForUpdate,
+  reopenCrewCompanionAfterUpdate,
 });
 
 /**

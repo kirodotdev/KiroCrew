@@ -9,11 +9,13 @@ lock, and path.
 
 from __future__ import annotations
 
+import itertools
 import json
+import logging
 import math
 import re
 import time as _time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -67,6 +69,17 @@ _FORGE_REF_WEIGHT = 4.0
 # expensive part of a search. A fourth forge-shaped token degrades to a plain
 # needle.
 _SEARCH_MAX_FORGE_REFS = 3
+# ALTERNATIVE spellings ONE resolver answer may contribute for a single token.
+# The collector returns the FIRST plugin to recognize the token, for every token
+# shape, so exactly one provider's answer ever arrives here — this bounds that
+# one answer, not a fan-in across providers. The unit of cost is the same as
+# above: one ``str.count`` per spelling per scanned session per field, so an
+# unbounded contribution would let a plugin multiply every search by a number
+# nothing in core chose. Sized to the sibling per-plugin ceiling
+# (_MAX_PLUGIN_PATH_MARKERS, also 8), which bounds the same kind of thing: what
+# one plugin may hand core for one lookup. Lives here rather than beside the
+# collector because the cost it bounds is this module's.
+_MAX_SEARCH_REF_SPELLINGS = 8
 
 
 def _is_cjk_char(ch: str) -> bool:
@@ -438,6 +451,129 @@ def _parse_forge_ref(token: str, lead: tuple[str, ...]) -> _ForgeRef | None:
     return None
 
 
+#: The resolver that recognizes a query token as some REGISTERED source
+#: provider's item and answers with that item's spellings. The built-in forge
+#: shapes above are tried first, so it can only ever claim a token no built-in
+#: recognized.
+#:
+#: ONE slot, not a list: the only production registrant is
+#: ``register_source_provider``, and the per-plugin fan-out already lives inside
+#: the collector it publishes. A list would have bought ordered consultation
+#: nothing in-tree can exercise.
+#:
+#: Deliberately a plain module-level callable: this module imports nothing but
+#: the standard library, and the provider registry it serves lives in
+#: ``kiro_crew.dashboard.handlers.source_providers`` — a 7k-line module that
+#: imports aiohttp at module scope. Reaching UP to ask it would put the whole
+#: dashboard HTTP stack on every search, including the CLI and the Discord
+#: title-only gate, neither of which runs a web server. The dashboard therefore
+#: PUSHES its collector down here at registration time instead.
+_search_ref_resolver: Callable[[str], tuple[str, Sequence[str]] | None] | None = None
+
+logger = logging.getLogger(__name__)
+
+
+def register_search_ref_resolver(
+    resolve: Callable[[str], tuple[str, Sequence[str]] | None],
+) -> None:
+    """Install the token -> ``(canonical, alts)`` resolver. Idempotent.
+
+    Called at provider registration time, from the side that owns the provider
+    registry. Re-registration is the expected case, not an error — the registry
+    publishes the same collector on every provider registration — and the slot
+    simply holds the latest.
+
+    A resolver must be PURE and allocation-cheap: it is consulted for every term
+    of every query, and both :func:`snippet_needles` and
+    :meth:`ConversationLog.search_sessions` re-parse, so a search costs at least
+    two passes over the tokens. Any I/O, config read or lock in a resolver
+    becomes per-keystroke latency in the dashboard's search box. Nothing enforces
+    that beyond this contract.
+    """
+    global _search_ref_resolver
+    _search_ref_resolver = resolve
+
+
+def reset_search_ref_resolver_for_tests() -> None:
+    """Drop the resolver. Test-only: the slot is module state."""
+    global _search_ref_resolver
+    _search_ref_resolver = None
+
+
+def _provider_search_ref(token: str) -> tuple[str, tuple[str, ...]] | None:
+    """Ask the registered resolver to recognize *token*.
+
+    Returns ``(canonical, alts)`` NORMALIZED — casefolded, de-duplicated, empties
+    dropped, alts capped at :data:`_MAX_SEARCH_REF_SPELLINGS` — or ``None``.
+
+    This is the ONLY normalizer. The dashboard collector hands the first answer
+    through without judging it, so casefolding, the shape checks, the cap and the
+    dedup all happen once, here, where the cost they bound is paid. It matters
+    because the failure is SILENT — :func:`parse_search_query` casefolds its input
+    and :func:`count_needle` requires already-folded needles, so a spelling that
+    arrives with a capital letter produces a needle that matches nothing, with no
+    error and no log; it just returns zero results.
+
+    Every way a resolver can fail is contained, because a plugin defect must not
+    make the search box stop working: raising when CALLED, returning a malformed
+    answer, and raising while its ``alts`` are READ — the hook promises a
+    ``Sequence``, which cannot do that, but a resolver ignoring the contract can,
+    so the read sits inside a ``try`` and the answer is dropped whole. Every case
+    logs — a traceback where an exception was raised, the offending value where a
+    shape was merely wrong. None of them is silent: silence is the defect above.
+    """
+    resolve = _search_ref_resolver
+    if resolve is None:
+        return None
+    try:
+        found = resolve(token)
+    except Exception:
+        logger.debug("search ref resolver %r failed on %r", resolve, token, exc_info=True)
+        return None
+    if found is None:
+        return None
+    try:
+        canonical, alts = found
+    except Exception:
+        # `Exception`, not just TypeError/ValueError: the ANSWER may itself be lazy,
+        # so unpacking it runs plugin code that can raise anything at all.
+        logger.debug("search ref resolver %r returned a malformed answer", resolve, exc_info=True)
+        return None
+    if not isinstance(canonical, str) or not canonical.strip():
+        logger.debug("search ref resolver %r returned an invalid canonical %r", resolve, canonical)
+        return None
+    if isinstance(alts, str) or not isinstance(alts, Iterable):
+        logger.debug("search ref resolver %r returned invalid alts %r", resolve, alts)
+        return None
+    folded = canonical.casefold()
+    try:
+        # islice, not tuple(alts): a resolver ignoring the `Sequence` contract can
+        # hand back an endless iterable, and materializing it would hang the parse.
+        candidates = tuple(itertools.islice(alts, _MAX_SEARCH_REF_SPELLINGS))
+    except Exception:
+        # A `Sequence` cannot raise here; a resolver ignoring the contract can,
+        # and its answer is dropped whole rather than read half-way.
+        logger.debug(
+            "search ref resolver %r raised while its alts were read", resolve, exc_info=True
+        )
+        return None
+    spellings: dict[str, None] = {}
+    for alt in candidates:
+        if isinstance(alt, str) and alt.strip():
+            spellings[alt.casefold()] = None
+        else:
+            logger.debug("search ref resolver %r returned an invalid alt %r", resolve, alt)
+    spellings.pop(folded, None)
+    # Containment: at least one spelling must actually carry the token the user
+    # typed, or the answer describes some other item and would gate (or rank) a
+    # query on text it never named.
+    typed = token.casefold()
+    if typed not in folded and not any(typed in spelling for spelling in spellings):
+        logger.debug("search ref resolver %r answered %r without the typed token", resolve, folded)
+        return None
+    return (folded, tuple(spellings))
+
+
 def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
     """Return ``(needles, phrase, adjacency_floor)`` for a search *query*, casefolded.
 
@@ -529,6 +665,42 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
     for index, part in enumerate(parts):
         lead = _forge_lead_in(parts, index)
         ref = _parse_forge_ref(part, lead)
+        if ref is None and not part.isdigit():
+            # Built-ins always win: only a token no forge shape recognized is
+            # offered to a registered provider. The extra `isdigit` guard is what
+            # keeps a provider from turning a BARE NUMBER into a gate — the same
+            # rule _parse_forge_ref applies to itself, and for the same reason.
+            # Gating "987654321" on a provider spelling would demand that
+            # spelling of every result, silently narrowing ordinary numeric
+            # content search. So a bare number is never offered to a provider at
+            # all, and the built-in ranking hint below carries built-in
+            # spellings only.
+            #
+            # A provider contributes SPELLINGS ONLY, never lead-in vocabulary:
+            # _forge_type_suffix's words are popped from the gate, and the common
+            # English words a provider would want ("review", "cr") are far more
+            # frequent in transcripts than "pr"/"mr", so admitting them would
+            # trade a real search term for every session mentioning that number.
+            # A prefixed token carries its own type and needs no lead-in.
+            provider_ref = _provider_search_ref(part)
+            if provider_ref is not None:
+                canonical, alts = provider_ref
+                if canonical in required:
+                    # Already gated by an earlier spelling of the same item; the
+                    # needle carries the whole set, so there is nothing to merge.
+                    continue
+                if canonical in charged or forge_budget:
+                    if canonical not in charged:
+                        charged.add(canonical)
+                        forge_budget -= 1
+                    required.setdefault(canonical, SearchNeedle(canonical, 1.0, True, alts, True))
+                    # Continue like the built-in path does: the literal token must
+                    # not ALSO survive into the gate through _script_runs, or a
+                    # provider query would carry two required needles.
+                    continue
+                # Budget exhausted and this item has no slot — fall through and
+                # degrade to a plain literal needle, exactly as an over-budget
+                # forge token does.
         if ref is not None:
             canonical, alts = _forge_spellings(ref)
             if canonical in required:

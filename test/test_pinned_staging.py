@@ -1917,3 +1917,48 @@ def test_the_tree_walk_capability_probe_names_a_function_that_supports_dir_fd() 
     assert os.lstat not in os.supports_dir_fd
     if pinned_fs.supports_pinned_walk():
         assert pinned_fs.supports_pinned_tree_walk() is True
+
+
+class TestFdRealPathHome:
+    """``fd_real_path`` is defined in pinned_fs and every consumer binds THAT object.
+
+    The primitive has cross-module consumers (hooks, sandbox, the app UI route,
+    spec_builder), and its containment guarantees — including the Windows
+    fail-closed branch — belong with the other descriptor-pinned mechanisms.
+    Pinning the location keeps a refactor from quietly forking the
+    implementation into a consumer module.
+    """
+
+    def test_defined_in_pinned_fs_and_exported(self):
+        assert pinned_fs.fd_real_path.__module__ == "kiro_crew.pinned_fs"
+        assert "fd_real_path" in pinned_fs.__all__
+
+    def test_every_consumer_binds_the_pinned_fs_object(self):
+        from kiro_crew import hooks, sandbox
+        from kiro_crew.apps import routes as app_routes
+        from kiro_crew.apps.builtins.spec_builder.backend import repository as spec_repository
+
+        assert hooks._fd_real_path is pinned_fs.fd_real_path
+        assert sandbox.fd_real_path is pinned_fs.fd_real_path
+        assert app_routes.fd_real_path is pinned_fs.fd_real_path
+        # spec_builder's descriptor-pinned reads live in repository.py (the
+        # handlers refactor moved them out of routes.py).
+        assert spec_repository.fd_real_path is pinned_fs.fd_real_path
+
+    def test_resolves_an_open_descriptor_to_its_real_path(self, tmp_path: Path):
+        target = tmp_path / "witness.txt"
+        target.write_text("x")
+        fd = os.open(target, os.O_RDONLY)
+        try:
+            got = pinned_fs.fd_real_path(fd)
+        finally:
+            os.close(fd)
+        assert got is not None
+        assert os.path.normcase(os.path.normpath(got)) == os.path.normcase(os.path.realpath(target))
+
+    def test_fails_closed_on_a_dead_descriptor(self):
+        # A descriptor number that cannot be open (far above any real fd
+        # table): every platform route must answer None, never a guess. A
+        # freshly-closed real fd would race reuse by another thread in the
+        # test process, so the impossible number is the deterministic probe.
+        assert pinned_fs.fd_real_path(2**30) is None

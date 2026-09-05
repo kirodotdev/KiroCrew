@@ -32,7 +32,7 @@ from ..spine.push_policy import (
     scan_content_for_secrets,
 )
 from . import store
-from .clone_setup import _repository_is_isolated, resolve_origin_url
+from .clone_setup import IsolationProbeError, _repository_is_isolated, resolve_origin_url
 
 logger = logging.getLogger(__name__)
 
@@ -261,8 +261,13 @@ def _commit_finding_locked(fp: str) -> dict[str, object]:
     # push. Rechecking only after creating the provisional commit is unsound: once that
     # check fails, rollback Git would itself trust the repository just declared unsafe,
     # while returning without rollback leaves a rejected commit as a future baseline.
-    if not _repository_is_isolated(clone):
-        return {"ok": False, "error": "repository isolation check failed — re-run setup"}
+    try:
+        if not _repository_is_isolated(clone):
+            return {"ok": False, "error": "repository isolation check failed — re-run setup"}
+    except IsolationProbeError as exc:
+        # A crashed probe is a sandbox failure, not an isolation verdict — re-running
+        # setup cannot fix it, so surface the real reason instead (#8151).
+        return {"ok": False, "error": str(exc)}
 
     diff_text = diff_path.read_text(encoding="utf-8")
     if not diff_text.strip():

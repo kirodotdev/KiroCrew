@@ -494,6 +494,10 @@ export const SCOPE_LABEL_KEY: Record<string, string> = {
   // `telemetry.enabled` config field is local-only OTEL collection, and a row
   // reading just "Telemetry" would imply this ceiling governs that too.
   'capabilities.telemetry': 'pages.settings.securityPanel.gov_scope_telemetry',
+  // Named after the menu entry it withdraws ("Share as image"), not the scope's
+  // leaf: a user whose Share entry vanished reads THIS row to learn why, and
+  // "Social Share" would not connect to the feature they lost.
+  'capabilities.social_share': 'pages.settings.securityPanel.gov_scope_social_share',
 }
 
 /** Localised scope name, falling back to a humanised leaf for an unknown scope.

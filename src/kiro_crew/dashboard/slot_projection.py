@@ -221,6 +221,16 @@ class SlotProjection:
             "surface": slot.mode,
             "workspace": slot.workspace,
             "project": slot.project,
+            # Remote-execution binding. Shipped on every slot (not just remote
+            # ones) so the frontend can branch on a field that is always
+            # present: an absent key and "runs locally" would be the same
+            # reading, and a stale client would then render a peer session as
+            # local. The binding's third field, `remote_slot`, is deliberately
+            # NOT projected: it is the PEER's slot key, meaningful only inside a
+            # request routed back through that instance, and no browser code has
+            # any use for it — these two carry every branch the frontend makes.
+            "executor": slot.executor,
+            "instance_id": slot.instance_id,
             "artifact": slot._artifact,
             "messages": len(slot.messages),
             "running": slot.running,
@@ -272,4 +282,12 @@ class SlotProjection:
             "linked_session_key": slot.linked_session_key,
             "app": slot._app,
             "origin": slot._origin,
+            # Creator attribution: the slot key of the session that asked for
+            # this one via the session-control create verb ("" for a person's
+            # own tab, a fork, a restore). Written at birth and rehydrated, so
+            # it is the one durable link from a crew member's DM thread to the
+            # workers it drives -- the Crew Members drawer filters the live
+            # ``slots`` frames on it. A member caller is ownership-fenced to the
+            # slots it created (``authorize_target``), so created == driven.
+            "created_by": getattr(slot, "_created_by", ""),
         }

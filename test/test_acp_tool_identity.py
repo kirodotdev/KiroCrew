@@ -605,3 +605,78 @@ class TestChatRunnerDirectiveSeam:
         spy = await _drive(state, slot, events, monkeypatch)
         spy.assert_called_once()
         assert "[applied]" in seen, f"applier output not re-redacted; saw {seen!r}"
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_argument_is_reported_as_a_refusal_not_a_lost_marker(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A directive tool's ARGUMENT rejection must not fire the lost-marker
+        WARNING (#8635). The tool's result is produced by really calling it, so
+        the test cannot drift from what the tool actually returns; the rejection
+        happens in the dispatch wrapper ahead of the handler, which is why the
+        refusal tag is applied at the server's outermost return.
+
+        Before the fix this logged ``decode FAILED … effect dropped`` ~10x/day on
+        this host -- a line whose purpose is to catch a rawOutput-envelope
+        escaping regression."""
+        from kiro_crew.mcp_core import _call_tool
+
+        rejection = _call_tool("monitor_start", {"message": "x" * 9000})
+        assert rejection.startswith("Error:")
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("rejected-arg")
+        slot._titled = True
+        events = [
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-reject",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-reject",
+                tool_output=rejection,
+                tool_final=True,
+            ),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        with caplog.at_level("INFO"):
+            spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_not_called()
+        assert "decode FAILED" not in caplog.text
+        assert "session-directive REFUSED" in caplog.text
+        # The sentinel is a wire detail: the transcript shows the tool's own text.
+        outputs = _tool_result_outputs(state)
+        assert any(o.startswith("Error:") for o in outputs), outputs
+        assert not any("KIROCREW_SESSION_DIRECTIVE" in o for o in outputs), outputs
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_lost_marker_still_warns(self, tmp_path, monkeypatch, caplog):
+        """The diagnostic must keep working for the case it exists for: an
+        authenticated directive tool whose final frame carries neither a marker
+        nor a refusal tag."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("lost-marker")
+        slot._titled = True
+        events = [
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-lost",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-lost",
+                tool_output="Monitor loop requested.",
+                tool_final=True,
+            ),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        with caplog.at_level("INFO"):
+            spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_not_called()
+        assert "session-directive decode FAILED" in caplog.text

@@ -305,8 +305,21 @@ describe('switchSlot.rejected — a gone target restores the pre-switch selectio
 
   it('a provisional switch does not clobber the half-loaded slot\'s live run entry', async () => {
     let releaseB!: (v: unknown) => void
+    // Only B's FIRST read is held open -- that is the device that keeps B's switch in
+    // flight across the provisional one, which is what this test is about. Later reads
+    // of B resolve: a slot mid-turn gets a BOUNDED first read like any other (run state
+    // is not an input to the window), so its coverage check can legitimately ask for a
+    // second one, and a mock that answers that with another never-resolving promise
+    // hangs the thunk on a harness artifact instead of on the behaviour asserted below.
+    // `releaseB` is reassigned by each executor, so a second held promise would also
+    // strand the first release with nothing left to call it.
+    let bReads = 0
     detail.mockImplementation((key: string) => {
-      if (key === 'B') return new Promise((resolve) => { releaseB = resolve })
+      if (key === 'B') {
+        bReads += 1
+        if (bReads === 1) return new Promise((resolve) => { releaseB = resolve })
+        return Promise.resolve(PAGES.B ?? PAGES.C)
+      }
       if (key === 'gone') return Promise.reject(apiError(404, 'slot unavailable'))
       return Promise.resolve(PAGES[key] ?? PAGES.C)
     })

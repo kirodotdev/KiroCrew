@@ -33,6 +33,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -96,6 +97,14 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # 404 (not 403): indistinguishable from a missing slot —
             # anti-enumeration (CWE-204); true reason logged via SEL above.
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # A crew-bound slot has no local rewind: it would rebuild the LOCAL ACP
+    # session and re-run the edited turn on this machine, diverging from the peer.
+    # AFTER the app-ownership 404 above so a foreign app cannot tell a remote slot
+    # apart from a missing one via the 409 (GPT #7693).
+    refusal = remote_bound_refusal(slot)
+    if refusal is not None:
+        return refusal
 
     try:
         body = await request.json()

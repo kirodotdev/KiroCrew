@@ -961,6 +961,11 @@ class TestOwnerSourceStatusTransport:
             owner_messages[0]["gitlabHostsGeneration"]
             == dash_messages[0]["gitlabHostsGeneration"]
         )
+        assert isinstance(owner_messages[0]["governanceGeneration"], int)
+        assert (
+            owner_messages[0]["governanceGeneration"]
+            == dash_messages[0]["governanceGeneration"]
+        )
 
     def test_owner_sockets_still_receive_non_slot_broadcasts(
         self, state: DashboardState, monkeypatch

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ChatMessage } from '../types'
+import type { ChatMessage, ChatSlot } from '../types'
 import {
   adoptSourceSelections,
   commitSourceSelection,
@@ -14,6 +14,7 @@ import {
   persistSeenPullRequestLinks,
   PullRequestLinkIndex,
   recordNewPullRequestLinks,
+  slotChangeUrls,
   sourceSelection,
   withSourceSelection,
 } from '../utils/pullRequestLinks'
@@ -991,5 +992,30 @@ describe('CJK / fullwidth punctuation after a PR URL (issue #507)', () => {
     expect(extractPullRequestLinks(messages(content))).toEqual([
       { url: gh, provider: 'github', number: 436, repo: 'KiroCrew', kind: 'change' },
     ])
+  })
+})
+
+describe('slotChangeUrls', () => {
+  const slot = (key: string, links: ChatSlot['source_links']): ChatSlot =>
+    ({ key, messages: 1, running: false, source_links: links }) as ChatSlot
+
+  it('returns the slot\'s pull-request urls, skipping issue links and duplicates', () => {
+    const pr = 'https://github.com/acme/widgets/pull/12'
+    const slots = [
+      slot('chat-a', [
+        { provider: 'github', number: 12, url: pr },
+        { provider: 'github', number: 12, url: pr },
+        { provider: 'github', number: 9, url: 'https://github.com/acme/widgets/issues/9', kind: 'issue' },
+        { provider: 'gitlab', number: 3, url: 'https://gitlab.com/acme/w/-/merge_requests/3', kind: 'change' },
+      ]),
+      slot('chat-b', [{ provider: 'github', number: 1, url: 'https://github.com/acme/other/pull/1' }]),
+    ]
+    expect(slotChangeUrls(slots, 'chat-a')).toEqual([pr, 'https://gitlab.com/acme/w/-/merge_requests/3'])
+  })
+
+  it('yields nothing for an unknown slot or one without serialized links', () => {
+    expect(slotChangeUrls([slot('chat-a', undefined)], 'chat-a')).toEqual([])
+    expect(slotChangeUrls([slot('chat-a', [])], 'chat-a')).toEqual([])
+    expect(slotChangeUrls([slot('chat-a', [])], 'chat-zzz')).toEqual([])
   })
 })

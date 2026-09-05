@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download } from 'lucide-react'
+import { Download, Sparkles } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsStepper } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api, ApiError } from '../../api/client'
@@ -9,6 +9,8 @@ import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream
 import { fmtBytes, fmtUnit } from '../../i18n/format'
 import {
   CATALOG_MODEL_PROVIDERS,
+  decoderDownloadLabel,
+  decoderRepairPrompt,
   downloadLabel,
   downloadRatio,
   FALLBACK_PROVIDERS,
@@ -18,6 +20,7 @@ import {
   providerLabel,
   unavailableMessage,
 } from '../../lib/sttProviders'
+import { sendErrorToChat } from '../../utils/errorReport'
 import { PttTestStrip } from '../../components/PttTestStrip'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import {
@@ -83,6 +86,39 @@ interface SttDownload {
   error: string
 }
 
+/** Progress of the one decoder fetch a gateway runs at a time. */
+interface FfmpegDownload {
+  /** `idle` | `downloading` | `ready` | `failed` | `unsupported`. */
+  stage: string
+  /** Which pinned executable this progress belongs to. */
+  artifact: string
+  downloaded_bytes: number
+  total_bytes: number
+  /** Machine-readable failure reason; '' unless `stage` is `failed`. */
+  error_code: string
+  /** The backend's own sentence for that failure, carried into the agent hand-off. */
+  error_detail: string
+}
+
+/**
+ * The decoder every compressed recording goes through, as served by
+ * `GET /api/stt/status`.
+ *
+ * `os` / `arch` are the GATEWAY's, not the browser's: a dashboard open on a
+ * laptop can be driving a gateway on another machine, and the hand-off prompt has
+ * to name the host that actually needs fixing.
+ */
+interface SttFfmpeg {
+  present: boolean
+  /** `bundled` | `system` | `store`, or null when no decoder resolves. */
+  source: string | null
+  /** `available` | `unsupported` | `bundled` — whether a fetch can fix this host. */
+  auto_fetch: string
+  os: string
+  arch: string
+  download: FfmpegDownload
+}
+
 interface SttStatus {
   available: boolean
   /** Machine-readable refusal reason; '' when available. See `unavailableMessage`. */
@@ -91,10 +127,22 @@ interface SttStatus {
   detail: string
   models: SttModel[]
   download: SttDownload
+  ffmpeg?: SttFfmpeg
 }
 
 const DOWNLOAD_STEP_RUNNING = 'downloading'
 const DOWNLOAD_STEP_FAILED = 'failed'
+
+/**
+ * Decoder stages, which are the backend's `stage` values verbatim.
+ *
+ * `unsupported` is not a failure and must not be rendered as one: no pinned
+ * upstream executable exists for the platform, so a retry cannot change the
+ * answer and the manual system-decoder route is the only one left.
+ */
+const FFMPEG_STAGE_RUNNING = 'downloading'
+const FFMPEG_STAGE_FAILED = 'failed'
+const FFMPEG_AUTO_FETCH_AVAILABLE = 'available'
 
 /**
  * How often the status endpoint is re-read while a model transfer runs.
@@ -170,6 +218,31 @@ function ModelDownloadProgress({ download }: { download: SttDownload }) {
           copies of "downloading N of M" would be two keys a translator renders
           differently for one event. */}
       <p className="text-[12px] text-muted mb-1.5">{downloadLabel(progress)}</p>
+      <div className="h-1.5 bg-border rounded-full overflow-hidden">
+        <div
+          className="h-full bg-accent rounded-full transition-all duration-500"
+          style={{ width: `${Math.round(downloadRatio(progress) * 100)}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Byte progress for the decoder fetch.
+ *
+ * Its own component rather than a second caller of `ModelDownloadProgress`: the
+ * two transfers report through different status blocks with different field
+ * names, and the caption has to say WHICH one is running — a bar labelled
+ * "downloading the speech model" while the decoder is being fetched is worse than
+ * no caption. The bar itself reuses `downloadRatio`, so the percentage, the byte
+ * figures and the divide-by-zero guard have one owner.
+ */
+function DecoderDownloadProgress({ download }: { download: FfmpegDownload }) {
+  const progress = { done: download.downloaded_bytes, total: download.total_bytes }
+  return (
+    <div className="animate-rise" aria-live="polite">
+      <p className="text-[12px] text-muted mb-1.5">{decoderDownloadLabel(progress)}</p>
       <div className="h-1.5 bg-border rounded-full overflow-hidden">
         <div
           className="h-full bg-accent rounded-full transition-all duration-500"
@@ -377,8 +450,14 @@ export default function SttSettings({ cardIndex }: {
   const statusQ = useQuery<SttStatus>({
     queryKey: ['sttStatus'],
     queryFn: () => api.sttStatus(),
+    // Either transfer keeps the poll armed. The decoder fetch runs on its own
+    // store, so gating only on the model's `step` left the decoder bar frozen at
+    // whatever byte count the first response happened to carry.
     refetchInterval: q =>
-      q.state.data?.download?.step === DOWNLOAD_STEP_RUNNING ? DOWNLOAD_POLL_MS : false,
+      q.state.data?.download?.step === DOWNLOAD_STEP_RUNNING
+      || q.state.data?.ffmpeg?.download?.stage === FFMPEG_STAGE_RUNNING
+        ? DOWNLOAD_POLL_MS
+        : false,
   })
 
   const initRef = useRef(false)
@@ -413,6 +492,14 @@ export default function SttSettings({ cardIndex }: {
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
   const [restarting, setRestarting] = useState(false)
+  const decoderMut = useMutation({
+    mutationFn: () => api.sttFfmpegDownload(),
+    onMutate: () => setErr(''),
+    // Same contract as the model transfer: the response only says it started, and
+    // progress arrives through the polled status query.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
+    onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
+  })
   const restartMut = useMutation({
     mutationFn: () => api.restartGateway(),
     onSuccess: () => setRestarting(true),
@@ -471,6 +558,29 @@ export default function SttSettings({ cardIndex }: {
   const usesCatalogModel = CATALOG_MODEL_PROVIDERS.includes(provider)
   const silenceMs = stt.silence_ms ?? SILENCE_MS_DEFAULT
   const partialIntervalMs = stt.partial_interval_ms ?? PARTIAL_INTERVAL_MS_DEFAULT
+
+  // The decoder block. Treated as absent until the status query answers, for the
+  // same reason the model catalog is: claiming a decoder is missing before the
+  // probe has run would offer a download nobody asked for on a host that has one.
+  const ffmpeg = status?.ffmpeg
+  const decoderDownload = ffmpeg?.download
+  const decoderDownloading = decoderDownload?.stage === FFMPEG_STAGE_RUNNING
+  const decoderFailed = decoderDownload?.stage === FFMPEG_STAGE_FAILED
+  // The code is the contract and the sentence is advisory, so the sentence is
+  // preferred for a human reader and the code is the fallback when a failure
+  // carried no prose.
+  const decoderFailureText = decoderDownload?.error_detail || decoderDownload?.error_code || ''
+  const askAgentToFixDecoder = () => {
+    if (!ffmpeg) return
+    // The one prefill mechanism: stage the prompt, navigate to chat, and let the
+    // user read and send it. Never a parallel channel, and never an auto-send.
+    sendErrorToChat(decoderRepairPrompt({
+      code: ffmpeg.download.error_code,
+      detail: ffmpeg.download.error_detail,
+      os: ffmpeg.os,
+      arch: ffmpeg.arch,
+    }))
+  }
 
   // Moving to a streaming-capable provider turns streaming on by default (one click
   // to undo) — a provider chosen FOR its live partials should not need a second
@@ -691,15 +801,83 @@ export default function SttSettings({ cardIndex }: {
           </div>
         )}
 
-        {/* Source installs still report the platform command supplied by the
-            gateway. Render this even when Status reads "ready": availability
-            deliberately treats ffmpeg as optional. */}
-        {available && !!stt.ffmpeg_missing && !stt.bundled_interpreter && stt.prereqs?.length > 0 && (
+        {/* A source install's decoder, and the one thing on this page that used
+            to be a dead end: the panel printed a shell command, and on a
+            distribution with no ffmpeg package that command was an `echo` of a
+            URL. The gateway can fetch the same digest-verified upstream bytes a
+            desktop release carries, so the states below are a fetch, its
+            progress, and — when it fails — a hand-off to an agent session,
+            leaving the manual commands only for a platform nothing is pinned for.
+            Rendered even when Status reads "ready": availability deliberately
+            treats the decoder as optional, so a provider can be usable while an
+            uploaded WebM cannot be decoded. */}
+        {!stt.bundled_interpreter && ffmpeg && !ffmpeg.present && (
           <div className="mt-2 bg-warn-subtle border border-border rounded-lg p-3 animate-rise">
-            <p className="text-sm text-text font-medium mb-2">{i18nT('pages.settings.sttSettings.ffmpeg_is_missing_voice_recordings_from_the_brow')}</p>
-            {stt.prereqs.map((cmd, i) => (
-              <code key={i} className="block bg-bg-elevated rounded px-3 py-1.5 text-[13px] font-mono text-accent mb-1 select-all">{cmd}</code>
-            ))}
+            <p className="text-sm text-text font-medium mb-2">
+              {i18nT('pages.settings.sttSettings.ffmpeg_is_missing_voice_recordings_from_the_brow')}
+            </p>
+            {decoderDownloading ? (
+              <DecoderDownloadProgress download={ffmpeg.download} />
+            ) : (
+              <>
+                {ffmpeg.auto_fetch === FFMPEG_AUTO_FETCH_AVAILABLE && (
+                  <div className="flex flex-col gap-1.5 items-start">
+                    <p className="text-[12px] text-muted">
+                      {i18nT('pages.settings.sttSettings.decoder_fetch_prompt')}
+                    </p>
+                    <Btn onClick={() => decoderMut.mutate()} disabled={decoderMut.isPending}>
+                      <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_decoder')}
+                    </Btn>
+                  </div>
+                )}
+                {/* The manual route, for a platform with no pinned executable
+                    (and therefore nothing a fetch could install). An empty
+                    command list is the honest answer on a host where no package
+                    manager can supply one, so the block renders nothing rather
+                    than an instruction that only prints a sentence. */}
+                {ffmpeg.auto_fetch !== FFMPEG_AUTO_FETCH_AVAILABLE && stt.prereqs?.length > 0 &&
+                  stt.prereqs.map((cmd, i) => (
+                    <code key={i} className="block bg-bg-elevated rounded px-3 py-1.5 text-[13px] font-mono text-accent mb-1 select-all">{cmd}</code>
+                  ))
+                }
+                {decoderFailed && (
+                  // The agent gets the failure, not the user: a digest mismatch
+                  // or an unreachable index is not something a settings page can
+                  // talk anyone through, and this IS an agent product. The button
+                  // PRE-FILLS a composer and stops — nothing is sent on the
+                  // user's behalf — through the same hand-off every other error
+                  // surface uses.
+                  <div className="flex flex-col gap-1.5 items-start mt-1.5">
+                    {/* `askAgent` is off because the hand-off is REPLACED here, not
+                        withheld: `AskAgentButton` carries the error journal's
+                        context (route, endpoint, status), which cannot express the
+                        four facts this repair needs — the failure code, the
+                        GATEWAY's OS and arch, the trusted decoder locations, and
+                        that ~/.local/bin is deliberately not one of them. Two
+                        buttons offering the agent different payloads is worse than
+                        one carrying the right payload, so the button below is the
+                        panel's own hand-off.
+                        On the draft this navigation could cost, the same trade
+                        BrowserPanel's install error takes and a safer version of
+                        it: the only editable values in this subtree are the AWS
+                        profile and region inputs above, which commit `onBlur` — so
+                        moving focus to this button is itself what saves them, and
+                        being stranded on a digest mismatch is not recoverable from
+                        this screen. */}
+                    <ErrorNotice
+                      message={i18nT('pages.settings.sttSettings.decoder_download_failed_reason', {
+                        error: decoderFailureText,
+                      })}
+                      variant="inline"
+                      askAgent={false}
+                    />
+                    <Btn onClick={askAgentToFixDecoder}>
+                      <Sparkles className="lucide-inline" /> {i18nT('pages.settings.sttSettings.let_the_agent_fix_it')}
+                    </Btn>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
       </SettingsCard>

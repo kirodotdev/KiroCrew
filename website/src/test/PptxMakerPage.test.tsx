@@ -19,6 +19,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
 import {
+  BOARD_WIDTH,
   DECK_TABS,
   countBoardSlides,
   filterDecks,
@@ -283,6 +284,37 @@ describe('board helpers', () => {
       expect(frame.getAttribute('sandbox')).toBe('')
     }
     unmount()
+  })
+
+  it('promotes both board frames onto their own compositing layer without losing the scale', () => {
+    // BoardFrame only mounts its iframe once it has measured a container
+    // width, and jsdom reports 0 — pin the measurement so the scaled frame
+    // actually renders and its transform can be asserted.
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 960, height: 540, top: 0, left: 0, right: 960, bottom: 540, x: 0, y: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
+    try {
+      const { container, unmount } = render(
+        <>
+          <BoardFrame html="<div class='slide'>a</div>" title="board" />
+          <BoardThumb html="<div class='slide'>a</div>" width={52} title="thumb" />
+        </>,
+      )
+      const frames = Array.from(container.querySelectorAll('iframe'))
+      expect(frames.length).toBe(2)
+      // `translateZ(0)` must be COMPOSED onto the scale, not replace it: the
+      // scale is each frame's whole geometry, and a bare translateZ(0) would
+      // render the 1920px document at full size inside the preview box.
+      expect(frames[0].style.transform).toBe(`scale(${960 / BOARD_WIDTH}) translateZ(0)`)
+      expect(frames[1].style.transform).toBe(`scale(${52 / BOARD_WIDTH}) translateZ(0)`)
+      for (const frame of frames) {
+        expect(frame.style.transformOrigin).toBe('top left')
+      }
+      unmount()
+    } finally {
+      rect.mockRestore()
+    }
   })
 
   it('collects theme accents in order and skips gaps', () => {

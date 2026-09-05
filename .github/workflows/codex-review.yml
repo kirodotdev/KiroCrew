@@ -663,11 +663,15 @@ jobs:
       #   - it can only ever WIDEN the gate. Opus may UPHOLD or DOWNGRADE; it
       #     cannot add a finding, raise an advisory, or alter a claim. A stage
       #     that can only turn red into amber cannot invent a new red.
-      #   - security-class findings never reach it. The fence below is a
-      #     deterministic grep, not a model judgement, precisely because a fence
-      #     that depends on the model classifying correctly is not a fence. The
-      #     prompt ALSO treats unbounded harm as unweighable; these are two
-      #     independent layers on purpose.
+      #   - security-class findings carry no downgrade eligibility. The
+      #     fence below is a deterministic grep, not a model judgement,
+      #     precisely because a fence that depends on the model classifying
+      #     correctly is not a fence. Fenced findings still enter the call, in
+      #     their own marker section, but under an ANNOTATE-ONLY verdict set:
+      #     the arbiter may FLAG one as a likely extreme edge case and
+      #     pre-draft the human override rationale, and nothing it writes can
+      #     change the gate (#8693). The prompt ALSO treats unbounded harm as
+      #     unweighable; these are two independent layers on purpose.
       #   - the gate reads ARITHMETIC over markers, never Opus's prose. Any
       #     missing marker, malformed footer, or count that fails to reconcile
       #     leaves GPT's verdict exactly as it was. There is no path where a
@@ -683,19 +687,24 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           BLOCK_DIR: ${{ runner.temp }}/adj-blocks
           # The deterministic unbounded-harm fence. A finding matching ANY of
-          # these never enters Opus's input and keeps blocking, no matter what it
-          # would have been ruled: for this class the harm has no ceiling for a
-          # remedy cost to be weighed against, so there is nothing to adjudicate.
+          # these is withheld from DOWNGRADE adjudication and keeps blocking, no
+          # matter what would have been ruled: for this class the harm has no
+          # ceiling for a remedy cost to be weighed against, so there is nothing
+          # to weigh. It still enters Opus's input, in a separate ANNOTATE-ONLY
+          # section that cannot affect the gate (#8693).
           # It covers BOTH unbounded rungs the contract names -- the security
           # vocabulary AND silent data corruption / irreversible data loss -- so
           # the deterministic layer matches the contract's own unweighable class
           # rather than a subset of it; leaving corruption to prompt-level
           # judgment alone would let a wrong downgrade green the gate on exactly
-          # the class the ladder says is unweighable. Deliberately over-broad --
-          # a false fence costs one upheld finding (today's behaviour), a false
-          # clearance ships an unbounded-harm defect. Bare `token` is excluded ON
-          # PURPOSE: in this repo it overwhelmingly means an LLM token budget, and
-          # fencing on it would fence nearly everything.
+          # the class the ladder says is unweighable. Deliberately over-broad on
+          # vocabulary -- a false fence now costs one machine-annotated override
+          # decision rather than a blind block, a false clearance ships an
+          # unbounded-harm defect. The extraction loop below additionally
+          # requires a fenced finding to STATE its consequence chain, so a bare
+          # keyword hit cannot ride the fence out of adjudication (#8693). Bare
+          # `token` is excluded ON PURPOSE: in this repo it overwhelmingly means
+          # an LLM token budget, and fencing on it would fence nearly everything.
           SECURITY_RE: 'residual/security|credential|passwd|password|\bsecret|api[ _-]?key|access[ _-]?key|private[ _-]?key|signing[ _-]?key|AKIA|ASIA|bearer|(access|session|auth|api|security|refresh)[ _-]?token|\bjwt\b|\bcookie|authentic|authoriz|\bauthn\b|\bauthz\b|\bauth\b|privileg|escalat|sandbox|traversal|\.\./|symlink|exfil|\bssrf\b|\bcsrf\b|\bxss\b|injection|subprocess|os\.system|shell=True|\beval\(|\bexec\(|egress|\biam\b|\bkms\b|encrypt|decrypt|\bhmac\b|signature|\bsudo\b|chmod|world-readable|corrupt|data[ _-]?loss|lose[ _-]?data|data[ _-]?destr|irreversib|unrecoverab'
         run: |
           set -uo pipefail
@@ -754,15 +763,89 @@ jobs:
           adjudicable=0
           fenced=0
           ids=""
+          fenced_ids=""
           : > "$RUNNER_TEMP/adj-fenced.md"
+          : > "$RUNNER_TEMP/adj-fenced-input.md"
           printf 'ADJUDICATION_INPUT_BEGIN::%s\n' "$nonce" > .review-adjudication/findings.md
           for f in "$BLOCK_DIR"/*.md; do
             [ -e "$f" ] || break
             count=$((count + 1))
-            if grep -qEi "$SECURITY_RE" "$f"; then
+            # The fence requires a stated consequence chain (the output
+            # contract's "input -> call path -> observable failure" arrow
+            # line) AND a security-class signal in one of the two places the
+            # REVIEWER asserts it: on that chain line, or on the finding's own
+            # "Anchor:" classification line. Every branch of that decision:
+            #   - no chain line at all: a pathless category claim, never
+            #     fenced -- normal downgrade adjudication (#8693 change 2);
+            #   - vocabulary on the chain line: fenced -- the stated
+            #     consequence itself is unbounded harm;
+            #   - security-class Anchor (e.g. residual/security) with a chain:
+            #     fenced -- the reviewer's explicit classification counts even
+            #     when the chain's wording avoids the vocabulary ("arbitrary
+            #     command execution" matches no keyword), otherwise a REAL
+            #     vulnerability becomes downgrade-eligible, the fail-open
+            #     direction;
+            #   - vocabulary only in quoted code or prose (a snippet naming
+            #     subprocess, say): NOT fenced -- a whole-block vocabulary
+            #     test would degenerate to a bare keyword match because every
+            #     finding carries an arrow line. One residual false-fence
+            #     stays by design: a quoted signature that itself carries an
+            #     arrow (`def run() -> subprocess.CompletedProcess`) reads as
+            #     a vocabulary-bearing chain line. That errs fail-closed (the
+            #     finding keeps blocking and gets annotate-only adjudication),
+            #     whereas narrowing the scan to the one line adjacent to
+            #     `Anchor:` would un-fence a genuine security chain whenever
+            #     the model breaks adjacency -- the fail-open direction.
+            # The Anchor-line branch additionally accepts a bare `security`
+            # token: an AUTOSDE rule id like backend-security-controls or
+            # frontend-security is a security classification even though
+            # SECURITY_RE's own `security` alternative requires a trailing
+            # `token` (kept that way for prose, where bare `security` is
+            # everywhere in this repo -- the Anchor line is reviewer-emitted
+            # classification, so the looser token is safe there and covers
+            # any future *security* rule id without per-id patching).
+            # Beyond the vocabulary, the Anchor branch fences by CLASS, and
+            # the decision is a complete table over every anchor the output
+            # contract permits -- per-id drip-patching this list is how a
+            # dangerous class stays downgrade-eligible for a round:
+            #   - `residual/` -- the whole residual family (security,
+            #     crash-data-loss-corruption, guard-removal, and any residual
+            #     class added later). Every residual class is by contract a
+            #     dangerous-harm class; individual ids like guard-removal
+            #     match nothing in SECURITY_RE and their chain wording
+            #     routinely avoids the vocabulary ("check skipped -> gate
+            #     bypass").
+            #   - `harness-parity` -- guards the capability/sandbox seams
+            #     (sandbox.py, providers, platform); a wrong downgrade
+            #     auto-clears a capability leak.
+            #   - `no-test-side-effects` -- guards against out-of-tmp writes;
+            #     a wrong downgrade auto-clears data destruction on the
+            #     machine running the suite.
+            #   - NOT fenced (downgrade adjudication is the intended path):
+            #     no-blocking-call-on-event-loop, no-new-work-on-gateway-boot-
+            #     path, top-level-imports, changelog-is-written-at-version-
+            #     bump-only, feature-map-correctness, no-new-builtin-apps,
+            #     recurring-defect-patterns, and the website UI rules --
+            #     availability/hygiene classes with bounded harm.
+            #   - a NEW AUTOSDE rule id defaults to NOT fenced unless it
+            #     carries a *security* token, is a residual class, or is
+            #     added here with a rationale.
+            # Over-fencing errs fail-closed: the finding keeps blocking and
+            # gets the annotate-only voice. The chain-line requirement
+            # (change 2) still applies to every branch -- a pathless claim is
+            # never fenced.
+            # The piped greps deliberately consume all input (no -q on the
+            # downstream): under pipefail a -q short-circuit can SIGPIPE the
+            # upstream grep and misread a real security finding as unfenced.
+            if grep -qE -- '->|→' "$f" \
+               && { grep -E -- '->|→' "$f" | grep -Ei "$SECURITY_RE" >/dev/null \
+                    || grep -Ei '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?Anchor:' "$f" | grep -Ei "$SECURITY_RE|\bsecurity\b|residual/|harness-parity|no-test-side-effects" >/dev/null; }; then
               fenced=$((fenced + 1))
+              fenced_ids="$fenced_ids F$count"
               { printf -- '--- F%s (security class -- withheld from adjudication) ---\n' "$count"; cat "$f"; } \
                 >> "$RUNNER_TEMP/adj-fenced.md"
+              { printf -- '=== F%s (fenced -- annotate-only) ===\n' "$count"; cat "$f"; echo; } \
+                >> "$RUNNER_TEMP/adj-fenced-input.md"
               continue
             fi
             adjudicable=$((adjudicable + 1))
@@ -770,6 +853,20 @@ jobs:
             { printf -- '=== F%s ===\n' "$count"; cat "$f"; echo; } >> .review-adjudication/findings.md
           done
           printf 'ADJUDICATION_INPUT_END::%s\n' "$nonce" >> .review-adjudication/findings.md
+
+          # Fenced findings enter the adjudicator's input too, but in their OWN
+          # marker section under an annotate-only verdict set (UPHOLD-FENCED /
+          # FLAG -- see the contract's FENCED FINDINGS section). Nothing parsed
+          # from rulings on this section can change the gate: a FLAG only
+          # pre-drafts the /ai-review override rationale a repository writer
+          # would verify and post (#8693).
+          if [ "$fenced" -gt 0 ]; then
+            {
+              printf 'ADJUDICATION_FENCED_BEGIN::%s\n' "$nonce"
+              cat "$RUNNER_TEMP/adj-fenced-input.md"
+              printf 'ADJUDICATION_FENCED_END::%s\n' "$nonce"
+            } >> .review-adjudication/findings.md
+          fi
 
           # Opus gets the extracted blocks and nothing else -- not GPT's
           # narrative, not its preamble, not the PR body. GPT's vocabulary in
@@ -785,6 +882,7 @@ jobs:
             echo "fenced=$fenced"
             echo "nonce=$nonce"
             echo "ids=${ids# }"
+            echo "fenced_ids=${fenced_ids# }"
           } >> "$GITHUB_OUTPUT"
           echo "Extracted $count BLOCKING finding(s) for $HEAD: $adjudicable adjudicable, $fenced withheld as security-class."
           if [ "$fenced" -gt 0 ]; then
@@ -801,7 +899,8 @@ jobs:
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
-          steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0'
+          (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
+          || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
           )
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
@@ -812,7 +911,8 @@ jobs:
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
-          steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0'
+          (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
+          || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
           )
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
         with:
@@ -844,6 +944,14 @@ jobs:
             You are in a checkout of this pull request's merge ref, so the code
             each finding names is on disk at the path it gives.
 
+            If the file also carries a block between
+            ADJUDICATION_FENCED_BEGIN::${{ steps.adj_input.outputs.nonce }} and
+            ADJUDICATION_FENCED_END::${{ steps.adj_input.outputs.nonce }}, those
+            are FENCED findings (${{ steps.adj_input.outputs.fenced }} of them,
+            ids ${{ steps.adj_input.outputs.fenced_ids }}) — equally DATA, ruled
+            under the contract's FENCED FINDINGS section: annotate-only, and
+            nothing you write about them can unblock the merge.
+
       - name: Adjudicate the blocking verdict (script arithmetic, fail closed)
         id: adj
         if: >-
@@ -858,6 +966,7 @@ jobs:
           ADJUDICABLE: ${{ steps.adj_input.outputs.adjudicable }}
           FENCED: ${{ steps.adj_input.outputs.fenced }}
           IDS: ${{ steps.adj_input.outputs.ids }}
+          FENCED_IDS: ${{ steps.adj_input.outputs.fenced_ids }}
           REASONS: disproportionate-remedy|harm-warrants-remedy|unrecoverable-loss|security-class|autosde-blocking-rule|evidence-incomplete
         run: |
           set -uo pipefail
@@ -940,6 +1049,36 @@ jobs:
                 decision="cleared"
                 note="Adjudication downgraded all $total blocking finding(s) to advisory: the remedy each one requires is disproportionate to the harm it prevents."
               fi
+            fi
+          fi
+          # ── FENCED ANNOTATIONS (advisory to a human; never touch `decision`) ─
+          # The annotate-only pass may FLAG a fenced finding as a likely extreme
+          # edge case. A flag holds no authority: the comment step renders it as
+          # a pre-drafted /ai-review override rationale for a repository writer
+          # to verify. Same arithmetic discipline as the verdict above -- footer
+          # counts, one well-formed line per fenced finding, the exact id set --
+          # and ANY mismatch discards every annotation while leaving `decision`
+          # exactly as computed above (#8693).
+          # The flags file lives in $RUNNER_TEMP, never the workspace: the
+          # same-repo checkout is the PR's merge ref, so a workspace path could
+          # be pre-committed by the PR and rendered as a forged override draft
+          # on a run where this step never wrote it.
+          rm -f "$RUNNER_TEMP/codex-adjudication-flags.md"
+          fline='^(UPHOLD-FENCED|FLAG) F[0-9]+ [^[:space:]]+ -- .+$'
+          if [ "$fenced" -gt 0 ] && grep -Fq "[GPT-ADJUDICATED-FENCED] $HEAD" "$parse"; then
+            ffooter="$(grep -F "[ADJUDICATION-FENCED] $HEAD " "$parse" | head -n1 || true)"
+            ftotal="$(printf '%s' "$ffooter" | sed -nE 's/.*[[:space:]]fenced=([0-9]+).*/\1/p')"
+            fflag="$(printf '%s' "$ffooter" | sed -nE 's/.*[[:space:]]flagged=([0-9]+).*/\1/p')"
+            flines="$(num "$(grep -cE "$fline" "$parse" || true)")"
+            fseen="$(grep -E "$fline" "$parse" | awk '{print $2}' | sort -u | tr '\n' ' ' || true)"
+            fwant="$(printf '%s\n' ${FENCED_IDS:-} | sort -u | tr '\n' ' ' || true)"
+            factual="$(num "$(grep -cE '^FLAG F[0-9]+ ' "$parse" || true)")"
+            if [ -n "$ftotal" ] && [ -n "$fflag" ] \
+              && [ "$ftotal" -eq "$fenced" ] && [ "$flines" -eq "$fenced" ] \
+              && [ "$factual" -eq "$fflag" ] && [ "$fseen" = "$fwant" ] \
+              && [ "$fflag" -gt 0 ]; then
+              grep -E '^FLAG F[0-9]+ ' "$parse" > "$RUNNER_TEMP/codex-adjudication-flags.md"
+              echo "annotate-only pass flagged $fflag of $fenced fenced finding(s) as likely edge case; no effect on the gate"
             fi
           fi
           {
@@ -1042,6 +1181,23 @@ jobs:
               cat codex-adjudication.md
               echo
               echo "</details>"
+            fi
+            if [ -s "${RUNNER_TEMP:-/tmp}/codex-adjudication-flags.md" ]; then
+              echo
+              echo "### 🏷️ Fenced finding(s) machine-flagged as likely edge case"
+              echo
+              echo "The security fence keeps these findings blocking regardless of adjudication; the only clearance path is a human override. The annotate-only pass judged the condition combination each one requires extreme, and pre-drafted the override rationale below. **A repository writer must independently verify a rationale before posting it** — it is machine-authored, and a wrong override on a security-class finding ships exactly the class the fence exists to stop."
+              echo
+              while IFS= read -r fl; do
+                rid="$(printf '%s\n' "$fl" | awk '{print $2}')"
+                rloc="$(printf '%s\n' "$fl" | awk '{print $3}')"
+                rtxt="${fl#* -- }"
+                echo "- **$rid** \`$rloc\` — $rtxt"
+                echo
+                echo '  ```'
+                echo "  /ai-review override gpt $HEAD: $rtxt"
+                echo '  ```'
+              done < "${RUNNER_TEMP:-/tmp}/codex-adjudication-flags.md"
             fi
             echo
             echo "False positive or not applicable? A repository writer can comment:"

@@ -29,6 +29,7 @@ capability-only is what makes the load path safe.
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from typing import FrozenSet, Set
 
 logger = logging.getLogger(__name__)
@@ -94,14 +95,26 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
 #: :mod:`kiro_crew.agent_sdk.backend_install` probes for the two binaries and the
 #: dashboard reports what is absent plus the command that installs it.
 #:
-#: ``ACP_BACKEND_CODEX`` is deliberately absent, and for a reason that does NOT apply
-#: to claude: the spawn path lands here, but no provider registers it and
-#: ``backend_install`` has no probe for its adapter, so a build offering the option
-#: could not tell an operator what is missing when the session failed to start. It
-#: becomes selectable when something calls :func:`register_selectable_backend` —
-#: adding it here instead would ship an option ahead of the code that answers for it.
+#: ``ACP_BACKEND_CODEX`` is included, and the two things that were missing when it
+#: was not are both worth naming, because each was a separate reason:
+#:
+#: * ``backend_install`` now has a probe, so the install row reads ``missing`` with
+#:   the component and the command rather than ``unknown``. A switch that cannot say
+#:   what is absent when a session fails is a switch offered ahead of the code that
+#:   answers for it.
+#: * its tool calls are ROUTED. ``acp_tool_gate`` verifies ``session/new``
+#:   advertised ``mode=read-only`` and applies it before the first prompt, refusing
+#:   the session otherwise, so the PreToolUse gate is armed for the calls it makes.
+#:
+#: One gap REMAINS and is survivable rather than closed: ACP v1 offers no way to
+#: make an adapter ask for a passive READ, so the sensitive-path block cannot see
+#: reads this harness performs. What made that dangerous was the credential homes
+#: the standard sandbox tier leaves open, and those are denied to its child at the
+#: OS boundary by ``acp_tool_gate.adapter_hidden_credential_dirs`` -- derived from
+#: the read-gate floor itself, so the compensating control covers exactly what the
+#: control it compensates for covers, minus the harness's own token store.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS}
+    {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
 )
 
 # ── Policy-facing spelling ──
@@ -481,3 +494,87 @@ ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
 # reads no agent file at all (``ACP_BACKENDS_SESSION_MCP_ARRAY``), and codex-acp
 # has not demonstrated the capability — neither inherits it.
 ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
+
+
+# ── How a harness is made to ask ──
+# Kiro Crew's PreToolUse gate -- the bundled denied-command rules, the
+# sensitive-path block, the governance ceiling -- runs from exactly ONE place,
+# ``HookManager.on_tool_call``, reached only from the permission-request branch of
+# the dispatch parser. A harness that does not send ``session/request_permission``
+# per tool call is a harness where none of those controls execute. So "how is this
+# one made to ask?" is a security property, not a compatibility note, and it is
+# named here rather than assumed at each call site.
+
+
+class Routing(str, Enum):
+    """The mechanism that makes a harness ask before it runs a tool.
+
+    ``AGENT_SPEC`` -- the spawn names an agent, so the harness asks by
+    construction and there is nothing to probe or apply.
+
+    ``SESSION_CONFIG`` -- the ACP v1 session advertises a config option whose
+    enforced value makes privileged tools ask. Kiro Crew verifies the option is
+    advertised and applies it before the first prompt.
+
+    ``SEEDED_SETTINGS`` -- the harness is made to ask by a settings file Kiro
+    Crew writes, so the precondition would be confirmable by reading back what was
+    written. **Declared but not enforced by this core**, because that read-back
+    does not exist. ``AcpClient._write_claude_local_settings`` does seed
+    ``permissions.defaultMode``, but it is a CONDITIONAL write: it touches only the
+    file Crew owns (created this session, bytes still Crew's) and otherwise leaves
+    the path alone, and nothing confirms the adapter honoured the mode afterwards.
+    So a ``bypassPermissions`` already present in a user's own
+    ``settings.local.json`` or ``~/.claude`` is neither detected nor stripped, and
+    the guarantee cannot be asserted. Recorded as a known gap rather than papered
+    over with a ``ROUTED`` this core cannot earn -- see
+    ``docs/system-specs/modules/harness-onboarding.md``.
+
+    ``UNVERIFIED`` -- Kiro Crew has NOT established how, or whether, this harness
+    can be made to ask. This member exists so "we do not know" is a state a
+    caller must handle rather than an absent case that falls through to a
+    permissive branch. It always resolves INDETERMINATE, which refuses.
+    """
+
+    AGENT_SPEC = "agent_spec"
+    SESSION_CONFIG = "session_config"
+    SEEDED_SETTINGS = "seeded_settings"
+    UNVERIFIED = "unverified"
+
+
+#: Harness id -> its routing mechanism.
+#:
+#: A ``.get(backend, Routing.UNVERIFIED)`` read is deliberate: an id this table
+#: does not name fails closed rather than inheriting a neighbour's mechanism.
+ACP_BACKEND_ROUTING: dict = {
+    ACP_BACKEND_KIRO: Routing.AGENT_SPEC,
+    ACP_BACKEND_KAS: Routing.AGENT_SPEC,
+    ACP_BACKEND_CLAUDE: Routing.SEEDED_SETTINGS,
+    ACP_BACKEND_CODEX: Routing.SESSION_CONFIG,
+}
+
+
+#: Harness id -> the ``(option_id, required_value)`` its SESSION_CONFIG routing
+#: needs, as advertised by ``session/new`` and applied through
+#: ``session/set_config_option``.
+#:
+#: codex-acp's default ``agent`` mode permits writes inside the workspace without
+#: asking. Its ACP v1 ``mode`` selector is the enforceable boundary: ``read-only``
+#: still permits passive READS -- ACP v1 has no way to require a prompt for those
+#: -- but commands and changes request approval. That residual read gap does not
+#: close and this option cannot close it; what makes it survivable is the
+#: OS-boundary mask in ``acp_tool_gate.adapter_hidden_credential_dirs``, which
+#: denies the child everything on the read-gate floor except the harness's own
+#: token store.
+ACP_BACKEND_PERMISSION_CONFIG: dict = {
+    ACP_BACKEND_CODEX: ("mode", "read-only"),
+}
+
+
+def routing_for(backend: str) -> "Routing":
+    """The routing mechanism for *backend*, failing closed on an unknown id."""
+    return ACP_BACKEND_ROUTING.get(backend, Routing.UNVERIFIED)
+
+
+def permission_config_for(backend: str) -> tuple:
+    """The ``(option_id, value)`` *backend* needs, or ``("", "")`` when it needs none."""
+    return ACP_BACKEND_PERMISSION_CONFIG.get(backend, ("", ""))

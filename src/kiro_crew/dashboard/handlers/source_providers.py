@@ -21,8 +21,8 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterable, Iterator
-from dataclasses import dataclass, fields
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass, fields, replace
 from pathlib import PurePosixPath
 from typing import Any, Protocol, TypedDict, TypeVar
 from urllib.parse import quote, urlparse, urlunparse
@@ -50,6 +50,10 @@ from kiro_crew.github_runner import (
 )
 from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
 from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
+from kiro_crew.history_search import register_search_ref_resolver as _register_search_ref_resolver
+from kiro_crew.history_search import (
+    reset_search_ref_resolver_for_tests as _reset_search_ref_resolver,
+)
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import (
     create_subprocess_limited,
@@ -75,6 +79,29 @@ _MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
 _SECONDARY_PAGE_SIZE = 100
 _COMMAND_TIMEOUT_SECS = 30
 _CACHE_TTL_SECS = 30
+# A merged pull request is terminal: nothing the chip renders moves again, and
+# re-reading it on the open-PR cadence for as long as its chip stays in a
+# sidebar was pure provider load — one `gh` subprocess per finished PR per
+# minute from the chip loop alone, forever. A CLOSED one is nearly so, but it can
+# be reopened and keeps accruing discussion, so it ages on a shorter clock.
+# These govern the chip cache and the full payloads that have no cheaper
+# revalidation (GitLab, registered plugins); a github.com full payload is
+# instead REVALIDATED with a conditional GET at the open cadence whatever its
+# lifecycle (see `_revalidate_pull_request`), so post-merge comments and a
+# reopen reach the panel within one TTL for one rate-limit-free request.
+# Mutation invalidation still drops these entries, the explicit refresh bypasses
+# them, and the turn-boundary force still re-reads a CLOSED chip, never a merged
+# one.
+_TERMINAL_TTL_SECS = 6 * 60 * 60
+_CLOSED_TTL_SECS = 60 * 60
+# Ceiling on how long conditional revalidation may keep re-stamping one full
+# payload without a full read behind it. The probes rest on GitHub moving the
+# `issues/{n}` ETag for every rendered field, which the API does not promise for
+# every mutation class; past this age one full read runs regardless of what the
+# probes say, so a coverage gap degrades to bounded staleness, never unbounded.
+_REVALIDATED_MAX_AGE_SECS = _TERMINAL_TTL_SECS
+# Chip-vocabulary states (see ``_project_state``) that never move on their own.
+_TERMINAL_CHIP_STATES = frozenset({"merged", "closed"})
 _CACHE_MAX_ENTRIES = 32
 _CACHE_MAX_BYTES = 48 * 1024 * 1024
 _PROVIDER_CONCURRENCY = 4
@@ -608,6 +635,18 @@ class SourceProviderPlugin(Protocol):
     #
     #   def chip_label(self, ref: SourceRef) -> str
     #   def path_markers(self) -> Sequence[str]
+    #   def search_ref(self, token: str) -> tuple[str, Sequence[str]] | None
+    #       Recognize ONE casefolded query token as this provider's item and
+    #       answer `(canonical_spelling, alternative_spellings)` -- every spelling
+    #       casefolded -- or None. Contributed to transcript search through
+    #       `source_search_ref()`, so a query naming a review by id gates on the
+    #       item rather than on the literal string. Spellings only: a provider
+    #       cannot contribute lead-in vocabulary, and a bare all-digit token is
+    #       never offered to a provider at all. Must be PURE and allocation-cheap -- no
+    #       I/O, no network, no config read -- it is called for every term of
+    #       every query, at least twice per search. Nothing in this repo registers
+    #       a provider, so `FakeAcmePlugin.search_ref` in
+    #       test/test_source_provider_plugin.py is the reference implementation.
     #   async def fetch_check_status(self, ref: SourceRef) -> dict[str, str]
     #   async def comment(self, ref: SourceRef, body: str) -> None
     #   async def resolve_thread(self, ref: SourceRef, thread_id: str,
@@ -641,6 +680,15 @@ def register_source_provider(plugin: SourceProviderPlugin) -> None:
         if not callable(getattr(plugin, method, None)):
             raise ValueError(f"source provider {provider_id!r} is missing {method}()")
     _SOURCE_PROVIDER_PLUGINS[provider_id] = plugin
+    # Publish the transcript-search seam DOWNWARD into core (dashboard -> core,
+    # the allowed direction; core never reaches up into this module). Done here,
+    # at registration, rather than from a route handler: `parse_search_query` is
+    # also reached from paths that serve no HTTP -- the Discord title-only resume
+    # gate and the `kirocrew memory search` CLI -- and a process that never ran a
+    # dashboard route would then answer the SAME query differently, a divergence
+    # that presents as flakiness rather than as a missing registration. Idempotent
+    # by identity, so registering several providers consults one collector.
+    _register_search_ref_resolver(source_search_ref)
     logger.info("registered source provider %s", provider_id)
 
 
@@ -652,6 +700,58 @@ def registered_source_provider(provider_id: str) -> SourceProviderPlugin | None:
 def reset_source_providers_for_tests() -> None:
     """Drop every registration. Test-only: the registry is module state."""
     _SOURCE_PROVIDER_PLUGINS.clear()
+    # The search seam is module state in core, published from here, so reset it
+    # with the registry it serves — otherwise a stale collector outlives the
+    # plugins it reads and a later test observes a registered resolver it never
+    # asked for.
+    _reset_search_ref_resolver()
+
+
+def source_search_ref(token: str) -> tuple[str, Sequence[str]] | None:
+    """Spellings of the provider item a query *token* names, or None.
+
+    The transcript search recognizes the built-in forge shapes itself (``#4411``,
+    ``pull/4411``, a PR URL) and expands them to every spelling of the same item,
+    so whichever form a transcript used is found. A registered provider whose ids
+    look like ``REV-987654321`` matches none of those shapes, so WITHOUT this its
+    ids degrade to plain literal needles: a query finds only the exact string it
+    typed, and never a transcript that cited the same review by URL.
+
+    A plugin contributes spellings through the optional ``search_ref()`` hook.
+
+    The FIRST plugin to ANSWER wins, for every token shape. Several plugins may be
+    registered, so the loop asks each in turn until one answers -- but nothing here
+    adjudicates BETWEEN two real answers: two registrants holding a real item at the
+    SAME token cannot arise in this repo, which registers no provider at all, so
+    merging them would ship surface no code path can reach. It is additive if a
+    second registrant appears.
+
+    Nothing here judges an answer's SHAPE. Skipping a malformed one would only
+    matter so a LATER plugin could still be asked, which is the same two-registrant
+    scenario the merge above is declined for, so the collector hands the first
+    answer through and lets the one normalizer decide what it is. A RAISE is
+    different: it costs no ``alts`` to contain and one broken edition must not hide
+    every later provider's items, so it is caught per provider here.
+
+    Shape belongs to the search module's ``_provider_search_ref``, the single
+    normalizer: casefolding, the dedup, the spelling cap and every shape check. Its
+    guard also wraps this whole collector, because it IS the resolver core calls.
+    """
+    for plugin in _SOURCE_PROVIDER_PLUGINS.values():
+        hook = getattr(plugin, "search_ref", None)
+        if not callable(hook):
+            continue
+        try:
+            found = hook(token)
+        except Exception:
+            # One broken edition must not hide every later provider's items, so the
+            # raise is contained HERE as well as in the normalizer's own guard.
+            logger.debug("source provider %s search_ref failed", plugin.id, exc_info=True)
+            continue
+        if found is None:
+            continue
+        return found
+    return None
 
 
 def source_link_path_markers() -> tuple[str, ...]:
@@ -1373,12 +1473,105 @@ async def _collect_process_output(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _provider_failure_message(executable: str, stderr: bytes) -> str:
+    """Redacted provider stderr, with the login hint appended for auth failures."""
+    message = _safe_error(stderr)
+    lowered = message.lower()
+    if "unauthenticated" in lowered or "not logged in" in lowered or "authentication" in lowered:
+        message = f"{message} Run `{executable} auth login`, then retry."
+    return message
+
+
+def _parse_json_success(executable: str) -> Callable[[int, bytes, bytes], Any]:
+    """The ordinary provider contract: exit 0 and a JSON body, anything else fails."""
+
+    def parse(returncode: int, stdout: bytes, stderr: bytes) -> Any:
+        if returncode != 0:
+            raise SourceProviderError(_provider_failure_message(executable, stderr))
+        try:
+            return json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SourceProviderError(f"{executable} returned invalid JSON") from exc
+
+    return parse
+
+
+@dataclass(frozen=True)
+class _ConditionalRead:
+    """One conditional REST GET: ``status`` is 200 or 304, ``etag`` the validator
+    the server sent back (``""`` when it sent none). The body is deliberately
+    not carried: the probes decide on status and validator alone and never
+    compare bodies, so a 200 body is dead weight."""
+
+    status: int
+    etag: str
+
+
+def _parse_conditional_get(executable: str) -> Callable[[int, bytes, bytes], _ConditionalRead]:
+    """Parse ``gh api -i`` output for a conditional GET.
+
+    ``-i`` puts the status line and response headers on stdout ahead of the
+    body, which is the only way to read the refreshed ``ETag``. The exit code
+    is NOT a usable signal here: ``gh`` treats every non-2xx status as a failure,
+    so a ``304 Not Modified`` -- the whole point of the request -- exits 1 with
+    ``gh: HTTP 304`` on stderr and an empty body. The status line decides
+    instead, and only a status other than 200/304 is a provider error.
+    """
+
+    def parse(returncode: int, stdout: bytes, stderr: bytes) -> _ConditionalRead:
+        text = stdout.decode("utf-8", errors="replace")
+        head, sep, _body = text.partition("\r\n\r\n")
+        if not sep:
+            head, sep, _body = text.partition("\n\n")
+        lines = head.splitlines()
+        status_parts = lines[0].split() if lines else []
+        try:
+            status = int(status_parts[1]) if status_parts[0].upper().startswith("HTTP/") else 0
+        except (IndexError, ValueError):
+            status = 0
+        if status not in (200, 304):
+            raise SourceProviderError(_provider_failure_message(executable, stderr))
+        etag = ""
+        for line in lines[1:]:
+            name, colon, value = line.partition(":")
+            if colon and name.strip().lower() == "etag":
+                etag = value.strip()
+                break
+        return _ConditionalRead(status, etag)
+
+    return parse
+
+
 async def _run_json(
     *argv: str,
     max_output_bytes: int = _METADATA_OUTPUT_BYTES,
     host: str = "",
 ) -> Any:
+    """Run an allowlisted provider CLI expecting exit 0 and a JSON body.
+
+    Thin wrapper over :func:`_run_provider`; every read and mutation that wants a
+    plain JSON answer goes through here.
+    """
+    return await _run_provider(
+        *argv,
+        max_output_bytes=max_output_bytes,
+        host=host,
+        parse=_parse_json_success(argv[0] if argv else ""),
+    )
+
+
+async def _run_provider(
+    *argv: str,
+    max_output_bytes: int = _METADATA_OUTPUT_BYTES,
+    host: str = "",
+    parse: Callable[[int, bytes, bytes], Any],
+) -> Any:
     """Run an allowlisted provider CLI with isolation, bounds, and SEL audit.
+
+    ``parse`` turns ``(returncode, stdout, stderr)`` into the result and raises
+    :class:`SourceProviderError` for a failed run; it runs inside the audited
+    section, so a parse failure is recorded as ``failed/provider_error`` and only
+    a parsed result reaches ``completed/success``.
 
     ``host`` is REQUIRED for ``glab`` and must already have passed
     :func:`parse_source_url`; it is re-checked here so a caller cannot reach an
@@ -1514,20 +1707,7 @@ async def _run_json(
             except OSError as exc:
                 raise SourceProviderError(f"{executable} could not start") from exc
             stdout, stderr = await _collect_process_output(proc, executable, max_output_bytes)
-        if proc.returncode != 0:
-            message = _safe_error(stderr)
-            lowered = message.lower()
-            if (
-                "unauthenticated" in lowered
-                or "not logged in" in lowered
-                or "authentication" in lowered
-            ):
-                message = f"{message} Run `{executable} auth login`, then retry."
-            raise SourceProviderError(message)
-        try:
-            result = json.loads(stdout.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise SourceProviderError(f"{executable} returned invalid JSON") from exc
+        result = parse(proc.returncode if proc.returncode is not None else -1, stdout, stderr)
     except asyncio.CancelledError:
         if invoked:
             _audit_provider_cli(executable, "failed", "request_cancelled")
@@ -1642,6 +1822,55 @@ def _project_state(raw_state: str, *, draft: bool) -> str | None:
     if state == "closed":
         return "closed"
     return None
+
+
+def _chip_state(status: dict[str, str] | None) -> str:
+    """The chip-vocabulary lifecycle of a cached chip status, ``""`` when unknown."""
+    return str(status.get("state") or "") if status else ""
+
+
+def _lifecycle_ttl(state: str) -> float:
+    """Retention for a chip-vocabulary lifecycle: merged, closed, or anything else."""
+    if state == "merged":
+        return _TERMINAL_TTL_SECS
+    if state == "closed":
+        return _CLOSED_TTL_SECS
+    return _CACHE_TTL_SECS
+
+
+def _full_payload_ttl(payload: dict[str, Any]) -> float:
+    """How long a cached full payload stays fresh WITHOUT revalidation, by the
+    lifecycle it describes.
+
+    Decided from the payload itself (through the same ``_project_state`` the chip
+    projection uses) rather than from the chip cache, so the two caches cannot
+    disagree about whether a URL is finished. A github.com payload past the open
+    TTL is revalidated instead of served on this clock (``fetch_pull_request``).
+    """
+    state = _project_state(str(payload.get("state") or ""), draft=bool(payload.get("draft")))
+    return _lifecycle_ttl(state or "")
+
+
+def _chip_refresh_due(
+    entry: tuple[float, dict[str, str] | None] | None, now: float, *, force: bool
+) -> bool:
+    """Whether a chip-cache entry has aged out of its TTL.
+
+    ``force`` (a turn boundary) bypasses the TTL for every lifecycle except
+    ``merged``: a PR the agent may have just reopened is worth a forced read, a
+    merged one cannot change and would only spend a provider subprocess per turn
+    for as long as its chip stays in the sidebar.
+    """
+    if entry is None:
+        return True
+    stamped_at, status = entry
+    state = _chip_state(status)
+    if state == "merged":
+        return now - stamped_at >= _TERMINAL_TTL_SECS
+    if force:
+        return True
+    ttl = _lifecycle_ttl(state) if state in _TERMINAL_CHIP_STATES else _CHECK_TTL_SECS
+    return now - stamped_at >= ttl
 
 
 def _gitlab_status_bucket(status: str) -> str:
@@ -4529,8 +4758,11 @@ async def _fetch_pull_request_uncached(
         # Sweep expired entries on write, then cap by both recency count and
         # aggregate serialized weight. A PR combines several provider commands,
         # so per-command pipe limits alone do not bound retained cache memory.
+        # Each entry ages by its own lifecycle-derived TTL (`_full_payload_ttl`).
         for key in [
-            key for key, (stored_at, _, _) in _CACHE.items() if now - stored_at >= _CACHE_TTL_SECS
+            key
+            for key, (stored_at, _, payload) in _CACHE.items()
+            if now - stored_at >= _full_payload_ttl(payload)
         ]:
             del _CACHE[key]
         _CACHE[ref.url] = (now, payload_size, data)
@@ -4552,6 +4784,214 @@ async def _fetch_pull_request_uncached(
     return data
 
 
+# ── Conditional revalidation of an expired GitHub payload ────────────────────
+# An expired full payload used to mean the whole provider fanout again (the core
+# `gh pr view`, the files, review-comment and rollup reads, and the merge-state
+# re-reads) even when nothing about the pull request had moved. GitHub's REST
+# API honours `If-None-Match`, and an authenticated `304 Not Modified` is free on
+# the primary rate limit, so an expired github.com payload is first REVALIDATED
+# with small conditional GETs; only when one reports a change does the fanout
+# run. Together the probes cover what the panel renders:
+#   * `issues/{n}` -- its ETag moves with the pull request's `updated_at`, i.e.
+#     title/body/labels/lifecycle (a reopen included), a push (synchronize),
+#     reviews, and comments. `pulls/{n}` is deliberately NOT the probe: it
+#     embeds the base/head repository objects whose live counters (open issues,
+#     stars, pushed_at) change its ETag on a busy repository without the pull
+#     request changing.
+#   * `commits/{head_sha}/check-runs` and `commits/{head_sha}/status` -- CI
+#     hangs off the commit, not the pull request, so `updated_at` never moves
+#     for it; these two ETags do. Both are needed: check runs and legacy commit
+#     statuses are separate resources, and `statusCheckRollup` renders both.
+#     Skipped for a merged or closed pull request, whose CI the panel and the
+#     chip no longer track.
+# The merge pair (`mergeable`/`mergeStateStatus`) is recomputed lazily by GitHub
+# and moves no validator; it is carried by the chip refresh, which drops the
+# full payload on a changed merge pair (see the chip <-> full protocol).
+# GitHub's GraphQL API -- what `gh pr view` speaks -- has no conditional
+# requests at all, which is why the probes are REST.
+#
+# Strictly 304-only: a probe that answers 200 (including the first probe of a
+# URL, which has no validator to send and only LEARNS the ETags) or that fails
+# is "unknown", and unknown runs the fanout. Nothing is ever judged unchanged by
+# comparing bodies. An explicit refresh, a mutation invalidation and any
+# non-GitHub provider (GitLab, a registered plugin) skip the probes entirely.
+
+
+@dataclass(frozen=True)
+class _Revalidator:
+    """The validators learned for one pull request URL. ``head_sha`` scopes the
+    two commit-level ETags: a push moves the head, and the old commit's
+    check-runs ETag would still answer 304 for a commit nobody looks at any
+    more."""
+
+    issue_etag: str
+    checks_etag: str
+    status_etag: str
+    head_sha: str
+    learned_at: float
+    # When the payload these validators vouch for was last read in full. An
+    # all-304 carries it forward unchanged; only a full read resets it, and
+    # `_revalidate_pull_request` forces one once it is `_REVALIDATED_MAX_AGE_SECS`
+    # old. ``None`` (validators built without a read behind them) is never
+    # aged out.
+    read_at: float | None = None
+
+
+_REVALIDATORS: dict[str, _Revalidator] = {}
+_REVALIDATORS_MAX = 512
+# Check-runs are paged; the ETag is per exact URL, so the page size is part of
+# the key and must not drift between probes.
+_REVALIDATE_CHECK_RUNS_PAGE = 100
+
+
+def _trim_revalidators() -> None:
+    while len(_REVALIDATORS) > _REVALIDATORS_MAX:
+        del _REVALIDATORS[min(_REVALIDATORS, key=lambda key: _REVALIDATORS[key].learned_at)]
+
+
+async def _gh_conditional_get(
+    path: str, etag: str, *, max_output_bytes: int = _METADATA_OUTPUT_BYTES
+) -> _ConditionalRead:
+    """One `gh api` GET carrying ``If-None-Match`` when a validator is known."""
+    argv = ["gh", "api", path, "-i"]
+    if etag:
+        argv += ["-H", f"If-None-Match: {etag}"]
+    return await _run_provider(
+        *argv, max_output_bytes=max_output_bytes, parse=_parse_conditional_get("gh")
+    )
+
+
+def _payload_is_terminal(payload: dict[str, Any]) -> bool:
+    state = _project_state(str(payload.get("state") or ""), draft=bool(payload.get("draft")))
+    return state in _TERMINAL_CHIP_STATES
+
+
+@dataclass(frozen=True)
+class _ProbeOutcome:
+    """``unchanged`` when every probe answered 304. ``learned`` carries the
+    validators the probes returned, or ``None`` when a probe failed or the
+    payload had no head to probe. On an all-304 they are already committed;
+    on a 200 they describe a payload the cache does NOT hold yet, so the
+    caller commits them only once the full read that follows has succeeded
+    -- committed early, a fanout that then failed would leave the pre-change
+    payload paired with post-change validators, and every later probe would
+    answer 304 against it and re-stamp the stale payload as current."""
+
+    unchanged: bool
+    learned: _Revalidator | None
+
+
+_PROBE_UNKNOWN = _ProbeOutcome(False, None)
+
+
+def _commit_revalidator(url: str, learned: _Revalidator | None) -> None:
+    if learned is None:
+        return
+    _REVALIDATORS[url] = learned
+    _trim_revalidators()
+
+
+async def _probe_github_payload(ref: SourceRef, payload: dict[str, Any]) -> _ProbeOutcome:
+    """Ask GitHub whether the pull request ``payload`` describes has moved.
+
+    Any probe failure is an "unknown" (not unchanged, nothing learned): the
+    fanout that follows is the same read that would have run without probing,
+    so a failing probe costs at most the probes themselves and can never hide
+    a change.
+    """
+    head_sha = str(payload.get("headSha") or "")
+    if not head_sha:
+        return _PROBE_UNKNOWN
+    known = _REVALIDATORS.get(ref.url)
+    same_head = known is not None and known.head_sha == head_sha
+    issue_etag = known.issue_etag if known else ""
+    checks_etag = known.checks_etag if known and same_head else ""
+    status_etag = known.status_etag if known and same_head else ""
+    repo_api = f"repos/{quote(ref.owner)}/{quote(ref.repo)}"
+    commit_api = f"{repo_api}/commits/{quote(head_sha)}"
+    probes = [_gh_conditional_get(f"{repo_api}/issues/{ref.number}", issue_etag)]
+    if not _payload_is_terminal(payload):
+        probes.append(
+            _gh_conditional_get(
+                f"{commit_api}/check-runs?per_page={_REVALIDATE_CHECK_RUNS_PAGE}",
+                checks_etag,
+                max_output_bytes=_CHECKS_OUTPUT_BYTES,
+            )
+        )
+        probes.append(
+            _gh_conditional_get(
+                f"{commit_api}/status", status_etag, max_output_bytes=_CHECKS_OUTPUT_BYTES
+            )
+        )
+    try:
+        reads = await asyncio.gather(*probes)
+    except SourceProviderError as exc:
+        logger.info("source revalidation probe failed; reading in full: %s", exc)
+        return _PROBE_UNKNOWN
+    issue = reads[0]
+    checks = reads[1] if len(reads) > 1 else None
+    status = reads[2] if len(reads) > 2 else None
+    learned = _Revalidator(
+        issue_etag=issue.etag or issue_etag,
+        checks_etag=(checks.etag if checks else "") or checks_etag,
+        status_etag=(status.etag if status else "") or status_etag,
+        head_sha=head_sha,
+        learned_at=time.monotonic(),
+        read_at=known.read_at if known else None,
+    )
+    unchanged = all(read.status == 304 for read in reads)
+    if unchanged:
+        # A 304 vouches for the payload the cache already holds, so the
+        # (re-confirmed) validators are safe to keep right away.
+        _commit_revalidator(ref.url, learned)
+    return _ProbeOutcome(unchanged, learned)
+
+
+def _revalidation_applies(ref: SourceRef) -> bool:
+    """Only a github.com pull request served by the built-in fetcher is probed;
+    GitLab and registered plugins have no conditional read here."""
+    return ref.provider == "github" and _plugin_for_change(ref) is None
+
+
+async def _revalidate_pull_request(
+    ref: SourceRef, generation: int, cached: tuple[float, int, dict[str, Any]]
+) -> dict[str, Any]:
+    """Serve the expired ``cached`` payload if the probes say it is current,
+    else fall through to the full read. Runs under the same inflight slot and
+    memory reservation as a full fetch, because it may become one."""
+    _, size, payload = cached
+    known = _REVALIDATORS.get(ref.url)
+    if (
+        known is not None
+        and known.read_at is not None
+        and time.monotonic() - known.read_at >= _REVALIDATED_MAX_AGE_SECS
+    ):
+        # Ceiling reached: read in full without asking, and forget the
+        # validators so the next cycle learns a fresh set against this read
+        # (kept, they would pin `read_at` and force every later cycle too).
+        _REVALIDATORS.pop(ref.url, None)
+        return await _fetch_pull_request_uncached(ref, generation)
+    outcome = await _probe_github_payload(ref, payload)
+    if outcome.unchanged:
+        async with _CACHE_LOCK:
+            # Re-stamp only the entry the probes vouched for: a mutation that
+            # landed meanwhile has advanced the generation and dropped it, and a
+            # concurrent write may have replaced it. Either way the caller still
+            # gets the payload the probes confirmed current.
+            if (
+                _FULL_FETCH_GENERATIONS.get(ref.url, 0) == generation
+                and _CACHE.get(ref.url) is cached
+            ):
+                _CACHE[ref.url] = (time.monotonic(), size, payload)
+        return payload
+    fresh = await _fetch_pull_request_uncached(ref, generation)
+    # Only now does the cache hold a payload at least as new as the validators
+    # describe (see _ProbeOutcome); a fanout that raised leaves the old ones.
+    if outcome.learned is not None:
+        _commit_revalidator(ref.url, replace(outcome.learned, read_at=time.monotonic()))
+    return fresh
+
+
 async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
     """Fetch a PR/MR, sharing one provider fanout per normalized URL."""
     # Refresh the self-managed GitLab allowlist off the event loop before any
@@ -4563,16 +5003,27 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
     while True:
         async with _CACHE_LOCK:
             cached = _CACHE.get(ref.url)
-            if not refresh and cached and time.monotonic() - cached[0] < _CACHE_TTL_SECS:
-                return cached[2]
+            revalidate = cached is not None and not refresh and _revalidation_applies(ref)
+            if cached and not refresh:
+                age = time.monotonic() - cached[0]
+                # Inside the open TTL every provider serves the entry as is. Past
+                # it, a github.com entry is REVALIDATED below whatever its
+                # lifecycle (the probe is one rate-limit-free request); a
+                # provider with no conditional read keeps serving a finished
+                # payload on its lifecycle clock instead.
+                if age < _CACHE_TTL_SECS or (not revalidate and age < _full_payload_ttl(cached[2])):
+                    return cached[2]
             task = _FULL_FETCH_INFLIGHT.get(ref.url)
             if task is not None:
                 break
             if _direct_fetch_capacity_free(_FULL_FETCH_RESERVATION_BYTES):
                 generation = _FULL_FETCH_GENERATIONS.get(ref.url, 0)
-                task = asyncio.create_task(
-                    _fetch_pull_request_uncached(ref, generation, refresh=refresh)
-                )
+                if revalidate and cached is not None:
+                    task = asyncio.create_task(_revalidate_pull_request(ref, generation, cached))
+                else:
+                    task = asyncio.create_task(
+                        _fetch_pull_request_uncached(ref, generation, refresh=refresh)
+                    )
                 _FULL_FETCH_INFLIGHT[ref.url] = task
                 _FULL_FETCH_TASKS.setdefault(ref.url, set()).add(task)
                 _reserve_direct_fetch(task, _FULL_FETCH_RESERVATION_BYTES)
@@ -7113,12 +7564,14 @@ def schedule_check_refresh(
     ``force`` skips the TTL check for event-driven callers that know the remote
     state just moved (see ``request_check_refresh_now``). The pending cap and
     inflight dedup still apply, so a forced round can never outgrow a paced one.
+    A finished PR ages by ``_TERMINAL_TTL_SECS`` instead of the open-PR TTL, and a
+    MERGED one is not even force-read (``_chip_refresh_due``).
     """
     now = time.monotonic()
     refreshing: list[str] = []
     for url in dict.fromkeys(urls):
         entry = _check_cache.get(url)
-        if not force and entry and now - entry[0] < _CHECK_TTL_SECS:
+        if not _chip_refresh_due(entry, now, force=force):
             continue
         if url in _check_inflight:
             refreshing.append(url)

@@ -53,6 +53,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         SkillDiscoveryProvider,
         SlackEnterpriseGate,
         TelemetryProvider,
+        TipsProvider,
         TunnelProvider,
     )
     from kiro_crew.platform.security_authority import PolicyAuthority
@@ -295,6 +296,12 @@ class PlatformContext:
     agent_catalog: "AgentCatalogProvider"
     prompt_sources: "PromptSourceProvider"
     skill_discovery: "SkillDiscoveryProvider"
+    # The edition's feature-tip pool. The one REPLACE-capable seam in this
+    # contract: a supplied pool takes over from the public curated file AND the
+    # docs-scan catalog rather than being unioned into them, because a public tip
+    # advertises a capability an edition build may not have. v1 addition (no
+    # CONTRACT_VERSION bump).
+    tips: "TipsProvider"
     # Edition-contributed denied-command rules the OPERATOR can switch off.
     # Distinct from ``security`` (the un-weakenable overlay floor).
     # v1 addition (no CONTRACT_VERSION bump).

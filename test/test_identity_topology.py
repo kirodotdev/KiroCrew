@@ -537,6 +537,84 @@ def test_session_pid_call_sites_are_registered() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Reflexive-tool strict-gate ratchet (#5913)
+# ---------------------------------------------------------------------------
+# A REFLEXIVE MCP tool is one whose semantics embed "my session": ledger
+# writes, monitor loops, session-scoped control, attributed channel sends. The
+# invariant is that every one of them resolves the caller through the single
+# fail-closed gate ``mcp_core.require_strict_session_key`` — never the lenient
+# resolver (whose /proc ancestor walk hands a subagent its PARENT slot's
+# identity) and never a private copy of the strict check. Before the gate
+# existed the fail-closed handling was re-derived by hand at every call site,
+# and nothing stopped the NEXT reflexive tool from calling the lenient
+# resolver and silently writing the parent slot's state from a subagent.
+# Same shape as the session_pid registry guard above: scan the source, fail on
+# an unregistered file, so the invariant is enforced rather than remembered.
+
+#: Call-form tokens. Prose references (docstrings without parens, ``#``
+#: comments, which are stripped per line below) do not count as calls.
+_STRICT_RESOLVER_CALL = re.compile(r"_resolve_session_key_strict\s*\(")
+_REFLEXIVE_GATE_CALL = re.compile(r"require_strict_session_key\s*\(")
+
+
+def _code_text(path: Path) -> str:
+    """File text with per-line ``#`` comments stripped (heuristic, no parser).
+
+    Good enough for these tokens: neither contains ``#``, and a call is never
+    legitimately split across a comment boundary.
+    """
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(line.split("#", 1)[0] for line in lines)
+
+
+def test_reflexive_tools_route_through_the_strict_gate() -> None:
+    from kiro_crew.mcp_core import REFLEXIVE_TOOL_MODULES
+
+    src = _src_root()
+    direct: set[str] = set()
+    gated: set[str] = set()
+    for p in src.rglob("*.py"):
+        rel = p.relative_to(src).as_posix()
+        text = _code_text(p)
+        if _STRICT_RESOLVER_CALL.search(text):
+            direct.add(rel)
+        if _REFLEXIVE_GATE_CALL.search(text):
+            gated.add(rel)
+
+    # 1. The gate is the ONLY caller of the strict resolver. mcp_core.py hosts
+    #    both, plus the resolver's own internal consumers (diagnosis, the
+    #    Slack identity classifier), so it is the single permitted file.
+    direct -= {"mcp_core.py"}
+    assert not direct, (
+        f"Direct _resolve_session_key_strict() call(s) outside mcp_core: "
+        f"{sorted(direct)}.\n"
+        "Reflexive tools must resolve identity through "
+        "mcp_core.require_strict_session_key so the fail-closed handling "
+        "stays in one place. Route the call through the gate and register "
+        "the module in mcp_core.REFLEXIVE_TOOL_MODULES."
+    )
+
+    # 2. Every module calling the gate is registered as reflexive, and every
+    #    registered module still calls it — the set is data, not lore.
+    gated -= {"mcp_core.py"}
+    registered = set(REFLEXIVE_TOOL_MODULES)
+    unregistered = gated - registered
+    stale = registered - gated
+    assert not unregistered, (
+        f"New reflexive-tool module(s) call require_strict_session_key but are "
+        f"not registered: {sorted(unregistered)}.\n"
+        "Add them to mcp_core.REFLEXIVE_TOOL_MODULES so the reflexive surface "
+        "stays enumerable."
+    )
+    assert not stale, (
+        f"Registered reflexive module(s) no longer call the gate: "
+        f"{sorted(stale)}. Either the tool regressed to a private identity "
+        "check (fix the tool) or it is gone (remove it from "
+        "mcp_core.REFLEXIVE_TOOL_MODULES)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Class-level publisher guard (#232)
 # ---------------------------------------------------------------------------
 # The "missing X-Session-Key" HTTP 400 was a channel-turn *publisher* gap: a

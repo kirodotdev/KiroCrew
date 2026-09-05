@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.config import loader as L
 from kiro_crew.config import superseded_defaults as SD
 from kiro_crew.config.loader import KiroCrewConfig
@@ -57,7 +59,8 @@ def _point_home(tmp_path, monkeypatch) -> None:
     """Redirect every config path at *tmp_path* so nothing touches the real home.
 
     ``render_doctor_section`` resolves ``config_path`` lazily out of the loader
-    module, so patching it there covers the doctor surface too.
+    module, so patching it there covers the doctor surface too. ``config_dir`` is
+    what ``ack_file_path`` resolves, so the acknowledgment file lands here as well.
     """
     cfgp = tmp_path / "config.json"
     monkeypatch.setattr(L, "config_path", lambda: cfgp)
@@ -323,3 +326,300 @@ def test_loop_stall_summary_explains_automatic_default():
     assert "JSON null" in text
     assert "None" not in text
     assert "#6651" in text
+
+
+# --------------------------------------------------------------------------
+# Acknowledgment: the report is falsifiable (#7559).
+# --------------------------------------------------------------------------
+
+
+def test_an_acked_value_is_not_reported(tmp_path, monkeypatch):
+    """A value the operator affirmed is a choice, not drift."""
+    _point_home(tmp_path, monkeypatch)
+    base = {"session": {"autocompact_pct": 90.0}}
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+    assert superseded_default_drift(base) == []
+
+
+def test_changing_an_acked_value_reports_it_again(tmp_path, monkeypatch):
+    """The ack records the VALUE, so it cannot silence a different one later.
+
+    Storing the old default again after acking a different value is exactly the
+    case a key-only ack would hide forever.
+    """
+    _point_home(tmp_path, monkeypatch)
+    SD.write_acked_superseded({"mcp_gateway.forward_declared_env": True})
+    drifted = superseded_default_drift({"mcp_gateway": {"forward_declared_env": False}})
+    assert FDE_ENTRY in drifted
+
+
+def test_an_acked_zero_does_not_silence_a_stored_false(tmp_path, monkeypatch):
+    """bool is an int subclass on the ack side too."""
+    _point_home(tmp_path, monkeypatch)
+    SD.write_acked_superseded({"mcp_gateway.forward_declared_env": 0})
+    assert FDE_ENTRY in superseded_default_drift({"mcp_gateway": {"forward_declared_env": False}})
+
+
+def test_an_explicit_empty_ack_map_shows_the_unacked_truth(tmp_path, monkeypatch):
+    """``acked={}`` answers "what am I holding?" even for affirmed values."""
+    _point_home(tmp_path, monkeypatch)
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+    base = {"session": {"autocompact_pct": 90.0}}
+    assert superseded_default_drift(base, acked={}) == [AUTOCOMPACT_ENTRY]
+
+
+def test_a_corrupt_ack_file_fails_soft(tmp_path, monkeypatch):
+    """An unreadable ack file means the operator is told again, never a crash."""
+    _point_home(tmp_path, monkeypatch)
+    SD.ack_file_path().write_text("{not json", encoding="utf-8")
+    assert SD.acked_superseded() == {}
+    assert FDE_ENTRY in superseded_default_drift({"mcp_gateway": {"forward_declared_env": False}})
+
+
+def test_the_ack_file_lives_outside_config_json(tmp_path, monkeypatch):
+    """A to_dict() rewrite carries only schema fields, so an ack inside the config
+    document would be dropped by the same materialization this module reports on."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"session": {"autocompact_pct": 90.0}})
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+
+    KiroCrewConfig().save()
+
+    assert SD.acked_superseded() == {"session.autocompact_pct": 90.0}
+    assert "acked_superseded" not in json.dumps(_on_disk(tmp_path))
+
+
+def test_record_acks_stores_what_is_stored(tmp_path, monkeypatch):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"session": {"autocompact_pct": 90.0}, "stt": {}})
+    # stt.streaming is not stored, so there is no choice to affirm.
+    recorded = SD.record_acks(["session.autocompact_pct", "stt.streaming"])
+    assert recorded == ["session.autocompact_pct"]
+    assert SD.acked_superseded() == {"session.autocompact_pct": 90.0}
+
+
+def test_record_acks_reads_the_config_fresh_not_a_callers_snapshot(tmp_path, monkeypatch):
+    """A value changed since it was listed must not be acked at its old snapshot --
+    that would silence the report for a value the operator never affirmed."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"session": {"autocompact_pct": 55.0}})
+    # 55.0 is not the superseded default, so it is not drift and not ackable.
+    assert SD.record_acks(["session.autocompact_pct"]) == []
+    assert SD.acked_superseded() == {}
+
+
+def test_recording_an_ack_merges_with_what_is_already_on_disk(tmp_path, monkeypatch):
+    """The read-modify-write runs inside the file's lock, so a concurrent ack of a
+    different key is not dropped by the second writer's replacement."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"session": {"autocompact_pct": 90.0}})
+    SD.write_acked_superseded({"stt.model": "turbo"})
+    SD.record_acks(["session.autocompact_pct"])
+    assert SD.acked_superseded() == {
+        "stt.model": "turbo",
+        "session.autocompact_pct": 90.0,
+    }
+
+
+def test_a_concurrent_ack_written_mid_transaction_survives(tmp_path, monkeypatch):
+    """Proves the merge reads what is on DISK inside the lock, not a stale snapshot."""
+    _point_home(tmp_path, monkeypatch)
+    real = SD._acked_from_document
+    fired: list[int] = []
+
+    def _sneak(raw):
+        # Fires on the locked read; write a rival ack before the merge computes.
+        result = real(raw)
+        if not fired:
+            fired.append(1)
+            SD.ack_file_path().write_text(
+                json.dumps({"acked": {"stt.model": "turbo"}}), encoding="utf-8"
+            )
+        return result
+
+    monkeypatch.setattr(SD, "_acked_from_document", _sneak)
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+    monkeypatch.setattr(SD, "_acked_from_document", real)
+    assert SD.acked_superseded()["session.autocompact_pct"] == 90.0
+
+
+def test_dropping_an_ack_leaves_the_others(tmp_path, monkeypatch):
+    _point_home(tmp_path, monkeypatch)
+    SD.write_acked_superseded({"stt.model": "turbo", "session.autocompact_pct": 90.0})
+    SD.drop_acks(["session.autocompact_pct"])
+    assert SD.acked_superseded() == {"stt.model": "turbo"}
+
+
+def test_dropping_an_unacked_key_never_touches_the_file(tmp_path, monkeypatch):
+    _point_home(tmp_path, monkeypatch)
+    SD.drop_acks(["session.autocompact_pct"])
+    assert not SD.ack_file_path().exists()
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="os.symlink needs elevation on Windows")
+def test_a_link_at_the_ack_path_is_refused_not_written_through(tmp_path, monkeypatch):
+    """The config writers FOLLOW a link on purpose (dotfiles repos). That is wrong for
+    a path the agent can name: following it would overwrite the link's target."""
+    _point_home(tmp_path, monkeypatch)
+    victim = tmp_path / "victim.json"
+    victim.write_text('{"keep": "me"}', encoding="utf-8")
+    SD.ack_file_path().symlink_to(victim)
+
+    with pytest.raises(OSError):
+        SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+
+    assert victim.read_text(encoding="utf-8") == '{"keep": "me"}'
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="os.symlink needs elevation on Windows")
+def test_a_link_swapped_in_after_the_check_is_replaced_not_followed(tmp_path, monkeypatch):
+    """The check reports the condition; the rename-over-leaf is what makes it
+    unexploitable, so a link winning the race still cannot reach its target."""
+    _point_home(tmp_path, monkeypatch)
+    victim = tmp_path / "victim.json"
+    victim.write_text('{"keep": "me"}', encoding="utf-8")
+    ack = SD.ack_file_path()
+
+    def _plant_then_pass(path):
+        ack.symlink_to(victim)
+        return False  # simulate losing the race: the check saw no link
+
+    monkeypatch.setattr(SD.platform_compat, "is_link_or_junction", _plant_then_pass)
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+
+    assert victim.read_text(encoding="utf-8") == '{"keep": "me"}'
+    assert not ack.is_symlink()
+    assert SD.acked_superseded() == {"session.autocompact_pct": 90.0}
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="no os.mkfifo on Windows")
+def test_a_fifo_at_the_ack_path_is_refused_instead_of_blocking(tmp_path, monkeypatch):
+    """The read runs on the config-load path, which is an event-loop path. `open()` on
+    a FIFO waits for a writer forever, which would wedge the gateway."""
+    _point_home(tmp_path, monkeypatch)
+    os.mkfifo(SD.ack_file_path())
+    assert SD.acked_superseded() == {}
+
+
+def test_a_directory_at_the_ack_path_is_refused(tmp_path, monkeypatch):
+    """Only a REGULAR file is read, so no other path shape reaches json.loads."""
+    _point_home(tmp_path, monkeypatch)
+    SD.ack_file_path().mkdir()
+    assert SD.acked_superseded() == {}
+
+
+def test_an_oversized_ack_file_is_refused(tmp_path, monkeypatch):
+    """A capped single read is what keeps the load-path read bounded."""
+    _point_home(tmp_path, monkeypatch)
+    SD.ack_file_path().write_text(" " * (SD.ACK_MAX_BYTES + 1), encoding="utf-8")
+    assert SD.acked_superseded() == {}
+
+
+def test_the_ack_file_carries_no_unread_version_field(tmp_path, monkeypatch):
+    """The soft read already tolerates any shape, so a version nobody checks is a
+    field with no reader."""
+    _point_home(tmp_path, monkeypatch)
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+    raw = json.loads(SD.ack_file_path().read_text(encoding="utf-8"))
+    assert set(raw) == {"acked"}
+
+
+# --------------------------------------------------------------------------
+# Adoption: removing the key is what un-materializes it.
+# --------------------------------------------------------------------------
+
+
+def test_dropping_a_key_makes_the_current_default_apply(tmp_path, monkeypatch):
+    _point_home(tmp_path, monkeypatch)
+    base = {"session": {"autocompact_pct": 90.0}}
+    assert SD.drop_drifted_keys(base, ["session.autocompact_pct"]) == ["session.autocompact_pct"]
+    assert base == {"session": {}}
+    # An emptied section resolves identically to an absent one.
+    assert superseded_default_drift(base) == []
+    _write_config(tmp_path, base)
+    assert KiroCrewConfig.load().session.autocompact_pct == 70.0
+
+
+def test_dropping_an_absent_key_reports_nothing_removed(tmp_path, monkeypatch):
+    _point_home(tmp_path, monkeypatch)
+    base: dict = {"session": {}}
+    assert SD.drop_drifted_keys(base, ["session.autocompact_pct"]) == []
+
+
+# --------------------------------------------------------------------------
+# The load path says it ONCE, in one line, whatever the registry size.
+# --------------------------------------------------------------------------
+
+
+def test_many_drifted_keys_produce_one_warning_line(tmp_path, monkeypatch, caplog):
+    """The registry is append-only, so a per-key line grows without bound on the
+    very installs with the most real drift -- and lands on every CLI invocation."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(
+        tmp_path,
+        {
+            "mcp_gateway": {"forward_declared_env": False},
+            "session": {"autocompact_pct": 90.0},
+            "stt": {"streaming": False, "model": "turbo"},
+            "dashboard": {"loop_stall_exit_after_secs": 25},
+        },
+    )
+
+    with caplog.at_level(logging.WARNING, logger=L.__name__):
+        KiroCrewConfig.load()
+
+    warnings = [r for r in caplog.records if "superseded default" in r.getMessage()]
+    assert len(warnings) == 1
+    text = warnings[0].getMessage()
+    # Every drifted key is named, and the line says what to do about it.
+    for key in (
+        "mcp_gateway.forward_declared_env",
+        "session.autocompact_pct",
+        "stt.streaming",
+        "stt.model",
+        "dashboard.loop_stall_exit_after_secs",
+    ):
+        assert key in text
+    assert "kirocrew config defaults" in text
+
+
+def test_an_acked_key_is_not_named_on_the_load_path(tmp_path, monkeypatch, caplog):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"session": {"autocompact_pct": 90.0}})
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+
+    with caplog.at_level(logging.WARNING, logger=L.__name__):
+        KiroCrewConfig.load()
+
+    assert not [r for r in caplog.records if "superseded default" in r.getMessage()]
+
+
+def test_doctor_lists_an_acked_entry_instead_of_hiding_it(tmp_path, monkeypatch, capsys):
+    """``doctor`` answers "what does this install hold?", so an affirmed value is
+    part of the answer; only the unsolicited load-path line is silenced."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"session": {"autocompact_pct": 90.0}})
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+
+    issues: list[str] = []
+    SD.render_doctor_section(issues)
+    out = capsys.readouterr().out
+
+    assert "session.autocompact_pct" in out
+    assert "acknowledged as intentional" in out
+    # Nothing is left to act on, so no fix hint is offered.
+    assert "--adopt" not in out
+    assert issues == []
+
+
+def test_doctor_offers_the_commands_when_something_is_unacked(tmp_path, monkeypatch, capsys):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"session": {"autocompact_pct": 90.0}})
+
+    issues: list[str] = []
+    SD.render_doctor_section(issues)
+    out = capsys.readouterr().out
+
+    assert "kirocrew config defaults --adopt" in out
+    assert "kirocrew config defaults --keep" in out
+    assert issues == []

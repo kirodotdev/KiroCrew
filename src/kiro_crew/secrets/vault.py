@@ -17,6 +17,8 @@ Agent isolation:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 from contextlib import contextmanager
@@ -247,6 +249,18 @@ class SecretVault:
     def list_names(self) -> list[str]:
         """Return all stored secret names."""
         return list(self._load_entries().keys())
+
+    def derive_subkey(self, purpose: str) -> bytes:
+        """Derive a purpose-scoped 32-byte key from the vault key (HMAC-SHA256).
+
+        Lets other agent-fenced mechanisms (e.g. the cron grant-pin HMAC) key
+        themselves without a second key file and its own birth/corruption
+        handling — the vault key's exclusive-create birth, fsync durability,
+        and owner-only ACL are inherited. Distinct purposes yield independent
+        keys, and the vault key itself is never handed out.
+        """
+
+        return hmac.new(self._get_or_create_key(), purpose.encode(), hashlib.sha256).digest()
 
     # ── Key management ──
 

@@ -2646,7 +2646,7 @@
         "view_rendered": "渲染视图"
       },
       "knowledge": {
-        "connectHelp": "将此仓库加入知识库，使智能体可以搜索你的笔记。稍后可在设置中更改。",
+        "connectHelp": "将此仓库加入知识库，使智能体可以搜索你的笔记。稍后可在“{{capabilities}} → {{tab}}”中更改。",
         "label": "同步到 {{productName}} 知识库"
       },
       "manifest": {
@@ -3369,12 +3369,12 @@
         "mcp_available": "可添加",
         "mcp_desc": "这些是 {{productName}} 里已安装的 MCP 服务器。{{name}} 只能调用在这里添加过的——点 Add 授予，点 Remove 收回。内置服务器始终可用，不可移除。",
         "mcp_disabled": "已禁用",
-        "mcp_empty": "还没有配置任何 MCP 服务器。先在 {{productName}} 设置 → MCP 里添加，然后重新打开本面板。",
-        "mcp_error_disabled": "此服务器已禁用。请先在 {{productName}} 设置 → MCP 中启用它。",
+        "mcp_empty": "还没有配置任何 MCP 服务器。先在 {{productName}} {{capabilities}} → {{tab}}里添加，然后重新打开本面板。",
+        "mcp_error_disabled": "此服务器已禁用。请先在 {{productName}} {{capabilities}} → {{tab}}中启用它。",
         "mcp_error_generic": "无法加载工具，请重试。",
         "mcp_error_in_progress": "正在发现工具，请稍候。",
         "mcp_error_not_found": "此服务器已不在配置中。",
-        "mcp_error_probe_failed": "此服务器未响应。请在 {{productName}} 设置 → MCP 中检查它的命令。",
+        "mcp_error_probe_failed": "此服务器未响应。请在 {{productName}} {{capabilities}} → {{tab}}中检查它的命令。",
         "mcp_from_cache": "（缓存 — 可能已过期）",
         "mcp_loading": "正在加载服务器…",
         "mcp_needs_approval": "需要审批",
@@ -4325,6 +4325,7 @@
           "starting": "正在开始…",
           "tell_me_what_you_have_in_mind_i_ll_ask_a_few_cla": "告诉我你的想法。我会在聊天中问几个澄清问题，写出一份可供你审阅的方案，等你准备好后再动手构建。",
           "this_folder_isn_t_a_git_repository_so_i_ll_work": "该文件夹不是 git 仓库，因此我会直接在其中工作。选择一个 git 仓库即可获得全新工作树的选项。",
+          "this_spec_will_be_called": "此规格将命名为 {{name}}",
           "type_bug_blurb": "排查问题，找出根本原因，并规划修复方案。",
           "type_bug_title": "修复 bug",
           "type_feature_blurb": "完整方案：需求、技术设计和任务清单。",
@@ -4383,10 +4384,13 @@
           "approved": "已批准",
           "approved_by_user": "由 {{user}} 批准",
           "archive_this_spec": "归档此 spec",
+          "cancel": "取消",
           "changed_since_approval": "批准后已变更",
           "clear": "清空",
           "close_esc": "关闭（Esc）",
           "close_review_view": "关闭审阅视图",
+          "delete_spec_named": "移除规格 {{name}}",
+          "delete_this_spec": "移除此规格",
           "document_file_name": "{{name}}.md",
           "drafting_design": "正在撰写设计…",
           "drafting_tasks": "正在撰写任务…",
@@ -4399,10 +4403,13 @@
           "pausing": "正在暂停…",
           "pending_comment_other": "{{count}} 条待处理评论",
           "remove_comment_on": "移除对 {{document}} 的评论",
+          "remove_spec_body": "“{{name}}”将离开 Spec Builder。Markdown 文件仍保留在项目中，该规格上正在运行的代理将被停止。",
+          "remove_this_spec": "移除此规格？",
+          "removing": "正在移除…",
           "rename_this_spec_label_the_folder_name_stays": "重命名此 spec 的标签。它的文件夹名和分支名保持不变。",
           "resize_document_panel": "调整文档面板大小",
           "restore_this_spec": "恢复此 spec",
-          "review_document": "审阅 {{document}}",
+          "review_document_named": "审阅 {{name}} 的 {{document}}.md",
           "send_all_to_agent": "全部发送给代理",
           "sending": "正在发送…",
           "spec_label": "Spec 标签",
@@ -4417,11 +4424,13 @@
           "working": "正在处理…"
         },
         "specRail": {
+          "active": "进行中",
           "agent_working": "代理工作中",
           "an_agent_is_working": "有代理正在工作",
           "filter_specs": "筛选 spec",
           "filter_specs_by_name": "按名称筛选 spec",
           "new_spec": "新建 spec",
+          "no_matching_specs": "没有符合该筛选的规格",
           "plan_ready": "方案就绪",
           "settings": "设置",
           "show_spec_list": "显示 spec 列表",
@@ -4432,7 +4441,8 @@
           "v": "v"
         },
         "specStatePanel": {
-          "answer_with": "“{{title}}”应如何回答？",
+          "answer_option": "用“{{option}}”回答“{{title}}”",
+          "answer_option_recommended": "用“{{option}}”回答“{{title}}”（推荐）",
           "answered": "已回答",
           "blocking": "阻塞项",
           "context": "上下文",
@@ -4789,7 +4799,7 @@
         "copy": "复制",
         "copied": "已复制",
         "empty_title": "还没有账户",
-        "empty_body": "目前请在“设置 → Deploy”中添加配置。配置完成后，其账户会显示在这里。",
+        "empty_body": "在下方“添加账户”中注册本机的一个 AWS 配置文件，其账户就会显示在这里。",
         "error_title": "无法加载你的账户。",
         "error_body": "读取账户列表时出错。请稍后重试。",
         "error_forbidden_body": "当前控制台会话不是所有者的会话，无法管理 AWS 账户。请以所有者身份登录后重试。",
@@ -4804,7 +4814,7 @@
         "add_accounts_summary": "注册本机更多的 AWS 配置文件",
         "add_accounts_intro": "这些本地配置文件尚未注册。选择你想添加的。",
         "add_accounts_none": "所有本地配置文件都已注册。",
-        "add_accounts_unsupported": "本机无法自动列出本地 AWS 配置文件。请改在 设置 -> Deploy 中添加配置文件。",
+        "add_accounts_unsupported": "在 Windows 上，AWS Control 无法访问本机的 AWS 配置文件：访问 AWS 需要 Linux 或 macOS shell。请在 WSL (Windows Subsystem for Linux) 中运行 {{productName}} 网关，然后注册你在其中配置的 AWS 配置文件。",
         "add_accounts_count_other": "已注册 {{count}} / {{max}}",
         "add_accounts_cap_reached": "已达到 {{max}} 个配置文件的上限。请先移除一个再添加。",
         "add_accounts_register": "注册所选",
@@ -4907,6 +4917,93 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "avatarBuilder": {
+      "apply": "应用",
+      "apply_hint": "先应用到编辑器——点“保存更改”才会生效。",
+      "axis_accessory": "头饰",
+      "axis_blush": "腮红",
+      "axis_brows": "眉毛",
+      "axis_eyes": "眼睛",
+      "axis_mouth": "嘴",
+      "axis_prop": "道具",
+      "axis_tile": "底色",
+      "cancel": "取消",
+      "customize": "自定义…",
+      "customized_note": "已使用自定义脸",
+      "field_hint": "这个成员在所有地方显示的面孔。",
+      "field_label": "头像",
+      "image_load_failed": "已保存的图片无法加载，暂以默认面孔显示。",
+      "mirror": "左右翻转",
+      "mode_face": "捏脸",
+      "mode_picture": "上传图片",
+      "opt_angry": "生气",
+      "opt_antenna": "天线",
+      "opt_bandana": "头巾",
+      "opt_beanie": "毛线帽",
+      "opt_blush": "腮红",
+      "opt_bolt": "闪电",
+      "opt_bow": "蝴蝶结",
+      "opt_canon": "经典",
+      "opt_cap": "棒球帽",
+      "opt_cat": "猫嘴",
+      "opt_closed": "闭眼",
+      "opt_cross": "锐利",
+      "opt_crown": "王冠",
+      "opt_cyclops": "独眼",
+      "opt_flat": "平",
+      "opt_flower": "花",
+      "opt_glass": "放大镜",
+      "opt_glasses": "眼镜",
+      "opt_grin": "露齿",
+      "opt_halo": "光环",
+      "opt_hardhat": "安全帽",
+      "opt_heart": "爱心",
+      "opt_mug": "马克杯",
+      "opt_none": "无",
+      "opt_oh": "哦",
+      "opt_open": "张嘴",
+      "opt_party": "派对帽",
+      "opt_phones": "耳机",
+      "opt_raised": "扬起",
+      "opt_sleepy": "困",
+      "opt_smile": "微笑",
+      "opt_smirk": "坏笑",
+      "opt_sparkle": "星光",
+      "opt_squint": "眯眼",
+      "opt_star": "星星",
+      "opt_swirl": "蚊香",
+      "opt_term": "终端",
+      "opt_tongue": "吐舌",
+      "opt_visor": "目镜",
+      "opt_wide": "圆瞪",
+      "opt_wink": "眨眼",
+      "opt_wobble": "波浪",
+      "opt_wrench": "扳手",
+      "randomize": "随机",
+      "reset_default": "恢复默认脸",
+      "tile_amber": "琥珀色",
+      "tile_bronze": "古铜色",
+      "tile_coral": "珊瑚色",
+      "tile_cyan": "青色",
+      "tile_green": "绿色",
+      "tile_indigo": "靛蓝色",
+      "tile_magenta": "洋红色",
+      "tile_olive": "橄榄色",
+      "tile_plum": "梅红色",
+      "tile_purple": "Kiro 紫",
+      "tile_red": "红色",
+      "tile_rose": "玫瑰色",
+      "tile_sky": "天蓝色",
+      "tile_steel": "钢蓝色",
+      "tile_teal": "青绿色",
+      "title": "自定义头像",
+      "title_named": "自定义头像 — {{name}}",
+      "upload_bad_image": "无法将该文件识别为图片。",
+      "upload_choose": "选择图片…",
+      "upload_hint": "把图片拖到这里，或",
+      "upload_note": "PNG、JPEG 或 WEBP。保存前会裁剪为正方形并缩放到 512 像素。",
+      "upload_too_large": "文件太大(最大 20 MB)。"
+    },
     "crewWakeSection": {
       "active": "运行中",
       "cancel_new_schedule": "取消新建定时任务",
@@ -5866,7 +5963,7 @@
       "pane_failed_to_load": "窗格加载失败",
       "retry": "重试",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "隧道看起来已连接，但远程仪表板始终未加载。它可能正在\n                  重启 — 请重试，或切换上方的标签页。",
-      "this_tab_stays_until_you_disconnect_the_instance": "此标签页会一直保留，直到你在“设置 → 远程实例”中断开此实例。"
+      "this_tab_stays_until_you_disconnect_the_instance": "此标签页会一直保留，直到你在“<0>设置 → 远程实例</0>”中断开此实例。"
     },
     "issuePanel": {
       "add_to_chat": "添加到对话",
@@ -6021,7 +6118,16 @@
       "sso_helper": "粘贴公司提供给你的 AWS 访问门户网址。",
       "sso_region_label": "AWS 区域（可选）",
       "sso_continue": "继续",
-      "sso_cancel": "取消"
+      "sso_cancel": "取消",
+      "loopback_aside_headline": "在浏览器里完成",
+      "loopback_aside_body": "我们已在新标签页打开 Kiro 登录。在那里确认后，这个页面会自动继续。",
+      "loopback_aside_footnote": "无需输入任何内容——登录结果会直接回到这台电脑。",
+      "loopback_waiting_title": "等待浏览器完成登录",
+      "loopback_waiting_body": "请在刚打开的标签页里完成登录。如果没有弹出标签页，用下面的按钮重新打开。",
+      "loopback_open_again": "重新打开登录页",
+      "loopback_use_code": "改用验证码",
+      "loopback_slow_hint": "等了很久？如果登录页无法连回这台电脑，请改用验证码——它在任何设备上都可用。",
+      "loopback_fell_back": "登录结果无法直接回到这台电脑，所以改为使用验证码。"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "缺少代理规范",
@@ -6533,6 +6639,7 @@
       "closed": "已关闭",
       "commits": "提交",
       "confirm_auto_merge": "确认自动合并",
+      "could_not_refresh_showing_cached": "无法刷新——显示上次加载的版本",
       "could_not_load_this_pull_request": "无法加载此拉取请求",
       "description": "描述",
       "draft": "草稿",
@@ -6952,7 +7059,7 @@
       "decline_consequence": "如果拒绝，不会加载任何内容，消息保持你输入的原样。",
       "grant_failed": "无法记录对此文件夹的信任。",
       "title": "信任此项目的技能？",
-      "withdraw_hint": "以后可以在技能设置页面撤销。",
+      "withdraw_hint": "以后可以在“{{capabilities}} → {{tab}}”中撤销。",
       "working": "正在信任…"
     },
     "projectSkillsTrustList": {
@@ -7746,7 +7853,12 @@
       "xhigh": "超高"
     },
     "sttProviders": {
-      "downloading_speech_model": "正在下载语音模型：{{pct}}（{{total}} 中的 {{done}}）"
+      "downloading_decoder": "正在下载音频解码器：{{pct}}（{{done}} / {{total}}）",
+      "downloading_speech_model": "正在下载语音模型：{{pct}}（{{total}} 中的 {{done}}）",
+      "stream_error_decode_failed": "语音识别未能完成这段转写。请重新口述一次。",
+      "stream_error_max_duration": "口述已达到时长上限。重新开始录制即可继续。",
+      "stream_error_model_missing": "语音模型还没准备好。请在语音转文字设置中下载它，然后重试。",
+      "stream_error_session_failed": "口述会话失败。请重新录制。"
     }
   },
   "nav": {
@@ -8779,6 +8891,7 @@
         "ask_a_side_question_2": "随手问一句…",
         "ask_a_side_question_main_agent_keeps_working": "随手问一句，不会打断正在运行的任务。这里的内容不会存进对话。",
         "context_from": "上下文来自",
+        "context_only_tools_unavailable": "仅使用上下文 · 此处无法使用工具和 MCP。请在主对话中执行操作。",
         "question_too_long": "问题过长 — 请缩减到约 {{max}} 个字符以内（当前：{{current}}）",
         "queue_cancel_failed": "无法取消排队中的这个问题",
         "queue_edit_failed": "无法更新排队中的这个问题",
@@ -8871,7 +8984,6 @@
         "s": "s",
         "stop": "停止",
         "stop_all": "全部停止",
-        "stop_all_running_subagents": "停止所有运行中的子代理",
         "stop_running_subagent": "停止运行中的子代理",
         "stop_subagent": "停止子代理 {{name}}",
         "stop_this_subagent": "停止此子代理",
@@ -9081,7 +9193,12 @@
         "kind_internal_url": "内部链接",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "分享前请注意——卡片中检测到：{{kinds}}",
-        "sensitive_in_caption": "分享前请注意——帖子文案中检测到：{{kinds}}"
+        "sensitive_in_caption": "分享前请注意——帖子文案中检测到：{{kinds}}",
+        "withdrawn_by_policy": "分享功能已被策略关闭。想保留文案就先复制——关闭此对话框后不会保存。",
+        "copy_text_only": "复制文案",
+        "copied_text": "已复制",
+        "copy_text_failed": "复制失败",
+        "copy_text_unavailable": "当前环境禁止写入剪贴板。文案已选中——按 Ctrl+C / ⌘C 复制。你改过的卡片文字请直接从卡片上复制。"
       }
     },
     "chatPage": {
@@ -9211,6 +9328,7 @@
       "clear_search": "清除搜索",
       "close": "关闭",
       "close_session": "关闭会话",
+      "closed": "已关闭",
       "collapse_folder_name": "折叠文件夹 {{name}}",
       "collapse_group_results": "折叠 {{group}} 的结果",
       "collapse_hidden_folders": "折叠隐藏文件夹",
@@ -9255,7 +9373,9 @@
       "flat_view_all_chats_without_folders": "平铺视图 — 所有聊天，不分文件夹",
       "folder": "文件夹",
       "folder_2": "文件夹 {{name}}",
+      "folder_create_failed": "无法创建聊天。",
       "folder_options_for": "{{name}} 的文件夹选项",
+      "folder_project_dir_missing": "该文件夹的项目目录已不存在：{{path}}。请在文件夹设置中更新。",
       "folders": "文件夹",
       "goal_loop_cycle": "目标循环 · 第 {{count}} 轮，共 {{total}} 轮",
       "goal_loop_cycle_no_cap": "目标循环 · 第 {{count}} 轮（无上限）",
@@ -9296,6 +9416,7 @@
       "new_chat": "新建对话",
       "new_chat_in_folder": "在文件夹中新建聊天",
       "new_chat_on_crew": "在 Crew 上新建聊天",
+      "runs_on_crew": "在 {{name}} 上运行 —— 一个已连接的 Crew，而非本机",
       "new_chat_in_name": "在 {{name}} 中新建聊天",
       "new_chat_session": "新建聊天会话",
       "new_folder": "新建文件夹",
@@ -9402,7 +9523,6 @@
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
-      "authorize": "授权",
       "before_you_connect": "连接前",
       "cancel": "取消",
       "complete_connection": "完成",
@@ -9459,7 +9579,9 @@
       "services": "服务",
       "services_available": "{{value}} 个可用",
       "test_connection": "测试",
+      "test_blocked_by_sibling": "同一时间只能运行一个连接测试 — 正在测试 {{provider}}",
       "test_failed": "服务商未通过连接测试。",
+      "test_in_flight": "{{provider}} 的连接测试已在运行。完成后请重试。",
       "testing": "正在测试…",
       "unknown_error": "未知错误",
       "value_prop_atlassian": "搜索 Jira 问题并读取 Confluence 页面。",
@@ -9751,6 +9873,7 @@
         "agent_backend": "代理后端",
         "claude_code": "Claude Code",
         "claude_uses_its_own_permissions": "Claude Code 通常会先请求批准，{{productName}} 会对该请求做把关。但如果某个工具已在 Claude 自身设置里预先批准（包括项目内那份 .claude/settings.json），它就不会再请求，因此拒绝规则和审计日志看不到这次调用。",
+        "codex_signs_in_separately": "Codex 自己登录：完成它自己的登录，或在 ~/.codex/config.toml 里指定 model provider（CODEX_HOME 可移动该目录）。这两者这里都不检查，读取它们的是适配器，不是 {{productName}}。",
         "could_not_load_the_agent_backend": "无法加载代理后端。",
         "could_not_save_the_agent_backend": "无法保存代理后端。",
         "default_all_features_supported": "默认。支持所有功能。",
@@ -9765,6 +9888,10 @@
         "new_sessions_use_this_agent_a_session_that_is_al": "新会话使用此代理。已打开的会话保持启动时所用的代理；在此切换不影响正在进行的会话。",
         "retry": "重试",
         "set_is_fixed_at_gateway_start": "此处显示哪些 agent 在 gateway 启动时确定。受管部署可通过策略限制该集合；修改策略需下次启动才生效。"
+      },
+      "debugToolsTab": {
+        "overlays_the_chat_with_live_scroll_and_anchor_dia": "在聊天上叠加实时滚动与锚点诊断信息",
+        "scroll_inspector": "滚动检查器"
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "在 crew 上聊天",
@@ -9790,6 +9917,10 @@
         "config": {
           "description": "{{productName}} 和代理配置查看器（只读）",
           "label": "配置"
+        },
+        "debugTools": {
+          "label": "调试工具",
+          "description": "在真实设备上叠加显示应用内部行为的诊断浮层。"
         },
         "featurePreviews": {
           "description": "尚未发布的功能和页面。在此开启之前，它们不会出现在侧边栏和全局搜索中。设置仅对本设备生效，且这些内容有意保留未完善的状态。",
@@ -10777,6 +10908,7 @@
         "read_only_failed": "无法加载此提示词，因此无法在此编辑。",
         "read_only_lossy": "此提示词不是有效的 UTF-8，因此无法在此编辑。",
         "read_only_redacted": "此副本已因安全原因被过滤，因此无法在此编辑。",
+        "retry_read": "重试",
         "save": "保存",
         "saved_prompts_from": "来自 {{registry}} 和 ~/.kiro/prompts/ 的已保存提示词。在聊天中用 @name 调用，或用 /prompts get name。",
         "scope_global": "全局",
@@ -11367,8 +11499,25 @@
       "script_source_download": "下载脚本",
       "script_source_failed": "无法加载脚本源代码。",
       "script_source_truncated": "已截断 — 脚本超出预览大小限制。",
+      "secrets_active_help": "运行时注入该任务的环境变量。此处仅显示名称——值始终保存在保险库中。",
+      "secrets_approve": "批准",
+      "secrets_deny": "拒绝",
+      "secrets_direction_caption": "环境变量 ← 密钥库条目",
+      "secrets_none": "尚未授予任何密钥。",
+      "secrets_none_hint": "让 agent 为此任务申请密钥。",
+      "secrets_pending_badge": "密钥申请待批准",
+      "secrets_pending_help": "批准后，这些保险库中的值会在任务运行时注入其环境变量。批准与任务当前代码绑定——脚本或命令之后被修改时，注入会停止，需重新批准。",
+      "secrets_pending_source": "本次批准涵盖的脚本",
+      "secrets_pending_source_failed": "无法加载脚本源码，因此无法批准该请求。",
+      "secrets_pending_source_loading": "正在加载该请求将运行的脚本，显示后才可批准。",
+      "secrets_pending_source_truncated": "该脚本超出可审阅的大小上限，因此无法批准该请求。",
+      "secrets_pending_source_unreviewable": "此脚本有部分内容无法按原样显示（凭证样文本已被遮蔽，或存在无法解码字节），所见并非将要运行的完整代码，因此无法批准此请求。",
+      "secrets_pending_title": "代理请求使用密钥",
+      "secrets_section": "保险库密钥",
       "no_owning_session": "无所属会话",
-      "owning_session": "所属会话"
+      "owning_session": "所属会话",
+      "secrets_revoke_all": "撤销全部密钥",
+      "secrets_revoke_all_confirm": "撤销全部？"
     },
     "servicesTab": {
       "channels": "渠道",
@@ -12422,6 +12571,7 @@
         "gov_scope_sandbox_level": "沙箱级别",
         "gov_scope_script_hooks": "脚本钩子",
         "gov_scope_spawn": "派生",
+        "gov_scope_social_share": "分享为图片",
         "gov_scope_telemetry": "匿名遥测",
         "gov_scope_theme_install": "主题安装",
         "gov_scope_theme_persona": "主题人格",
@@ -12657,7 +12807,7 @@
         "system_default": "系统默认",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg 缺失 — 在安装它之前，无法转写来自浏览器的语音录音。",
         "the_bundled_audio_decoder_is_missing_or_damaged": "内置的音频解码器缺失或已损坏。请重新安装 {{productName}} 桌面应用；无需单独安装 FFmpeg。",
-        "then_restart_the_gateway_so_it_can_import_the_ne": "然后重启 gateway（设置 → 关于 → 重启 gateway），以便加载新安装的包。",
+        "then_restart_the_gateway_so_it_can_import_the_ne": "然后重启 gateway，以便加载新安装的包。",
         "the_desktop_app_can_t_add_transcribe_support_ins": "桌面应用无法添加 Transcribe 支持——其内置的 Python 无法安装额外的包。请改用 pip 安装 {{productName}}，并从该环境运行 gateway。",
         "this_gateway_s_python_can_t_install_extra_packag": "此 gateway 的 Python 无法安装额外的包，因此无法在这里启用 Transcribe。请在 pip 能够安装 boto3 + amazon-transcribe 的 Python 环境中运行 gateway。",
         "transcribe_voice_into_the_message_box_when_you_c": "点击麦克风时将语音转写到消息框",
@@ -12717,7 +12867,13 @@
         "unavailable_import_failed": "语音识别组件已安装，但在本机上无法加载。",
         "unavailable_model_missing": "本机上还没有语音模型。请在下方下载。",
         "unavailable_apple_unsupported": "Apple 语音需要 macOS 26 或更高版本。请改用本地提供方。",
-        "unavailable_apple_needs_toolchain": "Apple 语音需要 Xcode 命令行工具。请先安装，然后重新加载此页面。"
+        "unavailable_apple_needs_toolchain": "Apple 语音需要 Xcode 命令行工具。请先安装，然后重新加载此页面。",
+        "decoder_fetch_prompt": "{{productName}} 可以为这台机器获取一份经摘要校验的副本，无需手动安装。",
+        "download_decoder": "下载解码器",
+        "decoder_download_failed_reason": "解码器下载失败：{{error}}",
+        "let_the_agent_fix_it": "交给 {{productName}} 处理",
+        "decoder_failure_unknown": "未报告",
+        "decoder_agent_prompt": "{{productName}} 转写语音录音所需的音频解码器（ffmpeg）安装失败。请在这台主机上把它修好。\n\n失败原因：{{code}} — {{detail}}\n主机：{{os}} {{arch}}\n\n{{productName}} 只执行 SHA-256 摘要验证通过的 ffmpeg。查找范围限于以下位置：/usr/local/bin、/opt/homebrew/bin、系统默认程序目录，以及数据目录 <data home>/models/ffmpeg/。路径从不作为信任凭据，因此 ~/.local/bin 被有意排除在信任之外，放在那里的副本会被忽略。\n\n请判断这台主机真正需要什么——包管理器、从源码构建，或者再试一次解码器下载——并自行判断是否确有必要使用提权。完成后，重新检查 GET /api/stt/status，并确认语音设置页不再报告解码器缺失。"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "。与 Slack 不同，Bot Framework 没有\n              仅出站模式。",
@@ -13470,7 +13626,12 @@
       "wake_error": "无法加载此成员的唤醒来源。",
       "wake_paused": "已暂停",
       "wake_webhook": "webhook",
-      "activity_error": "无法加载此成员的活动记录。"
+      "activity_error": "无法加载此成员的活动记录。",
+      "driving_sessions": "它正在驱动的会话",
+      "driving_none": "当前没有正在驱动的会话。",
+      "driving_idle": "空闲",
+      "driving_show_all": "查看全部（{{count}}）",
+      "driving_show_less": "收起"
     }
   },
   "privacyDisclosure": {
@@ -13512,6 +13673,10 @@
         "description": "仪表板界面的显示语言。",
         "label": "语言",
         "sync_failed": "无法保存到 {{productName}} 配置 — 此语言仅在此浏览器生效，重新加载后可能重置。"
+      },
+      "plainDiff": {
+        "description": "以普通 unified diff 文本显示差异，不使用语法高亮着色。在大型差异上占用更少内存。",
+        "label": "纯文本 diff"
       }
     },
     "groups": {
@@ -13631,7 +13796,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} 已禁用 — 网关离线",
-      "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}"
+      "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
+      "submit_comments": "提交评论"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "浏览器阻止了弹出窗口。允许此站点的弹出窗口后重试。"

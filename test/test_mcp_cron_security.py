@@ -16,6 +16,7 @@ Fixes under test:
 
 from __future__ import annotations
 
+import ast
 import json
 import time
 import uuid
@@ -446,6 +447,760 @@ def test_vet_script_contents_allows_benign(body):
     assert _vet_script_contents(body) is None
 
 
+# A cron script body is PYTHON SOURCE, not a shell command line. In Python source
+# a backslash run is an ESCAPE (`\\` is one backslash, `\.` is a literal dot), so
+# collapsing separator runs -- correct for a Win32 shell string, where
+# `%LOCALAPPDATA%\\kiro-cli` and `%LOCALAPPDATA%\kiro-cli` name one store --
+# strips the escapes and manufactures a path the source never contains. Each body
+# below READS NOTHING: two only describe or redact a fenced store, and the third
+# is a bare docstring. Every one has ZERO pass-1 hits before the collapse.
+BENIGN_SCRIPTS_WITH_A_SEPARATOR_RUN = [
+    # A redaction pattern over the Windows spelling of a fenced store.
+    'import re\nSCRUB = re.compile(r"%LOCALAPPDATA%\\\\kiro-cli")\n',
+    # Escapes stripped by the collapse turn a REGEX into a literal path:
+    # `/home/\S*/\.kiro/...` reads as `/home/S*/.kiro/...`.
+    'import re\nSCRUB = re.compile(r"/home/\\\\S*/\\\\.kiro/crew/security_policy.json")\n',
+    # The KEYWORD spelling of the first entry. `pattern=` must be exonerated exactly as
+    # the positional operand is -- they are the same redactor, and denying one while
+    # allowing the other is the asymmetry the dead keyword branch produced.
+    'import re\nSCRUB = re.compile(pattern=r"%LOCALAPPDATA%\\\\\\\\kiro-cli")\n',
+    # A redactor that stringifies the RESULT of a consuming call. `re.sub` returns a
+    # string, so this cannot recover the pattern and must not be refused.
+    'import re\n\n\ndef scrub(s):\n    redacted = re.sub(r"%LOCALAPPDATA%\\\\\\\\kiro-cli", "<X>", s)\n    return str(redacted)\n',
+    # The motivating redactor, used through the matching API -- the enumerated-safe way.
+    'import re\nSCRUB = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli")\n\n\ndef scrub(s):\n    return SCRUB.sub("<X>", s)\n',
+]
+
+
+def test_a_docstring_naming_a_fenced_store_is_an_accepted_over_block():
+    """A prose-only docstring naming the store is DENIED, deliberately.
+
+    Two rules compose to this outcome and neither can be narrowed safely. Docstrings
+    are scanned because Python retains them as ``__doc__``, where a body can read one
+    back into a sink. The fence is checked against the literal's own value, not only
+    its separator-collapsed copies, because a value whose separators are already single
+    produces no collapsed copy at all and would otherwise reach this layer unexamined.
+
+    Exempting docstrings from the value check would reopen the single-separator
+    ``open(f.__doc__)`` path, so the check stays uniform and this shape pays for it.
+    Recorded as a test rather than left in the benign corpus so the trade is explicit:
+    the body reads nothing, and it is refused anyway.
+    """
+    body = (
+        'def run(ctx):\n'
+        '    """Never touch %LOCALAPPDATA%\\\\kiro-cli -- it is the keystone."""\n'
+    )
+    err = _vet_script_contents(body)
+    assert err is not None and err.startswith("Error:")
+
+
+@pytest.mark.parametrize("body", BENIGN_SCRIPTS_WITH_A_SEPARATOR_RUN)
+def test_vet_script_contents_allows_a_separator_run_in_python_source(body):
+    assert _vet_script_contents(body) is None, f"should allow: {body!r}"
+
+
+# The control for the test above: the run is meaningless only in SHELL grammar, so
+# scoping the collapse to that subject must not reach the COMMAND path, where a
+# doubled separator still names the store the single spelling names (#6350). A
+# carve-out that leaked here would be a hole, not a false-positive fix.
+#
+# Each payload is reachable ONLY through pass 1b -- verified to be missed when the
+# subject flag is flipped -- so this control can actually fail. One per check pass
+# 1b repeats, because the collapse is keyed on the subject and never on one check:
+# the path matcher, the extraction control, and the relative-traversal matcher.
+COMMANDS_WITH_A_SEPARATOR_RUN = [
+    r'type "%LOCALAPPDATA%\\kiro-cli\config.json"',
+    r"cat %USERPROFILE%\\.ssh\id_rsa",
+    r"tar -xf evil.tar -C $HOME//.kiro/crew",
+    r"cat ..//.aws/credentials",
+]
+
+
+@pytest.mark.parametrize("cmd", COMMANDS_WITH_A_SEPARATOR_RUN)
+def test_vet_shell_command_still_blocks_a_separator_run(cmd):
+    err = _vet_shell_command(cmd)
+    assert err is not None and err.startswith("Error:"), f"should block: {cmd!r}"
+
+
+# Scoping the collapse away from the script body must not reopen the fence INSIDE a
+# script. These bodies hand a path to a filesystem sink whose decoded string VALUE
+# carries a separator RUN; Win32 collapses that run when the file is opened, so the
+# fenced store is reached — while the raw, uncollapsed source text matches no fence
+# pattern. Blocked before the subject scoping, so each is a genuine regression guard.
+#
+# Note how little separates these from the benign bodies above: the first differs from
+# the `re.compile` payload only in the call it wraps. A text- or value-level check
+# cannot tell them apart, because a regex escape and a path separator are the same
+# character once the literal is decoded — only the SINK differs.
+ATTACK_SCRIPTS_WITH_A_SEPARATOR_RUN = [
+    # open() on a run-carrying Windows path, raw spelling.
+    'f = open(r"%LOCALAPPDATA%\\\\kiro-cli\\\\config.json")\n',
+    # Same decoded value, non-raw spelling.
+    'f = open("%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\config.json")\n',
+    # Mixed-separator run — one of the two regressions this collapse has had before.
+    'f = open(r"%LOCALAPPDATA%\\/kiro-cli\\/config.json")\n',
+    # UNC leading pair — the other one; the leading pair must stay meaningful.
+    'f = open(r"\\\\\\\\server\\\\share\\\\.kiro\\\\crew\\\\security_policy.json")\n',
+    # pathlib rather than the open() builtin.
+    'from pathlib import Path\nPath(r"%LOCALAPPDATA%\\\\kiro-cli\\\\c.json").read_text()\n',
+    # The literal is bound to a name first, so no call encloses it.
+    'P = r"%LOCALAPPDATA%\\\\kiro-cli\\\\c.json"\nopen(P)\n',
+    # An f-string, so the literal segment sits under a JoinedStr.
+    'import os\nf = open(f"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\{os.sep}c.json")\n',
+    # A sink nobody enumerated: the deny verdict is the default, so this is covered
+    # without shutil appearing anywhere in the checker.
+    'import shutil\nshutil.copy(r"%LOCALAPPDATA%\\\\kiro-cli\\\\c.json", "/tmp/x")\n',
+    # The two shapes `_separator_collapsed_variants`' own docstring records as prior
+    # review-found regressions, carried here in their literal form because a run in a
+    # decoded VALUE is the same hazard the shell path already learned twice.
+    #
+    # (1) MIXED run: collapsing to one fixed separator leaves a run matching neither
+    #     spelling. `profiles` is a keystone leaf, so this reaches the trust root.
+    'f = open(r"D:/\\\\profiles\\\\u\\\\.kiro\\\\crew\\\\admission_policy.json")\n',
+    # (2) UNC LEADING PAIR plus an interior run — the case the docstring records as
+    #     having permitted the keystone read, because it matched neither the original
+    #     (interior run) nor the collapsed copy (no UNC prefix left).
+    'f = open(r"\\\\\\\\server\\\\share\\\\.kiro\\\\\\\\crew\\\\security_policy.json")\n',
+    # BYTES twin of the drive-letter case above. open()/os.open accept a bytes path,
+    # so skipping bytes constants left this reaching the fenced keystone.
+    'f = open(rb"D:/\\\\profiles\\\\u\\\\.kiro\\\\crew\\\\admission_policy.json")\n',
+    # BYTES twin in the relative-traversal spelling — the other form Opus names.
+    'f = open(rb"..\\\\..\\\\.kiro\\\\\\\\crew\\\\security_policy.json")\n',
+    # An allowlisted re.* call, but the fenced literal is in the SUBJECT slot, which
+    # re.sub returns verbatim to open(). Only the pattern operand is exonerated.
+    'import re\nopen(re.sub(r"Q", "", r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")).read()\n',
+    # Same call, fenced literal in the REPLACEMENT slot, which re.sub also passes
+    # through substantially unchanged.
+    'import re\nopen(re.sub(r"Q", r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json", "Q")).read()\n',
+    # The exoneration keys on the SPELLING ``re.compile``, so a rebound ``re`` must
+    # withdraw it — otherwise the allowlist launders an arbitrary reader.
+    'import shutil as re\nre.copy(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json", "/tmp/x")\n',
+    # A pattern-slot literal is only exonerated when ``re`` is the imported module;
+    # here the name is reassigned, so the body loses the exoneration.
+    'import re\nre = __import__("builtins")\nre.open(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    # The module NAME survives but its ATTRIBUTE is reassigned, so the call spells an
+    # allowlisted sink while actually being ``open``.
+    'import re\nre.compile = open\nre.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json").read()\n',
+    # A STARRED argument: args[0] is the Starred node, so an identity check against it
+    # cannot prove the literal is the pattern rather than the subject.
+    'import re\nopen(re.sub(*[r"Q", "", r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json"])).read()\n',
+    # The pattern slot is only safe when the re.* call is the OUTERMOST expression the
+    # literal reaches. Here its result is consumed by open(), so the fenced spelling
+    # flows on through a call that merely looks allowlisted.
+    'import re\nopen(re.sub(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json", "", "x")).read()\n',
+    # Compiled, then RE-EXTRACTED verbatim via `.pattern` in a later statement.
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(p.pattern).read()\n',
+    # Same escape, bound by a walrus inside the opening call itself.
+    'import re\nopen((p := re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")).pattern).read()\n',
+    # Parked in a DOCSTRING, which Python retains as __doc__, then read back out.
+    'def f():\n    r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json"\n\n\nopen(f.__doc__).read()\n',
+    # `except E as re:` binds the name through ExceptHandler.name -- a plain STRING,
+    # invisible to a Name-node walk -- so the module read as authentic.
+    'import re\ntry:\n    pass\nexcept Exception as re:\n    re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    # `case re:` binds through MatchAs.name, also a plain string.
+    'import re\nmatch object():\n    case re:\n        re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    # The attribute mutation spelled as a CALL reaches neither the Name nor the
+    # Attribute branch.
+    'import re\nsetattr(re, "compile", open)\nre.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    'import re\ndelattr(re, "compile")\nre.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    # Re-extraction spelled as a CALL. `getattr` puts the attribute name in a string
+    # argument, so it parses to an ast.Call and an Attribute-only walk never sees it --
+    # while the dotted twin two entries below IS blocked.
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(getattr(p, "pattern")).read()\n',
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(p.pattern).read()\n',
+    # A dynamic attribute name cannot be proved harmless over a compiled object.
+    'import re\nk = "pattern"\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(getattr(p, k)).read()\n',
+    # `repr` of a compiled pattern embeds the verbatim literal.
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(repr(p)).read()\n',
+    # A walrus inside the pattern slot binds the literal to a name that OUTLIVES the
+    # call, so the "a pattern operand goes nowhere else" premise does not hold.
+    'import re\nre.compile(p := r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(p).read()\n',
+    # Reflective reads: each is a Call whose `func` is an ast.Attribute, or hides the
+    # getter behind a name, so an enumerated bare-Name blocklist never fires.
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(p.__getattribute__("pattern")).read()\n',
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(object.__getattribute__(p, "pattern")).read()\n',
+    'import operator\nimport re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(operator.attrgetter("pattern")(p)).read()\n',
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\ng = getattr\nopen(g(p, "pattern")).read()\n',
+    # Stringify forms: the pattern is embedded in the output of the format itself.
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen("%s" % p).read()\n',
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen("{}".format(p)).read()\n',
+    'import re\np = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(f"{p!r}").read()\n',
+    # INDIRECT mutation: the module is held under a second name, or reached through
+    # sys.modules / vars(), so an `re`-keyed Attribute or Call check never sees it --
+    # while `re.compile` still spells the attribute that was replaced.
+    'import re\nm = re\nm.compile = open\nre.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    'import re\nm = re\nsetattr(m, "compile", open)\nre.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    'import re\nvars(re)["compile"] = open\nre.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    'import re\nimport sys\nsys.modules["re"].compile = open\nre.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\n',
+    # UNTRACKABLE binding: the compile result is bound to something that is not a plain
+    # name, so there is no name for the escape analysis to watch.
+    'import re\nd = {}\nd["p"] = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json")\nopen(str(d["p"])).read()\n',
+    'import re\np, q = re.compile(r"%LOCALAPPDATA%\\\\\\\\kiro-cli\\\\\\\\c.json"), 1\nopen(str(p)).read()\n',
+]
+
+
+@pytest.mark.parametrize("body", ATTACK_SCRIPTS_WITH_A_SEPARATOR_RUN)
+def test_vet_script_contents_blocks_a_run_reaching_a_fenced_store(body):
+    err = _vet_script_contents(body)
+    assert err is not None and err.startswith("Error:"), f"should block: {body!r}"
+
+
+def test_is_sensitive_source_body_owns_the_pairing():
+    """The source entry point must own BOTH halves, so a caller cannot split them.
+
+    Skipping pass 1b is sound only because the literal scan replaces it. A future
+    source-body caller reaching for the internal flag alone would silently reopen the
+    doubled-separator fence inside scripts, so the composition belongs to the API: the
+    public surface is `is_sensitive_source_body`, and the flag is private.
+    """
+    import inspect
+
+    from kiro_crew import security
+
+    assert hasattr(security, "is_sensitive_source_body")
+    params = inspect.signature(security.is_sensitive_bash_command).parameters
+    assert "subject_is_shell_grammar" not in params, "the flag must not be public"
+    assert "_subject_is_shell_grammar" in params
+
+    # The entry point blocks a run that only the literal scan can see...
+    attack = 'f = open(r"%LOCALAPPDATA%\\\\kiro-cli\\\\config.json")\n'
+    assert security.is_sensitive_source_body(attack) is not None
+    # ...and an unparseable body still gets the raw-text collapse.
+    broken = 'f = open(r"%LOCALAPPDATA%\\\\kiro-cli\\\\c.json"\n'
+    assert security.is_sensitive_source_body(broken) is not None
+
+
+def test_authenticity_follows_the_module_through_an_alias():
+    """Mutating the module under a second name is mutating the module.
+
+    `m = re` binds the SAME object, so `m.compile = open` replaces exactly the
+    attribute that `re.compile` spells. A check keyed on the literal name `re` sees an
+    untouched module and exonerates a call that now opens a file.
+    """
+    from kiro_crew.security import _re_module_is_authentic
+
+    assert _re_module_is_authentic(ast.parse('import re\nre.compile("x")\n')) is True
+    for body in (
+        'import re\nm = re\nm.compile = open\n',
+        'import re\nm = re\nsetattr(m, "compile", open)\n',
+        'import re\nvars(re)["compile"] = open\n',
+        'import re\nimport sys\nsys.modules["re"].compile = open\n',
+        'import re as m\nm.compile = open\nimport re\n',
+    ):
+        assert _re_module_is_authentic(ast.parse(body)) is False, body
+
+
+def test_a_compile_result_bound_where_it_cannot_be_tracked_forfeits_exoneration():
+    """The escape analysis watches NAMES, so a non-name binding must deny instead.
+
+    `_compiled_pattern_names` only tracks a plain `ast.Name` target. Binding the
+    compile result to a subscript, an attribute or a tuple element left the escape
+    check watching nothing while the literal stayed exonerated, so `str(d["p"])`
+    recovered the fenced spelling.
+    """
+    from kiro_crew.security import _compile_result_is_untrackable
+
+    trackable = 'import re\nSCRUB = re.compile("x")\n'
+    assert _compile_result_is_untrackable(ast.parse(trackable)) is False
+    for body in (
+        'import re\nd = {}\nd["p"] = re.compile("x")\n',
+        'import re\nc.p = re.compile("x")\n',
+        'import re\np, q = re.compile("x"), 1\n',
+    ):
+        assert _compile_result_is_untrackable(ast.parse(body)) is True, body
+
+
+def test_the_recovery_guard_denies_by_default_rather_than_enumerating():
+    """A compiled pattern may be used through its matching API and nothing else.
+
+    The guard was an allow-by-default blocklist inside a deny-by-default checker, so
+    each unenumerated recovery spelling reopened the fence. Reads through the matching
+    API stay exonerated; every other use of the object forfeits it, which is what makes
+    the guard closed against spellings nobody thought of.
+    """
+    from kiro_crew.security import _compiled_name_escapes
+
+    safe = ast.parse('import re\np = re.compile("x")\np.sub("<X>", s)\n')
+    assert _compiled_name_escapes(safe, {"p"}) is False
+
+    for body in (
+        'import re\np = re.compile("x")\nopen(p.__getattribute__("pattern"))\n',
+        'import re\np = re.compile("x")\nopen("%s" % p)\n',
+        'import re\np = re.compile("x")\nopen(f"{p!r}")\n',
+        'import re\np = re.compile("x")\nsend(p)\n',
+        'import re\np = re.compile("x")\nreturn_value = [p]\n',
+    ):
+        assert _compiled_name_escapes(ast.parse(body), {"p"}) is True, body
+
+
+def test_only_compile_results_are_tracked_as_compiled_patterns():
+    """`re.sub` returns a STRING, so stringifying its result is not a re-extraction.
+
+    Tracking every pattern SINK meant a redactor that returned `str(re.sub(...))` was
+    refused -- the exact shape this change exists to permit. Only the one sink whose
+    result is a pattern object can hand the literal back.
+    """
+    from kiro_crew.security import _compiled_pattern_names
+
+    assert _compiled_pattern_names(ast.parse('import re\np = re.compile("x")\n')) == {"p"}
+    consumed = 'import re\nredacted = re.sub("x", "<X>", s)\n'
+    assert _compiled_pattern_names(ast.parse(consumed)) == set()
+
+
+def test_call_spelled_reextraction_is_caught_like_the_dotted_spelling():
+    """`getattr(p, "pattern")` must count as re-extraction, same as `p.pattern`.
+
+    The attribute name travels in a string argument, so the node is an `ast.Call` and
+    an Attribute-only walk cannot see it -- the same call-spelled blind spot that
+    `setattr(re, ...)` exploited against the authenticity check. Two spellings of one
+    read must not disagree.
+    """
+    from kiro_crew.security import _pattern_reextracted
+
+    dotted = ast.parse('import re\np = re.compile("x")\nopen(p.pattern)\n')
+    called = ast.parse('import re\np = re.compile("x")\nopen(getattr(p, "pattern"))\n')
+    assert _pattern_reextracted(dotted) is True
+    assert _pattern_reextracted(called) is True
+
+
+def test_reextraction_guard_does_not_fire_on_an_unrelated_str_call():
+    """`str(count)` must not withdraw the exoneration.
+
+    The verdict is whole-body, so scoping `str`/`repr`/`vars` to names actually bound
+    from a compiling call is what keeps the guard from denying most real redactor
+    scripts. Without this control the guard could pass its attack tests by simply
+    refusing everything.
+    """
+    from kiro_crew.security import _pattern_reextracted
+
+    tree = ast.parse('import re\nSCRUB = re.compile("x")\nn = str(42)\nm = str(n)\n')
+    assert _pattern_reextracted(tree) is False
+
+
+def test_a_walrus_in_the_pattern_slot_forfeits_the_exoneration():
+    """A literal bound by `:=` inside the pattern slot escapes the call.
+
+    The exoneration rests on a pattern operand going nowhere else. A walrus binds the
+    same literal to a name that outlives the call, so `open(p)` in a later statement
+    receives the verbatim fenced spelling -- the premise fails and the slot must not
+    be treated as exonerating.
+    """
+    from kiro_crew.security import _enclosing_call_slot
+
+    tree = ast.parse('import re\nre.compile(p := "x")\n')
+    literal = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value == "x"
+    )
+    chain: list[ast.AST] = []
+
+    def walk(node: ast.AST, path: list[ast.AST]) -> bool:
+        if node is literal:
+            chain.extend(path)
+            return True
+        for child in ast.iter_child_nodes(node):
+            if walk(child, path + [node]):
+                return True
+        return False
+
+    assert walk(tree, [])
+    key, in_pattern_slot = _enclosing_call_slot(chain, literal)
+    assert key == ("re", "compile")
+    assert in_pattern_slot is False
+
+
+def test_fence_layer_checks_the_value_not_only_its_collapsed_copies():
+    """The literal scan must catch a fenced path on its own, not lean on a later pass.
+
+    `_separator_collapsed_variants` yields nothing when a value carries no separator
+    run, so iterating it alone left an already-single-separator decoded literal
+    unexamined by this layer. The shell path had pass 1a behind it; the source path had
+    nothing, so the verdict came from a later pass instead — defence in depth that
+    shared the earlier layer's blind spot.
+    """
+    from kiro_crew.security import _fence_hit_in_collapsed, _separator_collapsed_variants
+
+    single = r"%LOCALAPPDATA%\kiro-cli\config.json"
+    # Precondition: no run, so the collapsed-variant generator is empty. Without this
+    # the test could pass for the wrong reason.
+    assert tuple(_separator_collapsed_variants(single)) == ()
+    assert _fence_hit_in_collapsed(single) is not None
+
+
+def test_shell_path_skips_only_the_scan_pass_1_already_did():
+    """The opt-out drops a duplicate pass, never a layer.
+
+    `_fence_hit_in_collapsed` checks the value itself so the SOURCE-literal path is
+    self-sufficient (see the test above). On the shell path that check is a second full
+    run of the three pass-1 matchers over bytes pass 1 already rejected, and the
+    sensitive-path regex over a long newline-free line is the most expensive matcher on
+    this gate — so a 20 KB subject paid for it twice and doubled the wall time of a
+    path guarded by a linearity test. `value_already_scanned=True` removes that
+    duplicate.
+
+    What must NOT change is detection, so this pins both halves: the collapsed copies
+    are still checked with the opt-out on (a DOUBLED separator is still blocked), and
+    the single-separator spelling the skipped check would have caught is still blocked
+    by pass 1 itself, which is why skipping it is sound rather than merely cheaper.
+    """
+    from kiro_crew.security import (
+        _fence_hit_in_collapsed,
+        _separator_collapsed_variants,
+        is_sensitive_bash_command,
+    )
+
+    fenced_single = r"%LOCALAPPDATA%\kiro-cli\config.json"
+    # Precondition: no separator run, so the variant generator is empty and the
+    # value-check is the ONLY thing this layer could contribute for this input.
+    assert tuple(_separator_collapsed_variants(fenced_single)) == ()
+
+    # Default is unchanged and still self-sufficient.
+    assert _fence_hit_in_collapsed(fenced_single) is not None
+    # With the opt-out, the layer contributes nothing for a no-run value -- that is
+    # precisely the duplicate being skipped, and it is what makes the gate linear.
+    assert _fence_hit_in_collapsed(fenced_single, value_already_scanned=True) is None
+
+    # Detection is preserved on both spellings via the shell entry point.
+    # Single separator: pass 1 catches it, which is why the duplicate was redundant.
+    assert is_sensitive_bash_command(f"type {fenced_single}") is not None
+    # Doubled separator (#6350): only pass 1b's COLLAPSED copy catches this, so it
+    # proves the collapse still runs with the opt-out on.
+    doubled = r"type %LOCALAPPDATA%\\kiro-cli\\config.json"
+    assert is_sensitive_bash_command(doubled) is not None
+    # The extraction control travels with it, for the same reason.
+    assert is_sensitive_bash_command("tar -xf evil.tar -C $HOME//.kiro/crew") is not None
+
+
+def test_vet_script_contents_refuses_a_fenced_path_through_re_escape():
+    """`re.escape` must NOT exonerate a fenced literal — it consumes TEXT, not a pattern.
+
+    `_SOURCE_PATTERN_SINKS` admits an entry only if it "must consume its argument as a
+    PATTERN and never as a path". `re.escape` takes plain text and returns it escaped
+    for onward flow, so it fails that rule and was admitted only by symmetry with its
+    `re.*` neighbours. This pins the removal for the derivation rather than the name, so
+    the entry cannot be reinstated by that same symmetry argument later.
+    """
+    body = (
+        "import re\n"
+        'open(re.escape(r"%LOCALAPPDATA%\\\\kiro-cli\\\\c.json")).read()\n'
+    )
+    err = _vet_script_contents(body)
+    assert err is not None and err.startswith("Error:"), (
+        "re.escape must not exonerate a fenced path literal"
+    )
+
+
+def test_vet_script_contents_survives_a_deeply_nested_expression():
+    """A valid but very deep body must not raise RecursionError out of the gate.
+
+    The traversal is recursive, so a legitimate script with a long chain of operands
+    could crash `cron_add` into a JSON-RPC internal error. Containing it reports
+    ``parsed=False``, which routes the body to the raw scan WITH the collapse — still
+    fence-checked, just textually.
+    """
+    from kiro_crew.security import _sensitive_run_in_source_literals
+
+    deep = "x = " + " + ".join(["1"] * 1200) + "\n"
+    parsed, reason = _sensitive_run_in_source_literals(deep)
+    assert reason is None
+    assert parsed in (True, False)  # either path is fine; crashing is not
+    assert _vet_script_contents(deep) is None  # benign body still allowed
+
+
+def test_a_dynamic_namespace_write_forfeits_exoneration():
+    """Rebinding through a namespace MAPPING reaches none of the binding branches.
+
+    `globals()["re"] = Fake` rebinds the name `re` while producing no Name in Store
+    context, no Attribute, and no argument mentioning the module -- the subscript's
+    `value` is the bare `globals()` call, which names nothing the walk recognises. So
+    the module read authentic and a fenced literal in a pattern slot stayed exonerated
+    while `Fake.search` was free to open the path.
+
+    Matched on the NAME, not the subscript, because the mapping can be bound first:
+    `g = globals()` leaves the subscript's value an unresolvable local, so inspecting
+    the subscript can never close the class. `locals()` at module scope IS the global
+    namespace and `vars()` with no argument is `locals()`, so all three forfeit.
+    """
+    from kiro_crew.security import _re_module_is_authentic
+
+    for body in (
+        'import re\nglobals()["re"] = Fake\n',
+        'import re\ng = globals()\ng["re"] = Fake\n',
+        'import re\nlocals()["re"] = Fake\n',
+        'import re\nvars()["re"] = Fake\n',
+        'import re\nglobals().update({"re": Fake})\n',
+    ):
+        assert _re_module_is_authentic(ast.parse(body)) is False, body
+
+    # NEGATIVE CONTROL: the ordinary redactor names no namespace builtin and must
+    # stay authentic, or the fix re-breaks the false positive this PR clears.
+    assert (
+        _re_module_is_authentic(
+            ast.parse('import re\nre.sub(r"/\\\\S*[.]midway/cookie", "<JAR>", line)\n')
+        )
+        is True
+    )
+
+
+def test_an_unbound_compile_result_forfeits_exoneration():
+    """A result that is never bound reaches no binding node, so nothing is tracked.
+
+    `_compiled_pattern_names` only collects plain Name targets, so a compile result
+    that is returned, passed onward, or dropped into a container leaves it EMPTY --
+    and `_compiled_name_escapes` handed an empty set cannot fail. The literal was
+    therefore exonerated with zero tracking behind it, and any recovery spelling then
+    worked, including one that defeats a literal attribute-name match
+    (`getattr(p, "pat" + "tern")`). Chasing the recovery call is the wrong layer: the
+    fix is that exoneration requires the result to be DIRECTLY bound to a Name the
+    tracker can follow.
+    """
+    from kiro_crew.security import _compile_result_is_untrackable
+
+    for body in (
+        # the lane's own shape -- returned from a helper, never bound here
+        'import re\ndef build():\n    return re.compile("x")\n',
+        # passed straight into a call
+        'import re\np = keep(re.compile("x"))\n',
+        # dropped into a container literal rather than bound to a bare Name
+        'import re\npats = [re.compile("x")]\n',
+        'import re\nd = (re.compile("x"), 1)\n',
+        # yielded
+        'import re\ndef gen():\n    yield re.compile("x")\n',
+        # evaluated and discarded
+        'import re\nre.compile("x")\n',
+    ):
+        assert _compile_result_is_untrackable(ast.parse(body)) is True, body
+
+    # NEGATIVE CONTROL: bound DIRECTLY to a plain Name is the one trackable shape and
+    # must stay exonerated -- it is what the redactor this PR permits actually writes.
+    assert (
+        _compile_result_is_untrackable(ast.parse('import re\nSCRUB = re.compile("x")\n'))
+        is False
+    )
+
+
+def test_handing_the_module_to_any_call_forfeits_exoneration():
+    """A callee's effect on the module is not readable here, so the handover forfeits.
+
+    The call branch recognised only `setattr`/`delattr`, which made it an
+    allow-by-default blocklist inside a deny-by-default checker: an ordinary
+    `helper(re)` whose body does `m.compile = open` reached NO branch, so the module
+    read authentic and a fenced literal in the pattern slot stayed exonerated.
+    Enumerating callees cannot close that -- the mutation lives in a function this walk
+    never inspects -- so any ARGUMENT resolving to the module withdraws it instead.
+
+    The func position is deliberately NOT inspected: `re.sub(...)` and `re.compile(...)`
+    name the module there, and those are the calls the exoneration exists to permit.
+    """
+    from kiro_crew.security import _re_module_is_authentic
+
+    for body in (
+        "import re\ndef helper(m):\n    m.compile = open\nhelper(re)\n",
+        "import re\ndef helper(m=None):\n    m.compile = open\nhelper(m=re)\n",
+        "import re\nm = re\nhelper(m)\n",
+        'import re\nhelper(getattr(re, "compile"))\n',
+    ):
+        assert _re_module_is_authentic(ast.parse(body)) is False, body
+
+    # NEGATIVE CONTROL: naming the module in the FUNC position is the permitted shape
+    # and must stay authentic, or the fix re-breaks the motivating redactor.
+    for body in (
+        'import re\nre.sub(r"/\\\\S*[.]midway/cookie", "<JAR>", line)\n',
+        'import re\nSCRUB = re.compile("x")\nSCRUB.sub("<X>", line)\n',
+    ):
+        assert _re_module_is_authentic(ast.parse(body)) is True, body
+
+
+def test_dynamic_execution_in_the_body_forfeits_exoneration():
+    """Every other guard here is a static read, so a body that runs code defeats them.
+
+    `exec("re.compile = open")` carries the rebinding inside a STRING: it reaches no
+    Name, Attribute, Subscript or call-argument this tree can be asked about, so the
+    module read authentic while the call it spells now opens a file. The string is
+    opaque by construction, so no enumeration of spellings closes the class -- the
+    presence of the mechanism withdraws the exoneration instead.
+    """
+    from kiro_crew.security import _re_module_is_authentic
+
+    for body in (
+        "import re\nexec('re.compile = open')\n",
+        "import re\ne = exec\ne('re.compile = open')\n",
+        "import re\neval(\"setattr(re, 'compile', open)\")\n",
+        "import re\nexec(compile('re.compile = open', '<s>', 'exec'))\n",
+        "import re\n__import__('os')\n",
+    ):
+        assert _re_module_is_authentic(ast.parse(body)) is False, body
+
+    # NEGATIVE CONTROL: `re.compile` spells its name in an Attribute's `attr` STRING,
+    # not as a Name node, so the builtin-`compile` forfeit must not fire on it.
+    assert (
+        _re_module_is_authentic(ast.parse('import re\nSCRUB = re.compile("x")\n')) is True
+    )
+
+
+def test_a_wildcard_import_forfeits_exoneration():
+    """`from evil import *` can rebind `re` while naming no alias `re` at all.
+
+    The branch matched only aliases that NAME the module, which made it an
+    allow-by-default enumeration inside a deny-first checker: the explicit
+    `from evil import thing as re` forfeited, while the wildcard -- which can bind
+    strictly more, `re` included -- did not, and the module read authentic. An
+    unknowable binding set is the forfeit condition, so the class closes rather than
+    one more spelling.
+    """
+    from kiro_crew.security import _re_module_is_authentic
+
+    redactor = 'SCRUB = re.compile("x")\ndef f(s):\n    return SCRUB.sub("y", s)\n'
+    for body in (
+        "import re\nfrom evil import *\n" + redactor,
+        "import re\nfrom pkg.sub import *\n" + redactor,
+        "from evil import *\nimport re\n" + redactor,
+        "import re\nfrom evil import thing as re\n" + redactor,
+    ):
+        assert _re_module_is_authentic(ast.parse(body)) is False, body
+
+    # NEGATIVE CONTROLS: neither shape rebinds the module, so both must stay allowed --
+    # a bare `import re` redactor, and `from re import sub`, which binds `sub`.
+    assert _re_module_is_authentic(ast.parse("import re\n" + redactor)) is True
+    assert (
+        _re_module_is_authentic(ast.parse("import re\nfrom re import sub\n" + redactor))
+        is True
+    )
+
+
+def test_vet_script_contents_still_exonerates_a_pattern_slot_literal():
+    """The motivating real-world case must stay allowed after the narrowing.
+
+    A redactor names a fenced store in `re.sub`'s PATTERN operand to strip it out of
+    a log line. That literal is a regex, reaches no sink, and is the false positive
+    this PR exists to clear — narrowing the exoneration to the pattern slot must not
+    take it with it.
+    """
+    body = (
+        "import re\n"
+        'conf = re.sub(r"/\\\\S*[.]midway/cookie", "<JAR>", line)[:150]\n'
+    )
+    assert _vet_script_contents(body) is None
+
+
+def test_a_callable_replacement_forfeits_the_pattern_slot():
+    """`re.sub`'s replacement may be a FUNCTION, and `re` hands that function the Match.
+
+    A Match carries `.re`, so `Match.re.pattern` returns the verbatim pattern literal --
+    a route back to a fenced spelling that no other member of `_SOURCE_PATTERN_SINKS`
+    offers, and one the compiled-name escape analysis cannot see because it tracks only
+    `re.compile` results while a Match is never bound by the exonerated statement.
+
+    The recovery read can be spelled to defeat any enumeration (`getattr(m, "r" + "e")`
+    builds the name from a concatenation, `g = getattr` hides the callee), which is why
+    the decision is made on the REPLACEMENT's shape rather than on the recovery: only a
+    str/bytes constant provably cannot be called, and everything else fails closed.
+    """
+    fenced = r"/home/\\S*/\\.kiro/crew/security_policy.json"
+    recover = 'open(getattr(getattr(m, "r" + "e"), "pat" + "tern")).read()'
+    for body in (
+        'import re\nconf = re.sub(r"%s", lambda m: %s, line)\n' % (fenced, recover),
+        'import re\ng = getattr\nconf = re.sub(r"%s", lambda m: open(g(m)).read(), line)\n'
+        % fenced,
+        'import re\ndef r(m):\n    return %s\nconf = re.sub(r"%s", r, line)\n'
+        % (recover, fenced),
+        'import re\nimport helper\nconf = re.sub(r"%s", helper.recover, line)\n' % fenced,
+        'import re\nconf = re.sub(pattern=r"%s", repl=lambda m: open(h(m)).read(), string=line)\n'
+        % fenced,
+        'import re\nconf, n = re.subn(r"%s", lambda m: open(k(m)).read(), line)\n' % fenced,
+        # A Starred puts the replacement at a position nobody can know statically.
+        'import re\nconf = re.sub(r"%s", *rest)\n' % fenced,
+    ):
+        assert _vet_script_contents(body) is not None, body
+
+    # NEGATIVE CONTROLS: a str/bytes constant can never receive the Match, so the
+    # motivating redactor survives; `re.findall` returns str, never a Match.
+    for body in (
+        'import re\nconf = re.sub(r"%s", "<JAR>", line)[:150]\n' % fenced,
+        'import re\nconf = re.sub(rb"%s", b"<JAR>", line)\n' % fenced,
+        'import re\nconf = re.sub(pattern=r"%s", repl="", string=line)\n' % fenced,
+        'import re\nhits = re.findall(r"%s", line)\n' % fenced,
+    ):
+        assert _vet_script_contents(body) is None, body
+
+    # POSITIVE CONTROL for the fixture: the same literal outside an exonerated slot is
+    # refused, so the assertions above are not passing on an undetected spelling.
+    assert _vet_script_contents('f = open(r"%s")\n' % fenced) is not None
+
+
+def test_a_match_returning_sink_forfeits_the_pattern_slot():
+    """A `Match` is the OTHER way the verbatim literal leaves an exonerated slot.
+
+    Nothing tracks a Match -- `_compiled_pattern_names` follows only `re.compile`
+    results -- and the recovery read cannot be enumerated, since `getattr(m, "r" + "e")`
+    builds the attribute name from a concatenation. So the two families are handled
+    where the answer is provable, and by different means.
+
+    Module-level `re.match`/`search`/`fullmatch`/`finditer` are simply ABSENT from
+    `_SOURCE_PATTERN_SINKS`, so deny-by-default refuses a fenced literal in their
+    pattern slot outright -- no withdrawal rule is needed or wanted.
+
+    The COMPILED route still needs one, because the exoneration is earned by
+    `re.compile` and only then is the Match produced: `_SAFE_COMPILED_PATTERN_METHODS`
+    admitted the whole matching API on the METHOD NAME alone, so `p.search` must
+    discard its result and `p.sub`/`p.subn` must take a provably non-callable
+    replacement.
+    """
+    fenced = r"/home/\\S*/\\.kiro/crew/security_policy.json"
+    recover = 'open(getattr(getattr(m, "r" + "e"), "pat" + "tern")).read()'
+    for body in (
+        # Module-level Match-returning sinks, each binding the Match somewhere.
+        'import re\nfor m in re.finditer(r"%s", data):\n    %s\n' % (fenced, recover),
+        'import re\nm = re.search(r"%s", data)\n%s\n' % (fenced, recover),
+        'import re\nm = re.match(r"%s", data)\n%s\n' % (fenced, recover),
+        'import re\nm = re.fullmatch(r"%s", data)\n%s\n' % (fenced, recover),
+        'import re\nif (m := re.search(r"%s", data)):\n    %s\n' % (fenced, recover),
+        'import re\nxs = [%s for m in re.finditer(r"%s", data)]\n' % (recover, fenced),
+        # Compiled object: hands a Match to a callable, or returns one.
+        'import re\np = re.compile(r"%s")\nout = p.sub(lambda m: %s, data)\n'
+        % (fenced, recover),
+        'import re\np = re.compile(r"%s")\nout, n = p.subn(lambda m: %s, data)\n'
+        % (fenced, recover),
+        'import re\np = re.compile(r"%s")\nm = p.search(data)\n%s\n' % (fenced, recover),
+        'import re\np = re.compile(r"%s")\nfor m in p.finditer(data):\n    %s\n'
+        % (fenced, recover),
+    ):
+        assert _vet_script_contents(body) is not None, body
+
+    # NEGATIVE CONTROLS: `split`/`findall` return str and list, carrying no reference
+    # back to the pattern, and a string replacement can never receive a Match.
+    for body in (
+        'import re\np = re.compile(r"%s")\nout = p.sub("<JAR>", data)\n' % fenced,
+        'import re\np = re.compile(r"%s")\nparts = p.split(data)\n' % fenced,
+        'import re\nhits = re.findall(r"%s", data)\n' % fenced,
+    ):
+        assert _vet_script_contents(body) is None, body
+
+    # POSITIVE CONTROL for the fixture, so none of the above passes on a spelling the
+    # fence layer never detects.
+    assert _vet_script_contents('f = open(r"%s")\n' % fenced) is not None
+
+
+def test_vet_script_contents_keeps_the_collapse_when_the_body_does_not_parse():
+    """An unparseable body has no literals to inspect, so it must not be exonerated.
+
+    The literal check needs a parse tree; without one it reports nothing. The caller
+    therefore falls back to the raw-text scan WITH the collapse, which is the
+    conservative direction — a body that cannot be understood is scanned as text
+    rather than waved through.
+
+    The import is local so the attack cases above still COLLECT against a tree without
+    this fix — otherwise a missing symbol turns their red into a collection error, which
+    proves the symbol is absent rather than that the bypass is open.
+    """
+    from kiro_crew.security import _sensitive_run_in_source_literals
+
+    broken = 'f = open(r"%LOCALAPPDATA%\\\\kiro-cli\\\\c.json"\n'  # unclosed paren
+    parsed, reason = _sensitive_run_in_source_literals(broken)
+    assert parsed is False and reason is None
+    err = _vet_script_contents(broken)
+    assert err is not None and err.startswith("Error:")
+
+
 def test_vet_script_file_reads_and_blocks(tmp_path):
     f = tmp_path / "evil.py"
     f.write_text("import os\nopen(os.path.expanduser('~/.aws/credentials')).read()\n")
@@ -613,3 +1368,84 @@ def test_vet_script_file_blocks_sensitive_symlink(monkeypatch, tmp_path):
     assert err is not None and "blocked by security policy" in err
     # The secret content must NOT leak into the error message.
     assert "AKIAIOSFODNN7EXAMPLE" not in err
+
+
+def test_an_executable_pattern_expression_forfeits_the_pattern_slot():
+    """Occupying the pattern operand means BEING it, not merely reaching it.
+
+    `_enclosing_call_slot` resolves `inner` to the top of the argument subtree, so an
+    expression feeding the operand satisfies `args[0] is inner` while the fenced literal
+    sits underneath it. Evaluating that expression runs code BEFORE `re` sees a pattern:
+    `re.compile(FENCED + Reader())` hands the expanded path to `Reader.__radd__`, and
+    every other operator protocol is the same shape. So the exoneration requires the
+    literal itself to occupy the slot, positionally or by `pattern=`.
+
+    The allowed set is counted rather than merely iterated, so a widening that silently
+    re-refused the redactor this path exists to permit would fail here.
+    """
+    fenced = r"/home/\\S*/\\.kiro/crew/security_policy.json"
+    radd = "class Reader:\n    def __radd__(self, other):\n        return open(other).read()\n"
+    add = "class Reader:\n    def __add__(self, other):\n        return open(other).read()\n"
+    rmod = "class Reader:\n    def __rmod__(self, other):\n        return open(other).read()\n"
+    for body in (
+        'import re\n%sp = re.compile(r"%s" + Reader())\n' % (radd, fenced),
+        'import re\n%sp = re.compile(Reader() + r"%s")\n' % (add, fenced),
+        'import re\n%sp = re.compile(pattern=r"%s" + Reader())\n' % (radd, fenced),
+        'import re\n%sout = re.sub(r"%s" + Reader(), "<JAR>", line)\n' % (radd, fenced),
+        'import re\n%sp = re.compile(r"%s" %% Reader())\n' % (rmod, fenced),
+    ):
+        assert _vet_script_contents(body) is not None, body
+
+    allowed = (
+        'import re\nconf = re.sub(r"%s", "<JAR>", line)[:150]\n' % fenced,
+        'import re\nconf = re.sub(rb"%s", b"<JAR>", line)\n' % fenced,
+        'import re\nout = re.sub(pattern=r"%s", repl="<JAR>", string=line)\n' % fenced,
+        'import re\np = re.compile(r"%s")\nout = p.sub("<JAR>", data)\n' % fenced,
+    )
+    assert sum(_vet_script_contents(b) is None for b in allowed) == 4
+
+    assert _vet_script_contents('f = open(r"%s")\n' % fenced) is not None
+
+
+def test_a_module_alias_stored_through_a_container_forfeits_authenticity():
+    """A module reference that escapes as a VALUE is no longer statically trackable.
+
+    The alias walk records `m = re`, so mutation through a bare second name is caught.
+    `holder = [re]` then `m = holder[0]` puts the same object behind a subscript no
+    static walk can resolve, so `m.compile = reader` rebinds exactly what `re.compile`
+    spells while an alias set keyed on bare Name assignments records nothing.
+
+    Enumerating container shapes would rebuild the allow-by-default blocklist this
+    function already had to abandon for calls, so the rule closes the class instead: a
+    module reference may only be READ through an attribute or bound as a tracked bare
+    alias, and every other mention forfeits.
+
+    An attribute read off the module is that sanctioned mention, so the allowed set is
+    counted: were the widening to swallow it, the redactor this PR unblocks is refused
+    again and this assertion is what says so.
+    """
+    fenced = r"/home/\\S*/\\.kiro/crew/security_policy.json"
+    reader = "def reader(*a, **k):\n    return open(a[0]).read()\n"
+    for body in (
+        'import re\n%sholder = [re]\nm = holder[0]\nm.compile = reader\nP = re.compile(r"%s")\n'
+        % (reader, fenced),
+        'import re\n%sholder = (re,)\nm = holder[0]\nm.compile = reader\nP = re.compile(r"%s")\n'
+        % (reader, fenced),
+        'import re\n%sholder = {"m": re}\nm = holder["m"]\nm.compile = reader\nP = re.compile(r"%s")\n'
+        % (reader, fenced),
+        'import re\n%sm = re if flag else None\nm.compile = reader\nP = re.compile(r"%s")\n'
+        % (reader, fenced),
+        # Already closed by the call branch; pinned so the two rules stay consistent.
+        'import re\ndef helper(mod):\n    mod.compile = open\nhelper(re)\nP = re.compile(r"%s")\n'
+        % fenced,
+    ):
+        assert _vet_script_contents(body) is not None, body
+
+    allowed = (
+        'import re\nconf = re.sub(r"%s", "<JAR>", line)[:150]\n' % fenced,
+        'import re\np = re.compile(r"%s")\nout = p.sub("<JAR>", data)\n' % fenced,
+        'import re\nhits = re.findall(r"%s", data)\n' % fenced,
+    )
+    assert sum(_vet_script_contents(b) is None for b in allowed) == 3
+
+    assert _vet_script_contents('f = open(r"%s")\n' % fenced) is not None

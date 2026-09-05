@@ -127,16 +127,29 @@ def _find_cli() -> list[str]:
 # overrides every config file) so EVERY git invocation from this handler —
 # foreground inspection, the unattended background fetch, rebase, sync pull,
 # and any git a build step runs — is neutralized at one chokepoint instead of
-# per-call-site flags. All four keys are attacker-configurable via an
+# per-call-site flags. The config keys are attacker-configurable via an
 # agent-writable ``.git/config`` and would otherwise execute code:
 #   * protocol pin  — ``ext::``/custom remote helpers refused by git itself
 #   * core.fsmonitor / core.hooksPath — repo-registered executables
 #   * credential.helper (reset to empty list) — helper commands
 #   * core.sshCommand (pinned to plain ``ssh``) — arbitrary command on fetch
+#
+# GIT_NO_REPLACE_OBJECTS is the odd one out: not a config key and not about code
+# execution, but about WHICH OBJECT GRAPH git answers from. A
+# ``refs/replace/<oid>`` ref substitutes one object for another in every read, so
+# ``log``, ``rev-list --count``, ``merge-base`` and ``merge --ff-only`` all answer
+# about the SUBSTITUTE graph — a history no checked-out commit names. Every git
+# answer this handler acts on is a statement about the checkout on disk, so the
+# real graph is the only one that answers the question asked. Grafting is a
+# legitimate local operation (``git replace``), so this is a correctness pin
+# first and a tamper pin second, and it is an env var rather than a config pair
+# so no config precedence applies to it at all. ``update_governance`` and
+# ``auto_improvement``'s clone setup already pin it for the same reason.
 # Harmless for non-git commands (pip/npm ignore GIT_*).
 _GIT_ENV_NEUTRALIZERS: dict[str, str] = {
     "GIT_ALLOW_PROTOCOL": "https:ssh",
     "GIT_PROTOCOL_FROM_USER": "0",
+    "GIT_NO_REPLACE_OBJECTS": "1",
     "GIT_CONFIG_COUNT": "4",
     "GIT_CONFIG_KEY_0": "core.fsmonitor",
     "GIT_CONFIG_VALUE_0": "false",

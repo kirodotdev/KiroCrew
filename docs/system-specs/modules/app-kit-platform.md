@@ -291,6 +291,22 @@ wins and reverts a correction the registration path had made. Fixing that revers
 the editor-snapshot-wins contract kept in #5899, and unlike resurrection it
 self-heals on the next gateway start, so it is left to a separate ruling.
 
+What the ruling is weighing, since "less severe than resurrection" understates it:
+the reverted value is the exact artefact `_register_mcp_servers` refuses to write
+and scrubs on sight — a `backend.port:"auto"` app's illustrative manifest port,
+i.e. a reachable-LOOKING dead URL whose cost that path states as breaking *every*
+kiro session, not just this app's. Two facts set the window. The PUT's own tail
+calls `_reset_all_sessions`, which drains every active session **and** the warm
+pool, so the next cold start reads the reverted row rather than the revert lying
+dormant. And the only writer that puts the live port back is
+`reconcile_enabled_app_resources`, whose single call site is the gateway boot path
+(`dashboard/server.py`) — the mid-turn rung `_recover_app_agent_binding` is gated
+on an UNRESOLVED agent binding, which a reverted port does not produce. So the
+self-heal is a restart, and nothing shorter. Both axes above plus this open cell
+are enumerated in one table by
+`test_the_app_namespace_region_decides_every_axis_it_claims_to`, so a change to
+any of them has to come through it.
+
 Writer: `apps/bridges.py::_apply_agent_mcp_policy`, `_mcp_json_path`,
 `_scrub_legacy_shared_mcp`;
 `dashboard/handlers/agents.py::_merge_unowned_servers` and

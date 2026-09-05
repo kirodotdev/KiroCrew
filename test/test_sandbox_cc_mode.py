@@ -32,7 +32,8 @@ def _neutralize_sandbox_env(monkeypatch):
     """Prevent the 'already inside sandbox' passthrough on sandboxed hosts."""
     monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
     monkeypatch.setattr(
-        _sb_mod, "_KIRO_INTERNAL_SETTINGS_PATH",
+        _sb_mod,
+        "_KIRO_INTERNAL_SETTINGS_PATH",
         "/nonexistent/kirocrew-test/amazon-internal.json",
     )
 
@@ -142,6 +143,28 @@ class TestBuildSeatbeltProfileCcMode:
         assert '(deny file-read* (subpath "/private/kiro/crew"))' in profile
         assert '(deny file-write* (subpath "/private/kiro/crew"))' in profile
         assert '(deny file-link (subpath "/private/kiro/crew"))' in profile
+
+    def test_extra_hidden_file_leaf_also_gets_a_literal_deny(self):
+        """A file-shaped entry needs a ``literal`` rule, not only a ``subpath`` one.
+
+        Most of what the adapter credential mask passes here is a plain FILE --
+        ``.codex/auth.json``, ``.claude/.credentials.json``, ``.netrc``,
+        ``.git-credentials``, ``sel_hmac.key`` -- and whether a ``subpath`` rule
+        alone denies a non-directory was asserted in three comments in this tree
+        while the ``crew_hidden`` branch of the same function said the opposite
+        ("A leaf may be a plain file, which no subpath rule addresses"). Nothing
+        executes ``sandbox-exec`` here, so that could not be settled by test; the
+        profile emits BOTH shapes instead, and this pins the literal so the mask
+        never depends on the unverified reading again.
+        """
+        leaf = "/Users/someone/.netrc"
+        profile = _build_seatbelt_profile("standard", extra_hidden_dirs=(leaf,))
+
+        assert f'(deny file-read* (literal "{leaf}"))' in profile
+        assert f'(deny file-write* (literal "{leaf}"))' in profile
+        assert f'(deny file-link (literal "{leaf}"))' in profile
+        # the subpath rule stays -- a directory entry still needs it
+        assert f'(deny file-read* (subpath "{leaf}"))' in profile
 
     def test_cc_does_not_deny_aws(self):
         """CC seatbelt does NOT deny .aws — macOS needs full .aws access for
@@ -331,8 +354,9 @@ class TestChannelCredentialIsolation:
         for key, value in _FAKE_CHANNEL_ENV.items():
             monkeypatch.setenv(key, value)
         monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
-        with patch("kiro_crew.sandbox.detect_backend", return_value="none"), patch(
-            "kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True
+        with (
+            patch("kiro_crew.sandbox.detect_backend", return_value="none"),
+            patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True),
         ):
             _argv, env, cleanup = sandboxed_spawn_argv(["echo", "hi"], mode="standard")
         try:
@@ -711,9 +735,7 @@ class TestKnownHostsPreReadFailsClosed:
 
         stderr: list[str] = []
         with pytest.raises(OSError):
-            _run_known_hosts_pre_read(
-                known_hosts=str(kh), tmp_path=tmp_path, stderr_sink=stderr
-            )
+            _run_known_hosts_pre_read(known_hosts=str(kh), tmp_path=tmp_path, stderr_sink=stderr)
 
         # The refusal and its diagnostic are ONE behaviour observed from ONE setup,
         # so they are asserted together. Refusing silently would strand the operator

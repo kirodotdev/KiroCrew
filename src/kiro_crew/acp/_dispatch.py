@@ -1320,9 +1320,11 @@ def _repair_escaped_marker(text: str) -> str | None:
 def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> AcpEvent | None:
     """Build an ``EVENT_TOOL_RESULT`` from a ``tool_call_update`` carrying output.
 
-    Two output shapes: ``content[].content.text`` blocks (stream mid-turn), or
-    ``rawOutput.items[]`` (``Text`` / ``Json.stdout``) on ``status=completed``.
-    Returns None when the update carries no output (refinement-only updates are
+    Three output shapes: ``content[].content.text`` blocks (stream mid-turn),
+    ``rawOutput.items[]`` (``Text`` / ``Json.stdout``) on ``status=completed``,
+    and -- since ``rawOutput`` is unstructured passthrough rather than a
+    contract -- any other non-empty ``rawOutput`` object, serialised. Returns
+    None when the update carries no output at all (refinement-only updates are
     handled by :func:`_build_tool_refinement_event`).
 
     ``cache_scope`` is the emitting session's origin scope, forwarded only so the
@@ -1409,6 +1411,26 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
                                 output_parts.append(_mcp_text)
                             else:
                                 output_parts.append(json.dumps(j, default=str))
+            # Path 3: an object that is not that envelope at all. ``rawOutput``
+            # is unstructured passthrough, so ``items[]`` is ONE producer's
+            # private wrapper rather than a contract, and an object Crew does
+            # not recognise is not evidence the tool produced no output.
+            # Treating it as absent returns None from this builder, which drops
+            # the whole EVENT_TOOL_RESULT -- the event that writes both
+            # ``meta["output"]`` and ``meta["done"]`` for the pill. The Output
+            # tab is lost outright; ``done`` survives only if assistant text
+            # follows the tool group, because chat_runner's EVENT_TEXT_CHUNK
+            # handler then sweeps unmarked tool rows done. Serialise it instead,
+            # which is already the policy one level in: an unrecognised ``Json``
+            # envelope is dumped rather than dropped (above), and
+            # ``parse_todo_snapshot`` likewise accepts a bare-dict ``rawOutput``.
+            # Gated on the ABSENCE of ``items`` so no ``items[]`` envelope
+            # changes here, including one that legitimately yields nothing. No
+            # ``not output_parts`` test is needed: this whole branch already runs
+            # only when Path 1 found nothing, which is what keeps a content block
+            # winning over the raw envelope.
+            if raw_output and "items" not in raw_output:
+                output_parts.append(json.dumps(raw_output, default=str))
     if not output_parts:
         return None
     joined = "\n".join(output_parts)
@@ -1439,7 +1461,14 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
             session_directive.peek_failure_reason(joined),
             len(joined),
         )
-    final_output = _redact(joined)[:8000]
+    _redacted = _redact(joined)
+    final_output = _redacted[: session_directive.MAX_TOOL_RESULT_CHARS]
+    # Both session-directive sentinels are TAIL-anchored, and this cut runs AFTER
+    # redaction -- which can grow the text, since a credential is replaced by a
+    # longer placeholder. So a producer bounding its own length cannot guarantee
+    # the marker survives here; re-attach it when the cut removed it, exactly as
+    # the App render marker below is re-injected at this same seam.
+    final_output = session_directive.preserve_tail_marker(_redacted, final_output)
     # An MCP App render marker lives at offset 0 of its own text part, but the
     # 8000-char join cut is applied to the CONCATENATION of all parts: when the
     # marker part is preceded by other (up to 4000-char) parts, its offset in

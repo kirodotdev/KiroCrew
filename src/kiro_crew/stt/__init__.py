@@ -52,13 +52,16 @@ _EXPORTS: dict[str, str] = {
     "is_present": "models",
     "models_dir": "models",
     "Availability": "engine",
+    "CODE_DECODE_FAILED": "engine",
     "CODE_EXTRA_MISSING": "engine",
     "CODE_IMPORT_FAILED": "engine",
     "CODE_MODEL_MISSING": "engine",
     "CODE_NO_WHEEL": "engine",
     "CODE_OK": "engine",
+    "DecodeFailed": "engine",
     "pcm_from_int16": "engine",
     "SAMPLE_RATE_HZ": "vad",
+    "DECODE_FAILED_ADVISORY": "session",
     "KIND_ERROR": "session",
     "KIND_FINAL": "session",
     "KIND_PARTIAL": "session",
@@ -75,11 +78,14 @@ _EXPORTS: dict[str, str] = {
 
 __all__ = [
     "Availability",
+    "CODE_DECODE_FAILED",
     "CODE_EXTRA_MISSING",
     "CODE_IMPORT_FAILED",
     "CODE_MODEL_MISSING",
     "CODE_NO_WHEEL",
     "CODE_OK",
+    "DECODE_FAILED_ADVISORY",
+    "DecodeFailed",
     "KIND_ERROR",
     "KIND_FINAL",
     "KIND_PARTIAL",
@@ -106,12 +112,14 @@ __all__ = [
 # annotations on this module's own helpers rather than to be re-exported.
 if TYPE_CHECKING:
     from kiro_crew.stt.engine import (
+        CODE_DECODE_FAILED,
         CODE_EXTRA_MISSING,
         CODE_IMPORT_FAILED,
         CODE_MODEL_MISSING,
         CODE_NO_WHEEL,
         CODE_OK,
         Availability,
+        DecodeFailed,
         pcm_from_int16,
     )
     from kiro_crew.stt.models import (
@@ -121,6 +129,7 @@ if TYPE_CHECKING:
         models_dir,
     )
     from kiro_crew.stt.session import (
+        DECODE_FAILED_ADVISORY,
         KIND_ERROR,
         KIND_FINAL,
         KIND_PARTIAL,

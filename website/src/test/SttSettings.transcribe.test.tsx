@@ -58,13 +58,33 @@ function mount(over: Record<string, unknown> = {}) {
   mockApi.saveSttConfig.mockImplementation(async (p: Record<string, unknown>) => ({ ...data, ...p }))
   // The status endpoint answers the SAME verdict as the config fixture. The two
   // are served from one backend probe, so a fixture where they disagree would
-  // exercise a state the gateway cannot produce.
+  // exercise a state the gateway cannot produce. That includes the decoder: the
+  // block is driven by status's `ffmpeg` object (which names WHICH decoder would
+  // run and whether a fetch can fix the host), while the config's
+  // `ffmpeg_missing` is only kept for compatibility.
   mockApi.sttStatus.mockResolvedValue({
     available: data.available !== false,
     code: data.available === false ? 'stt_extra_missing' : '',
     detail: '',
     models: [{ name: 'base', size_bytes: 147951465, present: true }],
     download: { step: 'idle', model: '', downloaded_bytes: 0, total_bytes: 0, error: '' },
+    ffmpeg: {
+      present: !data.ffmpeg_missing,
+      source: data.ffmpeg_missing ? null : 'system',
+      // These fixtures assert the MANUAL command route, which is the branch a
+      // platform with no pinned executable takes.
+      auto_fetch: data.bundled_interpreter ? 'bundled' : 'unsupported',
+      os: 'Linux',
+      arch: 'x86_64',
+      download: {
+        stage: 'idle',
+        artifact: '',
+        downloaded_bytes: 0,
+        total_bytes: 0,
+        error_code: '',
+        error_detail: '',
+      },
+    },
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(

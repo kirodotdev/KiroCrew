@@ -314,6 +314,40 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
+        # A remote-bound slot runs its turn on a connected peer and streams the
+        # reply over the dashboard WebSocket; this endpoint has no such channel —
+        # its collectors read only local `chunk`/`assistant` rows. Reaching the
+        # local dispatch chokepoint (`_run_chat`, keyed on `executor == "remote"`)
+        # would append the prompt and emit a WS-only `chat_done`, leaving this HTTP
+        # caller waiting forever on a turn the peer never received and history
+        # holding an unsent turn (GPT #7693). Refuse BEFORE any mutation — keyed on
+        # `executor` (not `is_remote`) so a half-open binding is refused too,
+        # matching the chokepoint and the `api_chat` incomplete-binding guard. A
+        # freshly-created slot is always local, so this only rejects an existing
+        # remote-bound target.
+        if getattr(slot, "executor", "") == "remote":
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="openai_compat",
+                resources=f"slot={slot_id}",
+                error="remote-bound slot not supported on OpenAI-compat endpoint",
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": (
+                            "this session is bound to a remote crew; the "
+                            "OpenAI-compatible endpoint cannot relay remote turns"
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "remote_slot_unsupported",
+                    },
+                    "code": "remote_slot_unsupported",
+                },
+                status=409,
+            )
         # Busy check — prevent concurrent writes to same slot
         if slot.task is not None and not slot.task.done():
             sel().log_api_access(

@@ -419,6 +419,10 @@ class _Loop:
         self.max_cycles = 24
         self.cycle_count = 3
         self.stop_sentinel_path = ""
+        # Read by the fire path to decide whether the transcript row shows a
+        # short banner instead of the full message. "" keeps the historical
+        # verbose row, which is what these tests assert on.
+        self.banner = ""
 
 
 def _bg_slot(key: str) -> MagicMock:

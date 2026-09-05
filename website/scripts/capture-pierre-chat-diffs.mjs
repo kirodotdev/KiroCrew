@@ -8,13 +8,18 @@
  * renders a fenced ```diff exactly as in production.
  *
  * Frames:
- *   01-chips-card-collapsed   the file-change card, 5 rows, all collapsed:
+ *   01-chips-card-collapsed   the file-change card, 5 lightweight rows:
  *                             36px header band + its color-mix tint, per-row
- *                             filename + ±counts + diffstat cells, row dividers
+ *                             filename + ±counts + diffstat cells, row dividers;
+ *                             no Pierre surface is mounted yet
+ *   01b-chips-card-320        the same closed rows at the 320px viewport floor;
+ *                             an artifact row keeps its badge, counts and useful
+ *                             filename while redundant diffstat cells hide;
+ *                             Pierre remains unmounted
  *   02-chip-row-expanded      one row open — the inline Pierre diff INSIDE the
  *                             transcript (the headline feature)
- *   03-chip-filename-hover    filename hovered: it is now the open-file control,
- *                             so it takes the accent color + pointer cursor
+ *   03-chip-filename-hover    collapsed filename hovered: it is the open-file
+ *                             control, so it takes the accent color + pointer cursor
  *   04-chat-diff-basename     a chat diff block whose patch names
  *                             `website/src/components/DiffBlock.tsx` — the header
  *                             must read `DiffBlock.tsx`, never the full path
@@ -217,6 +222,8 @@ const FILE_CHANGES = [
   change('website/src/pierre/config.ts', CONFIG_BEFORE, CONFIG_AFTER),
 ]
 
+const ARTIFACT_PATH = 'website/src/components/DiffBlock.tsx'
+
 /** The row expanded for frame 02 — the biggest diff of the five. */
 const EXPAND_PATH = 'website/src/pierre/PierreImpl.tsx'
 
@@ -404,6 +411,9 @@ async function main() {
     // affordance is present in the frame (the point of the basename change is
     // that the SHORT header and the FULL-path Open button coexist).
     if (path === '/api/file-read') return route.fulfill({ status: 200, body: '' }), true
+    if (path === '/api/artifacts/session-docs') {
+      return json(route, { docs: [{ path: ARTIFACT_PATH }] }), true
+    }
     if (path === '/api/recent-projects') return json(route, { dirs: [PROJECT] }), true
     return false
   }
@@ -493,18 +503,59 @@ async function main() {
   await load(SURFACES.chips)
   const card = page.locator('div.ft-block-reveal:has([data-testid^="fcc-row-"])').first()
   await card.waitFor({ state: 'visible', timeout: 15000 })
-  // Pierre renders each collapsed row as its own shadow-root header; wait until
-  // all five have painted so the frame is not caught mid-mount.
+  // Closed rows are ordinary light-DOM headers. Wait for all five, then
+  // confirm the expensive Pierre shadow headers have not mounted.
   await page.waitForFunction(
-    n => document.querySelectorAll('[data-testid^="fcc-row-"]').length >= n,
+    n => document.querySelectorAll('[data-testid^="fcc-header-"]').length >= n,
     FILE_CHANGES.length,
     { timeout: 15000 },
   )
-  await page.waitForTimeout(1200)
+  await page.waitForTimeout(300)
+  const lightHeaderCount = await page.locator('[data-testid^="fcc-header-"]').count()
+  const collapsedPierreHeaders = (await deepQuery('[data-diffs-header]')).length
+  if (lightHeaderCount !== FILE_CHANGES.length || collapsedPierreHeaders !== 0) {
+    throw new Error(`collapsed mount gate failed: light=${lightHeaderCount}, pierre=${collapsedPierreHeaders}`)
+  }
   console.log('DIAG chips rows:', (await page.locator('[data-testid^="fcc-row-"]').count()),
-    'headers:', (await deepQuery('[data-diffs-header]')).length,
-    'titles:', JSON.stringify((await deepQuery('[data-title]')).map(t => t.text)))
+    'lightHeaders:', lightHeaderCount,
+    'pierreHeaders:', collapsedPierreHeaders,
+    'titles:', JSON.stringify((await deepQuery('[data-fcc-filename]')).map(t => t.text)))
   await shot(card, '01-chips-card-collapsed')
+
+  // Frame 1b: the supported 320px viewport floor. Artifact identity and counts
+  // remain visible, while its redundant diffstat cells yield space to a useful
+  // filename. Closed rows still perform no Pierre work.
+  await page.setViewportSize({ width: 320, height: 900 })
+  await page.waitForTimeout(300)
+  const narrowLayout = await page.locator(`[data-testid="fcc-row-${ARTIFACT_PATH}"]`).evaluate(row => {
+    const filename = row.querySelector('[data-fcc-filename]')
+    const metadata = row.querySelector('[data-testid="fcc-metadata"]')
+    const secondary = row.querySelector('[data-fcc-secondary-metadata]')
+    return {
+      filenameWidth: Math.round(filename.getBoundingClientRect().width),
+      metadataWidth: Math.round(metadata.getBoundingClientRect().width),
+      artifactBadges: row.querySelectorAll('[data-fcc-artifact-badge]').length,
+      secondaryDisplay: getComputedStyle(secondary).display,
+    }
+  })
+  const narrowPierreHeaders = (await deepQuery('[data-diffs-header]')).length
+  if (
+    narrowLayout.filenameWidth < 64
+    || narrowLayout.artifactBadges !== 1
+    || narrowLayout.secondaryDisplay !== 'none'
+    || narrowPierreHeaders !== 0
+  ) {
+    throw new Error(
+      `320px artifact layout gate failed: ${JSON.stringify({ ...narrowLayout, pierreHeaders: narrowPierreHeaders })}`,
+    )
+  }
+  console.log(
+    'DIAG 320px layout:',
+    JSON.stringify({ ...narrowLayout, pierreHeaders: narrowPierreHeaders }),
+  )
+  await shot(card, '01b-chips-card-320')
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.waitForTimeout(300)
 
   // Frame 2: one row expanded — the inline Pierre diff in the transcript.
   await page.locator(`[data-testid="fcc-toggle-${EXPAND_PATH}"]`).click()
@@ -514,19 +565,17 @@ async function main() {
     'pinnedBanner:', await page.locator('[data-testid="pinned-prompt"]').count())
   await shot(card, '02-chip-row-expanded')
 
-  // Frame 3: the filename IS the open-file control now — hover it. Pierre paints
-  // it inside its shadow root; Playwright's selectors pierce shadow DOM, so
-  // `[data-title]` inside the row resolves to the real inner node. The row is
-  // collapsed again first, so the frame is the header band alone rather than a
-  // sliver of the expanded diff underneath it.
+  // Frame 3: collapse back to the lightweight header, then hover the native
+  // filename control. The accent treatment must survive the Pierre-to-header
+  // swap and the diff body must be gone.
   await page.locator(`[data-testid="fcc-toggle-${EXPAND_PATH}"]`).click()
   await page.waitForTimeout(700)
   const hoverRow = page.locator(`[data-testid="fcc-row-${EXPAND_PATH}"]`)
-  const title = hoverRow.locator('[data-title]').first()
+  const title = hoverRow.locator('[data-fcc-filename]').first()
   await title.hover()
   await page.waitForTimeout(500)
   console.log('DIAG hover:', JSON.stringify(
-    (await deepQuery('[data-title]', `[data-testid="fcc-row-${EXPAND_PATH}"]`))[0]))
+    (await deepQuery('[data-fcc-filename]', `[data-testid="fcc-row-${EXPAND_PATH}"]`))[0]))
   // Crop to the hovered row's header band, so the accent color is the subject
   // rather than a detail inside a 600px-tall card.
   const box = await hoverRow.boundingBox()

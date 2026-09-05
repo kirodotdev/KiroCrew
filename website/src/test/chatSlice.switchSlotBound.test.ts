@@ -113,20 +113,22 @@ describe('switchSlot initial load bound', () => {
     expect(st.slotOldestIndex).toBe(0)
   })
 
-  // A streaming slot gets the larger WALK page, never the unbounded corpus:
-  // on a busy session the unbounded switch measured 6.2MB / ~1s server-side
-  // per switch, and the kept-head cut reconciles a bounded page against the
-  // (usually fresh) cache.
-  // Reconciled with upstream's shrink contract (boundedRefetchShrink.test.ts):
-  // a STREAMING or PAINTED slot switches unbounded — a bounded page is a
-  // window, and unseen server growth can push it clear of a small cache. Only
-  // a fresh slot (nothing painted) takes the one-page bound.
-  it('switches to a streaming slot unbounded', async () => {
+  // A slot mid-turn is bounded like any other. The exemption it used to have
+  // rested on the pre-purchase argument this file's subject retires -- unseen
+  // growth pushing a window clear of a small cache is a COVERAGE question,
+  // verified after the response for a streaming payload exactly as for a settled
+  // one. Leaving it in place applied the unbounded shape to the commonest switch
+  // there is, since a slot mid-turn is the one a reader most often steps away
+  // from: measured on a phone as one switch turning 303 loaded messages into
+  // 6,265, taking the reader's saved position with it.
+  it('switches to a streaming slot bounded to the cache, like any other', async () => {
     mockDetail({ running: true })
-    const store = makeStore({ slotRun: { 'slot-a': { state: 'streaming' } } })
+    const store = makeStore({
+      slotRun: { 'slot-a': { state: 'streaming' } },
+      slotMessages: { 'slot-a': Array.from({ length: 303 }, (_, i) => ({ role: 'user', content: `m${i}`, ts: `2026-01-01T00:00:00Z` })) },
+    })
     await store.dispatch(switchSlot('slot-a') as never)
-    // fetchSlotDetail omits the limit argument entirely when unbounded.
-    expect(api.chatSlotDetail).toHaveBeenCalledWith('slot-a')
+    expect(api.chatSlotDetail).toHaveBeenCalledWith('slot-a', 303)
   })
 
   it('switches to a fresh idle slot bounded to one page', async () => {

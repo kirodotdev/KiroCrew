@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { Copy, Check, Smartphone, X, ArrowRight } from 'lucide-react'
 import { api } from '../api/client'
 import { Btn } from './ui'
+import { settingsPath } from './settingsPath'
 import { useAppSelector } from '../store'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { copyToClipboard } from '../utils/clipboard'
@@ -204,7 +205,7 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
       )}
       {status && !ready && (
         <button
-          onClick={() => { onClose(); navigate('/settings/overview') }}
+          onClick={() => { onClose(); navigate(settingsPath({ tab: 'overview' })) }}
           className="w-full flex items-center justify-between gap-2 bg-bg-elevated border border-border rounded-lg px-3 py-2.5 mb-2 text-left cursor-pointer hover:bg-bg-hover transition-colors"
         >
           <span className="text-[12px] text-muted">

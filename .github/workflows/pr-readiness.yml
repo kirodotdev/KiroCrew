@@ -19,6 +19,10 @@ on:
   workflow_run:
     workflows:
       - CI
+      # The eleven cheap blocking gates, split out of CI so the fork reviewers can
+      # key on them. It is a lane in its own right -- a red gate must red the PR --
+      # and its completion is also what releases CI's heavy jobs.
+      - Fast Gate
       - Build
       - Code Review
       - Opus 4.8 Review
@@ -519,10 +523,16 @@ jobs:
 
           if [ "$stacked" = "true" ]; then
             skipped+=("CI (only runs on PRs to $DEFAULT_BRANCH)")
+            skipped+=("Fast Gate (only runs on PRs to $DEFAULT_BRANCH)")
             skipped+=("Build (only runs on PRs to $DEFAULT_BRANCH)")
           else
             workflow_specs+=(
               "ci.yml|CI"
+              # Fast Gate carries the same `branches:` filter as CI, so it belongs
+              # in this carve-out for the same reason: on a stacked PR it never
+              # starts, and a lane that reads "(not started)" freezes the verdict
+              # at pending forever.
+              "fast-gate.yml|Fast Gate"
               "build.yml|Build"
             )
           fi

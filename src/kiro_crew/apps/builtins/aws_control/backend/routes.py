@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import logging
 import os
 import shutil
@@ -343,6 +344,28 @@ def _not_found(message: str, code: str) -> web.Response:
 
 def _conflict(message: str, code: str) -> web.Response:
     return web.json_response({"error": message, "code": code}, status=409)
+
+
+def _ledger_corrupt(code: str) -> web.Response:
+    """Map a ledger reader's corruption refusal to a coded response.
+
+    The share and library ledger update readers refuse a corrupt document
+    rather than replacing it (#7805), so mutation handlers can see a
+    ``json.JSONDecodeError`` that previously could not happen. Letting it
+    escape gives aiohttp's bare 500 -- no ``code`` for the UI to branch on --
+    and letting a handler's ``except ValueError`` arm claim it (it IS a
+    ``ValueError``) reports corruption as a client mistake. 500 rather than
+    503: corruption does not clear on retry, the file needs a person to repair
+    it, and the bytes it still holds are exactly why the mutation refused.
+
+    The exception's own text is deliberately NOT echoed: a decode error's
+    payload can carry document content, and the fixed message says everything
+    the caller can act on.
+    """
+    return web.json_response(
+        {"error": "the local ledger is unreadable and must be repaired", "code": code},
+        status=500,
+    )
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -1291,6 +1314,13 @@ async def _handle_drive_share(request: web.Request) -> web.Response:
             )
     except AWSError as exc:
         return _aws_failed(exc)
+    except json.JSONDecodeError:
+        # record_share is the ledger write inside the lock. The URL was minted
+        # (presigning is local math, nothing durable exists in AWS) but the
+        # ledger refused to record it, so it must NOT be handed out: returning
+        # it would create a live unrevokable bearer grant with no local record
+        # -- the exact under-reporting the strict reader exists to prevent.
+        return _ledger_corrupt("share_ledger_corrupt")
     return web.json_response({"url": url, "share": record})
 
 
@@ -1388,7 +1418,10 @@ async def _handle_shares_list(request: web.Request) -> web.Response:
 
 async def _handle_share_forget(request: web.Request) -> web.Response:
     share_id = request.match_info.get("id", "")
-    removed = await asyncio.to_thread(shares_mod.forget_share, share_id)
+    try:
+        removed = await asyncio.to_thread(shares_mod.forget_share, share_id)
+    except json.JSONDecodeError:
+        return _ledger_corrupt("share_ledger_corrupt")
     if removed is None:
         return _not_found("unknown share", "unknown_share")
     return web.json_response({"forgotten": True})
@@ -1580,6 +1613,14 @@ async def _reconciled_remote_slugs(request: web.Request) -> tuple[set[str] | Non
         slugs = {f for f in folders if library_mod.valid_slug(f)}
         try:
             await asyncio.to_thread(library_mod.reconcile, account, slugs, observed_at=observed_at)
+        except json.JSONDecodeError:
+            # The strict update reader refused a corrupt ledger (#7805). Same
+            # degradation as the OSError arm below -- this route is best-effort by
+            # contract and the LIST must keep rendering (its rows come from the
+            # lenient display read) -- but the reason differs on the axis the
+            # operator acts on: this does not clear on retry, the file needs repair.
+            logger.warning("aws-control library reconcile refused: ledger corrupt")
+            return None, "the local sync ledger is corrupt and must be repaired"
         except OSError as exc:
             # The reconcile WRITES, and this route is best-effort by contract. An
             # unwritable ledger directory, or a lock this platform refuses to
@@ -1666,6 +1707,11 @@ async def _handle_library_remove(request: web.Request) -> web.Response:
             result = await asyncio.to_thread(
                 library_mod.library_remove, profile, region, bucket, account, slug
             )
+    except json.JSONDecodeError:
+        # Before the ``ValueError`` arm for the same subclass reason as the push
+        # handler: without it a corrupt ledger reads as ``invalid_slug``, blaming
+        # the request for a store that needs repair.
+        return _ledger_corrupt("library_ledger_corrupt")
     except ValueError as exc:
         return _bad_request(_safe_error(exc), "invalid_slug")
     except AWSError as exc:
@@ -1707,6 +1753,15 @@ async def _handle_library_push(request: web.Request) -> web.Response:
             )
     except ArtifactNotFoundError:
         return _not_found("unknown artifact", "unknown_artifact")
+    except json.JSONDecodeError:
+        # MUST precede the ``ValueError`` arm below: ``JSONDecodeError`` subclasses
+        # ``ValueError``, so without this the ledger's corruption refusal (#7805)
+        # would be reported as ``not_pushable`` -- a 400 blaming the artifact for a
+        # store the operator has to repair. The objects may already be in the
+        # bucket (upload precedes the ledger write); the honest answer is that the
+        # push is NOT recorded, which the next reconcile will surface as
+        # ``remoteOnly`` once the ledger is repaired.
+        return _ledger_corrupt("library_ledger_corrupt")
     except ValueError as exc:
         return _bad_request(_safe_error(exc), "not_pushable")
     except AWSError as exc:

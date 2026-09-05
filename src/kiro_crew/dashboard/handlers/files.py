@@ -1481,7 +1481,15 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     """POST /api/workspaces — create a new workspace."""
     import shutil  # noqa: F811
 
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
     from kiro_crew.validation import WORKSPACE_NAME_RE  # noqa: F811
+
+    # Ahead of the body read: a workspace entry carries a caller-supplied
+    # directory, so the traversal and sensitive-path guards below are defending
+    # against input that only the owner may supply in the first place.
+    owner_denied = await require_owner_dashboard_request(request, "workspace.create")
+    if owner_denied is not None:
+        return owner_denied
 
     # Default cap: the body is a workspace name plus optional dir/copy_from.
     body, body_err = await read_bounded_json(request)
@@ -1637,6 +1645,12 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
 
 async def api_workspaces_update(request: web.Request) -> web.Response:
     """PUT /api/workspaces/{name} — update a workspace."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    # Ahead of the 404: whether a workspace exists is not a non-owner's to learn.
+    owner_denied = await require_owner_dashboard_request(request, "workspace.update")
+    if owner_denied is not None:
+        return owner_denied
 
     name = request.match_info["name"]
     cfg = KiroCrewConfig.load()
@@ -1710,6 +1724,13 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
 
 async def api_workspaces_delete(request: web.Request) -> web.Response:
     """DELETE /api/workspaces/{name} — delete a workspace."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    # Ahead of the 404/409 guards: those are referential, not authorization, and
+    # this handler reaches `cfg.save()` with an entry removed.
+    owner_denied = await require_owner_dashboard_request(request, "workspace.delete")
+    if owner_denied is not None:
+        return owner_denied
 
     name = request.match_info["name"]
     cfg = KiroCrewConfig.load()
@@ -3787,7 +3808,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         # PUT body. Drop them here instead of listing them in _allowed -- they
         # stay unwritable, but a round-tripped read-only field must not 400 an
         # unrelated toggle save.
-        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts"}
+        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts", "social_share_enabled"}
         body = {
             k: v
             for k, v in body.items()
@@ -4083,6 +4104,14 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     _sel().log_tool_invocation(
         session_key="dashboard", tool_name="dashboard_config_read", outcome="success"
     )
+    # Governance-derived, not a config value: the dashboard draws the "Share as
+    # image" entry only when this is true, and it has no other way to know — the
+    # share card has no server-side action to refuse, so this read IS the
+    # enforcement point. Resolved off-thread (profile resolution may read from
+    # disk); every decision is SEL-audited by the probe itself.
+    from kiro_crew.dashboard import social_share
+
+    social_share_denied = await asyncio.to_thread(social_share.is_share_denied)
     return web.json_response(
         {
             "restore_sessions": cfg.dashboard.restore_sessions,
@@ -4107,6 +4136,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # Same discipline for Jira: Atlassian Cloud (*.atlassian.net) is
             # auto-recognized; self-hosted instances need explicit allowlisting.
             "jira_hosts": list(cfg.dashboard.jira_hosts),
+            # Read-only: the `capabilities.social_share` governance answer. False
+            # withdraws the "Share as image" menu entry; there is no toggle behind
+            # it, so nothing here is writable.
+            "social_share_enabled": not social_share_denied,
         }
     )
 

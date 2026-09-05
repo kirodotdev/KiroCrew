@@ -19,6 +19,7 @@ vi.mock('../components/MarkdownRenderer', () => ({
 
 import PullRequestPanel, {
   CHECK_POLL_MAX_FAILURES,
+  SOURCE_REMOUNT_REVALIDATE_MS,
   pullRequestCheckPollDelay,
   pullRequestCiSignal,
   pullRequestIsLive,
@@ -446,6 +447,51 @@ describe('PullRequestPanel', () => {
     expect(alert).toHaveTextContent('gh auth login')
     expect(alert).not.toHaveTextContent('GitHub CLI login required')
     expect(alert).not.toHaveTextContent('{"error"')
+  })
+
+  function renderWithRetained(dataUpdatedAt: number) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData<PullRequestSource>(['pull-request-source', github.url], github, {
+      updatedAt: dataUpdatedAt,
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[{ url: github.url, provider: 'github', number: 12, repo: 'widgets' }]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+          onAddToChat={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+  }
+
+  it('revalidates a retained payload older than the gateway cache window on mount', async () => {
+    // Stale-while-revalidate: the retained payload paints at once (no spinner)
+    // and a background refetch runs, because this gateway's own events cannot
+    // see a teammate's review or comment.
+    renderWithRetained(Date.now() - SOURCE_REMOUNT_REVALIDATE_MS - 1_000)
+    expect(screen.getAllByText(github.title).length).toBeGreaterThan(0)
+    await waitFor(() => expect(mockApi.pullRequestSource).toHaveBeenCalledWith(github.url, false))
+  })
+
+  it('does not refetch a retained payload the gateway would still serve from cache', () => {
+    // Inside the window a refetch returns the same bytes; a sibling view that
+    // shares this key (Code Review Sage) would otherwise pay two reads per open.
+    renderWithRetained(Date.now() - 1_000)
+    expect(screen.getAllByText(github.title).length).toBeGreaterThan(0)
+    expect(mockApi.pullRequestSource).not.toHaveBeenCalled()
+  })
+
+  it('shows a compact notice, not the full error card, when a background revalidation fails', async () => {
+    mockApi.pullRequestSource.mockRejectedValue(apiError({ error: 'gh: HTTP 401 Bad credentials' }))
+    renderWithRetained(Date.now() - SOURCE_REMOUNT_REVALIDATE_MS - 1_000)
+    await screen.findByRole('status')
+    // The loaded pull request stays on screen with a one-line notice above it...
+    expect(screen.getAllByText(github.title).length).toBeGreaterThan(0)
+    expect(screen.getByRole('status')).toHaveTextContent(/showing the last loaded version/i)
+    // ...and the full-height "could not load" card never appears over it.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('caps rendered source tabs at the per-slot limit', () => {

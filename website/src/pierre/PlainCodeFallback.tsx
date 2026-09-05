@@ -14,10 +14,16 @@
  *  `.pierre-surface`, three code blocks in one row = -36px). `pierre-plain` is
  *  the hook that wins that fight; the metrics live in index.css next to the rule
  *  they have to beat. Keep the two geometries equal or the reflow returns.
+ *
+ *  Also the FINAL render for patch surfaces when the plain-diff preference is
+ *  on (see `usePlainDiff`), which is why it accepts the caller's `className`:
+ *  in that mode it stands in for the Pierre element the class was written for.
+ *  The geometry above still has to hold there — the preference can flip while a
+ *  transcript is on screen, so this element replaces a Pierre surface in place.
  */
-export function PlainCodeFallback({ text }: { text: string }) {
+export function PlainCodeFallback({ text, className }: { text: string; className?: string }) {
   return (
-    <pre className="pierre-plain m-0 px-3 py-2 overflow-x-auto text-[13px] font-mono leading-5 whitespace-pre">
+    <pre className={`pierre-plain m-0 px-3 py-2 overflow-x-auto text-[13px] font-mono leading-5 whitespace-pre${className ? ` ${className}` : ''}`}>
       {text}
     </pre>
   )

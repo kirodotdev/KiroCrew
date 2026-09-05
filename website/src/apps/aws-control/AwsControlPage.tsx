@@ -288,10 +288,7 @@ function AddAccounts({ onDraftChange }: {
     onDraftChange(hasDraft)
   }, [hasDraft, onDraftChange])
 
-  const availableQ = useQuery({
-    queryKey: ['aws-control', 'profiles-available'],
-    queryFn: () => awsControlApi.availableProfiles(),
-  })
+  const availableQ = useAvailableProfilesQuery()
 
   const registerM = useMutation({
     mutationFn: (names: string[]) => awsControlApi.registerProfiles(names),
@@ -458,6 +455,18 @@ function AccountsPane({ accountsQ, selected, onUse }: {
   const [registrationDraft, setRegistrationDraft] = useState(false)
   const handOff = !registrationDraft
 
+  // The empty state's remedy is the Add-accounts disclosure further down this
+  // same pane, so the two must agree about whether that disclosure can serve
+  // this platform. On Windows profile discovery is unavailable and the
+  // disclosure says so, which leaves a Windows operator permanently at zero
+  // accounts -- an empty state still naming the disclosure would send them to a
+  // paragraph that refuses. There the subtitle is DROPPED rather than replaced:
+  // `empty_title` already says nothing is here, the disclosure carries the WSL
+  // constraint once, and a replacement subtitle would only restate the title in
+  // 12 catalogs. Undefined (still loading) reads as "can", so the ordinary
+  // platform never waits on this to render its own copy.
+  const canAddHere = useAvailableProfilesQuery().data?.supported !== false
+
   // Client-side filter over name + id; harmless when few accounts.
   const filtered = useMemo(() => {
     const rows = data?.accounts ?? []
@@ -550,7 +559,7 @@ function AccountsPane({ accountsQ, selected, onUse }: {
             testId="aws-control-empty"
             icon={<Cloud />}
             title={i18nT('apps.awsControl.page.empty_title')}
-            subtitle={i18nT('apps.awsControl.page.empty_body')}
+            subtitle={canAddHere ? i18nT('apps.awsControl.page.empty_body') : undefined}
           />
         </div>
       )}
@@ -615,6 +624,24 @@ function useAccountsQuery() {
   return useQuery({
     queryKey: ['aws-control', 'accounts'],
     queryFn: () => awsControlApi.accounts(),
+  })
+}
+
+/**
+ * The local-profile scan, shared by the Add-accounts disclosure and by the
+ * accounts empty state.
+ *
+ * One hook rather than a `useQuery` at each site, because the two have to agree
+ * about `supported`: the empty state's copy names an action whose ONLY home is
+ * that disclosure, so an empty state that names it while the disclosure reports
+ * the platform cannot serve it is a promise the next paragraph refuses. Sharing
+ * the key already shares React Query's cache entry, so the second reader costs
+ * no request.
+ */
+function useAvailableProfilesQuery() {
+  return useQuery({
+    queryKey: ['aws-control', 'profiles-available'],
+    queryFn: () => awsControlApi.availableProfiles(),
   })
 }
 

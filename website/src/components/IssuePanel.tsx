@@ -26,6 +26,7 @@ import JiraLogo from './icons/JiraLogo'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
+import { SOURCE_DETAIL_GC_MS, SOURCE_REMOUNT_REVALIDATE_MS } from './PullRequestPanel'
 import { Btn } from './ui'
 
 import { i18nT } from '../i18n/t'
@@ -337,6 +338,15 @@ export default function IssuePanel({
     // under the user, so a background poll would spend provider calls (and SEL
     // audit entries) for nothing.
     staleTime: Infinity,
+    // Same retention and the same stale-while-revalidate as the pull-request
+    // detail: a reopened Issues tab paints the retained payload instead of a
+    // spinner, and revalidates in the background once that payload is older
+    // than the gateway's cache window -- an issue has no turn-boundary or
+    // status-delta invalidation at all, so without this the retention alone
+    // would present an hour-old discussion as current.
+    gcTime: SOURCE_DETAIL_GC_MS,
+    refetchOnMount: query =>
+      Date.now() - query.state.dataUpdatedAt > SOURCE_REMOUNT_REVALIDATE_MS ? 'always' : false,
     retry: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -406,7 +416,10 @@ export default function IssuePanel({
       )}
 
       {query.isLoading && <LoadingSkeleton />}
-      {query.error && errorCode !== 'jira_no_credentials' && (
+      {/* Full-height card only while nothing is on screen; a failed background
+          revalidation over a loaded issue renders as a compact notice instead
+          (see the pull-request panel for the reasoning). */}
+      {query.error && !source && errorCode !== 'jira_no_credentials' && (
         <div className="flex-1 flex items-center justify-center px-6">
           <div role="alert" className="max-w-md flex flex-col items-center">
             <AlertCircle
@@ -466,6 +479,16 @@ export default function IssuePanel({
         </div>
       )}
 
+      {source && query.error && errorCode !== 'jira_no_credentials' && (
+        <div role="status" className="shrink-0 flex items-center gap-2 px-4 py-1.5 border-b border-border bg-bg-hover/40 text-[11px] text-muted">
+          <AlertCircle className="lucide-inline shrink-0 text-warn" aria-hidden="true" />
+          <span className="min-w-0 truncate">{i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')}</span>
+          {/* The login command is the one actionable fix, so it must survive a narrow
+              panel: it sits outside the truncating span and never clips. */}
+          {queryError.loginCommand && <code className="shrink-0 text-text" title={queryError.loginCommand}>{queryError.loginCommand}</code>}
+          <Btn type="button" onClick={handleRefresh} className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" aria-hidden="true" />{i18nT('components.issuePanel.retry')}</Btn>
+        </div>
+      )}
       {source && (
         <>
           <div className="shrink-0 px-4 py-3 border-b border-border">

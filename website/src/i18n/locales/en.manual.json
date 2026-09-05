@@ -1249,6 +1249,93 @@
     }
   },
   "components": {
+    "avatarBuilder": {
+      "apply": "Apply",
+      "apply_hint": "Applies here — press “Save changes” to keep it.",
+      "axis_accessory": "Headwear",
+      "axis_blush": "Blush",
+      "axis_brows": "Brows",
+      "axis_eyes": "Eyes",
+      "axis_mouth": "Mouth",
+      "axis_prop": "Item",
+      "axis_tile": "Background",
+      "cancel": "Cancel",
+      "customize": "Customize…",
+      "customized_note": "Using a custom face",
+      "field_hint": "The face this crew wears everywhere it appears.",
+      "field_label": "Avatar",
+      "image_load_failed": "The saved picture could not be loaded — showing the default face instead.",
+      "mirror": "Flip direction",
+      "mode_face": "Ghost face",
+      "mode_picture": "Picture",
+      "opt_angry": "Angry",
+      "opt_antenna": "Antenna",
+      "opt_bandana": "Bandana",
+      "opt_beanie": "Beanie",
+      "opt_blush": "Blush",
+      "opt_bolt": "Bolt",
+      "opt_bow": "Bow",
+      "opt_canon": "Classic",
+      "opt_cap": "Cap",
+      "opt_cat": "Cat",
+      "opt_closed": "Closed",
+      "opt_cross": "Sharp",
+      "opt_crown": "Crown",
+      "opt_cyclops": "Cyclops",
+      "opt_flat": "Flat",
+      "opt_flower": "Flower",
+      "opt_glass": "Magnifier",
+      "opt_glasses": "Glasses",
+      "opt_grin": "Grin",
+      "opt_halo": "Halo",
+      "opt_hardhat": "Hard hat",
+      "opt_heart": "Hearts",
+      "opt_mug": "Mug",
+      "opt_none": "None",
+      "opt_oh": "Oh",
+      "opt_open": "Open",
+      "opt_party": "Party hat",
+      "opt_phones": "Headphones",
+      "opt_raised": "Raised",
+      "opt_sleepy": "Sleepy",
+      "opt_smile": "Smile",
+      "opt_smirk": "Smirk",
+      "opt_sparkle": "Sparkle",
+      "opt_squint": "Squint",
+      "opt_star": "Star",
+      "opt_swirl": "Swirl",
+      "opt_term": "Terminal",
+      "opt_tongue": "Tongue",
+      "opt_visor": "Visor",
+      "opt_wide": "Wide",
+      "opt_wink": "Wink",
+      "opt_wobble": "Wobble",
+      "opt_wrench": "Wrench",
+      "randomize": "Randomize",
+      "reset_default": "Reset to the default face",
+      "tile_amber": "Amber",
+      "tile_bronze": "Bronze",
+      "tile_coral": "Coral",
+      "tile_cyan": "Cyan",
+      "tile_green": "Green",
+      "tile_indigo": "Indigo",
+      "tile_magenta": "Magenta",
+      "tile_olive": "Olive",
+      "tile_plum": "Plum",
+      "tile_purple": "Kiro purple",
+      "tile_red": "Red",
+      "tile_rose": "Rose",
+      "tile_sky": "Sky blue",
+      "tile_steel": "Steel blue",
+      "tile_teal": "Teal",
+      "title": "Customize avatar",
+      "title_named": "Customize avatar — {{name}}",
+      "upload_bad_image": "That file could not be read as an image.",
+      "upload_choose": "Choose a picture…",
+      "upload_hint": "Drag a picture here, or",
+      "upload_note": "PNG, JPEG, or WEBP. Cropped square and scaled to 512 px before it is stored.",
+      "upload_too_large": "That file is too large (20 MB max)."
+    },
     "crewWakeSection": {
       "active": "active",
       "pause_named": "Pause {{name}}",
@@ -1844,7 +1931,16 @@
       "sso_helper": "Paste the AWS access portal URL your company gave you.",
       "sso_region_label": "AWS Region (optional)",
       "sso_continue": "Continue",
-      "sso_cancel": "Cancel"
+      "sso_cancel": "Cancel",
+      "loopback_aside_headline": "Finish in your browser",
+      "loopback_aside_body": "We opened Kiro sign-in in a new tab. Approve there and this page carries on by itself.",
+      "loopback_aside_footnote": "Nothing to type — the sign-in comes straight back to this computer.",
+      "loopback_waiting_title": "Waiting for your browser",
+      "loopback_waiting_body": "Complete the sign-in in the tab that just opened. If no tab appeared, open it again below.",
+      "loopback_open_again": "Open the sign-in page again",
+      "loopback_use_code": "Use a code instead",
+      "loopback_slow_hint": "Taking a while? If the sign-in page can't reach this computer, switch to a code — it works from any device.",
+      "loopback_fell_back": "The sign-in couldn't come back to this computer directly, so here's a code instead."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Agent specs missing",
@@ -2096,6 +2192,7 @@
       "checks_unavailable": "Checks unavailable",
       "commits": "Commits",
       "confirm_auto_merge": "Confirm auto-merge",
+      "could_not_refresh_showing_cached": "Couldn't refresh — showing the last loaded version",
       "could_not_load_this_pull_request": "Could not load this pull request",
       "description": "Description",
       "enable_auto_merge": "Enable auto-merge",
@@ -3130,6 +3227,7 @@
       },
       "sideChat": {
         "ask_a_side_question_2": "Ask a side question…",
+        "context_only_tools_unavailable": "Context only · Tools and MCPs are unavailable here. Use the main chat to take action.",
         "question_too_long": "Question too long — reduce to under ~{{max}} characters (yours: {{current}})",
         "queue_cancel_failed": "Could not cancel that queued question",
         "queue_edit_failed": "Could not update that queued question",
@@ -3190,7 +3288,6 @@
         "open_in_subagents_sidebar": "Open {{label}} in subagents sidebar",
         "retry_failed_count": "Retry failed ({{count}})",
         "stop_all": "Stop all",
-        "stop_all_running_subagents": "Stop all running subagents",
         "stop_running_subagent": "Stop running subagent",
         "stop_subagent": "Stop subagent {{name}}"
       },
@@ -3343,7 +3440,12 @@
         "kind_internal_url": "an internal URL",
         "card_wordmark": "{{productName}}",
         "sensitive_in_card": "Before you share — the card contains: {{kinds}}",
-        "sensitive_in_caption": "Before you share — the post text contains: {{kinds}}"
+        "sensitive_in_caption": "Before you share — the post text contains: {{kinds}}",
+        "withdrawn_by_policy": "Sharing was turned off by policy. Copy your text now if you want to keep it — it is not saved when you close this dialog.",
+        "copy_text_only": "Copy text",
+        "copied_text": "Copied",
+        "copy_text_failed": "Copy failed",
+        "copy_text_unavailable": "Clipboard is blocked here. Your post text is selected — press Ctrl+C / ⌘C. Copy card edits from the card itself."
       }
     },
     "chatPage": {
@@ -3405,7 +3507,9 @@
       "delete_folder_confirm": "Delete “{{name}}”? Sessions will be ungrouped.",
       "filter_tags": "Filter tags: {{name}}",
       "folder_2": "Folder {{name}}",
+      "folder_create_failed": "Could not create the chat.",
       "folder_options_for": "Folder options for {{name}}",
+      "folder_project_dir_missing": "The folder's project directory no longer exists: {{path}}. Update it in Folder settings.",
       "goal_loop_cycle": "Goal loop · cycle {{count}} of {{total}}",
       "goal_loop_cycle_no_cap": "Goal loop · cycle {{count}} (no cap)",
       "goal_loop_interrupted_title": "Goal loop armed — last turn was interrupted; resume the chat or wait for the next cycle",
@@ -3445,6 +3549,7 @@
       "show_hidden_folder_one": "Show {{count}} hidden folder",
       "show_hidden_folder_other": "Show {{count}} hidden folders",
       "sub_agent_needs_approval_one": "{{count}} sub-agent needs approval",
+      "runs_on_crew": "Runs on {{name}} — a connected crew, not this machine",
       "sub_agent_needs_approval_other": "{{count}} sub-agents need approval",
       "switch_failed": "Switch failed",
       "switch_to_board_view": "Switch to board view",
@@ -3503,7 +3608,6 @@
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
-      "authorize": "Authorize",
       "before_you_connect": "Before you connect",
       "cancel": "Cancel",
       "complete_connection": "Complete",
@@ -3560,7 +3664,9 @@
       "services": "Services",
       "services_available": "{{value}} available",
       "test_connection": "Test",
+      "test_blocked_by_sibling": "One connection test runs at a time — {{provider}} is testing",
       "test_failed": "The provider did not pass the connection test.",
+      "test_in_flight": "A connection test for {{provider}} is already running. Try again once it finishes.",
       "testing": "Testing…",
       "unknown_error": "Unknown error",
       "value_prop_atlassian": "Search Jira issues and read Confluence pages.",
@@ -3722,6 +3828,10 @@
         "config": {
           "description": "{{productName}} and agent configuration viewers (read-only)",
           "label": "Config"
+        },
+        "debugTools": {
+          "label": "Debug tools",
+          "description": "Overlays that report what the app is doing to itself, on the device where it happens."
         },
         "featurePreviews": {
           "description": "Unreleased features and pages, hidden from the sidebar and from Search Everywhere until you turn them on here. Per-device, and unpolished on purpose.",
@@ -4167,7 +4277,8 @@
         "failed_to_load_prompts": "Failed to load prompts",
         "no_prompts_match_query": "No prompts match “{{query}}”.",
         "saved_prompts_from": "Saved prompts from {{registry}} and ~/.kiro/prompts/. Invoke with @name in chat or /prompts get name.",
-        "user_prompts_count": "User Prompts ({{count}})"
+        "user_prompts_count": "User Prompts ({{count}})",
+        "retry_read": "Retry"
       },
       "skillsTab": {
         "adds_new_requirements_to": "Adds new requirements to {{target}} — {{description}}",
@@ -4443,7 +4554,24 @@
       "script_source": "Script source",
       "script_source_download": "Download script",
       "script_source_failed": "Could not load the script source.",
-      "script_source_truncated": "Truncated — the script is larger than the preview limit."
+      "script_source_truncated": "Truncated — the script is larger than the preview limit.",
+      "secrets_active_help": "Injected into this job's environment at run time. Names only — values stay in the vault.",
+      "secrets_approve": "Approve",
+      "secrets_deny": "Deny",
+      "secrets_direction_caption": "environment variable ← vault secret",
+      "secrets_none": "No secrets granted.",
+      "secrets_none_hint": "Ask the agent to request secrets for this job.",
+      "secrets_pending_badge": "Secret request awaiting approval",
+      "secrets_pending_help": "Approving injects these vault values into this job's environment at run time. The approval is pinned to the job's current code — if the script or command changes later, injection stops until you approve again.",
+      "secrets_pending_source": "Script this approval covers",
+      "secrets_pending_source_failed": "The script source could not be loaded, so this request cannot be approved.",
+      "secrets_pending_source_loading": "Loading the script this request would run. Approval unlocks once it is shown.",
+      "secrets_pending_source_truncated": "This script is larger than the reviewable limit, so this request cannot be approved.",
+      "secrets_pending_source_unreviewable": "Parts of this script cannot be shown as written (masked credential-like text or undecodable bytes), so what you see is not exactly what would run. This request cannot be approved.",
+      "secrets_pending_title": "Agent requested secrets",
+      "secrets_section": "Vault secrets",
+      "secrets_revoke_all": "Revoke all secrets",
+      "secrets_revoke_all_confirm": "Revoke all?"
     },
     "servicesTab": {
       "channels": "Channels",
@@ -4914,6 +5042,7 @@
         "gov_scope_sandbox_level": "Sandbox level",
         "gov_scope_script_hooks": "Script hooks",
         "gov_scope_spawn": "Spawn",
+        "gov_scope_social_share": "Share as image",
         "gov_scope_telemetry": "Anonymous telemetry",
         "gov_scope_theme_install": "Theme install",
         "gov_scope_theme_persona": "Theme persona",
@@ -5033,7 +5162,13 @@
         "unavailable_import_failed": "The speech recogniser is installed but could not be loaded on this machine.",
         "unavailable_model_missing": "The speech model is not on this machine yet. Download it below.",
         "unavailable_apple_unsupported": "Apple Speech needs macOS 26 or newer. Choose the local provider instead.",
-        "unavailable_apple_needs_toolchain": "Apple Speech needs the Xcode command line tools. Install them, then reload this page."
+        "unavailable_apple_needs_toolchain": "Apple Speech needs the Xcode command line tools. Install them, then reload this page.",
+        "decoder_fetch_prompt": "{{productName}} can fetch a digest-verified copy for this machine, so nothing has to be installed by hand.",
+        "download_decoder": "Download decoder",
+        "decoder_download_failed_reason": "The decoder download failed: {{error}}",
+        "let_the_agent_fix_it": "Let {{productName}} fix it",
+        "decoder_failure_unknown": "not reported",
+        "decoder_agent_prompt": "The audio decoder (ffmpeg) that {{productName}} needs in order to transcribe voice recordings could not be installed. Please get it working on this host.\n\nWhat failed: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} only executes an ffmpeg whose bytes match a pinned SHA-256 digest, and it looks in exactly these places: /usr/local/bin, /opt/homebrew/bin, this operating system's own program directories, and its own digest-verified decoder store at <data home>/models/ffmpeg/. The path is never the trust anchor, so ~/.local/bin is deliberately NOT trusted and a copy left there is ignored.\n\nWork out what this host actually needs — a package manager, a build from source, or another attempt at the decoder download — and decide for yourself whether elevated privileges are appropriate before using any. When you are done, re-check GET /api/stt/status and confirm that the Voice settings page no longer reports a missing decoder."
       },
       "teamsPanel": {
         "active": "Active",
@@ -5342,6 +5477,9 @@
       "show_controls": "Show controls"
     },
     "developer": {
+      "agentBackendTab": {
+        "codex_signs_in_separately": "Codex signs in on its own: finish its sign-in, or name a model provider in ~/.codex/config.toml (CODEX_HOME moves that folder). Neither is checked here — the adapter reads them, not {{productName}}."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat on a crew",
         "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet."
@@ -5387,6 +5525,10 @@
         "description": "Language for the dashboard interface.",
         "label": "Language",
         "sync_failed": "Couldn't save this to your {{productName}} config — the language applies in this browser only and may reset on reload."
+      },
+      "plainDiff": {
+        "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",
+        "label": "Plain diffs"
       }
     },
     "groups": {
@@ -5471,7 +5613,8 @@
     },
     "offline": {
       "disabled_gateway_offline": "{{label}} disabled — gateway offline",
-      "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}"
+      "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
+      "submit_comments": "submit comments"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Your browser blocked the pop-out window. Allow pop-ups for this site and try again."
@@ -5589,7 +5732,12 @@
       "xhigh": "Extra High"
     },
     "sttProviders": {
-      "downloading_speech_model": "Downloading the speech model: {{pct}} ({{done}} of {{total}})"
+      "downloading_decoder": "Downloading the audio decoder: {{pct}} ({{done}} of {{total}})",
+      "downloading_speech_model": "Downloading the speech model: {{pct}} ({{done}} of {{total}})",
+      "stream_error_decode_failed": "Speech recognition could not finish this transcript. Dictate it again.",
+      "stream_error_max_duration": "Dictation reached its length limit. Start a new recording to continue.",
+      "stream_error_model_missing": "The speech model is not ready yet. Download it in the speech-to-text settings, then try again.",
+      "stream_error_session_failed": "The dictation session failed. Try recording again."
     }
   },
   "autoImprovement": {

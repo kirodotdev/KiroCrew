@@ -153,8 +153,52 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const q = input.toLowerCase()
   const filteredBrowse = q && q !== browsePath.toLowerCase() ? browseDirs.filter(d => d.name.toLowerCase().includes(q.split('/').pop() || '') || d.path.toLowerCase().includes(q)) : browseDirs
 
+  // Keyboard isolation for the popover, matching the boundary `Modal` carries on
+  // its own panel (see Modal.tsx's ModalDialog). It is needed SEPARATELY here
+  // because this popover portals as a React SIBLING of the `<Modal>` it paints
+  // above (FolderConfigModal renders it after `</Modal>`), and React routes
+  // synthetic events along the REACT tree — so Modal's panel handler is not an
+  // ancestor on this dispatch path and never sees these keystrokes. Sharing the
+  // modal's stacking context is a PAINT-order fact and implies nothing about
+  // event routing; conflating the two is what left this open (#6833).
+  //
+  // Unguarded, a global chord typed in either field here (the Ctrl+digit session
+  // jumps and the Settings chord deliberately fire while an input has focus)
+  // reaches `useKeyboardShortcuts`' bubble-phase `document` listener, navigates
+  // away, and unmounts the dialog underneath with its part-filled draft.
+  //
+  // Escape is excepted. Both dismissal paths that exist today already consume it
+  // before this handler runs — the Recent list at document CAPTURE
+  // (useListKeyboardNav), the Browse field as the event's own target — so the
+  // exception changes nothing observable today. What it protects is the
+  // CONTRACT: `stopPropagation()` on a synthetic event stops the native event
+  // too, and bubble-phase `window` is exactly where Modal's own dismissal
+  // listens, so a blanket stop here would break any dismissal wired that way the
+  // moment one appears. Measured, not assumed — a blanket-stop mutant passes
+  // every OTHER assertion in ProjectPicker.keyboardIsolation.test.tsx, which is
+  // why that file pins the window-bubble property on its own.
+  //
+  // One exception to the exception: an Escape the IME owns is cancelling a
+  // candidate list, not the popover. This reuses the component's EXISTING
+  // `ime` guard rather than mounting a second document-tracked latch, since a
+  // third latch instance is the very cost flagged against this fix shape.
+  // Bubble phase on purpose: the capture-phase listeners this surface depends
+  // on (useListKeyboardNav's document capture, Modal's window-capture Tab trap)
+  // run before the event reaches the target, so the boundary cannot starve them.
+  const isolateKeys = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      // Consumes the native event AND React's propagation flag when the IME
+      // owns it; leaves an accepted Escape entirely untouched for the handlers
+      // above. See `claimSyntheticKey`'s contract in useImeGuard.ts.
+      ime.claimKey(e)
+      return
+    }
+    e.stopPropagation()
+  }
+
   return createPortal(
-    <div ref={dropRef} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] flex flex-col overflow-hidden animate-slide-up" style={(() => {
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keyboard-isolation barrier (see above), not an activatable control; there is no behaviour for a keyboard to be given, and every control inside here is a real input or button. Adding a role/tab stop would advertise an interaction this element does not have.
+    <div ref={dropRef} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] flex flex-col overflow-hidden animate-slide-up" style={(() => {
       const dropMinH = 200
       const spaceBelow = window.innerHeight - anchorR.bottom - 8
       const flipUp = spaceBelow < dropMinH || anchorR.bottom > window.innerHeight / 2

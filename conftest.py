@@ -13,7 +13,7 @@ test collected from any testpath, because what they protect is the
 developer's machine rather than the correctness of one suite. Everything that is
 merely suite-specific isolation stays in ``test/conftest.py``.
 
-The floor has seven parts, and each one exists because the "remember to isolate
+The floor has eight parts, and each one exists because the "remember to isolate
 this" contract failed at least once:
 
 * **Services.** ``$XDG_CONFIG_HOME`` is redirected and the stdlib spawn funnels
@@ -29,6 +29,14 @@ this" contract failed at least once:
   ``JIRA_TOKEN_<HEX>`` keys are restored after every test, so a fabricated
   ``.env`` cannot silently override the next test's credentials in the same
   worker.
+* **The inherited shell environment.** The entries ``name_grant`` refuses as
+  inherited preloads are removed for each test's duration and restored
+  afterwards: the ``_ENV_PRELOAD_VARS`` names (``BASH_ENV``, ``ENV``, ...) and
+  exported bash functions (``BASH_FUNC_*`` keys, or the legacy bare-name
+  spelling whose value starts with ``() {``). RHEL-family hosts export ``which``
+  as a function from ``/etc/profile.d/which2.sh``, and that refusal is checked
+  before every narrower code, so 79 of 163 name-grant tests observed the wrong
+  refusal on those hosts while Ubuntu CI stayed green (issue #8395).
 * **The agent-spec home.** ``kiro_agents_dir()`` is a LAZY resolver, so neither of
   the two above reaches it, and a test that reaches the spec write path rewrites
   the machine-wide ``<kiro home>/agents/kirocrew.json`` -- the file that decides
@@ -470,11 +478,41 @@ def _isolate_sandbox_mount_source_roots(_sandbox_mount_source_root, monkeypatch)
     # ``_mount_pinned_source_names`` itself; ``TestMountPinnedSourceNames``
     # imports the function by name at module import, so the parser's own unit
     # tests are unaffected by this module-attribute patch.
+    _SANDBOX_SWEEP_ORIGINALS.setdefault(
+        "_mount_pinned_source_names", sandbox_mod._mount_pinned_source_names
+    )
     monkeypatch.setattr(
         sandbox_mod,
         "_mount_pinned_source_names",
-        lambda proc_root="/proc": (set(), False),
+        lambda proc_root="/proc", **_kw: (set(), False),
     )
+    # Third half, same floor, for the LEGACY (pre-prefix ``tmp*``) sweep. It
+    # resolves its own narrower root chain -- the launcher's two tmpfs roots,
+    # deliberately excluding the redirected system tempdir -- so without this it
+    # would scan the developer's real /run/user/$UID and /dev/shm, and there it
+    # matches names no Kiro Crew build has created since #6268: an unpinned test
+    # could delete a stranger's temp entry on the host. The bind scan is
+    # defaulted fail-closed for the same reason as the pin scan above: a test
+    # that forgets to fix its answer gets an INERT sweep (coverage unproven ->
+    # removes nothing, stamps nothing) rather than one reading host /proc.
+    _SANDBOX_SWEEP_ORIGINALS.setdefault("_launcher_tmpfs_roots", sandbox_mod._launcher_tmpfs_roots)
+    monkeypatch.setattr(
+        sandbox_mod,
+        "_launcher_tmpfs_roots",
+        lambda: [str(_sandbox_mount_source_root)],
+    )
+    _SANDBOX_SWEEP_ORIGINALS.setdefault(
+        "_bound_source_basenames", sandbox_mod._bound_source_basenames
+    )
+
+    def _unproven_bound_sources(proc_root="/proc", *, coverage=None, **_kw):
+        # Fail closed on BOTH claims the legacy gate accepts, so no test can
+        # reach the developer's real runtime tmpfs through it.
+        if coverage is not None:
+            coverage.covered = False
+        return (set(), False)
+
+    monkeypatch.setattr(sandbox_mod, "_bound_source_basenames", _unproven_bound_sources)
 
 
 @pytest.fixture(autouse=True)
@@ -559,6 +597,82 @@ def _no_credential_env_residue():
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = before[key]
+
+
+@pytest.fixture(autouse=True)
+def _scrub_inherited_preload_env(monkeypatch):
+    """Hide the entries ``name_grant`` refuses as inherited preloads, then restore them.
+
+    RHEL-family distributions (Amazon Linux 2023, RHEL, CentOS Stream, Fedora) ship
+    ``/etc/profile.d/which2.sh``, which exports ``which`` as a shell function -- so
+    ``BASH_FUNC_which%%`` sits in ``os.environ`` of any login shell before pytest even
+    starts. ``name_grant._inherited_preload()`` fires its AMBIGUOUS_ENV refusal on
+    exactly that shape, and that refusal is checked before every narrower code, so on
+    such a host 79 of the 163 tests in ``test/test_name_grant.py`` observed
+    ``inherited_env_can_redefine_programs`` instead of the code they assert, while
+    Ubuntu CI (no ``which2.sh``) stayed green (issue #8395). The detector's OTHER half
+    is host state just as easily: a login profile exporting ``BASH_ENV``, or a
+    container image setting ``ENV``, reproduces the same failure shape with no
+    ``which2.sh`` anywhere. The PRODUCT behaviour is correct -- an inherited preload
+    genuinely can redefine a program the agent runs -- the gap was that this floor
+    pins the data home, the credential env and the temp base, but not the environment
+    the run inherited.
+
+    The predicate is IMPORTED from ``name_grant`` rather than restated, so the scrub
+    and the detector cannot drift apart, and it mirrors BOTH halves the detector
+    checks: the ``_ENV_PRELOAD_VARS`` names (matched truthy, exactly as the detector's
+    ``os.environ.get(var)`` reads them -- an empty value triggers no refusal and is
+    left alone), and the exported-function pair (the ``BASH_FUNC_`` key prefix, plus
+    the legacy bare-name spelling whose value starts with ``() {``). It is also
+    deliberately no WIDER than that predicate: this is not a general "no exported
+    functions" floor -- how wide the detector should be is ``name_grant``'s design
+    question, and the scrub merely mirrors its answer. The import is deliberately
+    UNGUARDED, like ``_no_credential_env_residue``'s: an ImportError escape hatch
+    would disarm the scrub silently on a broken checkout and hand back the exact
+    79-failure pattern this fixture exists to remove, as a wall of wrong refusal
+    codes instead of one clear error.
+
+    The removals are recorded on the test's shared ``monkeypatch`` instance rather
+    than hand-rolled, and that is load-bearing, not convenience. Same-scope autouse
+    fixtures are ordered so that OTHER monkeypatch users run first (alphabetically in
+    practice), so a hand-rolled save/restore here tears down BEFORE monkeypatch's
+    undo -- and for a test that ``monkeypatch.setenv``-overrides the SAME key the
+    host inherited (recorded "was absent", because this scrub had removed it), the
+    undo then deletes the inherited value the hand-rolled restore had just put back,
+    leaking the removal out of the test. On one shared undo stack the nesting is
+    correct BY CONSTRUCTION: the test's later record is undone first (its delete
+    tolerates the key already being gone), then this fixture's ``delenv`` record
+    restores the inherited value. ``test_name_grant.py::TestInheritedHostEnvironment``
+    pins exactly that same-key case, and
+    ``test_host_isolation_floor.py::TestInheritedShellEnvironmentIsScrubbed`` drives
+    one real cycle of this fixture directly.
+
+    The deliberate AMBIGUOUS_ENV tests lose nothing: they construct their entries
+    inside the test body, after the scrub. The teardown sweep below is the
+    ``_no_credential_env_residue`` half of the contract: a matching entry still
+    present at teardown is either a raw ``os.environ`` write (no undo record --
+    swept here, stays gone) or a monkeypatch-managed one (its undo re-deletes
+    tolerantly or restores what it recorded), so nothing this fixture scrubbed and
+    nothing a test leaked survives past the test on this worker.
+    """
+    from kiro_crew.name_grant import (
+        _BASH_FUNC_KEY_PREFIX,
+        _BASH_FUNC_VALUE_PREFIX,
+        _ENV_PRELOAD_VARS,
+    )
+
+    def _is_inherited_preload(key: str, value: str) -> bool:
+        if key in _ENV_PRELOAD_VARS:
+            return bool(value)
+        return key.startswith(_BASH_FUNC_KEY_PREFIX) or value.startswith(_BASH_FUNC_VALUE_PREFIX)
+
+    for key in [k for k, v in os.environ.items() if _is_inherited_preload(k, v)]:
+        monkeypatch.delenv(key)
+    try:
+        yield
+    finally:
+        for key in [k for k, v in os.environ.items() if _is_inherited_preload(k, v)]:
+            os.environ.pop(key, None)
 
 
 @pytest.fixture(autouse=True)

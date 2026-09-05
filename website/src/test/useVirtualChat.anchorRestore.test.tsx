@@ -26,6 +26,12 @@ import {
 
 interface Geom { scrollTop: number; scrollHeight: number; clientHeight: number }
 
+/** Comfortably past the hook's RESTORE_HYDRATE_WAIT_MS. Real time rather than
+ *  fake timers: the deadline is read from `performance.now()`, which the fake
+ *  clock does not necessarily own, and a test that silently never advances the
+ *  clock it thinks it advanced is worse than one that takes a second. */
+const RESTORE_WAIT_PROBE_MS = 1350
+
 function makeScroller(initial: Geom) {
   const el = document.createElement('div')
   const state: Geom = { ...initial }
@@ -44,12 +50,34 @@ interface Item { id: string }
 const getKey = (it: Item) => it.id
 const mkItems = (n: number): Item[] => Array.from({ length: n }, (_, i) => ({ id: `m${i}` }))
 
+/** ChatPage's real `getKey` prices a row against the deduped `rowKeys` of ONE
+ *  render, so the same message answers to a different key once its neighbours
+ *  change. This models that: the key carries the row's index. */
+const positionalGetKey = (it: Item, i: number) => `${it.id}#${i}`
+/** ChatPage's `getStableId` -- the row's tail message, index-free. */
+const stableId = (it: Item) => `a-${it.id}`
+
 /** Pre-measure every row at `h` px via the persisted HeightCache blob, so the
  *  restore's offset math is exact (100px * index) rather than estimate-driven. */
 function seedHeights(sessionId: string, n: number, h: number) {
   const blob: Record<string, number> = {}
   for (let i = 0; i < n; i++) blob[`m${i}`] = h
   localStorage.setItem(`vc_heights_${sessionId}`, JSON.stringify(blob))
+}
+
+function mountWith(
+  sessionId: string,
+  geom: Geom,
+  items: Item[],
+  extra: Partial<UseVirtualChatOptions<Item>>,
+) {
+  const { el, state } = makeScroller(geom)
+  const ref: RefObject<HTMLDivElement | null> = { current: el }
+  const view = renderHook(
+    (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+    { initialProps: { items, sessionId, getKey, externalScrollerRef: ref, ...extra } },
+  )
+  return { el, state, view, ref }
 }
 
 function mount(sessionId: string, geom: Geom, items: Item[]) {
@@ -131,7 +159,7 @@ describe('useVirtualChat: reading-position restore on slot entry', () => {
     expect(view.result.current.isAtBottom).toBe(false)
   })
 
-  it('falls back to the bottom pin when the anchored row no longer exists', () => {
+  it('falls back to the bottom pin when the anchored row no longer exists', async () => {
     seedHeights('sess-gone', 50, 100)
     saveScrollAnchor('sess-gone', { key: 'deleted-row', top: 0 })
     const { el, state, view } = mount(
@@ -139,6 +167,17 @@ describe('useVirtualChat: reading-position restore on slot entry', () => {
       { scrollTop: 0, scrollHeight: 5000, clientHeight: 400 },
       mkItems(50),
     )
+    // The fallback is now DEFERRED, not immediate: a transcript hydrates in
+    // chunks, so "absent on this commit" no longer means "gone". The anchor is
+    // held (and the caller covers the transcript) until the row lands or the
+    // wait expires -- so nothing is placed yet here, and the gate is up.
+    expect(el.scrollTop).toBe(0)
+    expect(view.result.current.restoreGate).toBe(true)
+    // Past the wait the row is genuinely not coming, and the reader must not be
+    // stranded on a transcript nobody positioned. This is the guarantee the test
+    // has always made; only its timing moved.
+    await act(async () => { await new Promise((r) => setTimeout(r, RESTORE_WAIT_PROBE_MS)) })
+    expect(view.result.current.restoreGate).toBe(false)
     expect(el.scrollTop).toBe(4600)
     // ...and follow was re-armed: an append pins to the new bottom.
     act(() => {
@@ -146,6 +185,67 @@ describe('useVirtualChat: reading-position restore on slot entry', () => {
       view.rerender({ items: mkItems(51), sessionId: 'sess-gone', getKey, externalScrollerRef: { current: el } })
     })
     expect(el.scrollTop).toBe(4700)
+  })
+
+  it('resolves a persisted anchor by the stable id, not the per-render key', () => {
+    // The defect this pins: the anchor was captured and resolved through
+    // `getKey`, which is priced per render. Re-entering the slot with a
+    // different window renames every row, so the lookup missed on all of them
+    // and the restore silently degraded to the bottom pin -- reported from a
+    // phone as "switching sessions always lands at the bottom", with the
+    // position erased on the way (the ensuing at-bottom save clears it).
+    seedHeights('sess-vocab', 50, 100)
+    saveScrollAnchor('sess-vocab', { key: 'a-m20', top: -30 })
+    const { el } = mountWith(
+      'sess-vocab',
+      { scrollTop: 0, scrollHeight: 5000, clientHeight: 400 },
+      mkItems(50),
+      { getKey: positionalGetKey, getStableId: stableId },
+    )
+    // offsetOf(m20) = 2000, row top 30px above the viewport top -> 2030.
+    // Resolving through positionalGetKey yields 'm20#20' for that row and can
+    // never match, which would leave the bottom pin at 4600.
+    expect(el.scrollTop).toBe(2030)
+  })
+
+  it('still resolves through getKey for a caller that supplies no stable id', () => {
+    // The fallback is not decoration: a consumer outside ChatPage passes only
+    // getKey, and it must keep anchoring rather than lose it.
+    seedHeights('sess-nostable', 50, 100)
+    saveScrollAnchor('sess-nostable', { key: 'm20', top: -30 })
+    const { el } = mount(
+      'sess-nostable',
+      { scrollTop: 0, scrollHeight: 5000, clientHeight: 400 },
+      mkItems(50),
+    )
+    expect(el.scrollTop).toBe(2030)
+  })
+
+  it('holds the anchor while the transcript hydrates, then restores when the row lands', async () => {
+    // THE defect this pins. Entry commits carrying a PARTIAL transcript (measured
+    // on a phone: 6 rows, then 17 a moment later) used to consume the anchor on
+    // the first of them, so the lookup missed every time and the miss cleared the
+    // anchor on its way out -- "switching sessions always lands at the bottom",
+    // with the position erased so it could never work on a later try either.
+    seedHeights('sess-chunk', 50, 100)
+    saveScrollAnchor('sess-chunk', { key: 'm20', top: -30 })
+    const { el, state, view } = mount(
+      'sess-chunk',
+      { scrollTop: 0, scrollHeight: 600, clientHeight: 400 },
+      mkItems(6), // first hydration chunk: m0..m5, the anchored row is NOT here
+    )
+    // Neither restored nor pinned: held, with the gate up for the caller's cover.
+    expect(view.result.current.restoreGate).toBe(true)
+    expect(el.scrollTop).toBe(0)
+
+    // The rest of the transcript lands.
+    act(() => {
+      state.scrollHeight = 5000
+      view.rerender({ items: mkItems(50), sessionId: 'sess-chunk', getKey, externalScrollerRef: { current: el } })
+    })
+    // offsetOf(m20) = 2000, row top 30px above the viewport top -> 2030.
+    expect(el.scrollTop).toBe(2030)
+    expect(view.result.current.restoreGate).toBe(false)
   })
 
   it('pins to the bottom as before when no anchor is saved', () => {
@@ -277,6 +377,45 @@ describe('useVirtualChat: reading-position save on scroll settle', () => {
     })
     expect(loadScrollAnchor('sess-flush-bottom')).toBeNull()
   })
+
+  it('persists a save whose ONLY change is the alt identity', () => {
+    // The two ends fail in opposite cases, which is why the anchor carries both. An
+    // older-page prepend regroups a row and renames its LEAD while the tail id and the
+    // offset stay put -- so a de-dupe keyed on tail+offset swallows that write, the
+    // stored `alt` goes stale, and a later append renames the tail too. Then NEITHER
+    // identity resolves and entry falls back to the bottom pin, defeating the point of
+    // carrying two. Both de-dupe layers ask `anchorWriteChangesState`, which reads alt.
+    let lead = 'l-a'
+    const { el, state, view, ref } = mountWith(
+      'sess-alt',
+      { scrollTop: 0, scrollHeight: 5000, clientHeight: 400 },
+      mkItems(50),
+      { getAltId: () => lead },
+    )
+    attachRows(view, state, [4, 5, 6, 7, 8])
+
+    act(() => {
+      el.dispatchEvent(new Event('wheel'))
+      state.scrollTop = 590
+      el.dispatchEvent(new Event('scroll'))
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(loadScrollAnchor('sess-alt')).toEqual({ key: 'm5', top: -90, alt: 'l-a' })
+
+    // Same row, same offset, new lead id: the write must still land.
+    lead = 'l-b'
+    act(() => {
+      view.rerender({
+        items: mkItems(50), sessionId: 'sess-alt', getKey,
+        externalScrollerRef: ref, getAltId: () => lead,
+      })
+      el.dispatchEvent(new Event('wheel'))
+      el.dispatchEvent(new Event('scroll'))
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+
+    expect(loadScrollAnchor('sess-alt')).toEqual({ key: 'm5', top: -90, alt: 'l-b' })
+  })
 })
 
 
@@ -384,5 +523,54 @@ describe('useVirtualChat: switch flush honors follow (stick) over transient geom
       view.rerender({ items: mkItems(50), sessionId: 'sess-follow-b', getKey, externalScrollerRef: ref })
     })
     expect(loadScrollAnchor('sess-follow-a')).toBeNull()
+  })
+})
+
+/**
+ * Both writers of the persisted anchor have to ask whether a RESTORE owns the position,
+ * not merely whether one is still pending. `pendingRestoreRef` goes false the moment the
+ * anchored row is located -- before the scroller is written, and long before the settle
+ * stops correcting -- so a site gated on it reads our own landing as the reader's chosen
+ * position. A restore that lands at or near the end then CLEARED the anchor it had just
+ * restored, and the next entry, finding none, opened at the bottom.
+ *
+ * The gesture revocation restoreAnchor performs does not cover this: the at-bottom CLEAR
+ * runs ABOVE the intent gate, by design (see 'clearing at the bottom stays unconditional').
+ *
+ * Asserted against the source because the gap is a frame-ordering one -- the settle
+ * corrects across rAF callbacks jsdom does not run -- so a behavioural test here would
+ * pass against the defect.
+ */
+describe('a restore owns the position while it lands (source guard)', () => {
+  const region = (src: string, from: string, to: string) => {
+    const a = src.indexOf(from)
+    expect(a).toBeGreaterThan(-1)
+    const b = src.indexOf(to, a)
+    expect(b).toBeGreaterThan(a)
+    return src.slice(a, b)
+  }
+
+  it('gates the debounced save and the leave flush on restoreOwnsPosition', async () => {
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '../hooks/virtualizer/useVirtualChat.ts'),
+      'utf8',
+    )
+
+    const save = region(src, 'const scheduleAnchorSave = useCallback(', 'captureTopAnchor, restoreOwnsPosition])')
+    const leave = region(src, "devLog('LEAVE',", 'lastScrollCtxRef.current = null')
+
+    // Both regions are the ones that write storage -- if this stops holding, the slices
+    // above are pointing somewhere else and the rest of this test means nothing.
+    expect(save).toContain('clearScrollAnchor(')
+    expect(leave).toContain('clearScrollAnchor(')
+
+    expect(save).toContain('restoreOwnsPosition()')
+    expect(leave).toContain('!restoreOwnsPosition()')
+
+    // The narrower ref must not be what either one consults.
+    expect(save).not.toMatch(/if\s*\(\s*pendingRestoreRef\.current\s*\)\s*return/)
+    expect(leave).not.toContain('pendingRestoreRef.current')
   })
 })

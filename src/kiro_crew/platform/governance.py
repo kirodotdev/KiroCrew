@@ -1302,6 +1302,23 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "capabilities.mobile_connect": ScopeSpec(
         CAPABILITY, capability_default=True, scope_matchers={"methods": "identifier"}
     ),
+    # "Share as image": the dashboard turns an assistant reply into a branded
+    # PNG card and offers a prefilled post to X / LinkedIn. The card itself is
+    # rendered and exported in the browser (no upload — copy / download stay
+    # local), but the intent buttons hand the reply's caption text to a
+    # third-party site in a URL, so the feature is an egress path for agent
+    # output that a managed fleet may forbid wholesale. There is no server-side
+    # share action to refuse; the control is the dashboard entry, and the
+    # dashboard learns whether to draw it from ``GET /api/dashboard/config``
+    # (``social_share_enabled``), which resolves this row server-side so the
+    # frontend never guesses. Default True: naming the row without ``enabled``
+    # keeps the entry for the standalone user; a governing ceiling — policy or
+    # a profile bound to the dashboard surface — withdraws it
+    # (``dashboard/social_share.py``: evaluated on the pinned ``dashboard:ui``
+    # surface through ``vet_and_audit``, fail-closed, mirroring the
+    # mobile_connect listing). Data row only — CONTRACT_VERSION and the
+    # evaluator are untouched.
+    "capabilities.social_share": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 

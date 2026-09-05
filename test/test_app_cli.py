@@ -171,13 +171,15 @@ class TestHandleApp:
 
 
 class TestEnableWarnsHooksNeedRestart:
-    """CLI `app enable` must not imply it loaded the app's backend hooks.
+    """CLI `app enable` states how a backend-hook change reaches a gateway.
 
     Hooks are Python modules imported INTO the gateway process, and only the
-    gateway replaces them (``on_app_enable`` -> ``register_app_routes`` ->
-    ``load_app_module``). The CLI is a separate process, so a CLI enable leaves a
-    running gateway executing the code it imported earlier -- printing only
-    "enabled <app>" reads as though the new code were live (issue #7880).
+    gateway loads them (``on_app_enable`` -> ``register_app_routes`` ->
+    ``load_app_module``). The CLI is a separate process, so it cannot load them
+    directly -- but the gateway's hook reconciler (``apps/hook_reconcile.py``)
+    picks up the on-disk change within a poll interval, and a stopped gateway
+    loads it on next start. Printing only "enabled <app>" reads as though the new
+    code were already live; the notice states the actual timing (issue #7880).
     """
 
     HOOKS = {
@@ -201,10 +203,15 @@ class TestEnableWarnsHooksNeedRestart:
 
         out = capsys.readouterr().out
         assert "backend hooks" in out
-        # Names the declared hooks, so the operator can tell which code is stale.
+        # Names the declared hooks, so the operator can tell which code changed.
         assert "routes" in out and "on_startup" in out
-        # Names the recovery, not just the problem.
-        assert "restart" in out
+        # States the actual timing: a running gateway reconciles the change
+        # automatically (issue #7880's reconciler), and a stopped one loads it on
+        # next start -- so it must NOT tell the operator a manual restart is
+        # required (that was true only before the reconciler landed).
+        assert "reloads them automatically" in out
+        assert "next start" in out
+        assert "restart" not in out
         # The enable itself still reports success -- the notice is additive.
         from kiro_crew.apps.manager import _read_installed
 

@@ -151,6 +151,132 @@ OPTIONS_RE_TRAILER = re.compile(
     re.DOTALL,
 )
 
+# CONTROL-TAG HTML COMMENTS — canonical grammar (single source of truth).
+#
+# Agent control tags ride in HTML comments, which the dashboard's markdown
+# pipeline renders as nothing (rehype-raw emits comment nodes the react
+# renderer skips). Three families exist in ``src/``:
+#   * ``<!-- keep-visible -->``       — collapse-all exemption (#7948)
+#   * ``<!-- deliver:<route> -->``    — heartbeat routing
+#   * ``<!-- plan_task_id:<id> -->``  — task-planner Apply-to-Tasks anchor
+#
+# ONE GRAMMAR, TAIL-ANCHORED + FENCE-GUARDED, case-insensitive, both
+# recognizers (this regex and ``website/src/app-sdk/protocol/
+# keepVisibleMarker.ts``): only standalone tag lines at the message tail are
+# control tags, and a tail inside an UNTERMINATED fence is visible code (see
+# ``_in_open_fence``). Message-tail producers: the prompt rule ("as its
+# final line") and the task-planner appender (newline-prefixed). The
+# heartbeat's ``deliver:`` tags are HEARTBEAT.md FILE-format suffixes on
+# checklist lines, not message-tail emissions — echoed into a message body
+# they are mid-body content, which the dashboard renders as nothing and this
+# strip deliberately leaves alone. Position-independent stripping was tried
+# and retired: rounds 5–8 each surfaced another quoted-code dialect it
+# corrupted.
+#
+# Tag-line leading indent is ≤3 (CommonMark: 4+ spaces renders as an
+# indented code block — visible content, never a control tag).
+# ReDoS note: every quantifier is BOUNDED (whitespace ≤16, tag body ≤256 —
+# generous for real emissions like ``<!-- deliver:dashboard -->``), so a
+# failed match attempt does constant work and total matching stays linear
+# even on adversarial repetition input (CodeQL py/polynomial-redos: an
+# UNBOUNDED body with a failing ``-->`` suffix rescans per start position —
+# quadratic). An unterminated ``<!--`` is NOT matched: swallowing to
+# end-of-text on a missing ``-->`` silently deletes visible prose. A tag
+# body over the bound is not a real control tag and stays visible.
+_TRAILING_CONTROL_LINES_RE = re.compile(
+    r"(?:(?:^|\n)[ \t]{0,3}"
+    r"<!--(?:\s{0,16}keep-visible\s{0,16}|\s{0,16}(?:deliver|plan_task_id):[^>\n]{0,256})-->"
+    r"[ \t]{0,16})+\s{0,16}\Z",
+    re.IGNORECASE,
+)
+
+
+# Fence-delimiter lines (CommonMark: 3+ backticks or tildes, ≤3 leading
+# spaces). Used for the open-fence parity guard below.
+_FENCE_DELIM_LINE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+
+# Over-approximate fence-open CANDIDATES the exact walker cannot classify:
+# a fence run preceded only by whitespace and CommonMark container-marker
+# characters — list bullets (``- ```` ``), ordered-list digits/punctuation
+# (``1. ```` ``), blockquote markers (``> ```` ``) — or by 4+ spaces (an
+# indented code block at top level, but a REAL fence inside a list
+# continuation). Classifying these correctly needs full CommonMark
+# container tracking (nesting, lazy continuation, per-container indent
+# budgets); each conformance round surfaced another sibling. Instead of
+# deciding, the walker VETOES: a candidate seen while outside any tracked
+# fence makes the message's fence structure ambiguous and the strip does
+# nothing. Over-matching is safe by construction — the failure modes are
+# asymmetric: wrongly stripping deletes visible fence-interior content,
+# wrongly not stripping leaves an HTML comment the renderer never shows —
+# so a false veto costs at most a feature-miss, never content.
+# Single bounded character class then a literal run: linear, no
+# backtracking (class and fence characters are disjoint).
+_AMBIGUOUS_FENCE_LINE_RE = re.compile(r"^[ \t>+*\-\d.)]{0,40}(`{3,}|~{3,})")
+
+
+def _in_open_fence(text: str, idx: int) -> bool:
+    """True when position *idx* falls inside an UNTERMINATED code fence —
+    or when the fence structure before *idx* is AMBIGUOUS.
+
+    Walks fence-delimiter lines before *idx* with CommonMark's close rule
+    (same character, run at least as long as the opener). Inside an open
+    fence the renderer shows every line as literal code — including a line
+    that lexes like a control tag — so the strip must not touch it.
+
+    STRIP ONLY WHEN PROVABLY OUTSIDE: a container-prefixed or over-indented
+    fence candidate (``_AMBIGUOUS_FENCE_LINE_RE``) encountered while the
+    walker believes it is outside any fence may be a real opener this
+    grammar cannot see, so the walk answers True — do nothing — rather
+    than risk deleting fence-interior content. Inside a tracked fence the
+    same line shape is literal code under every interpretation and does
+    not veto, so a closed plain fence quoting container-fence examples
+    still strips normally.
+    """
+    open_run: str | None = None
+    for line in text[:idx].split("\n"):
+        m = _FENCE_DELIM_LINE_RE.match(line)
+        if not m:
+            if open_run is None and _AMBIGUOUS_FENCE_LINE_RE.match(line):
+                return True
+            continue
+        run = m.group(1)
+        if open_run is None:
+            open_run = run
+        elif (
+            run[0] == open_run[0]
+            and len(run) >= len(open_run)
+            # CommonMark 4.5: a CLOSING fence may not carry an info string —
+            # only whitespace may follow the run. Inside an open fence a
+            # fence-lookalike WITH trailing text (``` python) is literal
+            # code content, not a closer, so the fence stays open.
+            and line[m.end() :].strip() == ""
+        ):
+            open_run = None
+    return open_run is not None
+
+
+def strip_control_comments(text: str) -> str:
+    """Remove trailing control-tag lines from *text* for a plain-text
+    projection (preview, TTS, channel delivery).
+
+    TAIL-ANCHORED with a FENCE-PARITY guard — the same grammar as the
+    frontend recognizer (``keepVisibleMarker.ts``), case-insensitive on
+    both sides: only standalone tag lines ENDING the message are control
+    tags, and a tail that sits inside an UNTERMINATED fence is visible
+    code, not a tag (the renderer shows it literally). Every producer
+    emits at the tail — the prompt rule says "as its final line" and the
+    task-planner appends a newline-prefixed tag — so nothing real is
+    missed, and a tag quoted anywhere in the body (prose, inline code, any
+    fence dialect) is structurally untouchable rather than guarded by a
+    code-span grammar this module would have to keep re-deriving (rounds
+    5–8 each found another dialect). Stacked trailing tags are all
+    removed. This is the ONE backend strip implementation.
+    """
+    m = _TRAILING_CONTROL_LINES_RE.search(text)
+    if m is None or _in_open_fence(text, m.start()):
+        return text
+    return text[: m.start()]
+
 
 def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     """Detach protocol trailers before a renderer length-splits ``text``.
@@ -254,6 +380,103 @@ AWS_PROFILE_CHARS = "A-Za-z0-9_.+-"
 AWS_PROFILE_NAME_PATTERN = f"^[{AWS_PROFILE_FIRST_CHARS}][{AWS_PROFILE_CHARS}]{{0,127}}\\Z"
 AWS_PROFILE_NAME_RE = re.compile(AWS_PROFILE_NAME_PATTERN)
 
+SLACK_NAMESPACE = "slack"
+
+#: Session-key namespaces owned by a messaging channel, i.e. every prefix a
+#: conversation started OUTSIDE the dashboard can carry. Slack keys are
+#: ``slack:<thread_ts>``; every other transport uses
+#: ``{channel}:{agent}:{chatType}:{user}[:genN]`` (see
+#: ``messaging.link.build_dm_session_key``), plus the ``unified:`` bucket that
+#: ``dm_scope="unified"`` collapses direct DMs into.
+#:
+#: Deliberately excludes the non-channel namespaces that also contain a colon
+#: (``dashboard:``, ``cron:``, ``hook:``, ``subagent:``, ``channel:``) — those
+#: are surfaced by their own owners, not by the channel-session reconciler.
+#:
+#: NOTE: ``autonudge._CHANNEL_KEY_PREFIXES`` is a SEPARATE hand-kept copy. It is
+#: often described as narrower; as of this writing it is not -- both hold the same
+#: 11 namespaces. It answers a different question (does this key SHAPE belong to a
+#: channel rather than a dashboard slot), which is why it lists namespaces nothing
+#: can currently be delivered to. Deriving it from here would be sound and is
+#: deliberately left out of the change that homed this roster; until then, do not
+#: assume the two have diverged, and do not assume they are kept in step either.
+#:
+#: HOMED HERE, not in ``messaging.link``, because the roster has readers on both
+#: sides of an import cycle. ``messaging.link`` is itself stdlib-only, but
+#: importing anything from it executes ``messaging/__init__.py`` first, which
+#: pulls in ``driver`` -> ``acp`` -> ``hooks``; a reader that ``hooks`` is already
+#: mid-import for (``hooks`` -> ``webhooks`` -> ``validation``) then fails with a
+#: partially-initialized ``hooks``. This module imports only ``os`` and ``re``, so
+#: it can be read from anywhere. ``messaging.link`` re-exports both names, which
+#: is where the rest of the codebase still reads them from.
+CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
+    SLACK_NAMESPACE,
+    "discord",
+    "telegram",
+    "whatsapp",
+    "webex",
+    "wecom",
+    "teams",
+    "weixin",
+    "imessage",
+    "feishu",
+    "unified",
+)
+
+#: The channels a PROACTIVE send may name -- ``send_message``'s ``channel_type``
+#: and its channel ``session`` values. Derived ONCE here rather than subtracted at
+#: each reader: the same subtraction was spelled in three places, which is the
+#: drift shape that made a Webex owner DM unreachable while the gateway leg behind
+#: it already worked (#6514), one level up.
+#:
+#: Two members of the roster cannot be a send target:
+#:
+#: * ``slack`` has its own client and streaming path and is deliberately absent
+#:   from ``state.channel_transports``, so the shared ladder skips it. It is
+#:   spelled ``session="slack"``.
+#: * ``unified`` is the session-key bucket ``dm_scope="unified"`` collapses DMs
+#:   into, not a transport; no ``ChannelLink`` ever carries it as a channel type.
+CHANNEL_SEND_NAMESPACES: tuple[str, ...] = tuple(
+    sorted(set(CHANNEL_SESSION_NAMESPACES) - {SLACK_NAMESPACE, "unified"})
+)
+
+#: The channels an OWNER-DM may be inferred for -- ``send_message``'s channel
+#: ``session`` values. A strict subset of :data:`CHANNEL_SEND_NAMESPACES`, because
+#: the two ask different questions and only one of them needs an owner.
+#:
+#: ``channel_type`` names a conversation: the one the calling session already
+#: belongs to, or an explicit ``target_id`` the agent supplies. Neither infers a
+#: recipient. A channel ``session`` DOES infer one, from
+#: ``configured_targets()`` via ``_owner_dm_target``, whose safety claim is that
+#: the agent can only reach somebody the USER configured.
+#:
+#: ``weixin`` and ``wecom`` are excluded because that claim is false on both. Each
+#: folds identities LEARNED from inbound traffic into ``configured_targets()`` --
+#: Weixin's ``_known_users`` (``_allowed | _known_users``) and WeCom's
+#: ``_warm_chats``, which under ``wecom.allow_all_users`` become the list outright
+#: ("there is no configured list to draw on, so the warm peers ARE the list"). So a
+#: peer who messaged the bot once can be the single available direct target, which
+#: is exactly what ``_owner_dm_target`` reads as "the owner". Nothing downstream
+#: catches it: both transports' ``may_send_to`` returns True unconditionally under
+#: their open policy (Weixin's promise to consult ``_allowed`` alone holds only on
+#: its ``allowlist`` branch), and ``resolve_configured_target`` accepts the learned
+#: set too. So private agent output would reach an arbitrary peer, not the operator.
+#:
+#: The other seven transports draw ``configured_targets()`` from configured state
+#: alone; ``test_no_owner_dm_channel_advertises_learned_identities`` is the ratchet
+#: that keeps this subtraction honest rather than hand-kept, so a transport that
+#: starts mixing learned identities in fails the gate instead of silently becoming
+#: an owner-DM target.
+#:
+#: This is a per-channel CAPABILITY gap, not drift: the exclusion is derived from
+#: the send roster and carries its reason, the way ``slack`` and ``unified`` do. A
+#: channel graduates by distinguishing configured recipients from learned peers in
+#: ``configured_targets()`` -- at which point deleting it from this subtraction is
+#: the whole change.
+CHANNEL_OWNER_DM_NAMESPACES: tuple[str, ...] = tuple(
+    sorted(set(CHANNEL_SEND_NAMESPACES) - {"weixin", "wecom"})
+)
+
 # The product wordmark, figlet `small`. ONE definition on purpose: copy-pasting
 # it into cli.py and cli_chat.py risks a rename leaving a stale product name in
 # the two most-seen surfaces (bare `kirocrew`, the chat REPL). Import it; never
@@ -267,3 +490,15 @@ BANNER = r"""
 
   👻 Your personal AI agent
 """
+
+# Max length of an auto-nudge loop's ``banner`` -- the SHORT transcript row shown
+# in place of a long recurring instruction. Unrelated to ``BANNER`` above, which
+# is the product wordmark; this is a per-loop user string.
+#
+# It lives here, in a leaf that imports only ``os`` and ``re``, because three
+# modules need the same bound and one of them is ``validation.py``: importing it
+# from ``autonudge`` pulled a service module into a validation leaf and made the
+# bound's home depend on import order. Every enforcement site -- the two REST
+# authorizers, the MCP tool schemas, and the store loader -- reads THIS name, so
+# there is one definition and no path can drift to a different cap.
+MAX_BANNER_CHARS = 500

@@ -37,7 +37,7 @@ Builds use plain `pip` + `npm`/Vite + `pytest`, driven by the repo-root
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
 | **Python** | Backend | `>= 3.12` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
-| **Node.js + npm** | Building the dashboard | `20 \|\| >= 22` (`website/package.json` `engines`); `ensure-node.sh` targets 20, and drops to 16 on Amazon Linux 2 where newer official builds need a glibc that host does not have |
+| **Node.js + npm** | Building the dashboard | `>= 22` (`website/package.json` `engines`; Node 24 LTS recommended); on x86_64 Amazon Linux 2, the glibc-217 fallback installs Node 24 because official builds need a newer glibc (no glibc-217 arm64 build is available) |
 | **`kiro-cli`** | Driving the LLM | Required; see below |
 
 Node is only needed to *build* the dashboard. The prebuilt wheel, the DMG, the
@@ -585,6 +585,33 @@ the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else
 login (or `sudo` with no `$SUDO_USER`), first create or pick a normal account and
 install as it, e.g. `sudo -u <user> KIROCREW_KIRO_BIN=... kirocrew service
 install` (the official Docker image already runs as the `kirocrew` user).
+
+### SELinux-enforcing hosts with kirocrew under `$HOME`
+
+On an SELinux-enforcing host whose kirocrew lives under `$HOME` — the default on
+Bazzite, Fedora Silverblue/Kinoite and other atomic desktops — a **system**
+service cannot start at all. systemd (PID 1) runs in the `init_t` domain, the
+policy does not allow that domain to `execute` a file carrying a home label
+(`user_home_t`), and the unit fails every start with `status=203/EXEC` until it
+exhausts its restart limit.
+
+The binary is fine. `test -x` on it succeeds, the shebang is correct, and the
+permissions are right — the policy's execute check is the only thing that fails,
+which is why `203/EXEC` here looks identical to a genuinely missing or
+non-executable path. `kirocrew service install` therefore asks the loaded policy
+before writing anything, and if the unit provably cannot start it **refuses up
+front** and prints a ready-to-paste per-user unit instead of leaving a
+crash-looping service enabled at every boot.
+
+A per-user unit is not affected, because the per-user systemd manager does not
+run in PID 1's domain. Follow the commands the refusal prints, then manage the
+service with `systemctl --user status|restart kirocrew` and `journalctl --user -u
+kirocrew -f`. Note that `kirocrew service status` / `uninstall` only look at the
+system unit, so they will not see a user unit ([#7165] tracks adding a first-class
+`--user` scope). Installing kirocrew onto a system-labelled path such as
+`/usr/local/bin` also avoids the problem.
+
+[#7165]: https://github.com/kirodotdev/KiroCrew/issues/7165
 
 ### Setting the service port
 

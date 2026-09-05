@@ -2557,3 +2557,86 @@ def test_the_gate_reports_an_indeterminate_permission_as_not_ok(capsys) -> None:
     report = json.loads(capsys.readouterr().out.strip())
     assert report["ok"] is False
     assert report["violations"] == []
+
+
+# ---------------------------------------------------------------------------
+# A settled reviewer round acts even while the rest of the rollup runs: the
+# AI-review lanes are the gate, not the test matrix.
+# ---------------------------------------------------------------------------
+
+
+def test_settled_reviewer_round_acts_while_other_checks_still_run() -> None:
+    """Every pinned lane stamped this head and one blocks: act now.
+
+    The backend/frontend runs still in flight are on a commit the block
+    already condemns, so waiting them out only delays the edit.
+    """
+    module = _load_script()
+    comments = json.dumps(
+        [
+            _bot_comment(f"[GPT-REVIEWED] {_HEAD}\n[BLOCK-MERGE] {_HEAD}"),
+            _bot_comment(f"[OPUS-REVIEWED] {_HEAD}", key="claude-ai-review"),
+        ]
+    )
+    payload = _pr_payload([{"context": "PR Readiness", "state": "PENDING"}])
+    _install_fake_gh(module, payload, comments=comments)
+
+    assert module.main(["pr_status.py", "42", "--reviewers", "GPT,OPUS"]) == 20
+
+
+def test_pending_reviewer_lane_still_holds_the_round_open() -> None:
+    """One lane blocks but another has not stamped: the round is not settled.
+
+    Acting here would push before the pending lane posts, throwing away a
+    verdict that was still coming and buying an extra round.
+    """
+    module = _load_script()
+    comments = json.dumps([_bot_comment(f"[GPT-REVIEWED] {_HEAD}\n[BLOCK-MERGE] {_HEAD}")])
+    payload = _pr_payload([{"context": "PR Readiness", "state": "PENDING"}])
+    _install_fake_gh(module, payload, comments=comments)
+
+    assert module.main(["pr_status.py", "42", "--reviewers", "GPT,OPUS"]) == 10
+
+
+def test_discovery_mode_does_not_act_early_on_a_blocking_marker() -> None:
+    """Unpinned, an empty stale set cannot mean 'every lane reported'.
+
+    Only the lane that already spoke is visible, so a mid-round block stays a
+    wait until the rollup itself completes.
+    """
+    module = _load_script()
+    comments = json.dumps([_bot_comment(f"[GPT-REVIEWED] {_HEAD}\n[BLOCK-MERGE] {_HEAD}")])
+    payload = _pr_payload([{"context": "PR Readiness", "state": "PENDING"}])
+    _install_fake_gh(module, payload, comments=comments)
+
+    assert module.main(["pr_status.py", "42"]) == 10
+
+
+def test_settled_reviewer_round_without_a_blocker_is_not_an_early_act() -> None:
+    """All pinned lanes stamped and none blocks: nothing to act on yet."""
+    module = _load_script()
+    comments = json.dumps(
+        [
+            _bot_comment(f"No findings.\n[GPT-REVIEWED] {_HEAD}"),
+            _bot_comment(f"No findings.\n[OPUS-REVIEWED] {_HEAD}", key="claude-ai-review"),
+        ]
+    )
+    payload = _pr_payload([{"context": "PR Readiness", "state": "PENDING"}])
+    _install_fake_gh(module, payload, comments=comments)
+
+    assert module.main(["pr_status.py", "42", "--reviewers", "GPT,OPUS"]) == 10
+
+
+def test_failing_non_reviewer_check_does_not_act_while_a_lane_is_pending() -> None:
+    """A red test mid-round is still a wait: one round fixes one full set."""
+    module = _load_script()
+    comments = json.dumps([_bot_comment(f"[GPT-REVIEWED] {_HEAD}")])
+    payload = _pr_payload(
+        [
+            {"context": "PR Readiness", "state": "PENDING"},
+            {"context": "backend-test", "state": "FAILURE"},
+        ]
+    )
+    _install_fake_gh(module, payload, comments=comments)
+
+    assert module.main(["pr_status.py", "42", "--reviewers", "GPT,OPUS"]) == 10

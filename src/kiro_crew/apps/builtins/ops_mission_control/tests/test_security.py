@@ -12,6 +12,7 @@ so this is the test that catches it.
 """
 
 import contextlib
+import json
 import os
 import shutil
 import tempfile
@@ -300,6 +301,15 @@ class TestSecretBackend(unittest.TestCase):
         (self.tmp / "secrets.json").write_text("{ not json", encoding="utf-8")
         self.assertEqual(self.backend.get("pagerduty", "api_token"), "")
 
+    def test_non_utf8_file_degrades_to_empty(self):
+        # New with #7805: UnicodeDecodeError previously escaped the lookup read
+        # (a ValueError, not a JSONDecodeError). The lenient read must treat a
+        # corrupt byte stream as one condition regardless of which decoder
+        # noticed it -- failing a render would wedge the Settings UI on a file
+        # only a person can repair.
+        (self.tmp / "secrets.json").write_bytes(b"\xff\xfe not utf8")
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "")
+
 
 class TestSecretStoreLockdownOrdering(unittest.TestCase):
     """The store's write must never publish a token file it has not protected.
@@ -337,7 +347,8 @@ class TestSecretStoreLockdownOrdering(unittest.TestCase):
 
         self.assertTrue(sizes, "premise: the lockdown ran at all")
         self.assertEqual(
-            sizes[0], 0,
+            sizes[0],
+            0,
             f"the file already held payload bytes when it was locked down: {sizes[0]} bytes",
         )
 
@@ -356,11 +367,13 @@ class TestSecretStoreLockdownOrdering(unittest.TestCase):
                 self.backend.put("datadog", "api_key", "x" * 32)
 
         self.assertEqual(
-            (self.tmp / "secrets.json").read_bytes(), before,
+            (self.tmp / "secrets.json").read_bytes(),
+            before,
             "the previous store was altered",
         )
         self.assertEqual(
-            self.backend.get("pagerduty", "api_token"), "u+secretvalue",
+            self.backend.get("pagerduty", "api_token"),
+            "u+secretvalue",
             "a failed new write destroyed the previously stored token",
         )
 
@@ -386,11 +399,13 @@ class TestSecretStoreLockdownOrdering(unittest.TestCase):
                 self.backend.put("datadog", "api_key", "x" * 32)
 
         self.assertEqual(
-            (self.tmp / "secrets.json").read_bytes(), before,
+            (self.tmp / "secrets.json").read_bytes(),
+            before,
             "the previous store was altered",
         )
         self.assertEqual(
-            self.backend.get("pagerduty", "api_token"), "u+secretvalue",
+            self.backend.get("pagerduty", "api_token"),
+            "u+secretvalue",
             "a transient write failure destroyed the previously stored token",
         )
 
@@ -449,11 +464,13 @@ class TestSecretStoreNeverPublishesOverAFailedRead(unittest.TestCase):
                 self.backend.delete("pagerduty")
 
         self.assertEqual(
-            self.store.read_bytes(), before,
+            self.store.read_bytes(),
+            before,
             "a failed read was published back over the store",
         )
         self.assertEqual(
-            self.backend.get("pagerduty", "api_token"), "u+thisisthestoredtoken",
+            self.backend.get("pagerduty", "api_token"),
+            "u+thisisthestoredtoken",
             "a failed read destroyed a token that was still on disk",
         )
 
@@ -483,13 +500,108 @@ class TestSecretStoreNeverPublishesOverAFailedRead(unittest.TestCase):
         self.backend.put("pagerduty", "api_token", "u+thefirsttoken")
         self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+thefirsttoken")
 
-    def test_a_corrupt_store_still_repairs_on_write(self):
-        """Existing tolerance, pinned so the unreadable-file guard is not
-        mistaken for a licence to start failing on corruption too. A document
-        that parsed to nothing usable has no stored token left to lose."""
+    def test_a_corrupt_store_refuses_the_save_and_is_left_intact(self):
+        """#7805: a corrupt store is refused, never rewritten.
+
+        The old tolerance read an unparseable document as empty and let ``put``
+        publish over it -- destroying tokens a truncated JSON still held
+        verbatim, silently, when this file is the only copy of every provider
+        credential on the box. Byte-for-byte intactness is the half a raise
+        alone does not prove.
+        """
+        corrupt = '{"pagerduty": {"api_token": "u+recoverabletoken"}'  # truncated
+        self.store.write_text(corrupt, encoding="utf-8")
+        with self.assertRaises(json.JSONDecodeError):
+            self.backend.put("datadog", "api_key", "a" * 32)
+        self.assertEqual(
+            self.store.read_text(encoding="utf-8"),
+            corrupt,
+            "the mutation rewrote a corrupt store instead of refusing",
+        )
+
+    def test_a_corrupt_store_refuses_the_revocation_and_is_left_intact(self):
+        """The delete half: the old lenient read reported the provider absent,
+        so the operator was told there was nothing to revoke while the token
+        sat readable in the corrupt bytes -- and a later ``put`` would then
+        have destroyed it."""
+        corrupt = '{"pagerduty": {"api_token": "u+recoverabletoken"}'
+        self.store.write_text(corrupt, encoding="utf-8")
+        with self.assertRaises(json.JSONDecodeError):
+            self.backend.delete("pagerduty")
+        self.assertEqual(self.store.read_text(encoding="utf-8"), corrupt)
+
+    def test_the_corruption_refusal_is_the_named_type_with_no_document_bytes(self):
+        """Every corruption door raises ``CorruptDocumentError``, and NO copy of
+        the store's bytes rides anywhere on it: not the message, not ``doc``,
+        and not the exception CHAIN -- ``__cause__``/``__context__`` would keep
+        the original parser exception alive with the full document on it.
+        The adversarial shape is a TOKEN-SHAPED PROVIDER KEY: in a malformed
+        document any part can be a pasted credential, so a message that names
+        the key leaks it. Found in review (GPT 5.6)."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
+            CorruptDocumentError,
+        )
+
+        token = "u+PastedTokenThatLandedInTheWrongPlace"
+        # Door 1: parse failure -- the document text (token included) must not
+        # survive on the refusal or its chain.
+        self.store.write_text(f'{{"{token}": {{"api_token": "x"}}', encoding="utf-8")
+        with self.assertRaises(CorruptDocumentError) as ctx:
+            self.backend.put("datadog", "api_key", "a" * 32)
+        exc = ctx.exception
+        self.assertNotIn(token, str(exc))
+        self.assertNotIn(token, exc.doc)
+        self.assertIsNone(exc.__cause__, "the chained cause carries the full document")
+        self.assertIsNone(exc.__context__, "the implicit context carries the full document")
+
+        # Door 2: valid JSON the strict coercion refuses -- the counterexample
+        # from review: the token IS the provider key of the unusable entry.
+        self.store.write_text(f'{{"{token}": "scalar-not-a-dict"}}', encoding="utf-8")
+        with self.assertRaises(CorruptDocumentError) as ctx:
+            self.backend.put("datadog", "api_key", "a" * 32)
+        exc = ctx.exception
+        self.assertNotIn(token, str(exc))
+        self.assertNotIn(token, exc.doc)
+        self.assertIsNone(exc.__cause__)
+        self.assertIsNone(exc.__context__)
+
+    def test_a_store_that_is_not_utf8_takes_the_corruption_path(self):
+        """Not valid UTF-8 never reaches ``json.loads``, so it arrives as
+        ``UnicodeDecodeError`` -- a ``ValueError`` but NOT a ``JSONDecodeError``.
+        Unwrapped it would slip past every corruption clause at the callers;
+        one corrupt byte stream must be ONE condition regardless of which
+        decoder noticed it first."""
+        self.store.write_bytes(b"\xff\xfe not utf8 \x00")
+        with self.assertRaises(json.JSONDecodeError):
+            self.backend.put("datadog", "api_key", "a" * 32)
+        self.assertEqual(self.store.read_bytes(), b"\xff\xfe not utf8 \x00")
+
+    def test_valid_json_that_is_not_an_object_refuses_the_write(self):
+        """A bare array parses without raising, so coercing it to ``{}`` would
+        let the rewrite destroy a document nobody could read -- the same loss,
+        reached without a parse failure."""
+        self.store.write_text('["u+token-in-a-list"]', encoding="utf-8")
+        with self.assertRaises(json.JSONDecodeError):
+            self.backend.put("datadog", "api_key", "a" * 32)
+        self.assertEqual(self.store.read_text(encoding="utf-8"), '["u+token-in-a-list"]')
+
+    def test_an_entry_the_coercion_would_drop_refuses_the_write(self):
+        """Deserialize, re-serialize, refuse if anything on disk did not
+        survive: a provider entry that is not an object is dropped by the
+        lenient coercion, so on the update path it must refuse -- the rewrite
+        would silently delete whatever those bytes held."""
+        doc = json.dumps({"pagerduty": "u+scalar-not-a-dict", "datadog": {"api_key": "k"}})
+        self.store.write_text(doc, encoding="utf-8")
+        with self.assertRaises(json.JSONDecodeError):
+            self.backend.put("datadog", "api_key", "a" * 32)
+        self.assertEqual(self.store.read_text(encoding="utf-8"), doc)
+
+    def test_the_lookup_read_still_tolerates_corruption(self):
+        """The asymmetry is the point: failing a render would turn a
+        recoverable file into an unusable app. ``get`` answers "not configured"
+        and the fail-closed ``has_secrets`` check refuses the provider."""
         self.store.write_text("{ not json", encoding="utf-8")
-        self.backend.put("pagerduty", "api_token", "u+afterthecorruption")
-        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+afterthecorruption")
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "")
 
 
 class TestDescribeSecrets(unittest.TestCase):
@@ -750,9 +862,7 @@ class TestEveryRedactionSinkUsesTheSameSeam(unittest.TestCase):
         import importlib
         import inspect
 
-        mod = importlib.import_module(
-            f"kiro_crew.apps.builtins.ops_mission_control.backend.{name}"
-        )
+        mod = importlib.import_module(f"kiro_crew.apps.builtins.ops_mission_control.backend.{name}")
         return inspect.getsource(mod)
 
     def test_no_sink_imports_the_core_redactor_directly(self):

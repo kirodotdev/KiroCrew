@@ -62,12 +62,32 @@ def _load() -> list[dict[str, Any]]:
     A DISPLAY read: :func:`list_shares` must render on a store it could not
     load rather than failing the Access section. See :func:`_load_for_update`
     for why a mutation may not stand on the same answer.
+
+    An absent file is silent -- that is a store with no shares yet, not a fault.
+    Anything else is logged, because the state this degrades into looks exactly
+    like health: an empty Access section renders as "nothing is shared", which
+    for a ledger of live presigned URLs is the one wrong answer nobody would
+    question.
     """
     try:
         data = json.loads(_store_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except FileNotFoundError:
         return []
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning(
+            "aws-control shares: ledger unreadable; the Access section will render empty",
+            exc_info=True,
+        )
+        return []
+    if not isinstance(data, list):
+        # The same degradation reached without a parse failure -- same silence
+        # problem, same log line.
+        logger.warning(
+            "aws-control shares: ledger root is not an array; the Access section "
+            "will render empty"
+        )
+        return []
+    return data
 
 
 def _load_for_update() -> list[dict[str, Any]]:
@@ -75,21 +95,71 @@ def _load_for_update() -> list[dict[str, Any]]:
 
     Both mutations below rewrite the WHOLE file from what they read, so an
     empty base is not "nothing to carry forward" -- it is "forget every share
-    already recorded". Only a missing file makes that true. An unreadable one
+    already recorded". Only a MISSING file makes that true. An unreadable one
     (a transient EACCES/EIO, a scanner holding the handle on Windows) is a
     ledger we still have, and this one is the only local record of live
     PRESIGNED URLs: they are bearer grants that cannot be revoked, so a
     truncated ledger under-reports access that is still working. The error
     propagates and the mutation is abandoned instead.
 
-    A corrupt document keeps reading as empty, matching the display read: it
-    parsed to nothing usable, so there is nothing to lose by replacing it.
+    Corruption propagates too (#7805, mirroring #7794): a document that failed
+    to parse carries nothing to merge into, but "cannot merge into" is not
+    "safe to destroy". A truncated file still holds most of its records
+    verbatim, and replacing it discards the operator's only chance to recover
+    them by hand -- silently, while a refusal costs one skipped mutation and a
+    visible error. Two shapes that never reach ``json.loads``'s own raise are
+    folded into the same refusal: a byte stream that is not UTF-8 (which
+    arrives as ``UnicodeDecodeError`` -- a ``ValueError`` but NOT a
+    ``JSONDecodeError``, so left unwrapped it would slip past every corruption
+    clause at the callers), and valid JSON whose root is not an array (which
+    parses without raising, so normalizing it to ``[]`` would destroy a
+    document nobody could read -- the same loss, reached without a parse
+    failure).
+
+    Plain ``json.JSONDecodeError`` rather than ops-mission-control's named
+    ``CorruptDocumentError``: that type lives in another app and apps do not
+    import each other.
+
+    The per-ROW check exists because this reader's return value is not written
+    back verbatim: both mutations pipe it through :func:`_prune`, whose damage
+    path silently DROPS any row it cannot read an ``expiresAt`` from -- a
+    non-object row, a missing stamp, a mangled one -- and the whole-file
+    rewrite then takes those rows with it. That is the same coercion loss the
+    secret store's strict reader refuses, arriving one call later. So every
+    row must hold the one field the retention pass needs to make a
+    keep/expire decision; a row it would drop for DAMAGE refuses the mutation,
+    while the deliberate expiry drop (a parseable stamp in the past) stays
+    what it is: retention, not loss. The refusal names the row's index and
+    nothing else -- entry content must not ride on an exception that crosses
+    into responses and logs.
     """
     try:
         data = json.loads(_store_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
         return []
-    return data if isinstance(data, list) else []
+    except UnicodeDecodeError as exc:
+        raise json.JSONDecodeError(
+            f"share ledger is not valid UTF-8: {exc.reason}",
+            exc.object.decode("utf-8", "replace")[:120],
+            0,
+        ) from exc
+    if not isinstance(data, list):
+        raise json.JSONDecodeError("share ledger root is not a JSON array", str(data)[:120], 0)
+    for index, entry in enumerate(data):
+        damaged = not isinstance(entry, dict)
+        if not damaged:
+            try:
+                dt.datetime.fromisoformat(entry["expiresAt"])
+            except (KeyError, ValueError, TypeError):
+                damaged = True
+        if damaged:
+            raise json.JSONDecodeError(
+                f"share ledger entry {index} has no readable expiresAt, so the "
+                "retention pass would silently drop it",
+                "",
+                0,
+            )
+    return data
 
 
 def _save(entries: list[dict[str, Any]]) -> None:

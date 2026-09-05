@@ -774,3 +774,88 @@ class TestAssetReadHardening:
         assert "private" in cache
         assert "public" not in cache
         assert offloaded["used"] is True
+
+
+class TestLinkedAncestorGate:
+    """On Windows, a registration destination beneath a linked ANCESTOR must
+    be refused BEFORE the first filesystem probe -- both is_file() and
+    is_sensitive_path's resolved candidate forms traverse every ancestor, so
+    the probe itself would open the SMB connection the lexical UNC screen in
+    local_destination exists to prevent (#5962). Mirrors the guard on the
+    upload-side consumer (_inspect in outbound_files)."""
+
+    def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Patch ONLY the module's view of os -- patching the global os.name
+        # would make pathlib dispatch WindowsPath on a POSIX test host.
+        import os as _os
+
+        monkeypatch.setattr(
+            image_artifacts, "os", types.SimpleNamespace(name="nt", path=_os.path)
+        )
+
+    def test_linked_ancestor_is_refused_before_any_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering IS the property: both downstream probes are wired to
+        explode, so a regression that probes first fails loudly."""
+        f = tmp_path / "shot.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(
+            image_artifacts, "first_linked_ancestor", lambda _p: str(tmp_path)
+        )
+
+        def _boom_is_file(self: Path) -> bool:  # pragma: no cover
+            raise AssertionError("is_file ran before the ancestor walk")
+
+        def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
+            raise AssertionError("is_sensitive_path ran before the ancestor walk")
+
+        monkeypatch.setattr(Path, "is_file", _boom_is_file)
+        monkeypatch.setattr(image_artifacts, "is_sensitive_path", _boom_sensitive)
+        assert image_artifacts._local_file(str(f)) is None
+
+    def test_bypassing_the_guard_restores_the_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation check: with the walk reporting no link, the same file
+        resolves again -- the refusal above is attributable to the guard."""
+        f = tmp_path / "shot.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", lambda _p: None)
+        assert image_artifacts._local_file(str(f)) == f
+
+    def test_the_walk_is_not_consulted_on_posix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSIX behavior is pinned unchanged: the walk must not even run."""
+        import os as _os
+
+        if _os.name == "nt":
+            pytest.skip("gate is active on Windows by design")
+
+        def _boom(_p: object) -> None:  # pragma: no cover
+            raise AssertionError("ancestor walk ran on POSIX")
+
+        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", _boom)
+        f = tmp_path / "shot.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        assert image_artifacts._local_file(str(f)) == f
+
+    def test_a_leaf_link_is_refused_before_any_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The walk deliberately excludes the leaf, so the leaf gets its own
+        junction-aware check -- is_file() FOLLOWS a final-component link."""
+        f = tmp_path / "shot.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(image_artifacts, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(image_artifacts, "is_link_or_junction", lambda _p: True)
+
+        def _boom_is_file(self: Path) -> bool:  # pragma: no cover
+            raise AssertionError("is_file ran before the leaf link check")
+
+        monkeypatch.setattr(Path, "is_file", _boom_is_file)
+        assert image_artifacts._local_file(str(f)) is None

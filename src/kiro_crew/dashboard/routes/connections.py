@@ -121,6 +121,13 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/instances/{id}/send-session", handlers_instances.api_instances_send_session
     )
+    # Peer capability read — the per-instance counterpart to the local
+    # /api/agents, /api/models, /api/effort-levels and /api/workspaces, for a
+    # session whose turns run on that peer. Registered BEFORE the catch-all
+    # proxy route so `{path:.*}` cannot swallow it.
+    app.router.add_get(
+        "/api/instances/{id}/capabilities", handlers_instances.api_instances_capabilities
+    )
     # Generic chat proxy — the carrier for the remote-crew chat view. Forwards
     # a bounded slice of the peer's /api surface over the already-open tunnel;
     # method/path policy lives in the handler (see api_instances_proxy).

@@ -1574,6 +1574,16 @@ class TestEdgeCases:
         assert "default" in cfg.memory_stores
         assert isinstance(cfg.memory_stores["default"], MemoryStoreConfig)
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [(-5, 365), (0, 0), (30, 30)],
+    )
+    def test_history_max_days_sanitized_at_load(self, raw: int, expected: int) -> None:
+        """A hand-edited negative history_max_days falls back to the default
+        at load instead of reaching prune_history raw (#8245)."""
+        cfg = _load_from_dict({"memory": {"history_max_days": raw}})
+        assert cfg.memory.history_max_days == expected
+
     def test_recent_tint_count_loaded_from_config(self) -> None:
         """recent_tint_count from config.json is used instead of default 0."""
         cfg = _load_from_dict({"dashboard": {"recent_tint_count": 8}})

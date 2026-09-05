@@ -934,3 +934,80 @@ class TestSummarizePromptStructure:
             out = summarize_prompt_structure(bad)
             assert out["block_count"] == 0
             assert out["total_bytes"] == empty_bytes
+
+
+class TestLinkedAncestorGate:
+    """On Windows, a candidate beneath a linked ANCESTOR must be refused
+    BEFORE the first filesystem probe -- ``is_file()`` resolves every
+    ancestor, so the probe itself would traverse the link and open the SMB
+    connection the lexical UNC screen exists to prevent (#5962).
+
+    NOTE: under the module-local os patch, ``_PATH_RE`` keeps the grammar
+    chosen at import time, so candidates here stay host-native; the Windows
+    CI shard exercises real backslash shapes via ``tmp_path`` (see
+    ``test_natively_produced_path_is_inlined_on_this_host``)."""
+
+    def _windows(self, monkeypatch):
+        import types
+
+        # Patch ONLY prompt_blocks' view of os (its sole runtime use is the
+        # two gates' os.name checks; _PATH_RE was chosen at import time) --
+        # patching the global os.name would make pathlib dispatch WindowsPath
+        # everywhere on a POSIX test host.
+        monkeypatch.setattr(prompt_blocks, "os", types.SimpleNamespace(name="nt"))
+
+    def test_linked_ancestor_candidate_is_refused_before_any_probe(self, tmp_path, monkeypatch):
+        """Ordering IS the property: the leaf probe is wired to explode, so a
+        regression that probes first fails loudly instead of silently."""
+        p = _png(tmp_path)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: str(tmp_path))
+
+        def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
+            raise AssertionError("is_file ran before the ancestor walk")
+
+        monkeypatch.setattr(Path, "is_file", _boom)
+        blocks = build_prompt_blocks(f"see {p}")
+        # The candidate is skipped, not inlined; the text keeps the path so
+        # the turn still carries a usable reference.
+        assert [b["type"] for b in blocks] == ["text"]
+        assert str(p) in blocks[0]["text"]
+
+    def test_bypassing_the_guard_restores_the_probe(self, tmp_path, monkeypatch):
+        """Mutation check: with the walk reporting no link, the same candidate
+        is probed and inlined again -- so the refusal above is attributable to
+        the guard, not to some other screen."""
+        p = _png(tmp_path)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: None)
+        blocks = build_prompt_blocks(f"see {p}")
+        assert [b["type"] for b in blocks] == ["text", "image"]
+
+    def test_the_walk_is_not_consulted_on_posix(self, tmp_path, monkeypatch):
+        """macOS /tmp and /var are symlinks to /private/*; an unconditional
+        walk would refuse every image staged in a temp dir there."""
+        if os.name == "nt":
+            pytest.skip("gate is active on Windows by design")
+
+        def _boom(_p):  # pragma: no cover
+            raise AssertionError("ancestor walk ran on POSIX")
+
+        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", _boom)
+        p = _png(tmp_path)
+        blocks = build_prompt_blocks(f"see {p}")
+        assert [b["type"] for b in blocks] == ["text", "image"]
+
+    def test_a_leaf_link_is_refused_before_the_probe(self, tmp_path, monkeypatch):
+        """The walk deliberately excludes the leaf, so the leaf gets its own
+        junction-aware check -- is_file() FOLLOWS a final-component link."""
+        p = _png(tmp_path)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(prompt_blocks, "is_link_or_junction", lambda _p: True)
+
+        def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
+            raise AssertionError("is_file ran before the leaf link check")
+
+        monkeypatch.setattr(Path, "is_file", _boom)
+        blocks = build_prompt_blocks(f"see {p}")
+        assert [b["type"] for b in blocks] == ["text"]

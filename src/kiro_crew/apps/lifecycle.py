@@ -15,7 +15,11 @@ from typing import Any
 from kiro_crew.apps.context import AppContext, build_app_context
 from kiro_crew.apps.execution import shipped_builtin_app_root
 from kiro_crew.apps.manager import app_dir
-from kiro_crew.apps.module_loader import load_app_module
+from kiro_crew.apps.module_loader import (
+    cache_shutdown_callable,
+    load_app_module,
+    resolve_loaded_callable,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -56,6 +60,34 @@ _DETACHED_HOOK_TASKS: dict[str, set[asyncio.Task[Any]]] = {}
 # Destructive lifecycle operations therefore fail closed instead of withdrawing
 # trust or replacing files while that worker may still hold AppContext powers.
 _DETACHED_HOOK_RESIDUALS: set[str] = set()
+
+
+def app_has_retained_startup(app_name: str) -> bool:
+    """True if ``app_name`` still has a live or residual detached startup task.
+
+    A degraded/timed-out ``on_startup`` spawns a detached task that keeps running
+    even though the enable path leaves the loaded-signature record CLEARED (so the
+    reconciler retries the wiring on recovery). That cleared record would drop the
+    app out of the reconciler's teardown-candidate set, so a later CLI uninstall
+    would never stop the still-running task. The reconciler therefore also treats
+    an app that answers True here as teardown-visible: it runs the hooks-skipped
+    teardown (route dereg + detached startup-task stop) rather than orphaning it.
+    """
+    if app_name in _DETACHED_HOOK_RESIDUALS:
+        return True
+    return any(not t.done() for t in _DETACHED_HOOK_TASKS.get(app_name, ()))
+
+
+def apps_with_retained_startup() -> set[str]:
+    """App names with a live or residual detached startup task.
+
+    The reconciler unions this into its teardown-candidate set so a degraded app
+    whose loaded-signature record was cleared is still examined (and torn down
+    when it goes away). A superset is fine: the per-app re-read decides the action.
+    """
+    names = set(_DETACHED_HOOK_RESIDUALS)
+    names.update(n for n, tasks in _DETACHED_HOOK_TASKS.items() if any(not t.done() for t in tasks))
+    return names
 
 
 def _mark_cancelled_startup_residual(app_name: str) -> None:
@@ -189,6 +221,54 @@ class LifecycleDispatcher:
             return True
         ctx = self._build_context(app_info)
         return await self._invoke(name, hook_path, ctx, phase="startup")
+
+    async def cache_shutdown_for(self, app_info: dict[str, Any]) -> None:
+        """Resolve and cache an app's ``on_shutdown`` callable for later teardown.
+
+        Called by the PRODUCTION load paths (``on_app_enable`` /
+        ``on_gateway_startup``) right after a successful ``on_startup``. It snapshots
+        the bound ``on_shutdown`` callable so a teardown after a CLI uninstall (files
+        deleted, ``sys.modules`` entries unloaded) can still stop the background work
+        ``on_startup`` spawned.
+
+        Two cases, both without blocking the gateway event loop:
+
+        * ``on_shutdown`` lives in a module startup ALREADY loaded (the common
+          same-module case, or any already-imported module): resolve it purely from
+          ``sys.modules`` via ``resolve_loaded_callable`` -- an in-memory ``getattr``,
+          no disk load and no re-import (re-importing a same-module app would spawn a
+          fresh module object and detach the running startup state).
+
+        * ``on_shutdown`` lives in a SEPARATE module startup never imported: load it
+          from disk, but OFF the loop via ``asyncio.to_thread`` so the file read +
+          top-level module execution cannot freeze heartbeat/requests. This is what
+          lets teardown stop such an app after its files are deleted; the in-memory
+          resolve above is tried FIRST, so a same-module app never reaches this and is
+          never re-imported.
+
+        The cached callable is generation-tagged in ``module_loader`` and cleared on
+        unload/teardown, so a stale generation is never used against newer code.
+        Best-effort throughout: a miss only means that one hook may not run at
+        teardown, so it must never fail the enable.
+        """
+        name = app_info.get("name", "")
+        shutdown_path = self._get_hook(app_info, "on_shutdown")
+        if not shutdown_path:
+            return
+        try:
+            shutdown_func = resolve_loaded_callable(name, shutdown_path)
+            if shutdown_func is None:
+                # Separate module startup never imported: load it off the loop so a
+                # third-party file read + module exec cannot block the gateway.
+                shutdown_func = await asyncio.to_thread(self._resolve_hook, name, shutdown_path)
+            if shutdown_func is not None:
+                cache_shutdown_callable(name, shutdown_func)
+        except Exception:
+            logger.exception(
+                "Could not cache on_shutdown for %s; teardown after uninstall may "
+                "not run its shutdown hook",
+                name,
+            )
 
     async def dispatch_disable(self, app_info: dict[str, Any]) -> bool:
         """Call on_shutdown hook for a single app being disabled.
@@ -380,7 +460,22 @@ class LifecycleDispatcher:
             # reading the empty original. _resolve_hook dotted-imports builtins
             # for exactly that reason and still file-path-loads third-party apps,
             # where the isolation is the point.
-            func = self._resolve_hook(app_name, hook_path)
+            #
+            # SHUTDOWN resolves the ALREADY-LOADED module FIRST. on_shutdown must
+            # stop the code that is actually running, which is the module the
+            # gateway imported -- not whatever is on disk now. Disk and memory can
+            # disagree two ways: a same-path v2 reinstall leaves v2 files on disk
+            # while v1's background task is still live (a disk load would run v2's
+            # on_shutdown and orphan v1), and a CLI uninstall deletes the files
+            # entirely (a disk load raises). Resolving from sys.modules first
+            # covers both; the disk loader is the fallback only when nothing is
+            # loaded (e.g. a builtin, or an app whose module was never imported).
+            # STARTUP never takes this path -- it must load fresh code from disk.
+            func = None
+            if phase == "shutdown":
+                func = resolve_loaded_callable(app_name, hook_path)
+            if func is None:
+                func = self._resolve_hook(app_name, hook_path)
             if func is None:
                 raise ImportError(f"hook {hook_path!r} did not resolve for app {app_name!r}")
             result = func(ctx)

@@ -36,10 +36,12 @@ class TestCatalog:
     def test_catalog_ids_are_unique(self):
         # 130 patterns ported byte-exact from the retired agent-config
         # deniedCommands list + 7 legacy security.py globs (secret-fetch tool
-        # names + boto3 underscore destructive forms) restored as regexes.
-        assert len(BUILTIN_DENIED_RULES) == 148
+        # names + boto3 underscore destructive forms) restored as regexes,
+        # plus later additions (e.g. the dev-mode out-of-install confirmation
+        # flag, #6907).
+        assert len(BUILTIN_DENIED_RULES) == 149
         ids = [r.id for r in BUILTIN_DENIED_RULES]
-        assert len(set(ids)) == 148
+        assert len(set(ids)) == 149
 
     def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
         """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway
@@ -178,7 +180,7 @@ class TestCatalog:
     def test_patterns_match_manifest_verbatim(self):
         golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
         golden_by_id = {g["id"]: g for g in golden}
-        assert len(golden_by_id) == 148
+        assert len(golden_by_id) == 149
         for rule in BUILTIN_DENIED_RULES:
             g = golden_by_id[rule.id]
             assert rule.pattern == g["pattern"]
@@ -192,7 +194,7 @@ class TestCatalog:
 
     def test_builtin_denied_rules_accessor_returns_dicts(self):
         rules = builtin_denied_rules()
-        assert len(rules) == 148
+        assert len(rules) == 149
         first = rules[0]
         assert set(first.keys()) == {"id", "pattern", "category", "description"}
         assert isinstance(first["id"], str)
@@ -229,6 +231,12 @@ class TestSelfProtectionFlagInterposition:
         # tempered-greedy pattern, so it needs no widening/floor from this PR -- it
         # is listed here only to satisfy the category-completeness invariant.
         "self-protection-cron-adopt": "kirocrew {flags} cron adopt",
+        # Keys on the flag LITERAL itself (plain substring), so interposed
+        # flags anywhere in the command cannot separate the anchor from the
+        # token the rule matches — the flag IS the token.
+        "self-protection-dev-mode-out-of-root-confirm": (
+            "kirocrew {flags} app dev my-app --confirm-out-of-install-root"
+        ),
         # The kill rules key on the kill TARGET, not a CLI subcommand; their gap
         # is between the kill verb and the product name.
         "self-protection-kill": "pkill {flags} kirocrew",
@@ -451,25 +459,39 @@ class TestSelfProtectionFlagInterposition:
         rule joining the floor cannot silently skip all three walks. The kill
         rules key on a kill target, not a CLI subcommand, and the credential
         mint rule is outside the self-protection category -- neither has a
-        ``kirocrew ...`` template, so the derivation excludes them.
+        ``kirocrew ...`` template, so the derivation excludes them. The
+        dev-mode confirm rule's template does start with ``kirocrew``, but its
+        floor keys on the FLAG literal, not the subcommand words -- the
+        subcommand walks would quote ``app dev`` alone, which must stay
+        allowed without the flag -- so it is carved out explicitly and gets
+        its own quoting cross in
+        ``test_dev_mode_confirm_flag_denied_under_quote_splitting``.
         """
         from kiro_crew import security
 
+        flag_keyed_floor_ids = {"self-protection-dev-mode-out-of-root-confirm"}
         floor_subcommand_ids = {
             rule_id
             for rule_id in security._SELF_PROTECTION_FLOOR_RULE_IDS
             if self._TEMPLATES.get(rule_id, "").startswith("kirocrew ")
+            and rule_id not in flag_keyed_floor_ids
         }
         assert set(self._SUBCOMMANDS) == floor_subcommand_ids, (
             "every floor-listed kirocrew-subcommand rule must register its "
             "words in _SUBCOMMANDS (and every _SUBCOMMANDS entry must be "
             "floor-listed), or the shell-dressing walks silently skip it"
         )
+        # every flag-keyed carve-out must still be floor-listed -- the carve-out
+        # exempts a rule from the SUBCOMMAND walks, never from the floor itself
+        assert flag_keyed_floor_ids <= set(security._SELF_PROTECTION_FLOOR_RULE_IDS)
         # the predicate for each is wired and fires on a de-escaped argv
         assert security._is_self_restart("kirocrew -\\v restart")
         assert security._is_self_update("kirocrew \\update")
         assert security._is_self_gateway_restart("kirocrew -\\v gateway restart")
         assert security._is_self_cloud_destructive("kirocrew -\\v cloud destroy")
+        assert security._is_dev_mode_out_of_root_confirm(
+            "kirocrew app dev x --confirm-out-of-install-'root'"
+        )
 
     def test_self_protection_denied_under_interposed_redirection(self):
         """A redirection is removed from argv by the shell and can sit anywhere in
@@ -3273,6 +3295,24 @@ class TestCredentialMintSegmentScoping:
     @pytest.mark.parametrize(
         "cmd",
         [
+            f"bash -c'{_NAME} {_TOK}'",  # glued single-quoted
+            f'bash -c"{_NAME} {_TOK}"',  # glued double-quoted
+            f"sh -ec'{_NAME} {_TOK}'",  # letters before the c in the cluster
+            f"bash -lc'{_NAME} {_TOK}'",
+            f"sh -c'{_NAME} >/tmp/o {_TOK}'",  # redirect form needs the descent
+        ],
+    )
+    def test_glued_shell_flag_payload_still_blocked(self, cmd):
+        # With NO space after the `-c`, the payload rides INSIDE the flag token
+        # once shlex strips the quotes (`-c'<mint>'` -> one token).  The bare-flag
+        # pattern rejects a token carrying the payload's own characters, so the
+        # glued spelling was examined by NO consumer of the shared extractor --
+        # this floor included (#8197).
+        assert _denied_by(cmd) == _RULE_MINT
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
             f"{_NAME}>/tmp/out {_TOK}",
             f"{_NAME}>>/tmp/out {_TOK}",
             f"{_NAME} {_TOK}>/tmp/out",
@@ -3805,6 +3845,61 @@ class TestStdinProgramTextScoping:
             f"echo {rule.pattern!r} >> notes.txt",
         ):
             assert security.is_denied(cmd) is None, f"rule fires on its own text: {cmd!r}"
+
+
+class TestDevModeConfirmFlagIsAgentInaccessible:
+    """`--confirm-out-of-install-root` must be unreachable from an agent shell.
+
+    The flag is the operator's explicit attestation for granting app dev mode
+    on a UI root OUTSIDE the app's install directory (#6907), and the grant
+    relaxes the unauthenticated UI route's root containment. Without this rule
+    an auto-approved Bash tool could pass the flag itself and convert shell
+    access into a self-granted serving grant on an arbitrary host directory —
+    the exact self-grant path the confirmation gate exists to close. Two tiers
+    enforce it: the catalog rule matches the flag's literal text (direct form,
+    nested shell payloads, quoted interpreter argv), and the paired argv floor
+    (``_is_dev_mode_out_of_root_confirm``) re-checks the DE-ESCAPED text and
+    tokenized argv, because quote-splitting inside the token
+    (``--confirm-out-of-install-'root'``) reaches argparse as the accepted
+    flag while the raw text never carries the literal.
+    """
+
+    def test_the_flag_is_denied_in_direct_and_nested_forms(self):
+        from kiro_crew import security
+
+        for cmd in (
+            "kirocrew app dev my-app --confirm-out-of-install-root",
+            'bash -c "kirocrew app dev my-app --confirm-out-of-install-root"',
+            "python3 -c \"import subprocess; subprocess.run("
+            "['kirocrew','app','dev','x','--confirm-out-of-install-root'])\"",
+        ):
+            assert security.is_denied(cmd) is not None, f"not denied: {cmd!r}"
+
+    def test_dev_mode_confirm_flag_denied_under_quote_splitting(self):
+        """Quoting splits the flag in RAW text but the shell strips it, so the
+        de-quoted argv still carries the accepted flag -- the argv floor must
+        deny every spelling the raw-text regex cannot see."""
+        from kiro_crew import security
+
+        for cmd in (
+            "kirocrew app dev my-app --confirm-out-of-install-'root'",
+            'kirocrew app dev my-app --confirm-out-of-install-"root"',
+            'kirocrew app dev my-app "--confirm-out-of-install-root"',
+            "kirocrew app dev my-app '--confirm-out-of-install-root'",
+            'kirocrew app dev my-app --confirm-out-of-install-ro""ot',
+            "kirocrew app dev my-app --confirm\\-out-of-install-root",
+            "kirocrew app dev my-app --'confirm'-out-of-install-root",
+            "bash -c \"kirocrew app dev my-app --confirm-out-of-install-'root'\"",
+        ):
+            assert security.is_denied(cmd) is not None, f"not denied: {cmd!r}"
+
+    def test_ordinary_dev_toggles_stay_allowed(self):
+        """The rule targets the attestation flag, not the dev-mode verb —
+        in-install dev-mode toggles remain an ordinary agent operation."""
+        from kiro_crew import security
+
+        assert security.is_denied("kirocrew app dev my-app") is None
+        assert security.is_denied("kirocrew app dev my-app --off") is None
 
 
 class TestSelfModuleIndexIsLinear:
@@ -4494,8 +4589,8 @@ class TestNestedPayloadExtractionIsLinear:
         # (3x for a 2x input) so scheduler noise on a shared runner cannot red it,
         # while a quadratic scan's 4x cannot pass.
         assert large < small * 3, f"{small:.4f}s -> {large:.4f}s looks super-linear"
-        # ...and the absolute floor: the quadratic took ~13 s at this size.
-        assert large < 1.0, f"16k tokens took {large:.3f}s"
+        # No absolute cap: coverage tracing on the backend jobs prices line
+        # events, not algorithmic cost (#8630 precedent); the ratio is the guard.
 
     def test_a_long_double_dash_run_is_also_linear(self):
         """The ``--`` skip after a command flag was a THIRD forward walk, and fixing
@@ -4515,7 +4610,8 @@ class TestNestedPayloadExtractionIsLinear:
         elapsed(500)
         small, large = elapsed(4000), elapsed(8000)
         assert large < small * 3, f"{small:.4f}s -> {large:.4f}s looks super-linear"
-        assert large < 1.0, f"8k+8k tokens took {large:.3f}s"
+        # No absolute cap: coverage tracing on the backend jobs prices line
+        # events, not algorithmic cost (#8630 precedent); the ratio is the guard.
 
     def test_the_stop_predicates_match_the_handling(self):
         """The precomputed index and the branch taken at that index are two places
@@ -4523,10 +4619,30 @@ class TestNestedPayloadExtractionIsLinear:
         tokens its handler knows how to process."""
         from kiro_crew import security
 
-        for token in ("-c", "<<<", "<<<glued"):
-            assert security._is_shell_command_flag_or_herestring(token), token
-        for token in ("x", "--", "bash", ""):
-            assert not security._is_shell_command_flag_or_herestring(token), token
+        for token in ("-c", "-lc", "--command"):
+            assert security._is_shell_command_flag(token), token
+        # `-Cc` is deliberately NOT a flag stop: widening the class made it eat
+        # the stop through which a later `--command`'s payload was found.  The
+        # uppercase-clustered spellings belong to the every-carrier sweep
+        # (spaced) and the glued pattern (glued) instead.
+        for token in ("x", "--", "bash", "", "<<<", "-Cc"):
+            assert not security._is_shell_command_flag(token), token
+
+        for token in ("<<<", "<<<glued"):
+            assert security._is_herestring_token(token), token
+        for token in ("x", "--", "bash", "", "-c"):
+            assert not security._is_herestring_token(token), token
+
+        for token in ("-cx.sh", "-ecrg . /root", "-Ccrg . /root"):
+            assert security._is_glued_shell_command_token(token), token
+        for token in ("-c", "-lc", "-Cc", "x", "--", "bash", "", "<<<x"):
+            assert not security._is_glued_shell_command_token(token), token
+
+        # The sweep's loose carrier recognition covers what neither table does.
+        assert security._shell_c_carrier_glued("-Cc") == ""
+        assert security._shell_c_carrier_glued("-1c") == ""
+        assert security._shell_c_carrier_glued("-1cx.sh") == "x.sh"
+        assert security._shell_c_carrier_glued("--command") is None
 
         for token in ("-s", "--split-string", "-Sx", "--split-string=x"):
             assert security._is_env_split_flag(token), token
@@ -5603,8 +5719,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
     EMPTY_WORDS = ('""', "''", "$''", '$""', "\"\"''", '""""')
 
     # Single-segment commands, one per rule shape.  ``git push origin main`` is
-    # here for the VIEW property but not for the deny property -- see
-    # ``test_the_git_publish_detector_is_a_separate_pre_existing_gap``.
+    # here for the VIEW property; its deny property is enforced by the argv
+    # floor rather than the tiers -- see
+    # ``test_the_git_publish_detector_skips_an_empty_word``.
     PROPERTY_BASES = (
         "rm -rf /home/x",
         "dd if=/dev/zero of=/dev/sda",
@@ -5647,43 +5764,85 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
 
     def test_the_deny_decision_follows_the_view_for_every_boundary(self):
         """The view property above, carried through to the decision the gate
-        actually returns -- for the rules the deny TIERS evaluate."""
+        actually returns.  The non-git bases are decided by the deny TIERS;
+        the git base is enforced by the argv floor, swept here since issue
+        #8115 closed its empty-word gap (an interposed word now denies at
+        every boundary -- via the protected-branch rule where the parse holds,
+        via the ungated anti-obfuscation branch where it does not)."""
         from kiro_crew import security
 
         for base in self.PROPERTY_BASES:
-            if base.startswith("git "):
-                continue  # enforced by an argv floor, not the tiers -- see below
             expected_denied = security.is_denied(base) is not None
             for _at, _word, variant in self._empty_word_variants(base):
                 assert (security.is_denied(variant) is not None) == expected_denied, (
                     f"{variant!r} decided differently from {base!r}"
                 )
 
-    def test_the_git_publish_detector_is_a_separate_pre_existing_gap(self):
-        """DOCUMENTED GAP, pinned rather than claimed.
+    def test_the_git_publish_detector_skips_an_empty_word(self):
+        """GAP CLOSED by issue #8115 -- this is the flipped form of the
+        ``test_the_git_publish_detector_is_a_separate_pre_existing_gap`` pin
+        that #8114 left, and it now pins the closure.
 
-        ``git "" push origin main`` is allowed, and it is NOT this fix's mechanism.
-        Every git-publish rule is stripped from the regex tier and enforced solely
-        by an argv floor (``_git_publish_floor_tags``), whose entry detector
-        ``_is_git_publish`` reads the RAW command text and requires ``git`` and
-        ``push`` adjacent -- so an interposed empty word means the floor is never
-        consulted and the normalized view, which this change does fix, is never
-        reached.  Measured at this branch's merge-base ``a9769ebb1``: allowed there
-        too, so the delta from this change is zero.
-
-        Closing it means widening the sole enforcement path for pushes, whose
-        false-negative direction is "publish to a protected branch" -- a separate
-        change with its own review surface.  Tracked by issue #8115; when it
-        lands, this test is the one that must flip.
+        Every git-publish rule is stripped from the regex tier and enforced
+        solely by an argv floor (``_git_publish_floor_tags``).  Its entry
+        detector's raw-text pass still requires the program and subcommand
+        adjacent, but the normalizer second pass
+        (``_is_git_push_via_normalizer``) now skips empty and whitespace-only
+        argv words when seeking the subcommand, so an interposed empty word no
+        longer hides the push from the floor.  The widening is deliberate
+        fail-closed OVER-detection: git does not ignore a zero-width word (it
+        takes it as its command name and exits), so a spelling this newly
+        reaches either fails to run a push at all or was already reached in
+        its adjacent spelling -- no runnable push gains an escape.  For the
+        newly-reached spellings the floor's ``_git_push_args`` parse fails on
+        the interposed word, so the deny comes from the UNGATED
+        anti-obfuscation branch (``_GIT_PUBLISH_UNGATED``), not from
+        ``_is_push_to_protected_branch`` -- the right treatment for a spelling
+        git itself cannot run.
         """
+        from kiro_crew import security
+
         assert is_denied("git push origin main") is not None, (
             "the protected-branch floor no longer fires on the plain spelling -- this "
             "pin is measuring nothing"
         )
-        assert is_denied('git "" push origin main') is None, (
-            "the git-publish detector now tolerates an empty word -- the gap this pins "
-            "is closed, so update the security spec and flip this assertion"
-        )
+        # Every empty-word spelling the view property enumerates, interposed
+        # at the exact boundary the entry detector used to bail on, plus the
+        # whitespace-only shapes from issue #8115.
+        base = "git push origin main".split(" ")
+        for word in self.EMPTY_WORDS + ('" "', "$'\\t'"):
+            cmd = " ".join([base[0], word] + base[1:])
+            assert is_denied(cmd) is not None, (
+                f"an interposed word escaped the git-publish floor: {cmd!r}"
+            )
+        # The DISCRIMINATING pin for the seek-loop closure is the predicate
+        # itself: the end-to-end deny above can also arrive via the ungated
+        # parse-failure branch, and the flag spellings below already match the
+        # pass-1 raw regex, so only a direct call proves the normalizer seek
+        # now steps over the empty word (and, for the flag rows, that a global
+        # flag still consumes its empty argument without drifting off the
+        # subcommand position).
+        for cmd in (
+            'git "" push origin main',
+            "git '' -c x=y push origin main",
+            "git -c '' push origin main",
+        ):
+            assert security._is_git_push_via_normalizer(cmd) is True, (
+                f"the normalizer seek did not resolve the subcommand: {cmd!r}"
+            )
+        # ...and the end-to-end deny for the flag spellings holds too.
+        for cmd in (
+            "git -c '' push origin main",
+            "git -C '' push origin main",
+            "git '' -c x=y push origin main",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A post-subcommand empty word was always tolerated (argv parsing has
+        # begun by then) and stays unchanged.
+        assert is_denied('git push "" origin main') is not None
+        # The subcommand-position requirement is intact: ``stash push`` with an
+        # interposed empty word is still not a publish.
+        assert is_denied('git "" stash push') is None
 
     def test_a_whitespace_only_word_is_a_documented_residual(self):
         """DOCUMENTED GAP, pinned rather than claimed.

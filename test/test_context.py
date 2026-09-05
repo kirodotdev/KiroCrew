@@ -1412,3 +1412,18 @@ class TestMemoryGetContextQueryWiring:
         )
         builder.build_message("find my tokyo notes", True, "s2")
         assert seen == ["find my tokyo notes"]
+
+
+class TestKeepVisibleMarkerRule:
+    """#7948: the keep-visible collapse exemption must be documented in the
+    DASHBOARD critical rules (collapse-all is a dashboard-transcript feature
+    and rehype-raw is what renders the marker invisible), and must NOT ship in
+    the channel variant -- Slack/Discord outbound formatters never strip HTML
+    comments, so a channel agent following the rule would show users the
+    literal marker text."""
+
+    def test_marker_documented_in_dashboard_rules_only(self):
+        from kiro_crew.context import _CRITICAL_RULES, _CRITICAL_RULES_CHANNEL
+
+        assert "<!-- keep-visible -->" in _CRITICAL_RULES
+        assert "<!-- keep-visible -->" not in _CRITICAL_RULES_CHANNEL

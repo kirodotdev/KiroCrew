@@ -426,7 +426,20 @@ describe('a background refresh must not re-validate a cursor a pending switch in
   it('a superseded settle does not release the claim a newer switch holds', async () => {
     holdSwitchDetail = true
     const store = makeStore()
-    resumed(store)
+    // Seeded with an OLD page rather than the newest one, so the switch's window
+    // genuinely sits clear of the cache and the coverage check OBSERVES a hole. With
+    // the newest page cached, every bounded window covers it and no retry is issued
+    // -- correctly, but then this test has only two legs and cannot exercise a claim
+    // outliving one. The shape here is the real case the retry exists for: a tab
+    // holding history from before the conversation moved on.
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(
+      resumeFromHistory.fulfilled(
+        { ok: true, key: 'A', nextBefore: 0, messages: HISTORY.slice(0, PAGE), hasMore: false, total: TOTAL },
+        'req-resume',
+        { key: 'A', title: 'A' },
+      ),
+    )
 
     store.dispatch(switchSlot('A'))
     await flush()

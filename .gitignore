@@ -155,3 +155,7 @@ website/.vitest-reports/
 
 # Skill eval A/B outputs (regenerated per run; not review artifacts)
 evals/*/iteration-*/
+
+# A distribution stamps its build number here at packaging time (see
+# kiro_crew/__init__.py); never committed -- a dev checkout runs the bare core.
+src/kiro_crew/BUILD_VERSION

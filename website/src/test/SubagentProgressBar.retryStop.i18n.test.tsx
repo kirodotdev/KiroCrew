@@ -26,6 +26,7 @@
 
 import { describe, it, expect, vi, afterAll } from 'vitest'
 import { render } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentDone } from '../store/chatSlice'
@@ -62,10 +63,13 @@ function renderChip() {
   for (const id of ['r1', 'r2']) {
     store.dispatch(sseSubagentSpawn({ slot: SLOT, id, task: `task ${id}`, agent: `agent-${id}` }))
   }
+  const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   return render(
-    <Provider store={store}>
-      <SubagentProgressBar slot={SLOT} />
-    </Provider>,
+    <QueryClientProvider client={queryClient}>
+      <Provider store={store}>
+        <SubagentProgressBar slot={SLOT} />
+      </Provider>
+    </QueryClientProvider>,
   )
 }
 

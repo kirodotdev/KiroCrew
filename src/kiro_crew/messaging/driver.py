@@ -821,27 +821,35 @@ class TurnDriver:
         if args is None:
             if getattr(event, "tool_final", False):
                 if session_directive.is_refusal(output):
-                    # encode() refused to emit a marker (payload over the
-                    # delivery limit): nothing was applied and the result text
-                    # already told the model so. Terminal for this call.
+                    # The tool DECLINED and said so in its own result text (an
+                    # oversized payload, a schema rejection ahead of the handler,
+                    # or a session this effect can never apply to): nothing was
+                    # applied and the model was told. Terminal for this call.
                     pending.pop(event.tool_call_id, None)
                     if consumed is not None and event.tool_call_id:
                         consumed.add(event.tool_call_id)
                     logger.info(
-                        "session-directive REFUSED for %r (tool_call_id=%s): "
-                        "payload over the %d-char delivery limit; nothing applied",
+                        "session-directive REFUSED for %r (tool_call_id=%s, "
+                        "out_len=%d): the tool returned a tagged refusal instead "
+                        "of a directive; nothing applied",
                         tool,
                         event.tool_call_id,
-                        session_directive.MAX_DIRECTIVE_CHARS,
+                        len(output),
                     )
                 else:
                     # Authenticated directive tool, final frame, no marker:
                     # the effect is being dropped outright. Never let that be
-                    # silent — this exact silence can hide a marker-escaping
-                    # transport regression.
+                    # silent — and name BOTH causes that reach here now that
+                    # every by-design decline is tagged: the marker was mangled
+                    # in transport, or the tool raised past its own return so its
+                    # decline never passed refuse_if_markerless. Asserting one
+                    # cause sends an operator hunting a bug that is not there.
                     logger.warning(
                         "session-directive decode FAILED for %r (tool_call_id=%s, "
-                        "out_len=%d) — effect dropped",
+                        "out_len=%d) — effect dropped. Either the marker was lost "
+                        "in transport (a marker-escaping regression) or the tool "
+                        "raised past its own return, so its decline was never "
+                        "tagged a refusal",
                         tool,
                         event.tool_call_id,
                         len(output),

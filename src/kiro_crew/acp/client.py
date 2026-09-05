@@ -28,6 +28,7 @@ import stat
 import subprocess as subprocess_mod
 import sys
 import time
+import uuid
 from collections import deque
 from contextlib import aclosing
 from pathlib import Path
@@ -42,7 +43,7 @@ from typing import (
     TypeVar,
 )
 
-from kiro_crew import agent_scratch, model_registry, platform_compat
+from kiro_crew import acp_tool_gate, agent_scratch, model_registry, platform_compat
 from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
     _kiro_tool_name,
@@ -61,6 +62,7 @@ from kiro_crew.acp._dispatch import (
     redact_text,
 )
 from kiro_crew.acp.liveness import (
+    EVIDENCE_SAMPLING,
     VERDICT_WORKING,
     LivenessOracle,
     _consume_future_exception,
@@ -1099,6 +1101,12 @@ _STALE_TURN_TIMEOUT = 90.0
 # that silently never returns, burning the whole job timeout.  Long real tools
 # keep resetting the timer via tool_call_update progress frames and tool
 # results, so this only trips on a genuine stall.
+#
+# CONTRACT FOR BACKEND AUTHORS: a backend that emits NO frame at all while a
+# tool runs gets exactly this window for the whole tool, so a >10min build must
+# either stream tool_call_update progress frames or ping the session-keepalive
+# endpoint (both reset the clock).  This window — not the ~90s stale-turn
+# cutoff — is what governs an open tool call's silence (issue #8520).
 _TOOL_STALL_TIMEOUT = 600.0
 # After a compaction `failed` status, kiro-cli can leave the turn it was
 # compacting for unanswered: no session/prompt response and no end_turn ever
@@ -1342,6 +1350,20 @@ class AcpAuthRequired(AcpError):  # noqa: N818
     Non-retryable: respawning the process hits the same wall, so callers must
     surface the actionable message and skip the retry ladder rather than
     reset-and-requeue the turn.
+    """
+
+
+class AcpToolGateUnroutable(AcpError):  # noqa: N818
+    """The harness's tool calls would not reach Kiro Crew's PreToolUse gate.
+
+    Non-retryable, and a DISTINCT type from the transport errors around it: the
+    condition is a configuration fact, so a respawn re-reads the same answer and
+    refuses again while consuming a reconnect budget meant for transport faults.
+
+    Wraps :class:`kiro_crew.acp_tool_gate.ToolGateUnroutable`, which cannot
+    subclass ``AcpError`` itself -- it lives in a LEAF module that must not import
+    this one (import cycle, and a forbidden-root edge for the SDK boundary gate).
+    Branchless callers keep degrading through their generic ``AcpError`` handling.
     """
 
 
@@ -1744,11 +1766,61 @@ def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
     namespaces would call every legitimate model unusable; that backend
     announces its own substitutions through the ``session/new`` advisory
     instead (see ``_new_session_following_substitution``).
+
+    A pin carrying a stale ``<namespace>::<bare-id>`` qualifier (stored when a
+    catalog advertised the qualified spelling, judged against one advertising
+    the bare id) is the one comparable mismatch, and it is deliberately NOT
+    folded here: this predicate's permissive answer feeds the wire sites, and
+    a still-qualified id on the wire is a spelling the backend never
+    advertised. :func:`resolve_pin_spelling` is the shared fold for that case —
+    it answers with the advertised spelling, so a caller can compare AND send
+    one consistent id.
     """
     if not advertised:
         return False
     wanted = model_id.strip().lower()
     return wanted not in {m.strip().lower() for m in advertised if m and m.strip()}
+
+
+def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str:
+    """The advertised spelling *model_id* resolves to, or ``""`` when none.
+
+    The companion to :func:`model_is_unusable` for values that arrive from
+    storage rather than from the live picker: a persisted pin can carry a
+    ``<namespace>::<bare-id>`` qualifier from the catalog that advertised it
+    (issue #8521's ``openrouter::z-ai/glm-5.3-flash``), while the session being
+    judged advertises the BARE id. The literal membership test then misses for
+    a model the backend fully serves. This fold recovers the match without
+    per-provider exemptions: the full id is tried first, and only on a miss is
+    ONE leading ``<namespace>::`` qualifier peeled and the tail retried — so a
+    pin the backend genuinely does not serve still resolves to ``""`` under
+    either spelling, and an id advertised verbatim (qualifier and all) never
+    gets peeled at all.
+
+    Returns the ADVERTISED spelling of the match, not the caller's: the result
+    is meant to be sent on the wire (``session/set_model`` accepts advertised
+    ids), and it keeps the display verdict and the wire withhold answering from
+    one fold so the two cannot disagree about what "usable" means. Matching is
+    case/whitespace-insensitive on both sides, mirroring
+    :func:`model_is_unusable`.
+
+    An empty/unknown *advertised* set returns ``""`` — NOT as a "withheld"
+    answer, but as "nothing to resolve against": callers must keep routing the
+    withhold decision itself through :func:`model_is_unusable`, whose
+    empty-set-means-allow contract (harness-parity H12) this function does not
+    replace.
+    """
+    ids = [m.strip() for m in (advertised or []) if m and m.strip()]
+    if not ids:
+        return ""
+    by_key = {m.lower(): m for m in ids}
+    wanted = model_id.strip().lower()
+    if wanted in by_key:
+        return by_key[wanted]
+    namespace, sep, bare = wanted.partition("::")
+    if sep and namespace and bare in by_key:
+        return by_key[bare]
+    return ""
 
 
 def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> str:
@@ -2519,6 +2591,34 @@ def _select_tool_title(
     return None
 
 
+def _sandbox_preflight(backend: str, mode: str) -> tuple[str, ...]:
+    """Refuse an unmasked enforced adapter, then resolve its credential mask.
+
+    One function so the caller pays ONE ``asyncio.to_thread`` hop for both steps:
+    ``enforce_sandbox_floor`` probes for a sandbox backend and
+    ``adapter_hidden_credential_dirs`` resolves the home and every env-override root,
+    and both are blocking filesystem work that must not run on the event loop.
+
+    Raises :class:`AcpToolGateUnroutable` when this session would spawn the adapter
+    with its mask dropped; returns the mask otherwise (empty for a harness this core
+    does not enforce, so their spawn arguments stay byte-identical).
+    """
+    try:
+        acp_tool_gate.enforce_sandbox_floor(backend, mode)
+        return acp_tool_gate.adapter_hidden_credential_dirs(backend)
+    except acp_tool_gate.ToolGateUnroutable as exc:
+        # Translate at the boundary, exactly as the session-routing path does.
+        # ``acp_tool_gate`` is a LEAF that cannot import this module, so its
+        # ToolGateUnroutable is a plain ``Exception``: it is neither an
+        # ``AcpError`` (so the transport ladder in ``ensure_ready`` cannot see
+        # it) nor the ``AcpToolGateUnroutable`` the dedicated non-retrying
+        # handler names (an unrelated class). Raised raw, a sandbox-floor
+        # refusal therefore escaped ``ensure_ready`` uncaught and skipped the
+        # cleanup every other refusal path runs. ``from None`` because the
+        # wrapper carries the whole actionable message already.
+        raise AcpToolGateUnroutable(str(exc)) from None
+
+
 class AcpClient:
     """JSON-RPC 2.0 client over stdio with kiro-cli acp."""
 
@@ -2534,7 +2634,6 @@ class AcpClient:
         acp_backend: str = "",
         audit_source: str | None = None,
         mcp_gateway_overlay: str | Path | None = None,
-        mcp_gateway_settings_mcp_json: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
     ):
@@ -2595,9 +2694,6 @@ class AcpClient:
         # the same-named entries in the agent spec. Nothing is written to the
         # user's project or to ~/.kiro/agents. None = pooling off.
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
-        self._mcp_gateway_settings_mcp_json = (
-            str(mcp_gateway_settings_mcp_json) if mcp_gateway_settings_mcp_json else None
-        )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
@@ -2605,6 +2701,12 @@ class AcpClient:
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
         self._start_time: int | None = None  # process start time for PID recycling detection
+        # Names THIS spawn of the child, not the session it serves: a resume
+        # re-uses the session id on a brand-new process (see ensure_ready's
+        # session/load path), so the session id cannot distinguish the process
+        # that minted a resource from a successor that cannot honor it. Fresh
+        # per spawn, cleared with the process. See ``process_instance``.
+        self._process_instance: str = ""
         self._session_id: str | None = None
         self._next_id = 1
         self._buffer: deque[JsonRpcMessage] = deque(maxlen=100)
@@ -3248,6 +3350,20 @@ class AcpClient:
         return self._is_process_alive()
 
     @property
+    def process_instance(self) -> str:
+        """Identity of the CURRENT child process instance (``""`` when none).
+
+        A fresh random id per spawn. This — not the ACP session id — is what a
+        resource minted by the child must be compared against later: a resume
+        carries the SAME session id onto a NEW process (``ensure_ready``'s
+        session/load path re-sets ``_session_id`` from ``resume_sid``), so a
+        session-id comparison fails open exactly when the minting process is
+        gone. Liveness is a separate question: this names which spawn, while
+        :meth:`is_process_alive` answers whether it still runs.
+        """
+        return self._process_instance if self._process is not None else ""
+
+    @property
     def exit_code(self) -> int | None:
         """Return the process exit code, or None if still running / never started."""
         return self._process.returncode if self._process else None
@@ -3496,21 +3612,37 @@ class AcpClient:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
             return
         if self._is_kiro and self._model_is_unusable(self._model):
-            _withheld_log, _ = redact_exfiltration_urls(str(self._model))
-            _withheld_log, _ = redact_credentials(_withheld_log)
-            logger.warning(
-                "ACP model %s is not available to this account; staying on the "
-                "backend default %s (advertised: %s)",
-                _withheld_log,
-                self._resolved_model_id or DEFAULT_MODEL,
-                ", ".join(self._advertised_model_ids()),
-            )
-            # Record the session as running the default rather than the value we
-            # declined: the "!= DEFAULT_MODEL" test above is also what the
-            # warm-pool re-apply path reads (session_provider), so leaving the
-            # unusable id here would re-offer it on every claim.
-            self._model = DEFAULT_MODEL
-            return
+            # A literal miss can be a stale ``<namespace>::`` qualifier on a
+            # model the backend fully serves (#8521): resolve to the advertised
+            # spelling and send THAT, so the session runs the model the pin
+            # names instead of silently dropping to the default. Same fold the
+            # display verdict uses (chat_runner._pinned_model_verdict), so the
+            # chip and the wire cannot disagree about what "usable" means. A
+            # pin absent under either spelling still takes the withhold below.
+            _resolved = resolve_pin_spelling(self._model, self._advertised_model_ids())
+            if _resolved:
+                logger.info(
+                    "ACP model %s resolves to advertised %s; sending the advertised spelling",
+                    self._model,
+                    _resolved,
+                )
+                self._model = _resolved
+            else:
+                _withheld_log, _ = redact_exfiltration_urls(str(self._model))
+                _withheld_log, _ = redact_credentials(_withheld_log)
+                logger.warning(
+                    "ACP model %s is not available to this account; staying on the "
+                    "backend default %s (advertised: %s)",
+                    _withheld_log,
+                    self._resolved_model_id or DEFAULT_MODEL,
+                    ", ".join(self._advertised_model_ids()),
+                )
+                # Record the session as running the default rather than the value we
+                # declined: the "!= DEFAULT_MODEL" test above is also what the
+                # warm-pool re-apply path reads (session_provider), so leaving the
+                # unusable id here would re-offer it on every claim.
+                self._model = DEFAULT_MODEL
+                return
         if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
             await self.set_config_option("model", self._model)
         else:
@@ -3531,6 +3663,63 @@ class AcpClient:
         await self._wait_for_response(req_id, timeout=10.0)
 
     # ── Dynamic Config from ACP ──
+
+    async def _apply_session_permission_routing(self) -> None:
+        """Make a SESSION_CONFIG harness actually ask, or refuse to run it.
+
+        Called ONLY for a ``SESSION_CONFIG`` harness -- the caller tests that, so
+        the Kiro path never reaches this method (harness-parity H13).
+
+        Two outcomes, and each is a different verdict on purpose:
+
+        * the option was not advertised -> INDETERMINATE, because Kiro Crew cannot
+          tell what the adapter will do, and "cannot tell" must not read as armed;
+        * the write was rejected -> BYPASSED, an observed failure rather than an
+          unknown.
+
+        Only the enforced mechanisms refuse; ``enforce_runtime_routing`` owns that
+        decision, so the scope lives in one place instead of being re-derived here.
+        """
+        backend = self.backend
+        option_id, value = acp_tool_gate.permission_config_for(backend)
+        issue = acp_tool_gate.session_config_issue(backend, self._acp_config_options)
+        if issue:
+            # Not advertised: INDETERMINATE, never BYPASSED. The adapter may well
+            # ask anyway; Kiro Crew simply has no evidence, and the enforcement
+            # treats the two identically while the message stays honest.
+            try:
+                acp_tool_gate.enforce_runtime_routing(
+                    backend,
+                    issue,
+                    verdict=acp_tool_gate.Verdict.INDETERMINATE,
+                    remedy=acp_tool_gate.remediation_for(backend),
+                )
+            except acp_tool_gate.ToolGateUnroutable as exc:
+                raise AcpToolGateUnroutable(str(exc)) from None
+            return
+
+        try:
+            await self.set_config_option(option_id, value)
+        except AcpError as exc:
+            # The option was advertised and the write still failed, so this is an
+            # observed bypass rather than missing evidence.
+            try:
+                acp_tool_gate.enforce_runtime_routing(
+                    backend,
+                    "the adapter rejected its required session permission configuration",
+                    verdict=acp_tool_gate.Verdict.BYPASSED,
+                    remedy=acp_tool_gate.remediation_for(backend),
+                )
+            except acp_tool_gate.ToolGateUnroutable as gate_exc:
+                raise AcpToolGateUnroutable(str(gate_exc)) from exc
+            return
+
+        logger.info(
+            "ACP permission route armed: %s=%s (%s)",
+            option_id,
+            value,
+            acp_tool_gate.label_for(backend),
+        )
 
     def _store_session_config(self, resp: dict) -> None:
         """Extract effort configOptions from a session/new or session/load response.
@@ -3721,6 +3910,13 @@ class AcpClient:
         if self.backend in ACP_BACKENDS_INTERNAL_SANDBOX:
             await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
 
+        # Credential mask for an enforced adapter, resolved inside that adapter's
+        # own branch below. Declared here only because wrap_argv_async takes it as
+        # one argument for every harness; the kiro branch never assigns it, so the
+        # kiro construction path gains no conditional, no awaited step and no new
+        # failure point in service of an adapter (harness-parity H13).
+        adapter_hidden_dirs: tuple[str, ...] = ()
+
         if self._is_claude:
             # Fold the requested model onto the exact spelling claude-agent-acp
             # advertised (from the persisted provider-model cache warmed by a
@@ -3801,6 +3997,26 @@ class AcpClient:
                     f"The 'codex' CLI alone does not serve ACP."
                 )
             argv = codex_argv
+            # Fail closed BEFORE the spawn when the mask below would be dropped:
+            # several wrap_argv paths return without applying extra_hidden_dirs,
+            # which would start an enforced adapter with no compensating control
+            # at all. Placed inside this pre-existing codex arm rather than in a
+            # gate of its own on the shared path: harness-parity H13 asks whether
+            # the kiro path CHANGED, and a conditional or an awaited step added
+            # there in service of an adapter is the change it names -- so the
+            # adapter's work lives entirely behind the adapter's own seam.
+            # Keyed on the ROUTING, not on codex's identity: _sandbox_preflight
+            # re-checks acp_tool_gate.is_enforced(self.backend) itself, so this
+            # site cannot mask a harness this core does not enforce. A future
+            # SESSION_CONFIG harness gets its own arm here and must make the same
+            # call; test_acp_tool_gate ratchets that so it cannot be forgotten.
+            # OFF-LOOP: both halves touch the filesystem -- the refusal probes for
+            # a sandbox backend (a cold probe shells out via subprocess.run) and
+            # the mask resolves the home plus every env-override root -- so they
+            # run in ONE worker thread rather than blocking the gateway loop.
+            adapter_hidden_dirs = await asyncio.to_thread(
+                _sandbox_preflight, self.backend, self._sandbox_mode
+            )
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -3851,6 +4067,10 @@ class AcpClient:
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            # Credential homes the standard tier exposes for kiro-cli's sake and
+            # that an enforced adapter has no claim on. Empty for every harness
+            # this core does not enforce, so their spawn arguments are unchanged.
+            extra_hidden_dirs=adapter_hidden_dirs,
             is_kiro_cli=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
             _prepare=wrap_argv,
         )
@@ -3995,6 +4215,11 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        # Minted with the process it names, random rather than pid-derived: a
+        # pid can be reused by the OS, and the start-time disambiguator is not
+        # readable on every platform, so equality on a fresh random id is the
+        # comparison that cannot false-match across spawns.
+        self._process_instance = uuid.uuid4().hex[:16]
         _spawn_label = (
             CLAUDE_ACP_BIN
             if self._is_claude
@@ -4316,6 +4541,9 @@ class AcpClient:
         saved_child_pids = self._child_pids
         self._process = None
         self._pid = None
+        # The instance id names the process that just ended; a replacement spawn
+        # mints its own, so nothing may keep answering with this one in between.
+        self._process_instance = ""
         # A walk wedged on the dead PID's /proc entry can never speak for the
         # replacement process, so release it with the oracle it sampled into.
         self._retire_liveness_state()
@@ -4697,6 +4925,17 @@ class AcpClient:
         # 5. Set model — override if KiroCrew config specifies non-default.
         await self._apply_startup_model()
 
+        # 6. Arm permission routing for harnesses whose asking is a session
+        #    config option. AFTER the model apply (both write config options, and
+        #    the permission one must land last) and before any prompt can run:
+        #    _initialize_session is entirely pre-prompt, which is what makes this
+        #    placement the guarantee rather than a best effort.
+        #    Gated HERE rather than inside the method, so the first-class Kiro path
+        #    gains no call, no await and no failure point in service of an adapter
+        #    (harness-parity H13). A positive membership test, never "not claude".
+        if acp_tool_gate.routing_for(self.backend) is acp_tool_gate.Routing.SESSION_CONFIG:
+            await self._apply_session_permission_routing()
+
         # Drain MCP server init notifications
         await self._drain_notifications()
 
@@ -4748,6 +4987,18 @@ class AcpClient:
 
                     _startup_outcome = "ready"
                     return
+                except AcpToolGateUnroutable:
+                    # Non-retryable BY CONSTRUCTION (see the class docstring): the
+                    # refusal is a configuration fact, so a respawn re-reads the same
+                    # answer and refuses again -- a wasted spawn plus teardown that
+                    # also spends the reconnect budget this DISTINCT type exists to
+                    # protect. Must sit BEFORE the generic transport handler, because
+                    # it subclasses AcpError and would otherwise be retried by it,
+                    # which is the shape that made the distinct type decorative.
+                    _startup_outcome = "tool_gate_unroutable"
+                    await self._cleanup_failed_live_spawn()
+                    self._reset_state()
+                    raise
                 except (AcpTimeoutError, AcpError) as exc:
                     if attempt == 0:
                         logger.warning("ACP init failed (%s), retrying with fresh process...", exc)
@@ -5448,8 +5699,18 @@ class AcpClient:
                         # to a non-WORKING verdict on any error (fail toward
                         # reaping). In production, silent reads recur at the
                         # ~_READ_TIMEOUT cadence, giving well-spaced samples.
+                        #
+                        # Snapshot the idle window BEFORE awaiting the consult.
+                        # The walk is OUR OWN probe and a cold one costs tens of
+                        # milliseconds (executor warm-up, then the subtree walk);
+                        # reading the clock AFTER it charges that latency to the
+                        # BACKEND's silence budget, so on a loaded host the first
+                        # silent read could cross the cutoff carrying the only
+                        # verdict the oracle can give before it has a baseline,
+                        # and reap a turn that was streaming a moment earlier.
+                        _idle_secs = time.monotonic() - last_seen
                         verdict, evidence = await self._consult_liveness_model_wait()
-                        if (time.monotonic() - last_seen) > _STALE_TURN_TIMEOUT:
+                        if _idle_secs > _STALE_TURN_TIMEOUT:
                             # Past the cutoff: a backend still doing work (CPU/IO
                             # movement in its subtree — a long model generation or
                             # a spawned build) reads WORKING and we keep waiting.
@@ -5462,19 +5723,68 @@ class AcpClient:
                                     "Stale-turn deferral for req %d — idle %.0fs but "
                                     "backend WORKING (%s)",
                                     req_id,
-                                    time.monotonic() - last_seen,
+                                    _idle_secs,
                                     evidence,
                                 )
                                 continue
-                            logger.warning(
-                                "Stale turn detected for req %d — no data for %.0fs after text was streamed "
-                                "(liveness=%s: %s). Treating as complete.",
-                                req_id,
-                                time.monotonic() - last_seen,
-                                verdict,
-                                evidence,
-                            )
-                            return
+                            if evidence == EVIDENCE_SAMPLING:
+                                # The oracle stored a BASELINE and has nothing to
+                                # compare it against yet, so this verdict is
+                                # structurally incapable of reading WORKING: it
+                                # means "ask me again", not "idle". Reaping on it
+                                # ends a live turn on no evidence at all — the
+                                # per-silent-read consulting above exists to make
+                                # that unlikely, and deferring here makes it
+                                # impossible rather than merely improbable. The
+                                # next silent read has a baseline and answers for
+                                # real, so recovery is delayed by one read, not
+                                # weakened.
+                                logger.debug(
+                                    "Stale-turn deferral for req %d — idle %.0fs but the "
+                                    "liveness baseline is still priming (%s)",
+                                    req_id,
+                                    _idle_secs,
+                                    evidence,
+                                )
+                                continue
+                            if self._tool_dispatched:
+                                # An OPEN TOOL CALL is positive evidence the turn
+                                # is alive, so it defers this cutoff whatever the
+                                # verdict says. Only kiro-cli streams
+                                # tool_call_update progress frames while a tool
+                                # runs; a backend that runs the tool to completion
+                                # and only then reports the result is silent for
+                                # the whole tool, and with text streamed before
+                                # the dispatch this cutoff tore the turn down
+                                # MID-TOOL — reporting truncated work as complete
+                                # (issue #8520). Deliberately NOT a `continue`:
+                                # falling through hands the silence to the
+                                # tool-stall watchdog below, which governs exactly
+                                # this case on its own much longer budget and
+                                # RECOVERS the slot instead of completing the
+                                # turn. Mirrors the compaction-failed budget's
+                                # suspension above; _tool_dispatched is cleared
+                                # when the tool resolves, so the cutoff re-arms
+                                # for the model-wait silence it is actually for.
+                                logger.debug(
+                                    "Stale-turn deferral for req %d — idle %.0fs with a tool "
+                                    "call still open (liveness=%s: %s); tool-stall watchdog "
+                                    "governs",
+                                    req_id,
+                                    _idle_secs,
+                                    verdict,
+                                    evidence,
+                                )
+                            else:
+                                logger.warning(
+                                    "Stale turn detected for req %d — no data for %.0fs after text was streamed "
+                                    "(liveness=%s: %s). Treating as complete.",
+                                    req_id,
+                                    _idle_secs,
+                                    verdict,
+                                    evidence,
+                                )
+                                return
                     # Tool-stall watchdog: a tool was dispatched but NOTHING has
                     # come back (no result, no progress, no permission) for the
                     # stall window.  This is the silent-hang case where
@@ -6953,7 +7263,7 @@ class AcpClient:
                 if isinstance(inner, dict) and inner.get("type") == "text":
                     text = inner.get("text", "")
                     if text:
-                        output_parts.append(str(text)[:4000])
+                        output_parts.append(str(text))
 
         # Path 2: `rawOutput` (arrives with status=completed) — fallback when
         # there were no content blocks (e.g. some tools only emit rawOutput).
@@ -6969,12 +7279,12 @@ class AcpClient:
                         if not isinstance(item, dict):
                             continue
                         if "Text" in item and item.get("Text"):
-                            output_parts.append(str(item["Text"])[:4000])
+                            output_parts.append(str(item["Text"]))
                             continue
                         j = item.get("Json")
                         if isinstance(j, dict):
                             if "stdout" in j and j.get("stdout"):
-                                output_parts.append(str(j["stdout"])[:4000])
+                                output_parts.append(str(j["stdout"]))
                             else:
                                 # An unrecognised structured envelope reaches the
                                 # consumer through json.dumps, which escapes every
@@ -6993,9 +7303,24 @@ class AcpClient:
                                         "escape its payload. Envelope keys: %s",
                                         sorted(j.keys()),
                                     )
-                                    output_parts.append(_marker[:4000])
+                                    output_parts.append(_marker)
                                 else:
-                                    output_parts.append(json.dumps(j, default=str)[:4000])
+                                    output_parts.append(json.dumps(j, default=str))
+                # Path 3: an object that is not that envelope at all. Mirrors
+                # ``_dispatch._build_tool_result_event`` -- ``rawOutput`` is
+                # unstructured passthrough, so ``items[]`` is one producer's
+                # wrapper and an unrecognised object is not evidence the tool
+                # produced nothing. Returning None here is costlier than in the
+                # dispatch parser: both call sites use the result to disarm the
+                # stall watchdog and to fire PostToolUse hooks, so a dropped
+                # event leaves the watchdog armed and the hooks unfired. Gated on
+                # the ABSENCE of ``items`` so no ``items[]`` envelope changes.
+                # No per-part cut here or above: parts are collected RAW and
+                # the single bound is applied AFTER redaction at the end of this
+                # method, because a cut taken before redaction can split a
+                # credential into fragments no pattern matches.
+                if raw_output and "items" not in raw_output:
+                    output_parts.append(json.dumps(raw_output, default=str))
 
         if not output_parts:
             return None
@@ -7014,9 +7339,13 @@ class AcpClient:
                 content_free_digest(final_output),
             )
             final_output = _repaired
-        final_output = final_output[:8000]
-        final_output, _ = redact_exfiltration_urls(final_output)
-        final_output, _ = redact_credentials(final_output)
+        # Redact the WHOLE join, then bound -- never the reverse. Bounding first
+        # can split a credential across the cut into fragments no pattern
+        # matches: with a connection URI whose "@" lands on byte 8000, the head
+        # slice keeps "://user:password" and drops the "@" the prefilter needs,
+        # so the password reaches the dashboard in clear text. Same ordering as
+        # `_dispatch._build_tool_result_event` and as `_compaction_detail` below.
+        final_output = redact_text(final_output)[:8000]
         return AcpEvent(
             kind=EVENT_TOOL_RESULT,
             tool_call_id=tool_use_id,

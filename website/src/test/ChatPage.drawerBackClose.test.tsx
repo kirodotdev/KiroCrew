@@ -36,7 +36,7 @@ import { MemoryRouter, Routes, Route, useLocation, useNavigate, useNavigationTyp
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { sseSlots, sseConnected } from '../store/dashboardSlice'
-import { createSlot, setActiveSlot } from '../store/chatSlice'
+import { createSlot, setActiveSlot, switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 
 /** Completion callbacks handed to framer's `animate`, fired manually so a close
@@ -94,7 +94,10 @@ vi.mock('../hooks/useAgents', () => {
 })
 vi.mock('../hooks/useFilteredDropdown', () => ({ useFilteredDropdown: () => ({ filtered: [], query: '', setQuery: vi.fn(), selectedIndex: 0, setSelectedIndex: vi.fn(), onKeyDown: vi.fn() }) }))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
-vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => true }))
+/** Mutable so one test can cross the mobile breakpoint mid-session, which is the
+ *  whole point of the resize case below. Reset to mobile in `beforeEach`. */
+const viewport = vi.hoisted(() => ({ isMobile: true }))
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => viewport.isMobile }))
 vi.mock('../api/client', () => ({
   api: Object.fromEntries(
     ['sessions', 'chatSlotDetail', 'createChatSlot', 'deleteChatSlot', 'resumeChatSlot',
@@ -143,6 +146,7 @@ function NavProbe() {
         data-navtype={navType}
       />
       <button data-testid="platform-back" onClick={() => navigate(-1)}>back</button>
+      <button data-testid="platform-forward" onClick={() => navigate(1)}>forward</button>
     </div>
   )
 }
@@ -154,7 +158,7 @@ let backNav: (() => void) | null = null
  * observable rather than an inert no-op at the bottom of the stack — that is
  * the whole defect in #5795.
  */
-function renderChat() {
+function renderChat(initialEntries: string[] = ['/before-chat', '/chat?sid=slot-0']) {
   const store = createTestStore()
   act(() => {
     // BEFORE the slots: `sseConnected` also clears `slotsLoaded`. Connected is
@@ -173,7 +177,7 @@ function renderChat() {
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <ThemeProvider>
-          <MemoryRouter initialEntries={['/before-chat', '/chat?sid=slot-0']}>
+          <MemoryRouter initialEntries={initialEntries}>
             <NavProbe />
             <Routes>
               <Route path="/before-chat" element={<div data-testid="off-chat" />} />
@@ -193,6 +197,7 @@ const drawerMounted = () => screen.queryAllByTestId('sidebar-stub').length > 0
 /** Two controls carry this label on mobile; either opens a closed drawer. */
 const openDrawer = () => fireEvent.click(screen.getAllByLabelText('Toggle sessions')[0])
 const platformBack = () => fireEvent.click(screen.getByTestId('platform-back'))
+const platformForward = () => fireEvent.click(screen.getByTestId('platform-forward'))
 /** Back WITHOUT a DOM click — see `NavProbe`. Required after a drag, whose
  *  release arms the hook's click swallower. */
 const platformBackNoClick = () => act(() => { backNav?.() })
@@ -222,6 +227,7 @@ const finishSlide = () => act(() => { pendingSettles.splice(0).forEach(fn => fn(
 describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
   beforeEach(() => {
     pendingSettles.length = 0
+    viewport.isMobile = true
     Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 390 })
     Object.defineProperty(window, 'innerHeight', { writable: true, configurable: true, value: 844 })
   })
@@ -340,5 +346,89 @@ describe('ChatPage — mobile sessions drawer answers Back (#5795)', () => {
     expect(onChat()).toBe(true)
     expect(screen.queryByTestId('off-chat')).toBeNull()
     expect(drawerMounted()).toBe(false)
+  })
+
+  /**
+   * The general form of the drawer defect, and the reason the drawer's own
+   * one-shot claim was never enough (#8207).
+   *
+   * On mobile a session switch REPLACES — `shouldReplaceSessionUrl` — so no entry
+   * in this stack was ever pushed BY a switch, and a POP landing on a `?sid=`
+   * that differs from the session on screen cannot be one the user retraced. The
+   * only such entry that exists is the one under the drawer's duplicate, still
+   * naming the pre-drawer session. Obeying it is what walked the pane back into
+   * the outgoing conversation; the timing only decided how often.
+   *
+   * Stated as a bare stale entry rather than through the drawer, because that is
+   * the invariant: it holds for whatever pushes at this URL next, and it is the
+   * one form of the assertion a synchronous harness can hold honestly — the
+   * drawer route depends on a pop that MemoryRouter, jsdom and headless Chromium
+   * all settle before React can commit, so a test written through the drawer
+   * passes on the broken tree.
+   */
+  it('a POP onto a stale ?sid does not switch sessions on mobile', () => {
+    const store = renderChat(['/chat?sid=slot-1', '/chat?sid=slot-0'])
+    expect(store.getState().chat.activeSlot).toBe('slot-0')
+
+    platformBack()
+
+    expect(store.getState().chat.activeSlot).toBe('slot-0')
+    // And the entry is corrected in place, so a reload does not restore the
+    // session the URL was still naming.
+    expect(probe().dataset.sid).toBe('slot-0')
+  })
+
+  /**
+   * The other side of that rule, and the regression the first cut of it shipped.
+   *
+   * The layout is read at POP time; the entry was written earlier, possibly on
+   * the other side of the breakpoint — switch sessions on a wide window, then
+   * narrow it (an iPad Mini rotating into portrait does exactly this). Reading
+   * the CURRENT viewport as the entry's provenance suppressed a Back onto an
+   * entry a real push had created, and because the reader repairs the sid it
+   * declines, it did not merely make that Back inert: it overwrote a legitimate
+   * history target. So the push records what it left behind and the reader
+   * honours it whatever the layout has since become.
+   */
+  it('honours a Back onto an entry a desktop push created, even after narrowing to mobile', async () => {
+    viewport.isMobile = false
+    const store = renderChat(['/before-chat', '/chat?sid=slot-0'])
+
+    // A real desktop session switch — this is the write that PUSHES, leaving the
+    // slot-0 entry behind as a Back target.
+    await act(async () => { await store.dispatch(switchSlot('slot-1')) })
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+    expect(probe().dataset.sid).toBe('slot-1')
+
+    // The window narrows (or the tablet rotates) — same session, same stack.
+    viewport.isMobile = true
+    platformBack()
+
+    expect(store.getState().chat.activeSlot).toBe('slot-0')
+    expect(probe().dataset.sid).toBe('slot-0')
+  })
+
+  /**
+   * And the Forward half of the same stack. A push makes TWO history targets —
+   * the entry it leaves behind (Back) and the entry it creates (Forward) — so
+   * recording only the first left Forward looking like an unrecorded stale entry.
+   * Because the reader repairs what it declines, Forward did not merely fail to
+   * restore slot-1: it overwrote that entry with slot-0 and destroyed it.
+   */
+  it('restores the pushed destination on Forward after narrowing to mobile', async () => {
+    viewport.isMobile = false
+    const store = renderChat(['/before-chat', '/chat?sid=slot-0'])
+
+    await act(async () => { await store.dispatch(switchSlot('slot-1')) })
+    expect(probe().dataset.sid).toBe('slot-1')
+
+    viewport.isMobile = true
+    platformBack()
+    expect(store.getState().chat.activeSlot).toBe('slot-0')
+
+    platformForward()
+
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+    expect(probe().dataset.sid).toBe('slot-1')
   })
 })

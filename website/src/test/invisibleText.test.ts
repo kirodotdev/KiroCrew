@@ -81,7 +81,15 @@ describe('ChatPage inline chain consults the skip (source contract)', () => {
   const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
 
   it('skips hidden rows before the conversational branch', () => {
-    expect(src).toMatch(/if \(isHiddenInvisibleAssistantRow\(m\)\) return null/)
+    // Since chat-core P5-a the page dispatches through the app-sdk registry:
+    // the skip is a shape entry that draws nothing, ordered before the bubble
+    // entry (the last one in the host list).
+    expect(src).toMatch(/id: 'hidden_invisible_assistant',\s*\n\s*roles: \['\*'\],\s*\n\s*match: isHiddenInvisibleAssistantRow,\s*\n\s*render: \(\) => null/)
+    const list = src.indexOf('const renderers = mergeRenderers([')
+    const skip = src.indexOf("id: 'hidden_invisible_assistant'", list)
+    const bubble = src.indexOf('\n      bubble,\n    ])', list)
+    expect(skip).toBeGreaterThan(list)
+    expect(bubble).toBeGreaterThan(skip)
   })
 
   it('passes over hidden rows in the footer-host scan', () => {

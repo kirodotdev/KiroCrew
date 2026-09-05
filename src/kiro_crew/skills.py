@@ -19,7 +19,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from itertools import zip_longest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterator
 
 from kiro_crew import pinned_fs, skill_trust
@@ -2401,8 +2401,29 @@ class SkillsLoader:
 
     @staticmethod
     def _safe_name(name: str) -> bool:
-        """Return True if skill name is safe (no path traversal)."""
-        return bool(name) and ".." not in name and "\\" not in name
+        """Return True if skill name is safe (no traversal, rooted, or dot-only).
+
+        A rooted name must be rejected because ``Path.__truediv__`` discards
+        the base directory when the joined segment is absolute, so
+        ``self._dir / name`` would resolve outside the skills root. Both
+        flavours are checked: POSIX-absolute (``/etc/x``) and Windows
+        rooted/drive-qualified in the forward-slash spelling (``C:/x``,
+        ``C:x``, ``//server/share/x``) — the backslash spelling is already
+        caught by the ``"\\\\"`` rule. Dot-only spellings (``.``, ``./``)
+        must also be rejected: pathlib drops ``.`` components on join, so
+        ``self._dir / "."`` collapses to the skills root itself and a delete
+        would remove every installed skill. ``PurePosixPath(name).parts`` is
+        empty exactly for those spellings.
+        """
+        return (
+            bool(name)
+            and ".." not in name
+            and "\\" not in name
+            and bool(PurePosixPath(name).parts)
+            and not PurePosixPath(name).is_absolute()
+            and not PureWindowsPath(name).is_absolute()
+            and not PureWindowsPath(name).drive
+        )
 
     def load_skill(
         self,

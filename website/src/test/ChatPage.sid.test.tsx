@@ -121,12 +121,16 @@ function renderChatPage(opts: {
   /** Transcript already in the store, plus the slot its paging cursor describes. */
   messages?: RootState['chat']['messages']
   slotCursorKey?: string | null
+  /** Has the slot list arrived? Defaults to `slots.length > 0`, the invariant a
+   *  real boot holds: the flag is set by the writer that delivers the list. Pass
+   *  false with a populated list only to model the pre-arrival window. */
+  slotsLoaded?: boolean
 }) {
   const { route = '/chat', entries, mode, activeSlot = null, slots = [], hostEmbed,
-          messages = [], slotCursorKey = null } = opts
+          messages = [], slotCursorKey = null, slotsLoaded = slots.length > 0 } = opts
   const preload: PreloadState = {
     dashboard: {
-      status: { platform: 'darwin' }, connected: true, slots, approvalMode: 'normal',
+      status: { platform: 'darwin' }, connected: true, slots, slotsLoaded, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -358,6 +362,38 @@ describe('ChatPage ?sid= URL parameter', () => {
       renderChatPage({ route: '/chat?sid=nonexistent', slots })
       await vi.advanceTimersByTimeAsync(5100)
       expect(screen.getByText(/session "nonexistent" not found/i)).toBeTruthy()
+      vi.useRealTimers()
+    })
+
+    /** The timer measures "the list lacks this key", so it must not start before
+     *  the list exists. Firing is one-way — it clears `initialSidRef` — so a list
+     *  arriving after the deadline finds nothing left to resolve, and the banner
+     *  denies a session that is live. Only a reopen recovers, which is what makes
+     *  this read to the user as an intermittent "not found" on a good link. */
+    it('does not declare a session missing while the slot list has not arrived', async () => {
+      vi.useFakeTimers()
+      const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
+
+      await act(async () => { store.dispatch(sseSlots([slot('chat-9-900', 'Late Session')])) })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(store.getState().chat.activeSlot).toBe('chat-9-900')
+      vi.useRealTimers()
+    })
+
+    /** Control for the gate above: it must DELAY the deadline to the list's
+     *  arrival, not remove it. A key genuinely absent from a list that has landed
+     *  still earns the banner. */
+    it('still declares it missing once a list arrives without the key', async () => {
+      vi.useFakeTimers()
+      const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
+
+      await act(async () => { store.dispatch(sseSlots(slots)) })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
       vi.useRealTimers()
     })
   })

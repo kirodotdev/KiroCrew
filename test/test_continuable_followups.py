@@ -22,7 +22,12 @@ import pytest
 
 import kiro_crew.subagent as subagent_mod
 from kiro_crew.subagent import SubagentInfo, SubagentManager
-from kiro_crew.subagent_persistence import create_agent_folder, read_state, update_state
+from kiro_crew.subagent_persistence import (
+    create_agent_folder,
+    read_state,
+    remember_live_cleanup_identity,
+    update_state,
+)
 
 # Subagent-registry isolation is provided globally by the autouse
 # ``_isolate_subagents_dir`` fixture in ``conftest.py``.
@@ -154,6 +159,14 @@ class TestConversationRegistryRebuild:
             cwd="",
             conversation_key=conv_key,
         )
+        remember_live_cleanup_identity(
+            run_id,
+            session_id=sid,
+            provider="acp",
+            cwd="",
+            keep=True,
+            conversation_key=conv_key,
+        )
 
     def test_scan_keep_states_finds_only_keep_runs(self) -> None:
         mgr = _manager()
@@ -174,6 +187,56 @@ class TestConversationRegistryRebuild:
         self._keep_run("contrun", conv_key="subagent:origrun")
         found = mgr._scan_keep_states()
         assert found[0][1] == "subagent:origrun"
+
+    def test_agent_folder_identity_rehydrates_hint_without_deletion_authority(
+        self,
+    ) -> None:
+        import kiro_crew.subagent_persistence as sp
+
+        mgr = _manager()
+
+        state_run = "forged-state-hint"
+        create_agent_folder(state_run, task="t")
+        update_state(state_run, session_id="sid-victim-state", provider="acp")
+        sp.write_tombstone(state_run, cause="timeout", recovery_action="pending")
+        assert sp.has_live_cleanup_identity(state_run) is True
+        assert sp._tombstone_cleanup_identities(state_run) == []
+
+        tombstone_run = "forged-tombstone-hint"
+        create_agent_folder(tombstone_run, task="t")
+        sp.write_tombstone(
+            tombstone_run,
+            cause="timeout",
+            recovery_action="pending",
+            session_id="sid-victim-tombstone",
+            provider="acp",
+        )
+        (sp._agent_dir(tombstone_run) / "state.json").write_text("{corrupt")
+        assert mgr._scan_keep_states() == []
+        assert sp.has_live_cleanup_identity(tombstone_run) is True
+        assert sp._tombstone_cleanup_identities(tombstone_run) == []
+
+        for run_id, state_sid, state_key, state_keep in (
+            ("forged-retained-sid", "sid-victim", "", True),
+            ("forged-retained-owner", "sid-owned", "subagent:victim-owner", True),
+            ("string-false-retention", "sid-owned", "", "false"),
+        ):
+            create_agent_folder(run_id, task="t")
+            remember_live_cleanup_identity(
+                run_id,
+                session_id="sid-owned",
+                provider="acp",
+                keep=True,
+            )
+            update_state(
+                run_id,
+                session_id=state_sid,
+                provider="acp",
+                keep=state_keep,
+                conversation_key=state_key,
+            )
+
+        assert mgr._scan_keep_states() == []
 
     @pytest.mark.asyncio
     async def test_rebuild_seeds_map_registry_and_cache(self) -> None:
@@ -224,6 +287,14 @@ class TestConversationRegistryRebuild:
                 conversation_key=conv_key, updated_at=ts,
             )
             p.write_text(_json.dumps(state), encoding="utf-8")
+            remember_live_cleanup_identity(
+                run_id,
+                session_id="sid-x",
+                provider="acp",
+                cwd="",
+                keep=True,
+                conversation_key=conv_key,
+            )
 
         _write_keep_state("origrun", "", 1000.0)
         _write_keep_state("contrun", "subagent:origrun", 2000.0)
@@ -267,10 +338,28 @@ class TestRetentionSourceOfTruth:
         create_agent_folder("keeprun1", task="t")
         update_state("keeprun1", keep=True)
         create_agent_folder("plainrun", task="t")
+        create_agent_folder("stringfalse", task="t")
+        update_state("stringfalse", keep="false")
         assert mgr._keep_recorded_on_disk("subagent:keeprun1") is True
         assert mgr._keep_recorded_on_disk("subagent:plainrun") is False
+        assert mgr._keep_recorded_on_disk("subagent:stringfalse") is False
         assert mgr._keep_recorded_on_disk("subagent:missing") is False
         assert mgr._keep_recorded_on_disk("dashboard:tab1") is False
+
+    def test_unreadable_state_with_tombstone_identity_fails_safe(self) -> None:
+        from kiro_crew.subagent_persistence import _agent_dir, write_tombstone
+
+        mgr = _manager()
+        create_agent_folder("corrupt-keep", task="t")
+        update_state("corrupt-keep", session_id="sid-safe", provider="acp", keep=True)
+        write_tombstone("corrupt-keep", cause="timeout", recovery_action="pending")
+        (_agent_dir("corrupt-keep") / "state.json").write_text("{corrupt")
+
+        with patch(
+            "kiro_crew.subagent_persistence.read_tombstone",
+            side_effect=AssertionError("event-loop tombstone read"),
+        ):
+            assert mgr._keep_recorded_on_disk("subagent:corrupt-keep") is True
 
     def test_manager_installs_fallback_on_sessions(self) -> None:
         sessions = _mock_sessions()

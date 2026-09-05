@@ -266,7 +266,9 @@ custom-rules:
         host service mutation, pins KIROCREW_HOME per test (with
         `config.paths._resolved_home` reset, since resolving the home CREATES it
         and can run the legacy migration), pins the import-time `~/.kiro`
-        bindings via `_isolate_shared_kiro_paths`, pins the SEL default dir
+        bindings via `_isolate_shared_kiro_paths`, scrubs the inherited
+        shell-preload and exported-function variables `name_grant` refuses on
+        (`BASH_ENV`/`ENV`/..., `BASH_FUNC_*`), pins the SEL default dir
         session-wide, redirects `tempfile`'s base with residue reported, and
         fails the run on residue at the repository root.
       - `test/conftest.py` adds ~20 MORE autouse fixtures, and it applies ONLY to
@@ -453,7 +455,7 @@ custom-rules:
         its section once, under the release's final heading.
 
       Allowed (do NOT flag):
-      - A release PR that prepends one new `## [X.Y.Z] — YYYY-MM-DD` section
+      - A release PR that prepends one new `## [X.Y.Z] - YYYY-MM-DD` section
         and, in the same commit, bumps src/kiro_crew/__init__.py.
       - Correcting a genuine factual error inside an already-shipped section,
         when the PR body says that is what it is doing. Say it out loud; an

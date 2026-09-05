@@ -128,20 +128,18 @@ def _strict_session_key() -> tuple[str, str]:
     Returns ``(key, "")`` or ``("", error)``. The lenient default resolver
     includes a ``/proc`` ancestor walk, and a subagent lives under its parent
     slot's process tree — the walk would silently resolve to the PARENT
-    session, disclosing or overwriting the parent's ledger. The strict
-    resolver only accepts gateway-authored identities, and the verified key is
-    passed explicitly to the transport so the value that was checked is the
-    value that is used.
+    session, disclosing or overwriting the parent's ledger. Resolution is
+    delegated to :func:`mcp_core.require_strict_session_key`, the shared
+    fail-closed gate for reflexive tools (this helper is where that gate was
+    promoted from), and the verified key is passed explicitly to the transport
+    so the value that was checked is the value that is used.
     """
-    sk = mcp_core._resolve_session_key_strict()
-    if not sk:
-        return "", (
-            "Error: this session's identity could not be verified strictly, "
-            "so the ledger is not reachable from here. Subagents inherit no "
-            "session identity of their own — record ledger updates from the "
-            "parent session instead." + mcp_core.strict_identity_diagnosis()
-        )
-    return sk, ""
+    return mcp_core.require_strict_session_key(
+        "Error: this session's identity could not be verified strictly, "
+        "so the ledger is not reachable from here. Subagents inherit no "
+        "session identity of their own — record ledger updates from the "
+        "parent session instead."
+    )
 
 
 def session_ledger_read(name: str, args: dict[str, Any]) -> str:

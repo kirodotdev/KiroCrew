@@ -79,8 +79,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import (
     is_sensitive_path,
-    redact_credentials,
-    redact_exfiltration_urls,
+    redact_and_truncate,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -303,8 +302,10 @@ def _clone_github(url: str, dest: Path) -> str | None:
         if cleanup:
             Path(cleanup).unlink(missing_ok=True)
     if proc.returncode != 0:
-        _red, _ = redact_credentials(proc.stderr.strip()[:200])
-        _red, _ = redact_exfiltration_urls(_red)
+        # Redact the FULL text before the bound: a credential straddling the
+        # slice would otherwise be cut into fragments no redaction regex can
+        # match (same class as PR #7316 / #7350).
+        _red = redact_and_truncate(proc.stderr.strip(), 200)
         return f"git clone failed: {_red}"
     return None
 

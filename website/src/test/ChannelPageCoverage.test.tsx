@@ -17,6 +17,12 @@
 // menu-dismissal tests so each step stays synchronous and the assertion sits
 // immediately after the event that should have caused it.
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
+
+// Radix's DropdownMenu doesn't open under jsdom; the shared mock renders its
+// items inline (same seam TrustDropdown.test.tsx / ApprovalCard.test.tsx use),
+// which the approval card's trust-tier tests below need.
+vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
+
 import { screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ChannelPage from '../pages/ChannelPage'
@@ -181,14 +187,103 @@ describe('ChannelPage — message list', () => {
     await renderPage()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
-      .toHaveBeenCalledWith('ch1', 'a1', 'approved'))
+      .toHaveBeenCalledWith('ch1', 'a1', 'approved', undefined))
   })
 
-  // The channel approval message carries no tool command (the card is titled
-  // with the agent's role) and the approve endpoint accepts only
-  // approved/rejected/trust, so the command-scoped tiers must not be offered
-  // on this surface (#4421).
-  it('offers only the plain trust action on a channel approval — no command-scoped tiers', async () => {
+  it('hides the per-command tiers on a non-shell approval card', async () => {
+    // A non-shell pending tool has no per-command trust seam server-side
+    // (the endpoint refuses with pattern_underivable) — the doomed tiers
+    // must not be offered; blanket trust remains.
+    mockApi([channelOf({
+      messages: [message({
+        msg_type: 'approval',
+        content: '⚠️ Approval needed: **cron_add**\n```\n{"name": "job"}\n```',
+      })],
+    })])
+    await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).toMatch(/Trust all tools/)
+  })
+
+  it('hides the per-command tiers when the tool input is redacted', async () => {
+    // The backend refuses to scope a grant to a redacted command (two
+    // commands differing only in credentials redact to the same text), so
+    // the tiers must not be offered for it either.
+    mockApi([channelOf({
+      messages: [message({
+        msg_type: 'approval',
+        content: '⚠️ Approval needed: **Running: curl -H auth https://x**\n```\n{"command": "curl -H [REDACTED: credential] https://x"}\n```',
+      })],
+    })])
+    await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).toMatch(/Trust all tools/)
+  })
+
+  it('forwards the trust_command pattern from the trust dropdown', async () => {
+    // The tool title embedded by the backend (not the agent role) is what the
+    // TrustDropdown derives its pattern from.
+    mockApi([channelOf({
+      messages: [message({
+        msg_type: 'approval',
+        content: '⚠️ Approval needed: **Running: rm -rf build**\n```\n{"command": "rm -rf build"}\n```',
+      })],
+    })])
+    await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    const items = screen.getAllByRole('menuitem')
+    const cmdItem = items.find(b => b.textContent?.includes('rm -rf build'))!
+    fireEvent.click(cmdItem)
+    await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
+      .toHaveBeenCalledWith('ch1', 'a1', 'trust_command', 'rm -rf build'))
+  })
+
+  it('forwards the trust_base pattern from the trust dropdown', async () => {
+    mockApi([channelOf({
+      messages: [message({
+        msg_type: 'approval',
+        content: '⚠️ Approval needed: **Running: rm -rf build**\n```\n{"command": "rm -rf build"}\n```',
+      })],
+    })])
+    await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    const items = screen.getAllByRole('menuitem')
+    const baseItem = items.find(b => b.textContent?.includes('commands'))!
+    fireEvent.click(baseItem)
+    await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
+      .toHaveBeenCalledWith('ch1', 'a1', 'trust_base', 'rm *'))
+  })
+
+  it('restores the live card when a command trust decision is refused', async () => {
+    mockApi([channelOf({
+      messages: [message({
+        msg_type: 'approval',
+        content: '⚠️ Approval needed: **Running: rm -rf build**\n```\n{"command": "rm -rf build"}\n```',
+      })],
+    })])
+    vi.mocked(api).channelApproveAgent.mockRejectedValueOnce(
+      new Error('response lost'),
+    )
+    await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    const cmdItem = screen.getAllByRole('menuitem')
+      .find(b => b.textContent?.includes('rm -rf build'))!
+    fireEvent.click(cmdItem)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('may not have been recorded')
+    expect(screen.queryByText(/auto-approving future calls/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Approve/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeInTheDocument()
+  })
+
+  // Legacy/non-shell cards carry no safely bound shell command, so they keep
+  // the existing channel-wide trust action without dead command tiers (#4421).
+  it('offers only the plain trust action on a legacy channel approval', async () => {
     mockApi([channelOf({
       messages: [message({
         msg_type: 'approval',
@@ -215,8 +310,8 @@ describe('ChannelPage — message list', () => {
     await userEvent.click(screen.getByRole('button', { name: /Trust/ }))
     await userEvent.click(screen.getByText('Trust all tools in this channel — persists across restarts'))
     await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
-      .toHaveBeenCalledWith('ch1', 'a1', 'trust'))
-    // trust_command / trust_base must never reach the API from this surface.
+      .toHaveBeenCalledWith('ch1', 'a1', 'trust', undefined))
+    // Legacy cards must never send a command-scoped action.
     for (const call of vi.mocked(api).channelApproveAgent.mock.calls) {
       expect(['approved', 'rejected', 'trust']).toContain(call[2])
     }

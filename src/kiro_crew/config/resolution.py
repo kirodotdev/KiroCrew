@@ -41,6 +41,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "telegram",
         "discord",
         "webex",
+        "wakatime",
         "wecom",
         "weixin",
         "whatsapp",

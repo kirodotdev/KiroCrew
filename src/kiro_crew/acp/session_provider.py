@@ -400,6 +400,16 @@ class AcpSessionProvider(LLMProvider):
         return self._runtime.is_alive()
 
     @property
+    def process_instance(self) -> str:
+        """Per-spawn identity of the shared runtime's current process (see base).
+
+        A direct read on purpose: a `getattr` hedge would convert a future
+        wiring break into "no banner is ever live", indistinguishable from
+        correct expiry.
+        """
+        return self._runtime.process_instance
+
+    @property
     def exit_code(self) -> int | None:
         """Runtime process exit code (None if still running)."""
         proc = getattr(self._runtime, "_process", None)

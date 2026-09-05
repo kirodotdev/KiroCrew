@@ -54,6 +54,12 @@ from kiro_crew.computer_use.types import MAX_TREE_DEPTH_LIMIT as _CU_MAX_TREE_DE
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
 
+# Post-split section internals are reached through the module: the name-level
+# `from kiro_crew.config.sections import (...)` block below is a FROZEN
+# pre-split snapshot (test_config_module_boundaries pins it), so a coercer added
+# after the split must not join it.
+from kiro_crew.config import sections as _sections
+
 # Pure path primitives live in the leaf module ``config.paths`` (stdlib-only,
 # no ``kiro_crew`` imports) so the modules that only need ``config_dir()`` can
 # import them from there without transitively pulling in the full loader (DTOs,
@@ -228,6 +234,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     TelegramConfig,
     TelemetryConfig,
     TunnelConfig,
+    WakaTimeConfig,
     WatchdogConfig,
     WebexConfig,
     WeComConfig,
@@ -1271,7 +1278,7 @@ _REPORTED_SUPERSEDED_KEYS: set[str] = set()
 
 
 def _report_superseded_defaults(base_data: dict) -> None:
-    """Warn once per key when a stored base value still holds a superseded default.
+    """Warn once when stored base values still hold a superseded default.
 
     *base_data* is the ``config.json`` document as read, BEFORE the
     ``config.local.json`` overlay is merged over it. Reporting on the base is the
@@ -1283,15 +1290,37 @@ def _report_superseded_defaults(base_data: dict) -> None:
     are the same bytes on disk, so a rewrite cannot correct one without overriding
     the other. Telling the operator is the part that can be done without guessing.
 
-    Warned at most once per key per process. The gateway loads config repeatedly,
-    and a line the operator has already read is noise that trains them to ignore
-    the next one; the durable, re-readable rendering lives in ``doctor``.
+    ONE line naming every drifted key, not one line per key. The registry is
+    append-only, so a per-key line means the terminal noise on a long-lived install
+    grows with every default the project ever changes -- and it lands on every
+    short-lived ``kirocrew`` invocation, where the once-per-process guard below
+    buys nothing because there the process IS the invocation. The per-key detail
+    belongs on the surface the operator asked for: ``kirocrew config defaults``,
+    and ``doctor``. It is also emitted at debug here, so a gateway run with
+    ``-vv`` still carries the full text in its own log.
+
+    Keys already named in this process are not repeated, so a gateway that loads
+    config many times says it once. An acknowledged key is not reported at all --
+    ``superseded_default_drift`` filters it -- which is what makes this line
+    answerable instead of permanent.
     """
-    for entry in superseded_default_drift(base_data):
-        if entry.dotted_key in _REPORTED_SUPERSEDED_KEYS:
-            continue
+    drifted = [
+        e
+        for e in superseded_default_drift(base_data)
+        if e.dotted_key not in _REPORTED_SUPERSEDED_KEYS
+    ]
+    if not drifted:
+        return
+    for entry in drifted:
         _REPORTED_SUPERSEDED_KEYS.add(entry.dotted_key)
-        logger.warning("Superseded default in stored config: %s", drift_summary(entry))
+        logger.debug("Superseded default in stored config: %s", drift_summary(entry))
+    logger.warning(
+        "%d stored config value(s) still hold a superseded default: %s. "
+        "Run 'kirocrew config defaults' to see each one, '--adopt' to take the "
+        "current defaults, or '--keep' to affirm yours and stop this notice.",
+        len(drifted),
+        ", ".join(e.dotted_key for e in drifted),
+    )
 
 
 def stamp_config_meta(data: dict) -> dict:
@@ -1983,6 +2012,12 @@ class KiroCrewConfig:
         default_factory=WebexConfig,
         metadata=_meta("Webex", "Webex Messaging integration settings.", tags=["webex"]),
     )
+    wakatime: WakaTimeConfig = field(
+        default_factory=WakaTimeConfig,
+        metadata=_meta(
+            "WakaTime", "WakaTime dev-time tracking integration settings.", tags=["wakatime"]
+        ),
+    )
     teams: TeamsConfig = field(
         default_factory=TeamsConfig,
         metadata=_meta("Teams", "Microsoft Teams integration settings.", tags=["teams"]),
@@ -2397,6 +2432,7 @@ class KiroCrewConfig:
         feishu_data = _coerced_section(data, "feishu", _degraded)
         discord_data = _coerced_section(data, "discord", _degraded)
         webex_data = _coerced_section(data, "webex", _degraded)
+        wakatime_data = _coerced_section(data, "wakatime", _degraded)
         teams_data = _coerced_section(data, "teams", _degraded)
         imessage_data = _coerced_section(data, "imessage", _degraded)
         slack_data = _coerced_section(data, "slack", _degraded)
@@ -2506,6 +2542,12 @@ class KiroCrewConfig:
                         ),
                         telegram_account=entry.get("telegram_account", ""),
                         session_color=_safe_color(entry.get("session_color", "")),
+                        # Module-qualified on purpose: the facade's `from
+                        # sections import` list is a frozen pre-split snapshot
+                        # (test_config_module_boundaries), and post-split
+                        # internals are reached through the module, not
+                        # re-exported from here.
+                        avatar=_sections._safe_avatar(entry.get("avatar")),
                     )
 
         # Migrate workspaces from flat or structured format
@@ -2837,7 +2879,9 @@ class KiroCrewConfig:
                 ),
                 semantic_keys=memory_data.get("semantic_keys", []),
                 history_idle_hours=memory_data.get("history_idle_hours", 3.0),
-                history_max_days=memory_data.get("history_max_days", 365),
+                history_max_days=_safe_nonnegative_int(
+                    memory_data.get("history_max_days", 365), 365
+                ),
                 migrated=memory_data.get("migrated", False),
             ),
             knowledge=KnowledgeConfig(
@@ -2977,6 +3021,10 @@ class KiroCrewConfig:
                 wdm_base=str(webex_data.get("wdm_base", "") or ""),
                 soft_threshold_pct=_threshold_pct(webex_data.get("soft_threshold_pct"), 80),
                 hard_threshold_pct=_threshold_pct(webex_data.get("hard_threshold_pct"), 95),
+            ),
+            wakatime=WakaTimeConfig(
+                enabled=bool(wakatime_data.get("enabled", False)),
+                api_base_url=str(wakatime_data.get("api_base_url", "") or ""),
             ),
             imessage=IMessageConfig(
                 session_folder=_coerce_session_folder(imessage_data.get("session_folder")),
@@ -3631,6 +3679,7 @@ class KiroCrewConfig:
             "telegram": asdict(self.telegram),
             "discord": asdict(self.discord),
             "webex": asdict(self.webex),
+            "wakatime": asdict(self.wakatime),
             "wecom": asdict(self.wecom),
             "weixin": asdict(self.weixin),
             "whatsapp": asdict(self.whatsapp),
@@ -4045,11 +4094,9 @@ class KiroCrewConfig:
         if _gw.stub_servers:
             _gw_overlay = _gw.overlay_dir or str(default_overlay_dir())
             _gw_socket = _gw.socket_path or str(default_socket_path())
-            _gw_settings = str(Path(_gw_overlay).parent / "settings" / "mcp.json")
         else:
             _gw_overlay = None
             _gw_socket = None
-            _gw_settings = None
 
         # Effort-drop warnings already emitted by this factory, keyed by
         # (resolved model, level) — see the gate below. Benign under threads:
@@ -4176,7 +4223,6 @@ class KiroCrewConfig:
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,
                 mcp_gateway_overlay=_gw_overlay,
-                mcp_gateway_settings_mcp_json=_gw_settings,
                 mcp_gateway_socket=_gw_socket,
             )
 

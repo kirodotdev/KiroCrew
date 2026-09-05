@@ -19,6 +19,7 @@ import type {
   UpdateCheckResult,
   WorkflowRunSummary,
 } from '../types'
+import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
 import { ApiError, friendlyErrText } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
@@ -1938,6 +1939,17 @@ export interface KasLoginPollResult {
   error?: string
 }
 
+/**
+ * A loopback (PKCE) sign-in the gateway is listening for on a local port. The
+ * dashboard opens `auth_url` in the user's browser; the portal redirects back
+ * to `http://localhost:<port>` on this machine, and the gateway finishes the
+ * exchange itself — the user confirms nothing. Polled with the same login_id.
+ */
+export interface KasLoginLoopbackSession extends KasLoginDeviceSession {
+  auth_url: string
+  port: number
+}
+
 export interface AgentImportCategory {
   id: string
   label: string
@@ -2234,6 +2246,14 @@ export const api = {
     ) as Promise<KasLoginDeviceSession>,
   kasLoginPoll: (login_id: string) =>
     post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
+  // Loopback begin answers 409 `loopback_unavailable` when this install shape
+  // cannot receive the callback (or every allowlisted port is busy); the gate
+  // treats that as "start the device flow instead", not as a failure.
+  kasLoginBeginLoopback: (provider: string) =>
+    post('/api/kas-login/loopback', { provider }).then(j) as Promise<KasLoginLoopbackSession>,
+  // Idempotent: releases a loopback listener's port early on every start-over path.
+  kasLoginCancel: (login_id: string) =>
+    post('/api/kas-login/cancel', { login_id }).then(j) as Promise<{ ok: boolean }>,
   kasLoginLogout: (identity: string) =>
     post('/api/kas-login/logout', { identity }).then(j) as Promise<KasLoginStatus>,
   onboardingImportScan: () =>
@@ -2505,6 +2525,17 @@ export const api = {
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>
     del('/api/agents/' + encodeURIComponent(name)).then(j),
+  /** Stage a crew's picture on the server (a `.pending` file only — the
+   *  config PUT with `avatar: {kind:'image'}` is what promotes it live,
+   *  keeping the editor's Apply→Save two-step a real commit point). */
+  uploadCrewAvatar: (name: string, file: Blob) => {
+    const form = new FormData()
+    form.append('file', file, 'avatar.png')
+    return fetch('/api/agents/' + encodeURIComponent(name) + '/avatar', {
+      method: 'POST',
+      body: form,
+    }).then(j) as Promise<{ ok?: boolean; staged?: boolean; token?: string; error?: string }>
+  },
   models: () => fetch('/api/models').then(j),
   effortLevels: (slot?: string) =>
     fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
@@ -2567,6 +2598,13 @@ export const api = {
   updateCron: (id: string, body: object) =>
     fetch('/api/crons/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   runCron: (id: string) => post('/api/crons/' + id + '/run').then(j),
+  /** Grant/revoke vault secrets, or act on an agent-requested pending grant.
+   * Body: {secret_env: {...}} grants (empty object revokes), or
+   * {approve_pending: true, expected_secret_env, expected_ts} /
+   * {deny_pending: true}. Approval restates the displayed request; the server
+   * refuses with 409 stale_request if it was replaced. Operator-only server-side. */
+  cronSecretsGrant: (id: string, body: { secret_env?: Record<string, string>; approve_pending?: boolean; deny_pending?: boolean; expected_secret_env?: Record<string, string> | null; expected_ts?: number; expected_source_sha256?: string }) =>
+    put('/api/crons/' + id + '/secrets', body).then(j),
   cancelCron: (id: string) => post('/api/crons/' + id + '/cancel').then(j),
   cronToChat: (id: string) => post('/api/crons/' + id + '/to-chat').then(j),
   toggleCron: (id: string, enabled: boolean) => post('/api/crons/' + id + '/enable', { enabled }).then(j),
@@ -2579,6 +2617,9 @@ export const api = {
   },
   cronRunDetail: (jobId: string, runId: string) => fetch('/api/crons/' + jobId + '/history/' + encodeURIComponent(runId), { headers: { ..._sk } }).then(j),
   cronScript: (jobId: string) => fetch('/api/crons/' + jobId + '/script', { headers: { ..._sk } }).then(j),
+  /** Vault secret NAMES (values are never exposed). Same endpoint the Settings
+   * Secrets panel reads. */
+  secretsList: () => fetch('/api/secrets').then(j),
   ackCron: (id: string, summary: string, ts?: string) => post('/api/crons/' + id + '/ack', { summary, ts }).then(j),
   cronHistoryAll: (opts?: { offset?: number; limit?: number; jobId?: string }) => {
     const p = new URLSearchParams()
@@ -2902,6 +2943,10 @@ export const api = {
   // than in the middle of their first dictation. Returns as soon as the transfer
   // is under way; progress is read from `sttStatus`.
   sttPrepare: (model: string) => post('/api/stt/prepare', { model }).then(j),
+  // Fetch the audio decoder (ffmpeg) into the gateway's digest-verified store,
+  // for a source install whose OS ships no ffmpeg package. Same 202-then-poll
+  // shape as `sttPrepare`; progress arrives on `sttStatus().ffmpeg.download`.
+  sttFfmpegDownload: () => post('/api/stt/ffmpeg/download', {}).then(j),
   // Load the model and run one throwaway decode so the first real utterance does
   // not pay for the graph allocation. Fire-and-forget at every call site: a
   // failure only costs the latency it was meant to hide.
@@ -2948,7 +2993,12 @@ export const api = {
     if (before !== undefined) p.set('before', String(before))
     return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p, { signal }).then(j)
   },
-  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}) }).then(j),
+  /** Create a chat slot. `instance_id` binds the new session to a connected crew
+   *  for EXECUTION: it lives in this machine's list and history, and its turns run
+   *  over there. The backend opens the peer's slot first, so a peer that is
+   *  disconnected or on a different version fails the create rather than yielding
+   *  a session that cannot send. */
+  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}), ...(instance_id ? { instance_id } : {}) }).then(j) as Promise<ChatSlot>,
   /** Inject silent background context into a slot — consumed on the next user
    * message. Used by the artifact companion chat to name the bound artifact so
    * the user's first message needs no slug boilerplate. */
@@ -3092,17 +3142,19 @@ export const api = {
   // instance (backend rank-interleaves; remote rows carry instance_id/_name).
   // 403 = instances feature disabled — callers fall back to sessionsSearch.
   instancesSearchSessions: (q: string, limit = 50) => fetch('/api/instances/search-sessions?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
-  /** Create a chat slot ON A CONNECTED PEER, through the instances chat proxy.
-   *  The peer owns the session end to end — its context, memory, skills and
-   *  kiro-cli run the turn, and nothing is written to local history. `api/chat`
-   *  is inside the proxy's path allowlist, so this needs no new backend route;
-   *  the returned `key` is the slot key in the PEER's namespace and is only
-   *  meaningful in a request routed back through the same instance.
-   *  No `agent` is sent: the peer picks its own default, which is the whole
-   *  point of the session running there rather than here. */
-  instancesCreateRemoteSlot: (instanceId: string) =>
-    post('/api/instances/' + encodeURIComponent(instanceId) + '/proxy/api/chat/slots',
-      {}).then(j) as Promise<{ key?: string }>,
+  /** What a connected crew can do: its version, agent roster, model list, effort
+   *  levels and workspaces. The per-instance counterpart to `/api/agents`,
+   *  `/api/models`, `/api/effort-levels` and `/api/workspaces`, which are all
+   *  same-origin reads of THIS machine — a session bound to a peer for execution
+   *  must offer the peer's options, since picking a crew or model that only exists
+   *  here would fail on the first send.
+   *
+   *  `version_match` is the gate the backend enforces on every dispatch, surfaced
+   *  so the UI can explain a refusal before the user types rather than after.
+   *  `unavailable` names the reads that failed, per field, so one unreachable
+   *  roster disables exactly its own control instead of blanking the shelf. */
+  instancesCapabilities: (instanceId: string) =>
+    fetch('/api/instances/' + encodeURIComponent(instanceId) + '/capabilities').then(j) as Promise<RemoteCrewCapabilities>,
   sessionDetail: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key)).then(j),
   deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
   clearSessions: () => del('/api/sessions').then(j),
@@ -3113,6 +3165,7 @@ export const api = {
   spawn: (task: string) => post('/api/spawn', { task }).then(j),
   spawnStatus: (id: string, opts?: { signal?: AbortSignal }) => fetch('/api/spawn/' + encodeURIComponent(id), opts).then(j),
   spawnDelete: (id: string) => del('/api/spawn/' + encodeURIComponent(id)).then(j),
+  spawnStopAll: (slot: string) => post('/api/spawn/stop-all', { slot }).then(j),
   spawnRetry: (id: string) => post('/api/spawn/' + encodeURIComponent(id) + '/retry', {}).then(j),
   spawnClear: () => del('/api/spawn').then(j),
   approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
@@ -3366,7 +3419,7 @@ export const api = {
   channelUpdateAgent: (id: string, aid: string, updates: object) => patch('/api/channels/' + encodeURIComponent(id) + '/agents/' + encodeURIComponent(aid), updates).then(j),
   channelDismissAgent: (id: string, aid: string) => del('/api/channels/' + encodeURIComponent(id) + '/agents/' + encodeURIComponent(aid)).then(j),
   channelWakeAgent: (id: string, aid: string) => post('/api/channels/' + encodeURIComponent(id) + '/agents/' + encodeURIComponent(aid) + '/wake', {}).then(j),
-  channelApproveAgent: (id: string, aid: string, action: string) => post('/api/channels/' + encodeURIComponent(id) + '/agents/' + encodeURIComponent(aid) + '/approve', { action }).then(j),
+  channelApproveAgent: (id: string, aid: string, action: string, pattern?: string) => post('/api/channels/' + encodeURIComponent(id) + '/agents/' + encodeURIComponent(aid) + '/approve', pattern ? { action, pattern } : { action }).then(j),
   channelClearContext: (id: string, scope: 'all' | 'agent', agentId?: string) => post('/api/channels/' + encodeURIComponent(id) + '/clear-context', scope === 'agent' ? { scope, agent_id: agentId } : { scope }).then(j),
 
   // --- Apps ---

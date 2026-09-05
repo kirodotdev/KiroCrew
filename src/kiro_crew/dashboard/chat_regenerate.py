@@ -10,6 +10,7 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -32,6 +33,12 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # A crew-bound slot has no local regenerate: it would truncate LOCAL history
+    # and re-run the turn on this machine, diverging from the peer.
+    refusal = remote_bound_refusal(slot)
+    if refusal is not None:
+        return refusal
 
     async with slot._lock:
         if slot.running:
@@ -218,6 +225,12 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # A crew-bound slot has no local edit-and-resend: it would truncate LOCAL
+    # history and re-run the edited turn on this machine, diverging from the peer.
+    refusal = remote_bound_refusal(slot)
+    if refusal is not None:
+        return refusal
 
     try:
         body = await request.json()

@@ -186,8 +186,9 @@ def write_target(checkout: Path | str) -> Path:
     path = pointer_path()
     # ``restrict_to_owner=True`` locks the temp file down BEFORE the payload
     # reaches it: the pointer is a code-execution input read at every startup,
-    # and the previous post-rename lockdown left it inheriting the directory's
-    # ACL on Windows for the whole write window (issue #5285). It implies the
+    # so it must never be readable by another account, not even for the width
+    # of the write window — locking down only after the rename would leave it
+    # inheriting the directory's ACL on Windows until then. It implies the
     # owner-only POSIX mode, so the pointer is owner-only on every platform,
     # and a lockdown failure refuses the write before the final path is
     # touched. ``atomic_write`` also creates the parent directory itself,
@@ -227,13 +228,13 @@ def restore(prior: str | None) -> bool:
             # the pointer is a code-execution input read at every startup, and
             # a rollback must not be the step that widens access to it.
             # ``restrict_to_owner=True`` locks the temp file down before the
-            # content reaches it (the previous post-rename lockdown left the
-            # restored pointer inheriting the directory's ACL on Windows for
-            # the write window, issue #5285), and a lockdown failure surfaces
-            # as the OSError this except already maps to ``False`` — before
-            # the final path is touched, so a failed rollback never publishes
-            # an unprotected pointer. The parent mkdir lives inside
-            # ``atomic_write``, after its planted-link check.
+            # content reaches it, so the restored pointer never inherits the
+            # directory's ACL on Windows even for the width of the write
+            # window, and a lockdown failure surfaces as the OSError this
+            # except already maps to ``False`` — before the final path is
+            # touched, so a failed rollback never publishes an unprotected
+            # pointer. The parent mkdir lives inside ``atomic_write``, after
+            # its planted-link check.
             atomic_write(path, prior, restrict_to_owner=True)
         return True
     except OSError:

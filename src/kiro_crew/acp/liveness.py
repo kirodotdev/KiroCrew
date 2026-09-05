@@ -68,6 +68,8 @@ from concurrent.futures import Executor
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from kiro_crew import platform_compat
+
 logger = logging.getLogger(__name__)
 
 # ── Verdicts ──
@@ -97,6 +99,14 @@ EVIDENCE_ESTABLISHED_FLAT = "established_flat"
 # still covered by the "young descendant exists" test below, so the narrowing
 # only shortens a non-lethal cancel, never skips straight to one.
 EVIDENCE_SHELL_CHILD_ABSENT = "shell_child_absent"
+
+# Evidence for a movement probe that stored a BASELINE and has nothing to
+# compare it against yet. Structurally non-informative: it says "ask me again",
+# never "this process is idle". A caller whose non-WORKING branch destroys work
+# must therefore defer on it rather than treat it as a negative verdict — see
+# ``client._prompt_loop``'s stale-turn gate, which reaped a live turn on its
+# first silent read because the priming answer landed past the cutoff.
+EVIDENCE_SAMPLING = "sampling"
 
 # Tool names that are known to wrap a model call (e.g. kiro-cli's use_subagent
 # which starts a sub-agent turn inside the current tool call). The
@@ -137,6 +147,12 @@ _STUCK_INPUT_WCHANS = frozenset({"n_tty_read", "pipe_read", "wait_woken"})
 _READ_SYSCALL_NRS = frozenset({0, 63})
 # Shell wrappers whose bare program name is too generic to count as a match.
 _GENERIC_PROGRAMS = frozenset({"bash", "sh", "zsh", "env", "sudo", "nohup", "timeout"})
+
+# Sample key for the portable (no-procfs) CPU probe. Deliberately not one of the
+# ``/proc`` walk's keys: that counter is jiffies and this one is nanoseconds, so
+# a host whose procfs became readable mid-turn must not diff one against the
+# other.
+_PORTABLE_CPU_KEY = "portable_cpu"
 
 _WAIT_SECONDS_RE = re.compile(r"[\"']?seconds[\"']?\s*[:=]\s*(\d+)")
 
@@ -578,7 +594,7 @@ class LivenessOracle:
         # attribution (empty tool_name or an unknown tool), fall back to the
         # plain mcp_subtree_flat evidence so the full build-scale window holds.
         if (
-            evidence not in ("sampling", "no readable counters")
+            evidence not in (EVIDENCE_SAMPLING, "no readable counters")
             and tool.tool_name in _MODEL_WRAPPING_TOOLS
         ):
             held = socket_inodes(self._proc, runtime_pid)
@@ -771,8 +787,15 @@ class LivenessOracle:
         moved, evidence = self._tree_movement(runtime_pid)
         if moved:
             return VERDICT_WORKING, f"backend activity ({evidence})"
-        if evidence in ("sampling", "no readable counters"):
-            # No baseline yet, or /proc unreadable — cannot attest either way.
+        if evidence == "no readable counters":
+            # No procfs AT ALL (macOS, Windows) — the /proc-shaped evidence is
+            # ABSENT, not negative, so fall back to the portable probe before the
+            # caller takes its conservative branch. Linux-only counters must not
+            # read as "assume dead" on the platform most backends run on: that is
+            # how a macOS turn was declared complete mid-tool (issue #8520).
+            return self._portable_model_wait(runtime_pid)
+        if evidence == EVIDENCE_SAMPLING:
+            # No baseline yet — cannot attest either way.
             return VERDICT_UNKNOWN, evidence
         # Flat counters: distinguish the done-but-lost-frame wedge (no backend
         # connection at all) from a probably-thinking server-side silence
@@ -781,6 +804,27 @@ class LivenessOracle:
         if established:
             return VERDICT_UNKNOWN, f"{EVIDENCE_ESTABLISHED_FLAT}: {evidence}"
         return VERDICT_DEAD, f"no established backend socket and flat counters ({evidence})"
+
+    def _portable_model_wait(self, runtime_pid: int) -> tuple[str, str]:
+        """Model-wait verdict from platform-neutral evidence.
+
+        Reached only when the ``/proc`` walk read no counter whatsoever, i.e. on
+        a host that has no procfs. It can only ever FORGIVE silence: a CPU delta
+        on a live pid reads WORKING, and anything else keeps the UNKNOWN such a
+        host already returned, so the caller's conservative branch is untouched
+        wherever the portable probe cannot attest either. It deliberately never
+        answers DEAD — "no counter here" is not proof of death, and the caller
+        reaps on UNKNOWN anyway, so claiming it would only add a way to be wrong.
+
+        Both halves are load-bearing. The alive check alone would forgive a
+        finished-but-lost-frame backend forever (a wedged process is alive too),
+        trading a 90s truncation for a full-prompt-timeout hang; the CPU delta
+        alone would attest to the work of a RECYCLED pid.
+        """
+        moved, evidence = self._portable_movement(runtime_pid)
+        if moved and platform_compat.pid_exists(runtime_pid):
+            return VERDICT_WORKING, f"backend activity ({evidence}, pid alive)"
+        return VERDICT_UNKNOWN, evidence
 
     def _any_established(self, runtime_pid: int) -> bool:
         for pid in iter_descendants(self._proc, runtime_pid):
@@ -822,7 +866,7 @@ class LivenessOracle:
         if prev_io is None or prev_cpu is None:
             self._samples[io_key] = (now, io_total)
             self._samples[cpu_key] = (now, cpu_total)
-            return False, "sampling"
+            return False, EVIDENCE_SAMPLING
         if now - prev_io[0] < self._sample_min_secs:
             # Too soon for a fresh delta — report against the stored baseline
             # without advancing it.
@@ -834,6 +878,34 @@ class LivenessOracle:
         self._samples[io_key] = (now, io_total)
         self._samples[cpu_key] = (now, cpu_total)
         return (io_delta != 0 or cpu_delta != 0), f"io {io_delta:+d}B cpu {cpu_delta:+d}t"
+
+    def _portable_movement(self, root_pid: int) -> tuple[bool, str]:
+        """(moved, evidence) for *root_pid*'s CPU delta, without ``/proc``.
+
+        Same two-sample contract as :meth:`_tree_movement` — the first call after
+        a boundary stores a baseline and reports ``(False, "sampling")``, and a
+        second call inside ``sample_min_secs`` compares against that baseline
+        without advancing it — but it reads ONE portable counter
+        (:func:`platform_compat.proc_cpu_nanos_for_pid`) instead of walking
+        procfs, so it answers where that walk is blind.
+
+        Root pid only, so a busy DESCENDANT under an idle root reads flat here.
+        That is the conservative direction (it never invents movement), and the
+        case where the work lives in a child — an open tool call — is governed by
+        the caller's tool-stall policy rather than by this probe.
+        """
+        cpu = platform_compat.proc_cpu_nanos_for_pid(root_pid)
+        if cpu is None:
+            return False, "no readable counters"
+        now = self._now()
+        prev = self._samples.get(_PORTABLE_CPU_KEY)
+        if prev is None:
+            self._samples[_PORTABLE_CPU_KEY] = (now, cpu)
+            return False, EVIDENCE_SAMPLING
+        if now - prev[0] < self._sample_min_secs:
+            return cpu != prev[1], f"cpu {cpu - prev[1]:+d}ns (early)"
+        self._samples[_PORTABLE_CPU_KEY] = (now, cpu)
+        return cpu != prev[1], f"cpu {cpu - prev[1]:+d}ns"
 
 
 # ── Offloaded-consult guard (shared by AcpClient and AcpSessionHandle) ──

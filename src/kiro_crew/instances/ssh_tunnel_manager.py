@@ -67,6 +67,10 @@ from kiro_crew.cloud import ssm as cloud_ssm
 # hardcoded port, no wildcard). See server._extra_frame_ancestors.
 from kiro_crew.config.loader import DASHBOARD_PORT as _LOCAL_DASHBOARD_PORT
 from kiro_crew.deploy.engine import aws_spawn_env
+from kiro_crew.instances.constants import CAPABILITY_REPLY_MAX_BYTES as _CAPABILITY_REPLY_MAX_BYTES
+from kiro_crew.instances.constants import (
+    DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS as _CAPABILITY_PROXY_TIMEOUT,
+)
 from kiro_crew.instances.constants import (
     DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT_SECS,
 )
@@ -137,6 +141,25 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 _LOOPBACK = "127.0.0.1"
+
+#: The closed set of peer endpoints :meth:`SshTunnelManager.peer_capability` may
+#: read. Every one is a GET that reports what the peer gateway CAN do — its
+#: version, its agent roster, its model list, its effort levels, its workspaces —
+#: and none of them mutates anything. Keeping the set here (rather than letting
+#: the caller name a path) is what makes the method a carrier instead of a second
+#: proxy: a tainted string cannot reach a peer route that was never listed, and
+#: the ``api/agents`` mutating verbs stay unreachable even though the roster read
+#: lives under the same prefix. Adding a row is a security decision — it grants
+#: the local gateway a new read against every connected peer.
+_PEER_CAPABILITY_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/version",
+        "/api/agents",
+        "/api/models",
+        "/api/effort-levels",
+        "/api/workspaces",
+    }
+)
 # Poll cadence while waiting for the forward to come up.
 _READY_POLL_INTERVAL_SECS = 0.25
 # Bound on retained stderr so a chatty/looping ssh can't grow memory unbounded.
@@ -2424,6 +2447,141 @@ class SshTunnelManager:
             "error": "peer rejected the credential",
             "code": "transfer_unauthorized",
         }
+
+    async def peer_capability(self, instance_id: str, path: str) -> tuple[bool, Any]:
+        """GET one of a connected peer's read-only capability endpoints.
+
+        This is deliberately a NARROW CARRIER, not a general proxy. The generic
+        ``/api/instances/{id}/proxy/*`` route forwards a caller-supplied path and
+        is therefore fenced to the ``api/chat`` / ``api/stream`` prefixes; the
+        five paths a local session needs in order to render a peer-bound header
+        (version, agent roster, model list, effort levels, workspaces) sit
+        outside those prefixes. Widening the prefix list would have granted the
+        whole ``api/agents`` surface — including its mutating ``PUT`` — so the
+        capability read gets its own carrier whose target is chosen from a fixed
+        set here rather than by the caller.
+
+        Returns ``(ok, payload)``. On success *payload* is the peer's decoded
+        JSON, which may be a dict (version, workspaces) or a list (agents,
+        models, effort levels) — both shapes are real and returned as-is. On
+        failure *payload* is ``{"error", "code"}`` so a caller can tell a stale
+        credential from a peer too old to answer.
+        """
+        if path not in _PEER_CAPABILITY_PATHS:
+            # A programming error, not a runtime condition: the path set is
+            # closed and every caller passes a literal from it.
+            raise ValueError(f"not a peer capability path: {path!r}")
+        try:
+            url, cookie_name = self._peer_target(instance_id, path)
+        except _PeerUnavailable as e:
+            return False, {
+                "error": e.message,
+                "code": (
+                    "capability_peer_not_connected"
+                    if e.kind == "not_connected"
+                    else "capability_no_credential"
+                ),
+            }
+        timeout = aiohttp.ClientTimeout(total=_CAPABILITY_PROXY_TIMEOUT)
+        reminted = False
+        for _attempt in range(2):
+            try:
+                headers = self._peer_cookie_header(instance_id, cookie_name)
+            except _PeerUnavailable as e:
+                return False, {"error": e.message, "code": "capability_no_credential"}
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(
+                        url,
+                        headers=headers,
+                        # Same SSRF reasoning as the search carrier: the tunnel
+                        # endpoint is the only legitimate target, so a peer
+                        # answering 30x must not redirect the hub anywhere.
+                        allow_redirects=False,
+                    ) as resp:
+                        if resp.status in (401, 403):
+                            if not reminted and await self.refresh_token(instance_id):
+                                reminted = True
+                                continue  # retry once with the fresh credential
+                            return False, {
+                                "error": "peer rejected the credential",
+                                "code": "capability_unauthorized",
+                            }
+                        if resp.status in (404, 405):
+                            # The peer predates this endpoint. Reported as its own
+                            # code because it is the actionable case (update the
+                            # peer), not a transport fault to retry.
+                            return False, {
+                                "error": f"peer does not serve {path}",
+                                "code": "capability_peer_too_old",
+                            }
+                        if not 200 <= resp.status < 300:
+                            return False, {
+                                "error": f"peer refused the read (HTTP {resp.status})",
+                                "code": "capability_peer_refused",
+                            }
+                        chunks: list[bytes] = []
+                        received = 0
+                        oversized = False
+                        async for chunk in resp.content.iter_chunked(65536):
+                            received += len(chunk)
+                            if received > _CAPABILITY_REPLY_MAX_BYTES:
+                                oversized = True
+                                break
+                            chunks.append(chunk)
+                        if oversized:
+                            return False, {
+                                "error": "peer capability reply exceeds the size cap",
+                                "code": "capability_malformed_reply",
+                            }
+                        try:
+                            payload = json.loads(b"".join(chunks))
+                        except Exception:
+                            return False, {
+                                "error": "peer returned a malformed capability reply",
+                                "code": "capability_malformed_reply",
+                            }
+                        if not isinstance(payload, (dict, list)):
+                            return False, {
+                                "error": "peer returned a malformed capability reply",
+                                "code": "capability_malformed_reply",
+                            }
+                        return True, payload
+            except Exception as e:
+                logger.info(
+                    "Peer capability read %s from %s failed (%s)",
+                    path,
+                    instance_id,
+                    type(e).__name__,  # never the credential
+                )
+                return False, {
+                    "error": f"could not reach the instance ({type(e).__name__})",
+                    "code": "capability_unreachable",
+                }
+        # Both attempts came back unauthorized.
+        return False, {
+            "error": "peer rejected the credential",
+            "code": "capability_unauthorized",
+        }
+
+    async def peer_version(self, instance_id: str) -> tuple[bool, str]:
+        """The peer gateway's ``kiro_crew.__version__``, or ``(False, code)``.
+
+        Used by the version-equality gate that fences remote execution. A peer
+        without ``/api/version`` answers 404 and comes back as
+        ``capability_peer_too_old`` — which the gate must treat exactly like a
+        mismatch, since an unknown version cannot be proven equal.
+        """
+        ok, payload = await self.peer_capability(instance_id, "/api/version")
+        if not ok:
+            code = (
+                payload.get("code", "capability_unreachable") if isinstance(payload, dict) else ""
+            )
+            return False, str(code)
+        version = payload.get("version") if isinstance(payload, dict) else None
+        if not isinstance(version, str) or not version:
+            return False, "capability_malformed_reply"
+        return True, version
 
     async def search_sessions_remote(
         self, instance_id: str, query: str, limit: int

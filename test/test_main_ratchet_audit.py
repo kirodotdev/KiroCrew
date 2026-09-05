@@ -14,7 +14,8 @@ run that finishes after a newer push must not write its verdict there:
   since been fixed, so main reads as dirty when it is clean.
 
 Two further ways the lane could report a verdict that means less than it looks
-are pinned at the bottom of this module: a gate ADDED to ``ci.yml`` and not
+are pinned at the bottom of this module: a gate ADDED to ``ci.yml`` or to
+``fast-gate.yml`` (the split-out cheap blocking gates ci.yml waits on) and not
 mirrored here would never be measured on the integrated tree, and a gate step
 left on the default ``success()`` condition would skip every later gate as soon
 as one drifted.
@@ -335,7 +336,14 @@ class TestIssueBodyRendering:
 
 
 class TestGateParityWithCi:
-    """A ``scripts/check_*.py`` gate in ci.yml is measured here or accounted for.
+    """A ``scripts/check_*.py`` gate CI blocks on is measured here or accounted for.
+
+    "CI" is two workflow files since the Fast Gate split: ci.yml keeps the heavy
+    matrix, and fast-gate.yml holds the eleven cheap blocking gates that ci.yml's
+    ``await-fast-gate`` job now waits on. Both are read below. Reading only
+    ci.yml would have left eight of the enumerated gates outside the scan the
+    moment they moved -- the subset assertion would still pass, while the
+    accounting sets it checks against silently stopped describing anything.
 
     Scoped to script-invoking gates on purpose. The lane's two pytest-side
     ratchets (the redactor census and the config baseline) are an ORIGINAL
@@ -352,8 +360,8 @@ class TestGateParityWithCi:
     # A gate script cannot merely be absent from this lane; it must be absent for
     # a RECORDED reason. Scoping the pin to ci.yml's `backend-lint` would have
     # missed the repo's dominant shape -- one gate per standalone job -- so the
-    # whole of ci.yml is read and every gate lands in exactly one of the three
-    # sets below. That is what makes a gate added tomorrow a red test rather than
+    # whole of ci.yml AND of fast-gate.yml is read and every gate lands in
+    # exactly one of the three sets below. That is what makes a gate added tomorrow a red test rather than
     # a silent omission.
 
     # No whole-tree question exists to ask on main: each of these judges a CHANGE
@@ -392,20 +400,33 @@ class TestGateParityWithCi:
 
     def test_every_ci_gate_is_mirrored_or_recorded(self) -> None:
         # The silent direction: a renamed script errors its step loudly, but a
-        # gate ADDED to ci.yml and not mirrored here just never runs on main --
+        # gate ADDED to CI and not mirrored here just never runs on main --
         # and its drift then surfaces on an unrelated PR, which is #7511's
-        # failure mode reproduced for every future gate.
-        ci = yaml.safe_load((_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text("utf-8"))
+        # failure mode reproduced for every future gate. Both blocking workflows
+        # count: fast-gate.yml is where the cheap gates live, and ci.yml blocks
+        # on it through `await-fast-gate`, so a gate added to either is a gate CI
+        # enforces.
         audit = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
         in_ci: set[str] = set()
-        for job in ci["jobs"].values():
-            in_ci |= self._gate_scripts(job)
+        for name in ("ci.yml", "fast-gate.yml"):
+            workflow = yaml.safe_load(
+                (_REPO_ROOT / ".github" / "workflows" / name).read_text("utf-8")
+            )
+            for job in workflow["jobs"].values():
+                in_ci |= self._gate_scripts(job)
+        # The scan must actually see the moved gates: if a rename or another split
+        # empties it, the subset assertion below passes by measuring nothing.
+        assert self._DEFERRED_WHOLE_TREE_GATES <= in_ci, (
+            "gate script(s) recorded as deferred are no longer run by ci.yml or "
+            f"fast-gate.yml: {sorted(self._DEFERRED_WHOLE_TREE_GATES - in_ci)}. Either they "
+            "moved to a third workflow this scan must read, or the record is stale."
+        )
         measured = self._gate_scripts(audit["jobs"]["ratchet-gates"])
         classified = measured | self._PR_ONLY_BY_CONSTRUCTION | self._DEFERRED_WHOLE_TREE_GATES
 
         assert in_ci <= classified, (
-            "ci.yml runs gate script(s) this lane neither measures nor accounts for: "
+            "CI runs gate script(s) this lane neither measures nor accounts for: "
             f"{sorted(in_ci - classified)}. Mirror the step into ratchet-gates, or record "
             "the reason in _PR_ONLY_BY_CONSTRUCTION (it judges a diff, not a tree) or "
             "_DEFERRED_WHOLE_TREE_GATES. An unclassified gate is never measured on main's "

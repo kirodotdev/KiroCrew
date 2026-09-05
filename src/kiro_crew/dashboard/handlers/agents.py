@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from aiohttp import web
+from aiohttp import BodyPartReader, web
 
 from kiro_crew import agent_state, model_registry
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
@@ -46,6 +47,7 @@ from kiro_crew.apps.manager import (
     app_enabled_state,
     apps_dir,
 )
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewAgentConfig,
@@ -60,7 +62,17 @@ from kiro_crew.config.loader import (
     update_config_locked,
     write_config_atomically,
 )
+from kiro_crew.config.paths import data_home
 from kiro_crew.config.schema import SCHEMA_REGISTRY, config_entry_to_dict
+from kiro_crew.config.sections import (
+    _AVATAR_FILE_PIN_RE,
+    _AVATAR_GHOST_BOOL_TRAITS,
+    _AVATAR_GHOST_STR_TRAITS,
+)
+from kiro_crew.config.sections import _AVATAR_IMAGE_EXTS as _LOADER_AVATAR_IMAGE_EXTS
+from kiro_crew.config.sections import (
+    _safe_avatar,
+)
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
@@ -3033,6 +3045,33 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             {"error": effort_reason, "code": "invalid_reasoning_effort"}, status=400
         )
     reasoning_effort = _raw_effort.strip()
+    # Same convention as session_color: a non-empty raw value that the coercer
+    # collapses to "no override" is a caller mistake worth a 400, not a silent
+    # fallback to the name-derived face. The one exception is a well-formed
+    # ghost override whose traits all coerce to absent: that collapse is the
+    # validator's own all-empty→reset rule, not caller junk, so it stores as
+    # the canonical reset rather than being refused.
+    _raw_avatar = body.get("avatar")
+    avatar = _safe_avatar(_raw_avatar)
+    if _raw_avatar not in (None, {}) and not avatar and not _is_ghost_shaped(_raw_avatar):
+        return web.json_response(
+            {
+                "error": "avatar must be {'kind': 'ghost', 'traits': {...}}, {'kind': 'image'}, or empty",
+                "code": "invalid_avatar",
+            },
+            status=400,
+        )
+    if avatar.get("kind") == "image":
+        # A crew that does not exist yet cannot have staged a picture (the
+        # upload endpoint 404s for unknown names), so an image override on
+        # create can never have a file to commit.
+        return web.json_response(
+            {
+                "error": "upload the picture after creating the crew",
+                "code": "avatar_file_missing",
+            },
+            status=400,
+        )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name in cfg.agents:
@@ -3050,6 +3089,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             triggers=body.get("triggers", ""),
             source=body.get("source", "kirocrew"),
             session_color=session_color,
+            avatar=avatar,
         )
         cfg.save()
     # A crew APPEARING changes what the effort chain resolves even with no pin of
@@ -3148,11 +3188,119 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 )
             agent.session_color = _norm
             changed.append("session_color")
+        _avatar_promoted = False
+        _avatar_pin = ""
+        _prior_pin: object = None
+        _remove_files_after_save = False
+        if "avatar" in body:
+            _raw_av = body["avatar"]
+            _av = _safe_avatar(_raw_av)
+            # Same 400 convention as session_color: junk that coerces to "no
+            # override" is refused rather than silently clearing the face.
+            # None/{} are the explicit "reset to name-derived" spellings, and
+            # a well-formed ghost override that collapses all-empty is the
+            # validator's own reset rule, not caller junk.
+            if _raw_av not in (None, {}) and not _av and not _is_ghost_shaped(_raw_av):
+                return web.json_response(
+                    {
+                        "error": "avatar must be {'kind': 'ghost', 'traits': {...}}, {'kind': 'image'}, or empty",
+                        "code": "invalid_avatar",
+                    },
+                    status=400,
+                )
+            if _av.get("kind") == "image":
+                # THE commit point for pictures, under this same config lock.
+                # `promote` is a wire-only directive (never persisted — the
+                # validator drops it): the client sets it exactly when THIS
+                # save staged a fresh upload. Without it, a leftover staging
+                # from an earlier failed or abandoned save must NOT ride along
+                # into an unrelated edit — it is discarded instead, and the
+                # crew keeps wearing its current picture.
+                _tok = _raw_av.get("token") if isinstance(_raw_av, dict) else None
+                _wants_promote = isinstance(_raw_av, dict) and _raw_av.get("promote") is True
+                _prior_pin = agent.avatar.get("file")
+                if _wants_promote and not isinstance(_tok, str):
+                    # `promote` without its staging token must not slide into
+                    # the picture-keeping branch: that would discard the
+                    # staged replacement and report success for a save that
+                    # installed nothing.
+                    return web.json_response(
+                        {
+                            "error": "promote requires the staging token from the upload",
+                            "code": "avatar_file_missing",
+                        },
+                        status=400,
+                    )
+                if _wants_promote and isinstance(_tok, str):
+                    _promoted = await _drained_to_thread(_promote_pending_avatar, name, _tok)
+                    _avatar_promoted = _promoted is not None
+                    if _promoted is None:
+                        # The bytes THIS save staged are gone (a newer save
+                        # re-staged the slot, or staging was cleaned up).
+                        # Falling back to the current live picture would
+                        # report success while silently dropping the user's
+                        # selected replacement — fail the commit instead.
+                        return web.json_response(
+                            {
+                                "error": "staged avatar no longer matches this save"
+                                " — upload the picture again",
+                                "code": "avatar_file_missing",
+                            },
+                            status=400,
+                        )
+                    stamp, _avatar_pin = _promoted
+                else:
+                    await _drained_to_thread(_discard_pending_avatar, name)
+                    # A picture-keeping edit (no fresh upload): stamp from the
+                    # file the config's pin already selects.
+                    _live = await asyncio.to_thread(_live_avatar_file, name, _prior_pin)
+                    stamp = None
+                    if _live is not None:
+                        _avatar_pin = _live.name[len(_avatar_stem(name)) + 1 :]
+                        try:
+                            stamp = int((await asyncio.to_thread(_live.stat)).st_mtime_ns)
+                        except OSError:
+                            stamp = None
+                if stamp is None:
+                    return web.json_response(
+                        {
+                            "error": "no uploaded avatar file to commit — POST the picture first",
+                            "code": "avatar_file_missing",
+                        },
+                        status=400,
+                    )
+                _av = {"kind": "image", "v": stamp, "file": _avatar_pin}
+            elif agent.avatar.get("kind") == "image":
+                # Leaving the picture tier: the stored file must not linger
+                # as a silently-retrievable orphan — but only once the config
+                # write that stops selecting it has actually succeeded.
+                _remove_files_after_save = True
+            agent.avatar = _av
+            changed.append("avatar")
         if "source" in body:
             agent.source = body["source"]
             changed.append("source")
         effort_inputs_after = _effort_inputs(agent)
-        cfg.save()
+        # The config write is the transaction's point of no return: on
+        # failure the orphaned install is removed; on success the commit
+        # reaps every variant except the newly pinned one.
+        # `Exception`, NOT `BaseException`: a cancellation arriving here does
+        # not mean the save failed — the drained worker runs to completion,
+        # so on cancellation the save either fully landed (config and pin
+        # consistent; only the commit-time reap is skipped, leaving orphan
+        # variants the pin never serves) or raised a real exception, which
+        # takes the rollback path below. Rolling back on the cancellation
+        # itself would delete the file a completed save now pins.
+        try:
+            await _drained_to_thread(cfg.save)
+        except Exception:
+            if _avatar_promoted:
+                await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
+            raise
+        if _avatar_promoted:
+            await _drained_to_thread(_commit_promoted_avatar, name, _avatar_pin)
+        if _remove_files_after_save:
+            await _drained_to_thread(_remove_avatar_files, name)
     # Compared, not merely "the body carried the field": the crew form sends
     # reasoning_effort on every save (that is what makes clearing a pin possible)
     # and refresh_defaults drains the warm pool, so refreshing on presence would
@@ -3188,7 +3336,12 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 status=409,
             )
         del cfg.agents[name]
-        cfg.save()
+        await _drained_to_thread(cfg.save)
+        # The crew is gone; its uploaded picture must not outlive it. Inside
+        # the same lock so the cleanup cannot run AFTER a concurrent
+        # same-name recreation has already uploaded and committed a new
+        # picture under the same digest stem.
+        await _drained_to_thread(_remove_avatar_files, name)
     # A crew DISAPPEARING is the other half of the same invariant: the captured
     # config still holds the record, so a cron or messaging job still naming the
     # crew would keep resolving its old pin and binding.
@@ -3201,6 +3354,508 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
         resources=name,
     )
     return web.json_response({"ok": True})
+
+
+# ── Per-crew uploaded avatars ────────────────────────────────────────
+#
+# The "image" tier of per-crew custom avatars: the picture lives as a file
+# under the data home, the config field only records `{"kind": "image"}`
+# (see config.sections._safe_avatar). Serving goes through the authenticated API —
+# never a raw filesystem path — so remote dashboards work unchanged.
+
+#: Accepted image formats, sniffed from magic bytes — the client-sent
+#: Content-Type is attacker-controlled and is deliberately ignored. The set
+#: itself lives in the config loader, which validates the ``ext`` pin the
+#: committed config carries against the same vocabulary.
+_AVATAR_IMAGE_EXTS = _LOADER_AVATAR_IMAGE_EXTS
+_AVATAR_CONTENT_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+#: Upload ceiling. The client downscales to 512px before upload, so a
+#: compliant upload is tens of KB; 1 MB tolerates a generous margin while
+#: keeping a hostile body from ballooning memory (parts accumulate in RAM).
+_AVATAR_MAX_BYTES = 1024 * 1024
+
+
+def _is_ghost_shaped(value: object) -> bool:
+    """True when ``value`` is a structurally well-formed ghost override
+    whose trait values all carry their schema types.
+
+    Used to tell the validator's all-empty→reset collapse apart from caller
+    junk at the 400 gate. Structure alone is not enough: the validator
+    coerces a wrong-TYPE trait value (``{"eyes": 7}``) to absent, so a
+    malformed payload would collapse to reset and — when the crew currently
+    wears an uploaded picture — silently delete it. A payload only earns the
+    reset collapse when every trait it names is validly typed (string axes
+    are strings, boolean axes are real booleans), i.e. it is genuinely
+    empty, not mistyped.
+    """
+    if not (
+        isinstance(value, dict)
+        and value.get("kind") == "ghost"
+        and isinstance(value.get("traits"), dict)
+    ):
+        return False
+    traits = value["traits"]
+    known = set(_AVATAR_GHOST_STR_TRAITS) | set(_AVATAR_GHOST_BOOL_TRAITS) | {"tile"}
+    if any(k not in known for k in traits):
+        # An unknown axis name is a typo'd or version-skewed caller, not an
+        # empty override — it must not earn the reset collapse.
+        return False
+    for key in _AVATAR_GHOST_STR_TRAITS:
+        if key in traits and not isinstance(traits[key], str):
+            return False
+    for key in _AVATAR_GHOST_BOOL_TRAITS:
+        if key in traits and not isinstance(traits[key], bool):
+            return False
+    tile = traits.get("tile", "")
+    if not isinstance(tile, str):
+        return False
+    if tile and not _safe_color(tile):
+        # A nonempty tile the color validator coerces to absent is junk,
+        # not an intentionally empty axis.
+        return False
+    return True
+
+
+def _avatars_dir() -> Path:
+    """Uploaded-avatar directory, resolved against the live data home.
+
+    Lives under ``run/`` — the data-home subtree the security layer fences
+    from agent file tools (read AND write) — because the config's ``file``
+    pin only proves which path was committed, not what is inside it: an
+    agent that could write the pinned path would have its bytes served to
+    the owner's authenticated dashboard as the saved picture. The gateway's
+    own handlers open these paths directly in-process and do not route
+    through that gate, so upload/serve/reap all work unchanged.
+
+    Resolved per call, never captured at import — an import-time binding
+    freezes the data home and defeats pod isolation and test isolation
+    (dashboard/handlers/files.py is the precedent).
+    """
+    return data_home() / "run" / "avatars"
+
+
+def _avatar_stem(name: str) -> str:
+    """Path-safe filename stem for a crew's avatar.
+
+    Crew names are display strings (spaces, CJK, anything) — a digest
+    sidesteps every path-traversal and encoding question rather than
+    answering them one by one. Full digest: truncating buys nothing and a
+    shorter stem is the only thing a collision would need.
+    """
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()
+
+
+def _avatar_variant_paths(name: str) -> list[Path]:
+    """Every digest-named stored variant of ``name``'s picture on disk."""
+    stem = _avatar_stem(name)
+    d = _avatars_dir()
+    out: list[Path] = []
+    for p in d.glob(f"{stem}.*"):
+        suffix = p.name[len(stem) + 1 :]
+        if _AVATAR_FILE_PIN_RE.fullmatch(suffix) and p.is_file():
+            out.append(p)
+    return sorted(out)
+
+
+def _pending_avatar_path(name: str) -> Path | None:
+    """Return the STAGED (uploaded, not yet committed) file, or None."""
+    stem = _avatar_stem(name)
+    for ext in _AVATAR_IMAGE_EXTS:
+        p = _avatars_dir() / f"{stem}.pending.{ext}"
+        if p.is_file():
+            return p
+    return None
+
+
+def _remove_avatar_files(name: str) -> None:
+    """Delete every stored variant (installed + staged) of ``name``'s
+    avatar, best-effort — a failed unlink is logged, never raised, because
+    both callers (saving ``avatar: {}`` and crew deletion) have already
+    cleared the config field, so the file is unreachable either way.
+    """
+    stem = _avatar_stem(name)
+    for ext in _AVATAR_IMAGE_EXTS:
+        try:
+            (_avatars_dir() / f"{stem}.pending.{ext}").unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not remove staged avatar for %s (.%s)", name, ext)
+    for p in _avatar_variant_paths(name):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not remove avatar file %s for %s", p.name, name)
+
+
+def _discard_pending_avatar(name: str) -> None:
+    """Remove any staged-but-uncommitted upload (best-effort)."""
+    stem = _avatar_stem(name)
+    for ext in _AVATAR_IMAGE_EXTS:
+        try:
+            (_avatars_dir() / f"{stem}.pending.{ext}").unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not discard pending avatar for %s (.%s)", name, ext)
+
+
+def _read_avatar_file(path: Path) -> bytes | None:
+    """Bounded, symlink-refusing read of a stored avatar file.
+
+    The avatars dir sits behind the ``run/`` agent fence, but a stored file
+    is still not trusted just because it is where an upload would have
+    landed (defense in depth): a
+    planted symlink must not let the authenticated GET read an arbitrary
+    file, and a planted oversized blob must not be slurped unbounded into
+    gateway memory. ``None`` means "treat as absent".
+    """
+    try:
+        if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+            logger.warning("refusing non-regular avatar file %s", path.name)
+            return None
+        with path.open("rb") as fh:
+            data = fh.read(_AVATAR_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > _AVATAR_MAX_BYTES:
+        logger.warning("refusing oversized avatar file %s", path.name)
+        return None
+    return data
+
+
+def _staging_token(data: bytes) -> str:
+    """Identity of a staged upload: a content digest the PUT must echo.
+
+    Staging is keyed by crew, so overlapping saves share the slot; the token
+    is what stops save A's commit from promoting save B's bytes.
+    """
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _promote_pending_avatar(name: str, token: str) -> tuple[int, str] | None:
+    """Install the staged upload at its digest-named path; return
+    ``(cache stamp, file pin)``.
+
+    Installs only when the staged bytes match ``token`` (the digest the
+    upload response handed THIS save) — a slot overwritten by a newer save's
+    staging returns None instead of committing someone else's bytes. The
+    install target is ``<stem>.<token>.<ext>``: content-addressed, so it can
+    never collide with (or overwrite) the currently committed file — a
+    process kill anywhere before the config save leaves the committed
+    picture byte-identical at its own pinned path, and the orphaned install
+    is reaped by the next successful commit. The caller MUST follow with
+    :func:`_commit_promoted_avatar` (save succeeded) or
+    :func:`_rollback_promoted_avatar` (save failed). Runs synchronous
+    filesystem work: call via ``asyncio.to_thread``.
+    """
+    pending = _pending_avatar_path(name)
+    if pending is None:
+        return None
+    staged = _read_avatar_file(pending)
+    if staged is None or _staging_token(staged) != token:
+        return None
+    stem = _avatar_stem(name)
+    d = _avatars_dir()
+    pin = f"{token}{pending.suffix}"
+    final = d / f"{stem}.{pin}"
+    # replace_with_retry rides out the Windows sharing-violation window an
+    # AV scanner or indexer opens on either path. Re-uploading bytes already
+    # committed lands on the same digest path with identical content.
+    replace_with_retry(pending, final)
+    # Best-effort: a scanner holding a pending sibling open must not fail a
+    # promotion whose install already landed.
+    for other in _AVATAR_IMAGE_EXTS:
+        try:
+            (d / f"{stem}.pending.{other}").unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not remove staged avatar for %s (.%s)", name, other)
+    # Nanosecond mtime: a same-size same-second replacement must still get a
+    # fresh ?v= or the browser keeps showing the old bytes.
+    return int(final.stat().st_mtime_ns), pin
+
+
+def _commit_promoted_avatar(name: str, keep_pin: str) -> None:
+    """After the config save succeeded: reap every variant except the one
+    the config now pins — the previous picture and any orphaned installs.
+    """
+    for p in _avatar_variant_paths(name):
+        if p.name[len(_avatar_stem(name)) + 1 :] == keep_pin:
+            continue
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not reap avatar variant %s for %s", p.name, name)
+
+
+def _rollback_promoted_avatar(name: str, installed_pin: str, keep_pin: object) -> None:
+    """Undo an install whose config save failed: remove the installed file.
+
+    The committed picture was never touched — installs are content-addressed
+    — so rollback is a single unlink, skipped when the install landed on the
+    committed pin itself (a re-upload of identical bytes).
+    """
+    if installed_pin == keep_pin:
+        return
+    try:
+        (_avatars_dir() / f"{_avatar_stem(name)}.{installed_pin}").unlink(missing_ok=True)
+    except OSError:
+        logger.debug("could not remove installed avatar %s for %s", installed_pin, name)
+
+
+def _live_avatar_file(name: str, pin: object) -> Path | None:
+    """The avatar file the config's ``file`` pin selects, or None.
+
+    Only the exact pinned file counts. There is deliberately NO fallback for a
+    record without a valid pin (a hand-edited ``{"kind": "image"}``): every
+    writer stamps ``file`` at the commit, so a pinless record never names a
+    committed picture, and "any stored variant" would include an orphaned
+    install left by a crash between the install and the config save — the
+    one file this pin exists to keep out of the roster. A pinless record
+    therefore serves nothing (the frontend falls back to the seeded ghost)
+    and a picture-keeping save on it fails with ``avatar_file_missing``
+    rather than adopting an unknown file.
+    """
+    if isinstance(pin, str) and _AVATAR_FILE_PIN_RE.fullmatch(pin):
+        p = _avatars_dir() / f"{_avatar_stem(name)}.{pin}"
+        return p if p.is_file() else None
+    return None
+
+
+async def _drained_to_thread(fn, /, *args):
+    """``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation.
+
+    A plain ``await to_thread(...)`` raises ``CancelledError`` at the await
+    while the worker THREAD keeps running — inside ``async with
+    _get_config_lock()`` that releases the lock with the filesystem/config
+    mutation still in flight, so a concurrent save interleaves with it.
+    Shielding the task keeps the await alive until the worker actually
+    finishes, then re-raises the cancellation, so the lock is only ever
+    released with no mutation in flight.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            # OUR await was cancelled, not the worker: remember it, keep
+            # draining the still-running thread.
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
+def _sniff_image_ext(head: bytes) -> str:
+    """Return the format of ``head`` by magic bytes, or ``""``.
+
+    PNG / JPEG / WEBP only — the formats every target browser renders in an
+    ``<img>`` and none of which can carry active content the way SVG can.
+    """
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return ""
+
+
+def _image_body_complete(ext: str, body: bytes) -> bool:
+    """Whether ``body`` is a structurally complete image of format ``ext``.
+
+    Magic bytes alone accept a body cut off mid-stream (a client that died
+    mid-upload, or a hand-built request), and committing one would reap the
+    crew's previous picture in exchange for a file no browser can decode. A
+    full decoder is not a dependency of this package, so this checks the one
+    property every truncation breaks — that the container is closed:
+
+    - PNG: the stream ends with the ``IEND`` chunk (its 4-byte CRC is fixed).
+    - JPEG: the stream ends with the ``FFD9`` end-of-image marker.
+    - WEBP: the RIFF header's declared payload length matches the body.
+
+    Trailing padding after the terminator is not tolerated either: an
+    ``<img>`` renders it fine, but it is exactly the shape a smuggled payload
+    takes, and no encoder this endpoint accepts pictures from emits it.
+    """
+    if ext == "png":
+        return body.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    if ext == "jpg":
+        return body.endswith(b"\xff\xd9")
+    if ext == "webp":
+        if len(body) < 12:
+            return False
+        declared = int.from_bytes(body[4:8], "little")
+        # RIFF length counts everything after the 8-byte RIFF header. A
+        # single pad byte is legal when the payload length is odd.
+        return declared + 8 in (len(body), len(body) - 1)
+    return False
+
+
+async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
+    """GET /api/agents/{name}/avatar — serve the crew's uploaded picture.
+
+    Owner-gated and SEL-audited like its POST/DELETE peers. ``ETag`` derives
+    from the bytes served, so a replaced picture invalidates even when size
+    and second-granularity mtime coincide.
+    """
+    denied = await _require_owner(request, "agent.avatar_get")
+    if denied is not None:
+        return denied
+    name = request.match_info["name"]
+    # The file is served only while the crew's config actually selects it —
+    # a leftover file after an out-of-band config edit or a failed cleanup
+    # must not remain silently retrievable. The file pin narrows that further:
+    # only the exact committed file is served, so an uncommitted install left
+    # by a mid-save crash cannot impersonate the saved picture.
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    agent = cfg.agents.get(name)
+    if agent is None or agent.avatar.get("kind") != "image":
+        return web.json_response(
+            {"error": "no uploaded avatar", "code": "avatar_not_found"}, status=404
+        )
+    path = await asyncio.to_thread(_live_avatar_file, name, agent.avatar.get("file"))
+    if path is None:
+        return web.json_response(
+            {"error": "no uploaded avatar", "code": "avatar_not_found"}, status=404
+        )
+    data = await asyncio.to_thread(_read_avatar_file, path)
+    if data is None:
+        return web.json_response(
+            {"error": "no uploaded avatar", "code": "avatar_not_found"}, status=404
+        )
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="agent.avatar_get",
+        outcome="success",
+        source="dashboard",
+        resources=name,
+    )
+    etag = f'"{hashlib.sha256(data).hexdigest()[:32]}"'
+    if request.headers.get("If-None-Match") == etag:
+        return web.Response(status=304, headers={"ETag": etag})
+    return web.Response(
+        body=data,
+        content_type=_AVATAR_CONTENT_TYPES[path.suffix.lstrip(".")],
+        headers={"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"},
+    )
+
+
+async def api_kirocrew_agent_avatar_upload(request: web.Request) -> web.Response:
+    """POST /api/agents/{name}/avatar — STAGE the crew's picture (multipart).
+
+    Staging only: the file lands as ``<stem>.pending.<ext>`` and nothing the
+    roster serves changes. The commit point is the ordinary agent update
+    (`PUT /api/agents/{name}` with ``avatar: {"kind": "image"}``), which
+    promotes the staged file and writes the field under one config lock —
+    so a failed or abandoned Save can never have replaced the live picture,
+    and the editor's Apply→Save two-step holds for images exactly as it
+    does for ghost traits.
+    """
+    denied = await _require_owner(request, "agent.avatar_upload")
+    if denied is not None:
+        return denied
+    name = request.match_info["name"]
+    if not (request.content_type or "").startswith("multipart/"):
+        return web.json_response(
+            {"error": "expected multipart/form-data", "code": "not_multipart"}, status=400
+        )
+    data = bytearray()
+    try:
+        reader = await request.multipart()
+        part = await reader.next()
+        # `next()` may yield a nested MultipartReader (multipart/mixed); only
+        # a concrete body part carries a file, so anything else is skipped.
+        while part is not None and (not isinstance(part, BodyPartReader) or part.name != "file"):
+            part = await reader.next()
+        if part is None:
+            return web.json_response(
+                {"error": "missing 'file' part", "code": "missing_file_part"}, status=400
+            )
+        while True:
+            chunk = await part.read_chunk(64 * 1024)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > _AVATAR_MAX_BYTES:
+                return web.json_response(
+                    {
+                        "error": f"avatar exceeds {_AVATAR_MAX_BYTES // 1024} KB limit",
+                        "code": "avatar_too_large",
+                    },
+                    status=413,
+                )
+    except (ValueError, AssertionError):
+        # aiohttp raises plain ValueError for a bad/missing boundary or a
+        # body truncated mid-part; that is caller junk, not a server error.
+        return web.json_response(
+            {"error": "malformed multipart body", "code": "invalid_multipart"}, status=400
+        )
+    ext = _sniff_image_ext(bytes(data[:16]))
+    if not ext:
+        return web.json_response(
+            {
+                "error": "avatar must be a PNG, JPEG, or WEBP image",
+                "code": "avatar_bad_format",
+            },
+            status=400,
+        )
+    # Valid magic bytes on a truncated body must not stage: promotion would
+    # reap the committed picture and serve an undecodable file in its place.
+    if not _image_body_complete(ext, bytes(data)):
+        return web.json_response(
+            {
+                "error": "avatar image is truncated or malformed — re-export and upload again",
+                "code": "avatar_bad_format",
+            },
+            status=400,
+        )
+
+    def _stage() -> None:
+        d = _avatars_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        staged = d / f"{_avatar_stem(name)}.pending.{ext}"
+        # Atomic even for the staging file: a crash mid-write must not leave
+        # a truncated body a later promote would install. replace_with_retry
+        # rides out the Windows sharing-violation window an AV scanner or
+        # indexer opens on either path.
+        tmp = staged.with_suffix(f".{ext}.tmp-{uuid.uuid4().hex[:8]}")
+        try:
+            tmp.write_bytes(bytes(data))
+            replace_with_retry(tmp, staged)
+        finally:
+            tmp.unlink(missing_ok=True)
+        # A re-pick with a different format supersedes the previous staging.
+        # Best-effort: a scanner holding a stale sibling open must not fail
+        # the upload that already staged its bytes.
+        for other in _AVATAR_IMAGE_EXTS:
+            if other != ext:
+                try:
+                    (d / f"{_avatar_stem(name)}.pending.{other}").unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("could not remove stale staging for %s (.%s)", name, other)
+
+    # Staging happens under the config lock, with the crew's existence
+    # re-checked inside it: an upload racing a crew deletion must not write
+    # an orphan file the deletion's cleanup already missed. The multipart
+    # body was fully read above, so the lock is held only for the short
+    # filesystem commit.
+    async with _get_config_lock():
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if name not in cfg.agents:
+            return web.json_response(
+                {"error": f"Agent '{name}' not found", "code": "agent_not_found"},
+                status=404,
+            )
+        await _drained_to_thread(_stage)
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="agent.avatar_upload",
+        outcome="success",
+        source="dashboard",
+        resources=name,
+    )
+    return web.json_response({"ok": True, "staged": True, "token": _staging_token(bytes(data))})
 
 
 # ── Conductor skill regeneration ────────────────────────────────────

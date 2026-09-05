@@ -233,6 +233,7 @@ describe('evaluateAutoPin — the race-proof core', () => {
     expect(r).toEqual({ pin: false, stick: false, target: 600 })
   })
 
+
   it('IDLE: a reader ALREADY at the bottom keeps following', () => {
     // Rows settling under a reader parked at the very bottom must still keep them
     // there; the idle rule is about not MOVING someone who left the bottom.
@@ -395,6 +396,30 @@ describe('evaluateAutoPin — the race-proof core', () => {
 // re-fires the pin on every ResizeObserver tick even though the viewport is
 // visually pinned. atBottomEpsilon() scales to the device pixel (never below 1
 // CSS px).
+describe('evaluateAutoPin — a restore owns the position', () => {
+  // Captured on a phone: `WRITE autopin 3091->4245` answered in the same
+  // decisecond by `WRITE settle 4245->3091`, twice inside 120ms, 1,154px each
+  // way. The settle won those rounds only because its budget had not run out --
+  // which is why the same switch landed at the bottom some of the time and not
+  // others. Two owners must not both write the scroller.
+  const geom = { scrollTop: 3091, scrollHeight: 4840, clientHeight: 595 }
+
+  it('refuses the pin while a restore holds the position', () => {
+    expect(evaluateAutoPin({ stick: true, geom, lastWriteTop: 3091, restoreGate: true }).pin).toBe(false)
+  })
+
+  it('RELEASES follow rather than merely skipping it', () => {
+    // Skipping leaves follow armed, so the next growth yanks the reader from
+    // wherever the restore just put them -- the same defect one event later.
+    // This is the reasoning the IDLE branch above already documents.
+    expect(evaluateAutoPin({ stick: true, geom, lastWriteTop: 3091, restoreGate: true }).stick).toBe(false)
+  })
+
+  it('pins normally when no restore is in flight', () => {
+    expect(evaluateAutoPin({ stick: true, geom, lastWriteTop: 3091, restoreGate: false }).pin).toBe(true)
+  })
+})
+
 describe('atBottomEpsilon — fractional-DPR resting gate', () => {
   const desc = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio')
   const setDpr = (v: number | undefined) => {

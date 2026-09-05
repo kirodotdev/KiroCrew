@@ -44,9 +44,10 @@ except Exception:  # pragma: no cover
     sel = None  # type: ignore[assignment]
 
 try:
-    from kiro_crew.hooks import _fd_real_path, safe_read_file_bytes_nolink
+    from kiro_crew.hooks import safe_read_file_bytes_nolink
+    from kiro_crew.pinned_fs import fd_real_path
 except Exception:  # pragma: no cover - hooks always present in prod
-    _fd_real_path = None  # type: ignore[assignment]
+    fd_real_path = None  # type: ignore[assignment]
     safe_read_file_bytes_nolink = None  # type: ignore[assignment]
 
 try:
@@ -1060,7 +1061,7 @@ def _open_verified_dir(spec_dir: Path) -> tuple[Path, int] | None:
     mutations use the same descriptor whose identity was authorized here.
     """
     real_dir = _verified_spec_dir(spec_dir)
-    if real_dir is None or not _CAN_PIN_DIR or _fd_real_path is None:
+    if real_dir is None or not _CAN_PIN_DIR or fd_real_path is None:
         return None
     try:
         dir_fd = os.open(
@@ -1070,7 +1071,7 @@ def _open_verified_dir(spec_dir: Path) -> tuple[Path, int] | None:
     except OSError:
         return None
     try:
-        opened_path = _fd_real_path(dir_fd)
+        opened_path = fd_real_path(dir_fd)
         expected = os.path.normcase(str(real_dir))
         if opened_path is None or os.path.normcase(os.path.normpath(opened_path)) != expected:
             os.close(dir_fd)
@@ -1097,7 +1098,7 @@ def _create_open_verified_dir(spec_dir: Path) -> tuple[Path, int, int] | None:
             os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=parent_fd,
         )
-        opened_path = _fd_real_path(dir_fd) if _fd_real_path is not None else None
+        opened_path = fd_real_path(dir_fd) if fd_real_path is not None else None
         expected = os.path.normcase(str(spec_dir))
         if opened_path is None or os.path.normcase(os.path.normpath(opened_path)) != expected:
             os.close(dir_fd)

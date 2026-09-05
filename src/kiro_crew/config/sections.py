@@ -474,6 +474,89 @@ def _safe_color(value: object) -> str:
     return ""
 
 
+#: String-valued ghost trait axes accepted in a per-crew avatar override.
+_AVATAR_GHOST_STR_TRAITS = ("eyes", "brows", "mouth", "accessory", "prop")
+#: Boolean-valued ghost trait axes.
+_AVATAR_GHOST_BOOL_TRAITS = ("blush", "flip")
+#: Cap on a single trait value, so hand-written junk cannot bloat config.json.
+_AVATAR_TRAIT_MAX_LEN = 32
+#: Formats an uploaded crew picture may be stored in. Shared with the avatar
+#: endpoints: the config's ``file`` pin and the files on disk speak this set.
+_AVATAR_IMAGE_EXTS = ("png", "jpg", "webp")
+#: The config's committed-picture pin: ``<16-hex content digest>.<ext>``.
+#: Each install lands at a digest-named path that never collides with the
+#: currently committed file, so nothing overwrites a committed picture before
+#: the config save that commits its replacement.
+_AVATAR_FILE_PIN_RE = _re.compile(r"^[0-9a-f]{16}\.(?:png|jpg|webp)$")
+
+
+def _safe_avatar(value: object) -> dict:
+    """Return a validated per-crew avatar override, or ``{}`` on junk.
+
+    Accepted shapes:
+
+    - ``{"kind": "ghost", "traits": {...}}`` — pins the ghost face
+      trait-by-trait instead of deriving it from the crew name.
+    - ``{"kind": "image"}`` (optional int ``v``, optional ``file``) — the crew
+      wears an uploaded picture, served from ``GET /api/agents/{name}/avatar``.
+      The file itself lives under the data home's agent-fenced
+      ``run/avatars/`` dir; the config
+      field only marks the choice. ``v`` is the upload's cache-busting stamp
+      (file mtime, nanoseconds): the frontend appends it as ``?v=`` so a
+      replaced picture is re-fetched without waiting out the browser cache.
+      ``file`` pins the exact committed file — a ``<digest>.<ext>`` suffix
+      under the crew's stem. Every install lands at a digest-named path, so a
+      replacement never overwrites the committed file before the config save
+      commits it, and serving resolves only the pinned file.
+
+    Empty means "no override" — the frontend keeps rendering the name-seeded
+    face. config.json is hand-editable (and agent-writable), so junk collapses
+    to ``{}`` rather than crashing the load.
+
+    Trait *values* are deliberately not checked against the frontend's trait
+    vocabulary: the renderer resolves an unknown option to "absent"
+    (``EYES[k] ?? ''``), and keeping the vocabulary in one place (the style
+    module) means a new hat needs no backend release. ``tile`` is the one
+    exception — it is interpolated into SVG markup, so it is pinned to a hex
+    color by the same validator session_color uses.
+    """
+    if not isinstance(value, dict):
+        return {}
+    if value.get("kind") == "image":
+        out: dict[str, object] = {"kind": "image"}
+        v = value.get("v")
+        # bool is an int subclass; a hand-written `"v": true` must not pass.
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            out["v"] = v
+        f = value.get("file")
+        if isinstance(f, str) and _AVATAR_FILE_PIN_RE.fullmatch(f):
+            out["file"] = f
+        return out
+    if value.get("kind") != "ghost":
+        return {}
+    raw = value.get("traits")
+    if not isinstance(raw, dict):
+        return {}
+    traits: dict[str, object] = {}
+    for key in _AVATAR_GHOST_STR_TRAITS:
+        v = raw.get(key, "")
+        traits[key] = v[:_AVATAR_TRAIT_MAX_LEN] if isinstance(v, str) else ""
+    for key in _AVATAR_GHOST_BOOL_TRAITS:
+        # `is True`, not bool(): config.json is hand-editable and
+        # bool("false") is True, so a string-typed value would render the
+        # opposite of what its author wrote. Only a real boolean counts.
+        traits[key] = raw.get(key, False) is True
+    traits["tile"] = _safe_color(raw.get("tile", ""))
+    # An all-empty trait set (every axis absent) is indistinguishable in
+    # intent from "no override" but would render a featureless ghost. The
+    # builder cannot produce it (Apply always carries the seeded defaults), so
+    # it only arrives via hand-written config or direct API use — collapse it
+    # to the one canonical "reset" spelling instead of storing a third state.
+    if all(not v for v in traits.values()):
+        return {}
+    return {"kind": "ghost", "traits": traits}
+
+
 def _meta(label: str, help: str, **kwargs: object) -> dict:
     """Helper to build field metadata dicts with safe defaults."""
     return {"label": label, "help": help, **kwargs}
@@ -2827,6 +2910,17 @@ class KiroCrewAgentConfig:
             deprecated=True,
         ),
     )
+    avatar: dict = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Avatar",
+            "Per-crew avatar override. Empty means the face is derived from "
+            "the crew's name. {'kind': 'ghost', 'traits': {...}} pins explicit "
+            "ghost traits chosen in the avatar builder; {'kind': 'image'} "
+            "means an uploaded picture served from the per-crew avatar "
+            "endpoint.",
+        ),
+    )
 
 
 @dataclass
@@ -3545,6 +3639,16 @@ _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 _WARNED_STT_PROVIDERS: set[str] = set()
 
 
+def stt_provider_is_coerced(value: object) -> bool:
+    """True when a stored ``stt.provider`` cannot take effect and is replaced.
+
+    The single source of truth for "this stored value is inert", so the surface that
+    offers to remove it (``kirocrew config defaults``) cannot come to disagree with
+    the loader about which providers are dispatchable.
+    """
+    return value not in _VALID_STT_PROVIDERS
+
+
 def _validated_stt_provider(value: object) -> str:
     """Return *value* if it is selectable, else degrade to ``local`` with a reason.
 
@@ -3552,6 +3656,11 @@ def _validated_stt_provider(value: object) -> str:
     an unusable one must leave voice input working the way
     :func:`_normalize_acp_backend` degrades an unusable persisted backend, rather
     than failing the load that read it.
+
+    The notice names the command that removes the dead value. A load never writes,
+    so without that pointer the line repeats on every invocation forever -- and
+    unlike a superseded default there is nothing here to preserve, since the stored
+    value cannot take effect either way.
     """
     if value in _VALID_STT_PROVIDERS:
         return str(value)
@@ -3563,13 +3672,15 @@ def _validated_stt_provider(value: object) -> str:
         logger.warning(
             "STT provider %r is retired; using %r instead. It needed a separate "
             "out-of-band install, which the bundled local engine removes while "
-            "recognising the same speech.",
+            "recognising the same speech. Run 'kirocrew config defaults --adopt' "
+            "to drop the stored value and this notice.",
             value,
             STT_PROVIDER_LOCAL,
         )
     else:
         logger.warning(
-            "Unknown STT provider %r; using %r instead. Selectable providers: %s",
+            "Unknown STT provider %r; using %r instead. Selectable providers: %s. "
+            "Run 'kirocrew config defaults --adopt' to drop the stored value.",
             value,
             STT_PROVIDER_LOCAL,
             ", ".join(_VALID_STT_PROVIDERS),
@@ -4352,11 +4463,12 @@ class InstancesConfig:
             "at once. Least-recently-used instances beyond this are evicted and "
             "reconnected on demand. Bounds memory/socket use (each warm instance is a "
             "full dashboard SPA). 0 (the default) is automatic: the cap follows how "
-            "many crews are currently connected, so a crew you connected is never "
-            "evicted -- eviction cold-boots the pane and reads as a disconnect, so a "
-            "fixed cap below the connected count makes tab switching look like a "
-            "connection flap. Automatic is bounded by an internal ceiling; an explicit "
-            "value is honoured exactly, including one below the connected count.",
+            "many crews are configured, so up to an internal ceiling no crew you added "
+            "is evicted and the cap widens by itself when you add one -- eviction "
+            "cold-boots the pane and reads as a disconnect, so a cap below the number "
+            "of crews in use makes tab switching look like a connection flap. Past that "
+            "ceiling eviction resumes; an explicit value is honoured exactly, including "
+            "one below the number of configured crews.",
         ),
     )
     tunnel_base_port: int = field(
@@ -6106,3 +6218,27 @@ class TeamsConfig:
         self.soft_threshold_pct, self.hard_threshold_pct = _normalize_threshold_pair(
             self.soft_threshold_pct, self.hard_threshold_pct
         )
+
+
+@dataclass
+class WakaTimeConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the WakaTime integration (send coding-activity heartbeats "
+            "and read back stats). Requires the WAKATIME_API_KEY credential "
+            "stored in the dashboard secrets vault.",
+            tags=["wakatime"],
+        ),
+    )
+    api_base_url: str = field(
+        default="",
+        metadata=_meta(
+            "API Base URL",
+            "Override the WakaTime API base URL for a self-hosted, "
+            "API-compatible backend (Wakapi, Hackatime). Empty uses the public "
+            "WakaTime API at https://wakatime.com/api/v1.",
+            tags=["wakatime"],
+        ),
+    )

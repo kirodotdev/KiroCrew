@@ -67,6 +67,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import refuse_if_markerless
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.validation import (
     MCP_CORE_SCHEMAS,
@@ -845,6 +846,61 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
         f"(or add it to mcp_gateway.stub_servers and restart) to give this session "
         f"a verifiable identity. `kirocrew doctor` reports the same check."
     )
+
+
+#: The REFLEXIVE tool surface: every module whose MCP tools embed "my session"
+#: in their semantics (ledger writes, monitor loops, session-scoped control,
+#: attributed channel sends, crew/app state, cron ownership). Each of these
+#: resolves the caller STRICTLY through :func:`require_strict_session_key` —
+#: never the lenient :func:`_resolve_session_key`, whose ``/proc`` ancestor
+#: walk hands a subagent its PARENT slot's identity. This is data, not lore:
+#: ``test/test_identity_topology.py`` scans the source tree and fails when a
+#: module calls the strict resolver directly (bypassing the gate) or calls the
+#: gate without being registered here, so the NEXT reflexive tool cannot skip
+#: the gate silently. Paths are relative to ``src/kiro_crew``.
+REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
+    {
+        "mcp_computer.py",
+        "mcp_cron.py",
+        "mcp_dashboard.py",
+        "mcp_tools/apps.py",
+        "mcp_tools/control.py",
+        "mcp_tools/ledger.py",
+        "mcp_tools/messaging.py",
+        "mcp_tools/workflows.py",
+    }
+)
+
+
+def require_strict_session_key(
+    refusal: str, server: str = "kirocrew-core"
+) -> tuple[str, str]:
+    """The ONE fail-closed identity gate every reflexive tool routes through.
+
+    Returns ``(key, "")`` when the caller is strictly identified, and
+    ``("", error)`` otherwise, where ``error`` is the caller-supplied
+    ``refusal`` text with :func:`strict_identity_diagnosis` appended so the
+    operator learns why THIS install cannot answer "which session is calling".
+
+    Resolution is :func:`_resolve_session_key_strict` — gateway-injected
+    caller context, ``KIROCREW_SESSION_KEY``, or the HMAC-verified host-pid
+    sidecar; never the lenient ``/proc`` ancestor walk, under which a subagent
+    resolves to its PARENT slot and could read or mutate the parent's state.
+
+    The tuple shape is deliberate: each call site keeps its own arm. Most
+    refuse with the ``error`` half; tools that legitimately degrade instead
+    (``autonudge_stop`` short-circuits, ``ask_question`` gates on the
+    dashboard surface, computer-use falls back to an unresolved placeholder)
+    use the resolve half only and ignore ``error``. What no call site may do
+    is resolve identity for a reflexive tool through anything but this gate —
+    the ratchet test over :data:`REFLEXIVE_TOOL_MODULES` enforces exactly
+    that. Callers must send the KEY THIS GATE RETURNED on the wire:
+    re-resolving at the write would check one identity and act as another.
+    """
+    sk = _resolve_session_key_strict()
+    if sk:
+        return sk, ""
+    return "", refusal + strict_identity_diagnosis(server)
 
 
 def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | None:
@@ -1801,16 +1857,25 @@ def _classify_slack_identity() -> tuple[str, str | None]:
 
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
-    return call_tool_with_logging(
+    # Tag a directive tool's marker-less result as a refusal at the OUTERMOST
+    # return, which is the only point that sees every way such a tool can
+    # decline — argument validation runs inside the wrapper below, ahead of the
+    # handler, so a schema rejection never reaches code that could tag itself
+    # (#8635). Without the tag the consumer reads a decline as a LOST directive
+    # marker and fires a WARNING meant for a transport regression.
+    return refuse_if_markerless(
         name,
-        raw_args,
-        _validate_args,
-        _call_tool_inner,
-        # Real caller identity when resolvable (per-call caller context in
-        # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
-        # attribution for every standard tool audit in shared backends.
-        session_key=_resolve_session_key() or "mcp_core",
-        downstream_service="kirocrew-core",
+        call_tool_with_logging(
+            name,
+            raw_args,
+            _validate_args,
+            _call_tool_inner,
+            # Real caller identity when resolvable (per-call caller context in
+            # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
+            # attribution for every standard tool audit in shared backends.
+            session_key=_resolve_session_key() or "mcp_core",
+            downstream_service="kirocrew-core",
+        ),
     )
 
 

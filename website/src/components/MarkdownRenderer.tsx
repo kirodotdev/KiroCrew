@@ -2254,16 +2254,16 @@ const SOFT_BREAK_RE = /[\t ]*(?:\r?\n|\r)/g
  * (mdast `break` → <br>). This is an inlined equivalent of the `remark-breaks`
  * package, kept local to avoid adding a runtime dependency.
  *
- * Opt-in via MarkdownRenderer's `softBreaks` prop and used ONLY for user
- * messages: the chat input lets people press Shift+Enter for a newline, so
- * those breaks must survive rendering. Assistant/LLM markdown keeps standard
- * CommonMark soft-break-collapse.
+ * Opt-in via MarkdownRenderer's `softBreaks` prop, for surfaces where a lone
+ * source newline is meaningful: user messages (Shift+Enter in the composer)
+ * and injected notes. Assistant/LLM markdown keeps standard CommonMark
+ * soft-break-collapse.
  *
  * Operates on `text` nodes only, so fenced code, inline code, math, and raw
  * HTML (whose content lives in `.value`, not `.children`) are untouched, and
  * blank-line block separators — already parsed as distinct blocks — are not
  * affected, so lists and paragraphs keep their normal block spacing. That is
- * what lets user messages drop container-level `white-space: pre-wrap`, which
+ * what lets those surfaces drop container-level `white-space: pre-wrap`, which
  * had made react-markdown's inter-block newline text nodes render as literal
  * blank lines and inflated list/paragraph gaps.
  */

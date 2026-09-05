@@ -723,6 +723,49 @@ class TestSkillsCRUD:
         # Nested paths are now allowed
         assert loader.create_skill("foo/bar", "# nested") is True
 
+    def test_rooted_name_load(self, tmp_path):
+        """Rooted names must be rejected: a pathlib join with an absolute
+        segment discards the base directory, escaping the skills root."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        # POSIX-absolute (payload scoped under tmp_path so a guard regression
+        # is contained rather than acted on against the host)
+        assert loader.load_skill(str(tmp_path / "escape")) is None
+        assert loader.load_skill("/foo") is None
+        # Windows drive-qualified, forward-slash spelling
+        assert loader.load_skill("C:/Windows/System32") is None
+        # Windows drive-relative (no root, still re-anchors the join)
+        assert loader.load_skill("C:evil") is None
+        # Forward-slash UNC prefix
+        assert loader.load_skill("//server/share/skill") is None
+        # Backslash spellings stay rejected by the existing backslash rule
+        assert loader.load_skill("C:\\Windows\\evil") is None
+        assert loader.load_skill("\\\\server\\share\\skill") is None
+        # Dot-only spellings collapse the join back onto the skills root
+        assert loader.load_skill(".") is None
+        assert loader.load_skill("./") is None
+        assert loader.load_skill(".//.") is None
+
+    def test_rooted_name_create_update_delete(self, tmp_path):
+        """Skill CRUD must refuse rooted or dot-only names but accept
+        relative ones. Absolute payloads live under tmp_path so a guard
+        regression surfaces as a containment failure, not a host mutation."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        escape = tmp_path / "escape"
+        for rooted in (str(escape), "C:/abs", "C:abs", "//server/share/x", ".", "./"):
+            assert loader.create_skill(rooted, "# bad") is False
+            assert loader.update_skill(rooted, "# bad") is False
+            assert loader.delete_skill(rooted) is False
+        assert not escape.exists()
+        # delete_skill(".") must not have collapsed onto the skills root
+        assert skills_dir.is_dir()
+        # Normal relative names keep working: single-segment and nested
+        assert loader.create_skill("plain", "# ok") is True
+        assert loader.create_skill("nested/child", "# ok") is True
+
     def test_create_then_list(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()

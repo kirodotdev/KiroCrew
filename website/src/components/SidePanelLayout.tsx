@@ -2,7 +2,7 @@ import React from 'react'
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { NavBackBar } from './NavBackBar'
-import { useRegisterNavigationLeaveGuard } from './NavigationLeaveGuard'
+import { useRegisterNavigationLeaveGuard, usePublishNavigationStake } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useVisualViewport } from '../hooks/useVisualViewport'
@@ -114,9 +114,22 @@ const SidePanelLeaveGuardContext = React.createContext<
  * app shell (see NavigationLeaveGuard), so the same answer covers an in-app
  * route change that unmounts the layout itself. A pane declares dirtiness here
  * and nowhere else.
+ *
+ * `atStake` is that same dirtiness as a plain value, for the one asker that
+ * cannot ask: the browser's Back button arrives with no component to intercept
+ * it, so `NavigationBackGuard` has to be armed BEFORE the press (see
+ * `usePublishNavigationStake`). Pass the predicate the guard itself consults —
+ * `useSidePanelLeaveGuard(() => !dirty() || confirm(...), dirty())` — so the two
+ * cannot drift. Omitting it leaves Back unguarded for that pane, which is where
+ * every pane started.
  */
-export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard) {
+export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard, atStake = false) {
   const register = React.useContext(SidePanelLeaveGuardContext)
+  // Published from the PANE, not forwarded by the layout: the stake changes on
+  // the keystroke that dirties the draft, and that keystroke re-renders the pane
+  // without re-rendering the layout, so a layout-side forward would publish a
+  // stale answer (or never publish at all).
+  usePublishNavigationStake(atStake)
   // Register a stable trampoline over a ref, not `guard` itself: the guard
   // closes over the draft, so a new closure arrives on every keystroke.
   // Registering it directly would either re-run the effect per keystroke or

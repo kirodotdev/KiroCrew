@@ -15,6 +15,7 @@ import os
 import shutil
 import stat
 import sys
+import textwrap
 from pathlib import Path
 
 try:  # py3.9+ stdlib; kept in a try so older runtimes raise cleanly.
@@ -108,14 +109,28 @@ def available_fixtures() -> list[str]:
         return []
 
 
+def _description_block(lines: list[str], start: int, *, literal: bool) -> str:
+    """Read one indented manifest scalar, preserving literal newlines."""
+    continuations: list[str] = []
+    for line in lines[start:]:
+        if line and not line[0].isspace():
+            break
+        continuations.append(line)
+    if not any(line.strip() for line in continuations):
+        return ""
+    dedented = textwrap.dedent("\n".join(continuations)).strip()
+    return dedented if literal else " ".join(dedented.split())
+
+
 def fixture_summary(name: str) -> str:
-    """Return the first description line from a fixture manifest.
+    """Return the complete description from a fixture manifest.
 
     Fixture manifests use a deliberately small YAML subset. Reading one scalar
     does not justify making PyYAML a runtime dependency, so this parser accepts
-    either a one-line ``description: value`` or the first non-empty indented line
-    after a ``|``/``>`` block marker. A missing or malformed description is
-    documentation loss, not a reason for scenario discovery to fail.
+    either a one-line ``description: value`` or an indented ``|``/``>`` block.
+    Literal blocks preserve newlines; folded blocks become one whitespace-normalized
+    paragraph. A missing or malformed description is documentation loss, not a
+    reason for scenario discovery to fail.
     """
     try:
         lines = (_resolve_fixture(name) / FIXTURE_MANIFEST).read_text(encoding="utf-8").splitlines()
@@ -130,12 +145,7 @@ def fixture_summary(name: str) -> str:
         value = line[len(prefix) :].strip()
         if value not in block_markers:
             return value
-        for continuation in lines[index + 1 :]:
-            if continuation and not continuation[0].isspace():
-                break
-            if continuation.strip():
-                return continuation.strip()
-        return ""
+        return _description_block(lines, index + 1, literal=value.startswith("|"))
     return ""
 
 

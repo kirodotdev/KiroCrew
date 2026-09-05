@@ -81,8 +81,15 @@ export function searchScopeIsLimited({ slotHasMore, cursorIsForActiveSlot }: Sea
   return !cursorIsForActiveSlot || slotHasMore
 }
 
-/** Pages the top-of-transcript walk may issue on ONE expression of intent. */
-export const OLDER_WALK_MAX_PAGES_PER_INPUT = 4
+/** Pages the top-of-transcript walk may issue on ONE expression of intent.
+ *
+ *  Two, not four: a reader who is genuinely climbing keeps producing gestures,
+ *  so the budget renews itself and the only thing a larger number buys is how
+ *  far ONE flick can run unattended. At four pages that was measured as history
+ *  arriving for seconds after the finger left the glass. Two leaves headroom for
+ *  a fling's momentum to be covered without the walk outliving the gesture that
+ *  authorized it. */
+export const OLDER_WALK_MAX_PAGES_PER_INPUT = 2
 
 /**
  * Whether the top-of-transcript walk may issue another page.

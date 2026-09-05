@@ -906,6 +906,15 @@ class AcpSessionHandle:
         # from an abandoned turn (or routed here for a backend child between
         # turns) gets the fail-closed reject; the live turn's requests are
         # handled by the dispatch loop as before.
+        # A DROPPED frame is invisible to every layer above: the abandoned turn's
+        # output vanishes here with nothing to show it existed, and a turn that
+        # loses its terminal this way reaches the dashboard as an empty response
+        # with no attributable cause. Count them and say how many, ONCE. Never
+        # what they were: a frame carries model text, tool arguments and tool
+        # results, and none of that belongs in a log — nor its size, which leaks
+        # response length. The count is bounded by the queue, and the log line is
+        # one per turn regardless of how many frames drained.
+        _stale_dropped = 0
         while True:
             try:
                 stale = self._queue.get_nowait()
@@ -979,6 +988,19 @@ class AcpSessionHandle:
                         _stale_sid if _stale_sid != self._session_id else ""
                     ),
                 )
+            else:
+                # Everything that is not a permission request is DISCARDED, which
+                # is correct (it belongs to a turn nobody is reading any more) but
+                # was silent. Count it.
+                _stale_dropped += 1
+
+        if _stale_dropped:
+            logger.warning(
+                "pre-turn drain discarded %d leftover frame(s) from a prior "
+                "abandoned turn on this session; those frames — possibly "
+                "including that turn's terminal — reached no consumer",
+                _stale_dropped,
+            )
 
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
 
@@ -1019,6 +1041,16 @@ class AcpSessionHandle:
                 _mark(self._session_id, False)
             raise
 
+        # Did a terminal reach the consumer, and did this generator finish of its
+        # own accord? Together these answer a question no layer above can: the
+        # dashboard reads "no EVENT_COMPLETE" as an empty response and cannot tell
+        # whether the backend never closed the turn or the consumer simply walked
+        # away. Only a CLEAN exhaustion is reported, which is what makes the
+        # warning spam-free: a consumer close (GeneratorExit), a cancellation, and
+        # any raised error all leave `_exhausted_clean` False and are already
+        # logged by whoever caused them.
+        _yielded_terminal = False
+        _exhausted_clean = False
         try:
             # Surface any drain-time rejections (see the pre-turn drain above)
             # as crew-card activity before the turn's own events — the user
@@ -1052,6 +1084,11 @@ class AcpSessionHandle:
                 # single choke point because `_dispatch_events` yields from 15
                 # places and every one of them funnels through this `async for`.
                 self._parked_since = time.monotonic()
+                if event.kind == EVENT_COMPLETE:
+                    # Set BEFORE the yield: a consumer that closes the stream ON
+                    # the terminal still received it, and marking it after would
+                    # report a lost terminal that was in fact delivered.
+                    _yielded_terminal = True
                 try:
                     yield event
                 finally:
@@ -1064,11 +1101,26 @@ class AcpSessionHandle:
                     if self._parked_since is not None:
                         self._parked_total += time.monotonic() - self._parked_since
                         self._parked_since = None
+            # Reached only when the dispatch loop returned on its own — not on a
+            # close, a cancel, or an exception.
+            _exhausted_clean = True
         finally:
             if _mark is not None:
                 _mark(self._session_id, False)
             if not self._turn_done.is_set():
                 self._turn_done.set()
+            if _exhausted_clean and not _yielded_terminal:
+                # The dispatch loop synthesizes a terminal on every path it knows
+                # about (timeout, stale, tool stall, cancel-unacked), so reaching
+                # here means one of its exits has none — and the consumer is left
+                # deciding what an unclosed turn means. Content-free by
+                # construction: this line carries no count, no text and no ids,
+                # because the only fact it has to report is that it happened.
+                logger.warning(
+                    "prompt stream for this session ended without a terminal "
+                    "completion event; the caller will see the turn as producing "
+                    "nothing"
+                )
 
     # ── Turn park state (readable from OUTSIDE the turn) ──
 

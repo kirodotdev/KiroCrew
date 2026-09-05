@@ -201,7 +201,9 @@ export default function SpecStatePanel({ detail, answerDecision }: SpecStatePane
                           key={opt}
                           onClick={() => { if (!answering && !busy) answer(d, opt) }}
                           disabled={!!answering || busy}
-                          aria-label={i18nT('apps.specBuilder.components.specStatePanel.answer_with', { title: d.title }) + opt + (opt === d.recommended ? ' (recommended)' : '')}
+                          aria-label={opt === d.recommended
+                            ? i18nT('apps.specBuilder.components.specStatePanel.answer_option_recommended', { title: d.title, option: opt })
+                            : i18nT('apps.specBuilder.components.specStatePanel.answer_option', { title: d.title, option: opt })}
                           className="flex items-center gap-2.5 px-3 py-2 rounded-md border border-border focus-ring"
                           style={{ cursor: answering || busy ? 'default' : 'pointer', opacity: busy || (answering && answering !== d.id) ? 0.5 : 1 }}
                         >

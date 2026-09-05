@@ -1,10 +1,11 @@
 /**
  * Guards the MCP OAuth banner wiring in ChatPage.
  *
- * ChatPage.renderMessage must route messages with role 'mcp_oauth' to
- * renderMcpOAuthMessage so the Authorize banner renders inline. If that branch
- * (or its import) is dropped, the message falls through to AssistantMessage and
- * the raw "🔐 … requires authentication." text is shown instead of the banner.
+ * ChatPage's renderer entries must route messages with role 'mcp_oauth' to
+ * renderMcpOAuthMessage so the Authorize banner renders inline. If that entry
+ * (or its import) is dropped, the message falls to the registry default, which
+ * draws the banner inside the page's generic row wrapper instead of as a keyed
+ * page row; the entry is pinned here so that wiring stays explicit.
  *
  * This is a source-contract test: ChatPage's message list is driven by the
  * custom virtualizer (useVirtualChat), which mounts an empty window under jsdom
@@ -28,12 +29,15 @@ describe('ChatPage – MCP OAuth banner wiring', () => {
   })
 
   it('routes the mcp_oauth message role to the banner renderer', () => {
-    expect(chatPageSrc).toMatch(/role\s*===\s*['"]mcp_oauth['"]/)
+    // Since chat-core P5-a the page dispatches rows through the app-sdk
+    // registry: the banner is the page's `mcp_oauth` HOST ENTRY (same id as
+    // the registry default it overrides, claiming the role), not an if-branch.
+    expect(chatPageSrc).toMatch(/id:\s*'mcp_oauth',\s*\n\s*roles:\s*\['mcp_oauth'\]/)
     expect(chatPageSrc).toMatch(/renderMcpOAuthMessage\s*\(/)
   })
 
-  it('keeps the banner branch and its renderer call in the same render path', () => {
-    const idxRole = chatPageSrc.search(/role\s*===\s*['"]mcp_oauth['"]/)
+  it('keeps the banner entry and its renderer call in the same render path', () => {
+    const idxRole = chatPageSrc.search(/id:\s*'mcp_oauth',\s*\n\s*roles:\s*\['mcp_oauth'\]/)
     const idxCall = chatPageSrc.indexOf('renderMcpOAuthMessage(')
     expect(idxRole).toBeGreaterThanOrEqual(0)
     expect(idxCall).toBeGreaterThanOrEqual(0)

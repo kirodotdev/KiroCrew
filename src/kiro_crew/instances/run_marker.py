@@ -54,6 +54,7 @@ import os
 import sys
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 
@@ -62,7 +63,107 @@ logger = logging.getLogger(__name__)
 _MARKER_PREFIX = "gateway-"
 _MARKER_SUFFIX = ".bin"
 _PID_SUFFIX = ".pid"
+_START_SUFFIX = ".start"
 _SECRET_SUFFIX = ".secret"
+_MAX_PID_BYTES = 64
+#: Cap for the whole pid file: the digits plus surrounding whitespace and a
+#: trailing newline, with room to spare so a legitimate record is never
+#: truncated into a malformed one.
+_MAX_PID_FILE_BYTES = _MAX_PID_BYTES + 8
+#: READ-side cap for the start-identity sidecar. The token is opaque and
+#: platform-shaped (a Linux clock-tick count, a macOS ``sec.usec`` pair), so the
+#: bound is generous while still refusing a file that is not a sidecar. It bounds
+#: what this module will PARSE off disk; it does not shape what the producer
+#: emits, which is :func:`kiro_crew.platform_compat.get_process_start_id`.
+_MAX_START_TOKEN_BYTES = 128
+
+#: Directory containing gateway sidecars, relative to a data home. Public so a
+#: control plane can inspect a pod's isolated home without resolving its own.
+RUN_DIR_NAME = "run"
+
+
+def pid_file_name(port: int) -> str:
+    """File name of the PID sidecar written for a gateway serving *port*."""
+    return f"{_MARKER_PREFIX}{int(port)}{_PID_SUFFIX}"
+
+
+def _start_file_name(port: int) -> str:
+    """File name of the start-identity sidecar for a gateway serving *port*.
+
+    Mirrors :func:`pid_file_name`. Private because the token is only ever read
+    through :func:`read_pid_record_path`, which derives this name from the pid
+    path it was handed -- so no consumer outside this module needs to spell it.
+    """
+    return f"{_MARKER_PREFIX}{int(port)}{_START_SUFFIX}"
+
+
+def _start_path_for(path: Path) -> Path:
+    """Start-identity sidecar sitting beside the pid sidecar at *path*.
+
+    One derivation rule shared by the writer and the reader, so the two cannot
+    drift apart on where the token lives.
+    """
+    return path.with_suffix(_START_SUFFIX)
+
+
+def pid_start_token(pid: int) -> str:
+    """Canonical start-time identity for *pid*, or ``""`` when unknown.
+
+    The single producer of both the value the sidecar records and the value a
+    reader compares it against, so the two can never drift in how they spell it.
+
+    It chains two platform helpers because neither covers every host, and using
+    either alone costs a platform:
+
+    - :func:`kiro_crew.platform_compat.get_process_start_id` is preferred. It is
+      in-process on every platform it implements (no subprocess) and on macOS
+      reads ``libproc`` at MICROSECOND resolution, where ``process_start_time``'s
+      ``ps -o lstart=`` spelling is only 1-second granular — a pid recycled
+      inside the same second would reproduce an identical token there and the
+      guard would silently pass.
+    - :func:`kiro_crew.platform_compat.process_start_time` is the fallback, and
+      it is what keeps **Windows** working: it reads the process creation
+      ``FILETIME`` (100-ns units) through a query-only handle, while
+      ``get_process_start_id`` implements Linux and macOS only and answers
+      ``None`` everywhere else. Without this leg the token is empty on every
+      Windows host, so a pod there could never prove ownership at all — an
+      unsatisfiable requirement rather than a strict one.
+
+    The fallback's value is whitespace-collapsed because the macOS ``ps``
+    spelling is space-padded and the reader requires a single token; Windows
+    returns a bare integer, so the collapse is a no-op there.
+
+    ``""`` means "this host would not say", which is the same answer an absent
+    sidecar gives. Every caller must read it as *unproven* rather than as a
+    match.
+    """
+    try:
+        primary = platform_compat.get_process_start_id(int(pid))
+    except Exception:  # best-effort identity probe -- never break a caller
+        primary = None
+    if primary:
+        return str(primary)
+    try:
+        fallback = platform_compat.process_start_time(int(pid))
+    except Exception:
+        return ""
+    if not fallback:
+        return ""
+    return "-".join(str(fallback).split())
+
+
+def _pid_record(pid: int) -> str:
+    """Sidecar body for *pid*: exactly the pid and a newline, nothing else.
+
+    Byte-identical to the format this module has always written, which is what
+    keeps the reader SHIPPED in older clients working -- it takes the WHOLE file,
+    strips it and requires ``isdigit()``. Any second line, a start-time token
+    included, makes that reader answer ``None``, and a client sharing this data
+    home would then deny a gateway that genuinely is ours. The start identity
+    therefore lives in its own ``.start`` sidecar (:func:`_start_path_for`)
+    rather than in this file.
+    """
+    return f"{pid}\n"
 
 
 def _run_dir() -> Path:
@@ -114,7 +215,7 @@ def pid_path(port: int) -> Path:
     one path and nothing else. The pid therefore lives beside it in
     ``gateway-<port>.pid``.
     """
-    return _run_dir() / f"{_MARKER_PREFIX}{int(port)}{_PID_SUFFIX}"
+    return _run_dir() / pid_file_name(port)
 
 
 def secret_path(port: int) -> Path:
@@ -147,6 +248,87 @@ def read_secret(port: int) -> str:
     return _read_sidecar(port, _SECRET_SUFFIX)
 
 
+def _read_start_token(pid_path: Path) -> str:
+    """Start identity recorded beside the pid sidecar at *pid_path*, or ``""``.
+
+    Bounded, ASCII, single-token defensive parsing of an on-disk file -- an
+    absent, oversized, undecodable or whitespace-bearing file all read as ``""``
+    = unproven, never as a match. Single-token is the producer's own contract
+    (``get_process_start_id`` is documented colon-free and single-token), not a
+    normalisation this module performs. The read never creates the file or any
+    parent directory. The token is compared VERBATIM against a freshly probed
+    one, so a malformed file cannot accidentally agree with anything.
+    """
+    try:
+        with _start_path_for(pid_path).open("rb") as stream:
+            blob = stream.read(_MAX_START_TOKEN_BYTES + 1)
+    except (OSError, ValueError):
+        return ""
+    if len(blob) > _MAX_START_TOKEN_BYTES:
+        return ""
+    try:
+        token = blob.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return ""
+    # Single-token by contract (``get_process_start_id`` is documented colon-free
+    # and single-token), so anything carrying inner whitespace or a control
+    # character is not a sidecar this module wrote.
+    if not token or not token.isprintable() or token.split() != [token]:
+        return ""
+    return token
+
+
+def read_pid_record_path(path: Path) -> tuple[int, str] | None:
+    """``(pid, start_token)`` recorded at *path*, or ``None`` when there is no
+    positive ASCII-decimal pid to read.
+
+    The pid comes from *path* itself, whose body is the bare pid and nothing
+    else (:func:`_pid_record`); the start identity comes from the ``.start``
+    sidecar beside it (:func:`_start_path_for`). Splitting them is what lets the
+    pid file stay byte-identical to the format every shipped reader expects.
+    Only the FIRST line of *path* is parsed, so a two-line record left behind by
+    an intermediate build still yields its pid -- which fails closed exactly the
+    same way (its token is not where a reader looks) while producing the
+    accurate "record present, no start identity" diagnostic rather than "no
+    record at all".
+
+    Both reads are capped and neither creates a file or any parent directory.
+
+    ``start_token`` is ``""`` when no sidecar is readable -- written by a gateway
+    that predates the start-identity binding, or by one on a host that could not
+    read its own. It is NOT a wildcard: a caller that needs to know the pid
+    still names the same process must treat an empty token as unproven, because
+    the whole point of the token is that a recycled pid cannot reproduce it.
+    """
+    try:
+        with path.open("rb") as stream:
+            blob = stream.read(_MAX_PID_FILE_BYTES + 1)
+    except (OSError, ValueError):
+        return None
+    if len(blob) > _MAX_PID_FILE_BYTES:
+        return None
+    raw = blob.split(b"\n")[0].strip()
+    if not raw or len(raw) > _MAX_PID_BYTES or not raw.isascii() or not raw.isdigit():
+        return None
+    pid = int(raw)
+    if pid <= 0:
+        return None
+    return pid, _read_start_token(path)
+
+
+def _read_pid_path(path: Path) -> int | None:
+    """Positive PID recorded at *path*, ignoring its start identity, or ``None``.
+
+    Reachability-style accessor for the one caller that only needs the number.
+    Private on purpose: :func:`read_pid_record_path` is what a caller reaches for
+    when the answer must also prove the pid still names the process it was
+    recorded for, and an equally public "just the pid" helper invites skipping
+    that proof.
+    """
+    record = read_pid_record_path(path)
+    return record[0] if record is not None else None
+
+
 def read_pid(port: int) -> int | None:
     """Pid recorded by the gateway serving *port*, or ``None``.
 
@@ -160,11 +342,8 @@ def read_pid(port: int) -> int | None:
 
     Read-only: never creates ``run/``.
     """
-    raw = _read_sidecar(port, _PID_SUFFIX)
-    if not raw.isdigit():
-        return None
-    pid = int(raw)
-    return pid if pid > 0 else None
+    path = config_dir() / RUN_DIR_NAME / pid_file_name(port)
+    return _read_pid_path(path)
 
 
 def read_launcher(port: int) -> str | None:
@@ -246,7 +425,7 @@ def gateway_launcher_path() -> str | None:
 def write_marker(port: int) -> None:
     """Best-effort: record that this gateway serves *port*, plus its pid.
 
-    Writes two files, then prunes markers left by earlier runs on other ports:
+    Writes three files, then prunes markers left by earlier runs on other ports:
 
     * ``gateway-<port>.bin`` — the launcher path for the SSH token mint, or
       **empty** when no console script sits beside ``sys.executable`` (a
@@ -256,10 +435,26 @@ def write_marker(port: int) -> None:
       anyway matters because the *filename* is what client port discovery reads,
       and skipping it denied discovery to precisely the source/dev launches that
       most often run on a non-default port.
-    * ``gateway-<port>.pid`` — this process's pid, the identity a client checks
-      before trusting the port (see :func:`read_pid`).
+    * ``gateway-<port>.start`` — this process's start-time identity
+      (:func:`pid_start_token`), or **empty** on a host that will not report one.
+      It is what makes the pid record's FRESHNESS provable: a pid alone cannot be
+      told apart from the same number recycled onto an unrelated process after a
+      crash left the sidecar behind, and a reader that must not hand a credential
+      to that process needs to know the difference. Written even when empty, so a
+      token this generation cannot produce can never be a PREDECESSOR's token
+      left in place.
+    * ``gateway-<port>.pid`` — this process's pid and nothing else, the identity
+      a client checks before trusting the port (see :func:`read_pid`). It stays a
+      bare pid so the whole-file reader shipped in older clients keeps parsing it
+      (:func:`_pid_record`), which is why the start identity is a separate file
+      rather than a second line.
 
-    Both go through :func:`kiro_crew.atomic_write.atomic_write`, which uses a
+    The start file is written FIRST. Both orders fail closed — a pid without a
+    token reads as unproven, and a token without a pid is never consulted — but
+    this one narrows the window in which a published pid has no token to none of
+    the gateway's own making.
+
+    All three go through :func:`kiro_crew.atomic_write.atomic_write`, which uses a
     unique ``mkstemp`` (``O_EXCL``, mode ``0600``) temp then ``os.replace``.
     Using the shared helper — rather than a predictable ``<name>.tmp`` — closes a
     same-user symlink-TOCTOU: a pre-planted ``gateway-<port>.bin.tmp`` symlink
@@ -272,9 +467,12 @@ def write_marker(port: int) -> None:
         logger.debug(
             "No venv kirocrew launcher next to %s — writing port-only run-marker", sys.executable
         )
+    pid = os.getpid()
     try:
         atomic_write(marker_path(port), (launcher + "\n") if launcher else "", mode=0o600)
-        atomic_write(pid_path(port), f"{os.getpid()}\n", mode=0o600)
+        token = pid_start_token(pid)
+        atomic_write(_start_path_for(pid_path(port)), (token + "\n") if token else "", mode=0o600)
+        atomic_write(pid_path(port), _pid_record(pid), mode=0o600)
         logger.info("Wrote gateway run-marker for port %s -> %s", port, launcher or "(port only)")
     except Exception as e:  # best-effort — never break startup on a marker write
         logger.warning("Could not write gateway run-marker for port %s: %s", port, e)
@@ -303,8 +501,9 @@ def prune_markers(*, keep_port: int) -> None:
     Best-effort and never raises: a marker we fail to remove only costs a future
     lookup, and the ownership check still rejects it.
 
-    It removes the marker and pid sidecar but NEVER the credential, because
-    ``_gateway_owns_port`` cannot tell a dead gateway from an unprovable one. It
+    It removes the marker, the pid sidecar and that pid's start identity, but
+    NEVER the credential, because ``_gateway_owns_port`` cannot tell a dead
+    gateway from an unprovable one. It
     fails closed by RETURNING FALSE -- non-POSIX returns False outright, and a
     missing or throwing listener-lookup tool is folded into False as well -- so
     False means "ownership not proven", not "process gone". Deleting on False
@@ -335,7 +534,7 @@ def prune_markers(*, keep_port: int) -> None:
                 continue
         except Exception:
             logger.debug("Ownership check failed for port %s", port, exc_info=True)
-        for path in (marker_path(port), pid_path(port)):
+        for path in (marker_path(port), pid_path(port), _start_path_for(pid_path(port))):
             try:
                 path.unlink(missing_ok=True)
             except OSError:
@@ -344,14 +543,23 @@ def prune_markers(*, keep_port: int) -> None:
 
 
 def clear_marker(port: int) -> None:
-    """Best-effort removal of the run-marker, pid sidecar and credential.
+    """Best-effort removal of the run-marker, pid sidecar, start identity and credential.
 
-    The credential goes with them: it names a generation that no longer owns the
-    port, so leaving it behind would let a client authenticate with a value the
-    next owner never had. A crash still leaves all three (nothing runs), which is
-    why every consumer verifies ownership rather than trusting presence.
+    The start identity goes with the pid it attests: on its own it names nothing,
+    and leaving it beside a pid file a later gateway rewrites is exactly the
+    stale-token pairing the freshness check exists to refuse.
+
+    The credential goes too: it names a generation that no longer owns the port,
+    so leaving it behind would let a client authenticate with a value the next
+    owner never had. A crash still leaves all four (nothing runs), which is why
+    every consumer verifies ownership rather than trusting presence.
     """
-    for path in (marker_path(port), pid_path(port), secret_path(port)):
+    for path in (
+        marker_path(port),
+        pid_path(port),
+        _start_path_for(pid_path(port)),
+        secret_path(port),
+    ):
         try:
             path.unlink(missing_ok=True)
         except OSError:

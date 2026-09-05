@@ -15,6 +15,7 @@
 
 import { describe, it, expect, vi, afterAll } from 'vitest'
 import { render } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentTool } from '../store/chatSlice'
@@ -43,10 +44,13 @@ function renderWithToolCount(toolCount: number) {
   store.dispatch(setActiveSlot(SLOT))
   store.dispatch(sseSubagentSpawn({ slot: SLOT, id: 'a1', task: 'task a1', agent: 'agent-a1' }))
   store.dispatch(sseSubagentTool({ slot: SLOT, id: 'a1', tool: 'npx vitest run', tool_count: toolCount }))
+  const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   return render(
-    <Provider store={store}>
-      <SubagentProgressBar slot={SLOT} />
-    </Provider>,
+    <QueryClientProvider client={queryClient}>
+      <Provider store={store}>
+        <SubagentProgressBar slot={SLOT} />
+      </Provider>
+    </QueryClientProvider>,
   )
 }
 

@@ -7,6 +7,10 @@
  * Each component suspends into a plain monospace `<pre>` of the raw text while
  * the chunk loads, so content is readable immediately (and test environments
  * that never resolve the chunk still render the text).
+ *
+ * `PierrePatch` additionally makes that plain render the FINAL one when the
+ * user has turned off highlighted diffs (see `usePlainDiff`), which is why the
+ * fallback component is a real surface here rather than a loading state.
  */
 import { Suspense, forwardRef, lazy, memo, useContext, useEffect, useRef, useState } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
@@ -14,6 +18,7 @@ import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
 import { PlainCodeFallback } from './PlainCodeFallback'
 import { PierreFarmHoldContext } from '../components/pierreStaging'
+import { usePlainDiff } from '../hooks/usePlainDiff'
 
 const CodeImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierreCodeImpl })))
 const PatchImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierrePatchImpl })))
@@ -108,7 +113,12 @@ function warmKeyOf(text: string): string {
  * invisibly (absolute, zero footprint) so its chunk load, worker round-trip,
  * and paint all happen while the fallback holds the layout.
  */
-function WarmSwap({ fallback, children, warmKey }: { fallback: React.ReactNode; children: React.ReactNode; warmKey?: string }) {
+function WarmSwap({ fallback, children, warmKey, onVisible }: {
+  fallback: React.ReactNode
+  children: React.ReactNode
+  warmKey?: string
+  onVisible?: () => void
+}) {
   const boxRef = useRef<HTMLDivElement | null>(null)
   const [painted, setPainted] = useState(false)
   // Measure-farm render: the fallback IS the measured geometry -- mounting the
@@ -153,6 +163,9 @@ function WarmSwap({ fallback, children, warmKey }: { fallback: React.ReactNode; 
       clearTimeout(deadline)
     }
   }, [painted, farm, warmKey])
+  useEffect(() => {
+    if (painted) onVisible?.()
+  }, [onVisible, painted])
   if (farm) return <>{fallback}</>
   return (
     <div
@@ -212,6 +225,23 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
    *  controls). Only rendered when the file header is enabled. */
   renderHeaderMetadata?: () => React.ReactNode
 }) {
+  // Plain-diff preference (Settings → Display): render the raw patch text and
+  // never request the Pierre chunk at all. This is the seam for EVERY unified-
+  // patch surface — chat fences, tool-call cards, tool input, PR file diffs —
+  // so one preference covers all of them instead of each call site opting in.
+  //
+  // Not requesting the chunk is the point rather than a side effect: loading it
+  // is what pulls in Pierre + Shiki, and the first surface inside it that wants
+  // colour is what builds the highlight worker pool (`highlightWorkerPool` in
+  // ./PierreImpl). So plain mode on a patch surface costs a `<pre>` and nothing
+  // else — no chunk, no pool, no workers.
+  //
+  // `PierreFilePair` below honours the same preference but cannot take this
+  // route: it is handed two file bodies and no patch, so there is nothing to
+  // print raw and the diff still has to be computed inside the chunk. It drops
+  // the colour and the workers instead — see `PierreFilePairImpl`.
+  const [plain] = usePlainDiff()
+  if (plain) return <PlainCodeFallback text={patch} className={className} />
   return (
     <WarmSwap warmKey={warmKeyOf(patch)} fallback={<PlainCodeFallback text={patch} />}>
       <Suspense fallback={<PlainCodeFallback text={patch} />}>
@@ -221,11 +251,16 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   )
 })
 
-export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
+export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackText, fallbackClassName, onVisible, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
   oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
   className?: string
+  /** Optional caller-specific warm/Suspense fallback text and bounds. */
+  fallbackText?: string
+  fallbackClassName?: string
+  /** Called after WarmSwap reveals the real implementation. */
+  onVisible?: () => void
   /** Injected into the file header's metadata slot. Also rendered while
    *  `options.collapsed` is set, where the header IS the whole surface. */
   renderHeaderMetadata?: () => React.ReactNode
@@ -234,8 +269,14 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   /** Injected directly after the filename in the header. */
   renderHeaderFilenameSuffix?: () => React.ReactNode
 }) {
+  const fallbackNode = (
+    <PlainCodeFallback
+      text={fallbackText ?? (newFile ?? oldFile)?.contents ?? ''}
+      className={fallbackClassName}
+    />
+  )
   const impl = (
-    <Suspense fallback={<PlainCodeFallback text={(newFile ?? oldFile)?.contents ?? ''} />}>
+    <Suspense fallback={fallbackNode}>
       <FilePairImpl
         oldFile={oldFile}
         newFile={newFile}
@@ -254,7 +295,11 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   // Patch: readable text holds the layout until the diff paints.
   if (options?.collapsed) return impl
   return (
-    <WarmSwap warmKey={warmKeyOf((newFile ?? oldFile)?.contents ?? '')} fallback={<PlainCodeFallback text={(newFile ?? oldFile)?.contents ?? ''} />}>
+    <WarmSwap
+      warmKey={warmKeyOf((newFile ?? oldFile)?.contents ?? '')}
+      fallback={fallbackNode}
+      onVisible={onVisible}
+    >
       {impl}
     </WarmSwap>
   )

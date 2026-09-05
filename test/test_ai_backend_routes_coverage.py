@@ -1677,6 +1677,23 @@ class TestRunEngine:
         assert payload["code"] == "session_conflict"
         assert payload["error"] == str(exc)
 
+    async def test_a_probe_launcher_crash_gets_its_own_code(
+        self, supervisor: FakeSupervisor
+    ) -> None:
+        """A crashed isolation probe is a sandbox failure, not a state conflict:
+        a UI branching on `code` must not render the push-isolation guidance
+        for it (#8151). It subclasses RuntimeError, so without the dedicated
+        clause it would fall into `session_conflict`."""
+        supervisor.start_raises = clone_setup.IsolationProbeError(
+            "ModuleNotFoundError: No module named 'platform'"
+        )
+        response = await routes._handle_run_start(_request("POST"))
+        assert response.status == 409
+        payload = _json_of(response)
+        assert payload["code"] == "sandbox_launcher_failed"
+        assert "sandbox launcher" in payload["error"]
+        assert "push is not disabled" not in payload["error"]
+
     async def test_status_reads_in_memory_state_only(self, supervisor: FakeSupervisor) -> None:
         supervisor._status = runner.STATUS_RUNNING
         payload = _json_of(await routes._handle_run_status(_request()))

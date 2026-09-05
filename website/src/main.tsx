@@ -15,7 +15,7 @@ import { ProviderProvider } from './providers'
 import { ThemeProvider } from './hooks/useTheme'
 import { UIModeProvider } from './hooks/useUIMode'
 import ThemeExperienceLayer from './components/ThemeExperienceLayer'
-import { NavigationLeaveGuardProvider } from './components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/NavigationLeaveGuard'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
 // i18n must initialize before the first render — a component rendering ahead of
@@ -154,6 +154,11 @@ createRoot(document.getElementById('root')!).render(
                 <ThemeExperienceLayer />
                 <NavigationLeaveGuardProvider>
                   <BrowserRouter>
+                    {/* Inside the router (it navigates) and outside the routes
+                        (it must survive every route change). Renders nothing,
+                        and stays out of the history stack entirely until a page
+                        publishes work at stake. */}
+                    <NavigationBackGuard />
                     <Routes>
                       <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
                       <Route

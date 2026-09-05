@@ -145,15 +145,33 @@ DETERMINISM_MODULES = frozenset({"time", "random", "uuid", "datetime", "secrets"
 FORBIDDEN_ATTRS = frozenset(
     {
         # generator / coroutine / async-generator introspection
-        "gi_frame", "gi_code", "gi_yieldfrom", "gi_running",
-        "cr_frame", "cr_code", "cr_await", "cr_running", "cr_origin",
-        "ag_frame", "ag_code", "ag_await", "ag_running",
+        "gi_frame",
+        "gi_code",
+        "gi_yieldfrom",
+        "gi_running",
+        "cr_frame",
+        "cr_code",
+        "cr_await",
+        "cr_running",
+        "cr_origin",
+        "ag_frame",
+        "ag_code",
+        "ag_await",
+        "ag_running",
         # frame object
-        "f_back", "f_globals", "f_builtins", "f_locals", "f_code", "f_trace",
+        "f_back",
+        "f_globals",
+        "f_builtins",
+        "f_locals",
+        "f_code",
+        "f_trace",
         # traceback object
-        "tb_frame", "tb_next",
+        "tb_frame",
+        "tb_next",
         # function object (py2-era aliases still resolve on some builds)
-        "func_globals", "func_code", "func_builtins",
+        "func_globals",
+        "func_code",
+        "func_builtins",
     }
 )
 
@@ -450,9 +468,7 @@ class _Validator(ast.NodeVisitor):
         # use, and tying the check to call-site analysis would reopen the gap.
         if isinstance(node.value, str):
             for reason in _format_field_reasons(node.value):
-                self.errors.append(
-                    f"line {node.lineno}: {reason} (in a format string)"
-                )
+                self.errors.append(f"line {node.lineno}: {reason} (in a format string)")
         self.generic_visit(node)
 
     def visit_BinOp(self, node: ast.BinOp) -> None:  # noqa: N802 (ast.NodeVisitor API)
@@ -466,8 +482,7 @@ class _Validator(ast.NodeVisitor):
             if combined is not None:
                 for reason in _format_field_reasons(combined):
                     self.errors.append(
-                        f"line {node.lineno}: {reason} "
-                        f"(in a concatenated format string)"
+                        f"line {node.lineno}: {reason} " f"(in a concatenated format string)"
                     )
         self.generic_visit(node)
 

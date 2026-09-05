@@ -55,6 +55,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/sso-ttl", handlers.api_sso_ttl)
     app.router.add_get("/api/dashboard/branding", handlers.api_branding)
     app.router.add_get("/api/health", handlers.api_health)
+    # Authenticated, NOT a probe path: the version-equality gate for remote
+    # execution reads it over an instance tunnel with the dashboard cookie.
+    app.router.add_get("/api/version", handlers.api_version)
     app.router.add_get("/api/live", handlers.api_live)
     app.router.add_get("/api/ready", handlers.api_ready)
     app.router.add_get("/api/theme/boot", handlers.api_theme_boot)
@@ -93,7 +96,9 @@ def register(app: web.Application) -> None:
 
     app.router.add_get("/api/kas-login", _lazy_kas("api_kas_login_status"))
     app.router.add_post("/api/kas-login/device", _lazy_kas("api_kas_login_begin_device"))
+    app.router.add_post("/api/kas-login/loopback", _lazy_kas("api_kas_login_begin_loopback"))
     app.router.add_post("/api/kas-login/poll", _lazy_kas("api_kas_login_poll"))
+    app.router.add_post("/api/kas-login/cancel", _lazy_kas("api_kas_login_cancel"))
     app.router.add_post("/api/kas-login/logout", _lazy_kas("api_kas_login_logout"))
     app.router.add_get("/api/governance/channels", handlers.api_governance_channels)
 

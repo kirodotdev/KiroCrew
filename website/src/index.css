@@ -1351,7 +1351,7 @@ html:lang(ko) {
      `!important` is required to beat the inline `animationDelay` the stagger
      ladder sets. Deliberately scoped to them rather than zeroing every
      animation delay globally. */
-  @media(prefers-reduced-motion:reduce){.animate-rise,.animate-chip-hop{animation-delay:0s !important}}
+  @media(prefers-reduced-motion:reduce){.animate-rise,.animate-chip-hop,.skeleton::after{animation-delay:0s !important}}
   ::selection{background:var(--accent-subtle);color:var(--text-strong)}
   .bg-accent::selection{background:rgba(255,255,255,.25);color:white}
   ::-webkit-scrollbar{width:6px;height:6px}
@@ -2144,10 +2144,32 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .followup-chip{max-width:min(100%,clamp(18rem,calc(50% - 0.1875rem),26rem))}
 
 /* ── Skeleton shimmer placeholder ── */
+/* The highlight is its OWN element, moved with transform, so a sweep costs a
+   compositor transform instead of repainting a gradient every frame -- which
+   matters most here because a skeleton appears exactly when the main thread is
+   busiest (measuring the rows it stands in for).
+
+   It previously pointed at `@keyframes shimmer`, which translates its TARGET.
+   That is right for .animate-shimmer (a highlight element on a track) and wrong
+   here: it slid every bar sideways by its own width, read as the placeholder
+   drifting around rather than shimmering. Separate keyframes, so the two cannot
+   be confused again.
+
+   `--sk-delay` lets a caller stagger a group of bars so the sweep reads as one
+   wave travelling down them. It is set on the BAR and inherited by the
+   pseudo-element, which cannot take an inline style of its own. Duration is
+   zeroed under reduced motion by the global rule near the top of this file, and
+   the DELAY by the companion rule beside it -- that rule covers duration only, so
+   a stagger left in place would hold bars dark in sequence forever. */
+@keyframes skeleton-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
 .skeleton{
-  background:linear-gradient(90deg,var(--bg-elevated) 25%,var(--bg-hover) 50%,var(--bg-elevated) 75%);
-  background-size:200% 100%;animation:shimmer 1.5s ease-in-out infinite;
-  border-radius:var(--radius-sm)}
+  position:relative;overflow:hidden;
+  background:var(--bg-elevated);border-radius:var(--radius-sm)}
+.skeleton::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent 0%,var(--bg-hover) 50%,transparent 100%);
+  animation:skeleton-sweep 1.6s ease-in-out infinite;
+  animation-delay:var(--sk-delay,0s)}
 
 /* ── Consistent focus ring ── */
 .focus-ring{transition:border-color 0.2s,box-shadow 0.2s}

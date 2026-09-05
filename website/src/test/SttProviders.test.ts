@@ -23,12 +23,16 @@ import {
   PROVIDER_LABEL_KEY,
   PROVIDER_LOCAL,
   PROVIDER_TRANSCRIBE,
+  STREAM_ERROR_CODE_KEY,
   UNAVAILABLE_CODE_KEY,
+  streamErrorMessage,
 } from '../lib/sttProviders'
 import EN_MANUAL from '../i18n/locales/en.manual.json'
 
 const manualStt = (EN_MANUAL as { pages: { settings: { sttSettings: Record<string, string> } } })
   .pages.settings.sttSettings
+const manualStreamErrors = (EN_MANUAL as { lib: { sttProviders: Record<string, string> } })
+  .lib.sttProviders
 
 /** A key's leaf name under `pages.settings.sttSettings`. */
 const leaf = (key: string) => key.replace('pages.settings.sttSettings.', '')
@@ -146,5 +150,74 @@ describe('the download prompt', () => {
     }
     // Guard the guard: an empty catalog map would make the loop vacuously pass.
     expect(seen.length).toBeGreaterThanOrEqual(SUPPORTED_LANGUAGES.length)
+  })
+})
+
+describe('a streaming session that failed', () => {
+  /** A key's leaf name under `lib.sttProviders`. */
+  const streamLeaf = (key: string) => key.replace('lib.sttProviders.', '')
+
+  it('names every code the streaming socket can only report itself', () => {
+    // `_CODE_MAX_DURATION` and `_CODE_SESSION_FAILED` in `dashboard/stt_stream.py`,
+    // `CODE_DECODE_FAILED` in `stt/engine.py`, plus `stt_model_missing`, which the
+    // socket also sends and which needs different words below the composer than in
+    // the settings panel. An omission renders the backend's English sentence.
+    expect(Object.keys(STREAM_ERROR_CODE_KEY).sort()).toEqual([
+      'stt_decode_failed',
+      'stt_max_duration_exceeded',
+      'stt_model_missing',
+      'stt_session_failed',
+    ])
+  })
+
+  it('has a catalog string behind each code key', () => {
+    for (const [code, key] of Object.entries(STREAM_ERROR_CODE_KEY)) {
+      expect(manualStreamErrors[streamLeaf(key)], code).toBeTruthy()
+    }
+  })
+
+  it('gives each code its own message', () => {
+    // "Retry" and "wait for a download" are unrelated actions; one shared key would
+    // send half of these users to the wrong one.
+    const keys = Object.values(STREAM_ERROR_CODE_KEY)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('resolves a stream code to its own key, not the settings panel copy', () => {
+    // `stt_model_missing` is in BOTH tables. The stream table has to win: the
+    // settings copy says "Download it below", and below the composer there is no
+    // "below".
+    expect(streamErrorMessage('stt_decode_failed')).toBe(
+      manualStreamErrors[streamLeaf(STREAM_ERROR_CODE_KEY.stt_decode_failed)],
+    )
+    const modelMissing = streamErrorMessage('stt_model_missing')
+    expect(modelMissing).toBe(
+      manualStreamErrors[streamLeaf(STREAM_ERROR_CODE_KEY.stt_model_missing)],
+    )
+    expect(modelMissing).not.toBe(manualStt.unavailable_model_missing)
+  })
+
+  it('falls back to the availability vocabulary for a setup failure', () => {
+    // A missing extra or an unusable wheel travels through the socket unchanged, and
+    // its remedy is the same sentence the settings panel already renders — so it is
+    // localised here too rather than dropping to the server's English.
+    expect(streamErrorMessage('stt_extra_missing', 'raw english')).toBe(
+      manualStt.unavailable_extra_missing,
+    )
+  })
+
+  it('keeps the server sentence for a code this build does not know', () => {
+    // A newer gateway can name a reason this bundle has no key for. Its own prose is
+    // still actionable; a generic "unavailable" would throw away the only
+    // information there was.
+    expect(streamErrorMessage('stt_something_newer', 'the recogniser exploded')).toBe(
+      'the recogniser exploded',
+    )
+  })
+
+  it('reports nothing rather than an empty sentence when it knows nothing', () => {
+    // The caller supplies the generic last resort, so an empty answer has to be
+    // falsy for that `||` to reach it.
+    expect(streamErrorMessage('', '')).toBe('')
   })
 })

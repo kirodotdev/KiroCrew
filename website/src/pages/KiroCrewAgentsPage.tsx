@@ -18,7 +18,8 @@ import SegmentedControl from '../components/SegmentedControl'
 import InfoTip from '../components/InfoTip'
 import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
-import CrewAvatar from '../components/CrewAvatar'
+import CrewAvatar, { ghostTraitsFrom, imageAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
+import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import CrewWakeSection from '../components/CrewWakeSection'
 import CrewWebhookSection from '../components/CrewWebhookSection'
 import CrewEditorRail from '../components/crew/CrewEditorRail'
@@ -64,6 +65,8 @@ interface AgentUpdatePayload {
   reasoning_effort: string
   /** Default session color (#rrggbb hex) for new sessions. '' = no default. */
   session_color: string
+  /** Pinned ghost face from the avatar builder. `{}` = the name-derived face. */
+  avatar: CrewAvatarOverride | Record<string, never>
 }
 
 /** The stored spelling for "no per-agent pin, inherit the next tier down". The
@@ -553,7 +556,7 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
       style={agent.session_color ? { borderLeftColor: agent.session_color, borderLeftWidth: '3px' } : undefined}
     >
       <div className="flex items-center gap-3">
-        <CrewAvatar seed={agent.name} size={38} />
+        <CrewAvatar seed={agent.name} avatar={agent.avatar} size={38} />
         {/* Fixed height for the whole header block. Badges are slightly taller
             than plain text, so cards carrying a `default` badge would otherwise
             push their binding grid lower than a card without one, and the row
@@ -647,7 +650,7 @@ function CrewRow({ agent, isDefault, shared, onOpen }: {
     >
       <TableCell>
         <div className="flex items-center gap-2.5 min-w-0">
-          <CrewAvatar seed={agent.name} size={28} />
+          <CrewAvatar seed={agent.name} avatar={agent.avatar} size={28} />
           <div className="min-w-0">
             <div className="flex items-center gap-2 min-w-0">
               <Clickable
@@ -750,6 +753,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [sessionColor, setSessionColor] = useState('')
   const [editModel, setEditModel] = useState(INHERIT_MODEL)
   const [editEffort, setEditEffort] = useState('')
+  /** Draft avatar override. null = the name-derived face (no override). */
+  const [editAvatar, setEditAvatar] = useState<CrewAvatarOverride | null>(null)
+  const [avatarBuilderOpen, setAvatarBuilderOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   /** The armed confirm row, scrolled into view when it appears: the danger zone
    *  is the last section, so on a short window the confirm buttons land under
@@ -816,6 +822,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setSessionColor(a.session_color || '')
     setEditModel(a.model || INHERIT_MODEL)
     setEditEffort(a.reasoning_effort || '')
+    // Normalized through the same coercion the renderer applies, so the dirty
+    // check compares like with like (a junk stored value reads as "no
+    // override" everywhere).
+    const storedTraits = ghostTraitsFrom(a.avatar)
+    const storedImage = imageAvatarFrom(a.avatar)
+    setEditAvatar(
+      storedTraits
+        ? { kind: 'ghost', traits: storedTraits }
+        : storedImage
+          ? { kind: 'image', v: storedImage.v }
+          : null,
+    )
+    setAvatarBuilderOpen(false)
     setSheet({ mode: 'edit', name: a.name })
   }, [])
 
@@ -886,25 +905,84 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore, triggers, session_color: sessionColor, epoch: sheetEpoch.current })
   }
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editing) return
     setError('')
+    // Snapshot the identity of THIS save before the first await: the epoch
+    // moves when the editor closes or reopens, and a save that awaited an
+    // upload must neither write through to a different opening's crew nor
+    // settle (close) a dialog it no longer owns. The FIELD VALUES are
+    // snapshotted here too — what commits is exactly what was on screen when
+    // Save was pressed, and the pane is fenced (disabled) for the upload's
+    // duration so no edit can land mid-save only to be discarded by the
+    // post-save close.
+    const epoch = sheetEpoch.current
+    const name = editing
+    const data = {
+      kiro_agent: kiroAgent,
+      workspace,
+      memory_store: memoryStore,
+      triggers,
+      // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
+      // clearing a pin is a real write rather than a skipped field.
+      model: editModel,
+      // Sent unconditionally for the same reason as `model`: '' is a real
+      // value (clear the pin), so a skipped field would make clearing
+      // impossible.
+      reasoning_effort: editEffort,
+      session_color: sessionColor,
+    }
+    let avatarPayload: CrewAvatarOverride | Record<string, never> = editAvatar ?? {}
+    if (editAvatar?.kind === 'image') {
+      let stagedToken: string | null = null
+      if (editAvatar.pendingData) {
+        // STAGE the picture; nothing live changes until the PUT below
+        // promotes it under the server's config lock — so a failed or
+        // abandoned Save never costs the previously saved picture.
+        setAvatarUploading(true)
+        try {
+          // Decode the data URI directly — fetch(data:) trips the
+          // dashboard's connect-src CSP, which only allows network origins.
+          const comma = editAvatar.pendingData.indexOf(',')
+          const mime = /data:([^;,]+)/.exec(editAvatar.pendingData)?.[1] ?? 'image/png'
+          const bin = atob(editAvatar.pendingData.slice(comma + 1))
+          const bytes = new Uint8Array(bin.length)
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+          const up = await api.uploadCrewAvatar(name, new Blob([bytes], { type: mime }))
+          if (!up.ok || !up.token) {
+            settleFor(epoch, up.error || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent'))
+            return
+          }
+          stagedToken = up.token
+        } catch (e) {
+          // A thrown error here is transport-level ("Failed to fetch", a
+          // decode failure) — vocabulary the user never saw. The banner gets
+          // the localized failure; the raw message goes to the console.
+          // eslint-disable-next-line no-console -- the only record of WHY a staged upload failed once the banner shows the localized string
+          console.warn('avatar upload failed', e)
+          settleFor(epoch, i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent'))
+          return
+        } finally {
+          setAvatarUploading(false)
+        }
+      }
+      // `promote` + the staging token only when THIS save staged the file —
+      // the token is what stops an overlapping save's staging from being
+      // committed by this one, and a plain {kind:'image'} keeps the current
+      // picture while the server discards any stale staging. The server
+      // stamps the cache-buster `v` at the commit.
+      avatarPayload = stagedToken
+        ? { kind: 'image', promote: true, token: stagedToken }
+        : { kind: 'image' }
+    }
+    if (epoch !== sheetEpoch.current) return
     updateMut.mutate({
-      name: editing,
-      epoch: sheetEpoch.current,
+      name,
+      epoch,
       data: {
-        kiro_agent: kiroAgent,
-        workspace,
-        memory_store: memoryStore,
-        triggers,
-        // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
-        // clearing a pin is a real write rather than a skipped field.
-        model: editModel,
-        // Sent unconditionally for the same reason as `model`: '' is a real
-        // value (clear the pin), so a skipped field would make clearing
-        // impossible.
-        reasoning_effort: editEffort,
-        session_color: sessionColor,
+        ...data,
+        // {} is the wire spelling for "reset to the name-derived face".
+        avatar: avatarPayload,
       },
     })
   }
@@ -988,7 +1066,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const collidingCrews = [...new Set([...sharingWorkspace, ...sharingMemoryStore])]
 
   const creating = sheet?.mode === 'create'
-  const sheetBusy = createMut.isPending || updateMut.isPending || deleteMut.isPending
+  const [avatarUploading, setAvatarUploading] = useState(false)
+  const sheetBusy =
+    createMut.isPending || updateMut.isPending || deleteMut.isPending || avatarUploading
 
   /** Which rail pane the editor body is showing. Reset whenever the editor is
    *  pointed somewhere else, so a crew never opens on the pane the previous one
@@ -1139,12 +1219,25 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
     if (triggers !== (editingAgent.triggers || '')) out.add('routing')
     if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
+    // Both tiers in one comparison: ghost traits normalize through
+    // ghostTraitsFrom (flat record, stable key order) and an image override
+    // through imageAvatarFrom — so a picture pick, replace, or removal is
+    // dirty exactly like a trait edit. pendingData is part of the draft's
+    // identity on purpose: a newly chosen picture IS an unsaved change.
+    const savedNorm = ghostTraitsFrom(editingAgent.avatar) ?? imageAvatarFrom(editingAgent.avatar)
+    const draftNorm =
+      editAvatar?.kind === 'ghost'
+        ? (editAvatar.traits ?? null)
+        : editAvatar?.kind === 'image'
+          ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
+          : null
+    if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
     // An open inline schedule-create form is pending work too: it gets the
     // rail's unsaved dot and the note, so closing the editor cannot silently
     // eat a half-typed schedule the way an untracked surface would.
     if (schedDraft) out.add('schedules')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar])
 
   const sections = useCrewEditorSections({
     templateLabel: provider.labels.agentTemplateField,
@@ -1346,7 +1439,27 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
              and suppressing it would break that. */
         >
           <DialogHeader>
-            {!creating && <CrewAvatar seed={editing} size={28} />}
+            {/* The avatar is itself the entry point to the builder: the
+                first-run review's top finding was that a face setting filed
+                under "Triggers" has no scent — but everyone tries clicking
+                the face. The Triggers-pane row remains as the discoverable
+                text route. */}
+            {!creating && (
+              <button
+                type="button"
+                onClick={() => setAvatarBuilderOpen(true)}
+                // Outside the pane's <fieldset> fence, so it carries the same
+                // busy gate itself: a builder opened mid-save could Apply a newer
+                // draft that the completing save's close then discards.
+                disabled={sheetBusy}
+                className="rounded-md transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+                aria-label={i18nT('components.avatarBuilder.title')}
+                title={i18nT('components.avatarBuilder.title')}
+                data-testid="header-avatar-button"
+              >
+                <CrewAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={() => setError(i18nT('components.avatarBuilder.image_load_failed'))} />
+              </button>
+            )}
             <DialogTitle className="font-mono">
               {creating ? i18nT('pages.kiroCrewAgentsPage.create_agent') : editing}
             </DialogTitle>
@@ -1363,6 +1476,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               an existing crew has surfaces (schedules, bindings, removal) that a
               new one does not, and a wizard for creation is a separate decision. */}
           <DialogBody className={creating ? undefined : 'flex flex-col overflow-hidden p-0 sm:flex-row'}>
+            {/* The fence that makes the Save-time snapshot honest: while a
+                save is in flight (staged upload, the committing PUT, create
+                or delete), every control in the pane is disabled (fieldset
+                covers form controls, pointer-events the custom widgets), so
+                no edit can land mid-save only to be silently dropped when
+                the post-save close unmounts the pane.
+                display:contents keeps the flex layout unchanged. */}
+            <fieldset
+              disabled={sheetBusy}
+              aria-busy={sheetBusy}
+              className={`contents ${sheetBusy ? '[&>*]:pointer-events-none [&>*]:opacity-60' : ''}`}
+            >
             {creating ? (
               <div className="flex flex-col gap-6">
                 <section className="flex flex-col gap-3">
@@ -1410,7 +1535,21 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 >
                   {pane === 'overview' && (
                     <CrewOverviewPane
-                      hub={<CrewAvatar seed={editing} size={34} />}
+                      // The largest face in the editor opens the builder too, so
+                      // the hub does not teach the opposite lesson from the
+                      // header face (same title, same entry point).
+                      hub={
+                        <button
+                          type="button"
+                          onClick={() => setAvatarBuilderOpen(true)}
+                          className="rounded-full transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring"
+                          aria-label={i18nT('components.avatarBuilder.title')}
+                          title={i18nT('components.avatarBuilder.title')}
+                          data-testid="hub-avatar-button"
+                        >
+                          <CrewAvatar seed={editing} avatar={editAvatar ?? undefined} size={34} />
+                        </button>
+                      }
                       templateLabel={provider.labels.agentTemplateField}
                       template={kiroAgent}
                       workspace={workspace}
@@ -1539,6 +1678,22 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                     <>
                       <TriggersField value={triggers} onChange={setTriggers} />
                       <SessionColorField value={sessionColor} onChange={setSessionColor} />
+                      <Field
+                        label={i18nT('components.avatarBuilder.field_label')}
+                        hint={i18nT('components.avatarBuilder.field_hint')}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <CrewAvatar seed={editing || ''} avatar={editAvatar ?? undefined} size={36} />
+                          <Btn onClick={() => setAvatarBuilderOpen(true)} data-testid="open-avatar-builder">
+                            {i18nT('components.avatarBuilder.customize')}
+                          </Btn>
+                          {editAvatar && (
+                            <span className="text-[11px] text-muted">
+                              {i18nT('components.avatarBuilder.customized_note')}
+                            </span>
+                          )}
+                        </div>
+                      </Field>
                     </>
                   )}
 
@@ -1574,6 +1729,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 </div>
               </>
             )}
+            </fieldset>
           </DialogBody>
 
           {/* Save is disabled while nothing is pending. The schedule pause/run
@@ -1664,6 +1820,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          {/* Same stacked-layer contract as WorkspaceModal: mounted inside the
+              editor's DialogContent, `open`-driven. Save only lands in the
+              editor's draft state — the crew record is written by Save changes. */}
+          {!creating && editing && (
+            <CrewAvatarBuilder
+              open={avatarBuilderOpen}
+              name={editing}
+              value={editAvatar}
+              onCancel={() => setAvatarBuilderOpen(false)}
+              onSave={next => { setEditAvatar(next); setAvatarBuilderOpen(false) }}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </>

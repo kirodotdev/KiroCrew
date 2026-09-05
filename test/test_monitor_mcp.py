@@ -9,7 +9,7 @@ from kiro_crew import mcp_core, session_directive
 from kiro_crew.mcp_tools import control
 
 
-def test_monitor_watch_is_stateless_and_canonical():
+def test_monitor_watch_is_stateless_and_canonical(gateway_posts):
     with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"):
         result = control.monitor_watch(
             "monitor_watch",
@@ -25,9 +25,13 @@ def test_monitor_watch_is_stateless_and_canonical():
     assert args["target"] == "https://github.com/acme/widgets/pull/7"
     assert "session_key" not in json.dumps(args)
     assert "loop_id" not in json.dumps(args)
+    # BOTH halves of the delivery contract: the marker above, and the
+    # out-of-band record parked for a consumer that never sees the marker —
+    # carrying the same canonicalized payload the marker carries.
+    assert gateway_posts == [("/api/session-directive", {"kind": "monitor_watch", "args": args})]
 
 
-def test_monitor_watch_rejects_native_subagent_binding():
+def test_monitor_watch_rejects_native_subagent_binding(gateway_posts):
     with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="subagent:child"):
         result = control.monitor_watch(
             "monitor_watch",
@@ -39,9 +43,11 @@ def test_monitor_watch_rejects_native_subagent_binding():
         )
     assert session_directive.decode(result, "monitor_watch") is None
     assert "only works" in result
+    # A refusal must not publish: no marker, no parked record.
+    assert gateway_posts == []
 
 
-def test_monitor_watch_rejects_webex_while_finite_legacy_loop_remains_available():
+def test_monitor_watch_rejects_webex_while_finite_legacy_loop_remains_available(gateway_posts):
     audit = MagicMock()
     with (
         patch(
@@ -79,6 +85,10 @@ def test_monitor_watch_rejects_webex_while_finite_legacy_loop_remains_available(
     assert legacy_args is not None
     assert legacy_args["max_cycles"] == 24
     assert legacy_args["max_runtime_secs"] == 14_400
+    # Only the accepted legacy loop publishes; the three refusals park nothing.
+    assert gateway_posts == [
+        ("/api/session-directive", {"kind": "monitor_start", "args": legacy_args})
+    ]
 
 
 @pytest.mark.parametrize(
@@ -143,7 +153,7 @@ def test_structured_monitor_mutations_require_strict_session_identity(tool_name,
     assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
 
 
-def test_structured_update_and_stop_reject_native_subagent_binding():
+def test_structured_update_and_stop_reject_native_subagent_binding(gateway_posts):
     with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="subagent:child"):
         update = control.monitor_update(
             "monitor_update",
@@ -155,6 +165,8 @@ def test_structured_update_and_stop_reject_native_subagent_binding():
     assert session_directive.decode(stop, "monitor_stop") is None
     assert "only works" in update
     assert "only works" in stop
+    # A refusal must not publish: no marker, no parked record.
+    assert gateway_posts == []
 
 
 def test_monitor_inspect_passes_strict_identity_without_fallback():

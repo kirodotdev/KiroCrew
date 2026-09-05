@@ -13,6 +13,10 @@ Each test is written to FAIL if its corresponding fix is reverted:
   once instead of probing with ``get_lessons()`` first.
 - ``TestRecentFromSourceTailRead`` — ``recent_from_source`` reads a bounded
   tail rather than the whole transcript.
+- ``TestEpisodicSqliteCosineNumpy`` — the sqlite episodic tier scores rows with
+  one numpy mat-vec when numpy is available (issue #8548), giving identical
+  results to the stdlib loop; ``test_numpy_branch_is_actually_taken`` fails if
+  the vectorized branch is reverted.
 """
 
 from __future__ import annotations
@@ -411,3 +415,162 @@ class TestRecentFromSourceTailRead:
                 )
         msgs = log.recent_from_source("slack-C3", exclude_key="slack-C3-a", max_messages=20)
         assert [m["content"] for m in msgs] == ["from-slack-C3-b"]
+
+
+class TestEpisodicSqliteCosineNumpy:
+    """The sqlite episodic cosine scan gives identical results on both branches.
+
+    Issue #8548: `_sqlite_vector_search` is the tier a default install runs
+    (faiss-cpu is not a declared dependency), and it scored rows with a pure
+    Python loop despite numpy being available. The numpy branch must be a
+    drop-in: same ids, same order, same cosine values as the stdlib loop.
+    """
+
+    DIM = 8
+
+    @staticmethod
+    def _normed(seed: int, dim: int) -> list[float]:
+        """Deterministic pre-normalized vector (matches the storage contract)."""
+        import math as _math
+
+        raw = [float((seed + i) % 5) + 0.25 for i in range(dim)]
+        norm = _math.sqrt(sum(x * x for x in raw))
+        return [x / norm for x in raw]
+
+    def _seed_store(self, tmp_path: Path) -> "VectorMemoryStore":
+        import struct as _struct
+        from datetime import datetime, timezone
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=self.DIM)
+        store.init()
+        now = datetime.now(tz=timezone.utc).isoformat()
+        rows = [
+            ("ep-1", self._normed(1, self.DIM), ["alpha"]),
+            ("ep-2", self._normed(3, self.DIM), ["beta"]),
+            ("ep-3", self._normed(7, self.DIM), ["alpha", "beta"]),
+            ("ep-4", self._normed(11, self.DIM), []),
+        ]
+        for mem_id, vec, tags in rows:
+            store.db.execute(
+                "INSERT INTO episodic_memories "
+                "(id, conversation_id, text, embedding, tags, importance, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    mem_id,
+                    "conv-1",
+                    f"episodic row {mem_id}",
+                    _struct.pack(f"{self.DIM}f", *vec),
+                    json.dumps(tags),
+                    0.6,
+                    now,
+                ),
+            )
+        # One row whose embedding length does NOT match the query dim: both
+        # branches must skip it.
+        short = self._normed(5, self.DIM - 3)
+        store.db.execute(
+            "INSERT INTO episodic_memories "
+            "(id, conversation_id, text, embedding, tags, importance, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "ep-short",
+                "conv-1",
+                "episodic row with a mismatched embedding length",
+                _struct.pack(f"{self.DIM - 3}f", *short),
+                "[]",
+                0.6,
+                now,
+            ),
+        )
+        store.db.commit()
+        return store
+
+    def _search(
+        self,
+        store: "VectorMemoryStore",
+        monkeypatch: pytest.MonkeyPatch,
+        use_numpy: bool,
+        tag_filter: list[str] | None = None,
+    ) -> list[dict]:
+        import kiro_crew.vector_memory as vm
+
+        monkeypatch.setattr(vm, "_HAS_NUMPY", use_numpy)
+        return store._sqlite_vector_search(
+            query_embedding=self._normed(2, self.DIM),
+            query_text="episodic row",
+            limit=10,
+            mmr=False,
+            tag_filter=tag_filter,
+        )
+
+    def test_numpy_branch_matches_stdlib_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._seed_store(tmp_path)
+        fast = self._search(store, monkeypatch, use_numpy=True)
+        slow = self._search(store, monkeypatch, use_numpy=False)
+
+        assert [r["id"] for r in fast] == [r["id"] for r in slow]
+        assert [r["id"] for r in fast]  # non-empty: the fixture rows survived
+        for f, s in zip(fast, slow):
+            assert abs(f["cosine_sim"] - s["cosine_sim"]) < 1e-6
+            assert abs(f["score"] - s["score"]) < 1e-6
+
+    def test_numpy_branch_is_actually_taken(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reverting the vectorization makes this fail: the numpy path must not
+        touch ``struct.unpack``, which is exactly what the old per-row loop did."""
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        import kiro_crew.vector_memory as vm
+
+        store = self._seed_store(tmp_path)
+
+        def _boom(*args: object, **kwargs: object) -> None:
+            raise AssertionError("struct.unpack called on the numpy branch")
+
+        monkeypatch.setattr(vm.struct, "unpack", _boom)
+        results = self._search(store, monkeypatch, use_numpy=True)
+        assert {r["id"] for r in results} == {"ep-1", "ep-2", "ep-3", "ep-4"}
+
+    def test_mismatched_embedding_length_skipped_in_both_branches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._seed_store(tmp_path)
+        for use_numpy in (True, False):
+            ids = {r["id"] for r in self._search(store, monkeypatch, use_numpy=use_numpy)}
+            assert "ep-short" not in ids
+            assert {"ep-1", "ep-2", "ep-3", "ep-4"} <= ids
+
+    def test_tag_filter_applies_in_both_branches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._seed_store(tmp_path)
+        for use_numpy in (True, False):
+            ids = {
+                r["id"]
+                for r in self._search(store, monkeypatch, use_numpy=use_numpy, tag_filter=["alpha"])
+            }
+            assert ids == {"ep-1", "ep-3"}
+
+    def test_zero_surviving_rows_returns_empty_in_both_branches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._seed_store(tmp_path)
+        for use_numpy in (True, False):
+            ids = {
+                r["id"]
+                for r in self._search(
+                    store, monkeypatch, use_numpy=use_numpy, tag_filter=["no-such-tag"]
+                )
+            }
+            assert ids == set()

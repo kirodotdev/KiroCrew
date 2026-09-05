@@ -310,7 +310,6 @@ class TestCompanionRuntimeInheritsBackend:
             "_sandbox_mode",
             "_extra_env",
             "_mcp_gateway_overlay",
-            "_mcp_gateway_settings_mcp_json",
             "_mcp_gateway_socket",
         ):
             setattr(provider.client, attr, None)

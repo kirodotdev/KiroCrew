@@ -538,6 +538,35 @@ describe('edge states', () => {
     expect(await screen.findByTestId('aws-control-empty')).toBeTruthy()
     expect(screen.queryByTestId('account-card')).toBeNull()
     expect(screen.queryByTestId('aws-rail')).toBeNull()
+    // The remedy is the Add-accounts disclosure on this same pane, so the copy
+    // names it. Asserted against the KEY, not a fragment, so a copy edit moves
+    // both sides of this pair together — and paired with the unsupported case
+    // below, since a one-sided assertion passes just as well if both platforms
+    // collapsed onto one string.
+    expect(screen.getByTestId('aws-control-empty').textContent).toContain(
+      i18nT('apps.awsControl.page.empty_body'),
+    )
+  })
+
+  it('drops the Add-accounts pointer from the empty state where nothing can be added', async () => {
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(
+      accountsPayload({ accounts: [], totals: { accounts: 0, profiles: 0, profilesHealthy: 0 } }),
+    )
+    vi.mocked(awsControlApi.availableProfiles).mockResolvedValue(
+      availablePayload({ profiles: [], supported: false, registeredCount: 0 }),
+    )
+    renderWithProviders(<AwsControlPage />)
+
+    // Discovery is POSIX-only, so an unsupported platform sits at zero accounts
+    // permanently and the disclosure below reports that it cannot list profiles.
+    // An empty state naming that disclosure would promise an action the next
+    // paragraph refuses, which is the same defect as naming a page that does not
+    // exist -- one scroll shorter. The subtitle goes away entirely rather than
+    // being replaced: the title already says nothing is here, and the WSL
+    // constraint belongs in the disclosure, once.
+    await screen.findByTestId('add-accounts-unsupported')
+    expect(screen.getByTestId('aws-control-empty-title')).toBeTruthy()
+    expect(screen.queryByTestId('aws-control-empty-subtitle')).toBeNull()
   })
 })
 

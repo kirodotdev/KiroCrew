@@ -588,6 +588,43 @@ This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM r
 
 The summary carries **no message content** — only counts, types, and sizes — which is a hard requirement (issue #6022): the kiro-cli data dir is fenced precisely because it holds SSO tokens, so the diagnostics must never record block text, image bytes, or tool arguments. This lets an operator tell a stale/invalid model id apart from a structurally malformed payload the next time a turn is rejected as `Improperly formed request` (see the `_RE_MALFORMED_REQUEST` classifier), without ever exposing what the turn contained. The helper is defensive by contract: it never raises into the live prompt path (a malformed block list yields a partial/minimal summary), so a diagnostics failure can never break a turn.
 
+### Turn-boundary loss diagnostics (content-free)
+
+Two places in `AcpSessionHandle.prompt` could destroy or omit a turn's evidence
+silently. Both now report, and both report **only** a count or the bare fact —
+never frame text, tool arguments, tool results, or frame SIZE, since a size leaks
+response length.
+
+- **Pre-turn stale drain.** The drain empties the session queue of frames left by
+  an abandoned turn (see the cancel-unacked / stale / tool-stall / timeout paths,
+  which synthesize a terminal and return while the real kiro-cli turn keeps
+  emitting). Permission REQUESTS are answered rather than dropped; everything else
+  is discarded, which used to happen with no count and no log. It now counts the
+  discarded frames and emits **one** WARNING per turn carrying that count — one
+  line regardless of how many frames drained, so a burst cannot flood the log.
+  This matters downstream: a turn whose terminal was destroyed here reaches the
+  dashboard as an empty response with no attributable cause. The count is NOT
+  bridged into `chat_runner` — see the note below.
+- **A prompt stream that ends without a terminal.** `_dispatch_events`
+  synthesizes an `EVENT_COMPLETE` on every exit path it knows about, so a
+  consumer that never receives one is looking at a path that has none. The
+  generator warns when it exhausts CLEANLY having yielded no terminal.
+  "Cleanly" is what makes the line spam-free: a consumer close
+  (`GeneratorExit`), a cancellation, and any raised error all skip it, and each
+  is already logged by whoever caused it. The terminal is marked as delivered
+  BEFORE its `yield`, so a consumer that closes the stream on the terminal is not
+  reported as having lost it.
+
+**Deliberately not bridged to the runner.** The drain count stays inside this
+layer. Reaching `chat_runner` would mean a new field on the `AcpEvent` /
+`LLMEvent` provider contract plus plumbing through `_dispatch` and the provider,
+and `scripts/check_agent_sdk_boundary.py` baselines the dashboard modules at a
+count that may not grow — a materially larger change than the fault it would
+report. Unknown `sessionUpdate` discriminants in `_dispatch.py` are still ignored
+silently for a related reason: `parse_session_update` is a pure function on a hot
+path with no per-session state, so a bounded log there needs a dedupe set it does
+not have, and an unbounded one would log per frame.
+
 
 ## AcpRuntime & AcpSessionHandle (session multiplexing)
 

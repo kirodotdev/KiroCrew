@@ -297,6 +297,50 @@ describe('PromptsTab authoring', () => {
       .toBeDisabled()
   })
 
+  it('offers Retry on a failed read, and a successful retry clears the failure', async () => {
+    mockApi.prompts.mockResolvedValue([USER_PROMPT])
+    // Reject EVERY read, not just the first: the desktop pane auto-selects
+    // the only prompt on mount, which already consumes one load, and the
+    // row click that follows is the re-click path, which re-loads on a
+    // failed read. A `...Once` rejection would be spent by the auto-select
+    // and the click's own reload would succeed before Retry is ever seen.
+    mockApi.promptDetail.mockRejectedValue(new Error('boom'))
+    renderTab()
+    await select('my-prompt')
+
+    // The failed read renders a visible recovery, not just a caption: before,
+    // the only retry path was re-clicking the selected row, which nothing
+    // taught, so the pane dead-ended until the user re-clicked by accident.
+    await waitFor(() => expect(screen.getByText(/could not be loaded/)).toBeInTheDocument())
+    const callsBefore = mockApi.promptDetail.mock.calls.length
+
+    // The server recovers; Retry reuses the row re-click's load path: the
+    // same detail fetch fires once more, and success clears the failed state.
+    mockApi.promptDetail.mockResolvedValue({
+      content: '---\ndescription: mine\n---\n\nbody text', redacted: false,
+      hash: 'a'.repeat(64),
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(mockApi.promptDetail.mock.calls.length).toBe(callsBefore + 1))
+    expect(await screen.findByText(/body text/)).toBeInTheDocument()
+    expect(screen.queryByText(/could not be loaded/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+  })
+
+  it('offers no Retry on a redacted copy, whose re-read returns the same answer', async () => {
+    mockApi.prompts.mockResolvedValue([USER_PROMPT])
+    mockApi.promptDetail.mockResolvedValue({
+      content: 'key: [REDACTED: credential]', redacted: true,
+    })
+    renderTab()
+    await select('my-prompt')
+
+    // Redaction is the server's verdict on the file's CONTENT, not a transient
+    // fault: retrying cannot change it, so no button implies it could.
+    expect(screen.getByText(/filtered for safety/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+  })
+
   it('keeps an open editor intact when the create dialog is opened', async () => {
     mockApi.prompts.mockResolvedValue([USER_PROMPT])
     renderTab()

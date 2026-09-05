@@ -99,7 +99,12 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
           {current ? current.name : 'folder'}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[190px] max-h-[300px] overflow-y-auto">
+      {/* Intentional tighter cap composed via min() with the primitive's
+          available-height var: 300px keeps the folder picker compact while
+          preserving the viewport never-clip floor (a bare max-h would override
+          the primitive, since cn()'s tailwind-merge dedupes max-h-*). overflow
+          is left to the primitive. */}
+      <DropdownMenuContent align="start" className="min-w-[190px] max-h-[min(300px,var(--radix-dropdown-menu-content-available-height))]">
         <FolderPickerItems
           folders={folders}
           currentFolderId={artifact.folder_id || null}

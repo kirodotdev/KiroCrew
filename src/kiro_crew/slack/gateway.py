@@ -83,7 +83,7 @@ from kiro_crew.config.loader import (
     data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY
+from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY, strip_control_comments
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import (
@@ -95,7 +95,7 @@ from kiro_crew.cron import (
     build_cron_session_context,
     effective_wake_budget,
 )
-from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
+from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import (
@@ -117,7 +117,11 @@ from kiro_crew.dashboard.cron_inject import (
     prefetch_cron_history,
 )
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
-from kiro_crew.dashboard.handlers.autonudge import _redact_monitor_value, compose_nudge_body
+from kiro_crew.dashboard.handlers.autonudge import (
+    _redact_monitor_value,
+    compose_nudge_body,
+    render_nudge_message,
+)
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
@@ -172,6 +176,7 @@ from kiro_crew.heartbeat import (
 )
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, HooksConfig, hooks_config_from_config_dict
+from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
@@ -1462,6 +1467,73 @@ def _channel_transport_permitted(member: str) -> bool:
         return False
 
 
+#: Budget for pinning kiro-cli's path before an unattended spawn. The lookup is
+#: a handful of `stat` calls, but they are under the home directory and
+#: `_warn_if_kiro_cli_outdated` awaits them BEFORE `_init_dashboard` binds its
+#: socket — so on an unresponsive network-mounted home an unbounded lookup would
+#: keep the gateway from ever coming up. Overrunning the budget refuses the
+#: spawn, exactly as an absent binary does.
+_KIRO_CLI_RESOLVE_TIMEOUT_SECS = 5.0
+
+
+def _kiro_cli_pin_probe() -> tuple[str | None, bool]:
+    """``(pinned path, an unpinned install exists)`` — the sync half of the pin.
+
+    The second element separates the two ways the pin can come back empty, which
+    a caller must report differently: kiro-cli is not installed at all (nothing
+    to say — the backend is optional), or it IS installed somewhere the pin does
+    not accept, which is a state an operator needs told about.
+    """
+
+    pinned = resolve_kiro_cli(include_inherited_path=False)
+    if pinned is not None:
+        return pinned, False
+    return None, resolve_kiro_cli() is not None
+
+
+async def _pinned_kiro_cli(purpose: str) -> str | None:
+    """kiro-cli's absolute path for an unattended spawn, or ``None`` to refuse.
+
+    Neither unattended spawn may exec a bare argv0: the gateway's inherited
+    ``PATH`` can lead with an agent-writable directory (a worktree venv's
+    ``bin``), and whatever that names would decide the payload. So the candidate
+    set is the fixed known install directories plus the operator's own
+    ``KIROCREW_KIRO_BIN``, with the inherited ``PATH`` excluded.
+
+    That set does not cover every install: a system-wide one outside
+    ``known_kiro_cli_dirs`` — a root-owned ``/usr/local/bin`` on Linux — is
+    refused here while sessions keep launching it off ``PATH``. Refusing is the
+    right default for a spawn with no operator present, but being SILENT about
+    it is not: the resulting host never auto-updates and never warns it is
+    outdated, with nothing in the log to say why. Hence the warning naming the
+    override, and hence its condition — an install the pin declined is worth a
+    line, a backend that simply is not installed is not.
+
+    Off the loop and bounded: see :data:`_KIRO_CLI_RESOLVE_TIMEOUT_SECS`.
+    """
+
+    try:
+        pinned, unpinned_exists = await asyncio.wait_for(
+            asyncio.to_thread(_kiro_cli_pin_probe),
+            timeout=_KIRO_CLI_RESOLVE_TIMEOUT_SECS,
+        )
+    except (TimeoutError, asyncio.TimeoutError):
+        logger.warning(
+            "kiro-cli: path lookup exceeded %.0fs (unresponsive home?), skipping %s",
+            _KIRO_CLI_RESOLVE_TIMEOUT_SECS,
+            purpose,
+        )
+        return None
+    if pinned is None and unpinned_exists:
+        logger.warning(
+            "kiro-cli resolves only through PATH, which an unattended spawn does "
+            "not trust, so %s is skipped. Point KIROCREW_KIRO_BIN at the binary "
+            "to have it used here.",
+            purpose,
+        )
+    return pinned
+
+
 class GatewayOrchestrator:
     """Manages the lifecycle of all gateway services.
 
@@ -2408,10 +2480,18 @@ class GatewayOrchestrator:
         stall every other callback for the 5s budget, and a timeout is logged
         (not silently swallowed) so a wedged kiro-cli that costs 5s on every
         boot is diagnosable from gateway.log.
+
+        Pinned the same way the auto-update pins it, via `_pinned_kiro_cli`:
+        this probe runs unattended at boot, so a shim planted on `PATH` would
+        execute here regardless of the `--version` argument. A binary the pin
+        refuses has no version worth warning about — and the pin logs why.
         """
+        kiro_cli_bin = await _pinned_kiro_cli("the kiro-cli version check")
+        if kiro_cli_bin is None:
+            return
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kiro-cli",
+                kiro_cli_bin,
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -2968,7 +3048,12 @@ class GatewayOrchestrator:
             # ``redact_via_context`` stays the redactor rather than the neutral
             # ``display_safe``: it is context-aware, and the shared sink's default
             # pair would silently drop that.
-            safe_text, _ = redact_for_display(text, redact_via_context)
+            #
+            # Trailing control-tag lines are stripped FIRST (#7948): this is the
+            # proactive egress chokepoint for cron results and subagent
+            # completions authored under dashboard rules, and Slack renders
+            # HTML comments literally. Strip-then-redact matches display_safe.
+            safe_text, _ = redact_for_display(strip_control_comments(text), redact_via_context)
             # ``chunk_for_transport``: the transport's OWN unit (bytes for a
             # byte-capped channel like Webex, chars otherwise) and fence-safe on
             # both paths. A blind slice through a code block leaves part two with
@@ -3597,6 +3682,8 @@ class GatewayOrchestrator:
                         job.command,
                         cmd_timeout,
                         job.id,
+                        job.secret_env,
+                        job.secret_env_pin,
                         timeout=_claim_backstop(job, cmd_timeout),
                     )
                     if result.get("status") == "cancelled":
@@ -3924,6 +4011,14 @@ class GatewayOrchestrator:
                         job.id,
                         job.message,
                         script_timeout,
+                        job.secret_env,
+                        job.secret_env_pin,
+                        delivery_fingerprint(
+                            job.session_key,
+                            job.silent,
+                            job.channel or "",
+                            job.thread_ts or "",
+                        ),
                         timeout=_claim_backstop(job, script_timeout),
                     )
                     status = result.get("status", "error")
@@ -5951,6 +6046,42 @@ class GatewayOrchestrator:
             tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg}"
         else:
             tagged = wake_message
+        # ONE STRING, TWO CONSUMERS, and only an opt-in ``banner`` splits them.
+        # ``tagged`` is the PROMPT and is never shortened — re-delivering the
+        # whole instruction every cycle is the guarantee the nudge exists to
+        # provide. ``visible`` is the transcript row, which a reader consults
+        # only to learn that a cycle happened. Without a banner it IS ``tagged``,
+        # so an existing loop's row is byte-identical to today's.
+        #
+        # A banner deliberately skips ``compose_nudge_body``: that composer
+        # prefixes the work-ledger snapshot, which the model wants and a display
+        # line does not. ``render_nudge_message`` still applies, so
+        # ``{{STOP_FILE}}`` resolves in a banner as it does in a message.
+        #
+        # A banner is a MESSAGE-loop concept: a monitor wake (``wake_message``)
+        # shows its own actionable-wake row, so the banner only splits the row
+        # on the ``wake_message is None`` arm.
+        #
+        # ``isinstance`` rather than a bare falsiness test: ``banner: str`` is a
+        # plain dataclass annotation, unenforced at runtime, and ``_load`` builds
+        # a loop straight from parsed JSON — so a store carrying ``"banner": 5``
+        # yields ``loop.banner == 5`` and ``.strip()`` on it would raise
+        # ``AttributeError``, killing the fire and (since the service re-arms an
+        # undelivered cycle) rearming the loop forever. A whitespace-only banner
+        # is truthy too and its blank row is worse than the verbose one, so both
+        # fall through to ``tagged``.
+        banner = loop.banner.strip() if isinstance(loop.banner, str) else ""
+        if banner and wake_message is None:
+            # Credential redaction lives at the banner's single owner — the
+            # authorized write paths (incl. /goal via ``normalize_banner``) and
+            # ``_load`` for a hand-edited store — so ``loop.banner`` is already
+            # scrubbed here and every egress (this row, ``GET /api/autonudge``,
+            # the WS broadcast) serves the same scrubbed value. No per-fire,
+            # per-field scrub at this sink.
+            shown = render_nudge_message(banner, loop.stop_sentinel_path)
+            visible = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{shown}"
+        else:
+            visible = tagged
         from kiro_crew.dashboard.chat import (
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
         )
@@ -5976,7 +6107,10 @@ class GatewayOrchestrator:
         # The tag stays in ``content`` because that is what the model reads,
         # and the body is deliberately NOT duplicated into meta — the client
         # derives it from content, so a multi-KB payload is stored and
-        # broadcast once rather than twice.
+        # broadcast once rather than twice. ``visible`` rather than ``tagged``
+        # in the appended row: identical unless the loop opted into a ``banner``,
+        # in which case this transcript row is the only thing shortened while the
+        # full ``tagged`` prompt still reaches ``_run_chat``.
         nudge_meta: dict[str, Any] = {
             "nudge": {
                 "cycle": loop.cycle_count + 1,
@@ -6003,7 +6137,7 @@ class GatewayOrchestrator:
         def _append_nudge() -> None:
             turn_slot.append(
                 "nudge",
-                tagged,
+                visible,
                 "msg msg-nudge",
                 meta=nudge_meta,
             )
@@ -10035,12 +10169,17 @@ class GatewayOrchestrator:
                 return
             logger.info("Auto-update: reset to origin/%s, rebuilding", branch)
 
-            # Update the optional kiro-cli backend if present.
-            if shutil.which("kiro-cli"):
+            # Update the optional kiro-cli backend, by the pinned absolute path
+            # `_pinned_kiro_cli` returns — never a bare argv0 this unattended
+            # path would let `PATH` answer. `None` means do not spawn it,
+            # skipped like any absent backend, which this step already treats as
+            # non-fatal.
+            kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
+            if kiro_cli_bin is not None:
                 kiro_update: asyncio.subprocess.Process | None = None
                 try:
                     kiro_update = await asyncio.create_subprocess_exec(
-                        "kiro-cli",
+                        kiro_cli_bin,
                         "update",
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,

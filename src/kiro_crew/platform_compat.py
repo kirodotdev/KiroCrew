@@ -939,6 +939,17 @@ _DARWIN_PROC_BSDINFO_SIZE = 136
 _DARWIN_PBI_START_TVSEC_OFFSET = 120
 _DARWIN_PBI_START_TVUSEC_OFFSET = 128
 
+# ``proc_pidinfo(PROC_PIDTASKINFO)`` fills a ``proc_taskinfo`` struct that opens
+# with six uint64 fields — ``pti_virtual_size``, ``pti_resident_size``,
+# ``pti_total_user``, ``pti_total_system``, ``pti_threads_user``,
+# ``pti_threads_system`` (48 bytes) — followed by twelve int32 counters (48),
+# for a struct size of 96. Only the two total-CPU fields matter here, and both
+# are already NANOSECONDS; the total size doubles as the layout check.
+_DARWIN_PROC_PIDTASKINFO = 4
+_DARWIN_PROC_TASKINFO_SIZE = 96
+_DARWIN_PTI_TOTAL_USER_OFFSET = 16
+_DARWIN_PTI_TOTAL_SYSTEM_OFFSET = 24
+
 _darwin_libproc: Any = None
 _darwin_libproc_loaded = False
 
@@ -1038,6 +1049,41 @@ def _darwin_process_start_microtime(pid: int) -> str | None:
         if sec <= 0:
             return None
         return f"{sec}.{usec:06d}"
+    except Exception:
+        return None
+
+
+def _darwin_process_cpu_nanos(pid: int) -> int | None:
+    """macOS total (user+system) CPU nanoseconds of *pid* via ``libproc``.
+
+    Same contract as the start-time probe above: no entitlement is needed for a
+    same-uid process, nothing is exec'd, and a fill size other than the exact
+    struct size means the assumed layout no longer matches, so the answer is
+    refused rather than sliced out of the wrong place.
+    """
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_PROC_TASKINFO_SIZE)
+        filled = lib.proc_pidinfo(
+            pid,
+            _DARWIN_PROC_PIDTASKINFO,
+            0,
+            buf,
+            _DARWIN_PROC_TASKINFO_SIZE,
+        )
+        if filled != _DARWIN_PROC_TASKINFO_SIZE:
+            return None
+        # Both x86_64 and arm64 macOS are little-endian.
+        user = int.from_bytes(
+            buf.raw[_DARWIN_PTI_TOTAL_USER_OFFSET:_DARWIN_PTI_TOTAL_SYSTEM_OFFSET], "little"
+        )
+        system = int.from_bytes(
+            buf.raw[_DARWIN_PTI_TOTAL_SYSTEM_OFFSET : _DARWIN_PTI_TOTAL_SYSTEM_OFFSET + 8],
+            "little",
+        )
+        return user + system
     except Exception:
         return None
 
@@ -4729,6 +4775,75 @@ def _proc_cpu_jiffies(pid: int) -> int:
             return _parse_cpu_jiffies(fh.read())
     except OSError:
         return 0
+
+
+def proc_cpu_nanos_for_pid(pid: int) -> int | None:
+    """Total (user+system) CPU time of *pid* in NANOSECONDS, or None.
+
+    The per-pid, cross-platform counterpart to :func:`proc_cpu_seconds`, which
+    can only measure the CALLING process. A caller samples this twice and
+    consumes the DELTA as evidence that a process is doing work; ``None`` means
+    no per-pid counter is readable on this host, which is evidence of neither
+    work nor death.
+
+    - Linux: ``_proc_cpu_jiffies`` scaled by ``SC_CLK_TCK``. Never None — an
+      unreadable pid reads 0 there, which a delta correctly sees as flat.
+    - macOS: ``libproc.proc_pidinfo(PROC_PIDTASKINFO)``, already nanoseconds.
+    - Windows: ``GetProcessTimes`` kernel+user (100-ns units) over a query-only
+      handle.
+    - Any other platform: None.
+
+    Root pid ONLY — deliberately no subtree walk, because neither macOS nor
+    Windows has a child enumeration cheap enough for a probe on a read loop's
+    cadence. A caller that needs the subtree total and knows it is on Linux uses
+    :func:`proc_subtree_sample` instead.
+    """
+    if type(pid) is not int or pid <= 0:
+        return None
+    if IS_LINUX:
+        try:
+            ticks = os.sysconf("SC_CLK_TCK") or 100
+        except (AttributeError, OSError, ValueError):
+            ticks = 100
+        return _proc_cpu_jiffies(pid) * (1_000_000_000 // ticks)
+    if IS_MACOS:
+        return _darwin_process_cpu_nanos(pid)
+    if not IS_WINDOWS:
+        return None
+    handle = _open_process_query_handle(pid)
+    if handle is None:
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        creation = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not kernel32.GetProcessTimes(
+            wintypes.HANDLE(handle),
+            ctypes.byref(creation),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+
+        def _hundred_ns(value: "wintypes.FILETIME") -> int:
+            return (value.dwHighDateTime << 32) | value.dwLowDateTime
+
+        return (_hundred_ns(kernel) + _hundred_ns(user)) * 100
+    except Exception:
+        return None
+    finally:
+        _close_process_handle(handle)
 
 
 class SubtreeSample(NamedTuple):

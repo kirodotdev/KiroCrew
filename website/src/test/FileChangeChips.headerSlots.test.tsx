@@ -44,8 +44,10 @@ import { __resetStagingForTests } from '../components/pierreStaging'
 
 const change = (path: string, before: string, after: string) => ({ path, before, after })
 const latest = () => hoisted.options[hoisted.options.length - 1]
-const header = (c: HTMLElement) => c.querySelector('[data-diffs-header]') as HTMLElement
-const title = (c: HTMLElement) => c.querySelector('[data-title]') as HTMLElement
+const pierreHeader = (c: HTMLElement) => c.querySelector('[data-diffs-header]') as HTMLElement
+const collapsedHeader = (c: HTMLElement) => c.querySelector('[data-testid^="fcc-header-"]') as HTMLElement
+const toggle = (c: HTMLElement, path = '/a.ts') =>
+  fireEvent.click(c.querySelector(`[data-testid="fcc-toggle-${path}"]`)!)
 const cells = (c: HTMLElement, cls: string) => c.querySelectorAll(`.${cls}`).length
 
 beforeEach(() => {
@@ -61,11 +63,12 @@ beforeEach(() => {
 })
 
 describe('expanded row header slots', () => {
-  it('shows the basename in the header and keeps the full path on the row tooltip', () => {
+  it('shows the basename without mounting Pierre and keeps the full path on the row tooltip', () => {
     const { container } = render(
       <FileChangeChips fileChanges={[change('/deep/nested/index.ts', 'a', 'b')]} />,
     )
-    expect(title(container).textContent).toBe('index.ts')
+    expect(collapsedHeader(container).textContent).toContain('index.ts')
+    expect(container.querySelector('[data-testid="pierre-pair"]')).toBeNull()
     expect(container.querySelector('[data-testid="fcc-row-/deep/nested/index.ts"]')?.getAttribute('title'))
       .toBe('/deep/nested/index.ts')
   })
@@ -75,14 +78,14 @@ describe('expanded row header slots', () => {
     const { container, rerender } = render(
       <FileChangeChips fileChanges={[change('/src/a.ts', 'a', 'b')]} onFileOpen={onFileOpen} />,
     )
-    const open = within(header(container)).getByLabelText('Open /src/a.ts in side panel')
-    expect(open).toHaveAttribute('title', 'Open /src/a.ts in side panel')
+    const open = within(collapsedHeader(container)).getByLabelText('Open /src/a.ts in side panel')
+    expect(open).toHaveAttribute('title', '/src/a.ts')
     fireEvent.click(open)
     expect(onFileOpen).toHaveBeenCalledWith('/src/a.ts')
 
     // Without a handler the affordance is absent rather than inert.
     rerender(<FileChangeChips fileChanges={[change('/src/a.ts', 'a', 'b')]} />)
-    expect(within(header(container)).queryByLabelText(/in side panel/)).toBeNull()
+    expect(within(collapsedHeader(container)).queryByLabelText(/in side panel/)).toBeNull()
   })
 
   it('badges only the rows the session tracks as artifacts', () => {
@@ -101,16 +104,50 @@ describe('expanded row header slots', () => {
       'This document is tracked as a session artifact, not a source-file change',
     )
     expect(badgesIn('/src/a.ts')).toHaveLength(0)
+    const secondaryIn = (path: string) => container
+      .querySelector(`[data-testid="fcc-row-${path}"] [data-fcc-secondary-metadata]`)
+    expect(secondaryIn('/notes.md')).toHaveClass('max-[420px]:hidden')
+    expect(secondaryIn('/src/a.ts')).not.toHaveClass('max-[420px]:hidden')
+  })
+
+  it('keeps the lightweight metadata rail fluid for narrow rows', () => {
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/src/long-component-name.ts', 'a', 'b')]} />,
+    )
+    const metadata = container.querySelector<HTMLElement>('[data-testid="fcc-metadata"]')!
+    expect(metadata.style.flexBasis).toBe('')
+    expect(metadata.className).not.toContain('shrink-0')
   })
 })
 
 describe('card split/unified toggle', () => {
-  it('flips every row between split and unified and persists the choice', () => {
+  it('mounts no Pierre rows until each file is opened', () => {
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/a.ts', 'a', 'b'), change('/b.ts', 'a', 'b')]} />,
+    )
+    expect(hoisted.options).toHaveLength(0)
+    toggle(container, '/a.ts')
+    expect(hoisted.options).toHaveLength(1)
+    toggle(container, '/b.ts')
+    expect(hoisted.options).toHaveLength(2)
+  })
+
+  it('reveals more closed rows without mounting Pierre', () => {
+    const files = Array.from({ length: 12 }, (_, i) => change(`/f${i}.ts`, 'a', 'b'))
+    const { getByText } = render(<FileChangeChips fileChanges={files} />)
+    expect(hoisted.options).toHaveLength(0)
+    fireEvent.click(getByText('Show 4 more'))
+    expect(hoisted.options).toHaveLength(0)
+  })
+
+  it('flips every mounted row between split and unified and persists the choice', () => {
     const { container, getByLabelText } = render(
       <FileChangeChips fileChanges={[change('/a.ts', 'a', 'b'), change('/b.ts', 'a', 'b')]} />,
     )
+    toggle(container, '/a.ts')
+    toggle(container, '/b.ts')
     // Unseeded default is split — the shared `mc-diff-split` preference's
-    // default — and every row receives it.
+    // default — and every opened row receives it.
     const styles = () => hoisted.options.map(o => o.diffStyle)
     expect(styles()).toEqual(['split', 'split'])
 
@@ -122,11 +159,13 @@ describe('card split/unified toggle', () => {
     expect(within(container as HTMLElement).getByLabelText('Switch to split view')).toBeInTheDocument()
   })
 
-  it('seeds the layout from the shared mc-diff-split preference', () => {
+  it('seeds opened rows from the shared mc-diff-split preference', () => {
     localStorage.setItem('mc-diff-split', '0')
-    const { getByLabelText } = render(
+    const { container, getByLabelText } = render(
       <FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} />,
     )
+    expect(hoisted.options).toHaveLength(0)
+    toggle(container)
     expect(hoisted.options[0].diffStyle).toBe('unified')
     expect(getByLabelText('Switch to split view')).toBeInTheDocument()
   })
@@ -170,45 +209,44 @@ describe('diffstat bar', () => {
 })
 
 describe('header click routing', () => {
-  /* Read disclosure off the chevron rather than Pierre's `collapsed` option:
-     during the collapse animation the row is deliberately still uncollapsed,
-     so the option lags the state by one animation. */
   const rowIsOpen = (c: HTMLElement) =>
     c.querySelector('[data-testid^="fcc-toggle-"]')!.getAttribute('aria-expanded') === 'true'
 
-  it('opens the file when Pierre’s filename node is clicked, without collapsing the diff', () => {
+  it('opens the file from the collapsed filename without mounting Pierre', () => {
     const onFileOpen = vi.fn()
     const { container } = render(
       <FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} onFileOpen={onFileOpen} />,
     )
-    fireEvent.click(title(container))
+    fireEvent.click(within(collapsedHeader(container)).getByLabelText('Open /a.ts in side panel'))
     expect(onFileOpen).toHaveBeenCalledWith('/a.ts')
     expect(rowIsOpen(container)).toBe(false)
+    expect(container.querySelector('[data-testid="pierre-pair"]')).toBeNull()
   })
 
-  it('toggles the diff from header whitespace, so the header has no dead zone', () => {
+  it('opens from collapsed whitespace and closes from Pierre header whitespace', () => {
     const onFileOpen = vi.fn()
     const { container } = render(
       <FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} onFileOpen={onFileOpen} />,
     )
-    fireEvent.click(header(container))
+    fireEvent.click(collapsedHeader(container))
     expect(rowIsOpen(container)).toBe(true)
     expect(latest().collapsed).toBe(false)
     expect(onFileOpen).not.toHaveBeenCalled()
 
-    fireEvent.click(header(container))
+    fireEvent.click(pierreHeader(container))
     expect(rowIsOpen(container)).toBe(false)
   })
 
   it('leaves the row alone when the filename is clicked with no open handler', () => {
     const { container } = render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} />)
-    expect(() => fireEvent.click(title(container))).not.toThrow()
+    const filename = collapsedHeader(container).querySelector('[title="/a.ts"]')!
+    expect(() => fireEvent.click(filename)).not.toThrow()
     expect(rowIsOpen(container)).toBe(false)
   })
 
   it('ignores clicks on the diff body, so selecting code never collapses it', () => {
     const { container } = render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} />)
-    fireEvent.click(header(container))
+    toggle(container)
     expect(rowIsOpen(container)).toBe(true)
     fireEvent.click(container.querySelector('[data-code]')!)
     expect(rowIsOpen(container)).toBe(true)
@@ -216,20 +254,19 @@ describe('header click routing', () => {
 
   it('handles a chevron click once, not twice through the header delegate', () => {
     const { container } = render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} />)
-    // The chevron is a light-DOM child of the delegating wrapper, so a second
-    // handling would toggle straight back and the row would never open.
-    fireEvent.click(container.querySelector('[data-testid="fcc-toggle-/a.ts"]')!)
+    toggle(container)
     expect(rowIsOpen(container)).toBe(true)
     expect(latest().collapsed).toBe(false)
   })
 
-  it('does not route the Open button through the header delegate', () => {
+  it('does not route Pierre’s Open button through the header delegate', () => {
     const onFileOpen = vi.fn()
     const { container } = render(
       <FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} onFileOpen={onFileOpen} />,
     )
-    fireEvent.click(within(header(container)).getByLabelText('Open /a.ts in side panel'))
+    toggle(container)
+    fireEvent.click(within(pierreHeader(container)).getByLabelText('Open /a.ts in side panel'))
     expect(onFileOpen).toHaveBeenCalledTimes(1)
-    expect(rowIsOpen(container)).toBe(false)
+    expect(rowIsOpen(container)).toBe(true)
   })
 })

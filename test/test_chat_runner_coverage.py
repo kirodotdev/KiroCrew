@@ -1129,6 +1129,144 @@ class TestFlushSegment:
         assert [m.get("role") for m in slot.messages] == ["assistant"]
 
 
+class TestAppendRedactionNotice:
+    """Unit coverage for the shared notice helper (issue #8311).
+
+    ``_flush_segment`` and the seven exception/teardown persists all route
+    through ``_append_redaction_notice`` so the credential-redaction notice
+    lands wherever a pasteable assistant body is finalized, not only on the
+    happy path. These tests exercise the helper directly: it takes the
+    ALREADY-REDACTED string (the same bytes persisted to the assistant row),
+    counts the artifact tags, and appends one ``msg-info`` notice.
+    """
+
+    def test_a_clean_body_gets_no_notice(self, tmp_path):
+        _state(tmp_path)  # not needed, but keeps the harness parity explicit
+        slot = _slot()
+
+        chat_runner._append_redaction_notice(slot, "here is a plain answer")
+
+        assert [m.get("role") for m in slot.messages] == []
+
+    def test_a_single_credential_gets_one_notice(self, tmp_path):
+        from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact_credentials
+
+        slot = _slot()
+        secret = "postgresql://user:pass@host:5432/db"
+        redacted, _ = redact_credentials(f"connect with {secret}")
+
+        chat_runner._append_redaction_notice(slot, redacted)
+
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert len(notices) == 1, f"expected one notice row, got {slot.messages}"
+        assert notices[0]["cls"] == "msg msg-info"
+        assert "Security notice" in notices[0]["content"]
+        assert "will not work if you paste it as-is" in notices[0]["content"]
+        # The notice must never carry the secret it is reporting on.
+        assert "user:pass" not in notices[0]["content"]
+        # Coherence check: the tag the count reads is genuinely present in the body.
+        assert REDACTED_CREDENTIAL_TAG in redacted
+
+    def test_multiple_credentials_are_counted(self, tmp_path):
+        from kiro_crew.security import redact_credentials
+
+        slot = _slot()
+        redacted, _ = redact_credentials("first postgresql://a:b@h1/db then mysql://c:d@h2/db")
+
+        chat_runner._append_redaction_notice(slot, redacted)
+
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert len(notices) == 1, f"expected exactly one notice row, got {notices}"
+        assert "2 credentials" in notices[0]["content"]
+        assert "were replaced" in notices[0]["content"]
+
+    def test_an_encoded_credential_tag_is_counted(self, tmp_path):
+        """A base64-encoded credential is redacted by a DIFFERENT pass and tag.
+
+        Counting only the plaintext tag would leave this silently rewritten --
+        the same #6189 failure, reached by another pass. The helper reads
+        ``CREDENTIAL_REDACTION_TAGS`` so a newly added tag cannot escape.
+        """
+        import base64
+
+        from kiro_crew.security import (
+            _REDACTED_ENCODED_CREDENTIAL_TAG,
+            REDACTED_CREDENTIAL_TAG,
+            redact_credentials,
+        )
+
+        slot = _slot()
+        blob = base64.b64encode(b"postgresql://user:pass@host:5432/db").decode()
+        redacted, _ = redact_credentials(f"decode this: {blob}")
+
+        chat_runner._append_redaction_notice(slot, redacted)
+
+        # Redacted by pass 2, so ONLY the encoded tag is present.
+        assert _REDACTED_ENCODED_CREDENTIAL_TAG in redacted
+        assert REDACTED_CREDENTIAL_TAG not in redacted
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert len(notices) == 1, f"expected one notice row, got {slot.messages}"
+        assert "A credential" in notices[0]["content"]
+
+
+class TestExceptionPathRedactionNotice:
+    """The notice must fire on the exception/teardown persists too (issue #8311).
+
+    Seven branches finalize a pasteable assistant body directly via
+    ``slot.append("assistant", <redacted>, "msg msg-a")`` and bypass
+    ``_flush_segment``. This drives a real ``AcpProcessDied`` turn (the same
+    scripted-provider harness the recovery-ladder tests use) with a credential
+    in the streamed text and asserts the notice now lands immediately after the
+    assistant row and BEFORE the subsequent retry/error card. It fails if the
+    ``_append_redaction_notice`` call is removed from that branch, which is the
+    mutation guard the issue asks for.
+    """
+
+    @pytest.mark.asyncio
+    async def test_process_death_persist_warns_about_a_redacted_credential(self, tmp_path):
+        from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+
+        # Stream a credential-bearing chunk, then die: assistant_text is non-empty
+        # so the AcpProcessDied branch persists the (redacted) partial and, with
+        # this fix, appends the notice.
+        def _stream(*_args, **_kwargs):
+            async def _gen():
+                yield LLMEvent(
+                    kind=EVENT_TEXT_CHUNK,
+                    text="run: psql postgresql://user:pass@host:5432/db",
+                )
+                raise AcpProcessDied("process exited")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+
+        await _drive(state, slot)
+
+        roles = [m.get("role") for m in slot.messages]
+        assert "assistant" in roles, f"no assistant row persisted: {slot.messages}"
+        assistant = next(m for m in slot.messages if m.get("role") == "assistant")
+        notice = next((m for m in slot.messages if m.get("role") == "notice"), None)
+        # Redaction still happened on the exception path.
+        assert "user:pass" not in assistant["content"]
+        assert REDACTED_CREDENTIAL_TAG in assistant["content"]
+        # ...and the notice now fires (this is what regresses if the helper call
+        # is removed from the AcpProcessDied branch).
+        assert notice is not None, f"expected a redaction notice row, got {roles}"
+        assert notice["cls"] == "msg msg-info"
+        assert "Security notice" in notice["content"]
+        assert "user:pass" not in notice["content"]
+        # Ordering: notice sits between the assistant body and the retry/error
+        # card, mirroring _flush_segment (notice immediately follows its message).
+        assert roles.index("notice") == roles.index("assistant") + 1
+        assert "error" in roles, f"expected a retry/error card after the notice: {roles}"
+        assert roles.index("notice") < roles.index("error")
+
+
 class TestScheduleWidgetRegistration:
     def test_empty_text_registers_nothing(self, tmp_path):
         state, slot = _state(tmp_path), _slot()

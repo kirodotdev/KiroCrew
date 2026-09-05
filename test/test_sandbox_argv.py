@@ -49,6 +49,33 @@ _POSIX_ONLY = pytest.mark.skipif(
 )
 
 
+@pytest.fixture()
+def systemd_run_resolvable(monkeypatch):
+    """Make ``trusted_system_bin("systemd-run")`` resolve on a host without systemd.
+
+    The cgroup-scope tests below mock ``_probe_cgroup_scope`` to "available" and
+    assert the argv ``cgroup_scope_argv`` BUILDS. That argv is only built when
+    the wrapper also resolves from a trusted system directory, and on macOS /
+    a container without systemd it never does -- so the code degraded (no
+    ceiling, loud warning), and seven tests about argv SHAPE failed for a reason
+    that has nothing to do with argv shape. Only ``systemd-run`` is faked; every
+    other name still goes through the real resolver, so the tests that assert
+    degradation when it is ABSENT (they patch the resolver to ``None``
+    themselves, inside their own ``with``) are unaffected -- an inner patch
+    wins and reverts to this one.
+    """
+    from kiro_crew import platform_compat
+
+    real = platform_compat.trusted_system_bin
+
+    def _resolve(name: str) -> str | None:
+        if name == "systemd-run":
+            return "/usr/bin/systemd-run"
+        return real(name)
+
+    monkeypatch.setattr(sandbox_mod.platform_compat, "trusted_system_bin", _resolve)
+
+
 @pytest.fixture(autouse=True)
 def clean_backend(monkeypatch):
     """Reset cached backend between tests.
@@ -681,7 +708,7 @@ class TestBuildSeatbeltProfile:
             sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True
         )
         monkeypatch.setattr(
-            "kiro_crew.hooks._fd_real_path", lambda _fd: "/canonical/workspace"
+            "kiro_crew.sandbox.fd_real_path", lambda _fd: "/canonical/workspace"
         )
 
         assert (
@@ -701,7 +728,7 @@ class TestBuildSeatbeltProfile:
         monkeypatch.setattr(
             sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True
         )
-        monkeypatch.setattr("kiro_crew.hooks._fd_real_path", lambda _fd: None)
+        monkeypatch.setattr("kiro_crew.sandbox.fd_real_path", lambda _fd: None)
 
         with pytest.raises(OSError):
             sandbox_mod.bound_agent_workspace_target(41, "/mutable/workspace")
@@ -946,19 +973,21 @@ class TestBuildLauncherScript:
         assert "unknown arch" not in script
 
         # Execute the arch-dispatch block itself, so this proves the refusal
-        # FIRES rather than that its message is present as text.
+        # FIRES rather than that its message is present as text. The block
+        # starts at the machine read: ``import platform`` no longer sits here —
+        # it is hoisted to the preamble so no first-time stdlib import runs
+        # after namespace/mount isolation (#8151).
         lines = script.splitlines()
         start = -1
         end = -1
         for index, line in enumerate(lines):
-            if start < 0 and line.strip() == "import platform as _plat":
+            if start < 0 and line.strip() == "_machine = _plat.machine()":
                 start = index
             elif start >= 0 and "if _DENY_SYSCALLS:" in line:
                 end = index
                 break
         assert start >= 0 and end > start, "arch-dispatch block not found"
         block = textwrap.dedent("\n".join(lines[start:end]))
-        block = block.replace("import platform as _plat", "")
 
         class _FakePlat:
             def __init__(self, machine):
@@ -1988,6 +2017,7 @@ class TestSessionHostPreexec:
             self._reset_cache()
 
 
+@pytest.mark.usefixtures("systemd_run_resolvable")
 class TestCgroupScopeArgv:
     """cgroup_scope_argv() wraps agent spawns in a transient systemd --user
     --scope with pids.max + memory.max — the default-on fork-bomb / memory-DoS
@@ -2287,6 +2317,7 @@ class TestCgroupScopeArgv:
             self._reset_probe()
 
 
+@pytest.mark.usefixtures("systemd_run_resolvable")
 class TestAgentsSliceLimits:
     """ensure_agents_slice_limits() puts an AGGREGATE MemoryMax/TasksMax on
     kirocrew-agents.slice — the parent of every per-spawn scope — so N
@@ -2643,6 +2674,7 @@ class TestAgentsSliceLimits:
             sb._CGROUP_SCOPE_PROBE = None
 
 
+@pytest.mark.usefixtures("systemd_run_resolvable")
 class TestCgroupScopeBusEnv:
     """The systemd-run scope prepended by cgroup_scope_argv needs the user
     session bus in the environment it is spawned with. Callers that build that
@@ -3190,6 +3222,49 @@ class TestMacOsNestingDetection:
         # EPERMs, and reading that as a host verdict is the bug this fixes.
         mock_detect.assert_not_called()
 
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_the_passthrough_silently_drops_extra_hidden_dirs(
+        self, mock_detect, monkeypatch, tmp_path
+    ):
+        """A caller's ``extra_hidden_dirs`` is UNENFORCED on the passthrough.
+
+        It is not a bug -- a nested re-wrap is denied by design on both platforms,
+        so there is no mount namespace to build and nothing to bind-mask into --
+        but it is a fact a caller must not build a security control on, and it is
+        invisible from the call site: the wrap returns successfully, and the mask
+        it was asked for simply does not exist.
+
+        This bites hardest where it is least visible. Every app backend is spawned
+        through ``wrap_argv`` by ``apps/backend.py``, so it runs with this marker
+        set, and every spawn IT then wraps takes this branch. Dev Fleet's sync is
+        exactly that shape -- it wraps each sync step from inside the sandbox -- so
+        a mask an app backend asks for to keep a step away from one of its own paths
+        would cover nothing while reading, at the call site, as a control. An app
+        backend that needs such a boundary has to get it somewhere other than here:
+        the sync runner keeps the synced checkout off its import path with the
+        interpreter's own ``-I`` rather than with a mask.
+
+        CHARACTERIZATION, NOT A CONTRACT. If nested confinement ever becomes
+        possible, this test is one of the things that should change WITH it -- it
+        records what the passthrough does today so a caller cannot be misled by it,
+        and it is not an argument for keeping the behaviour.
+        """
+        secret = tmp_path / "provenance"
+        secret.mkdir()
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: True)
+        with patch("kiro_crew.sel.sel"):
+            result, cleanup = wrap_argv(
+                ["/usr/bin/npm", "ci"], mode="strict", extra_hidden_dirs=(str(secret),)
+            )
+
+        # No launcher script, so nothing exists that COULD carry a bind-mask...
+        assert cleanup is None
+        # ...and the path appears nowhere in what will actually be executed.
+        assert not any(str(secret) in arg for arg in result)
+        assert result[-2:] == ["/usr/bin/npm", "ci"]
+        mock_detect.assert_not_called()
+
     @patch("kiro_crew.sandbox.detect_backend", return_value="none")
     def test_forged_marker_without_kernel_confirmation_is_refused(
         self, mock_detect, monkeypatch
@@ -3291,6 +3366,7 @@ class TestMacOsNestingDetection:
             sandbox_mod._macos_sandbox_state.cache_clear()
 
 
+@pytest.mark.usefixtures("systemd_run_resolvable")
 class TestAgentSliceMemoryHigh:
     """_ensure_agent_slice_memory_high() reconciles the AGGREGATE MemoryHigh
     ceiling on kirocrew-agents.slice — bounding the SUM of all concurrent agent

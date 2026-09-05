@@ -6,7 +6,8 @@
 // bug is whether the vanished rows are absent from the store at that moment or
 // present-but-unrendered. This probe captures exactly that: a MutationObserver
 // watches the transcript scroller, and whenever the number of mounted message
-// rows DROPS between frames it logs the DOM count against the store's message
+// rows DROPS between frames — or the number of VISIBLE rows drops while the
+// mounted count holds — it logs the DOM counts against the store's message
 // count and the grouped display-item count at the same instant.
 //
 // Reading the log:
@@ -14,6 +15,12 @@
 //   - `displayItems` fell but `storeMessages` held → grouping collapse
 //     (loose rows folding into one turn — expected while a turn accumulates).
 //   - both held while `mountedRows` fell           → windowing/render path.
+//   - `mountedRows` held while `visibleRows` fell  → a mounted row's content
+//     was hidden in place (turn collapse via CollapsibleSection's height-0
+//     container, marked `data-collapsed="true"`), NOT the windowing path.
+//   - `mountedRows` AND `visibleRows` both fell    → an unmount and a collapse
+//     landed in the same frame — compare the two deltas before blaming either
+//     subsystem for the whole drop.
 import { useEffect, type RefObject } from 'react'
 
 /** Set `localStorage[BUBBLE_PROBE_FLAG] = '1'` and reload to enable. */
@@ -48,7 +55,19 @@ export function useBubbleVanishProbe(
     const el = scrollerRef.current
     if (!el) return
     const mountedRows = () => el.querySelectorAll('[data-display-index]').length
+    // Rows whose content is not hidden inside a collapsed turn container.
+    // `data-display-index` sits on the virtualizer's row wrapper OUTSIDE
+    // TurnBlock, and CollapsibleSection renders INSIDE the row — so the fold
+    // is a DESCENDANT of the row, and the right test is "does this row contain
+    // a collapsed fold", not `closest()` up the ancestor chain. A collapsed
+    // fold keeps its children mounted while animating height to 0, so this
+    // count moves when mountedRows does not.
+    const visibleRows = () =>
+      Array.from(el.querySelectorAll('[data-display-index]')).filter(
+        row => !row.querySelector('[data-collapsed="true"]'),
+      ).length
     let last = mountedRows()
+    let lastVisible = visibleRows()
     let raf = 0
     const mo = new MutationObserver(() => {
       // Coalesce a mutation burst into one per-frame reading — a React commit
@@ -59,21 +78,43 @@ export function useBubbleVanishProbe(
       raf = requestAnimationFrame(() => {
         raf = 0
         const now = mountedRows()
-        if (now < last) {
+        const nowVisible = visibleRows()
+        const mountedDropped = now < last
+        // Fourth bucket: mounted rows held while visible rows fell — a row was
+        // hidden IN PLACE (turn collapse), not unmounted by the windowing path.
+        const hiddenInPlace = !mountedDropped && nowVisible < lastVisible
+        if (mountedDropped || hiddenInPlace) {
           const counts = getCounts()
           // eslint-disable-next-line no-console
-          console.warn('[bubbleProbe] mounted rows dropped', {
-            mountedBefore: last,
-            mountedAfter: now,
-            storeMessages: counts.store,
-            displayItems: counts.display,
-            at: new Date().toISOString(),
-          })
+          console.warn(
+            hiddenInPlace
+              ? '[bubbleProbe] row content hidden in place (mounted held, visible fell)'
+              : '[bubbleProbe] mounted rows dropped',
+            {
+              kind: hiddenInPlace ? 'hidden-in-place' : 'mounted-drop',
+              mountedBefore: last,
+              mountedAfter: now,
+              visibleBefore: lastVisible,
+              visibleAfter: nowVisible,
+              storeMessages: counts.store,
+              displayItems: counts.display,
+              at: new Date().toISOString(),
+            },
+          )
         }
         last = now
+        lastVisible = nowVisible
       })
     })
-    mo.observe(el, { childList: true, subtree: true })
+    // `attributes` + the filter: a turn collapse toggles `data-collapsed` on an
+    // existing container and changes NO children, so without attribute
+    // observation that transition would never produce a reading.
+    mo.observe(el, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-collapsed'],
+    })
     return () => {
       mo.disconnect()
       if (raf) cancelAnimationFrame(raf)

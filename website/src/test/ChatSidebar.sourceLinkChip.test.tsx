@@ -295,8 +295,28 @@ describe('ChatSidebar – terminal PR chips suppress CI', () => {
   it('keeps the closed chip\'s own lifecycle label', () => {
     renderSidebar({ rows: stateRows() })
     // The spinner goes away; the terminal signal must not.
-    expect(chip(url(993))).toHaveTextContent('closed')
+    expect(chip(url(993))).toHaveTextContent('Closed')
     expect(chip(url(994)).querySelector('[aria-label="Merged"]')).not.toBeNull()
+  })
+
+  it('renders the closed label from the catalog, not the raw wire value', () => {
+    // The chip used to print the raw wire value `link.state` ("closed"),
+    // untranslated in every locale, cased by a CSS `capitalize`, and invisible
+    // to assistive tech under any other language. It now renders the catalog
+    // string as real text, so the anchor's accessible name carries the
+    // translated label with no extra ARIA. The span deliberately has no
+    // `title`: a child title would shadow the anchor's own tooltip (the URL
+    // and the modifier escape hatch) for the region the word covers.
+    renderSidebar({ rows: stateRows() })
+    const chipEl = chip(url(993))
+    const label = Array.from(chipEl.querySelectorAll('span'))
+      .find(s => s.textContent === 'Closed') as HTMLElement
+    expect(label).toBeDefined()
+    // The catalog, not a CSS `capitalize` over the wire value, decides casing.
+    expect(label.classList.contains('capitalize')).toBe(false)
+    expect(label).not.toHaveAttribute('title')
+    // The anchor's accessible name (its text content) includes the label.
+    expect(chipEl).toHaveAccessibleName(/Closed/)
   })
 
   it.each(['passed', 'failed'] as const)('hides a %s CI glyph on a closed chip too', (ci) => {

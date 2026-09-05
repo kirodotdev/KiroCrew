@@ -61,7 +61,7 @@ export default function SpecRail({
             aria-label={i18nT('apps.specBuilder.components.specRail.show_spec_list')}
             className="min-w-0 flex-1 flex items-center gap-2 h-9 px-1.5 rounded-md cursor-pointer bg-transparent border-none text-muted hover:text-text hover:bg-bg-hover transition-colors focus-ring"
           >
-            <FileText size={15} className="text-accent shrink-0" />
+            <FileText className="lucide-inline text-accent shrink-0" />
             <span className="min-w-0 truncate text-[13px] font-semibold text-text">
               {i18nT('apps.specBuilder.components.specRail.spec_builder')}
             </span>
@@ -131,7 +131,7 @@ export default function SpecRail({
               label={<Settings className="lucide-inline" />}
             />
           )}
-          <FileText size={15} className="text-accent shrink-0" />
+          <FileText className="lucide-inline text-accent shrink-0" />
         </span>
       </aside>
     )
@@ -228,12 +228,17 @@ export default function SpecRail({
           <SpecListSkeleton />
         ) : (
           <>
-            {active.length > 0 && groupHeader('ACTIVE', active.length)}
+            {active.length > 0 && groupHeader(i18nT('apps.specBuilder.components.specRail.active'), active.length)}
             {active.map(row)}
             {ready.length > 0 && groupHeader(i18nT('apps.specBuilder.components.specRail.plan_ready'), ready.length)}
             {ready.map(row)}
             {archived.length > 0 && groupHeader(i18nT('apps.meetings.review.archivedSection'), archived.length)}
             {archived.map(row)}
+            {specs.length > 0 && active.length === 0 && ready.length === 0 && archived.length === 0 && (
+              <div className="px-2.5 py-6 text-[13px] text-muted text-center leading-relaxed">
+                {i18nT('apps.specBuilder.components.specRail.no_matching_specs')}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -243,7 +248,7 @@ export default function SpecRail({
           in an icon + name + version line and keeps Settings in the rail rather
           than hiding it behind a one-off entry point. */}
       <div className="shrink-0 border-t border-border px-3 py-2.5 flex items-center gap-2">
-        <FileText size={15} className="text-accent shrink-0" />
+        <FileText className="lucide-inline text-accent shrink-0" />
         <span className="text-[13px] font-medium text-text">{i18nT('apps.specBuilder.components.specRail.spec_builder')}</span>
         <span className="text-[12px] text-muted opacity-70">{i18nT('apps.specBuilder.components.specRail.v')}{APP_VERSION}</span>
         <span className="flex-1" />

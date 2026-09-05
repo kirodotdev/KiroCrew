@@ -1671,7 +1671,7 @@
         "view_rendered": "Rendered"
       },
       "knowledge": {
-        "connectHelp": "Adds this vault to the Knowledge library so agents can search your notes. You can change this later in Settings.",
+        "connectHelp": "Adds this vault to the Knowledge library so agents can search your notes. You can change this later in {{capabilities}} → {{tab}}.",
         "label": "Sync to {{productName}} knowledge"
       },
       "manifest": {
@@ -2383,12 +2383,12 @@
         "mcp_available": "Available to add",
         "mcp_desc": "These are the MCP servers installed in {{productName}}. {{name}} can only call the ones added here — press Add to grant one, Remove to take it back. Built-in servers are always available and cannot be removed.",
         "mcp_disabled": "Disabled",
-        "mcp_empty": "No MCP servers are configured yet. Add one in {{productName}} Settings → MCP, then reopen this panel.",
-        "mcp_error_disabled": "This server is disabled. Enable it in {{productName}} Settings → MCP first.",
+        "mcp_empty": "No MCP servers are configured yet. Add one in {{productName}} {{capabilities}} → {{tab}}, then reopen this panel.",
+        "mcp_error_disabled": "This server is disabled. Enable it in {{productName}} {{capabilities}} → {{tab}} first.",
         "mcp_error_generic": "Couldn't load tools — try again.",
         "mcp_error_in_progress": "Already discovering tools — hold on.",
         "mcp_error_not_found": "This server is no longer configured.",
-        "mcp_error_probe_failed": "This server didn't respond. Check its command in {{productName}} Settings → MCP.",
+        "mcp_error_probe_failed": "This server didn't respond. Check its command in {{productName}} {{capabilities}} → {{tab}}.",
         "mcp_from_cache": "(cached — may be stale)",
         "mcp_loading": "Loading servers…",
         "mcp_needs_approval": "Needs approval",
@@ -3352,6 +3352,7 @@
           "starting": "Starting…",
           "tell_me_what_you_have_in_mind_i_ll_ask_a_few_cla": "Tell me what you have in mind. I’ll ask a few clarifying questions in chat, write up a plan you can review, and\n          then build it when you’re ready.",
           "this_folder_isn_t_a_git_repository_so_i_ll_work": "This folder isn’t a git repository, so I’ll work in it directly. Pick a git repo to get the option of a fresh worktree (keeps your main checkout untouched).",
+          "this_spec_will_be_called": "This spec will be called {{name}}",
           "type_bug_blurb": "Investigate the problem, find the root cause, and plan the fix.",
           "type_bug_title": "Fix a bug",
           "type_feature_blurb": "A full plan: requirements, technical design, and a task list.",
@@ -3410,10 +3411,13 @@
           "approved": "Approved",
           "approved_by_user": "Approved by {{user}}",
           "archive_this_spec": "Archive this spec",
+          "cancel": "Cancel",
           "changed_since_approval": "Changed since approval",
           "clear": "Clear",
           "close_esc": "Close (Esc)",
           "close_review_view": "Close review view",
+          "delete_spec_named": "Remove spec {{name}}",
+          "delete_this_spec": "Remove this spec",
           "document_file_name": "{{name}}.md",
           "drafting_design": "Drafting design…",
           "drafting_tasks": "Drafting tasks…",
@@ -3427,10 +3431,13 @@
           "pending_comment_one": "{{count}} pending comment",
           "pending_comment_other": "{{count}} pending comments",
           "remove_comment_on": "Remove comment on {{document}}",
+          "remove_spec_body": "“{{name}}” will leave Spec Builder. The markdown files stay in the project, and any running agent for this spec will be stopped.",
+          "remove_this_spec": "Remove this spec?",
+          "removing": "Removing…",
           "rename_this_spec_label_the_folder_name_stays": "Rename this spec’s label. Its folder and branch name stay the same.",
           "resize_document_panel": "Resize document panel",
           "restore_this_spec": "Restore this spec",
-          "review_document": "Review {{document}}",
+          "review_document_named": "Review {{document}}.md for {{name}}",
           "send_all_to_agent": "Send all to agent",
           "sending": "Sending…",
           "spec_label": "Spec label",
@@ -3445,11 +3452,13 @@
           "working": "working…"
         },
         "specRail": {
+          "active": "ACTIVE",
           "agent_working": "agent working",
           "an_agent_is_working": "An agent is working",
           "filter_specs": "Filter specs",
           "filter_specs_by_name": "Filter specs by name",
           "new_spec": "New spec",
+          "no_matching_specs": "No specs match that filter",
           "plan_ready": "PLAN READY",
           "settings": "Settings",
           "show_spec_list": "Show spec list",
@@ -3460,7 +3469,8 @@
           "v": "v"
         },
         "specStatePanel": {
-          "answer_with": "How should “{{title}}” be answered?",
+          "answer_option": "Answer “{{title}}” with {{option}}",
+          "answer_option_recommended": "Answer “{{title}}” with {{option}} (recommended)",
           "answered": "answered",
           "blocking": "BLOCKING",
           "context": "CONTEXT",
@@ -3753,7 +3763,7 @@
         "copy": "Copy",
         "copied": "Copied",
         "empty_title": "No accounts yet",
-        "empty_body": "Profiles are added under Settings → Deploy for now. Once one is set up, its account appears here.",
+        "empty_body": "Register one of this machine's AWS profiles under Add accounts below, and its account appears here.",
         "error_title": "Couldn't load your accounts.",
         "error_body": "Something went wrong reading the account list. Try again in a moment.",
         "error_forbidden_body": "This dashboard session is not the owner's, so it cannot manage AWS accounts. Sign in as the owner, then try again.",
@@ -3772,7 +3782,7 @@
         "add_accounts_summary": "Register more of this machine's AWS profiles",
         "add_accounts_intro": "These local profiles aren't registered yet. Pick the ones you want to add.",
         "add_accounts_none": "Every local profile is already registered.",
-        "add_accounts_unsupported": "This machine can't list local AWS profiles automatically. Add profiles under Settings → Deploy instead.",
+        "add_accounts_unsupported": "AWS Control can't reach this machine's AWS profiles on Windows: its AWS access needs a Linux or macOS shell. Run the {{productName}} gateway under WSL (Windows Subsystem for Linux), then register the profiles you set up there.",
         "add_accounts_count_one": "{{count}} of {{max}} registered",
         "add_accounts_count_other": "{{count}} of {{max}} registered",
         "add_accounts_cap_reached": "You've reached the {{max}}-profile limit. Remove one before adding more.",
@@ -4330,7 +4340,7 @@
       "loading_pane": "Loading pane…",
       "retry": "Retry",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "The tunnel looks connected but the remote dashboard never loaded. It may be\n                  restarting — retry, or switch tabs above.",
-      "this_tab_stays_until_you_disconnect_the_instance": "This tab stays until you disconnect the instance in Settings → Remote Instances."
+      "this_tab_stays_until_you_disconnect_the_instance": "This tab stays until you disconnect the instance in <0>Settings → Remote Instances</0>."
     },
     "jobForm": {
       "a_short_label_for_this_job": "A short label for this job",
@@ -4941,7 +4951,7 @@
       "decline_consequence": "If you decline, nothing is loaded and your message is left as you typed it.",
       "grant_failed": "Could not record trust for this folder.",
       "title": "Trust this project's skills?",
-      "withdraw_hint": "You can withdraw this later from the Skills settings page.",
+      "withdraw_hint": "You can withdraw this later from {{capabilities}} → {{tab}}.",
       "working": "Trusting…"
     },
     "projectSkillsTrustList": {
@@ -6211,6 +6221,7 @@
       "clear_search": "Clear search",
       "close": "Close",
       "close_session": "Close session",
+      "closed": "Closed",
       "column_filter": "Column filter",
       "column_name_optional": "Column name (optional)",
       "create": "Create…",
@@ -6478,6 +6489,10 @@
         "new_sessions_use_this_agent_a_session_that_is_al": "New sessions use this agent. A session that is already open keeps the one it started with — switching here does not change it mid-session.",
         "retry": "Retry",
         "set_is_fixed_at_gateway_start": "Which agents appear here is decided when the gateway starts. A managed deployment can restrict the set by policy; editing that policy takes effect on the next start."
+      },
+      "debugToolsTab": {
+        "overlays_the_chat_with_live_scroll_and_anchor_dia": "Overlays the chat with live scroll and anchor diagnostics",
+        "scroll_inspector": "Scroll inspector"
       },
       "featurePreviewsTab": {
         "crew": "Crew",
@@ -6826,7 +6841,12 @@
       "wake_error": "Couldn't load this member's wake sources.",
       "wake_paused": "paused",
       "wake_webhook": "webhook",
-      "activity_error": "Couldn't load this member's activity."
+      "activity_error": "Couldn't load this member's activity.",
+      "driving_sessions": "Sessions it's driving",
+      "driving_none": "Not driving any sessions right now.",
+      "driving_idle": "Idle",
+      "driving_show_all": "Show all ({{count}})",
+      "driving_show_less": "Show less"
     },
     "migrationPage": {
       "app_migration": "App Migration",
@@ -8114,7 +8134,7 @@
         "streaming": "Streaming",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg is missing — voice recordings from the browser cannot be transcribed until it is installed.",
         "the_bundled_audio_decoder_is_missing_or_damaged": "The bundled audio decoder is missing or damaged. Reinstall the {{productName}} desktop app; do not install FFmpeg separately.",
-        "then_restart_the_gateway_so_it_can_import_the_ne": "Then restart the gateway (Settings → About → Restart gateway) so it can import the new packages.",
+        "then_restart_the_gateway_so_it_can_import_the_ne": "Then restart the gateway so it can import the new packages.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "The desktop app can't add Transcribe support — its bundled Python can't install extra packages. Install {{productName}} with pip and run the gateway from that environment instead.",
         "this_gateway_s_python_can_t_install_extra_packag": "This gateway's Python can't install extra packages, so Transcribe can't be enabled here. Run the gateway from a Python environment where pip can install boto3 + amazon-transcribe.",
         "transcribe_voice_into_the_message_box_when_you_c": "Transcribe voice into the message box when you click the mic",

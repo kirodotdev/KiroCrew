@@ -1017,7 +1017,14 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           tabIndex={0}
           allow={allow || undefined}
           className="w-full border-none bg-card block"
-          style={{ height: displayHeight }}
+          // `translateZ(0)` promotes the frame onto its own compositing layer.
+          // Without it an engine can lay the srcDoc document out, run its
+          // scripts and report a correct height while rasterizing nothing —
+          // and this frame is a full-screen overlay, so a skipped first paint
+          // is a blank viewport with no error state. The 3D form adds no
+          // visual offset with no perspective set. Same remedy as
+          // ArtifactBody / WidgetFrame / ArtifactThumbs; keep them in step.
+          style={{ height: displayHeight, transform: 'translateZ(0)' }}
           title={`${payload.server} / ${payload.tool}`}
         />
       </div>

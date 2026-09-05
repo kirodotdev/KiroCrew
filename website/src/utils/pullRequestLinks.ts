@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import type { ChatMessage, SourceProviderId } from '../types'
+import type { ChatMessage, ChatSlot, SourceProviderId } from '../types'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from './safeStorage'
 
@@ -42,6 +42,25 @@ export function partitionSourceLinks(
   const issues: PullRequestLink[] = []
   for (const link of links) (link.kind === 'issue' ? issues : changes).push(link)
   return { changes, issues }
+}
+
+/**
+ * The pull-request URLs a slot's sidebar chips name — the set a turn-boundary
+ * invalidation is scoped to. Issue links are skipped (their panel has no
+ * turn-boundary refresh), an unknown slot yields nothing, and the list is the
+ * serialized chip subset, not every link in the transcript: the slots payload
+ * carries only the first few, so a session with more PRs than chips has its
+ * overflow left to the status-delta path.
+ */
+export function slotChangeUrls(slots: readonly ChatSlot[], slotKey: string): string[] {
+  const slot = slots.find(s => s.key === slotKey)
+  if (!slot?.source_links) return []
+  const urls: string[] = []
+  for (const link of slot.source_links) {
+    if (link.kind === 'issue' || !link.url || urls.includes(link.url)) continue
+    urls.push(link.url)
+  }
+  return urls
 }
 
 /* ── Source-provider registry (edition extension seam) ────────────────────────

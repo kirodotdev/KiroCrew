@@ -11,13 +11,12 @@ interface TrustDropdownProps {
   fullCommand: string
   baseCommand: string
   isShell: boolean
-  /** Whether the mounting surface has an actual tool command behind the
-      approval. Channel approvals carry an agent ROLE in place of a command,
-      so command-scoped tiers there would describe the wrong thing and emit
-      decisions (`trust_command` / `trust_base`) the channel backend refuses;
-      pass false to offer only the session-scoped `trust` action. Explicit
-      prop rather than sniffing `fullCommand`, so command-bearing surfaces
-      keep every tier no matter what the command text looks like. */
+  /** Whether the approval carries an actual tool command. Agent-role channel
+      approvals pass false because command-scoped tiers would describe the
+      wrong thing and emit decisions (`trust_command` / `trust_base`) the
+      channel backend refuses; shell-command channel approvals pass true.
+      Explicit rather than inferred from `fullCommand`, so command-bearing
+      surfaces keep every tier no matter what the command text looks like. */
   hasCommand?: boolean
   disabled?: boolean
   className?: string

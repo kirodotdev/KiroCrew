@@ -35,6 +35,7 @@ import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, FOCUS_INSET
 import { APP_NAV_ORDER_KEY, buildReorderBaseline, mergeVisibleReorder, readAppNavOrder, useAppNavHidden } from './lib/appNavHidden'
 import { computeHeaderDragGaps, type DragGap } from './lib/dragGaps'
 import { isEmbeddedPane } from './lib/embedded'
+import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, registerThemeDecorSlot } from './lib/themeDecorLayer'
 import { useHoverIntent } from './hooks/useHoverIntent'
 import { useNativeNotification } from './hooks/useNativeNotification'
 import { useNotificationSound } from './hooks/useNotificationSound'
@@ -54,7 +55,7 @@ import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
 import { canRenderMobileConnectKind } from './components/mobileConnectRenderers'
-import { useMayLeaveForNavigation, useIsCurrentUrl } from './components/NavigationLeaveGuard'
+import { useMayLeaveForNavigation, useIsCurrentUrl, useGuardedLeave } from './components/NavigationLeaveGuard'
 import { motion, AnimatePresence, useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from './hooks/useDrawerSwipe'
 
@@ -837,6 +838,11 @@ const NC_CLOSE_BACKSTOP_MS = 1000
  */
 function NotificationsBellButton() {
   const navigate = useNavigate()
+  // Both jumps out of this popover run inside the gate: the bell is reachable
+  // from every page, including one holding an unsaved draft, and each handler
+  // also CLOSES the popover — so asking around the `navigate` alone would leave
+  // the user's "keep my draft" answer with the panel shut behind it.
+  const leave = useGuardedLeave()
   const location = useLocation()
   const dispatch = useAppDispatch()
   const items = useAppSelector(s => s.notifications.items)
@@ -1049,7 +1055,7 @@ function NotificationsBellButton() {
               <div {...leavingProps} className={`absolute top-0 right-0 ${closing ? 'pointer-events-none' : 'pointer-events-auto'} ${isMobile ? 'w-full' : 'w-[400px]'} glass-surface glass-static rounded-xl shadow-xl flex flex-col items-center justify-center gap-2 p-6 text-center`} style={{ maxHeight: 240 }}>
                 <AlertTriangle size={20} className="text-warn" />
                 <div className="text-[13px] font-semibold text-text-strong">{i18nT('app.notifications_failed_to_load')}</div>
-                <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => { closePanel(); navigate('/notifications') }}>{i18nT('app.open_the_full_inbox')}</button>
+                <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => leave(() => { closePanel(); navigate('/notifications') }, '/notifications')}>{i18nT('app.open_the_full_inbox')}</button>
               </div>
             }
           >
@@ -1094,7 +1100,7 @@ function NotificationsBellButton() {
                   <div className="flex justify-end px-1 pb-1">
                     <button
                       className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer"
-                      onClick={() => { closePanel(); navigate('/notifications') }}
+                      onClick={() => leave(() => { closePanel(); navigate('/notifications') }, '/notifications')}
                     >
                       {i18nT('app.open_inbox')}
                     </button>
@@ -2892,6 +2898,22 @@ export default function App() {
         }),
       }}
     >
+      {/* Theme decoration slot (#7377). ThemeExperienceLayer portals a pack's
+          decorative overlays here so they share the shell's stacking context
+          with the header — rendered as a sibling of <App /> they compete with
+          the shell's z-1 as a whole and paint OVER the top bar whatever their
+          z-index (see lib/themeDecorLayer.ts). Fixed + inset-0 so it takes no
+          grid cell; click-through so it never intercepts (an overlay declaring
+          pointerEvents opts its own iframe back in); its own stacking context
+          at OVERLAY_Z_MAX so nothing inside can outrank the header (TOPBAR_Z /
+          TOPBAR_FOCUS_Z). Must precede the header in DOM order. */}
+      <div
+        id={THEME_DECOR_SLOT_ID}
+        ref={registerThemeDecorSlot}
+        data-testid="theme-decor-slot"
+        className="fixed inset-0 pointer-events-none"
+        style={{ zIndex: OVERLAY_Z_MAX }}
+      />
 
       {/* Full-height activity bar slot: ChatPage portals its
           Activity panel here on desktop so it spans the window top-to-bottom
@@ -2937,27 +2959,31 @@ export default function App() {
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header
         ref={topPeekSurface}
-        className="topbar topbar-glass relative pl-2 pr-3 z-[45]"
+        className="topbar topbar-glass relative pl-2 pr-3"
+        // Both z-indexes come from lib/themeDecorLayer.ts, which derives the
+        // theme-overlay ceiling from them — the header must outrank pack
+        // decoration in both layouts (#7377), and a literal here could drift.
+        //
         // In focus mode the header leaves the grid and becomes an overlay
         // positioned against the shell (which is already `relative`), NOT the
         // viewport: `position: fixed` would be measured against whichever
         // ancestor happens to establish a containing block, and the shell is the
         // app area either way. It stays MOUNTED and slides — unmounting it would
         // tear down the notification/metrics popovers it owns and lose their
-        // state on every peek. z-[62] clears the whole chat-pane stack (max 61)
-        // and the rail (50) while staying under the update banner (70), side
-        // sheets (89/90) and every modal (100+).
+        // state on every peek. TOPBAR_FOCUS_Z (62) clears the whole chat-pane
+        // stack (max 61) and the rail (50) while staying under the update banner
+        // (70), side sheets (89/90) and every modal (100+).
         style={focusActive
           ? {
             position: 'absolute',
             top: 0, left: 0, right: 0, height: 42,
-            zIndex: 62,
+            zIndex: TOPBAR_FOCUS_Z,
             transform: topChromeShown ? 'translateY(0)' : 'translateY(-100%)',
             transition: 'transform 200ms cubic-bezier(0.2, 0, 0, 1)',
             // Hidden chrome must not eat clicks aimed at the content beneath it.
             pointerEvents: topChromeShown ? 'auto' : 'none',
           }
-          : { gridArea: 'topbar' }}
+          : { gridArea: 'topbar', zIndex: TOPBAR_Z }}
         {...(focusActive ? topPeek.surfaceProps : {})}
       >
         {/* Left: mobile menu toggle + inline instance selector. The brand now

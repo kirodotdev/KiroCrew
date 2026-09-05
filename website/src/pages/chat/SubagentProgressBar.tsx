@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnApproval } from '../../store/chatSlice'
@@ -155,9 +156,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const hasActive = running > 0 || queued > 0 || awaiting > 0
   const visibleList = activeList.slice(0, CHIP_MAX_ROWS)
   const hiddenCount = activeList.length - visibleList.length
-  // Only running/tool agents are cancellable via spawnDelete; pending agents
-  // (awaiting approval) are resolved through the approval reject path instead.
+  // Per-row stop remains limited to agents with a live run id. The header also
+  // includes accepted work waiting behind the stagger/concurrency queue. Pending
+  // spawn approvals keep their explicit approve/reject path.
   const stoppableCount = useMemo(() => activeList.filter(a => a.status === 'running' || a.status === 'tool').length, [activeList])
+  const stopTargetCount = stoppableCount + queued
   // Cancel a running subagent. A failed spawnDelete is swallowed with only a
   // debug breadcrumb. The 30s reconcile loop below is the safety net that
   // drops any agent the backend actually stopped.
@@ -165,9 +168,17 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     // eslint-disable-next-line no-console -- names which subagent refused to stop; the 30s reconcile loop hides the failure from the UI, so this is the only place a cancel that never landed is visible
     api.spawnDelete(id).catch(() => console.warn(`spawnDelete failed for subagent ${id}; reconcile loop will resync`))
   }, [])
+  const stopAllMutation = useMutation({
+    mutationFn: (targetSlot: string) => api.spawnStopAll(targetSlot),
+    onError: (_error, targetSlot) => {
+      // eslint-disable-next-line no-console -- the reconciliation loop will resync running cards, but queued work has no row id to retry individually
+      console.warn(`spawnStopAll failed for slot ${targetSlot}; reconcile loop will resync`)
+    },
+  })
   const stopAll = useCallback(() => {
-    activeListRef.current.forEach(a => { if (a.status === 'running' || a.status === 'tool') stopAgent(a.id) })
-  }, [stopAgent])
+    if (!slot) return
+    stopAllMutation.mutate(slot)
+  }, [slot, stopAllMutation])
   const [retrying, setRetrying] = useState(false)
   // Collapse the agent list to the one-line header. Default expanded; the
   // choice is remembered across sessions via localStorage so a user who
@@ -211,10 +222,13 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   if (!hasActive) return null
   return (
     // `relative z-[46]` lifts the wave chip above every theme-experience
-    // overlay: those are clamped to OVERLAY_Z_MAX=45 in ThemeExperienceLayer,
-    // so 46 is the minimal value that no theme (built-in or custom, present or
-    // future) can paint over — while staying below the mute button (z=50) and
-    // consent modal (z=120), and under modal backdrops (z-[46], later in DOM).
+    // overlay. Overlays portal into the shell's decor slot, which is pinned at
+    // OVERLAY_Z_MAX (lib/themeDecorLayer.ts — do not restate the number here);
+    // the chip renders in the same shell stacking context, so 46 is a real
+    // in-context comparison against that ceiling (the test pins 46 >
+    // OVERLAY_Z_MAX). The mute button (z=50) and consent modal (z=120) live at
+    // the document root and outrank the whole shell regardless; the chip also
+    // stays under modal backdrops (z-[46], later in DOM).
     // Without this the chip sits at auto z-index and a fullscreen overlay (e.g.
     // an activate-time transition wipe) covers it for the overlay's lifetime.
     <div className="px-4 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
@@ -259,13 +273,13 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> {i18nT('pages.chat.subagentProgressBar.retry_failed_count', { count: failedIds.length })}
               </button>
             )}
-            {stoppableCount > 0 && (
+            {stopTargetCount > 0 && (
               <button
                 className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
                 onClick={stopAll}
-                aria-label={stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all_running_subagents') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
+                aria-label={queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
               >
-                <X size={11} /> {stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
+                <X size={11} /> {queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
               </button>
             )}
           </span>

@@ -3039,12 +3039,16 @@ class TestCleanupLoop:
             with caplog.at_level(logging.INFO, logger="kiro_crew.session"):
                 await mgr._cleanup_loop()
 
-        # Verify: sweep was called (production wiring)
-        mock_sweep.assert_called_once()
-        # Verify the offload: ran on a maintenance-executor worker thread,
-        # not the event loop thread (run_in_executor path).
+        # Verify: sweep was called (production wiring). At least once, not
+        # exactly once: the loop now also dispatches one reclaim pass at START
+        # (a host whose runtime tmpfs is out of inodes cannot spawn at all, so
+        # that pass must not wait out an interval), so a run can legitimately
+        # record the boot pass, the tick pass, or both.
+        assert mock_sweep.call_count >= 1
+        # Verify the offload: EVERY call ran on a maintenance-executor worker
+        # thread, not the event loop thread (run_in_executor path).
         assert sweep_threads, "sweep never executed"
-        assert sweep_threads[0] != threading.main_thread().name
+        assert all(name != threading.main_thread().name for name in sweep_threads)
         assert sweep_threads[0].startswith("mc-maint")
         # Verify: non-zero return produces the info log
         assert "removed 3 stale sandbox artifacts" in caplog.text

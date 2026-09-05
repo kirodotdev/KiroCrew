@@ -88,6 +88,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.messaging.split import iter_fence_spans
+from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -373,6 +374,15 @@ def local_destination(raw_dest: str) -> Path | None:
         if os.name == "nt" and is_unc_shape(clean) and not unc_probe_allowed(clean):
             return None
         path = Path(clean).expanduser()
+        # The EXPANDED form is screened too, since expansion is what actually
+        # gets stat-ed downstream: `~` resolving to a roaming-profile home can
+        # surface a UNC shape the raw text did not have. Still lexical with
+        # respect to the PATH (`expanduser` reads the environment, or the
+        # local account database for `~user` -- never the path itself), so
+        # the documented lexical-only contract holds. Mirrors the both-forms
+        # screening in dashboard/handlers/themes.py::_resolve_local_source.
+        if os.name == "nt" and is_unc_shape(str(path)) and not unc_probe_allowed(str(path)):
+            return None
         if not path.is_absolute():
             return None
     except (OSError, RuntimeError, ValueError):
@@ -429,6 +439,28 @@ def _inspect(
         except (OSError, ValueError):
             return Rejection(dest, REASON_SENSITIVE, "outside the approved workspace")
     try:
+        # A linked ANCESTOR defeats local_destination's lexical UNC screen:
+        # the destination is not itself UNC-shaped -- only the link's target
+        # is -- and EVERY resolving call below is the probe. That includes
+        # is_sensitive_path, whose candidate forms are built with
+        # realpath()/resolve(), so this guard must run before it, not merely
+        # before the is_symlink() lstat. Lives here, not in local_destination,
+        # to keep that function's documented lexical-only contract intact.
+        # Windows-only for the same reason as the UNC gate: on POSIX stat-ing
+        # through a symlink is harmless. The reply matches the leaf case on
+        # purpose -- which ancestor is a link is filesystem layout the caller
+        # supplied a path to guess at. Reference wiring:
+        # dashboard/handlers/themes.py::_resolve_local_source.
+        if os.name == "nt" and first_linked_ancestor(path) is not None:
+            return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
+        # The LEAF gets the junction-aware check the walk deliberately
+        # excludes. The all-platform is_symlink() refusal below is lstat-only
+        # (junction-blind) and runs after is_sensitive_path, whose candidate
+        # forms resolve the leaf too -- so on Windows the leaf must be
+        # screened here, before the first resolving call. lstat-based, never
+        # follows.
+        if os.name == "nt" and is_link_or_junction(path):
+            return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
         if is_sensitive_path(str(path)):
             return Rejection(dest, REASON_SENSITIVE, "reading this location is blocked")
         if path.is_symlink():

@@ -42,6 +42,8 @@ import { MARKER_SELECTORS } from './lib/session-row-marker.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/session-status-marker'
 const ACTIVE = 'chat-run'
+/** The fixture that must render the manual-attention interruption marker. */
+const INTERRUPTED = 'chat-interrupted'
 /** The fixture that must render the unread dot — seeded into `mc-unread-slots`. */
 const UNREAD = 'chat-unread'
 const BASELINE = process.env.MARKER_BASELINE === '1'
@@ -80,6 +82,11 @@ const slots = [
     folder_id: '', last_message: 'Compared three schedulers.',
   },
   {
+    key: INTERRUPTED, title: 'Deployment follow-up after restart', running: false, interrupted: true,
+    messages: 7, agent: 'kirocrew', modified: now - 18 * 60, last_ts: ago(18), last_turn_ts: ago(18),
+    folder_id: '', last_message: 'Checking the deployment.',
+  },
+  {
     // Unread and idle: the one marker whose words (`last_message`) do not name it,
     // so it is the one that keeps an accessible name after the move — and the one
     // whose box only exists as a flex item, which is why it is seeded and ASSERTED
@@ -101,8 +108,9 @@ const problems = []
 const check = msg => { if (BASELINE) problems.push(msg); else throw new Error(msg) }
 
 /** Fixtures that own a status marker, so a missing one is a failure, not a skip:
- *  the running spinner, the approval shield, the question mark, and the unread dot. */
-const MARKER_ROWS = new Set([ACTIVE, 'chat-approve', 'chat-ask', UNREAD])
+ *  the running spinner, approval shield, question mark, interruption warning,
+ *  and unread dot. */
+const MARKER_ROWS = new Set([ACTIVE, 'chat-approve', 'chat-ask', INTERRUPTED, UNREAD])
 
 async function main() {
   const { srv, base } = await serveDist()

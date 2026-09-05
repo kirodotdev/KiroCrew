@@ -68,9 +68,19 @@ def test_argument_validator_accepts_every_advertised_session(value: str) -> None
     assert cleaned["session"] == value
 
 
-def test_argument_validator_still_rejects_an_unadvertised_session() -> None:
+@pytest.mark.parametrize("value", ["unified", "pigeon", "webex:99887766", "Webex"])
+def test_argument_validator_still_rejects_an_unadvertised_session(value: str) -> None:
+    """The roster is derived, so the negative control must not be a real channel.
+
+    This case previously used ``"telegram"``, which #6514 made legal: the roster
+    now derives from ``CHANNEL_SESSION_NAMESPACES``, so every registered channel
+    is advertised. The values here are the ones that must STAY refused —
+    ``unified`` is the session-key bucket rather than a transport and is excluded
+    on purpose, and the rest are a bare unknown name, a namespaced session key
+    where a transport is expected, and a case variant.
+    """
     with pytest.raises(ValidationError):
-        validate_tool_args({"text": "hi", "session": "telegram"}, SEND_MESSAGE_SCHEMA)
+        validate_tool_args({"text": "hi", "session": value}, SEND_MESSAGE_SCHEMA)
 
 
 def test_description_states_what_discord_does_and_what_it_refuses() -> None:
@@ -602,3 +612,40 @@ async def test_options_trailer_survives_as_a_numbered_list(audit) -> None:
     assert re.search(r"1\.\s*Alpha", body)
     assert re.search(r"2\.\s*Bravo", body)
     assert "[OPTIONS:" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_non_cron_channel_session_vets_on_the_headers_attested_identity() -> None:
+    """The owner-DM leg must not vet a non-cron caller under the host sentinel.
+
+    ``_deliver_channel_dm`` resolves ``caller_session or HOST_SESSION_KEY``, and
+    HOST_SESSION_KEY is the PERMISSIVE default -- so dropping a non-cron caller's
+    identity here lets a session whose own profile denies the transport reach a
+    host-permitted owner DM. The sibling ``channel_type``/``target_id`` leg already
+    closed this; the channel-``session`` leg was not migrated with it.
+
+    The identity comes from the ``X-Session-Key`` HEADER, which
+    ``token_auth._verify_unix_peer`` kernel-attests against the peer's own process
+    ancestry, never from the body -- so it matches the principal
+    ``_channel_delivery_key`` resolves for delivery on this same path.
+    """
+    seen: list[str] = []
+
+    async def _capture(state, channel_type, text, *, caller_session=""):
+        seen.append(caller_session)
+        return True, "", ""
+
+    module = __import__("kiro_crew.dashboard.handlers.messaging", fromlist=["_deliver_channel_dm"])
+    with patch.object(module, "_deliver_channel_dm", _capture):
+        async with TestClient(TestServer(_app(_state(_discord_transport())))) as client:
+            resp = await client.post(
+                "/api/send-message",
+                json={"text": "hi", "session": "discord"},
+                headers={"X-Session-Key": "dashboard:9"},
+            )
+            assert resp.status == 200
+
+    assert seen == ["dashboard:9"], (
+        "a non-cron channel-session send must carry the attested caller identity "
+        "into the governance vet, not degrade to the permissive host sentinel"
+    )

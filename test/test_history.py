@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from windows_sim import builtin_open_sharing_violation
 
-from kiro_crew import history
+from kiro_crew import history, history_search
 from kiro_crew.history import (
     _CONSOLIDATION_THRESHOLD,
     _METADATA_CACHE_MAX,
@@ -1809,6 +1809,398 @@ class TestForgeReferenceSearch:
         keys = {s["key"] for s in log.search_sessions("pull request #4411", 10)}
 
         assert keys == {"url_only", "hash_form", "prose_form"}, keys
+
+
+class TestProviderSearchRefSeam:
+    """A REGISTERED source provider contributes its own id spellings.
+
+    The forge shapes above are built in. An edition that adds a source provider
+    whose ids look like ``REV-987654321`` matches none of them, so without a seam
+    its ids degrade to plain literal needles: a query finds only the exact string
+    it typed, never a transcript that cited the same item by URL. These pin the
+    seam's two consultation points -- gating on a prefixed id, and RANKING for a
+    bare number -- and the guards that keep a plugin from widening the gate or
+    breaking the search box.
+
+    The resolvers here are deliberately fake and generic: the seam is provider
+    agnostic, and a test naming a real provider would encode one consumer's URL
+    shapes into core's contract.
+    """
+
+    @staticmethod
+    @pytest.fixture(autouse=True)
+    def _clean_registry():
+        """The resolver registry is module state, so isolate every test."""
+        history_search.reset_search_ref_resolver_for_tests()
+        yield
+        history_search.reset_search_ref_resolver_for_tests()
+
+    @staticmethod
+    def _resolver(token: str):
+        """Recognize ``ref-<digits>``, ``items/ref-<digits>`` and bare digits."""
+        import re
+
+        match = re.fullmatch(r"(?:ref-)?(\d{3,9})", token) or re.fullmatch(
+            r"items/ref-(\d{3,9})", token
+        )
+        if match is None:
+            return None
+        number = match.group(1)
+        return (f"ref-{number}", (f"items/ref-{number}", f"ref {number}"))
+
+    @staticmethod
+    def _needle(query: str) -> history.SearchNeedle:
+        """The single required needle, asserting the one-reference invariant.
+
+        Mirrors ``TestForgeReferenceSearch._needle``: ~30 forge tests depend on a
+        reference query gating on exactly ONE needle, so a provider token must
+        satisfy the same invariant or the literal term has survived into the gate
+        alongside the provider's canonical spelling.
+        """
+        needles, _, _ = history.parse_search_query(query)
+        required = [n for n in needles if n.required]
+        assert len(required) == 1, f"{query!r} must gate on one reference: {required}"
+        return required[0]
+
+    @staticmethod
+    def _corpus(tmp_path) -> ConversationLog:
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("url_form", "assistant", "opened https://example.test/items/ref-987654321 today")
+        log.append("id_form", "assistant", "babysitting ref-987654321 to green")
+        log.append("prose_form", "assistant", "rebased ref 987654321 onto main")
+        log.append("digit_noise", "assistant", "the run id was 1987654321772 and it timed out")
+        return log
+
+    def test_a_provider_id_gates_on_the_item_not_the_literal(self):
+        """The named defect: one item, one result set, whichever spelling is typed."""
+        history_search.register_search_ref_resolver(self._resolver)
+
+        needle = self._needle("REF-987654321")
+
+        assert needle.text == "ref-987654321"
+        assert set(needle.alts) == {"items/ref-987654321", "ref 987654321"}
+        assert needle.digit_bounded is True
+
+    def test_every_provider_spelling_finds_every_spelling(self, tmp_path):
+        """A URL mention and a prose mention answer the same query."""
+        history_search.register_search_ref_resolver(self._resolver)
+        log = self._corpus(tmp_path)
+
+        for query in ("ref-987654321", "items/ref-987654321"):
+            keys = {s["key"] for s in log.search_sessions(query, 10)}
+            assert keys == {"url_form", "id_form", "prose_form"}, query
+
+    def test_an_uppercase_resolver_answer_still_matches(self, tmp_path):
+        """Casefold on OUR side, because getting it wrong fails SILENTLY.
+
+        A query is casefolded before parsing and needle matching requires folded
+        text, so a spelling that arrived capitalized would produce a needle that
+        can never match -- no error, no log, just zero results. Trusting the
+        plugin to fold is therefore not an option.
+        """
+
+        def shouty(token: str):
+            if token != "ref-987654321":
+                return None
+            return ("REF-987654321", ("ITEMS/REF-987654321", "REF 987654321"))
+
+        history_search.register_search_ref_resolver(shouty)
+        log = self._corpus(tmp_path)
+
+        needle = self._needle("ref-987654321")
+
+        assert needle.text == "ref-987654321"
+        assert needle.alts == ("items/ref-987654321", "ref 987654321")
+        assert {s["key"] for s in log.search_sessions("ref-987654321", 10)} == {
+            "url_form",
+            "id_form",
+            "prose_form",
+        }
+
+    def test_a_bare_number_keeps_plain_substring_recall(self, tmp_path):
+        """The loosen-only contract: a resolver cannot hide a numeric-content hit."""
+        history_search.register_search_ref_resolver(self._resolver)
+        log = self._corpus(tmp_path)
+
+        keys = {s["key"] for s in log.search_sessions("987654321", 10)}
+
+        assert "digit_noise" in keys, "plain digits still match"
+
+    def test_built_ins_win_and_the_resolver_is_never_asked(self):
+        """A resolver can only claim a token no built-in recognized."""
+        asked: list[str] = []
+
+        def greedy(token: str):
+            asked.append(token)
+            return ("ref-4411", ("items/ref-4411",))
+
+        history_search.register_search_ref_resolver(greedy)
+
+        for query in ("#4411", "pull/4411", "https://github.com/kirodotdev/KiroCrew/pull/4411"):
+            needle = self._needle(query)
+            assert needle.text == "#4411", query
+            assert "pull/4411" in needle.alts, query
+        assert asked == [], f"built-in shapes must short-circuit the resolver: {asked}"
+
+    def test_a_resolver_cannot_gate_a_bare_number(self):
+        """A bare number is the provider's blind spot: it is not consulted at all.
+
+        A provider's ids are prefixed, so a bare run of digits names nothing it
+        owns. Gating on it would trade a real search term for every session that
+        merely mentions that number.
+        """
+
+        def greedy(token: str):
+            return ("ref-42", ("items/ref-42",))
+
+        history_search.register_search_ref_resolver(greedy)
+
+        needles, _, _ = history.parse_search_query("42")
+
+        required = [n for n in needles if n.required]
+        assert [n.text for n in required] == ["42"], required
+        # Nor does it reach the ranking hint: the hint carries built-in spellings
+        # only, so a provider cannot influence a bare-number query in any way.
+        folded = {s for n in needles if not n.required for s in (n.text, *n.alts)}
+        assert not any("ref-42" in s for s in folded), folded
+
+    def test_contributed_spellings_are_capped(self):
+        """Each spelling costs one substring scan of every scanned session."""
+
+        def flood(token: str):
+            if token != "ref-777":
+                return None
+            return ("ref-777", tuple(f"spelling-{i}/777" for i in range(50)))
+
+        history_search.register_search_ref_resolver(flood)
+
+        needle = self._needle("ref-777")
+
+        assert len(needle.alts) == history_search._MAX_SEARCH_REF_SPELLINGS
+        # Bounds ONE answer, not a fan-in: the collector returns the first
+        # plugin to recognize the token, so only one provider's answer arrives.
+        assert history_search._MAX_SEARCH_REF_SPELLINGS == 8, "one answer's worth"
+
+    def test_an_endless_alts_iterable_is_consumed_only_to_the_cap(self):
+        """A resolver ignoring the ``Sequence`` contract can hand back no end of
+        spellings, and materializing them all would hang every search."""
+        produced: list[str] = []
+
+        def endless(token: str):
+            if token != "ref-777":
+                return None
+
+            def spellings():
+                while True:
+                    produced.append(f"spelling-{len(produced)}/777")
+                    yield produced[-1]
+
+            return ("ref-777", spellings())
+
+        history_search.register_search_ref_resolver(endless)
+
+        self._needle("ref-777")
+
+        assert len(produced) == history_search._MAX_SEARCH_REF_SPELLINGS, len(produced)
+
+    def test_an_answer_that_does_not_carry_the_typed_token_is_dropped(self):
+        """Containment: an answer naming some OTHER item cannot claim the token."""
+
+        def unrelated(token: str):
+            return ("ref-111", ("items/ref-111",)) if token == "ref-777" else None
+
+        history_search.register_search_ref_resolver(unrelated)
+
+        needles, _, _ = history.parse_search_query("ref-777")
+
+        required = [n for n in needles if n.required]
+        assert [n.text for n in required] == ["ref-777"], required
+        assert all(n.alts == () for n in required)
+
+    def test_a_raising_resolver_does_not_break_the_query(self):
+        """A plugin defect must not make the search box stop working."""
+
+        def broken(token: str):
+            raise RuntimeError("provider is on fire")
+
+        history_search.register_search_ref_resolver(broken)
+
+        needles, phrase, _ = history.parse_search_query("ref-987654321 deploy")
+
+        assert phrase == "ref-987654321 deploy"
+        assert {n.text for n in needles if n.required} == {"ref-987654321", "deploy"}
+
+    def test_a_resolver_whose_unpack_raises_does_not_break_the_query(self):
+        """The ANSWER itself may be lazy, so unpacking it can raise anything.
+
+        Only ``TypeError``/``ValueError`` were caught, so a two-item generator that
+        raises while being unpacked escaped ``parse_search_query`` into a 500 on
+        every search -- the collector no longer shape-checks ahead of this.
+        """
+
+        def lazy_unpack_boom(token: str):
+            def answer():
+                yield "ref-987654321"
+                raise RuntimeError("provider is on fire")
+
+            return answer()
+
+        history_search.register_search_ref_resolver(lazy_unpack_boom)
+
+        needles, phrase, _ = history.parse_search_query("ref-987654321 deploy")
+
+        assert phrase == "ref-987654321 deploy"
+        assert {n.text for n in needles if n.required} == {"ref-987654321", "deploy"}
+
+    def test_a_resolver_raising_while_its_alts_are_read_does_not_break_the_query(self):
+        """The hook promises a ``Sequence``, which cannot raise while being read.
+
+        A resolver ignoring that can, so the read sits inside a boundary; without
+        one the exception escapes the parse as a 500 on every search. The answer
+        is dropped WHOLE -- a half-read one is not an answer.
+        """
+
+        def boom_on_read(token: str):
+            class Hostile:
+                def __iter__(self):
+                    yield "items/ref-987654321"
+                    raise RuntimeError("provider is on fire")
+
+            return ("ref-987654321", Hostile()) if token == "ref-987654321" else None
+
+        history_search.register_search_ref_resolver(boom_on_read)
+
+        needles, phrase, _ = history.parse_search_query("ref-987654321 deploy")
+
+        assert phrase == "ref-987654321 deploy"
+        assert {n.text for n in needles if n.required} == {"ref-987654321", "deploy"}
+        gating = next(n for n in needles if n.required and n.text == "ref-987654321")
+        assert gating.alts == (), gating.alts
+
+    def test_a_later_registration_replaces_the_resolver(self):
+        """One slot, not a list: the latest registration is the one consulted."""
+
+        def broken(token: str):
+            raise RuntimeError("provider is on fire")
+
+        history_search.register_search_ref_resolver(broken)
+        history_search.register_search_ref_resolver(self._resolver)
+
+        needle = self._needle("ref-987654321")
+
+        assert needle.text == "ref-987654321"
+
+    def test_a_malformed_resolver_answer_is_ignored(self):
+        """Shape is validated, not trusted: a bad answer degrades to a literal."""
+
+        def malformed(token: str):
+            return ("", ["ok/1"]) if token == "ref-987654321" else None
+
+        history_search.register_search_ref_resolver(malformed)
+
+        needles, _, _ = history.parse_search_query("ref-987654321")
+
+        assert {n.text for n in needles if n.required} == {"ref-987654321"}
+        assert all(n.alts == () for n in needles if n.required)
+
+    def test_a_malformed_resolver_answer_is_logged_not_silent(self, caplog):
+        """The docstring promises every failure leaves a trace; silence hides a defect.
+
+        A silent drop is the failure this normalizer exists to prevent: the query
+        degrades to a literal and returns zero results with nothing to read.
+        """
+
+        def bad_canonical(token: str):
+            return (42, ["ok/1"]) if token == "ref-987654321" else None
+
+        history_search.register_search_ref_resolver(bad_canonical)
+        with caplog.at_level(logging.DEBUG, logger=history_search.logger.name):
+            history.parse_search_query("ref-987654321")
+
+        assert any(
+            "malformed" in r.message or "invalid" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_a_non_iterable_alts_answer_is_logged_not_silent(self, caplog):
+        """The sibling shape rejection: `alts` a bare string is equally silent."""
+
+        def bad_alts(token: str):
+            return ("acme-987654321", "not-a-sequence") if token == "ref-987654321" else None
+
+        history_search.register_search_ref_resolver(bad_alts)
+        with caplog.at_level(logging.DEBUG, logger=history_search.logger.name):
+            history.parse_search_query("ref-987654321")
+
+        assert any(
+            "malformed" in r.message or "invalid" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_a_malformed_alt_is_logged_not_silent(self, caplog):
+        """The per-alt shape rejection, the third case the docstring's claim covers.
+
+        One bad spelling costs only itself: the good spellings survive, so this is a
+        per-alt drop rather than the whole-answer drop a raising read produces.
+        """
+
+        def bad_alt(token: str):
+            if token != "ref-987654321":
+                return None
+            return ("acme-987654321", ["ref-987654321", 42, "  "])
+
+        history_search.register_search_ref_resolver(bad_alt)
+        with caplog.at_level(logging.DEBUG, logger=history_search.logger.name):
+            needles, _, _ = history.parse_search_query("ref-987654321")
+
+        assert any("an invalid alt" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
+        assert [n.alts for n in needles if n.required] == [("ref-987654321",)]
+
+    def test_republishing_the_same_resolver_consults_it_once(self):
+        """A registry republishes its collector on every provider registration."""
+        calls: list[str] = []
+
+        def counting(token: str):
+            calls.append(token)
+            return None
+
+        history_search.register_search_ref_resolver(counting)
+        history_search.register_search_ref_resolver(counting)
+
+        history.parse_search_query("deploy")
+
+        assert calls == ["deploy"], calls
+
+    def test_no_registration_leaves_the_parse_untouched(self):
+        """The seam is inert until something registers -- the regression guard."""
+        needles, phrase, floor = history.parse_search_query("ref-987654321 4411")
+
+        assert phrase == "ref-987654321 4411"
+        assert {n.text for n in needles if n.required} == {"ref-987654321", "4411"}
+        assert [n.text for n in needles if not n.required] == ["#4411"]
+        assert floor is False
+
+    def test_the_expansion_budget_is_shared_with_the_built_ins(self):
+        """A provider token charges the same ledger, so it cannot mint slots."""
+        history_search.register_search_ref_resolver(self._resolver)
+
+        needles, _, _ = history.parse_search_query("ref-111 ref-222 ref-333 ref-444")
+
+        required = [n for n in needles if n.required]
+        expanded = [n for n in required if n.text.startswith("ref-") and n.alts]
+        assert len(expanded) == history._SEARCH_MAX_FORGE_REFS, expanded
+        assert required[-1].text == "ref-444", "the over-budget token degrades to a literal"
+        assert required[-1].alts == ()
+
+    def test_repeating_one_item_charges_one_slot(self):
+        """Two spellings of one item are one item, whichever order they arrive."""
+        history_search.register_search_ref_resolver(self._resolver)
+
+        needles, _, _ = history.parse_search_query("ref-987654321 items/ref-987654321")
+
+        required = [n for n in needles if n.required]
+        assert len(required) == 1, required
+        assert required[0].text == "ref-987654321"
 
 
 class TestRecencyBoost:

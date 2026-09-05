@@ -214,10 +214,14 @@ points is overhead, not richness.
 
 ## Delivery in Crew
 
-- **Terseness is suspended for this reply.** An explanation request is the
-  documented exception to the answer-only and concise verbosity levels. Do not
-  compress an Age-5 explanation into one clipped line because a verbosity block
-  says to — the request itself lifted that rule for this turn.
+- **An explanation request lifts the ban on explaining, not the length bound.**
+  Never flatten an Age-5 or Age-10 explanation into one clipped jargon line
+  because a verbosity block says to — the register is what this skill is for, and
+  every level keeps it. Length is the other axis and it stays with the active
+  level: `answer_only` holds its few-plain-sentences bound unless the user asked
+  for depth (a doc, a walkthrough, in detail), and it pins its own replies to the
+  Age 10 row above, borrowing the calibration rather than a length licence.
+  `concise` and below: write what the audience needs.
 - **Persist what gets forwarded.** An explanation written for a manager, a
   director or a customer usually gets pasted somewhere else. Save it as an
   artifact so it outlives the chat scrollback and can be revised, instead of

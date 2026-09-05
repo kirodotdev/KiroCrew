@@ -46,20 +46,51 @@ test("the gateway UTF-8 contract is explicit and stable", () => {
   });
 });
 
-test("Windows consumes packaged bytecode while POSIX redirects runtime caches", () => {
+test("packaged bundles consume shipped bytecode; macOS also forbids writing it", () => {
   const cache = String.raw`C:\Users\test\.kiro\crew\cache\pycache`;
+  const posixCache = "/Users/test/.kiro/crew/cache/pycache";
+
+  // Windows: adjacent caches, writes allowed (Authenticode seals no resource
+  // tree, and modules outside the traced closure benefit from caching).
   assert.deepStrictEqual(gatewayBytecodeEnvironment("win32", cache, true), {
     PYTHONPYCACHEPREFIX: "",
   });
+
+  // macOS: adjacent caches AND no writes. codesign seals every file under
+  // Contents/, so a single post-signing .pyc makes Gatekeeper call the app
+  // "damaged". Redirecting instead would also prevent that, but a set prefix
+  // makes CPython ignore the shipped closure and recompile it per version.
+  assert.deepStrictEqual(gatewayBytecodeEnvironment("darwin", posixCache, true), {
+    PYTHONPYCACHEPREFIX: "",
+    PYTHONDONTWRITEBYTECODE: "1",
+  });
+
+  // Unpackaged: a dev tree ships no precompiled closure, so redirect.
   assert.deepStrictEqual(gatewayBytecodeEnvironment("win32", cache, false), {
     PYTHONPYCACHEPREFIX: cache,
   });
-  assert.deepStrictEqual(gatewayBytecodeEnvironment("darwin", cache, true), {
-    PYTHONPYCACHEPREFIX: cache,
+  assert.deepStrictEqual(gatewayBytecodeEnvironment("darwin", posixCache, false), {
+    PYTHONPYCACHEPREFIX: posixCache,
   });
-  assert.deepStrictEqual(gatewayBytecodeEnvironment("linux", cache, true), {
-    PYTHONPYCACHEPREFIX: cache,
+
+  // Linux: may be read-only, but has no signature to protect, so redirect.
+  assert.deepStrictEqual(gatewayBytecodeEnvironment("linux", posixCache, true), {
+    PYTHONPYCACHEPREFIX: posixCache,
   });
+});
+
+test("the macOS lock is a write ban, not a redirect", () => {
+  // A redirect and a ban are not interchangeable: a non-empty prefix would send
+  // bytecode outside the bundle but also make CPython ignore the shipped
+  // checked-hash caches, so every version's first launch recompiles the tree. The packaged macOS answer must therefore be exactly
+  // "adjacent caches, no writes".
+  const env = gatewayBytecodeEnvironment("darwin", "/some/cache", true);
+  assert.equal(env.PYTHONDONTWRITEBYTECODE, "1");
+  assert.equal(
+    env.PYTHONPYCACHEPREFIX,
+    "",
+    "a non-empty prefix on packaged macOS discards the shipped caches",
+  );
 });
 
 test("the one desktop gateway spawn uses the hardened environment builder", () => {

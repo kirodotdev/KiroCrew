@@ -24,6 +24,34 @@ function makeScrollerWithRows(n: number) {
   return el
 }
 
+/**
+ * Scroller mirroring the REAL transcript nesting: `data-display-index` sits on
+ * the virtualizer's row wrapper, and the collapsible container (the shape
+ * CollapsibleSection produces) renders INSIDE the row. Toggling
+ * `data-collapsed` on that inner container hides the row's content in place
+ * without removing a single node.
+ */
+function makeScrollerWithCollapsible(nPlainRows: number, nFoldedRows: number) {
+  const el = document.createElement('div')
+  for (let i = 0; i < nPlainRows; i++) {
+    const row = document.createElement('div')
+    row.setAttribute('data-display-index', String(i))
+    el.appendChild(row)
+  }
+  const containers: HTMLElement[] = []
+  for (let i = 0; i < nFoldedRows; i++) {
+    const row = document.createElement('div')
+    row.setAttribute('data-display-index', String(nPlainRows + i))
+    const fold = document.createElement('div') // CollapsibleSection's motion.div
+    fold.appendChild(document.createElement('div')) // the folded turn content
+    row.appendChild(fold)
+    el.appendChild(row)
+    containers.push(fold)
+  }
+  document.body.appendChild(el)
+  return { el, containers }
+}
+
 describe('useBubbleVanishProbe', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>
   let rafSpy: ReturnType<typeof vi.spyOn>
@@ -78,9 +106,52 @@ describe('useBubbleVanishProbe', () => {
     })
     expect(warnSpy).toHaveBeenCalledTimes(1)
     const payload = warnSpy.mock.calls[0][1] as Record<string, unknown>
+    expect(payload.kind).toBe('mounted-drop')
     expect(payload.mountedBefore).toBe(5)
     expect(payload.mountedAfter).toBe(3)
     expect(payload.storeMessages).toBe(10)
     expect(payload.displayItems).toBe(3)
+  })
+
+  it('reports the hidden-in-place bucket when a collapse hides a row\'s content without removing nodes', async () => {
+    localStorage.setItem(BUBBLE_PROBE_FLAG, '1')
+    // Real nesting: 2 plain rows + 3 rows each wrapping a collapsible fold.
+    const { el, containers } = makeScrollerWithCollapsible(2, 3)
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    renderHook(() => useBubbleVanishProbe(ref, () => ({ store: 5, display: 5 })))
+
+    // Collapse one turn: the attribute flips on the fold INSIDE its row,
+    // no node is removed anywhere.
+    await act(async () => {
+      containers[0].setAttribute('data-collapsed', 'true')
+      await Promise.resolve()
+    })
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy.mock.calls[0][0]).toContain('hidden in place')
+    const payload = warnSpy.mock.calls[0][1] as Record<string, unknown>
+    expect(payload.kind).toBe('hidden-in-place')
+    expect(payload.mountedBefore).toBe(payload.mountedAfter) // mounted held
+    expect(payload.mountedAfter).toBe(5)
+    expect(payload.visibleBefore).toBe(5)
+    expect(payload.visibleAfter).toBe(4) // the collapsed row left the visible count
+  })
+
+  it('re-expanding (attribute removed) produces no reading — only drops are reported', async () => {
+    localStorage.setItem(BUBBLE_PROBE_FLAG, '1')
+    const { el, containers } = makeScrollerWithCollapsible(2, 3)
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    renderHook(() => useBubbleVanishProbe(ref, () => ({ store: 5, display: 5 })))
+
+    await act(async () => {
+      containers[0].setAttribute('data-collapsed', 'true')
+      await Promise.resolve()
+    })
+    expect(warnSpy).toHaveBeenCalledTimes(1) // the collapse itself
+
+    await act(async () => {
+      containers[0].removeAttribute('data-collapsed')
+      await Promise.resolve()
+    })
+    expect(warnSpy).toHaveBeenCalledTimes(1) // re-expand added nothing
   })
 })

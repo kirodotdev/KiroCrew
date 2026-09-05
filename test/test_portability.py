@@ -934,3 +934,178 @@ def test_a_malformed_job_cannot_reach_the_cron_loader(tmp_path):
     svc._reset_fingerprint = lambda: None
     svc._load()
     assert [j.name for j in svc._jobs] == ["survivor"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #8217: a refused cron merge must not be reported as a successful one.
+# `apply_import_zip` used to append "crons (merged)" unconditionally, so an
+# import whose merge was refused (imported ZERO jobs) was returned to the
+# dashboard as a success listing "crons (merged)", and the SEL audit agreed.
+# The only trace of the refusal was a print no dashboard import can see.
+# ---------------------------------------------------------------------------
+
+
+def _import_into_target_with_live_crons(zip_path, tmp_path, live_store_text):
+    """Apply a merge import into a target that already has a crons.json."""
+    import kiro_crew.portability as port
+
+    target = tmp_path / "target_mc"
+    target.mkdir()
+    (target / "crons.json").write_text(live_store_text)
+    with patch.object(port, "config_dir", return_value=target):
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+            summary = port.apply_import_zip(zip_path, mode="merge")
+    return summary, target
+
+
+@pytest.mark.parametrize(
+    "live_store_text",
+    [
+        pytest.param("{not json", id="live-store-unreadable"),
+        pytest.param("[]", id="live-store-not-an-object"),
+        pytest.param(json.dumps({"jobs": ["not-an-object"]}), id="live-job-list-unusable"),
+    ],
+)
+def test_a_refused_cron_merge_is_not_reported_as_merged(tmp_path, live_store_text):
+    # The snapshot side is mostly sanitized by `_sanitize_imported_crons`
+    # before the merge, so from `apply_import_zip` the reachable refusals are
+    # the LIVE store's side -- unreadable bytes, a non-object top level, or an
+    # unusable job list -- plus one archive-side shape the sanitizer passes
+    # through (a lone-surrogate job name, covered separately below). Each one
+    # must surface in the summary as a skip, not as "crons (merged)".
+    z = _make_cron_import_zip(
+        tmp_path / "ok.zip", [_cron_job("c1", "restored-job", message="check")]
+    )
+    summary, target = _import_into_target_with_live_crons(z, tmp_path, live_store_text)
+
+    assert "crons (merged)" not in summary["items"], summary
+    assert "crons (skipped: unreadable or invalid cron store)" in summary["items"], summary
+    assert summary.get("refused_merges") == ["crons"]
+    # Nothing was imported: the live store is byte-identical to before.
+    assert (target / "crons.json").read_text() == live_store_text
+
+
+def test_an_archive_side_refusal_is_not_reported_as_merged(tmp_path):
+    # The one archive-side refusal reachable end-to-end: a lone-surrogate job
+    # name survives `_sanitize_imported_crons` (which only checks the name is
+    # a str, and rewrites nothing when no job was dropped or paused), and
+    # `_usable_cron_shape` then refuses the SOURCE side inside `_merge_crons`.
+    z = _make_cron_import_zip(
+        tmp_path / "surrogate.zip", [_cron_job("c1", "bad\ud800name", message="check")]
+    )
+    live = json.dumps({"jobs": [_cron_job("l1", "local-job", message="local")]})
+    summary, target = _import_into_target_with_live_crons(z, tmp_path, live)
+
+    assert "crons (merged)" not in summary["items"], summary
+    assert "crons (skipped: unreadable or invalid cron store)" in summary["items"], summary
+    assert summary.get("refused_merges") == ["crons"]
+    assert (target / "crons.json").read_text() == live
+
+
+def test_a_genuine_cron_merge_still_reports_merged(tmp_path):
+    z = _make_cron_import_zip(
+        tmp_path / "ok.zip", [_cron_job("c1", "restored-job", message="check")]
+    )
+    live = json.dumps({"jobs": [_cron_job("l1", "local-job", message="local")]})
+    summary, target = _import_into_target_with_live_crons(z, tmp_path, live)
+
+    assert "crons (merged)" in summary["items"], summary
+    assert "refused_merges" not in summary, summary
+    names = [j["name"] for j in json.loads((target / "crons.json").read_text())["jobs"]]
+    assert sorted(names) == ["local-job", "restored-job"]
+
+
+def test_merge_crons_returns_the_outcome_on_every_path(tmp_path):
+    """The three refusal paths answer False and write nothing; a merge answers True.
+
+    Two of the source-side refusals are unreachable through `apply_import_zip`
+    (the sanitizer rewrites the snapshot's store first) but fully reachable from
+    the snapshot restore path, so they are locked here at the merger itself.
+    """
+    from kiro_crew.snapshot import _merge_crons
+
+    good = json.dumps({"jobs": [_cron_job("d1", "existing", message="m")]})
+    src, dst = tmp_path / "src.json", tmp_path / "dst.json"
+
+    # Refusal 1: unreadable source.
+    src.write_text("{not json")
+    dst.write_text(good)
+    assert _merge_crons(src, dst) is False
+    assert dst.read_text() == good
+
+    # Refusal 2: unreadable destination.
+    src.write_text(good)
+    dst.write_text("{not json")
+    assert _merge_crons(src, dst) is False
+    assert dst.read_text() == "{not json"
+
+    # Refusal 3: unusable cron shape (source side; the guard is symmetric).
+    src.write_text(json.dumps({"jobs": ["not-an-object"]}))
+    dst.write_text(good)
+    assert _merge_crons(src, dst) is False
+    assert dst.read_text() == good
+
+    # A real merge answers True and writes the merged store.
+    src.write_text(json.dumps({"jobs": [_cron_job("s1", "imported", message="m")]}))
+    dst.write_text(good)
+    assert _merge_crons(src, dst) is True
+    names = [j["name"] for j in json.loads(dst.read_text())["jobs"]]
+    assert sorted(names) == ["existing", "imported"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "summary,expected_outcome,expect_refused_tag",
+    [
+        pytest.param(
+            {
+                "items": ["crons (skipped: unreadable or invalid cron store)"],
+                "refused_merges": ["crons"],
+                "staging": "unpinned",
+            },
+            "partial",
+            True,
+            id="refused-merge-logs-partial",
+        ),
+        pytest.param(
+            {"items": ["crons (merged)"], "staging": "unpinned"},
+            "ok",
+            False,
+            id="clean-import-logs-ok",
+        ),
+    ],
+)
+async def test_import_handler_outcome_reflects_a_refused_merge(
+    tmp_path, summary, expected_outcome, expect_refused_tag
+):
+    # The dashboard handler used to log outcome="ok" unconditionally, so the
+    # audit trail confirmed the false success. A summary carrying a refused
+    # merge must land as "partial" with the refused component named.
+    from aiohttp.test_utils import make_mocked_request
+
+    import kiro_crew.dashboard.handlers.portability as ph
+
+    events = []
+
+    class _FakeSel:
+        def log_api_access(self, **kw):
+            events.append(kw)
+
+    upload = tmp_path / "upload.zip"
+    upload.write_bytes(b"")
+
+    async def _fake_read_upload(request):
+        return upload, None
+
+    req = make_mocked_request("POST", "/api/portability/import?mode=merge")
+    req["user"] = "tester"
+    with patch.object(ph, "_read_upload_file", _fake_read_upload):
+        with patch.object(ph, "validate_import_zip", lambda p: (True, "", {"version": 2})):
+            with patch.object(ph, "apply_import_zip", lambda p, m: summary):
+                with patch.object(ph, "_sel", lambda: _FakeSel()):
+                    resp = await ph.api_portability_import(req)
+
+    assert resp.status == 200
+    assert len(events) == 1, events
+    assert events[0]["outcome"] == expected_outcome
+    assert ("refused=crons" in events[0]["resources"]) is expect_refused_tag

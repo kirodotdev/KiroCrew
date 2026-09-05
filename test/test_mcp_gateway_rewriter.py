@@ -31,14 +31,17 @@ from kiro_crew.mcp_gateway.rewriter import (
 from kiro_crew.sandbox import scrub_agent_denied_env
 
 
-class TestSettingsRelocationMatchesInjection:
-    """``_injectable_settings_servers`` drives BOTH the per-agent injection and
-    the removal from the global settings overlay, so it must return exactly the
-    servers that get injected.
+class TestSettingsInjection:
+    """``_injectable_settings_servers`` drives the per-agent injection of
+    global settings servers, so it must return exactly the servers that get
+    injected.
 
-    A name returned here but not injected is deleted from the only overlay that
-    still lists it — the server vanishes and its MCP tools disappear, which is
-    strictly worse than either stubbing it or leaving it alone.
+    A server it returns is wrapped with each agent's own name and injected at
+    ACP ``session/new``, where the stub takes precedence over the raw
+    same-named entry kiro-cli merges from the real settings file
+    (``session_servers.py``). A server it does NOT return is left entirely to
+    that merge — the rewriter never writes a settings overlay and never
+    modifies the real settings file (#8111).
     """
 
     def _spec(self) -> dict:
@@ -50,19 +53,20 @@ class TestSettingsRelocationMatchesInjection:
             }
         }
 
-    def test_unstubbed_stdio_server_is_left_in_the_settings_overlay(self) -> None:
+    def test_unstubbed_stdio_server_is_not_injected(self) -> None:
         out = _injectable_settings_servers(self._spec(), frozenset(["beta-mcp"]))
-        # beta is stubbed -> relocated. alpha is NOT -> must stay put, or it is
-        # dropped from settings while nothing injects it.
+        # beta is stubbed -> injected. alpha is NOT -> left to kiro-cli's own
+        # merge of the real settings file.
         assert set(out) == {"beta-mcp"}
 
-    def test_nothing_stubbed_relocates_nothing(self) -> None:
-        """The shipped default. Every server stays raw in the settings overlay."""
+    def test_nothing_stubbed_injects_nothing(self) -> None:
+        """The shipped default. Every server merges raw from the real
+        settings file."""
         assert _injectable_settings_servers(self._spec(), frozenset()) == {}
 
     def test_alias_spelling_is_honoured(self) -> None:
         """The config may carry the slash-free alias while settings keeps the raw
-        key; matching only the raw name would silently fail to relocate a
+        key; matching only the raw name would silently fail to inject a
         stubbed slash-named server."""
         spec = {"mcpServers": {"npm:@playwright/mcp": {"command": sys.executable}}}
         from kiro_crew.mcp_gateway.rewriter import mcp_server_alias
@@ -73,21 +77,21 @@ class TestSettingsRelocationMatchesInjection:
         # Keyed by the RAW name, because the caller filters raw-keyed src_servers.
         assert set(out) == {"npm:@playwright/mcp"}
 
-    def test_http_server_is_never_relocated_even_when_listed(self) -> None:
-        """HTTP/SSE needs no stub and merges globally; relocating it would strip
-        it from settings for no gain."""
+    def test_http_server_is_never_injected_even_when_listed(self) -> None:
+        """HTTP/SSE needs no stub and merges globally; injecting it would gain
+        nothing."""
         out = _injectable_settings_servers(self._spec(), frozenset(["http-mcp"]))
         assert out == {}
 
-    def test_end_to_end_unstubbed_server_survives_in_the_written_overlay(
+    def test_end_to_end_no_settings_overlay_and_real_settings_untouched(
         self, tmp_path: Path
     ) -> None:
-        """Drive the real ``rewrite_agents`` and read the overlay it writes.
+        """Drive the real ``rewrite_agents`` and inspect what it wrote.
 
-        The unit tests above pin the producer; this pins the WIRING. Without it
-        the call site could pass the wrong set (or none) and no test would fail,
-        while every unstubbed global server silently vanished from the only
-        overlay that lists it.
+        The unit tests above pin the producer; this pins the WIRING: the
+        stubbed global lands wrapped in the agent overlay, no settings overlay
+        appears anywhere under the overlay tree (#8111), and the real settings
+        file is byte-identical afterwards.
         """
         from kiro_crew.mcp_gateway.rewriter import rewrite_agents
 
@@ -99,6 +103,7 @@ class TestSettingsRelocationMatchesInjection:
         settings_dir = tmp_path / "settings"
         settings_dir.mkdir()
         (settings_dir / "mcp.json").write_text(json.dumps(self._spec()), encoding="utf-8")
+        settings_before = (settings_dir / "mcp.json").read_bytes()
 
         overlay_dir = tmp_path / "overlay" / "agents"
         rewrite_agents(
@@ -109,16 +114,16 @@ class TestSettingsRelocationMatchesInjection:
             stub_servers=frozenset(["beta-mcp"]),
         )
 
-        written = json.loads(
-            (overlay_dir.parent / "settings" / "mcp.json").read_text(encoding="utf-8")
-        )
-        names = set(written["mcpServers"])
-        # alpha was never stubbed: it must still be here, raw, for the session to
-        # launch itself. beta was stubbed, so it moved to the per-agent overlay.
-        assert "alpha-mcp" in names
-        assert "beta-mcp" not in names
-        # HTTP always stays and merges globally.
-        assert "http-mcp" in names
+        overlay = json.loads((overlay_dir / "kirocrew.json").read_text(encoding="utf-8"))
+        names = set(overlay["mcpServers"])
+        # beta was stubbed: injected per-agent, wrapped. alpha and http were
+        # not: they stay solely in the real settings file for kiro-cli's merge.
+        assert "beta-mcp" in names
+        assert "alpha-mcp" not in names
+        assert "http-mcp" not in names
+        # No settings overlay is written, and the real settings file is intact.
+        assert not (overlay_dir.parent / "settings").exists()
+        assert (settings_dir / "mcp.json").read_bytes() == settings_before
 
 
 def _rewrite(

@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from body_stream_helpers import BodyStreamPayload
+from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
@@ -30,17 +31,30 @@ from kiro_crew.dashboard.handlers import (
 
 
 def _req(body: dict | None = None, match_info: dict | None = None) -> web.Request:
-    """Build a mocked aiohttp.web.Request carrying real body bytes."""
+    """Build a mocked aiohttp.web.Request carrying real body bytes.
+
+    The three handlers are owner-gated, and the gate reads ``request.app["state"]``
+    plus the claims the token-auth middleware normally populates. Without them
+    every test here would answer on the gate rather than on the branch it names,
+    so the request is dressed as the owner. The gate's own refusal behaviour is
+    covered at route level in ``test_workspace_member_thread_owner_gate``.
+    """
     # ``body=None`` means "malformed JSON": the capped read parses the bytes
     # itself, so the malformed case is expressed as malformed bytes.
     raw = json.dumps(body).encode() if body is not None else b"{bad json"
-    return make_mocked_request(
+    app = web.Application()
+    app["state"] = NoConfiguredOwner()
+    request = make_mocked_request(
         "POST",
         "/api/workspaces",
         match_info=match_info or {},
         headers={"Content-Length": str(len(raw))},
         payload=BodyStreamPayload(raw),
+        app=app,
     )
+    request["user"] = "local-app"
+    request["app"] = ""
+    return request
 
 
 def _cfg(**kw: object) -> KiroCrewConfig:

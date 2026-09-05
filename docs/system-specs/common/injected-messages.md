@@ -309,9 +309,35 @@ next turn into the same slot:
 - `{{STOP_FILE}}` in the configured message is substituted with the resolved stop
   sentinel path before the tag is prepended.
 - The slot entry uses role `nudge` with a structured `nudge` meta block (`cycle`,
-  `loop_id`), so the dashboard shows a compact cycle chip. The tag stays in
-  `content` because that is what the model reads, and the body is deliberately not
-  duplicated into meta: a multi-KB payload is stored and broadcast once.
+  `loop_id`), so the dashboard shows a compact cycle chip. The body is deliberately
+  not duplicated into meta: a multi-KB payload is stored and broadcast once.
+- **The visible row and the model's prompt are separate strings, and only an opt-in
+  `banner` makes them differ.** With no banner the two carry the same body, so an
+  existing loop's transcript is unchanged and `content` is what the model reads. With
+  a banner set, `content` carries that short stand-in instead of the message body and
+  is no longer what the model reads — the prompt still carries the full message. The
+  prompt is never shortened: re-delivering the whole instruction every cycle is the
+  guarantee the nudge exists to provide.
+- **`banner` is optional on every arming surface** and defaults to absent.
+  `POST /api/autonudge` and `PATCH /api/autonudge/{loop_id}` accept it; accepting it
+  on `PATCH` is what lets a running loop be quieted without resetting its budgets. The
+  MCP tools `monitor_start` and `monitor_update` carry it in their input schemas, and
+  `monitor_update` treats an explicit empty string as "clear", so a banner set once can
+  be removed without tearing the loop down. It is capped at `MAX_BANNER_CHARS` (500),
+  two orders of magnitude under the 8000-char `message` limit, because the two fields
+  have different jobs: `message` is an instruction re-delivered to the model every
+  cycle, a banner is one display line.
+- **A non-blank banner on a channel-bound loop is refused with 400.** A `slack:` /
+  `discord:` / `webex:` loop delivers the nudge as the turn's own input and has no
+  separate display surface to shorten, so storing one would be dead config the runtime
+  could never honour. A blank banner is still accepted there, since that is the default
+  every channel-bound caller already passes. A persisted banner is additionally repaired
+  at load: a non-string value is blanked, and a persisted string banner is
+  credential-scrubbed and re-capped (redaction runs before the cap slice, so a
+  secret straddling the cap is masked whole). A caller-supplied banner is also
+  credential-scrubbed at the write path with the same `redact_exfiltration_urls` /
+  `redact_credentials` passes the `message` field gets, since a banner is persisted and
+  served by `GET /api/autonudge`.
 - A nudge arriving while the slot is already running is DROPPED, not queued.
   Queueing would stack identical multi-KB payloads and blow the context window; the
   next idle tick schedules again.

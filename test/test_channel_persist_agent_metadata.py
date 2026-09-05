@@ -51,9 +51,9 @@ def test_persist_turn_records_agent_in_session_metadata(channel, mod_name, tmp_p
 
     listed = log.list_sessions()
     assert listed, f"{channel}: _persist_turn should persist a session file"
-    assert listed[0].get("agent") == "sales-agent", (
-        f"{channel}: session metadata must carry the agent the turn ran under"
-    )
+    assert (
+        listed[0].get("agent") == "sales-agent"
+    ), f"{channel}: session metadata must carry the agent the turn ran under"
 
 
 @pytest.mark.parametrize("channel,mod_name", _CHANNELS)

@@ -7,6 +7,7 @@ import hmac as _hmac  # noqa: F401
 import hmac as _hmac_mod
 import json
 import os
+import shutil
 import sys
 import textwrap
 import threading
@@ -2185,6 +2186,10 @@ def test_escalation_cleanup_removes_empty_builtin_via_pinned_fd(tmp_path, monkey
 def _assert_git_neutralizers(env):
     assert env["GIT_ALLOW_PROTOCOL"] == "https:ssh"
     assert env["GIT_PROTOCOL_FROM_USER"] == "0"
+    # Not a config key and not about code execution: it pins WHICH OBJECT GRAPH
+    # git answers from, so every answer this handler acts on describes the
+    # history the checkout actually holds rather than a grafted substitute.
+    assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
     # Full config-driven-execution neutralizer set, injected as env so it
     # covers EVERY git call (background fetch, rebase, sync pull included).
     pairs = {
@@ -3278,6 +3283,9 @@ def test_git_env_neutralizers_present():
     n = mod._GIT_ENV_NEUTRALIZERS
     assert n["GIT_ALLOW_PROTOCOL"] == "https:ssh"
     assert n["GIT_PROTOCOL_FROM_USER"] == "0"
+    assert n["GIT_NO_REPLACE_OBJECTS"] == "1"
+    # GIT_NO_REPLACE_OBJECTS is an env var in its own right, NOT one of the
+    # config pairs, so the count must not have grown to cover it.
     assert n["GIT_CONFIG_COUNT"] == "4"
     assert n["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
     assert n["GIT_CONFIG_VALUE_0"] == "false"
@@ -3287,6 +3295,100 @@ def test_git_env_neutralizers_present():
     assert n["GIT_CONFIG_VALUE_2"] == ""
     assert n["GIT_CONFIG_KEY_3"] == "core.sshCommand"
     assert n["GIT_CONFIG_VALUE_3"] == "ssh"
+
+
+@pytest.mark.skipif(
+    shutil.which("git") is None,
+    reason="git is required to exercise a real refs/replace graft",
+)
+def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatch):
+    """A ``refs/replace`` graft must not change what Dev Fleet's git reads report.
+
+    Pinned by BEHAVIOUR against a real repository rather than by asserting the
+    variable is present, because the claim is about git's own semantics: a
+    ``refs/replace/<oid>`` ref substitutes one object for another in EVERY read, so
+    ``rev-list --count`` walks the substitute's parents and answers about a history
+    no checked-out commit names. Dev Fleet acts on exactly that number -- it is how
+    "behind by N commits" and the sync's own decisions are formed -- so the real
+    graph is the only one that answers the question asked.
+
+    The unpinned reading is asserted too, so this test fails if git ever stops
+    honouring the graft and the pin becomes a no-op nobody would notice.
+    """
+    import subprocess
+
+    git = shutil.which("git")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    # An exported GIT_DIR/GIT_WORK_TREE is PLANTED rather than assumed absent,
+    # because it is what makes the allowlist below observable instead of a claim.
+    # This decoy stands in for the operator's real checkout: drop the filtering
+    # and every ``run()`` retargets here, so the suite mutates a repository
+    # outside tmp_path and the graft assertions answer about a history this test
+    # never built.
+    decoy = tmp_path / "decoy.git"
+    decoy.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(decoy))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "decoy-work"))
+
+    # The base env is the module's OWN allowlist (`_is_safe_env_key`, what
+    # `_build_env` filters through) rather than a merge over `os.environ`,
+    # because git takes its location from the environment and those variables
+    # outrank ``-C <repo>``: an exported ``GIT_DIR``, ``GIT_WORK_TREE`` or
+    # ``GIT_INDEX_FILE`` would send the ``add``/``commit``/``replace`` below at an
+    # unrelated repository, so running the suite would mutate an operator's real
+    # index and refs. ``GIT_REPLACE_REF_BASE`` and ``GIT_NO_REPLACE_OBJECTS``
+    # would also decide the graft assertions before they were made. An allowlist
+    # removes the whole class in one place, including any variable git adds later.
+    #
+    # Global and system config are excluded for the mirror-image reason: a
+    # ``commit.gpgsign`` or ``core.hooksPath`` in the operator's ``~/.gitconfig``
+    # would fail these fixture commits on their machine and nowhere else.
+    # Repository-local config still applies, which is what the identity below is
+    # set through.
+    base_env = {k: v for k, v in os.environ.items() if mod._is_safe_env_key(k)}
+    base_env["GIT_CONFIG_GLOBAL"] = os.devnull
+    base_env["GIT_CONFIG_SYSTEM"] = os.devnull
+
+    def run(*args, env=None):
+        proc = subprocess.run(
+            [git, "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            env={**base_env, **(env or {})},
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip()
+
+    run("init", "-q")
+    run("config", "user.email", "t@example.invalid")
+    run("config", "user.name", "T")
+    oids = []
+    for i in range(3):
+        (repo / "f.txt").write_text(f"{i}\n", encoding="utf-8")
+        run("add", "f.txt")
+        run("commit", "-q", "-m", f"c{i}")
+        oids.append(run("rev-parse", "HEAD"))
+
+    # Three commits, so HEAD's history is three deep.
+    assert run("rev-list", "--count", "HEAD") == "3"
+    # Graft HEAD onto the root, which shortens the history git reports.
+    run("replace", "--graft", oids[2], oids[0])
+
+    # Ungrafted the reading is the truth; grafted it is not. Both are asserted so
+    # neither half of the pin can rot silently.
+    assert run("rev-list", "--count", "HEAD") == "2"
+    assert (
+        run("rev-list", "--count", "HEAD", env={"GIT_NO_REPLACE_OBJECTS": "1"}) == "3"
+    )
+    assert run("rev-list", "--count", "HEAD", env=mod._GIT_ENV_NEUTRALIZERS) == "3"
+
+    # Nothing reached the decoy, so the allowlist rather than luck is what kept
+    # every mutation above inside tmp_path.
+    assert list(decoy.iterdir()) == [], "an inherited GIT_DIR retargeted the fixture"
 
 
 # =============================================================================

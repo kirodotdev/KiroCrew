@@ -1,81 +1,78 @@
 /**
- * Role-parity contract between the two transcript render paths.
+ * Role-parity contract between ChatPage and the transcript renderer registry.
  *
- * The dashboard renders chat messages through TWO paths: ChatPage's inline
- * `renderMessage` if-chain, and the registry in `app-sdk/messageRenderers`
- * that every other surface (SideChat, ChatPane, ChatEmbed) consumes via
- * ChatMessageList. A role wired in only one path ships a surface where that
- * message renders as raw text or not at all — `mcp_oauth` shipped exactly
- * this way once, wired in app-sdk but not in the main chat.
+ * Every chat surface renders rows through `app-sdk/messageRenderers`. Until
+ * chat-core P5-a, ChatPage was the exception: an inline `renderMessage`
+ * if-chain that had to be kept in step with the registry by hand, and the
+ * defect class that bought this test -- `mcp_oauth` wired in app-sdk and
+ * rendered as raw text in the main chat -- lived in that gap. ChatPage now
+ * DISPATCHES through the registry (`resolveRenderer` over
+ * `mergeRenderers(chatPageRenderers)`), so a role registered once renders on
+ * every surface by construction. What is left to guard:
  *
- * Until ChatPage consumes the registry directly (the chat-core extraction's
- * later phase), this contract is the guard: every role literal that ChatPage's
- * source dispatches on must be CLAIMED by the registry, or be explicitly
- * listed here as chrome-only with a reason. Adding a role branch to ChatPage
- * without touching either list fails this test.
+ * 1. The dispatch stays registry-driven: the renderer block in ChatPage
+ *    contains no `if (m.role === '…')` dispatch of its own.
+ * 2. ChatPage's host entries either OVERRIDE a default (same id, page chrome
+ *    layered on the shared row) or are one of the documented page-only shape
+ *    entries below -- an undocumented id is a fork of the registry in disguise.
+ * 3. Role literals ChatPage still uses OUTSIDE the renderer (chrome logic:
+ *    footer rules, queue rail, last-error lookup, permission grouping) name
+ *    roles the registry claims, or are allowlisted as chrome with a reason.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defaultMessageRenderers } from '../app-sdk/messageRenderers'
-import { REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 
 /**
- * Roles ChatPage handles that are deliberately NOT a registry row. Each entry
- * must say why it is chrome rather than a transcript row type — an entry
- * without a reason is a parity gap hiding behind the allowlist.
+ * Roles ChatPage's CHROME logic names that are deliberately NOT a registry
+ * row. Each entry must say why -- an entry without a reason is a parity gap
+ * hiding behind the allowlist. (`queued` and `streaming` left this list with
+ * P5-a: the registry claims both -- `undrawn` and the assistant entry.)
  */
 const CHROME_ONLY_ROLES: Record<string, string> = {
-  // Rendered as the QueueStack card rail above the composer, not as a
-  // transcript row (the registry deliberately draws nothing for it).
-  queued: 'composer rail, not a transcript row',
-  // Approval flow: resolved inline into grouped tool rows; the standalone
-  // role is chrome that the permission cards own.
+  // Approval flow: resolved inline into grouped tool rows (GROUPED_ROLES);
+  // the standalone role is chrome that the permission cards own. ChatPage's
+  // own `permission` entry draws nothing for the same reason.
   permission: 'approval cards own it; grouped, never a standalone row',
-  // Pseudo-role: normalized to `assistant` before dispatch on both paths.
-  streaming: 'alias of assistant during a live turn',
 }
 
 /**
- * Roles only the registry claims, with the reason each is legitimate. These
- * arrive on surfaces that read the raw snapshot endpoints (app embeds, side
- * sessions), whose payloads carry wire-shape roles ChatPage's normalized
- * store never sees.
+ * Host entries that do not override a default. ChatPage's host list is the
+ * dashboard's shared row set (`createTranscriptRenderers`, which ChatPane
+ * also uses) plus the page-only entries, so both are listed: each is a SHAPE
+ * entry (`roles: ['*']` + `match`), a role the SDK has no row for, or a
+ * deliberately undrawn role, with the reason it is not a registry default.
  */
-const REGISTRY_ONLY_ROLES: Record<string, string> = {
-  tool_call: 'raw snapshot wire shape; ChatPage store normalizes to tool',
-  tool_result: 'raw snapshot wire shape; ChatPage store normalizes to tool',
-  system: 'lifecycle marker in raw snapshots; deliberately undrawn',
-  done: 'lifecycle marker in raw snapshots; deliberately undrawn',
+const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
+  // -- shared dashboard set (pages/chat/transcriptRenderers.tsx) --
+  thinking_block: 'ThinkingBlock with disclosure state; the registry folds reasoning into the group summary',
+  recovery_inject: 'RecoveryCard for gateway-authored inject rows; the registry renders inject as prose (resolveInjectCard decides, shared)',
+  workflow_completion: 'WorkflowCompletionCard needs session/folder/panel hand-offs the SDK has no seam for',
+  workflow_run_tool: 'launch card refining the tool line; store-connected',
+  subagent_run_tool: 'launch card refining the tool line; store-connected',
+  tool_completion: 'the ✅/🚫 completion sibling draws nothing, claimed so no surface\'s unclaimed-role fallback prints it',
+  // -- page-only --
+  permission: 'undrawn here; the registry leaves it to GROUPED_ROLES',
+  hidden_invisible_assistant: 'zero-width-space quiet-cycle rows; the registry applies the same skip inside its assistant entry',
+  bubble: 'the page\'s user / inject / assistant row, with fork, pin, footer, regenerate and search-scope chrome',
+}
+
+const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+
+function rendererBlock(): string {
+  const start = src.indexOf('fallback: bubbleRenderer } = useMemo')
+  const end = src.indexOf('const renderMessage = useCallback', start)
+  if (start < 0 || end < 0) throw new Error('ChatPage renderer block not found -- did the P5-a dispatch move?')
+  return src.slice(start, end)
 }
 
 function chatPageRoleLiterals(): Set<string> {
-  const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
   const roles = new Set<string>()
   // Both dispatch shapes used in the file: `m.role === 'x'` and
-  // `messages[i].role === 'x'` (and their !== variants — a negative dispatch
+  // `messages[i].role === 'x'` (and their !== variants -- a negative dispatch
   // still means the code KNOWS the role).
   for (const m of src.matchAll(/\.role\s*[!=]==\s*'([a-z_]+)'/g)) roles.add(m[1])
-  // Reasoning rows dispatch through the shared predicate (isReasoningRole /
-  // hasReasoningContent from pages/chat/groupDisplayItems — the #6406
-  // single-definition consolidation) rather than a role literal. Credit the
-  // shared list's roles ONLY when ChatPage imports BOTH predicates from the
-  // shared module AND both dispatch statements are present. This is a textual
-  // check, not an AST binding check: a comment spelling the exact dispatch
-  // shape could keep the credit alive — accepted, because the companion
-  // predicate-idiom guard below and the reasoningBurst structural scan bound
-  // what ChatPage can contain, and losing either import drops the credit
-  // (the orphan check then reddens). If the dispatch shape is refactored,
-  // update these patterns.
-  const importsShared =
-    /import \{[^}]*\bhasReasoningContent\b[^}]*\} from '\.\/chat\/groupDisplayItems'/.test(src) &&
-    /import \{[^}]*\bisReasoningRole\b[^}]*\} from '\.\/chat\/groupDisplayItems'/.test(src)
-  const dispatchesReasoning =
-    /hasReasoningContent\(\w+\)\)\s*return\s*<ThinkingBlock/.test(src) &&
-    /isReasoningRole\(\w+\)\)\s*return\s*null/.test(src)
-  if (importsShared && dispatchesReasoning) {
-    for (const role of REASONING_ROLES) roles.add(role)
-  }
   return roles
 }
 
@@ -87,64 +84,86 @@ function registryClaimedRoles(): Set<string> {
   return roles
 }
 
-describe('chat role parity (ChatPage renderMessage vs app-sdk registry)', () => {
-  it('every role ChatPage dispatches on is claimed by the registry or allowlisted as chrome', () => {
+const factorySrc = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
+
+function hostEntryIds(): string[] {
+  const page = [...rendererBlock().matchAll(/^\s+id: '([a-z_]+)',?$/gm)].map(m => m[1])
+  // The page spreads the shared dashboard set into its list; its entries are
+  // host entries here too.
+  const spreads = /\.\.\.shared,/.test(rendererBlock()) && /const shared = createTranscriptRenderers\(/.test(rendererBlock())
+  const shared = spreads ? [...factorySrc.matchAll(/^\s+id: '([a-z_]+)',?$/gm)].map(m => m[1]) : []
+  return [...page, ...shared]
+}
+
+describe('chat role parity (ChatPage consumes the app-sdk registry)', () => {
+  it('ChatPage dispatches rows through the registry, not an if-chain of its own', () => {
+    expect(src).toMatch(/import \{[^}]*\bmergeRenderers\b[^}]*\} from '\.\.\/app-sdk\/messageRenderers'/)
+    expect(src).toMatch(/import \{[^}]*\bresolveRenderer\b[^}]*\} from '\.\.\/app-sdk\/messageRenderers'/)
+    expect(src).toContain('resolveRenderer(m, chatPageRenderers)')
+    // Variant flags INSIDE one entry (`const isUser = m.role === 'user'`) are
+    // fine; a dispatch statement is not -- it would select a row the registry
+    // never sees. Both spellings of a dispatch are rejected, so a chain cannot
+    // come back as a `switch`.
+    expect(rendererBlock()).not.toMatch(/if \(m\.role\s*[!=]==\s*'[a-z_]+'\)/)
+    expect(rendererBlock()).not.toMatch(/switch \(m\.role\)/)
+  })
+
+  it('the SDK defaults that render through ctx.wrapper are unreachable on this page', () => {
+    // `ctx.wrapper` is the SDK's conversational-row layout; the page passes a
+    // keyed Fragment for it, which is only sound if no row reaches those
+    // defaults. Host entries resolve first, so it holds iff the page's bubble
+    // claims every role the wrapper-using defaults claim.
+    const wrapperUsers = defaultMessageRenderers.filter(r => /ctx\.wrapper\(/.test(r.render.toString()))
+    expect(wrapperUsers.map(r => r.id).sort()).toEqual(['assistant', 'inject', 'user'])
+    const bubbleRoles = rendererBlock().match(/id: 'bubble',\s*\n\s*roles: \[([^\]]*)\]/)
+    expect(bubbleRoles).not.toBeNull()
+    for (const r of wrapperUsers) for (const role of r.roles) expect(bubbleRoles![1]).toContain(`'${role}'`)
+  })
+
+  it('a role nobody claims falls back to the BUBBLE by reference, never to an SDK default by position', () => {
+    // mergeRenderers returns [...shapeMatched, ...hostEntries, ...roleKeyedDefaults],
+    // so the merged list's tail is the SDK `undrawn` default (render: () => null);
+    // indexing it would make an unregistered role -- the drift this contract
+    // exists to catch -- vanish from the main chat instead of rendering as text.
+    expect(rendererBlock()).toContain('return { renderers, fallback: bubble }')
+    expect(src).toContain('return (entry ?? bubbleRenderer).render(m, ctx)')
+    expect(src).not.toMatch(/chatPageRenderers\[chatPageRenderers\.length - 1\]/)
+    // And the page's own `undrawn` override leaves `system` / `done` unclaimed,
+    // so they keep the if-chain's fall-through instead of the SDK's null.
+    const undrawn = rendererBlock().match(/id: 'undrawn',\s*\n\s*roles: \[([^\]]*)\]/)
+    expect(undrawn).not.toBeNull()
+    expect(undrawn![1]).not.toMatch(/'system'|'done'/)
+  })
+
+  it('every ChatPage host entry overrides a default or is a documented page-only entry', () => {
+    const defaults = new Set(defaultMessageRenderers.map(r => r.id))
+    const ids = hostEntryIds()
+    expect(ids.length).toBeGreaterThan(5)
+    const undocumented = ids.filter(id => !defaults.has(id) && !(id in PAGE_ONLY_ENTRY_IDS))
+    // An entry with a NEW id that also claims a role the defaults render would
+    // shadow the shared row on this page only -- the fork this contract exists
+    // to stop. Reuse the default's id to override it, or document why the
+    // entry is page-only.
+    expect(undocumented).toEqual([])
+    // And the documentation cannot outlive the entry.
+    const stale = Object.keys(PAGE_ONLY_ENTRY_IDS).filter(id => !ids.includes(id))
+    expect(stale).toEqual([])
+  })
+
+  it('every role ChatPage still names is claimed by the registry or allowlisted as chrome', () => {
     const claimed = registryClaimedRoles()
     const missing = [...chatPageRoleLiterals()].filter(
       role => !claimed.has(role) && !(role in CHROME_ONLY_ROLES),
     )
-    // A failure here means a role renders in the main chat but is invisible
-    // (or raw) in SideChat / ChatPane / ChatEmbed — register it in
-    // app-sdk/messageRenderers, or add it to CHROME_ONLY_ROLES with a reason.
+    // A role ChatPage's chrome reasons about but no renderer claims would be
+    // rendered by the page's bubble fallback and by nothing on the other
+    // surfaces -- register it, or add it to CHROME_ONLY_ROLES with a reason.
     expect(missing).toEqual([])
   })
 
   it('the chrome allowlist carries no stale entries', () => {
     const known = chatPageRoleLiterals()
     const stale = Object.keys(CHROME_ONLY_ROLES).filter(role => !known.has(role))
-    // An allowlist entry for a role ChatPage no longer mentions is dead
-    // weight that would silently excuse a future regression — remove it.
     expect(stale).toEqual([])
-  })
-
-  it('the registry itself only claims roles ChatPage knows (no orphaned surface-only roles)', () => {
-    const known = chatPageRoleLiterals()
-    const orphaned = [...registryClaimedRoles()].filter(
-      role => !known.has(role) && !(role in REGISTRY_ONLY_ROLES),
-    )
-    // A role only the registry knows renders on app surfaces but as raw text
-    // in the MAIN chat — the exact defect class this contract exists to stop
-    // (that is how mcp_oauth shipped). Wire it into ChatPage too, or record
-    // why it is a wire-shape role in REGISTRY_ONLY_ROLES.
-    expect(orphaned).toEqual([])
-  })
-
-  it('the registry-only allowlist carries no stale entries', () => {
-    const claimed = registryClaimedRoles()
-    const stale = Object.keys(REGISTRY_ONLY_ROLES).filter(role => !claimed.has(role))
-    expect(stale).toEqual([])
-  })
-
-  it('fails closed: every role dispatch in ChatPage uses the shape the extractor parses', () => {
-    const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
-    // The extractor understands two idioms: `<expr>.role ===/!== '<literal>'`
-    // and the shared reasoning predicates credited above. Any other dispatch
-    // idiom — switch(m.role), a lookup map, comparison against a variable —
-    // would be invisible to the parity checks above, so its mere presence
-    // fails this contract. If you add one, extend the extractor in this file
-    // to parse it rather than allowlisting it here.
-    const comparisons = [...src.matchAll(/\.role\s*[!=]==\s*(\S)/g)]
-    const nonLiteral = comparisons.filter(m => m[1] !== "'")
-    expect(nonLiteral.map(m => m[0])).toEqual([])
-    expect([...src.matchAll(/switch\s*\([^)]*\.role/g)].map(m => m[0])).toEqual([])
-    // Predicate-shaped role dispatch (the #6406 idiom): only the two shared
-    // reasoning predicates are parsed. A future is<X>Role(...) / has<X>Content(...)
-    // helper called in ChatPage is a role dispatch the extractor cannot see,
-    // so its presence fails here until the extractor learns it.
-    const predicateCalls = [...src.matchAll(/\b(is[A-Z]\w*Role|has[A-Z]\w*Content)\s*\(/g)].map(m => m[1])
-    const unknownPredicates = predicateCalls.filter(
-      name => name !== 'isReasoningRole' && name !== 'hasReasoningContent',
-    )
-    expect(unknownPredicates).toEqual([])
   })
 })

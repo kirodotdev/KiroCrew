@@ -118,11 +118,24 @@ jobs:
           echo "Nightly (semver): ${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}"
           echo "Wheel (PEP 440):  ${BASE}.dev${STAMP_FULL}"
 
-  # The production dependency audit (dependency-vulnerability.yml) is NOT a
-  # nightly gate: it reaches the npm registry, whose slow hours failed the
-  # nightly for hours at a stretch and blocked every build behind it. It runs
-  # before tagged releases only (release.yml), where a vulnerable dependency
-  # would actually ship.
+  # The production dependency audit gates PUBLICATION, not the build. It reaches
+  # the npm registry, whose slow hours once failed the nightly for hours at a
+  # stretch and blocked every build behind it -- which is why it was removed
+  # from this workflow entirely. Removing it went too far: main has no
+  # dependency-audit gate of its own, so a high/critical production
+  # vulnerability that lands there shipped to nightly-channel users unaudited
+  # until the next tagged release.
+  #
+  # Hanging it off the PUBLISH jobs instead of the build jobs restores the
+  # control without restoring the outage: a slow or flaky registry now delays
+  # publication of an already-built nightly rather than failing the build, and
+  # the artifacts stay in the run for a re-run to publish once the audit
+  # answers. Deliberately NOT a `needs:` of build-wheel / build-desktop /
+  # build-windows -- that arrangement is what blocked the builds before, and
+  # test_dependency_vulnerability_gate.py pins it that way.
+  dependency-vulnerability-gate:
+    name: Production Dependency Vulnerability Gate
+    uses: ./.github/workflows/dependency-vulnerability.yml
 
   build-wheel:
     name: Build Wheel
@@ -168,7 +181,7 @@ jobs:
   # never blocks the CLI release. See docs/build/release.md.
   publish-cli:
     name: Publish CLI (nightly channel)
-    needs: [version, build-wheel]
+    needs: [version, build-wheel, dependency-vulnerability-gate]
     permissions:
       contents: read
       id-token: write
@@ -208,7 +221,7 @@ jobs:
   # tracked in #2645 rather than reshaped here.
   publish-linux-appimage-x64:
     name: Publish Linux appimage (nightly channel · x64)
-    needs: [version, build-desktop]
+    needs: [version, build-desktop, dependency-vulnerability-gate]
     permissions:
       contents: read
       id-token: write
@@ -226,7 +239,7 @@ jobs:
 
   publish-linux-appimage-arm64:
     name: Publish Linux appimage (nightly channel · arm64)
-    needs: [version, build-desktop]
+    needs: [version, build-desktop, dependency-vulnerability-gate]
     permissions:
       contents: read
       id-token: write
@@ -244,7 +257,7 @@ jobs:
 
   publish-linux-deb-x64:
     name: Publish Linux deb (nightly channel · x64)
-    needs: [version, build-desktop]
+    needs: [version, build-desktop, dependency-vulnerability-gate]
     permissions:
       contents: read
       id-token: write
@@ -262,7 +275,7 @@ jobs:
 
   publish-linux-deb-arm64:
     name: Publish Linux deb (nightly channel · arm64)
-    needs: [version, build-desktop]
+    needs: [version, build-desktop, dependency-vulnerability-gate]
     permissions:
       contents: read
       id-token: write
@@ -280,7 +293,7 @@ jobs:
 
   publish-linux-rpm-x64:
     name: Publish Linux rpm (nightly channel · x64)
-    needs: [version, build-desktop]
+    needs: [version, build-desktop, dependency-vulnerability-gate]
     permissions:
       contents: read
       id-token: write
@@ -298,7 +311,7 @@ jobs:
 
   publish-linux-rpm-arm64:
     name: Publish Linux rpm (nightly channel · arm64)
-    needs: [version, build-desktop]
+    needs: [version, build-desktop, dependency-vulnerability-gate]
     permissions:
       contents: read
       id-token: write
@@ -327,7 +340,7 @@ jobs:
   # soft_fail exists to protect.
   publish-windows-x64:
     name: Publish Windows Desktop (nightly channel · x64)
-    needs: [version, build-windows]
+    needs: [version, build-windows, dependency-vulnerability-gate]
     permissions:
       contents: read
       # A called workflow cannot exceed the caller job's grants, so the probe's
@@ -353,7 +366,7 @@ jobs:
   # alone (see test_workflow_permissions.py).
   publish-docker:
     name: Publish Docker Image (nightly channel)
-    needs: [version, build-wheel]
+    needs: [version, build-wheel, dependency-vulnerability-gate]
     permissions:
       contents: read
       packages: write
@@ -379,7 +392,7 @@ jobs:
   # attestation (signed + stapled bytes).
   sign-and-notarize:
     name: Sign + Notarize macOS
-    needs: [version, build-wheel, build-desktop]
+    needs: [version, build-wheel, build-desktop, dependency-vulnerability-gate]
     permissions:
       id-token: write
       contents: read

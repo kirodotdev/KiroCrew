@@ -810,13 +810,116 @@ class TestShares:
         shares.record_share(account=ACCOUNT, section="drive", key="first.txt", expires_secs=3600)
         assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["first.txt"]
 
-    def test_a_corrupt_share_store_still_repairs_on_write(self, tmp_path):
-        # Existing tolerance, pinned alongside the new guard.
+    def test_a_corrupt_share_store_refuses_the_mutation_and_is_left_intact(self, tmp_path):
+        # #7805: a corrupt ledger is refused, never rewritten. The old tolerance
+        # read it as empty and let the whole-file rewrite destroy records a
+        # truncated JSON still held verbatim -- and this ledger is the only local
+        # record of live presigned URLs, which are unrevokable bearer grants.
+        import json as _json
+
         from kiro_crew.apps.builtins.aws_control.backend import shares
 
-        (tmp_path / "shares.json").write_text("[not json", encoding="utf-8")
-        shares.record_share(account=ACCOUNT, section="drive", key="after.txt", expires_secs=3600)
-        assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["after.txt"]
+        corrupt = '[{"id": "recoverable-share", "key": "live.txt"}'  # truncated
+        (tmp_path / "shares.json").write_text(corrupt, encoding="utf-8")
+        with pytest.raises(_json.JSONDecodeError):
+            shares.record_share(
+                account=ACCOUNT, section="drive", key="after.txt", expires_secs=3600
+            )
+        with pytest.raises(_json.JSONDecodeError):
+            shares.forget_share("recoverable-share")
+        assert (tmp_path / "shares.json").read_text(
+            encoding="utf-8"
+        ) == corrupt, "a mutation rewrote a corrupt share ledger instead of refusing"
+        # The display read stays lenient: the Access section renders (empty)
+        # rather than failing on a file only a person can repair.
+        assert shares.list_shares(ACCOUNT) == []
+
+    def test_a_share_store_that_is_not_utf8_takes_the_corruption_path(self, tmp_path):
+        # UnicodeDecodeError is a ValueError but NOT a JSONDecodeError; unwrapped
+        # it would slip past every corruption clause at the callers.
+        import json as _json
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        (tmp_path / "shares.json").write_bytes(b"\xff\xfe not utf8")
+        with pytest.raises(_json.JSONDecodeError):
+            shares.record_share(account=ACCOUNT, section="drive", key="x.txt", expires_secs=3600)
+        assert (tmp_path / "shares.json").read_bytes() == b"\xff\xfe not utf8"
+        # And the DISPLAY read tolerates the same bytes (new with #7805:
+        # UnicodeDecodeError previously escaped it): the Access section renders
+        # empty rather than failing on a file only a person can repair.
+        assert shares.list_shares(ACCOUNT) == []
+
+    def test_a_share_store_that_parses_to_a_non_array_refuses_the_mutation(self, tmp_path):
+        # Valid JSON with the wrong root parses without raising, so coercing it
+        # to [] would let the rewrite destroy a document nobody could read.
+        import json as _json
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        (tmp_path / "shares.json").write_text('{"not": "a list"}', encoding="utf-8")
+        with pytest.raises(_json.JSONDecodeError):
+            shares.record_share(account=ACCOUNT, section="drive", key="x.txt", expires_secs=3600)
+        assert (tmp_path / "shares.json").read_text(encoding="utf-8") == '{"not": "a list"}'
+
+    def test_damaged_rows_refuse_the_mutation_instead_of_being_pruned_away(self, tmp_path):
+        # The loss arrives one call later than the parse: both mutations pipe
+        # the ledger through _prune, whose damage path silently DROPS any row
+        # it cannot read an expiresAt from, and the whole-file rewrite takes
+        # those rows with it. Measured in review (Opus): a valid-JSON ledger
+        # holding one non-object row, one row with no expiry, and one with a
+        # mangled expiry lost all three to a single record_share. Every damaged
+        # shape must refuse; the deliberate expiry drop stays retention.
+        import json as _json
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        for damaged in (
+            "a-damaged-row-that-is-not-an-object",
+            {"id": "no-expiry", "key": "secret-report.pdf", "account": "111"},
+            {"id": "bad-expiry", "key": "b.pdf", "expiresAt": "NOT-A-DATE"},
+        ):
+            doc = _json.dumps(
+                [damaged, {"id": "healthy", "key": "c.pdf", "expiresAt": "2999-01-01T00:00:00"}]
+            )
+            (tmp_path / "shares.json").write_text(doc, encoding="utf-8")
+            with pytest.raises(_json.JSONDecodeError):
+                shares.record_share(
+                    account=ACCOUNT, section="drive", key="new.txt", expires_secs=3600
+                )
+            with pytest.raises(_json.JSONDecodeError):
+                shares.forget_share("healthy")
+            assert (tmp_path / "shares.json").read_text(encoding="utf-8") == doc, damaged
+
+    def test_the_damaged_row_refusal_names_no_entry_content(self, tmp_path):
+        # The refusal names the row's index and nothing else: a share note or
+        # key from a hand-edited ledger must not ride on an exception that
+        # crosses into responses and logs.
+        import json as _json
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        (tmp_path / "shares.json").write_text(
+            _json.dumps([{"id": "x", "key": "leakable-object-key.pdf"}]), encoding="utf-8"
+        )
+        with pytest.raises(_json.JSONDecodeError) as excinfo:
+            shares.record_share(account=ACCOUNT, section="drive", key="n.txt", expires_secs=3600)
+        assert "leakable-object-key.pdf" not in str(excinfo.value)
+        assert "leakable-object-key.pdf" not in excinfo.value.doc
+
+    def test_an_expired_row_is_still_retention_not_damage(self, tmp_path):
+        # The keep/expire decision must survive the strict per-row check: a
+        # parseable stamp in the past is the deliberate drop, not a refusal.
+        import json as _json
+
+        from kiro_crew.apps.builtins.aws_control.backend import shares
+
+        (tmp_path / "shares.json").write_text(
+            _json.dumps([{"id": "dead", "key": "old.txt", "expiresAt": "2000-01-01T00:00:00"}]),
+            encoding="utf-8",
+        )
+        shares.record_share(account=ACCOUNT, section="drive", key="new.txt", expires_secs=3600)
+        assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["new.txt"]
 
     def test_expired_shares_are_pruned_and_forget_removes(self):
         from kiro_crew.apps.builtins.aws_control.backend import shares

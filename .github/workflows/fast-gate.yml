@@ -1,0 +1,355 @@
+name: Fast Gate
+
+# The eleven cheap, blocking gates, split out of ci.yml so two consumers can key
+# on them BEFORE the expensive matrix runs.
+#
+# They cost 198 job-seconds in total, 70% of which is runner acquisition and
+# checkout, and they finish in ~44 seconds wall clock because they run in
+# parallel. ci.yml's heavy jobs (the eight backend shards alone are 73.7% of CI's
+# job-minutes) used to start alongside them, so a gate that went red in 20
+# seconds still let ~220 job-minutes of tests run to completion.
+#
+# Two things now depend on this workflow finishing first:
+#   1. ci.yml's `await-fast-gate` job, which the heavy jobs need -- so a red gate
+#      skips the matrix instead of racing it.
+#   2. The five fork-*-review.yml lanes, which used to trigger on
+#      `workflow_run: ["CI"] completed`. Waiting for all of CI put a fork PR's AI
+#      verdict ~54 minutes out (CI's median wall clock) when the gates it
+#      actually needed were green after one. They now trigger on this workflow.
+#
+# Trigger parity with ci.yml is deliberate, including `branches: [main]`: the fork
+# reviewers key on this workflow now, so a wider filter here would newly review
+# fork PRs opened against a non-main base -- which today get no review at all,
+# because they wait on a CI run that ci.yml's own branch filter never starts.
+# Widening that is a separate decision from moving the gates.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Same rule as ci.yml: a PR only needs a verdict on its tip commit, main keeps
+  # its in-flight run. Divergence here would let a superseded gate run outlive
+  # the CI run that is waiting on it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  scrub-lint:
+    name: De-Amazon Scrub Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Full history is fetched lazily by the script only for the (skipped)
+        # history scan; the working-tree gate needs just the checkout.
+        with:
+          persist-credentials: false
+      - name: Scan working tree for internal markers
+        # Blocking gate: fails the build on any Amazon-internal marker in the
+        # public tree (internal domains/hosts, ticket ids, aliases, credential
+        # shapes) outside the intentional allowlist, so a sync cannot reintroduce
+        # a coupling. --no-history: git-history rewrite is a separate task.
+        run: ./scripts/scrub-lint.sh --no-history
+
+  vendor-manifest:
+    name: Vendored Tree Integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Deliberately NOT gated behind the `changes` job's surface outputs:
+    # everything under src/kiro_crew/_vendor is excluded from semgrep and the
+    # AI reviewers' diff, so this checksum gate is the only content review the
+    # vendored tree gets. Hashing the ~26MB tree takes seconds, and an
+    # always-on job cannot be dodged by a path-filter edge case.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify _vendor tree against the committed sha256 manifest
+        # Blocking gate: fails on any modified, missing, or added file under
+        # src/kiro_crew/_vendor relative to scripts/vendor_manifest.sha256.
+        # Legitimate vendored bumps regenerate the manifest with --write (see
+        # src/kiro_crew/_vendor/README.md) so the change lands as a reviewable
+        # manifest diff. No setup-python step: ubuntu-latest ships Python 3,
+        # same as the other stdlib-only lint jobs in this file.
+        run: python3 scripts/verify_vendor_manifest.py
+
+  brand-lint:
+    name: Brand Name Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: brand-lint/Check the product name on the lines this change adds runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the product name on the lines this change adds
+        # Diff-scoped on purpose. The tree still carries thousands of prose lines
+        # that join the two words, from before the convention, so a whole-tree
+        # gate would fail every PR until one enormous rename lands and charge the
+        # break to whoever pushed next. Added lines are complete for regression —
+        # a line only reaches main through a diff that added it — and the
+        # whole-tree number is still printed as a non-failing report.
+        env:
+          # `base.sha`, not `origin/<base>`: the merge ref this run checks out was
+          # computed against that exact commit, so the diff cannot pick up main
+          # moves that landed after the run started. Same reasoning as the
+          # i18n gates below; see the longer note at their first use.
+          BRAND_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          BRAND_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$BRAND_BASE_REF" 'the brand-name gate')" || exit 1
+          export BRAND_BASE_REF
+          # Self-test first: it plants one probe per rule family, so a typo that
+          # silently disables an exemption fails here instead of shipping green.
+          python3 scripts/check_brand_name.py --test
+          python3 scripts/check_brand_name.py
+
+  focus-cue-lint:
+    name: Focus Cue Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: focus-cue-lint/Check the focus cues on the elements this change touches runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the focus cues on the elements this change touches
+        # Diff-scoped on purpose, same reasoning as the brand gate above: the tree
+        # still carries elements that opted out of the focus outline before the
+        # global ring existed, so a whole-tree gate would charge that backlog to
+        # whoever pushed next. Elements a change touched are complete for
+        # regression — a hole only reaches main through a diff that wrote its
+        # className — and the whole-tree number is still printed as a non-failing
+        # report.
+        env:
+          FOCUS_CUE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          FOCUS_CUE_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$FOCUS_CUE_BASE_REF" 'the focus-cue gate')" || exit 1
+          export FOCUS_CUE_BASE_REF
+          # Self-test first: it plants one probe per rule family, so a change that
+          # silently promotes a suppressor to a cue — or disables an exemption —
+          # fails here instead of shipping a gate that passes everything.
+          python3 scripts/check_focus_cue.py --test
+          python3 scripts/check_focus_cue.py
+
+  feature-map-lint:
+    name: Feature Map Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: feature-map-lint/Check the feature map covers the features this change adds runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the feature map covers the features this change adds
+        # Structural, not line-scoped, and that is the whole design. A feature
+        # arrives as a FILE appearing under the pages or handlers tree, or a route
+        # entry appearing in the router — so those are what demand a map row.
+        # Editing an existing page is how a feature changes BEHAVIOR, which the map
+        # deliberately does not describe, so an edit-only diff never fires. A gate
+        # that asked for a map review on every UI fix would produce a map nobody
+        # reads. Contract: docs/feature-map/README.md
+        env:
+          # `base.sha` for the same reason as the brand gate above: the merge ref
+          # this run checks out was computed against that exact commit.
+          FEATURE_MAP_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          FEATURE_MAP_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$FEATURE_MAP_BASE_REF" 'the feature-map gate')" || exit 1
+          export FEATURE_MAP_BASE_REF
+          # Self-test first: it plants one probe per trigger rule, so a widened or
+          # narrowed rule fails here instead of shipping a gate that asks for a map
+          # update on every edit — or never asks at all.
+          python3 scripts/check_feature_map.py --test
+          python3 scripts/check_feature_map.py
+
+  changelog-history:
+    name: Changelog History Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: changelog-history/Check that shipped changelog sections survived this change runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check that shipped changelog sections survived this change
+        # CHANGELOG.md is append-only history: every section already in it
+        # describes software a user has installed, so a line deleted from one is
+        # unrecoverable from that user's artifact. This has already happened
+        # once — a commit titled "docs: add 0.3.0-insider.9 changelog" REPLACED
+        # the file instead of prepending to it (53 insertions, 322 deletions),
+        # taking [0.2.0], [0.1.3] and [0.1.2] with it. It read as plausible in
+        # review because the insertions are what a reader looks at, and the
+        # deletions sat in the same hunk. Nothing failed; a user noticed the
+        # Releases page had gone nearly empty.
+        #
+        # So the judgment half of the rule (commit dumps, prerelease headings,
+        # whether this PR should touch the file at all) stays in AUTOSDE.yaml
+        # where a reviewer applies it, and the mechanical half runs here, where
+        # nobody has to notice anything. release.yml's stable gate is the
+        # complement: it checks the NEW section exists, not that the old ones
+        # survived — which is the half that actually failed.
+        env:
+          # base.sha, not origin/<base>: the merge ref this run checks out was
+          # computed against that exact commit, so the comparison cannot pick up
+          # base moves that landed after the run started. Same reasoning as the
+          # brand-name and i18n gates above.
+          CHANGELOG_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          CHANGELOG_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$CHANGELOG_BASE_REF" 'the changelog-history gate')" || exit 1
+          export CHANGELOG_BASE_REF
+          # Self-test first: one probe per rule family, so a weakened rule fails
+          # here instead of shipping green and letting a deletion through.
+          python3 scripts/check_changelog_history.py --test
+          python3 scripts/check_changelog_history.py
+
+  builtin-skill-scope:
+    name: Builtin Skill Scope Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check for this repository's markers in shipped skill bodies
+        # Everything under src/kiro_crew/builtin_skills/ installs on every
+        # machine that installs Kiro Crew, so a skill body naming THIS
+        # repository -- its GitHub slug, a src/ checkout path, a test file, a
+        # workflow file -- is an instruction that resolves for one user and
+        # points an agent at a path that does not exist for everyone else.
+        # prepare-pr already solved it properly: repository specifics live in a
+        # profile keyed by repository, so the body stays portable. The
+        # kirocrew-dev/ family is exempt by directory (matched directly beneath
+        # builtin_skills/, so a nested or look-alike name cannot inherit it),
+        # because this repository is its subject matter rather than a leak.
+        # Product surface (the kirocrew CLI, ~/.kiro/crew paths, config keys) is
+        # deliberately NOT a marker -- see the script docstring for why the set
+        # is narrow, and for the repository paths it knowingly does not cover.
+        # No baseline: the tree's only two markers were fixed here, so the rule
+        # is absolute and no marker is exempted by record.
+        run: |
+          # Self-test first: one probe per marker class, both sides of the
+          # exemption, and the undecodable-file path, so a rule that silently
+          # stops matching fails here instead of shipping green.
+          python3 scripts/check_builtin_skill_scope.py --test
+          python3 scripts/check_builtin_skill_scope.py
+
+  loop-bound-locks:
+    name: Loop-Bound Locks Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check for bare module-global asyncio primitives
+        # An asyncio.Lock/Event/Queue created at module scope binds to the
+        # import-time (or first-use) event loop and raises RuntimeError when
+        # acquired from another loop (Python 3.10+). #4800 converted every
+        # module-global lock to kiro_crew.loop_lock.LoopBoundLock; this gate
+        # keeps the declaration form of the class extinct (the registry form
+        # — dicts holding lazily-created locks — is a review concern; see the
+        # script docstring). Whole-tree, not diff-scoped: the backlog is zero
+        # after the conversion, so there is nothing to charge to whoever
+        # pushes next.
+        run: |
+          # Self-test first: it plants one probe per rule family, so a rule
+          # that silently stops matching fails here instead of shipping green.
+          python3 scripts/check_loop_bound_locks.py --test
+          python3 scripts/check_loop_bound_locks.py
+
+  testpaths-coverage:
+    name: Testpaths Coverage Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that every pytest test file sits under a collected root
+        # setup.cfg pins `testpaths`, so a test_*.py file created outside those
+        # roots is silently never run — green by omission — and rots against
+        # the code it claims to cover (#6577: twelve files sat uncollected in a
+        # root-level tests/ dir). Whole-tree, not diff-scoped: the backlog is
+        # zero after #6577's move, so there is nothing to charge to whoever
+        # pushes next. Nested distributions with their own pyproject/setup.cfg
+        # and marker-exempted manual scripts are excluded; see the script
+        # docstring.
+        run: |
+          # Self-test first: it plants one probe per rule family, so a rule
+          # that silently stops matching fails here instead of shipping green.
+          python3 scripts/check_testpaths_coverage.py --test
+          python3 scripts/check_testpaths_coverage.py
+
+  harness-parity:
+    name: Harness Parity Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: harness-parity/Check harness identity tests on the lines this change adds runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check harness identity tests on the lines this change adds
+        # Kiro Crew drives one first-class harness (kiro-cli) and adapts the
+        # others. The defect class is a call site that spells "this is kiro" as
+        # the ABSENCE of another harness: correct with two backends, and then it
+        # hands the third a capability or a sandbox waiver nobody granted it.
+        # It fails toward the permissive answer, so nothing else goes red.
+        #
+        # Diff-scoped for the same reason as the brand gate above: the tree
+        # carries pre-existing negative tests in the dormant claude seam, and
+        # converting them is a separate change with its own review. Added lines
+        # are complete for regression, and the whole-tree count is still printed
+        # as a non-failing report. Invariants:
+        # docs/system-specs/modules/harness-parity.md
+        env:
+          # `base.sha` for the same reason as the brand gate: the merge ref this
+          # run checks out was computed against that exact commit.
+          HARNESS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          HARNESS_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$HARNESS_BASE_REF" 'the harness-parity gate')" || exit 1
+          export HARNESS_BASE_REF
+          # Self-test first: it plants one probe per rule, so a regex typo that
+          # silently disables a rule fails here instead of shipping green.
+          python3 scripts/check_harness_parity.py --test
+          python3 scripts/check_harness_parity.py
+
+  docs-lint:
+    name: Docs Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the linter's own checks still fire
+        # Self-test first: a gate that has silently stopped detecting anything is
+        # worse than no gate, because it reads as a green signal. Each check is
+        # exercised against a planted defect in a throwaway tree.
+        run: python3 scripts/docs_lint.py --test
+
+      - name: Lint documentation trees
+        # Blocking gate: every internal link resolves, every doc is reachable from
+        # its directory index, every directory holding docs has one, no code comment
+        # cites a doc that does not exist, no doc cites a source LINE past the end of
+        # the file it names, no module spec names a source file that exists nowhere,
+        # and no doc whose filename is hardcoded in code has been renamed out from
+        # under its consumer.
+        # No setup-python step: ubuntu-latest ships Python 3 and the script is
+        # stdlib-only.
+        run: ./scripts/docs-lint.sh

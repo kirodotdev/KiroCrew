@@ -76,8 +76,7 @@ from kiro_crew.mcp_core import (
     _patch,
     _post,
     _resolve_session_key,
-    _resolve_session_key_strict,
-    strict_identity_diagnosis,
+    require_strict_session_key,
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
@@ -789,13 +788,13 @@ def _visible_chat_slots() -> tuple[list[dict], str | None]:
     if err:
         return [], err
     live = [r for r in rows if str(r.get("memory_mode") or "persistent") == "persistent"]
-    caller_key = _resolve_session_key_strict()
+    caller_key, strict_err = require_strict_session_key(
+        "cannot verify which session is calling, so the session list is "
+        "withheld — these tools scope what they show to the caller",
+        server=SERVER_NAME,
+    )
     if not caller_key:
-        return [], (
-            "cannot verify which session is calling, so the session list is "
-            "withheld — these tools scope what they show to the caller"
-            + strict_identity_diagnosis(SERVER_NAME)
-        )
+        return [], strict_err
     scope = _caller_app_scope(caller_key, rows)
     if scope is None:
         return [], (
@@ -833,13 +832,14 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
     the endpoint looking like the unconfined person. Every caller of this gate
     must pass what it returns straight to the write.
     """
-    caller_key = _resolve_session_key_strict()
+    caller_key, strict_err = require_strict_session_key(
+        f"Error: cannot verify which session is calling, so {verb} is "
+        "refused — reshaping the shared folder tree requires a caller "
+        "identity the gateway can vouch for.",
+        server=SERVER_NAME,
+    )
     if not caller_key:
-        return "", (
-            f"Error: cannot verify which session is calling, so {verb} is "
-            "refused — reshaping the shared folder tree requires a caller "
-            "identity the gateway can vouch for." + strict_identity_diagnosis(SERVER_NAME)
-        )
+        return "", strict_err
     rows, err = _get_rows("/api/chat/slots")
     if err:
         return "", f"Error: {err}"
@@ -890,14 +890,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # authorize the check and the action as potentially different sessions:
         # the lenient walk reads mutable process state, so what it answers at
         # request time need not be what the gate approved.
-        caller_key = _resolve_session_key_strict()
+        caller_key, strict_err = require_strict_session_key(
+            "Error: this session cannot be identified well enough to control another "
+            "session. Session control authorizes on the calling session's identity, and "
+            "only a gateway-issued key counts — a spawned subagent has none of its own.",
+            server=SERVER_NAME,
+        )
         if not caller_key:
-            return (
-                "Error: this session cannot be identified well enough to control another "
-                "session. Session control authorizes on the calling session's identity, and "
-                "only a gateway-issued key counts — a spawned subagent has none of its own."
-                + strict_identity_diagnosis(SERVER_NAME)
-            )
+            return strict_err
 
     if name == "session_create":
         args = validate_tool_args(args, SESSION_CREATE_SCHEMA)
@@ -1256,13 +1256,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # an unresolved identity reaches the endpoint as no header at all, where
         # it reads as the unconfined dashboard user. Refuse instead of writing
         # with an authority we cannot name.
-        caller_key = _resolve_session_key_strict()
+        caller_key, strict_err = require_strict_session_key(
+            "Error: cannot verify which session is calling, so this move is "
+            "refused — filing another session requires a caller identity the "
+            "gateway can vouch for.",
+            server=SERVER_NAME,
+        )
         if not caller_key:
-            return (
-                "Error: cannot verify which session is calling, so this move is "
-                "refused — filing another session requires a caller identity the "
-                "gateway can vouch for." + strict_identity_diagnosis(SERVER_NAME)
-            )
+            return strict_err
         # The verified key is passed through unchanged: re-resolving inside the
         # helper would let the write carry a different session's authority than
         # the one checked here.

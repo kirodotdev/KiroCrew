@@ -477,9 +477,7 @@ class TestFindOrphanMcpCandidates:
         assert len(records) == 1
         assert records[0].exc_info is None
 
-    def test_unexpected_probe_error_keeps_traceback(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_unexpected_probe_error_keeps_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
         """A genuinely unexpected probe failure still logs exc_info."""
         from kiro_crew.session_pid import find_orphan_mcp_candidates
 
@@ -664,6 +662,20 @@ class TestFindOrphanMcpCandidates:
 @_POSIX_ONLY
 class TestKillOrphanMcps:
     """Tests for kill_orphan_mcps (kill confirmed orphans)."""
+
+    @pytest.fixture(autouse=True)
+    def _stable_root_identity(self) -> Iterator[None]:
+        """Give synthetic PIDs a start token so the recycle guard passes.
+
+        `kill_orphan_mcps` captures the root's `_pid_start_token` before the
+        subtree scan and re-confirms it before signalling, so a PID whose
+        identity cannot be read is skipped by design. These tests use synthetic
+        PIDs that have no `/proc` entry; a stable token states the thing they
+        already assume -- that the PID was not recycled mid-sweep. See
+        test_orphan_mcp_subtree.TestRootRecycleGuard for the guard's own cover.
+        """
+        with patch("kiro_crew.session_pid._pid_start_token", return_value="tok-stable"):
+            yield
 
     def test_uses_killpg_when_pgid_differs(self) -> None:
         """If orphan is its own group leader, kill via killpg."""
@@ -1285,6 +1297,12 @@ class TestEnvHasKirocrewMarker:
 
 
 class TestMarkedLauncherSweepIntegration:
+    @pytest.fixture(autouse=True)
+    def _stable_root_identity(self) -> Iterator[None]:
+        """See TestKillOrphanMcps._stable_root_identity."""
+        with patch("kiro_crew.session_pid._pid_start_token", return_value="tok-stable"):
+            yield
+
     """find + kill phases honor the marked-launcher positive-ID path."""
 
     def test_find_includes_marked_npx_orphan(self) -> None:
@@ -1398,8 +1416,7 @@ class TestIsSweepableOrphanWork:
         from kiro_crew.session_pid import _is_sweepable_orphan_work
 
         worker = (
-            b"/repo/.venv/bin/python\x00-u\x00-c"
-            b"\x00import sys;exec(eval(sys.stdin.readline()))"
+            b"/repo/.venv/bin/python\x00-u\x00-c" b"\x00import sys;exec(eval(sys.stdin.readline()))"
         )
         with (
             patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
@@ -1528,9 +1545,7 @@ class TestIsSweepableOrphanWork:
         assert _ORPHAN_WORK_MIN_AGE_SECONDS > _ORPHAN_MIN_AGE_SECONDS
         with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
             assert (
-                _is_sweepable_orphan_work(
-                    1234, self._PYTEST_CMDLINE, _ORPHAN_MIN_AGE_SECONDS + 1
-                )
+                _is_sweepable_orphan_work(1234, self._PYTEST_CMDLINE, _ORPHAN_MIN_AGE_SECONDS + 1)
                 is False
             )
 
@@ -1547,9 +1562,7 @@ class TestIsSweepableOrphanWork:
 
         with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
             assert (
-                _is_sweepable_orphan_work(
-                    1234, b"/usr/local/bin/kiro-cli\x00chat\x00--acp", 700.0
-                )
+                _is_sweepable_orphan_work(1234, b"/usr/local/bin/kiro-cli\x00chat\x00--acp", 700.0)
                 is False
             )
             assert _is_sweepable_orphan_work(1234, b"claude\x00--print", 700.0) is False
@@ -1938,9 +1951,7 @@ class TestPidStartTokenIdentityGuard:
         assert entry in session_pid_file.read_text(encoding="utf-8")
 
     @_POSIX_ONLY
-    def test_session_roots_subreaper_reparent_still_killed(
-        self, session_pid_file: Path
-    ) -> None:
+    def test_session_roots_subreaper_reparent_still_killed(self, session_pid_file: Path) -> None:
         """A recorded start token that MATCHES proves identity on its own.
 
         Orphans do not always reparent to init: a process placed in its own
@@ -1974,9 +1985,10 @@ class TestPidStartTokenIdentityGuard:
         ):
             cleanup_orphaned_session_roots()
 
-        assert (99998, platform_compat.SIGKILL) in kills, (
-            "a token-verified orphan adopted by a subreaper was not reaped"
-        )
+        assert (
+            99998,
+            platform_compat.SIGKILL,
+        ) in kills, "a token-verified orphan adopted by a subreaper was not reaped"
         # And it must not be silently untracked, which is what leaks it forever.
         assert entry not in session_pid_file.read_text(encoding="utf-8")
 

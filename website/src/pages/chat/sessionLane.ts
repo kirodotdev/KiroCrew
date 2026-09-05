@@ -45,13 +45,28 @@ export interface LaneSlotFields {
  *  tracked per slot in the dashboard store, never on the slot payload. */
 export interface LaneExtras {
   subagentAwaiting?: number
-  /** Live work that outlives the slot's own `running` flag: an armed monitor /
-   *  goal loop that will wake the session on its own, or a dynamic workflow
-   *  executing against it. Both are tracked in the dashboard store rather than
-   *  on the slot payload, and the row status chain already reads them, so a lane
-   *  that ignored them would file a session as idle while its own row renders a
-   *  spinner. */
-  backgroundWork?: boolean
+  /** A dynamic workflow is active for this slot. Unlike an armed goal loop,
+   *  this is current execution and supersedes an older interrupted turn. */
+  workflowActive?: boolean
+  /** An armed goal loop is work while healthy, but not while its last turn is
+   *  interrupted — that stalled state remains Waiting until the next cycle. */
+  goalLoopActive?: boolean
+  /** Detailed child activity can lead or lag the slot snapshot during reconnect. */
+  detailedSubagentsRunning?: boolean
+}
+
+/** Current execution that makes an older `interrupted` flag stale. Shared by
+ *  the sidebar row and board lane so Resume and Working cannot disagree. An
+ *  armed goal loop is deliberately excluded: it is future work, not execution. */
+export function hasLiveSessionWork(slot: LaneSlotFields, extras: LaneExtras = {}): boolean {
+  return !!(
+    slot.running ||
+    slot.orchestrating ||
+    slot.subagents_running ||
+    (slot.queue_depth ?? 0) > 0 ||
+    extras.workflowActive ||
+    extras.detailedSubagentsRunning
+  )
 }
 
 export interface SessionLaneDef {
@@ -85,17 +100,12 @@ export function inferLane(slot: LaneSlotFields, extras: LaneExtras = {}): Sessio
   if (slot.pending_approval || (extras.subagentAwaiting ?? 0) > 0) return 'needs_approval'
   // Parked on a human answer. Deliberately NOT `waiting_for_input`, which is
   // true of every finished turn and would swallow the whole idle lane: only an
-  // explicit unanswered question, an options card, or an interrupted turn the
-  // user must resume counts as waiting ON them.
-  if (slot.needs_input || slot.has_options || slot.interrupted) return 'waiting'
-  if (
-    slot.running ||
-    slot.orchestrating ||
-    slot.subagents_running ||
-    (slot.queue_depth ?? 0) > 0 ||
-    extras.backgroundWork
-  ) {
-    return 'working'
-  }
+  // explicit unanswered question or options card outranks live work.
+  if (slot.needs_input || slot.has_options) return 'waiting'
+  if (hasLiveSessionWork(slot, extras)) return 'working'
+  // An interrupted turn waits on the user only when no newer work supersedes
+  // it. An armed goal loop does not supersede its own stalled turn.
+  if (slot.interrupted) return 'waiting'
+  if (extras.goalLoopActive) return 'working'
   return 'idle'
 }

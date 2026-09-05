@@ -1546,6 +1546,39 @@ class TestDriveShare:
             )
         assert resp.status == 502
 
+    def test_share_withholds_the_url_when_the_ledger_refuses_as_corrupt(self):
+        # #7805: the ledger reader refuses a corrupt document rather than
+        # replacing it. A mint that could not be RECORDED must not be handed
+        # out — the URL would be a live unrevokable bearer grant with no local
+        # record, the exact under-reporting the strict reader exists to prevent.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/share", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value={"section": "drive", "key": "a.txt"})  # type: ignore[method-assign]
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod, "publish_denied_reason", return_value=""),
+            mock.patch.object(routes_mod.storage_mod, "object_exists", return_value=True),
+            mock.patch.object(routes_mod.storage_mod, "presign", return_value="https://signed"),
+            mock.patch.object(
+                routes_mod.shares_mod,
+                "record_share",
+                side_effect=json.JSONDecodeError("Expecting value", "[ not json", 2),
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/share")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 500
+        body = _payload(resp)
+        assert body["code"] == "share_ledger_corrupt"
+        assert "https://signed" not in json.dumps(body)
+        assert "[ not json" not in json.dumps(body)
+
 
 # ---------------------------------------------------------------------------
 # Shares list + forget
@@ -1820,6 +1853,27 @@ class TestSharesListForget:
             )
         assert resp.status == 404
         assert _payload(resp)["code"] == "unknown_share"
+
+    def test_forget_reports_a_corrupt_ledger_instead_of_claiming_unknown(self):
+        # #7805: on the old lenient read a corrupt ledger made every share read
+        # as absent, so forget answered 404 "unknown share" while the record sat
+        # readable in the corrupt bytes — and the rewrite then destroyed it.
+        handlers = _registered()
+        with (
+            mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+            mock.patch.object(
+                routes_mod.shares_mod,
+                "forget_share",
+                side_effect=json.JSONDecodeError("Expecting value", "[ not json", 2),
+            ),
+        ):
+            req = _request("POST", "/shares/sh-1/forget", match_info={"id": "sh-1"})
+            req.json = AsyncMock(return_value={})  # type: ignore[method-assign]
+            resp = asyncio.run(
+                handlers[("POST", "/shares/{id}/forget")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 500
+        assert _payload(resp)["code"] == "share_ledger_corrupt"
 
 
 # ---------------------------------------------------------------------------
@@ -2257,6 +2311,40 @@ class TestLibrary:
         # Reported, not swallowed: the payload must not claim a reconcile happened.
         assert body["reconciled"] is False and body["remoteError"]
 
+    def test_library_list_survives_a_corrupt_ledger(self):
+        # #7805: the strict update reader refuses a corrupt ledger with
+        # JSONDecodeError. The list route is best-effort by contract and its
+        # rows come from the LENIENT display read, so the render must survive
+        # and the degradation must be reported — with a reason that says
+        # "repair", not "retry".
+        handlers = _registered()
+        rows = [{"slug": "x", "name": "X"}]
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.storage_mod, "list_library_folders", return_value=["x"]),
+            mock.patch.object(routes_mod.library_mod, "list_pushable", return_value=rows),
+            mock.patch.object(
+                routes_mod.library_mod,
+                "reconcile",
+                side_effect=json.JSONDecodeError("Expecting value", "{ not json", 2),
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/library/{account}")](  # type: ignore[operator]
+                    _request("GET", f"/library/{ACCOUNT}", match_info={"account": ACCOUNT})
+                )
+            )
+        body = _payload(resp)
+        assert resp.status == 200
+        assert body["artifacts"] == rows
+        assert body["reconciled"] is False
+        assert "corrupt" in body["remoteError"]
+
     def test_library_list_audits_an_identity_denial_it_degrades_past(self):
         # _guarded's own rule: a permission DECISION reaches SEL. This route
         # degrades instead of failing, so without an explicit audit the decision
@@ -2429,6 +2517,16 @@ class TestLibrary:
         assert resp.status == 400
         assert _payload(resp)["code"] == "not_pushable"
 
+    def test_push_reports_a_corrupt_ledger_not_a_client_error(self):
+        # #7805, the trap the issue names: JSONDecodeError subclasses ValueError,
+        # so without its own arm the ledger's corruption refusal would be
+        # reported as 400 not_pushable — blaming the artifact for a store the
+        # operator has to repair, on a push whose upload may already be in the
+        # bucket.
+        resp = self._push(side_effect=json.JSONDecodeError("Expecting value", "{ not json", 2))
+        assert resp.status == 500
+        assert _payload(resp)["code"] == "library_ledger_corrupt"
+
     def test_push_surfaces_an_aws_error(self):
         resp = self._push(side_effect=AWSError("put denied"))
         assert resp.status == 502
@@ -2510,6 +2608,16 @@ class TestLibrary:
         resp, _removed = self._remove(side_effect=ValueError("'x/y' is not an artifact slug"))
         assert resp.status == 400
         assert _payload(resp)["code"] == "invalid_slug"
+
+    def test_remove_reports_a_corrupt_ledger_not_an_invalid_slug(self):
+        # #7805: JSONDecodeError subclasses ValueError, so without its own arm
+        # the ledger's corruption refusal reads as 400 invalid_slug — blaming
+        # the request for a store the operator has to repair.
+        resp, _removed = self._remove(
+            side_effect=json.JSONDecodeError("Expecting value", "{ not json", 2)
+        )
+        assert resp.status == 500
+        assert _payload(resp)["code"] == "library_ledger_corrupt"
 
     def test_remove_surfaces_an_aws_error(self):
         # A failed delete must NOT report success: the objects are still there,

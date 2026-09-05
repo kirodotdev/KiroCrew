@@ -73,6 +73,103 @@ def _stub_resolvers(
     monkeypatch.setattr(client, "_resolve_claude_code_executable", lambda: claude_cli)
 
 
+# ── The codex driver seams ──
+
+
+class TestCodexDriverSeams:
+    """The three functions ``_probe_codex`` reads its verdict from.
+
+    Tested at the driver rather than only through the probe because the
+    cached-negative logic is the part with a real hazard: an operator installs the
+    adapter a MISSING row told them to install, and every spawn in the running
+    gateway still reuses the cached ``None`` until a restart. Reporting
+    ``restart_required`` instead of a bare ``installed`` is what keeps the panel
+    from promising something the next session breaks.
+    """
+
+    def test_resolves_reports_a_runnable_argv(self, monkeypatch):
+        """One component, unlike claude's two: the adapter ships its own Codex binary."""
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_resolve_codex_acp_bin", lambda: (["node", "/n/c.js"], "/p"))
+        assert driver.codex_adapter_resolves() is True
+
+    def test_resolves_reports_absence(self, monkeypatch):
+        """``(None, searched_path)`` is the resolver's own "not found", not an error."""
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_resolve_codex_acp_bin", lambda: (None, "/searched"))
+        assert driver.codex_adapter_resolves() is False
+
+    def test_unresolved_cache_is_not_a_negative(self, monkeypatch):
+        """No session has needed the adapter yet, so the fresh answer is the true one.
+
+        Reading the sentinel as a negative would report ``restart_required`` on a
+        gateway that has simply never spawned codex.
+        """
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_codex_acp_argv_cache", client._UNRESOLVED)
+        assert driver.codex_adapter_cached_negative() is False
+
+    def test_absent_cache_attribute_is_not_a_negative(self, monkeypatch):
+        """A build without the global must not read as a cached failure."""
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.delattr(client, "_codex_acp_argv_cache", raising=False)
+        assert driver.codex_adapter_cached_negative() is False
+
+    def test_cached_negative_is_reported(self, monkeypatch):
+        """A cached ``None`` is the case the whole function exists for.
+
+        The adapter may be on disk NOW while this process still refuses to spawn
+        it, so the row has to say "restart" rather than "installed".
+        """
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_codex_acp_argv_cache", (None, "/searched"))
+        assert driver.codex_adapter_cached_negative() is True
+
+    def test_cached_positive_is_not_a_negative(self, monkeypatch):
+        """A cached runnable argv means spawns work; nothing to disclose."""
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_codex_acp_argv_cache", (["node", "/n/c.js"], "/p"))
+        assert driver.codex_adapter_cached_negative() is False
+
+    def test_unreadable_cache_shape_fails_safe(self, monkeypatch):
+        """A cache that will not unpack must not crash a dashboard GET.
+
+        Fails toward "no disclosure" rather than toward an exception: the row is
+        built on a read-only path that must degrade, not 500.
+        """
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_codex_acp_argv_cache", object())
+        assert driver.codex_adapter_cached_negative() is False
+
+    def test_install_command_names_the_package_the_resolver_searches_for(self):
+        """The advice and the resolution ladder must agree by construction.
+
+        A global install of the SCOPED package puts the UNSCOPED binary on PATH,
+        which is what the ladder looks for -- so the command is built from the same
+        constant rather than restated, and cannot drift from what satisfies it.
+        """
+        from kiro_crew.acp.client import CODEX_ACP_NPM_PKG
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        command = driver.codex_adapter_install_command()
+        assert command == f"npm i -g {CODEX_ACP_NPM_PKG}"
+        assert CODEX_ACP_NPM_PKG in command
+
+
 # ── Per-backend verdicts ──
 
 
@@ -510,11 +607,14 @@ class TestEndpointPayloadShape:
         # codex is in ACP_BACKENDS_KNOWN with no entry in ``_PROBES``, so it gets a
         # row -- the endpoint lists every id the switch can show -- but the row can
         # only say ``unknown`` and must name nothing to install. That gap is why
-        # codex is absent from BASELINE_SELECTABLE_BACKENDS: offering the switch
-        # would offer a verdict this payload cannot supply.
-        assert by_policy["codex"]["installed"] == "unknown"
-        assert by_policy["codex"]["missing_components"] == []
-        assert by_policy["codex"]["install_command"] == ""
+        # codex now has a probe, so its row carries a real verdict rather than
+        # ``unknown``. That is the whole reason it could be offered: the operator
+        # gets the component name and the command that installs it.
+        assert by_policy["codex"]["installed"] == "missing"
+        assert by_policy["codex"]["missing_components"] == ["codex-acp"]
+        assert by_policy["codex"]["install_command"].startswith("npm i -g ")
+        # ``selectable`` stays False here because this test PINS the live enum to
+        # ``["", "kas"]`` above; it asserts the payload shape, not the registry.
         assert by_policy["codex"]["selectable"] is False
 
     def test_an_unknown_row_names_no_components(self, monkeypatch):

@@ -31,7 +31,13 @@ from typing import Any
 # no native library is loaded on any platform. Aliased so the schema block below
 # reads as "the computer-use vocabulary" rather than bare names.
 from kiro_crew.computer_use import types as _cu_types
-from kiro_crew.constants import AWS_PROFILE_NAME_RE, WINDOWS_DEVICE_STEMS
+from kiro_crew.constants import (
+    AWS_PROFILE_NAME_RE,
+    CHANNEL_OWNER_DM_NAMESPACES,
+    MAX_BANNER_CHARS,
+    SLACK_NAMESPACE,
+    WINDOWS_DEVICE_STEMS,
+)
 
 # Reasoning-effort vocabulary: ``effort.py`` is the single source of truth for
 # the valid levels; EFFORT_VALUES additionally admits ``""`` ("unset — defer to
@@ -304,6 +310,13 @@ class ValidationError(Exception):
 
 # ── Field Validators ──
 
+#: Stamped onto a value truncated by :func:`clamp_to_max_len`. It reports what the
+#: CLAMP dropped, not the caller's original input length: the value reaching the
+#: clamp has already been through :func:`sanitize_string`, so an "original length"
+#: here would silently attribute the sanitizer's removals to the truncation. Kept
+#: short so it costs almost none of the field's budget.
+_CLAMP_NOTE = " [... truncated, dropped {n} chars]"
+
 
 @dataclass
 class FieldSpec:
@@ -322,6 +335,19 @@ class FieldSpec:
     item_max_len: int = 0  # for list fields: max length of each string element
     item_pattern: re.Pattern[str] | None = None  # for list fields: regex for each string element
     max_items: int = 0  # for list fields: max number of items (0 = no limit)
+    # Opt-in, and DELIBERATELY narrow: when a string field is over ``max_len``,
+    # truncate it to the cap instead of rejecting the whole call. For a field
+    # whose only job is to EXPLAIN a request — ``autonudge_stop`` /
+    # ``monitor_stop`` ``reason`` — the length of the explanation must not be
+    # able to defeat the request itself (#8635). Never set this on a field the
+    # handler acts on: a truncated control input is a wrong control input, and
+    # rejecting is the only safe answer there.
+    #
+    # The truncation is NOT silent: :func:`clamp_to_max_len` stamps the value
+    # itself with how much it dropped, so every place the value travels — the
+    # applied outcome the model reads back, the SEL audit row, the persisted
+    # stop reason — says so without any layer having to plumb a second flag.
+    clamp_to_max: bool = False
 
 
 @dataclass
@@ -331,6 +357,33 @@ class ToolSchema:
     tool_name: str
     fields: list[FieldSpec] = field(default_factory=list)
     custom_validator: Any = None  # Optional callable(cleaned_args) -> None; raises ValidationError
+
+
+def clamp_to_max_len(value: str, max_len: int) -> str:
+    """Truncate *value* to *max_len* chars, stamping it with what was dropped.
+
+    Used only for a :class:`FieldSpec` that opted into ``clamp_to_max``. The
+    note is what makes this a clamp rather than a silent mutation: the returned
+    string carries its own provenance, so the model reading the applied outcome
+    and the operator reading the audit row both see that the text was cut, with
+    no extra return channel and no per-tool plumbing.
+
+    The note counts what THIS call dropped. It deliberately does not claim to
+    report the caller's original length: by the time a field reaches here it has
+    already been sanitized, so one number cannot honestly stand for both
+    removals (see :data:`_CLAMP_NOTE`).
+
+    The result is always ``<= max_len``. A cap too small to hold the note at all
+    degrades to a plain cut rather than to a value that is only a note.
+    """
+    # Solve for the note that describes the cut the note itself is part of: the
+    # note occupies budget, so the dropped count includes it. Computed directly
+    # rather than iterated -- keep is what survives, everything else is dropped.
+    keep = max_len - len(_CLAMP_NOTE.format(n=len(value)))
+    if keep <= 0:
+        return value[:max_len]
+    head = value[:keep].rstrip()
+    return head + _CLAMP_NOTE.format(n=len(value) - len(head))
 
 
 def validate_field(value: Any, spec: FieldSpec) -> Any:
@@ -365,14 +418,18 @@ def validate_field(value: Any, spec: FieldSpec) -> Any:
         if not value and spec.required:
             raise ValidationError(spec.name, "required (empty after sanitization)")
         if spec.max_len and len(value) > spec.max_len:
-            # Report the actual length + overshoot so a caller (e.g. the LLM
-            # composing a learn_add rule) can trim by the exact amount in one
-            # pass instead of guessing and re-submitting repeatedly.
-            raise ValidationError(
-                spec.name,
-                f"exceeds max length {spec.max_len} "
-                f"(got {len(value)}, trim {len(value) - spec.max_len} chars)",
-            )
+            if spec.clamp_to_max:
+                # Explanatory field: cut it and carry on (see FieldSpec.clamp_to_max).
+                value = clamp_to_max_len(value, spec.max_len)
+            else:
+                # Report the actual length + overshoot so a caller (e.g. the LLM
+                # composing a learn_add rule) can trim by the exact amount in one
+                # pass instead of guessing and re-submitting repeatedly.
+                raise ValidationError(
+                    spec.name,
+                    f"exceeds max length {spec.max_len} "
+                    f"(got {len(value)}, trim {len(value) - spec.max_len} chars)",
+                )
         if spec.allowed and value not in spec.allowed:
             raise ValidationError(spec.name, f"must be one of: {', '.join(sorted(spec.allowed))}")
         if spec.pattern and value and not spec.pattern.match(value):
@@ -1137,7 +1194,14 @@ FILE_SEND_SCHEMA = ToolSchema(
 AUTONUDGE_STOP_SCHEMA = ToolSchema(
     tool_name="autonudge_stop",
     fields=[
-        FieldSpec("reason", str, max_len=MAX_SHORT_STRING),
+        # Clamped, not rejected: a stop request must not be defeated by the
+        # length of its own explanation (#8635). ``reason`` is a human-readable
+        # note — it selects no behavior in ``_autonudge_stop``, which only
+        # interpolates it into the applied-outcome text and the persisted stop
+        # record — so truncating it costs a few words of narrative and saves
+        # the stop. Rejecting cost the stop AND fired the consumer's
+        # lost-marker WARNING.
+        FieldSpec("reason", str, max_len=MAX_SHORT_STRING, clamp_to_max=True),
     ],
 )
 
@@ -1164,7 +1228,10 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
 MONITOR_INSPECT_SCHEMA = ToolSchema(tool_name="monitor_inspect")
 MONITOR_STOP_SCHEMA = ToolSchema(
     tool_name="monitor_stop",
-    fields=[FieldSpec("reason", str, max_len=MAX_MONITOR_STOP_REASON_CHARS)],
+    # Same shape and same reasoning as autonudge_stop's reason: a stop request
+    # whose explanation runs long is still a stop request. Fixing only one of
+    # the two stop tools would leave the other to be rediscovered.
+    fields=[FieldSpec("reason", str, max_len=MAX_MONITOR_STOP_REASON_CHARS, clamp_to_max=True)],
 )
 
 # monitor_start creates an AutoNudge loop bound to the calling session (the
@@ -1184,6 +1251,11 @@ MONITOR_START_SCHEMA = ToolSchema(
         # default, so a caller written before this field existed keeps the
         # default behaviour rather than silently escaping it.
         FieldSpec("gate", bool),
+        # The short row shown in the transcript instead of the full message. An
+        # ENTRY bound only: the authorised add path re-checks the cap AFTER
+        # redaction, which is the one that governs what gets stored, because
+        # redaction can grow the string.
+        FieldSpec("banner", str, max_len=MAX_BANNER_CHARS),
     ],
 )
 
@@ -1204,6 +1276,9 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
+        # Same bound as the arm side, for the reason the comment above gives: a
+        # loop must not be updatable into a state monitor_start would refuse.
+        FieldSpec("banner", str, max_len=MAX_BANNER_CHARS),
     ],
 )
 
@@ -2485,6 +2560,21 @@ FILE_WRITE_SCHEMA = ToolSchema(
 # is what actually authorizes it.
 _TARGET_ID_RE = re.compile(r"^[\x21-\x7e]{1,512}$")
 
+# Every legal ``send_message`` ``session`` value: the delivery MODES plus every
+# channel a proactive send may name. Built from the shared
+# ``CHANNEL_SEND_NAMESPACES`` so this, the tool's advertised enum and the gateway's
+# accepted ``channel_type`` set are three views of ONE roster rather than three
+# lists that drift -- which is the #6514 defect, where this pattern and the tool's
+# enum both still read "discord" alone months after eight more transports were
+# registered and made serviceable by the gateway's channel-neutral owner-DM leg.
+#
+# ``origin`` is added because it is a delivery MODE rather than a transport, and
+# ``slack`` because it routes through its own client instead of the channel ladder;
+# both are outside the send roster for those reasons, not by omission.
+_SEND_MESSAGE_SESSION_RE = re.compile(
+    "^(origin|" + "|".join((SLACK_NAMESPACE, *CHANNEL_OWNER_DM_NAMESPACES)) + ")$"
+)
+
 
 # Fields that select or shape a SLACK delivery. Combined with the
 # ``channel_type``/``target_id`` pair — which addresses a non-Slack destination
@@ -2560,13 +2650,23 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
         # Must accept every value ``mcp_tools.messaging._SESSION_TARGETS``
         # advertises: this pattern runs BEFORE the handler, so a value missing
         # here is rejected as malformed even though the tool's own enum offers
-        # it. Spelled out rather than imported because ``mcp_tools`` imports this
-        # module; ``test_mcp_messaging_discord`` pins the two together.
+        # it. That is what happened to the eight non-Discord channels in #6514.
+        #
+        # DERIVED from the same roster the tool's enum and the gateway's accepted
+        # ``channel_type`` set are built from, so the three cannot disagree.
+        # Importing it costs no cycle: the roster is homed in ``kiro_crew.constants``,
+        # which imports only ``os`` and ``re``. It is deliberately NOT read from
+        # ``messaging.link`` (which re-exports it): importing a name from there
+        # executes ``messaging/__init__.py``, pulling in ``driver`` -> ``acp`` ->
+        # ``hooks``, and ``hooks`` -> ``webhooks`` -> ``validation`` is already an
+        # edge, so reading it from this module that way closes a startup cycle.
+        # ``unified`` is excluded because it is a session-key bucket, not a
+        # transport; ``origin`` is added because it is a delivery MODE.
         FieldSpec(
             "session",
             str,
             max_len=MAX_SHORT_STRING,
-            pattern=re.compile(r"^(origin|slack|discord)$"),
+            pattern=_SEND_MESSAGE_SESSION_RE,
         ),
         FieldSpec("caller_session", str, max_len=MAX_SHORT_STRING, pattern=CRON_SESSION_RE),
     ],
@@ -2877,6 +2977,17 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
         tool_name="cron_trigger",
         fields=[
             FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
+        ],
+    ),
+    # Agent-initiated vault-secret REQUEST for a script cron. Records a
+    # pending grant only; the operator approves in the dashboard. The mapping's
+    # keys/values are re-validated at the persistence layer
+    # (cron_script.validate_secret_env_grant) — this schema bounds shape/size.
+    "cron_secret_request": ToolSchema(
+        tool_name="cron_secret_request",
+        fields=[
+            FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
+            FieldSpec("secrets", dict, required=True),
         ],
     ),
 }

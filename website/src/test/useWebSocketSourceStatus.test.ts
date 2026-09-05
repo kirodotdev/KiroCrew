@@ -154,32 +154,76 @@ describe('useWebSocket pull-request status sync', () => {
 
   it('refetches the open pull request when the active slot finishes a turn', () => {
     store.dispatch(setActiveSlot('chat-active'))
+    store.dispatch(sseSlots([
+      {
+        key: 'chat-active', messages: 1, running: false,
+        source_links: [{ provider: 'github', number: 7, label: '#7', url: URL_A }],
+      },
+    ] as never))
     const { ws, unmount } = connect()
     const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const refetch = vi.spyOn(qc, 'refetchQueries')
 
     act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'chat-active' } }) })
 
     // Lifecycle/CI deltas don't cover review comments or mergeability, so the
-    // turn boundary itself re-reads the payload the panel is showing.
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pull-request-source'], refetchType: 'active' })
+    // turn boundary itself re-reads the payload the panel is showing (the
+    // MOUNTED detail query — `refetchQueries` with `type: 'active'` touches
+    // nothing off-screen and marks nothing stale) and marks the slot's own
+    // chips stale for their next mount.
+    expect(refetch).toHaveBeenCalledWith({ queryKey: ['pull-request-source'], type: 'active' })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pull-request-source', URL_A], refetchType: 'none' })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pull-request-statuses'], refetchType: 'active' })
+    // Never the bare family: `invalidateQueries` would mark EVERY session's
+    // cached PR stale regardless of `refetchType`.
+    expect(invalidate).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ['pull-request-source'] }))
     unmount()
   })
 
-  it('marks a background slot\'s PR queries stale without refetching them', () => {
+  it('marks only a background slot\'s OWN PRs stale, without refetching them', () => {
     store.dispatch(setActiveSlot('chat-active'))
+    store.dispatch(sseSlots([
+      { key: 'chat-active', messages: 1, running: false, source_links: [] },
+      {
+        key: 'chat-other', messages: 1, running: false,
+        source_links: [
+          { provider: 'github', number: 7, label: '#7', url: URL_A },
+          { provider: 'github', number: 9, label: '#9', url: 'https://github.com/acme/repo/issues/9', kind: 'issue' },
+        ],
+      },
+    ] as never))
     const { ws, unmount } = connect()
     const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const refetch = vi.spyOn(qc, 'refetchQueries')
 
     act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'chat-other' } }) })
 
     // A background slot's detail query is staleTime:Infinity, so if its turn is
     // never marked stale it renders pre-turn data when the user later switches
     // to it. Mark it stale (refetchType: 'none') so it refetches on next mount —
-    // but do NOT refetch an off-screen PR now (pure provider load).
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pull-request-source'], refetchType: 'none' })
+    // but do NOT refetch an off-screen PR now (pure provider load), and do NOT
+    // touch other sessions' PRs: an unscoped invalidation made every panel
+    // reopen refetch while any chat anywhere was running.
+    expect(refetch).not.toHaveBeenCalled()
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pull-request-source', URL_A], refetchType: 'none' })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pull-request-statuses'], refetchType: 'none' })
-    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['pull-request-source'], refetchType: 'active' })
+    expect(invalidate).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ['pull-request-source'] }))
+    expect(invalidate).not.toHaveBeenCalledWith(expect.objectContaining({ refetchType: 'active' }))
+    const sourceCalls = invalidate.mock.calls.filter(([f]) => (f as { queryKey: unknown[] }).queryKey[0] === 'pull-request-source')
+    expect(sourceCalls).toHaveLength(1)
+    unmount()
+  })
+
+  it('leaves every detail query alone when the finished slot links no PR', () => {
+    store.dispatch(setActiveSlot('chat-active'))
+    store.dispatch(sseSlots([{ key: 'chat-other', messages: 1, running: false, source_links: [] }] as never))
+    const { ws, unmount } = connect()
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+
+    act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'chat-other' } }) })
+
+    expect(invalidate).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: expect.arrayContaining(['pull-request-source']) }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pull-request-statuses'], refetchType: 'none' })
     unmount()
   })
 

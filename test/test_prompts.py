@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
 
+from conftest import requires_symlinks
 from kiro_crew.dashboard.chat import _expand_prompt_mention, _run_chat
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
@@ -372,8 +373,15 @@ class TestApiPrompts:
         resp = asyncio.run(api_prompt_detail(_api_request("broken")))
         path.chmod(0o644)
         assert resp.status == 500
-        mock_sel.log_tool_invocation.assert_called_once()
-        assert mock_sel.log_tool_invocation.call_args[1]["outcome"] == "error"
+        by_tool: dict[str, list[str]] = {}
+        for call in mock_sel.log_tool_invocation.call_args_list:
+            by_tool.setdefault(call.kwargs["tool_name"], []).append(call.kwargs["outcome"])
+        # The handler audits its own outcome exactly once...
+        assert by_tool["api_prompt_detail"] == ["error"]
+        # ...and the resolution that precedes it walks the listing, whose
+        # description read is withheld by the same bad mode and records that
+        # separately. Two reads were refused, so two lines are the honest count.
+        assert by_tool["api_prompts"] == ["error"]
 
     def test_detail_too_large(self, tmp_path, mock_sel):
         _user_prompt(tmp_path, "huge", "x" * 200_000)
@@ -387,6 +395,249 @@ class TestApiPrompts:
         _aim_pkg(aim_dir, "B-1.0", "1", {"d": "# B"})
         resp = asyncio.run(api_prompt_detail(_api_request("B-1.0/d")))
         assert resp.status == 200 and "B" in json.loads(resp.body)["content"]
+
+
+# ── Repository-supplied prompt paths are read through the descriptor gate ──
+
+
+class TestPromptReadsGoThroughTheDescriptorGate:
+    """A prompt path is READ through the same gate that judged it.
+
+    A project's ``.kiro/prompts`` holds content the user CLONED, so deciding a
+    path names a prompt and then re-opening that name is not enough: the bytes
+    finally read need not be the bytes anything checked. A HARDLINK breaks the
+    equivalence with no race at all — it shares its target's inode, so
+    ``realpath`` yields the alias's own innocent path and every path-based check
+    passes while the bytes belong to whatever it aliases. ``st_nlink`` is the
+    only signal it leaves, and it is readable only on an open descriptor.
+    """
+
+    @staticmethod
+    def _checkout_prompts(tmp_path, monkeypatch) -> Path:
+        """A cloned project's ``.kiro/prompts``, wired in as the local scope."""
+        proj = tmp_path / "checkout"
+        monkeypatch.setattr("kiro_crew.agent._project_dir", lambda: proj)
+        d = proj / ".kiro" / "prompts"
+        d.mkdir(parents=True)
+        return d
+
+    @staticmethod
+    def _plant_alias(secret: Path, alias: Path) -> None:
+        try:
+            os.link(secret, alias)
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover - host capability
+            pytest.skip(f"filesystem does not support hardlinks: {exc}")
+        if alias.stat().st_nlink < 2:  # pragma: no cover - host capability
+            pytest.skip("filesystem did not create a second link")
+
+    @staticmethod
+    def _secret(tmp_path) -> Path:
+        # A leading '#' comment is what an INI-style credentials file carries, and
+        # it is exactly what the description extractor publishes as a heading.
+        p = tmp_path / "credentials"
+        p.write_text("# aws_secret_access_key = SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        return p
+
+    def test_a_hardlinked_prompt_publishes_no_description(self, tmp_path, monkeypatch):
+        secret = self._secret(tmp_path)
+        d = self._checkout_prompts(tmp_path, monkeypatch)
+        (d / "innocent.md").write_text("# Innocent\n", encoding="utf-8")
+        self._plant_alias(secret, d / "aliased.md")
+
+        listed = _list_aim_prompts()
+        by_name = {p["name"]: p for p in listed}
+        # Still listed — the scan sees an ordinary regular .md — but with no
+        # metadata drawn out of the aliased inode.
+        assert by_name["aliased"]["description"] == ""
+        assert "SHOULD-NOT-APPEAR" not in json.dumps(listed)
+        # The ordinary neighbour is unaffected: the refusal narrows metadata for
+        # one entry, never the library around it.
+        assert by_name["innocent"]["description"] == "Innocent"
+
+    def test_a_refused_description_leaves_an_audit_line(self, tmp_path, monkeypatch, mock_sel):
+        """An entry listing with no description must not also be invisible.
+
+        With no audit record it is byte-identical to a prompt that simply has no
+        description, so a planted alias leaves the operator nothing to find. The
+        line records only THAT the bytes were withheld — the gate judges and
+        reads through one descriptor and answers a bare ``None``, and re-``stat``
+        ing the path to recover a cause would be another by-name look at exactly
+        the input this read stopped trusting. Its ordinary neighbour must not
+        produce one, or the log says nothing.
+        """
+        secret = self._secret(tmp_path)
+        d = self._checkout_prompts(tmp_path, monkeypatch)
+        (d / "innocent.md").write_text("# Innocent\n", encoding="utf-8")
+        self._plant_alias(secret, d / "aliased.md")
+
+        _list_aim_prompts()
+        refusals = [
+            c
+            for c in mock_sel.log_tool_invocation.call_args_list
+            if c.kwargs["tool_name"] == "api_prompts"
+        ]
+        assert [c.kwargs["outcome"] for c in refusals] == ["error"]
+        assert refusals[0].kwargs["metadata"]["path"].endswith("aliased.md")
+
+    @requires_symlinks
+    def test_a_sensitive_description_target_is_audited_as_blocked(
+        self, tmp_path, monkeypatch, mock_sel
+    ):
+        """The one cause that IS knowable is recorded as itself.
+
+        ``validate_file_path`` refuses the name before any open, so unlike the
+        gate's bare ``None`` this refusal has a reason the audit line can state.
+        """
+        store = tmp_path / "credential-store"
+        store.mkdir()
+        (store / "credentials").write_text("# k = SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "kiro_crew.hooks.is_sensitive_path", lambda p: "credential-store" in str(p)
+        )
+        d = self._checkout_prompts(tmp_path, monkeypatch)
+        (d / "creds.md").symlink_to(store / "credentials")
+
+        _list_aim_prompts()
+        refusals = [
+            c
+            for c in mock_sel.log_tool_invocation.call_args_list
+            if c.kwargs["tool_name"] == "api_prompts"
+        ]
+        assert [c.kwargs["outcome"] for c in refusals] == ["blocked"]
+
+    def test_a_hardlinked_prompt_is_not_served_by_the_unscoped_read(
+        self, tmp_path, monkeypatch, mock_sel
+    ):
+        secret = self._secret(tmp_path)
+        d = self._checkout_prompts(tmp_path, monkeypatch)
+        self._plant_alias(secret, d / "aliased.md")
+
+        resp = asyncio.run(api_prompt_detail(_api_request("aliased")))
+        assert resp.status == 500
+        assert b"SHOULD-NOT-APPEAR" not in resp.body
+        # Reported as the outcome an unreadable file already produced, so a
+        # refusal is not distinguishable from an I/O error.
+        assert mock_sel.log_tool_invocation.call_args[1]["outcome"] == "error"
+
+    @requires_symlinks
+    def test_a_prompt_resolving_onto_a_sensitive_target_publishes_no_description(
+        self, tmp_path, monkeypatch
+    ):
+        store = tmp_path / "credential-store"
+        store.mkdir()
+        secret = store / "credentials"
+        secret.write_text("# aws_access_key_id = SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "kiro_crew.hooks.is_sensitive_path", lambda p: "credential-store" in str(p)
+        )
+        d = self._checkout_prompts(tmp_path, monkeypatch)
+        (d / "creds.md").symlink_to(secret)
+
+        listed = _list_aim_prompts()
+        assert [p["name"] for p in listed] == ["creds"]
+        assert listed[0]["description"] == ""
+        assert "SHOULD-NOT-APPEAR" not in json.dumps(listed)
+
+    @requires_symlinks
+    def test_a_prompt_symlinked_to_an_ordinary_file_still_describes(self, tmp_path, monkeypatch):
+        """Tolerance, not a fix: the gate canonicalizes BEFORE it opens.
+
+        ``O_NOFOLLOW`` therefore refuses nothing about a link the user chose —
+        only a sensitive, hardlinked or non-regular TARGET loses its description.
+        Passes before the fix too; it is here so a later round cannot tighten the
+        description read into a blanket link refusal without going red.
+        """
+        real = tmp_path / "notes" / "review.md"
+        real.parent.mkdir(parents=True)
+        real.write_text("# Review Checklist\n", encoding="utf-8")
+        d = self._checkout_prompts(tmp_path, monkeypatch)
+        (d / "review.md").symlink_to(real)
+
+        listed = _list_aim_prompts()
+        assert [(p["name"], p["description"]) for p in listed] == [("review", "Review Checklist")]
+
+    def test_a_prompt_at_exactly_the_cap_is_still_served(self, tmp_path, mock_sel):
+        """The size cap moved onto the gate's own bound; the boundary did not.
+
+        ``MAX_PROMPT_BYTES`` was checked by a ``stat`` before the read and is now
+        the gate's ``max_bytes``, so an off-by-one there would refuse a prompt
+        that has always been legal.
+        """
+        _user_prompt(tmp_path, "atcap", "x" * MAX_PROMPT_BYTES)
+        resp = asyncio.run(api_prompt_detail(_api_request("atcap")))
+        assert resp.status == 200
+        assert len(json.loads(resp.body)["content"]) == MAX_PROMPT_BYTES
+
+    # ── The Windows shape: no O_NOFOLLOW, so the fd's real path is the guard ──
+    #
+    # Windows has no ``O_NOFOLLOW`` at all and the gate asks for it with
+    # ``getattr(os, "O_NOFOLLOW", 0)`` at call time, so deleting the attribute
+    # reproduces that platform's open semantics on any host: a leaf swapped for a
+    # link AFTER canonicalization is followed. What still refuses it is
+    # ``within_root`` — the fd-real-path check, pinned to the inode actually
+    # opened. The swap is injected deterministically by wrapping the gate's OWN
+    # ``validate_file_path`` (which it calls immediately before the open), so no
+    # timing is involved. Both handlers hold a module-level binding of that name,
+    # so patching it in ``hooks`` reaches only the gate's internal call and leaves
+    # each handler's own pre-open resolution — the one that supplies the root —
+    # untouched, which is exactly the window being simulated.
+
+    def _swap_leaf_inside_the_gate(self, monkeypatch, entry: Path, secret: Path) -> None:
+        from kiro_crew import hooks as _hooks
+
+        real_validate = _hooks.validate_file_path
+
+        def _validate_then_swap(raw):
+            out = real_validate(raw)
+            if out is not None and Path(out) == entry and not entry.is_symlink():
+                entry.unlink()
+                entry.symlink_to(secret)
+            return out
+
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        monkeypatch.setattr(_hooks, "validate_file_path", _validate_then_swap)
+
+    @requires_symlinks
+    def test_a_leaf_swapped_after_validation_publishes_no_description(self, tmp_path, monkeypatch):
+        secret = tmp_path / "outside" / "credentials"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("# aws_secret_access_key = SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        d = self._checkout_prompts(tmp_path, monkeypatch)
+        entry = d / "notes.md"
+        entry.write_text("# Notes\n", encoding="utf-8")
+        self._swap_leaf_inside_the_gate(monkeypatch, entry, secret)
+
+        assert _extract_sop_description(entry) == ""
+
+    @requires_symlinks
+    def test_a_leaf_swapped_after_validation_is_not_served_by_the_unscoped_read(
+        self, tmp_path, monkeypatch, mock_sel
+    ):
+        secret = tmp_path / "outside" / "credentials"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("# aws_secret_access_key = SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        d = self._checkout_prompts(tmp_path, monkeypatch)
+        entry = d / "notes.md"
+        entry.write_text("# Notes\n", encoding="utf-8")
+        # Resolve the entry without the listing, so the ONLY gate call in this
+        # test — and so the only swap — is the read's own.
+        monkeypatch.setattr(
+            _prompts_mod,
+            "_find_prompt",
+            lambda raw, *a, **kw: {
+                "name": "notes",
+                "fullName": "notes",
+                "description": "",
+                "path": str(entry),
+                "package": "",
+                "source": "local",
+            },
+        )
+        self._swap_leaf_inside_the_gate(monkeypatch, entry, secret)
+
+        resp = asyncio.run(api_prompt_detail(_api_request("notes")))
+        assert resp.status == 500
+        assert b"SHOULD-NOT-APPEAR" not in resp.body
 
 
 # ── _run_chat prompt paths ──

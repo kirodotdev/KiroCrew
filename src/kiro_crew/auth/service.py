@@ -19,19 +19,19 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
 
-from kiro_crew.auth.login import builder_id, control_plane, device
+from kiro_crew.auth.login import builder_id, control_plane, device, portal
 from kiro_crew.auth.login.endpoints import (
     BUILDER_ID_REGION,
     BUILDER_ID_START_URL,
     USER_AGENT,
     social_service_url,
 )
-from kiro_crew.auth.shape import select_transport
+from kiro_crew.auth.shape import Transport, select_transport
 from kiro_crew.auth.store import KasToken, SocialProvider, TokenStore, TokenStoreError
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,14 @@ class UnknownLoginError(Exception):
 
 class MissingStartUrlError(Exception):
     """An IdC login was begun without the company start URL it requires."""
+
+
+class LoopbackUnavailableError(Exception):
+    """A loopback login cannot start here: wrong transport or no free callback port.
+
+    The dashboard treats this as 'fall back to the device flow now', so it is a
+    coded 409 rather than a failure.
+    """
 
 
 class InvalidRegionError(Exception):
@@ -89,6 +97,27 @@ class _PendingOidcLogin:
     resolve_profile: bool
 
 
+# How long the loopback listener waits for the portal to redirect back. Long enough
+# for a full Google/GitHub sign-in with 2FA; short enough that a browser that can
+# never reach this machine's loopback (tunnel, tailnet, phone) degrades to the
+# device flow within one sitting instead of holding an allowlisted port all day.
+LOOPBACK_TIMEOUT_SECS = 300.0
+
+
+@dataclass
+class _PendingLoopbackLogin:
+    """A loopback (PKCE) social login whose listener task is running in-process.
+
+    ``task`` owns the bound callback port for its whole life: it serves the redirect,
+    exchanges the code and persists the token, then resolves. Polling only inspects
+    the task; cancelling it is what releases the port early.
+    """
+
+    task: asyncio.Task[KasToken]
+    provider: SocialProvider
+    expires_at: datetime
+
+
 def _parse_provider(provider_str: str) -> SocialProvider:
     """Map a caller-supplied provider name to the wire enum (case-insensitive)."""
     normalized = (provider_str or "").strip().lower()
@@ -96,6 +125,33 @@ def _parse_provider(provider_str: str) -> SocialProvider:
         if member.value.lower() == normalized or member.name.lower() == normalized:
             return member
     raise ValueError(f"unknown social provider: {provider_str!r}")
+
+
+_PendingKind = _PendingLogin | _PendingOidcLogin | _PendingLoopbackLogin
+
+
+def _social_from_login_option(login_option: str) -> SocialProvider | None:
+    """Map the portal callback's ``login_option`` (``google``/``github``) to the enum.
+
+    ``None`` for an empty or unrecognised value, so the caller can fall back to the
+    provider the user clicked rather than fail an otherwise-valid callback.
+    """
+    try:
+        return _parse_provider(login_option)
+    except ValueError:
+        return None
+
+
+def _expires_at(entry: _PendingKind) -> datetime:
+    if isinstance(entry, _PendingLoopbackLogin):
+        return entry.expires_at
+    return entry.auth.expires_at
+
+
+def _release(entry: _PendingKind) -> None:
+    """Drop an entry's live resources; only a loopback login holds any (its port)."""
+    if isinstance(entry, _PendingLoopbackLogin) and not entry.task.done():
+        entry.task.cancel()
 
 
 class KasLoginService:
@@ -114,7 +170,7 @@ class KasLoginService:
     ) -> None:
         self._store = store
         self._session = session
-        self._pending: dict[str, _PendingLogin | _PendingOidcLogin] = {}
+        self._pending: dict[str, _PendingKind] = {}
         self._lock = asyncio.Lock()
 
     async def _http(self) -> aiohttp.ClientSession:
@@ -125,6 +181,13 @@ class KasLoginService:
         return self._session
 
     async def close(self) -> None:
+        # Release every held callback port first: a listener that outlives the
+        # service would keep an allowlisted port bound with nobody to poll it.
+        async with self._lock:
+            entries = list(self._pending.values())
+            self._pending.clear()
+        for entry in entries:
+            _release(entry)
         if self._session is not None and not self._session.closed:
             await self._session.close()
         self._session = None
@@ -214,7 +277,7 @@ class KasLoginService:
 
     async def _register_pending(
         self,
-        pending: _PendingLogin | _PendingOidcLogin,
+        pending: _PendingKind,
         *,
         user_code: str,
         verification_uri_complete: str,
@@ -229,9 +292,9 @@ class KasLoginService:
             # the server) is otherwise never polled again, so repeated
             # start-and-abandon would grow this process-lifetime dict without bound.
             now = datetime.now(timezone.utc)
-            expired = [lid for lid, entry in self._pending.items() if entry.auth.expires_at <= now]
+            expired = [lid for lid, entry in self._pending.items() if _expires_at(entry) <= now]
             for lid in expired:
-                del self._pending[lid]
+                _release(self._pending.pop(lid))
             self._pending[login_id] = pending
         return {
             "login_id": login_id,
@@ -251,7 +314,10 @@ class KasLoginService:
         if pending is None:
             raise UnknownLoginError(login_id)
 
-        if datetime.now(timezone.utc) >= pending.auth.expires_at:
+        if isinstance(pending, _PendingLoopbackLogin):
+            return await self._poll_loopback(login_id, pending)
+
+        if datetime.now(timezone.utc) >= _expires_at(pending):
             await self._forget(login_id)
             return {"status": "expired"}
 
@@ -347,19 +413,161 @@ class KasLoginService:
         return await self._persist_and_finish(login_id, token)
 
     async def _persist_and_finish(self, login_id: str, token: KasToken) -> dict[str, Any]:
-        """Save an approved token; the shared terminal step of every poll flavor."""
+        """Save an approved token; the shared terminal step of every poll flavor.
+
+        Runs under the pending lock, save included, and only while the login is
+        still registered. ``cancel`` takes the same lock, so it either runs first
+        (the entry is gone and nothing is ever written — the poll answers
+        ``UnknownLoginError``) or after the write has landed. A cancel can never
+        return while a credential the user abandoned is still on its way to disk,
+        and two polls of one approved login persist once. The write is one small
+        file, so other logins wait milliseconds.
+        """
+        async with self._lock:
+            if login_id not in self._pending:
+                raise UnknownLoginError(login_id)
+            result = await self._save_token(token)
+            self._pending.pop(login_id, None)
+        return result
+
+    async def _save_token(self, token: KasToken) -> dict[str, Any]:
+        """Write an approved token to the store and shape the poll's terminal answer.
+
+        Takes no lock, so ``_persist_and_finish`` can run it while holding
+        ``self._lock`` to keep the login cancellable until the write lands.
+        """
         try:
             await asyncio.to_thread(self._store.save, token)
         except TokenStoreError as err:
             # Disk full / read-only store: the login was approved but we cannot
-            # persist it. Report error (not authorized) and drop the pending
-            # entry so a retry starts a fresh flow rather than looping.
+            # persist it. Report error (not authorized); the caller drops the
+            # pending entry so a retry starts a fresh flow rather than looping.
             # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - logs the OSError only, never the token value
             logger.warning("could not persist approved KAS token: %s", err)
-            await self._forget(login_id)
-            return {"status": "error"}
-        await self._forget(login_id)
+            # The one poll error a dashboard must NOT retry on another transport:
+            # the store itself is unwritable, so every flavor would fail the same way.
+            return {"status": "error", "code": "token_store_failed"}
         return {"status": "authorized", "provider": token.provider}
+
+    async def begin_loopback(self, provider_str: str) -> dict[str, Any]:
+        """Start a loopback (PKCE) social login; returns the portal URL to open.
+
+        Only Google/GitHub run through Kiro's portal; Builder ID / IdC stay on the
+        device flow (as in kiro-cli). Binding one of the Cognito-allowlisted ports
+        happens HERE, synchronously, so an all-ports-busy host fails the begin with a
+        coded error the dashboard can turn into an immediate device-flow fallback —
+        rather than a listener that never answers.
+
+        Raises ValueError for a non-social provider, LoopbackUnavailableError when
+        the transport is not loopback for this install shape or no callback port
+        can be bound.
+        """
+        provider = _parse_provider(provider_str)
+        if select_transport() is not Transport.LOOPBACK:
+            raise LoopbackUnavailableError("loopback transport not available on this install")
+        try:
+            # bind() is a syscall on the serving loop; tiny for loopback, but the
+            # gateway's no-blocking-call rule holds regardless of expected cost.
+            sock, port = await asyncio.to_thread(portal.bind_allowed_port)
+        except portal.PortalAuthError as err:
+            raise LoopbackUnavailableError(str(err)) from err
+        verifier = portal.generate_code_verifier()
+        state = portal.generate_state()
+        auth_url = portal.build_auth_url(port, state, portal.generate_code_challenge(verifier))
+        task = asyncio.create_task(
+            self._run_loopback(sock, port, provider, state, verifier),
+            name=f"kas-loopback-{port}",
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=LOOPBACK_TIMEOUT_SECS)
+        result = await self._register_pending(
+            _PendingLoopbackLogin(task=task, provider=provider, expires_at=expires_at),
+            user_code="",
+            verification_uri_complete=auth_url,
+            expires_at=expires_at,
+        )
+        # The dashboard opens this URL itself: the browser is the user's, not ours.
+        result["auth_url"] = auth_url
+        result["port"] = port
+        return result
+
+    async def _run_loopback(
+        self,
+        sock: Any,
+        port: int,
+        provider: SocialProvider,
+        state: str,
+        verifier: str,
+    ) -> KasToken:
+        """Serve the callback and exchange the code. Owns the socket.
+
+        Returns the token WITHOUT persisting it: the poll persists through
+        ``_save_token`` under the pending lock, only while the login is still
+        registered, so a cancelled login ("use a code instead", start over) can
+        never leave a credential behind that the user did not see land.
+        """
+        try:
+            callback = await portal.wait_for_callback(
+                sock, port, state, timeout_secs=LOOPBACK_TIMEOUT_SECS
+            )
+            redirect_uri = portal.rebuild_redirect_uri(
+                port, callback["path"], callback["login_option"]
+            )
+            # The portal page is where the user actually picks Google vs GitHub;
+            # the button they clicked here only chose the transport. Trust the
+            # callback's login_option so the stored provider matches the account.
+            chosen = _social_from_login_option(callback["login_option"]) or provider
+            session = await self._http()
+            return await portal.exchange_code(
+                chosen, callback["code"], verifier, redirect_uri, session=session
+            )
+        finally:
+            # The listener normally closes the socket with its runner; closing an
+            # already-closed socket is a no-op, so this only matters for the path
+            # where serving never started (cancel racing setup).
+            await asyncio.to_thread(sock.close)
+
+    async def _poll_loopback(self, login_id: str, pending: _PendingLoopbackLogin) -> dict[str, Any]:
+        """Report the listener task's state; terminal outcomes drop the entry.
+
+        A timeout or a listener failure carries ``code: loopback_failed`` so the
+        dashboard can degrade to the device flow for the same provider without a
+        detour through an error screen.
+        """
+        if not pending.task.done():
+            if datetime.now(timezone.utc) < pending.expires_at:
+                return {"status": "pending"}
+            # Deadline passed but the listener has not unwound yet: same outcome as
+            # its own timeout, reported now rather than one poll later.
+            await self._forget(login_id)
+            return {"status": "expired", "code": "loopback_timeout"}
+        # Classify the terminal answer under the pending lock so two polls of one
+        # finished task agree on who owns it; the success path then hands off to
+        # ``_persist_and_finish``, which re-checks registration under the same
+        # lock before writing, so a cancel landing in between wins and nothing
+        # is persisted.
+        async with self._lock:
+            if self._pending.get(login_id) is not pending:
+                raise UnknownLoginError(login_id)
+            if pending.task.cancelled():
+                self._pending.pop(login_id, None)
+                return {"status": "error", "code": "loopback_cancelled"}
+            err = pending.task.exception()
+            if err is not None:
+                self._pending.pop(login_id, None)
+        if err is None:
+            return await self._persist_and_finish(login_id, pending.task.result())
+        if isinstance(err, portal.PortalTimeoutError):
+            return {"status": "expired", "code": "loopback_timeout"}
+        logger.warning("loopback login failed: %s", err)
+        return {"status": "error", "code": "loopback_failed", "error": str(err)}
+
+    async def cancel(self, login_id: str) -> None:
+        """Abandon a pending login, releasing its callback port if it holds one.
+
+        Idempotent: an unknown or already-finished id is a no-op, because the
+        dashboard cancels on every 'start over' / 'use a code instead' click.
+        """
+        await self._forget(login_id)
 
     async def logout(self, identity: str) -> None:
         """Delete the stored token for one identity kind.
@@ -371,4 +579,6 @@ class KasLoginService:
 
     async def _forget(self, login_id: str) -> None:
         async with self._lock:
-            self._pending.pop(login_id, None)
+            entry = self._pending.pop(login_id, None)
+        if entry is not None:
+            _release(entry)

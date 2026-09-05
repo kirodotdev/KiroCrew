@@ -9,9 +9,10 @@ import { Card, CardTitle, Btn, Badge, SearchInput, EmptyState } from '../../comp
 import Modal from '../../components/Modal'
 import PromptForm, { PROMPT_FILENAME_MAX_BYTES, assemblePromptContent, parsePromptContent, promptNameProblem, type PromptFormData, type PromptScope } from '../../components/PromptForm'
 import InfoTip from '../../components/InfoTip'
+import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
-import { parseErrorCode } from '../../utils/errorReport'
+import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
 
@@ -103,6 +104,13 @@ export default function PromptsTab() {
   // both would tell a user recovering from a network blip that their prompt
   // looks like it contains a secret.
   const [readOnlyReason, setReadOnlyReason] = useState<'redacted' | 'lossy' | 'failed' | null>(null)
+  // The failed read's journal report, captured in `load()`'s catch by the
+  // error's OWN message. The pane displays localized copy, and a localized
+  // string cannot match the journal (it keys on the server's English text),
+  // so without carrying the report here the Ask-agent hand-off would lose the
+  // structured context — endpoint, HTTP status, backend code — that is the
+  // hand-off's whole value.
+  const [failedReadReport, setFailedReadReport] = useState<ErrorReport | undefined>(undefined)
   // True from selection until that prompt's own detail response settles. Gates
   // the Edit/Delete row and the content box: neither can say anything honest
   // about a file whose read hasn't answered yet.
@@ -242,6 +250,7 @@ export default function PromptsTab() {
     setContent('')
     setContentEditable(false)
     setReadOnlyReason(null)
+    setFailedReadReport(undefined)
     // Named loading state, not inferred from empty content: without it the
     // header renders a disabled "Edit unavailable" for the whole fetch — a
     // label asserting a fact the system doesn't hold yet — and the content
@@ -284,11 +293,12 @@ export default function PromptsTab() {
       setContentEditable(!d.redacted && !d.lossy)
       setReadOnlyReason(d.redacted ? 'redacted' : d.lossy ? 'lossy' : null)
       setDetailLoading(false)
-    } catch {
+    } catch (e) {
       if (pendingRef.current !== key) return
       setContent('')
       setContentEditable(false)
       setReadOnlyReason('failed')
+      setFailedReadReport(e instanceof Error ? findReport(e.message) : undefined)
       setDetailLoading(false)
     }
   }, [queryClient])
@@ -329,24 +339,30 @@ export default function PromptsTab() {
   // OPENING the modal resets it) and every later tab switch would ask about a
   // draft the user already threw away. If the modal ever stops covering the
   // rail, the create form needs this same guard.
-  useSidePanelLeaveGuard(() =>
-    !editDirty() || confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')))
+  //
+  // The second argument is the same dirtiness as a value, which is what arms the
+  // browser Back guard: that gesture reaches no component, so it has to be armed
+  // before the press rather than asked at it. Same predicate as the guard above,
+  // so the two cannot disagree about whether there is a draft.
+  useSidePanelLeaveGuard(
+    () => !editDirty() || confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')),
+    editDirty(),
+  )
 
   // The guard above is consulted by every exit that has been wired to ask: this
-  // layout's own rail and mobile back bar, the global sidebar, and the command
-  // palette. A reload, a tab close, or navigating the browser off the dashboard
-  // entirely destroys the same draft, and `beforeunload` is the only thing the
-  // platform offers there — the same idiom, for the same reason, as
-  // ArtifactDetailPage, PapyrusPage, MdNotebook and ChatPage.
+  // layout's own rail and mobile back bar, the global sidebar, the command
+  // palette, the notification panel's jumps, and — through the stake published
+  // alongside it — the browser's own Back/Forward button. A reload, a tab close,
+  // or navigating the browser off the dashboard entirely destroys the same
+  // draft, and `beforeunload` is the only thing the platform offers there — the
+  // same idiom, for the same reason, as ArtifactDetailPage, PapyrusPage,
+  // MdNotebook and ChatPage.
   //
-  // NOT covered, and deliberately named rather than implied: the browser's own
-  // Back/Forward button, and in-app `navigate()` callers that have not been
-  // wired (notification jumps, and any future one). `beforeunload` does not fire
-  // for Back (the document never unloads) and react-router's `useBlocker` needs
-  // a data router the dashboard does not mount, so vetoing Back means pushing
-  // sentinel history entries under a router that owns the stack. The structural
-  // retirement of this per-caller wiring is tracked in #8010; until then a new
-  // navigation surface has to opt in, and forgetting fails silently.
+  // Still NOT covered, and deliberately named rather than implied: an in-app
+  // `navigate()` caller that neither asks nor runs inside `useGuardedLeave`.
+  // Coverage remains opt-in per surface, and forgetting fails silently; the
+  // structural retirement of that model (a data router so `useBlocker` becomes
+  // available, or lifting the draft so no exit destroys it) is tracked in #8010.
   useEffect(() => {
     if (!editDirty()) return
     const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
@@ -576,15 +592,45 @@ export default function PromptsTab() {
                        fetch. */
                     <p className="text-muted text-[12px] italic">{i18nT('pages.overview.promptsTab.loading_content')}</p>
                   ) : (<>
-                    {readOnlyReason && (
+                    {(readOnlyReason === 'redacted' || readOnlyReason === 'lossy') && (
                       <p className="text-muted text-[11px] mb-1 italic">
                         {readOnlyReason === 'redacted'
                           ? i18nT('pages.overview.promptsTab.read_only_redacted')
-                          : readOnlyReason === 'lossy'
-                            ? i18nT('pages.overview.promptsTab.read_only_lossy')
-                            : i18nT('pages.overview.promptsTab.read_only_failed')}
+                          : i18nT('pages.overview.promptsTab.read_only_lossy')}
                       </p>
                     )}
+                    {/* `failed` is the one reason that IS an error — its value
+                        comes from `load()`'s catch — so it renders through
+                        ErrorNotice per errors-use-error-notice, keeping the
+                        journal's structured context and the agent hand-off.
+                        `redacted`/`lossy` stay a caption: they arrive on the
+                        SUCCESS path and describe the file's content, not a
+                        failure. askAgent is safe here: this block renders only
+                        while `detailEditing` is false, so no editor draft
+                        lives in the subtree the hand-off unmounts, and the
+                        create modal's backdrop covers the pane while it holds
+                        typed work.
+
+                        Only `failed` gets Retry, too: a redacted or lossy copy
+                        is the server's answer about the file's CONTENT and
+                        asking again returns the same answer, but a failed
+                        fetch is an answer about the NETWORK, and the recovery
+                        path already exists — re-clicking the selected row
+                        re-invokes the load. Nothing taught that, so the pane
+                        dead-ended until the user re-clicked by accident. The
+                        button calls the same `load` the row re-click calls;
+                        no new fetch path. */}
+                    {readOnlyReason === 'failed' && (<>
+                      <ErrorNotice
+                        message={i18nT('pages.overview.promptsTab.read_only_failed')}
+                        report={failedReadReport}
+                        askAgent
+                        className="mb-2"
+                      />
+                      <Btn className="mb-2 text-[12px]" onClick={() => void load(selected)}>
+                        {i18nT('pages.overview.promptsTab.retry_read')}
+                      </Btn>
+                    </>)}
                     <pre className="bg-bg-elevated border border-border rounded-md p-3 font-mono text-[13px] text-text overflow-x-auto whitespace-pre-wrap leading-normal">{content}</pre>
                   </>)}
                 </div>

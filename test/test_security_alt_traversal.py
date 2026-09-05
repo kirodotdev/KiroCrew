@@ -307,6 +307,18 @@ def test_non_recursive_directory_action_is_allowed(command: str) -> None:
         f"bash -lc 'rg . {CREW}'",
         f"sh -lc 'grep -r . {CREW}'",
         f"bash -c'rg . {CREW}'",
+        # UPPERCASE letters cluster too (`-C` is noclobber), and this pass feeds
+        # case-PRESERVING tokens -- a lowercase-only flag class dropped these
+        # while the deleted local scan tolerated any prefix (#8197).
+        f"bash -Cc'rg . {CREW}'",
+        f"bash -Cc 'rg . {CREW}'",
+        # A decoy that satisfies the same token predicate must not eat the stop
+        # through which the real carrier's payload is found, and any prefix
+        # before the first lowercase `c` still marks a carrier -- both are what
+        # the deleted local scan's every-token walk provided.
+        f"ksh -onoclobber -c'rg . {CREW}'",
+        f"bash -c 'true' -c 'rg . {CREW}'",
+        f"bash -1c 'rg . {CREW}'",
         f"rg --files {CREW} | xargs bash -lc 'cat \"$@\"' bash",
         f"rg --files {CREW} | xargs sh -c 'exec cat \"$@\"' sh",
     ],

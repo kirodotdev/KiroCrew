@@ -2,6 +2,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { useState, useMemo, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { Bell, BellOff, Check, CheckCheck, Layers, Trash2, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { deleteNotification, clearNotifications, ackAllNotifications } from '../../store/notificationsSlice'
 import { api } from '../../api/client'
@@ -128,6 +129,10 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   }, [filtered])
 
   const navigate = useNavigate()
+  // Same gate as the detail panel: a note's action button navigates away from
+  // whatever page the feed is floating over, and the ask belongs in front of the
+  // handler rather than around its navigate call.
+  const leave = useGuardedLeave()
   // group_key stacking -- notes sharing a group_key within a date group
   // collapse into one stack (newest is the visible head), macOS Notification
   // Center style. Expansion is per stack key, session-local.
@@ -396,7 +401,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                               key={a.id}
                               type="button"
                               className={`${actionBtn} text-text`}
-                              onClick={e => { e.stopPropagation(); navigate(a.safeUrl!) }}
+                              onClick={e => { e.stopPropagation(); leave(() => navigate(a.safeUrl!), a.safeUrl!) }}
                             >{a.label}</button>
                           ))}
                           <span className="flex-1" />

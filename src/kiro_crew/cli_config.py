@@ -18,6 +18,16 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
+from kiro_crew.config.superseded_defaults import (
+    acked_superseded,
+    coerced_value_drift,
+    coercion_summary,
+    drift_summary,
+    drop_acks,
+    drop_drifted_keys,
+    record_acks,
+    superseded_default_drift,
+)
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.sel import sel
 
@@ -229,9 +239,231 @@ def _config_cmd(args: argparse.Namespace) -> None:
         )
         editor = os.environ.get("EDITOR", "vi")
         os.execvp(editor, [editor, str(p)])
+    elif action == "defaults":
+        _defaults_cmd(args)
     else:
-        print("Usage: kirocrew config {get,set,edit}", file=sys.stderr)
+        print("Usage: kirocrew config {get,set,edit,defaults}", file=sys.stderr)
         sys.exit(1)
+
+
+def _defaults_cmd(args: argparse.Namespace) -> None:
+    """Review, adopt, or affirm stored values that no longer match the shipped ones.
+
+    Two kinds, and the difference decides what an operator may do:
+
+    - a SUPERSEDED DEFAULT still wins, so it may be a deliberate choice. It can be
+      adopted away or affirmed.
+    - a COERCED value cannot win -- the loader replaces it at parse time -- so there
+      is nothing to affirm and ``--keep`` refuses it by name rather than promising a
+      setting that never takes effect.
+
+    Three modes over one detection pass, so the list an operator reads and the set a
+    flag acts on cannot disagree:
+
+    - no flag: list both kinds, marking anything already affirmed.
+    - ``--adopt``: remove the keys, so the loader resolves the current default.
+      Rewriting is safe here where it is not on the load path because the operator
+      asked by name, and only a key that IS drifted or coerced is ever removed.
+      Detection runs again inside the write lock, so a value changed since it was
+      listed is left alone.
+    - ``--keep``: record the stored values as intentional, silencing the load-path
+      notice for exactly those values. Changing a value later reports it again.
+
+    A bare ``--adopt``/``--keep`` skips keys already affirmed, so it cannot silently
+    undo an earlier decision; naming a key explicitly still acts on it. A key that
+    is neither drifted nor coerced is refused rather than silently ignored, because
+    a typo would otherwise read as success.
+    """
+    path = config_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print("✅ No config.json yet — the current defaults already apply.")
+        return
+    except OSError as e:
+        print(f"❌ Could not read {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        # ValueError covers both shapes of unreadable content without restating
+        # them: json.JSONDecodeError and UnicodeDecodeError are both subclasses.
+        print(f"❌ Could not read {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(raw, dict):
+        print(f"❌ {path} is not a JSON object", file=sys.stderr)
+        sys.exit(1)
+
+    # acked={} so the operator sees the whole truth; an ack answers the unsolicited
+    # load-path line, not the question they just typed.
+    drifted = superseded_default_drift(raw, acked={})
+    coerced = coerced_value_drift(raw)
+    acked = acked_superseded()
+    wanted = list(getattr(args, "keys", None) or [])
+    if wanted:
+        known = {e.dotted_key for e in drifted} | {c.dotted_key for c, _ in coerced}
+        unknown = [k for k in wanted if k not in known]
+        if unknown:
+            print(
+                "❌ Not holding a superseded default or a coerced value: " + ", ".join(unknown),
+                file=sys.stderr,
+            )
+            print(
+                "   Run 'kirocrew config defaults' with no arguments to see the list.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        drifted = [e for e in drifted if e.dotted_key in wanted]
+        coerced = [(c, v) for c, v in coerced if c.dotted_key in wanted]
+
+    if not drifted and not coerced:
+        print("✅ No stored value holds a superseded default.")
+        return
+
+    keeping = getattr(args, "keep", False)
+    if keeping and coerced:
+        # There is nothing to affirm: the loader replaces the value whatever the
+        # operator thinks of it, so recording it as intentional would promise a
+        # setting that never takes effect.
+        for centry, stored in coerced:
+            print(
+                f"⚠️  {centry.dotted_key} ({stored!r}) cannot be kept — "
+                f"the loader replaces it. Use --adopt to drop it."
+            )
+        coerced = []
+        if not drifted:
+            return
+
+    if (getattr(args, "adopt", False) or keeping) and not wanted:
+        # A bare --adopt/--keep means "all of them", and an affirmed value is not
+        # one of them: the operator already answered for that key, so sweeping it
+        # up here would silently undo their decision. Naming a key explicitly
+        # still acts on it -- that is the operator saying so again.
+        drifted = [e for e in drifted if e.dotted_key not in acked]
+        if not drifted and not coerced:
+            print("✅ Nothing left to act on — every remaining value is acknowledged.")
+            print("   Name a key explicitly to change one of those.")
+            return
+
+    keys = [e.dotted_key for e in drifted]
+
+    if getattr(args, "adopt", False):
+        removed: list[str] = []
+        coerced_keys = [c.dotted_key for c, _ in coerced]
+
+        def _mutate(existing: dict) -> dict:
+            # Re-detect inside the lock: the document read above is a snapshot, and
+            # removing a key whose value changed since would discard a live choice.
+            fresh = [
+                e.dotted_key
+                for e in superseded_default_drift(existing, acked={})
+                if e.dotted_key in keys
+            ]
+            fresh += [
+                c.dotted_key
+                for c, _ in coerced_value_drift(existing)
+                if c.dotted_key in coerced_keys
+            ]
+            removed.extend(drop_drifted_keys(existing, fresh))
+            return existing
+
+        try:
+            update_config_locked(config_path(), mutate=_mutate)
+        except ConfigReadError as e:
+            print(f"❌ Cannot edit a corrupt config.json: {e}", file=sys.stderr)
+            sys.exit(1)
+        except OSError as e:
+            # A read-only or full data home, or a refused link: report it and stop,
+            # rather than letting the CLI die on a traceback.
+            print(f"❌ Could not write {config_path()}: {e}", file=sys.stderr)
+            sys.exit(1)
+        # An adopted key no longer stores the acked value, so its ack is dead
+        # bookkeeping; dropping it keeps a later deliberate choice reportable.
+        try:
+            if removed:
+                drop_acks(removed)
+        except OSError as e:
+            print(f"⚠️  Adopted, but could not update acknowledgments: {e}", file=sys.stderr)
+        sel().log_api_access(
+            caller="cli",
+            operation="config_adopt_defaults",
+            outcome="allowed",
+            source="cli",
+            resources=",".join(removed) or "none",
+        )
+        # An overlay value outranks the base file, so for a key it also carries the
+        # EFFECTIVE value does not change -- saying the default now applies would be
+        # false. Report what actually happened instead.
+        overridden = _overlay_keys(removed)
+        for key in removed:
+            if key in overridden:
+                print(f"✅ {key} removed from config.json — config.local.json still overrides it")
+            else:
+                print(f"✅ {key} removed — the current default now applies")
+        if not removed:
+            print("Nothing removed — the stored values changed since they were listed.")
+        else:
+            print("\nRestart the gateway for a running instance to pick this up.")
+        return
+
+    if keeping:
+        try:
+            recorded = record_acks(keys)
+        except ConfigReadError as e:
+            print(f"❌ Cannot read a corrupt config.json: {e}", file=sys.stderr)
+            sys.exit(1)
+        except OSError as e:
+            print(f"❌ Could not record acknowledgments: {e}", file=sys.stderr)
+            sys.exit(1)
+        if not recorded:
+            print("Nothing recorded — the stored values changed since they were listed.")
+            return
+        sel().log_api_access(
+            caller="cli",
+            operation="config_keep_defaults",
+            outcome="allowed",
+            source="cli",
+            resources=",".join(recorded),
+        )
+        for key in recorded:
+            print(f"✅ {key} recorded as intentional — no longer reported")
+        print("\nChanging one of these values later reports it again.")
+        return
+
+    for entry in drifted:
+        mark = "✅ acknowledged as intentional" if entry.dotted_key in acked else "ℹ️ "
+        print(f"{mark} {drift_summary(entry)}\n")
+    for centry, stored in coerced:
+        print(f"ℹ️  {coercion_summary(centry, stored)}\n")
+    if coerced or any(e.dotted_key not in acked for e in drifted):
+        print("Take the current defaults:  kirocrew config defaults --adopt")
+        print("Affirm your values:         kirocrew config defaults --keep")
+        print("Either accepts specific keys, e.g. --keep session.autocompact_pct")
+
+
+def _overlay_keys(dotted_keys: list[str]) -> set[str]:
+    """Return the subset of *dotted_keys* that ``config.local.json`` also carries.
+
+    Removing such a key from the base file does not change the value the loader
+    resolves -- the overlay still wins -- so the adopt report must not claim the
+    current default now applies. Reads only, and treats an unreadable overlay as
+    carrying nothing: a wrong claim is worse than a missing note either way, and
+    every other surface already tolerates a broken overlay.
+    """
+    p = config_local_path()
+    if not p.is_file():
+        return set()
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # ValueError covers malformed JSON and invalid UTF-8 alike; either way the
+        # overlay is treated as carrying nothing.
+        return set()
+    if not isinstance(raw, dict):
+        return set()
+    found = set()
+    for dotted in dotted_keys:
+        if _dict_get(raw, dotted) is not _MISSING:
+            found.add(dotted)
+    return found
 
 
 def _dict_get(d: dict, key: str) -> object:

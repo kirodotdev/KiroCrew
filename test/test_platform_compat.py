@@ -806,6 +806,19 @@ class TestResourceShims:
         # truncated without argtypes, so GetProcessTimes failed and this read 0.0.
         assert pc.proc_cpu_seconds() > 0.0
 
+    def test_proc_cpu_nanos_for_pid_reads_a_running_process(self):
+        # Linux /proc, macOS libproc, Windows GetProcessTimes: a live interpreter
+        # has consumed CPU on all three. None is reserved for a platform with no
+        # per-pid counter at all, where the caller keeps its prior behavior.
+        ns = pc.proc_cpu_nanos_for_pid(os.getpid())
+        if ns is None:
+            pytest.skip("no per-pid CPU counter on this platform")
+        assert ns > 0
+
+    def test_proc_cpu_nanos_for_pid_refuses_a_reserved_pid(self):
+        assert pc.proc_cpu_nanos_for_pid(0) is None
+        assert pc.proc_cpu_nanos_for_pid(-1) is None
+
     def test_raise_nofile_soft_limit_is_safe(self):
         # No-op on Windows; best-effort raise on POSIX. Must never raise.
         pc.raise_nofile_soft_limit(4096)
@@ -1545,6 +1558,40 @@ class TestOwnProcessStartTime:
 
         monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _ShortLib())
         assert pc._darwin_process_start_microtime(4242) is None
+
+    def test_darwin_cpu_nanos_parses_the_taskinfo_layout(self, monkeypatch):
+        """user+system CPU are sliced from the pinned ``proc_taskinfo`` offsets."""
+
+        class _FakeLib:
+            @staticmethod
+            def proc_pidinfo(_pid, _flavor, _arg, buf, size):
+                raw = bytearray(size)
+                raw[pc._DARWIN_PTI_TOTAL_USER_OFFSET : pc._DARWIN_PTI_TOTAL_USER_OFFSET + 8] = (
+                    7_000_000_000
+                ).to_bytes(8, "little")
+                raw[pc._DARWIN_PTI_TOTAL_SYSTEM_OFFSET : pc._DARWIN_PTI_TOTAL_SYSTEM_OFFSET + 8] = (
+                    500_000_000
+                ).to_bytes(8, "little")
+                buf.raw = bytes(raw)
+                return size
+
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _FakeLib())
+        assert pc._darwin_process_cpu_nanos(4242) == 7_500_000_000
+
+    def test_darwin_cpu_nanos_refuses_a_mismatched_struct_size(self, monkeypatch):
+        """Same layout check as the start-time probe: a partial fill answers None."""
+
+        class _ShortLib:
+            @staticmethod
+            def proc_pidinfo(_pid, _flavor, _arg, _buf, _size):
+                return 64
+
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _ShortLib())
+        assert pc._darwin_process_cpu_nanos(4242) is None
+
+    def test_darwin_cpu_nanos_without_libproc_is_none(self, monkeypatch):
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: None)
+        assert pc._darwin_process_cpu_nanos(4242) is None
 
     def test_reads_the_platform_once_then_serves_the_cache(self, monkeypatch):
         first = pc.own_process_start_time()  # populate the cache for THIS pid

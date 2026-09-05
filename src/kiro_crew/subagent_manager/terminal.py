@@ -114,6 +114,11 @@ class TerminalCoordinator(ManagerComponent):
         arguments rather than unified away. The WS payload is identical (both
         set ``info.elapsed`` before calling), so it is built from ``info`` here.
         """
+        # A queued synthetic terminal is registered before all sibling reports
+        # are scheduled, with ``done=False`` as a batch-completion hold. The
+        # exclusive report task owns the terminal transition; flipping here
+        # means only the last sibling can observe the batch as fully settled.
+        info.done = True
         await self._manager._fire_event(
             "subagent_done",
             info,

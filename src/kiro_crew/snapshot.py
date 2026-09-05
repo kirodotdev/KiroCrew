@@ -2347,21 +2347,32 @@ def _usable_cron_shape(parsed: object, path: Path) -> bool:
     return True
 
 
-def _merge_crons(src_path: Path, dst_path: Path) -> None:
+def _merge_crons(src_path: Path, dst_path: Path) -> bool:
+    """Merge the archive's cron jobs into the live store.
+
+    Returns ``True`` when the merged store was written, ``False`` when the
+    merge was refused: an unreadable source, an unreadable destination, or an
+    unusable cron shape on either side. The refusal diagnostics stay on
+    stdout, but a print is invisible to a caller with no terminal — the
+    dashboard import reported "crons (merged)" over a refusal that imported
+    zero jobs — so the outcome is also returned for the caller to report.
+    A failing WRITE of the merged store is not a refusal: the ``OSError``
+    propagates, which is the loud behavior the caller's error path expects.
+    """
     # Cron job names are operator-authored text and routinely non-ASCII, so the
     # locale codepage is the wrong decoder for this file on any host.
     try:
         src = json.loads(src_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         print(f"  ⚠️  Could not read {src_path}: {exc} — skipping cron merge")
-        return
+        return False
     try:
         dst = json.loads(dst_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         print(f"  ⚠️  Could not read {dst_path}: {exc} — skipping cron merge")
-        return
+        return False
     if not _usable_cron_shape(src, src_path) or not _usable_cron_shape(dst, dst_path):
-        return
+        return False
     existing = {j.get("name") for j in dst.get("jobs", [])}
     imported = 0
     for job in src.get("jobs", []):
@@ -2374,6 +2385,7 @@ def _merge_crons(src_path: Path, dst_path: Path) -> None:
     dst_path.write_text(json.dumps(dst, indent=2), encoding="utf-8")
     total = len(src.get("jobs", []))
     print(f"  Cron jobs imported: {imported} (skipped {total - imported} duplicates)")
+    return True
 
 
 _TERMINATORS = (b"\n", b"\r")
@@ -3870,13 +3882,17 @@ def _do_merge(
 
     if _want(components, "crons"):
         sc, dc = snap / "crons.json", mc / "crons.json"
+        crons_ok = True
         if sc.is_file():
             if dc.is_file():
-                _merge_crons(sc, dc)
+                crons_ok = _merge_crons(sc, dc)
             else:
                 shutil.copy2(str(sc), str(dc))
                 print("  Crons: copied (no existing crons)")
-        print("  ✅ crons")
+        if crons_ok:
+            print("  ✅ crons")
+        else:
+            print("  ⚠️  crons: merge skipped (see warning above) — no jobs imported")
 
     if _want(components, "config"):
         for f in CORE_FILES["config"]:

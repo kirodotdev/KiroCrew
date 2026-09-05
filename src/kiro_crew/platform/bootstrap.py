@@ -49,6 +49,7 @@ from kiro_crew.platform.defaults import (
     DefaultSkillDiscoveryProvider,
     DefaultSlackEnterpriseGate,
     DefaultTelemetryProvider,
+    DefaultTipsProvider,
     DefaultTunnelProvider,
 )
 from kiro_crew.platform.discovery import discover_companion_context, plugin_entry_points
@@ -143,6 +144,7 @@ def build_default_context(
         agent_catalog=DefaultAgentCatalogProvider(),
         prompt_sources=DefaultPromptSourceProvider(),
         skill_discovery=DefaultSkillDiscoveryProvider(),
+        tips=DefaultTipsProvider(),
         denied_rules=DefaultDeniedRuleProvider(),
         import_sources=DefaultImportSourceProvider(),
         capability_manager=DefaultCapabilityManager(),

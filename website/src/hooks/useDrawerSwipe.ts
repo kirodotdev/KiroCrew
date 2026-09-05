@@ -769,6 +769,53 @@ function dragOwnedBelow(chain: HTMLElement[], root: HTMLElement, side: Side): bo
   return false
 }
 
+/**
+ * Whether an active TEXT SELECTION owns the touch starting at `target`.
+ *
+ * A long-press selects a word and puts two drag handles on it, and extending
+ * the selection is a HORIZONTAL drag over ordinary chat text — dead center in
+ * this gesture's arming surface. Nothing else here can see it: the handles are
+ * browser chrome, not elements in the chain, so `dragOwnedBelow` finds no claim
+ * and `findHorizontalScroller` no scroller, and the handle drag passed every
+ * guard and locked as an open-drawer gesture — the drawer slid in mid-selection.
+ * The selection itself is the signal: a non-collapsed range means the user is
+ * working WITH the text under the finger, and a horizontal drag during one is
+ * the handle, not the drawer — the hamburger is still there for the exception.
+ *
+ * A focused EDITABLE under the finger is the same situation one step earlier:
+ * the caret's own handle drags before any range exists, so a touch that begins
+ * inside the element being typed in yields too. Focus is required — merely
+ * containing an input must not turn a whole form into a gesture sink, and an
+ * idle input the user is not in carries no handle to defer to.
+ *
+ * Reads the COMPOSED chain, like the two guards above, and for the same reason
+ * (see `touchedChain`): outside a shadow root both `e.target` AND
+ * `document.activeElement` are retargeted to the host, so a walk up
+ * `parentElement` from the retargeted target never meets an editable inside
+ * one. The chain crosses the boundary, and the focus side descends through
+ * `shadowRoot.activeElement` to the element that really holds the caret.
+ *
+ * Fails toward the gesture, like every guard here: no document (SSR, a bare
+ * test environment) means no selection to defer to.
+ */
+function selectionOwnsTouch(chain: HTMLElement[]): boolean {
+  if (typeof document === 'undefined') return false
+  const sel = typeof document.getSelection === 'function' ? document.getSelection() : null
+  if (sel && !sel.isCollapsed) return true
+  // The deepest focused element: `document.activeElement` stops at a shadow
+  // HOST, and each root names its own inner focus.
+  let active: Element | null = document.activeElement
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement
+  if (!active) return false
+  for (const node of chain) {
+    const editable = node instanceof HTMLInputElement
+      || node instanceof HTMLTextAreaElement
+      || node.isContentEditable
+    if (editable && (node === active || node.contains(active))) return true
+  }
+  return false
+}
+
 interface DrawerSwipeOptions {
   /** Bind the gesture at all. Mobile-only — a pointer device has the toggle. */
   enabled: boolean
@@ -1140,6 +1187,12 @@ export function useDrawerSwipe(
       // opens it, and the hamburger is always there. Decided at touchstart
       // because it no longer depends on the direction.
       if (findHorizontalScroller(chain)) return
+      // An active text selection — or the focused editable being typed in —
+      // owns the drag: extending a selection rightward IS a horizontal drag
+      // over plain chat text, and its handles are browser chrome that neither
+      // chain reader above can see. Decided here like `findHorizontalScroller`,
+      // because it does not depend on the direction.
+      if (selectionOwnsTouch(chain)) return
       travelPx.current = span()
       startX.current = touch.clientX
       startY.current = touch.clientY
@@ -1171,6 +1224,12 @@ export function useDrawerSwipe(
         // toward it. This is also what lets a left and a right instance share
         // one element — each rejects the other's opening direction.
         if (openRef.current ? dx * openDir > 0 : dx * openDir < 0) { reset(); return }
+        // A long-press SELECTS mid-touch: the finger goes down, the selection
+        // appears under it, and the SAME touch drags the handle on without
+        // lifting — so the touchstart check saw nothing. Re-checked only while
+        // pending: an already-locked drag owns the panel, and a selection
+        // appearing under it must not yank the panel away mid-slide.
+        if (selectionOwnsTouch(touchedChain(e, el))) { reset(); return }
         phase.current = 'locked'
         // The finger owns the page from here: no vertical scroll under the
         // drawer, and no click on release.

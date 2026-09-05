@@ -19,12 +19,13 @@
  *  translated or reworded entry silently stops collecting that family of keys. */
 const SESSION_PREFIXES = [
   'vc_heights_',
-  'vc_anchor2_',
-  // The pre-version-bump anchor prefix. `ScrollAnchorCache` reaps these outright
-  // when it loads, but that only happens once the chat virtualizer is on screen —
-  // so the boot sweep keeps owning them for a user who never opens a chat.
-  // Dropping this line when the prefix was bumped would leave those keys
+  'vc_anchor3_',
+  // The pre-version-bump anchor prefixes. `ScrollAnchorCache` reaps these
+  // outright when it loads, but that only happens once the chat virtualizer is
+  // on screen — so the boot sweep keeps owning them for a user who never opens a
+  // chat. Dropping a line when the prefix was bumped would leave those keys
   // uncollectable for exactly the sessions that are already gone.
+  'vc_anchor2_',
   'vc_anchor_',
   'kirocrew:touched-files:',
   'mc-panel-tabs:',

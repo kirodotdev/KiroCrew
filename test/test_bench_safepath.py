@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+import kiro_crew.eval.bench.safepath as safepath
 from kiro_crew.eval.bench import datasets
 from kiro_crew.eval.bench.corpus import (
     CAT_SINGLE_HOP,
@@ -35,6 +36,7 @@ from kiro_crew.eval.bench.safepath import (
     guard_output_dir,
     guard_read_path,
     guard_write_path,
+    read_text_nofollow,
 )
 from kiro_crew.eval.bench.toy_embedder import TOY_EMBEDDER_ID, toy_embed_fn
 
@@ -94,6 +96,127 @@ def test_an_ordinary_directory_is_allowed(tmp_path: Path) -> None:
     out = tmp_path / "bench_results"
     assert guard_output_dir(out, what="report output directory") == out.resolve()
     assert guard_write_path(out / "a.json", what="report") == (out / "a.json").resolve()
+
+
+def test_read_text_refuses_a_nonregular_opened_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """File type is judged on the opened fd, not on an earlier path stat."""
+    import os
+    import stat
+    from types import SimpleNamespace
+
+    payload = tmp_path / "payload.json"
+    payload.write_text("{}", encoding="utf-8")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            os,
+            "fstat",
+            lambda _fd: SimpleNamespace(st_nlink=1, st_mode=stat.S_IFIFO, st_size=0),
+        )
+        with pytest.raises(UnsafePathError, match="not a regular file"):
+            read_text_nofollow(payload, what="corpus file")
+
+
+def test_bounded_read_catches_growth_after_fstat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale small st_size cannot turn the byte cap into an unbounded read."""
+    import os
+    from types import SimpleNamespace
+
+    payload = tmp_path / "payload.json"
+    payload.write_text("123456789", encoding="utf-8")
+    real_fstat = os.fstat
+
+    def stale_size(fd: int) -> object:
+        opened = real_fstat(fd)
+        return SimpleNamespace(
+            st_nlink=opened.st_nlink,
+            st_mode=opened.st_mode,
+            st_size=0,  # Simulate a file that grew after descriptor inspection.
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fstat", stale_size)
+        with pytest.raises(UnsafePathError, match="content is too large.*8-byte limit"):
+            read_text_nofollow(payload, what="corpus file", max_bytes=8)
+
+
+def test_bounded_read_allows_content_at_the_exact_limit(tmp_path: Path) -> None:
+    payload = tmp_path / "payload.json"
+    payload.write_text("12345678", encoding="utf-8")
+    assert read_text_nofollow(payload, what="corpus file", max_bytes=8) == "12345678"
+
+
+def test_read_opens_basename_through_pinned_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final open is relative to a held parent fd, never a resolved path name."""
+    import os
+
+    payload = tmp_path / "payload.json"
+    payload.write_text("{}", encoding="utf-8")
+    real_open = os.open
+    seen: dict[str, object] = {}
+
+    def open_from_pinned_parent(
+        resolved_parent: str,
+        name: str,
+        *,
+        flags: int,
+        mode: int,
+        what: str,
+    ) -> int:
+        seen.update(parent=resolved_parent, name=name, what=what)
+        # The helper's own dir_fd mechanics are covered in pinned_fs tests. Here we
+        # pin this reader's contract -- it delegates a basename + parent, never the
+        # full resolved path -- without requiring Windows to open a directory fd.
+        return real_open(payload, flags, mode)
+
+    monkeypatch.setattr(safepath, "_supports_pinned_walk", lambda: True)
+    monkeypatch.setattr(safepath, "_open_in_pinned_parent", open_from_pinned_parent)
+    assert read_text_nofollow(payload, what="corpus file") == "{}"
+    assert seen["parent"] == str(tmp_path.resolve())
+    assert seen["name"] == payload.name
+    assert seen["what"] == "corpus file"
+
+
+def test_unpinned_read_fails_when_opened_path_cannot_be_attested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = tmp_path / "payload.json"
+    payload.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(safepath, "_supports_pinned_walk", lambda: False)
+    monkeypatch.setattr(safepath.pinned_fs, "fd_real_path", lambda _fd: None)
+
+    with pytest.raises(UnsafePathError, match="cannot verify.*opened file descriptor"):
+        read_text_nofollow(payload, what="corpus file")
+
+
+def test_unpinned_read_refuses_a_redirected_opened_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = tmp_path / "payload.json"
+    other = tmp_path / "other.json"
+    payload.write_text("{}", encoding="utf-8")
+    other.write_text('{"secret": true}', encoding="utf-8")
+    monkeypatch.setattr(safepath, "_supports_pinned_walk", lambda: False)
+    monkeypatch.setattr(safepath.pinned_fs, "fd_real_path", lambda _fd: str(other.resolve()))
+
+    with pytest.raises(UnsafePathError, match="different path"):
+        read_text_nofollow(payload, what="corpus file")
+
+
+def test_unpinned_read_allows_an_attested_opened_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = tmp_path / "payload.json"
+    payload.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(safepath, "_supports_pinned_walk", lambda: False)
+    monkeypatch.setattr(safepath.pinned_fs, "fd_real_path", lambda _fd: str(payload.resolve()))
+
+    assert read_text_nofollow(payload, what="corpus file") == "{}"
 
 
 # ── Entry point 1: the report WRITE (reported) ───────────────────────────────
@@ -226,9 +349,7 @@ def test_a_non_resident_embedder_prints_a_refusal_not_a_traceback(
         raise IngestError("the embedding model is not resident")
 
     monkeypatch.setattr("kiro_crew.eval.bench.run.prepare_embedder", _boom)
-    monkeypatch.setattr(
-        cli_bench, "_load_corpus", lambda key: _tiny_corpus()  # noqa: ARG005
-    )
+    monkeypatch.setattr(cli_bench, "_load_corpus", lambda key: _tiny_corpus())  # noqa: ARG005
     rc = cli_bench.bench_cmd(_retrieval_args(out_dir=str(tmp_path)))
     out = capsys.readouterr().out
     assert rc == 1
@@ -246,12 +367,8 @@ def test_a_refused_report_write_does_not_discard_the_measurement(
     """
     from kiro_crew import cli_bench
 
-    monkeypatch.setattr(
-        cli_bench, "_load_corpus", lambda key: _tiny_corpus()  # noqa: ARG005
-    )
-    rc = cli_bench.bench_cmd(
-        _retrieval_args(toy_embedder=True, out_dir=str(fake_home / ".aws"))
-    )
+    monkeypatch.setattr(cli_bench, "_load_corpus", lambda key: _tiny_corpus())  # noqa: ARG005
+    rc = cli_bench.bench_cmd(_retrieval_args(toy_embedder=True, out_dir=str(fake_home / ".aws")))
     out = capsys.readouterr().out
     assert rc == 1
     assert "not saved" in out

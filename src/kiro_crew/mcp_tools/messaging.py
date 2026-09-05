@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import mcp_core
+from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import BINARY_MIME_ALLOWLIST, redact_credentials, redact_exfiltration_urls
@@ -33,7 +34,34 @@ from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE
 #: one delivers a DM to that channel's own configured owner: the gateway resolves
 #: the destination from the transport's configured-target allowlist, so the
 #: agent cannot address anyone the user has not configured for that channel.
-_CHANNEL_SESSIONS: tuple[str, ...] = ("discord",)
+#:
+#: DERIVED from the channel roster, not hand-listed, for the reason
+#: ``SEND_MESSAGE_SCHEMA`` already gives about ``channel_type``: a second copy of
+#: the roster goes stale when a transport is added. This one had. It read
+#: ``("discord",)`` while the gateway leg it feeds
+#: (``dashboard/handlers/messaging.py::_deliver_channel_dm``) was already
+#: channel-neutral — it looks the transport up by name and takes the destination
+#: from that transport's own ``configured_targets()`` — so the eight other
+#: registered channels were refused HERE, by a validator, on their way to a leg
+#: that could serve them.
+#:
+#: Widening the accepted set does not widen the reachable AUDIENCE. Whether a
+#: given channel can actually take a proactive DM is answered per send by
+#: ``_owner_dm_target``, which returns a target only when the transport
+#: advertises exactly ONE available direct target: a channel that needs prior
+#: inbound state (Teams, WeCom) or cannot DM proactively at all (Feishu) marks
+#: its targets unavailable and still degrades to the dashboard notification, and
+#: an ambiguous allow-list is refused rather than guessed at. That gate is at the
+#: side-effect boundary and reads live config, which is where it has to be — a
+#: static tuple here cannot answer a runtime question.
+#:
+#: The two exclusions live with the roster in ``constants.CHANNEL_SEND_NAMESPACES``,
+#: which the gateway's accepted ``channel_type`` set and the validator's pattern
+#: also read, so the subtraction is not respelled per reader. This leg reads the
+#: narrower ``CHANNEL_OWNER_DM_NAMESPACES``, because inferring an OWNER needs the
+#: transport to tell configured recipients from peers learned off inbound traffic
+#: and not every one does -- the reason is recorded at that definition.
+_CHANNEL_SESSIONS: tuple[str, ...] = CHANNEL_OWNER_DM_NAMESPACES
 
 #: Every accepted ``session`` value. The advertised enum is built from this, so
 #: the contract the model is shown and the validation a call is held to cannot
@@ -70,8 +98,18 @@ def schemas() -> list[dict[str, Any]]:
                 "\n\nsession param (optional):"
                 "\n  omitted   — dashboard notification only (default)."
                 '\n  "slack"   — Slack DM + dashboard notification.'
-                '\n  "discord" — Discord DM to the configured owner + dashboard'
-                " notification."
+                '\n  a channel name ("discord", "telegram", "webex", "teams",'
+                ' "whatsapp", "imessage", "feishu") — a DM to'
+                " that channel's own configured owner + dashboard notification."
+                " Only a destination the user already allow-listed for that channel"
+                " is reachable, and only when exactly one is configured: an"
+                " ambiguous allow-list, a channel that is not connected, and a"
+                " channel that cannot DM proactively all fall back to the"
+                " dashboard notification and say so rather than reporting success."
+                ' Not "wecom" or "weixin": each advertises peers learned from'
+                " inbound traffic beside configured ones, so an owner cannot be told"
+                " apart from whoever messaged the bot. Reach those with channel_type,"
+                " which addresses a conversation instead of inferring a recipient."
                 '\n  "origin"  — inject into the dashboard session that spawned'
                 " this cron. Falls through to notification-only if origin is"
                 " unreachable (tab closed, history deleted, or cron has no origin)."
@@ -79,13 +117,16 @@ def schemas() -> list[dict[str, Any]]:
                 "'user' to DM an allowed user, at most one, not both, and either "
                 "one always sends to Slack. channel, user, blocks, thread_ts, "
                 "reply_broadcast and unfurl_links/unfurl_media are Slack protocol "
-                'options: combining any of them with session="discord" is REFUSED, '
+                "options: combining any of them with a channel session is REFUSED, "
                 "not silently ignored."
                 "\n\nOn a non-Slack messaging channel (Telegram, Discord, Teams, "
                 "Webex, WeCom, Weixin, WhatsApp, iMessage) set 'channel_type' to "
                 "that channel's name to post into the conversation you are already "
-                "talking in. That is the only way a message reaches the user there, "
-                "and the Slack-only options above are rejected alongside it."
+                "talking in. Use it in preference to a channel session whenever you "
+                "are talking on that channel — it reaches the conversation at hand, "
+                "where a channel session reaches the channel's configured owner "
+                "wherever the call came from. The Slack-only options above are "
+                "rejected alongside it."
                 "\n\nTo reach a NON-Slack channel (Webex, Telegram, Discord, …) at"
                 " a specific destination, pass channel_type plus target_id, where"
                 " target_id is one of the opaque ids that channel exposes as a"
@@ -181,11 +222,15 @@ def schemas() -> list[dict[str, Any]]:
                         "enum": list(_SESSION_TARGETS),
                         "description": (
                             "Delivery routing. Omit for notification bell only (default). "
-                            '"slack" adds Slack DM delivery. "discord" sends a Discord DM '
-                            "to the configured owner instead; it takes none of the "
-                            "Slack-only options above. "
-                            '"origin" injects into the dashboard session that spawned '
-                            "this cron (falls back to notification if unreachable)."
+                            '"slack" adds Slack DM delivery. A channel name (e.g. '
+                            '"discord", "webex", "telegram") sends a DM on that channel '
+                            "to its configured owner instead; it takes none of the "
+                            "Slack-only options above, and falls back to the "
+                            "notification (saying so) when that channel is not "
+                            "connected or no single configured recipient can be "
+                            'resolved. "origin" injects into the dashboard session '
+                            "that spawned this cron (falls back to notification if "
+                            "unreachable)."
                         ),
                     },
                 },
@@ -405,14 +450,39 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     # every surface that can legitimately ask for it.
     verified_session = ""
     if channel_type:
-        verified_session = mcp_core._resolve_session_key_strict()
+        verified_session, _strict_err = mcp_core.require_strict_session_key(
+            "Error: cannot verify caller identity for a channel_type send "
+            "(no gateway-injected session key or HMAC-verified pid). "
+            "Refusing to post into a conversation that cannot be attributed."
+        )
         if not verified_session:
-            return (
-                "Error: cannot verify caller identity for a channel_type send "
-                "(no gateway-injected session key or HMAC-verified pid). "
-                "Refusing to post into a conversation that cannot be attributed."
-                + mcp_core.strict_identity_diagnosis()
-            )
+            return _strict_err
+    elif session in _CHANNEL_SESSIONS:
+        # A channel SESSION leaves over the same transports as ``channel_type``, so
+        # it is held to the same identity bar and refused the same way.
+        #
+        # The refusal is the POINT, not a side effect. ``gov_session`` below falls
+        # back to the LENIENT resolver, which walks process ancestors -- so an
+        # unidentified sub-agent resolves to its parent, and the channel-agent
+        # containment check (``_deny_channel_agent_messaging``, keyed on an
+        # identity starting ``channel:``) then does not fire for a contained agent.
+        # That is a confinement bypass onto the owner-DM egress surface, and the
+        # gateway's fail-closed ``channels`` re-vet does NOT backstop it: that gate
+        # covers the transport scope, not channel-agent containment.
+        #
+        # Refusing costs no legitimate caller. The gateway injects
+        # ``KIROCREW_SESSION_KEY`` into every agent/ACP subprocess
+        # (``acp/client.py``) and cron runs carry ``cron:<job_id>`` in it
+        # (``cron_script.py``), with the HMAC-verified host-pid sidecar covering
+        # PID-namespace-sandboxed sessions. It is dropped only when there is no
+        # session key to inject -- exactly the caller that cannot be attributed.
+        verified_session, _strict_err = mcp_core.require_strict_session_key(
+            f"Error: cannot verify caller identity for a session={session!r} send "
+            "(no gateway-injected session key or HMAC-verified pid). "
+            "Refusing to send a DM that cannot be attributed to a caller."
+        )
+        if not verified_session:
+            return _strict_err
     # ``gov_session`` is the identity every gate below is keyed on. It is the
     # STRICT key whenever one was required, so the identity that is checked is
     # the identity the request is later sent under (``_post`` gets the same
@@ -432,11 +502,9 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     # Forward the identity the gateway will re-vet under. The STRICT key whenever
     # one was established above -- never the lenient one, which walks process
     # ancestors and would hand a sub-agent its PARENT's channel permissions at the
-    # egress chokepoint. Every channel egress has a ``channel_type`` and therefore a
-    # strict key, so this covers both channel legs; a cron keeps forwarding its own
-    # key for the Slack/dashboard routing it drives. Without either, nothing is
-    # forwarded and the gateway falls back to the host sentinel, which is correct
-    # only because no channel send can reach that state.
+    # egress chokepoint. BOTH channel legs require one, so every channel egress
+    # forwards a strictly-resolved identity or was already refused above; a cron
+    # keeps forwarding its own key for the Slack/dashboard routing it drives.
     if verified_session:
         payload["caller_session"] = verified_session
     elif is_cron:
@@ -528,9 +596,9 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     if delivered_to and delivered_to != "notification":
         return f"Message sent to the {delivered_to} conversation + notification."
     # Reached the dashboard notification only. Warn loudly when a chat surface
-    # was intended (explicit session=slack/discord, or a cron — which defaults
-    # to Slack) so the caller can detect the miss and retry instead of
-    # reading a success string for a notification-only send.
+    # was intended (explicit session=slack or a channel session, or a cron —
+    # which defaults to Slack) so the caller can detect the miss and retry
+    # instead of reading a success string for a notification-only send.
     if session == "slack":
         return "⚠️ Slack unavailable — delivered as dashboard notification only (NOT in Slack)."
     if session in _CHANNEL_SESSIONS:
@@ -549,14 +617,13 @@ def send_message(name: str, args: dict[str, Any]) -> str:
 
 
 def send_notification(name: str, args: dict[str, Any]) -> str:
-    caller_session = mcp_core._resolve_session_key_strict()
+    caller_session, _strict_err = mcp_core.require_strict_session_key(
+        "Error: cannot verify caller identity for send_notification "
+        "(no gateway-injected session key or HMAC-verified pid). "
+        "Refusing to publish without a trusted governance identity."
+    )
     if not caller_session:
-        return (
-            "Error: cannot verify caller identity for send_notification "
-            "(no gateway-injected session key or HMAC-verified pid). "
-            "Refusing to publish without a trusted governance identity."
-            + mcp_core.strict_identity_diagnosis()
-        )
+        return _strict_err
     # Channel-agent containment: same boundary
     # as send_message — an auto-approved call emits no permission event,
     # so channel.py's guard alone cannot hold it.
@@ -760,7 +827,9 @@ def file_send(name: str, args: dict[str, Any]) -> str:
     # native leg first would reroute the file to the linked chat instead of
     # the named Slack channel.
     channel_warning = ""
-    strict_key = mcp_core._resolve_session_key_strict()
+    # Resolve-half of the shared strict gate only: file_send degrades (skips
+    # the native channel leg) rather than refusing when identity is absent.
+    strict_key, _ = mcp_core.require_strict_session_key("file_send native delivery")
     if strict_key and not args.get("channel"):
         channel_resp = mcp_core._post(
             "/api/channel/upload-file",

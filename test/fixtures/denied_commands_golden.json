@@ -399,7 +399,7 @@
     "id": "iac-teardown-cdk-destroy",
     "pattern": "cdk destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources — irreversible infrastructure and data loss."
+    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources \u2014 irreversible infrastructure and data loss."
   },
   {
     "id": "local-destructive-chmod-777",
@@ -579,7 +579,7 @@
     "id": "iac-teardown-kubectl-delete-namespace",
     "pattern": "kubectl delete namespace.*",
     "category": "iac-teardown",
-    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it — irreversible cluster-wide teardown."
+    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it \u2014 irreversible cluster-wide teardown."
   },
   {
     "id": "local-destructive-mkfs",
@@ -603,7 +603,7 @@
     "id": "iac-teardown-pulumi-destroy",
     "pattern": "pulumi destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack — irreversible infrastructure teardown."
+    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack \u2014 irreversible infrastructure teardown."
   },
   {
     "id": "local-destructive-rm-rf-root",
@@ -621,7 +621,7 @@
     "id": "iac-teardown-terraform-destroy",
     "pattern": "terraform destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state — irreversible infrastructure and data loss."
+    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state \u2014 irreversible infrastructure and data loss."
   },
   {
     "id": "sql-truncate-table",
@@ -832,6 +832,12 @@
     "pattern": ".*kiro.?crew\\b(?:(?!&&)[^;|])*?\\bcron\\b(?:(?!&&)[^;|])*?\\badopt\\b.*",
     "category": "self-protection",
     "description": "Blocks 'kirocrew cron adopt' so the agent cannot assign itself ownership of a scheduled job. A cron's owning session both manages the job and receives its output, and the MCP cron tools deliberately cannot write that field -- without this rule a session could reach the same power through bash and claim a job that belongs to another session. The gaps between the words tolerate anything that is not a command separator, rather than enumerating what may sit there: the CLI accepts '-v'/'--verbose' and '--no-jail' before a subcommand, a shell redirection is legal anywhere in a simple command, and $IFS is a word separator too, so an allow-list of interlopers would need extending on each new spelling. A single '&' is allowed through because '2>&1' is a redirection, while '&&' still ends the match: the three words have to belong to ONE simple command."
+  },
+  {
+    "id": "self-protection-dev-mode-out-of-root-confirm",
+    "pattern": ".*--confirm-out-of-install-root.*",
+    "category": "self-protection",
+    "description": "Blocks any agent command carrying the `--confirm-out-of-install-root` flag, the operator's explicit attestation for granting app dev mode on a UI root outside the app's install directory. The dev-mode grant relaxes the unauthenticated UI route's root containment, so an agent able to pass the flag itself would convert an auto-approved shell into a self-granted serving grant on an arbitrary host directory. The confirmation must come from the operator's own terminal, which these rules do not govern."
   },
   {
     "id": "legacy-get-secret",

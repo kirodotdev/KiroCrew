@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import threading
@@ -3559,7 +3560,7 @@ class TestPrepareMessages:
             {"role": "done", "content": ""},
             {"role": "assistant", "content": "hi"},
         ]
-        out = _prepare_messages(msgs, running=False)
+        out = _prepare_messages(msgs, running=False, live_child="")
         roles = [m["role"] for m in out]
         assert "queued" in roles, "queued must be preserved for tab-switch indicator"
         assert "done" not in roles, "done must be stripped"
@@ -3573,7 +3574,7 @@ class TestPrepareMessages:
             {"role": "chunk", "content": "Hel"},
             {"role": "chunk", "content": "lo"},
         ]
-        out = _prepare_messages(msgs, running=True)
+        out = _prepare_messages(msgs, running=True, live_child="")
         assert out[-1]["role"] == "streaming"
         assert "Hel" in out[-1]["content"]
 
@@ -6792,6 +6793,57 @@ class TestPinnedModelWithheld:
         client.available_models = MagicMock(side_effect=RuntimeError("boom"))
         assert _pinned_model_verdict(client, "claude-opus-5", "acp") is None
 
+    def test_namespaced_pin_matches_bare_advertised(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # Regression #8521: a persisted pin can carry a `<namespace>::<bare-id>`
+        # qualifier from the catalog that advertised it when it was stored,
+        # while the session being judged advertises the BARE id. The literal
+        # comparison missed for every such pin and the banner claimed a fully
+        # supported model "isn't offered right now". The verdict must peel the
+        # qualifier and resolve to runnable — for ANY namespace vocabulary, not
+        # just `agent.provider` (a fixed enum that no catalog qualifies ids
+        # with, so keying on it would leave the fold unreachable).
+        client = self._client(["auto", "z-ai/glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "openrouter::z-ai/glm-5.3-flash", "acp") is False
+
+    def test_namespaced_pin_judged_even_when_provider_unreadable(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # _run_chat passes provider_name="" when the config could not be read.
+        # The fold keys on the pin's own qualifier, not on the provider string,
+        # so an unreadable config must not degrade the verdict back to the
+        # false withhold (nor is it needed for the peel to fire).
+        client = self._client(["auto", "z-ai/glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "openrouter::z-ai/glm-5.3-flash", "") is False
+
+    def test_pin_absent_after_peel_is_still_withheld(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # The peel must not turn the verdict into a rubber stamp: a pin the
+        # backend serves under NEITHER spelling still answers withheld.
+        client = self._client(["auto", "z-ai/glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "openrouter::no-such-model", "acp") is True
+
+    def test_only_one_qualifier_level_is_peeled(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # The fold peels exactly ONE leading qualifier. A doubly-qualified pin
+        # whose innermost tail happens to be advertised is not a spelling of
+        # that model — unbounded stripping would rubber-stamp arbitrary junk
+        # around any advertised id.
+        client = self._client(["auto", "glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "a::b::glm-5.3-flash", "acp") is True
+
+    def test_pin_advertised_verbatim_needs_no_peel(self):
+        from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
+
+        # A backend that advertises the qualified spelling itself matches on
+        # the first (full) comparison — the peel is a miss-only retry, so it
+        # can only clear a false withhold, never create one.
+        client = self._client(["openrouter::z-ai/glm-5.3-flash"])
+        assert _pinned_model_verdict(client, "openrouter::z-ai/glm-5.3-flash", "acp") is False
+
     def test_slot_reports_no_verdict_until_one_is_recorded(self):
         slot = _ChatSlot("s1")
         slot.model = "claude-opus-5"
@@ -7376,7 +7428,7 @@ class TestPrepareMessagesInterleaved:
             {"role": "chunk", "content": "streaming"},
         ]
 
-        result = _prepare_messages(messages, running=True)
+        result = _prepare_messages(messages, running=True, live_child="")
 
         # user, assistant, tool, assistant, streaming (collapsed chunks)
         assert len(result) == 5
@@ -7400,7 +7452,7 @@ class TestPrepareMessagesInterleaved:
             {"role": "assistant", "content": "Segment 2", "cls": "msg msg-a"},
         ]
 
-        result = _prepare_messages(messages, running=False)
+        result = _prepare_messages(messages, running=False, live_child="")
 
         assert len(result) == 4
         roles = [m["role"] for m in result]
@@ -10673,6 +10725,31 @@ class TestPythonStageLoop:
         assert any(i["content"] == "queued mid-plan" for i in slot._queue)
 
     @pytest.mark.asyncio
+    async def test_queued_receipt_carries_the_entry_queue_id(self, tmp_path, monkeypatch):
+        """The `queued: true` receipt names the entry it created: `queue_id`
+        must equal the queue entry's id, because the sender binds its pre-send
+        composer state to that id for the cancel-queued restore (#560) — a
+        content-based key cannot do this (serialization is not injective and
+        other tabs can queue colliding content)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("busy-chat")
+        slot._in_stage_execution = True  # force the busy queue path
+
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "queued while busy", "slot": "busy-chat"}
+            )
+            assert resp.status == 200
+            body = await resp.json()
+            assert body.get("queued") is True
+            entry = next(i for i in slot._queue if i["content"] == "queued while busy")
+            assert body.get("queue_id") == entry["id"]
+
+    @pytest.mark.asyncio
     async def test_go_button_uses_stage_loop(self, tmp_path, monkeypatch):
         """Go button via plan-action endpoint uses _stage_loop."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -13382,7 +13459,7 @@ class TestRegenerateAndVariants:
         ]
         from kiro_crew.dashboard.chat import _prepare_messages
 
-        prepared = _prepare_messages(slot.messages, False)
+        prepared = _prepare_messages(slot.messages, False, live_child="")
         ai = [m for m in prepared if m.get("role") == "assistant"][0]
         for v in ai["variants"]:
             assert "AKIAIOSFODNN7EXAMPLE" not in v.get("content", "")
@@ -16076,6 +16153,22 @@ class TestEmptyResponseRetry:
         mock_client.stream = _stream
         mock_client.stream_command = _stream
 
+    @staticmethod
+    async def _cancel_background_tasks(state) -> None:
+        """Cancel AND await every task this isolated state spawned.
+
+        `_run_chat` starts title/summary work that is irrelevant to these
+        recovery assertions. A bare `task.cancel()` leaves the coroutine pending
+        until the loop gets another tick, which surfaces as unawaited-coroutine
+        and destroyed-pending-task warnings under xdist. Await the cancellation
+        exactly; never sleep and never let one test's teardown spill into another.
+        """
+        tasks = list(state._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     @pytest.mark.asyncio
     async def test_first_empty_response_requeues_message(self, tmp_path: Path) -> None:
         """First empty response at depth 0 → message re-queued silently."""
@@ -16190,8 +16283,7 @@ class TestEmptyResponseRetry:
 
         with patch.object(_ChatSlot, "queue_insert", spy):
             await _run_chat(state, slot, "test message")
-            for _bg_task in list(state._background_tasks):
-                _bg_task.cancel()
+            await self._cancel_background_tasks(state)
 
         # The nudge (NOT the original message) is queued at the front.
         assert (0, _EMPTY_AUTO_CONTINUE_MSG) in calls
@@ -16348,6 +16440,472 @@ class TestEmptyResponseRetry:
 
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+
+
+class TestProductiveTurnNeverReplaysVerbatim:
+    """A turn that DID work must never have the user's message replayed verbatim.
+
+    ``assistant_text`` is reset at every tool boundary, so a turn that streamed a
+    preamble and then called a tool arrives at the terminal chain with an empty
+    final segment and takes the empty-response branch. Rung 1 of that ladder
+    re-queues the ORIGINAL message, which re-runs every tool call that already
+    completed — a second ``send_message``, a second write, a second PR — and
+    re-derives an answer the user has already read.
+
+    The field incident these tests pin: two consecutive billed turns, each with an
+    assistant preamble and successful tool calls and each ending on a clean
+    ``end_turn``, were both classified empty; the first verbatim-replayed the
+    user's message.
+
+    Reuses ``TestEmptyResponseRetry``'s harness rather than a second one, so a
+    change to how a slot is built cannot leave these tests driving a different
+    runner than the ladder tests beside them.
+    """
+
+    _make_state_and_slot = TestEmptyResponseRetry._make_state_and_slot
+
+    @staticmethod
+    def _spy_queue(monkeypatch=None):
+        """Record ``(index, content)`` for every queue insert."""
+        calls: list[tuple] = []
+        orig = _ChatSlot.queue_insert
+
+        def spy(self_slot, *a, **kw):
+            calls.append(a)
+            return orig(self_slot, *a, **kw)
+
+        return calls, spy
+
+    _cancel_background_tasks = staticmethod(TestEmptyResponseRetry._cancel_background_tasks)
+
+    @staticmethod
+    def _text_then_tool_stream(client, executed):
+        """TEXT -> TOOL_CALL -> TOOL_RESULT -> COMPLETE(end_turn).
+
+        ``executed`` counts dispatches so a replay of the original message would
+        be observable as a second execution rather than only as a queue entry.
+        """
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="checking")
+            executed.append(msg)
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-1",
+                title="send_message",
+            )
+            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", text="sent")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+    @staticmethod
+    def _tool_only_stream(client):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="send_message")
+            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", text="sent")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+    @staticmethod
+    def _thinking_only_stream(client):
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_THINKING_CHUNK, LLMEvent
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_THINKING_CHUNK, text="hmm")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+    @pytest.mark.asyncio
+    async def test_text_then_tool_turn_continues_instead_of_replaying(self, tmp_path: Path) -> None:
+        """The incident's own shape: preamble + a completed tool call, clean
+        end_turn. The original message must NOT be re-queued; exactly one
+        synthetic continuation may be, and the completed tool must not re-run."""
+        from kiro_crew.dashboard.chat_utils import (
+            _ACTIVITY_NO_REPLY_CONTINUE_MSG,
+            _EMPTY_AUTO_CONTINUE_MSG,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        executed: list[str] = []
+        self._text_then_tool_stream(client, executed)
+        calls, spy = self._spy_queue()
+
+        with patch.object(_ChatSlot, "queue_insert", spy):
+            await _run_chat(state, slot, "send the summary")
+            await self._cancel_background_tasks(state)
+
+        # The verbatim replay is the defect. It must be absent.
+        assert (0, "send the summary") not in calls, (
+            "the ORIGINAL user message was re-queued after a turn that already "
+            "ran a tool — the replay re-executes completed side effects"
+        )
+        # Exactly one continuation, and it is the one whose body does not claim
+        # the turn produced nothing (which would invite the model to redo the
+        # completed call).
+        _continuations = [c for c in calls if c and c[1] == _ACTIVITY_NO_REPLY_CONTINUE_MSG]
+        assert len(_continuations) == 1, f"expected one continuation, got {calls}"
+        # The productive turn skipped rung 1 (verbatim replay), so this one
+        # continuation consumes the whole bounded ladder. If the continuation
+        # itself returns empty, it gives up rather than enqueueing a SECOND
+        # continuation whose wording would again invite rework.
+        assert slot._empty_response_retries == 2
+        assert (0, _EMPTY_AUTO_CONTINUE_MSG) not in calls, (
+            "the empty-response body tells the model its turn produced no "
+            "output, which is false for a turn that ran a tool"
+        )
+        # The tool ran once. The queue was not drained in this test, so a second
+        # execution could only come from a replay dispatched inside this turn.
+        assert executed == ["send the summary"], f"tool dispatched more than once: {executed}"
+
+    @pytest.mark.asyncio
+    async def test_tool_only_turn_does_not_replay_verbatim(self, tmp_path: Path) -> None:
+        """A turn with tool calls and no text at all still counts as productive."""
+        from kiro_crew.dashboard.chat_utils import _ACTIVITY_NO_REPLY_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._tool_only_stream(client)
+        calls, spy = self._spy_queue()
+
+        with patch.object(_ChatSlot, "queue_insert", spy):
+            await _run_chat(state, slot, "post it")
+            await self._cancel_background_tasks(state)
+
+        assert (0, "post it") not in calls, "tool-only turn verbatim-replayed the prompt"
+        assert (0, _ACTIVITY_NO_REPLY_CONTINUE_MSG) in calls
+
+    @pytest.mark.asyncio
+    async def test_thinking_only_turn_does_not_replay_verbatim(self, tmp_path: Path) -> None:
+        """Thinking is work the replay would discard and re-charge for."""
+        from kiro_crew.dashboard.chat_utils import _ACTIVITY_NO_REPLY_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._thinking_only_stream(client)
+        calls, spy = self._spy_queue()
+
+        with patch.object(_ChatSlot, "queue_insert", spy):
+            await _run_chat(state, slot, "think about it")
+            await self._cancel_background_tasks(state)
+
+        assert (0, "think about it") not in calls, "thinking-only turn verbatim-replayed the prompt"
+        assert (0, _ACTIVITY_NO_REPLY_CONTINUE_MSG) in calls
+
+    @pytest.mark.asyncio
+    async def test_activity_free_turn_keeps_the_verbatim_replay_rung(self, tmp_path: Path) -> None:
+        """The guard is scoped: a GENUINELY activity-free empty turn keeps rung 1.
+
+        Without this, the fix could be 'never replay', which would silently
+        remove the self-heal that a real provider-side empty depends on.
+        """
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        TestEmptyResponseRetry._make_empty_stream(self, client)
+        calls, spy = self._spy_queue()
+
+        with (
+            patch.object(_ChatSlot, "queue_insert", spy),
+            patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            await _run_chat(state, slot, "test message")
+            await self._cancel_background_tasks(state)
+
+        assert (0, "test message") in calls, "the activity-free replay rung was removed"
+        assert slot._empty_response_retries == 1
+
+
+class TestEmptyTurnDiagnostics:
+    """The empty-response WARNING must name a CLOSED cause, and carry no content.
+
+    The incident it exists for had three attempts with three different causes and
+    one log line that could not tell them apart. These tests assert on the closed
+    vocabulary only — never on a prompt, a response, a tool argument, a path, an
+    identity, a token count or a cost, because asserting on those would pin
+    exactly the leak the diagnostics are designed to avoid.
+    """
+
+    _make_state_and_slot = TestEmptyResponseRetry._make_state_and_slot
+    _cancel_background_tasks = staticmethod(TestEmptyResponseRetry._cancel_background_tasks)
+
+    @staticmethod
+    def _causes(caplog):
+        """The ``cause=`` values of every empty-response warning captured."""
+        out = []
+        for rec in caplog.records:
+            msg = rec.getMessage()
+            if "Empty model response" not in msg:
+                continue
+            for field in msg.split():
+                if field.startswith("cause="):
+                    out.append(field.split("=", 1)[1])
+        return out
+
+    @staticmethod
+    def _fields(caplog):
+        """``key=value`` pairs of the first empty-response warning captured."""
+        for rec in caplog.records:
+            msg = rec.getMessage()
+            if "Empty model response" not in msg:
+                continue
+            return dict(
+                tuple(f.split("=", 1)) for f in msg.split() if "=" in f and not f.startswith("%")
+            )
+        return {}
+
+    def test_the_cause_and_rung_vocabularies_are_closed(self) -> None:
+        """Pure-unit: every cause the classifier can return, from its own inputs.
+
+        Kept as a unit test over ``classify_empty_turn`` rather than seven
+        ``_run_chat`` drives: the ranking between overlapping causes is the part
+        that can regress silently, and a stream fixture cannot express
+        'synthesized terminal AND tool activity' as cleanly as the snapshot can.
+        """
+        from kiro_crew.dashboard.chat_utils import (
+            EMPTY_CAUSE_NO_TERMINAL,
+            EMPTY_CAUSE_OTHER,
+            EMPTY_CAUSE_PROVIDER_EMPTY,
+            EMPTY_CAUSE_SYNTHETIC,
+            EMPTY_CAUSE_THINKING_ONLY,
+            EMPTY_CAUSE_TOOL_ONLY,
+            EMPTY_CAUSE_VISIBLE_PARTIAL,
+            STOP_REASON_ABSENT,
+            EmptyTurnActivity,
+            classify_empty_turn,
+        )
+
+        # No terminal outranks everything, including activity.
+        assert (
+            classify_empty_turn(EmptyTurnActivity(saw_terminal=False, had_tools=True))
+            == EMPTY_CAUSE_NO_TERMINAL
+        )
+        # A synthesized terminal outranks activity: the emptiness is ours.
+        assert (
+            classify_empty_turn(
+                EmptyTurnActivity(saw_terminal=True, terminal_synthetic=True, had_tools=True)
+            )
+            == EMPTY_CAUSE_SYNTHETIC
+        )
+        # A flushed visible segment outranks tools: the user read an answer.
+        assert (
+            classify_empty_turn(
+                EmptyTurnActivity(saw_terminal=True, flushed_visible=True, had_tools=True)
+            )
+            == EMPTY_CAUSE_VISIBLE_PARTIAL
+        )
+        assert (
+            classify_empty_turn(EmptyTurnActivity(saw_terminal=True, had_tools=True))
+            == EMPTY_CAUSE_TOOL_ONLY
+        )
+        assert (
+            classify_empty_turn(EmptyTurnActivity(saw_terminal=True, had_thinking=True))
+            == EMPTY_CAUSE_THINKING_ONLY
+        )
+        # A clean end_turn with nothing at all is the only genuine provider empty.
+        assert (
+            classify_empty_turn(EmptyTurnActivity(saw_terminal=True, stop_reason="end_turn"))
+            == EMPTY_CAUSE_PROVIDER_EMPTY
+        )
+        # An OMITTED stop reason is NOT a provider empty — the distinction the
+        # incident's third attempt needed and did not have.
+        assert (
+            classify_empty_turn(
+                EmptyTurnActivity(saw_terminal=True, stop_reason=STOP_REASON_ABSENT)
+            )
+            == EMPTY_CAUSE_OTHER
+        )
+
+    def test_normalize_stop_reason_never_returns_a_raw_backend_string(self) -> None:
+        """Closed output set, and the ACP spellings it mirrors are pinned.
+
+        ``chat_utils`` may not import ``kiro_crew.acp.types`` (the agent-SDK
+        boundary gate baselines it at one edge and a baselined file may not grow),
+        so it spells the three stop reasons as literals. The test tree is outside
+        that gate, so the pin lives here — a change to the backend's vocabulary
+        reddens here instead of silently reclassifying every turn as ``other``.
+        """
+        from kiro_crew.acp.types import (
+            STOP_REASON_CANCELLED,
+            STOP_REASON_END_TURN,
+            STOP_REASON_REFUSAL,
+        )
+        from kiro_crew.dashboard.chat_utils import (
+            _STOP_CANCELLED_REASON,
+            _STOP_END_TURN,
+            _STOP_REFUSAL,
+            STOP_REASON_ABSENT,
+            STOP_REASON_OTHER,
+            normalize_stop_reason,
+        )
+
+        assert _STOP_END_TURN == STOP_REASON_END_TURN
+        assert _STOP_CANCELLED_REASON == STOP_REASON_CANCELLED
+        assert _STOP_REFUSAL == STOP_REASON_REFUSAL
+
+        assert normalize_stop_reason(None) == STOP_REASON_ABSENT
+        assert normalize_stop_reason("") == STOP_REASON_ABSENT
+        assert normalize_stop_reason(STOP_REASON_END_TURN) == STOP_REASON_END_TURN
+        assert normalize_stop_reason("error: tool stall") == "error"
+        # An invented backend reason is folded, never echoed.
+        _invented = "the model said stop because of /home/someone/secret.txt"
+        assert normalize_stop_reason(_invented) == STOP_REASON_OTHER
+
+    @pytest.mark.asyncio
+    async def test_provider_empty_and_no_terminal_event_report_distinct_causes(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """Two turns that look identical to the old log line must not any more."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard.chat_utils import (
+            EMPTY_CAUSE_NO_TERMINAL,
+            EMPTY_CAUSE_PROVIDER_EMPTY,
+        )
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        # A clean end_turn with nothing in it.
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _clean(msg):
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _clean
+        client.stream_command = _clean
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat(state, slot, "a", _prompt_depth=1)
+        await self._cancel_background_tasks(state)
+        assert self._causes(caplog) == [EMPTY_CAUSE_PROVIDER_EMPTY]
+
+        # A stream that ends without any terminal event at all.
+        caplog.clear()
+        state2, slot2, client2, _run_chat2 = self._make_state_and_slot(tmp_path)
+
+        async def _no_terminal(msg):
+            return
+            yield  # pragma: no cover -- makes this an async generator
+
+        client2.stream = _no_terminal
+        client2.stream_command = _no_terminal
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat2(state2, slot2, "a", _prompt_depth=1)
+        await self._cancel_background_tasks(state2)
+        assert self._causes(caplog) == [EMPTY_CAUSE_NO_TERMINAL]
+
+    @pytest.mark.asyncio
+    async def test_omitted_stop_reason_is_not_reported_as_provider_empty(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """A terminal with no stopReason is its own observation."""
+        from kiro_crew.dashboard.chat_utils import (
+            EMPTY_CAUSE_OTHER,
+            STOP_REASON_ABSENT,
+        )
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_COMPLETE)  # no stop_reason
+
+        client.stream = _stream
+        client.stream_command = _stream
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat(state, slot, "a", _prompt_depth=1)
+        await self._cancel_background_tasks(state)
+
+        assert self._causes(caplog) == [EMPTY_CAUSE_OTHER]
+        assert self._fields(caplog).get("stop_reason") == STOP_REASON_ABSENT
+
+    @pytest.mark.asyncio
+    async def test_productive_turn_reports_visible_partial_and_the_continue_rung(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """The incident's shape gets its own cause AND the rung it took.
+
+        Asserting the rung is what makes the diagnostic answer 'what did the
+        runner DO', not only 'what did it see'.
+        """
+        from kiro_crew.dashboard.chat_utils import (
+            EMPTY_CAUSE_VISIBLE_PARTIAL,
+            EMPTY_RUNG_CONTINUE,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        TestProductiveTurnNeverReplaysVerbatim._text_then_tool_stream(client, [])
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat(state, slot, "send the summary")
+            await self._cancel_background_tasks(state)
+
+        assert self._causes(caplog) == [EMPTY_CAUSE_VISIBLE_PARTIAL]
+        _fields = self._fields(caplog)
+        assert _fields.get("rung") == EMPTY_RUNG_CONTINUE
+        assert _fields.get("flushed_visible") == "True"
+        assert _fields.get("tools") == "True"
+
+    @pytest.mark.asyncio
+    async def test_the_warning_carries_no_content_and_no_billing_amounts(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """The privacy floor, asserted against the rendered line.
+
+        Every diagnostic value is a bool or a closed constant, so the prompt text,
+        the streamed text, the tool title and the billed amounts must be absent
+        from the line even though the turn carried all of them.
+        """
+        from kiro_crew.acp.types import STOP_REASON_END_TURN, TurnUsage
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="SECRETPREAMBLE")
+            yield LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="SECRETTOOL")
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason=STOP_REASON_END_TURN,
+                usage=TurnUsage(credits=4.25, input_tokens=1234, output_tokens=99),
+            )
+
+        client.stream = _stream
+        client.stream_command = _stream
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_runner"):
+            await _run_chat(state, slot, "SECRETPROMPT")
+            await self._cancel_background_tasks(state)
+
+        _line = next(
+            rec.getMessage() for rec in caplog.records if "Empty model response" in rec.getMessage()
+        )
+        for forbidden in ("SECRETPROMPT", "SECRETPREAMBLE", "SECRETTOOL", "4.25", "1234", "99"):
+            assert forbidden not in _line, f"{forbidden!r} leaked into {_line!r}"
+        # Billing presence IS reported — as a bool, which is the point.
+        assert "billed=True" in _line
 
 
 class TestExpandDollarSkills:
@@ -18677,10 +19235,12 @@ class TestSlotModelLiveSwitch:
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_active_turn_falls_back_to_reset(self, tmp_path):
+    async def test_active_turn_answers_409_without_reset(self, tmp_path):
         # Awaiting a response mid-turn would race the streaming prompt loop on
         # stdout for the non-multiplexed client (same hazard the effort handler
-        # documents), so a turn in flight takes the old reset path.
+        # documents), and the old reset fallback tore down the in-flight turn
+        # mid-stream for any programmatic caller. A turn in flight now answers
+        # busy: no live switch, no reset, slot model untouched.
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         provider = self._provider(active_turn=True)
@@ -18690,10 +19250,13 @@ class TestSlotModelLiveSwitch:
 
         async with TestClient(TestServer(self._app(state))) as client:
             resp = await client.post("/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"})
+            data = await resp.json()
 
-        assert resp.status == 200
+        assert resp.status == 409
+        assert data["code"] == "turn_in_flight"
         provider.client.set_model.assert_not_awaited()
-        state.sessions.reset.assert_awaited_once()
+        state.sessions.reset.assert_not_awaited()
+        assert state._slots["a"].model == "claude-opus-4.8"
 
     @pytest.mark.asyncio
     async def test_live_switch_failure_falls_back_to_reset(self, tmp_path):

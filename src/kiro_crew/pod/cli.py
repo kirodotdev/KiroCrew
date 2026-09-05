@@ -22,8 +22,10 @@ from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.sel import sel
+from kiro_crew.tips_text import truncate_summary
 
 logger = logging.getLogger(__name__)
+_SCENARIOS_TABLE_WIDTH = 100
 
 # A verb handler: (config, parsed args) -> None.
 PodHandler = Callable[[PodConfig, argparse.Namespace], None]
@@ -633,7 +635,9 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
             threshold = time.time() - _parse_older_than(args.older_than)
         orphans = rt.orphan_homes(cfg)
     except rt.PodError as exc:
-        _audit("pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120])
+        _audit(
+            "pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120]
+        )
         raise
     dry_run = bool(getattr(args, "dry_run", False))
     results: list[dict[str, str]] = []
@@ -843,6 +847,94 @@ def _exec(cfg: PodConfig, args: argparse.Namespace) -> None:
     sys.exit(rt.exec_in_pod(cfg, name, argv))
 
 
+def _api_body(raw: str) -> object:
+    """Decode a pod response body without ever raising.
+
+    The fixed-key envelope is this command's output contract, so a body that
+    cannot be parsed degrades to its (already scrubbed) text instead of
+    replacing the envelope with a traceback. Deciding that per exception TYPE is
+    what keeps failing: `json.loads` recurses once per nesting level, so a deep
+    response raises RecursionError — a RuntimeError, not the ValueError a
+    malformed body raises. Any decode failure is a body problem, never a reason
+    to abandon the envelope.
+    """
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return raw
+
+
+def _api_envelope(name: str, method: str, path: str, status: int, ok: bool, body: object) -> str:
+    """Render the envelope, degrading a body that cannot be serialized.
+
+    Serialization is the command's last exit, so it must not raise either:
+    encoding recurses per nesting level too, and a body deep enough to decode
+    but not re-encode would otherwise take the envelope down after the request
+    had already succeeded. The fallback document has a fixed shape and depth,
+    so it cannot fail in turn.
+    """
+    document: dict[str, object] = {
+        "name": name,
+        "method": method,
+        "path": path,
+        "status": status,
+        "ok": ok,
+        "body": body,
+    }
+    try:
+        return json.dumps(document, indent=2)
+    except Exception:
+        document["body"] = "<body omitted: not serializable>"
+        return json.dumps(document, indent=2)
+
+
+def _api(cfg: PodConfig, args: argparse.Namespace) -> None:
+    """Make one authenticated pod request and print a stable JSON document.
+
+    Every exit from this function is the envelope. The request, the decode and
+    the render all sit inside one guarded region whose handlers cover any
+    Exception, so a failure mode nobody enumerated degrades the body rather than
+    escaping as a traceback on stdout — which an agent parsing this output reads
+    as a protocol violation, not as an error it can act on.
+    """
+    name = str(args.name)
+    method = str(args.method).upper()
+    normalized = "/api/<invalid>"
+    status = 0
+    body: object = ""
+    ok = False
+    error = ""
+    try:
+        name = rt.validate_name(name)
+        normalized = rt.api_path(args.path)
+        status, raw = rt.pod_api(
+            cfg,
+            name,
+            method,
+            normalized,
+            data=getattr(args, "data", "") or "",
+            allow_write=bool(getattr(args, "allow_write", False)),
+        )
+        body = _api_body(raw)
+        ok = 200 <= status < 300
+        error = "" if ok else f"status={status}"
+    except rt.PodError as exc:
+        body = str(exc)
+        error = type(exc).__name__
+    except Exception as exc:
+        body = f"pod api failed ({type(exc).__name__})"
+        error = type(exc).__name__
+    resources = f"name={name} method={method} path={normalized} status={status}"
+    if method not in rt.API_READ_METHODS:
+        resources += " write=1"
+    _audit("pod.api", "allowed" if ok else "failure", resources, error=error)
+    print(_api_envelope(name, method, normalized, status, ok, body))
+    if not ok:
+        sys.exit(1)
+
+
 def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     # Gate before exec'ing the log mechanism — on an unsupported host this would
@@ -920,6 +1012,18 @@ def _cleanup_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
     sys.exit(rc)
 
 
+def _scenario_table_description(description: str, width: int) -> str:
+    """Shorten *description* to *width* for one table row, never cutting mid-word.
+
+    Sentence detection lives in ``truncate_summary`` alone. It prefers the last
+    complete sentence that fits, which on a description whose second sentence
+    does not fit IS the first sentence — so a separate first-sentence pass here
+    would be a second spelling of the same rule that discards a second sentence
+    the row had room for.
+    """
+    return truncate_summary(" ".join(description.split()), width)
+
+
 def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
     """List the named fixtures accepted by ``pod up --seed``."""
     from kiro_crew import seed as seed_mod
@@ -936,10 +1040,12 @@ def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
         return
 
     width = max(len("SCENARIO"), *(len(str(row["name"])) for row in rows))
+    description_width = _SCENARIOS_TABLE_WIDTH - width - 2
     print(f"{'SCENARIO':<{width}}  DESCRIPTION")
     for row in rows:
         name = str(row["name"])
         description = str(row["description"] or "(no description)")
+        description = _scenario_table_description(description, description_width)
         print(f"{name:<{width}}  {description}")
     print(f"\nseed one with: kirocrew pod up <worktree> --seed {rows[0]['name']}")
 
@@ -953,6 +1059,7 @@ _VERBS: dict[str, PodHandler] = {
     "token": _token,
     "url": _url,
     "scenarios": _scenarios,
+    "api": _api,
     "logs": _logs,
     "install": _install,
     "provision": _provision,
@@ -967,7 +1074,7 @@ def dispatch(args: argparse.Namespace) -> None:
     if not action:
         print(
             "Usage: kirocrew pod "
-            "{up|down|ls|prune|status|token|url|scenarios|logs|exec|install|provision} …"
+            "{up|down|ls|prune|status|token|url|scenarios|api|logs|exec|install|provision} …"
         )
         sys.exit(2)
     cfg = PodConfig.load()

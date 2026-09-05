@@ -26,6 +26,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -74,6 +75,7 @@ from kiro_crew.env import (
     describe_search_path,
     emit_env,
     mcp_search_path,
+    sanitize_spec_env,
     spec_path_key,
 )
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
@@ -657,6 +659,10 @@ def _managed_mcp_env() -> dict[str, str]:
 
     Returns ``{}`` on a default install, which keeps the emitted spec
     byte-for-byte what it is today (``_prune_empty`` drops an empty ``env``).
+    That is safe only because a default-install child DERIVES the same home the
+    gateway did, from an inherited ``HOME``. Preserving a user's ``env`` puts
+    that inheritance in reach of a config, so the companion control lives in
+    ``_enforce_managed_mcp_ownership``: see ``_HOME_DERIVING_ENV_KEYS``.
     """
     override = _valid_override_home()
     return {"KIROCREW_HOME": str(override)} if override else {}
@@ -666,6 +672,133 @@ def _managed_mcp_env() -> dict[str, str]:
 # NOT a transport: a `registry` entry is a POINTER into the admin's catalog,
 # carrying only env/headers/timeout overrides, and its command/url are ignored.
 _MCP_REGISTRY_TYPE = "registry"
+
+# Every key a managed MCP server's entry may carry. Derived from kiro-cli's
+# documented local-server schema rather than assembled by hand, so it can be
+# reviewed against an external source instead of against someone's memory:
+# docs/reference/kiro-cli/mcp/configuration.md lists command, args, env,
+# disabled, autoApprove and disabledTools for a local (stdio) server, and
+# url/headers for a REMOTE one. The remote pair is deliberately absent -- these
+# servers are stdio-only, a leftover ``url`` would shadow the command, and older
+# builds left both behind -- so they are dropped by the rule below rather than by
+# name. ``timeout`` is the one addition: not in that table, but emitted by base
+# and one of the customizations #3594 is about, so dropping it would re-introduce
+# the very bug this fixes.
+#
+# ``type`` is here, and only the ``registry`` VALUE is ours. A transport hint the
+# user wrote (``"type": "stdio"``) is theirs and kiro-cli tolerates it, which
+# ``test_refresh_preserves_a_user_transport_hint`` pins deliberately -- so this
+# key is carried and the registry marker is re-derived from the signed-in account
+# below, rather than the whole key being treated as ours.
+#
+# Of the rest, three are OURS and are set on each pass (``command``, ``args``,
+# ``autoApprove``); the other four are the customizations a user may declare and
+# this fix exists to preserve. ``disabledTools`` is a user GUARD, not a
+# preference: dropping it would silently re-expose tools the user turned off,
+# which is why it is carried rather than re-derived (the custom-server PUT
+# endpoint round-trips it for the same reason).
+_MANAGED_MCP_ENTRY_KEYS: frozenset[str] = frozenset(
+    {"command", "args", "type", "autoApprove", "timeout", "env", "disabled", "disabledTools"}
+)
+
+# The type each USER-AUTHORED key must have, from the same schema table as the set
+# above. A right key with a wrong-typed value is rejected by kiro-cli exactly like
+# an unknown field -- and it rejects the whole agent -- so these are checked and
+# dropped in ``_enforce_managed_mcp_ownership`` rather than trusted.
+#
+# ``command`` and ``args`` are absent because both callers set them before the
+# enforcer runs, so their types are ours rather than input. ``env`` is absent
+# because it needs more than a type check: ``sanitize_spec_env`` already validates
+# it per ENTRY, which is the finer-grained version of this same rule.
+_MANAGED_MCP_ENTRY_VALUE_TYPES: dict[str, type | tuple[type, ...]] = {
+    "type": str,
+    "timeout": (int, float),
+    "disabled": bool,
+    "autoApprove": list,
+    "disabledTools": list,
+}
+
+# The ITEM type for each list-valued key above. Both are documented as arrays of
+# tool NAMES, so validating only the container leaves ``disabledTools: [1]``
+# emitting a spec kiro-cli refuses. Kept as its own mapping rather than folded
+# into the one above because the two answer different questions -- is this field
+# the right shape, and are its contents the right shape -- and the second is
+# applied per ITEM so one malformed name cannot discard the ones beside it.
+_MANAGED_MCP_ENTRY_ITEM_TYPES: dict[str, type] = {
+    "autoApprove": str,
+    "disabledTools": str,
+}
+
+# Env keys a managed MCP server's spec must never carry through from
+# agent.json are NOT enumerated here. agent.json is agent-writable (not in
+# _SENSITIVE_HOME_DIRS / _WRITE_PROTECTED_HOME_PATHS) and every managed
+# server's ``env`` is launched verbatim by kiro-cli as the child process's
+# environment, so the filter has to be exactly the one env.sanitize_spec_env
+# already applies for the probe: PREFIX-matched, case-insensitively, over
+# Kiro Crew's whole reserved namespace plus the loader/interpreter channels.
+#
+# Delegating rather than restating is the point. This function exists because
+# two hand-synced copies of the ownership rules drifted (#3594); a local
+# frozenset of reserved NAMES would be a third copy of a rule env.py already
+# owns, and a name list fails open for the next KIROCREW_ variable somebody
+# adds -- the reachable case GPT found on this PR was KIROCREW_CLI, which
+# mcp_cron._caller_is_cli() reads as "skip per-session ownership entirely".
+# env.py states the reviewable property instead: a config cannot author our
+# namespace. KIROCREW_HOME is stripped by that same namespace rule and then
+# re-pinned below to the gateway's actual override, so ours is the only value
+# that can reach the child.
+
+
+# Env keys that decide where ``Path.home()`` points, and therefore where a
+# managed shim resolves its data home when no ``KIROCREW_HOME`` pin is present.
+# Stripped from a MANAGED entry only -- this is not a deny rule for specs in
+# general, and env.sanitize_spec_env deliberately lets ``HOME`` through because a
+# user's own MCP server legitimately needs it.
+#
+# The population is what makes stripping correct here. A managed server is ours:
+# its command and args are ours, and it resolves OUR data home through
+# config_dir() -> Path.home(). On a default install that inheritance is exactly
+# right, which is why _managed_mcp_env() emits nothing there. Letting a
+# config-declared HOME override it would relocate the shim's whole data home:
+# cron_add would report success into a store the gateway never reads and the job
+# would never run -- the same silent split _managed_mcp_env documents, arriving
+# through a door that only opened once user env survived a clean rebuild.
+#
+# Both spellings are listed because Path.home() consults HOME on POSIX and
+# USERPROFILE on Windows, and a spec is portable across both.
+#
+# Held upper-cased and compared against key.upper(), because sanitize_spec_env
+# preserves each key's ORIGINAL case (out[key] = value) -- so a spec declaring
+# "userprofile" arrives with that spelling and an exact-case pop would miss it
+# while Windows, whose env names are case-insensitive, would still honour it.
+# This mirrors the folding sanitize_spec_env already does for its own prefixes;
+# the rest of the tree folds case at every one of these boundaries.
+_HOME_DERIVING_ENV_KEYS: frozenset[str] = frozenset({"HOME", "USERPROFILE"})
+
+# Env names that decide WHAT a managed shim executes, rather than how it behaves
+# once running. Stripped from a MANAGED entry only, for the same reason as the
+# home-deriving pair above and matched the same way (upper-cased, compared against
+# key.upper()): a user's own MCP server may legitimately need any of these, and
+# ``env.sanitize_spec_env`` therefore does not refuse them globally.
+#
+# A managed shim is OURS, and some of them are scripts whose shebang resolves
+# their interpreter by NAME at exec time (``#!/usr/bin/env node`` -- see the note
+# in ``name_grant``). So a config-authored value here does not tune our process,
+# it chooses a different program for us to run:
+#
+# * ``PATH`` picks which ``node``/``python``/binary the shebang resolves to.
+# * ``BASH_ENV`` and ``ENV`` name a file a non-interactive shell SOURCES first.
+# * ``SHELLOPTS``/``BASHOPTS`` inject shell options the launcher never set.
+# * ``NODE_OPTIONS`` carries ``--require``, and ``NODE_PATH`` redirects resolution.
+#
+# Grouped as one class deliberately. The interpreter half of this problem is
+# already stated as a namespace in env.py (``PYTHON`` by prefix) because that
+# population is unbounded; these have no shared prefix to key on, so they are
+# enumerated -- and the enumeration is scoped to the launchers a managed shim
+# actually uses (a shell, and node) rather than trying to cover every runtime.
+_LAUNCHER_EXEC_ENV_KEYS: frozenset[str] = frozenset(
+    {"PATH", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "NODE_OPTIONS", "NODE_PATH"}
+)
 
 
 def _mcp_registry_mode() -> bool:
@@ -2162,6 +2295,181 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
         logger.debug("SEL audit for kiro_hooks merge failed", exc_info=True)
 
 
+def _enforce_managed_mcp_ownership(
+    entry: dict,
+    spec: dict,
+    registry_mode: bool,
+    *,
+    auto_approve: str,
+) -> None:
+    """Strip/re-pin the fields Kiro Crew owns on one managed-server entry.
+
+    Applied identically by the fresh-build path (``build_agent_config``) and
+    the existing-config refresh path (``_refresh_dynamic_fields``) so the two
+    can no longer hand-drift: that silent divergence between two copies of
+    this same ownership logic is what let a clean rebuild discard a user's
+    timeout/env in the first place (#3594), and would just as easily reopen a
+    security-relevant strip (e.g. the reserved-env-key scrub below) if only
+    one of the two loops picked it up.
+
+    ``entry["command"]``/``entry["args"]`` are set by the caller beforehand —
+    both loops resolve those slightly differently (build vs. refresh), so
+    ownership of that resolution stays with them.
+
+    ``auto_approve`` names what should happen to ``autoApprove``, as ONE
+    parameter rather than a pair of booleans, so a caller cannot spell a
+    combination that has no meaning. The three values are the three real cases:
+
+    * ``"own"`` (build) -- ``autoApprove`` tracks the spec on every call, like
+      every other field this function owns, so agent- or user-written
+      ``autoApprove`` data never survives a clean build.
+    * ``"seed"`` (refresh, entry absent) -- set it from the spec, because a
+      server the user does not have yet has no preference to respect.
+    * ``"preserve"`` (refresh, entry present) -- leave it alone, so a user who
+      deliberately removed a grant is not silently handed it back on every
+      refresh.
+    """
+    # Entry keys are an ALLOW-LIST, not a list of known-bad names. kiro-cli
+    # rejects a server spec carrying a field it does not know, and it rejects the
+    # WHOLE agent when it does, so a single stray ``cwd`` on a managed entry
+    # takes every Kiro Crew tool down with it. Dropping the key we cannot honour
+    # keeps the agent loadable, which is what the user actually wanted.
+    #
+    # It has to be an allow-list because the deny side is unbounded: ``url`` and
+    # ``headers`` were the two stale fields older builds left behind (these
+    # servers are stdio-only, and a leftover ``url`` would shadow the command and
+    # propagate into the CC config), but naming them one at a time fails open for
+    # the next field anybody hand-writes. Both are absent from the set below, so
+    # they are still dropped -- now as instances of a rule rather than as two
+    # names.
+    #
+    # This became reachable HERE with the fix: the fresh-build path used to
+    # rebuild the entry from scratch and so discarded every unknown key with the
+    # rest, and preserving the user's timeout/env is exactly what put them back
+    # in reach.
+    for stray_key in [k for k in entry if k not in _MANAGED_MCP_ENTRY_KEYS]:
+        entry.pop(stray_key, None)
+        logger.warning(
+            "dropping %r from a managed MCP server's entry: it is not a field a "
+            "managed entry may carry, and kiro-cli rejects the whole agent spec "
+            "over one unknown field",
+            stray_key,
+        )
+    # A right key with a wrong-TYPED value fails exactly the same way: the spec is
+    # schema-checked, so ``"disabled": "false"`` (a string where a boolean belongs)
+    # loses the user every Crew tool just as surely as an unknown field. Dropping
+    # the ill-typed value rather than coercing it is the same call already made one
+    # level down for env ENTRIES in ``sanitize_spec_env``: a value we invent is not
+    # the one the user wrote, and the rest of their entry still survives.
+    #
+    # Only the keys a user may author are checked. ``command``/``args`` are set by
+    # both callers before this runs, so their types are ours, not input. Unlike
+    # the env-NAME case, this list is closed and finite -- exactly the fields
+    # ``_MANAGED_MCP_ENTRY_VALUE_TYPES`` names, with the types the same schema
+    # documents -- so it converges instead of growing a name per round.
+    for typed_key, expected in _MANAGED_MCP_ENTRY_VALUE_TYPES.items():
+        if typed_key not in entry:
+            continue
+        value = entry[typed_key]
+        # ``bool`` is a subclass of ``int``, so a bare isinstance check would let
+        # ``"timeout": true`` through as a number.
+        wrong_type = not isinstance(value, expected) or (
+            expected is not bool and isinstance(value, bool)
+        )
+        # A float can be the right TYPE and still not be representable. Python's
+        # json module accepts bare ``NaN``/``Infinity`` on the way in and writes
+        # them back out verbatim, but neither is JSON, so a strict parser rejects
+        # the file -- and kiro-cli rejects the whole agent with it. isfinite is the
+        # complete test here rather than another name to remember: it covers NaN,
+        # +Infinity and -Infinity, which is every non-finite float there is.
+        if not wrong_type and isinstance(value, float) and not math.isfinite(value):
+            wrong_type = True
+        if wrong_type:
+            entry.pop(typed_key, None)
+            logger.warning(
+                "dropping %r from a managed MCP server's entry: %r is not the "
+                "type kiro-cli's spec schema documents for it, and it would be "
+                "rejected along with the whole agent",
+                typed_key,
+                value,
+            )
+    # A list of the right TYPE can still hold the wrong ITEMS. Both list-valued
+    # keys are documented as arrays of tool NAMES, so ``disabledTools: [1]``
+    # satisfies the check above and still emits a spec kiro-cli refuses -- the
+    # container was validated and its contents were not.
+    #
+    # Filtered per ITEM rather than dropped whole, which is the rule this fix
+    # already applies one level down to env ENTRIES in ``sanitize_spec_env``:
+    # a well-typed sibling survives its neighbour. That matters most for
+    # ``disabledTools``, where discarding the list because one item is malformed
+    # would re-expose every tool the user did name correctly.
+    for list_key in _MANAGED_MCP_ENTRY_ITEM_TYPES:
+        items = entry.get(list_key)
+        if not isinstance(items, list):
+            continue
+        kept = [item for item in items if isinstance(item, str)]
+        for bad_item in [item for item in items if not isinstance(item, str)]:
+            logger.warning(
+                "dropping %r from a managed MCP server's %r: that list carries "
+                "tool names, and a non-string item would be rejected along with "
+                "the whole agent spec",
+                bad_item,
+                list_key,
+            )
+        if len(kept) != len(items):
+            entry[list_key] = kept
+    # Enterprise registry MARKER — the ``registry`` value is ours and tracks the
+    # account the gateway is actually signed in to, so it is set when the
+    # declaration is on and removed (not left stale) when it is off, which stops
+    # a host that leaves an enterprise profile from shipping a marker the inverse
+    # filter would now use to drop these servers. Only that value: a transport
+    # hint the user wrote is theirs and is carried through untouched.
+    if registry_mode:
+        entry["type"] = _MCP_REGISTRY_TYPE
+    elif entry.get("type") == _MCP_REGISTRY_TYPE:
+        entry.pop("type", None)
+    # Env: keep the user's own variables, but only genuine ones. A malformed
+    # (non-dict) override is dropped rather than fed to dict(...), which would
+    # otherwise raise and abort the whole config rebuild over a single bad
+    # agent.json value. sanitize_spec_env then drops Kiro Crew's whole reserved
+    # namespace and the loader/interpreter channels by prefix (see the module
+    # comment above), the home-deriving names are dropped for this population
+    # (see _HOME_DERIVING_ENV_KEYS), and KIROCREW_HOME is re-pinned to the
+    # gateway's actual override afterwards so ours is the value that reaches the
+    # child.
+    existing_env = entry.get("env")
+    env = sanitize_spec_env(existing_env.items()) if isinstance(existing_env, dict) else {}
+    for home_key in [k for k in env if k.upper() in _HOME_DERIVING_ENV_KEYS]:
+        env.pop(home_key, None)
+        logger.warning(
+            "dropping %r from a managed MCP server's env: it would move the "
+            "data home this shim shares with the gateway",
+            home_key,
+        )
+    for exec_key in [k for k in env if k.upper() in _LAUNCHER_EXEC_ENV_KEYS]:
+        env.pop(exec_key, None)
+        logger.warning(
+            "dropping %r from a managed MCP server's env: it would choose what "
+            "this shim executes rather than configure it (see "
+            "_LAUNCHER_EXEC_ENV_KEYS)",
+            exec_key,
+        )
+    env.update(_managed_mcp_env())
+    if env:
+        entry["env"] = env
+    else:
+        entry.pop("env", None)
+    if auto_approve == "own":
+        if "autoApprove" in spec:
+            entry["autoApprove"] = list(spec["autoApprove"])
+        else:
+            # agent.json is agent-writable; it cannot grant auto-approval to a
+            # managed server that does not ship an audited default grant.
+            entry.pop("autoApprove", None)
+    elif auto_approve == "seed" and "autoApprove" in spec:
+        entry["autoApprove"] = list(spec["autoApprove"])
+
+
 def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     """Return the final agent config (shipped defaults + user overrides + dynamic fields).
 
@@ -2235,22 +2543,17 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
         else:
             cmd = spec.get("command") or spec["command_fn"]()
             args = list(spec["args"])
-        entry = {"command": cmd, "args": args}
-        # Enterprise registry mode: without this marker the client drops the
-        # entry before launch (see _mcp_registry_mode). command/args stay so the
-        # spec still describes a runnable server for every other consumer —
-        # doctor's handshake probe, the CC sidecar sync, a later un-governed
-        # refresh — none of which route through the registry.
-        if registry_mode:
-            entry["type"] = _MCP_REGISTRY_TYPE
-        # Pin the data home so the shim cannot read a DIFFERENT one than the
-        # gateway that spawned it (see _managed_mcp_env). Omitted entirely on a
-        # default install, so the emitted spec is unchanged there.
-        env = _managed_mcp_env()
-        if env:
-            entry["env"] = env
-        if "autoApprove" in spec:
-            entry["autoApprove"] = list(spec["autoApprove"])
+        # The deep merge above may have supplied user-owned options such as a
+        # timeout or extra environment variables. Keep those on a clean build,
+        # while replacing the invocation and transport fields that define our
+        # trusted managed server. Ownership of every other field is enforced
+        # by the same helper the refresh path uses (_enforce_managed_mcp_ownership),
+        # so the two loops cannot silently diverge on what counts as "ours".
+        existing = mcp.get(name)
+        entry = dict(existing) if isinstance(existing, dict) else {}
+        entry["command"] = cmd
+        entry["args"] = args
+        _enforce_managed_mcp_ownership(entry, spec, registry_mode, auto_approve="own")
         mcp[name] = entry
 
     # Edition-contributed MCP servers (PlatformContext).  ADD-only: standalone
@@ -2353,42 +2656,13 @@ def _refresh_dynamic_fields(config: dict, *, gated_off: "frozenset[str] | None" 
         else:
             entry["command"] = spec.get("command") or spec["command_fn"]()
             entry["args"] = list(spec["args"])
-        # Strip any stale remote-transport fields from older builds: these
-        # servers are stdio-only, and a leftover ``url`` would otherwise
-        # propagate into the CC config and shadow the command. (Root fix for
-        # the downstream stdio-force in cc_agent / acp.client.)
-        entry.pop("url", None)
-        entry.pop("headers", None)
-        # Enterprise registry marker — refreshed like command/args rather than
-        # preserved like ``autoApprove``, because it tracks the account the
-        # gateway is actually signed in to, not a user preference. Removed (not
-        # left stale) when the declaration is off, so a host that leaves an
-        # enterprise profile stops shipping a marker that would now cause the
-        # inverse filter to drop these servers.
-        if registry_mode:
-            entry["type"] = _MCP_REGISTRY_TYPE
-        elif entry.get("type") == _MCP_REGISTRY_TYPE:
-            entry.pop("type", None)
-        # Data-home pin — refreshed like command/args rather than preserved like
-        # ``autoApprove``, because it is OURS, not a user customization: it must
-        # track the home the gateway is actually running under. A config written
-        # under an override and later refreshed on a default install would
-        # otherwise keep pointing the shims at the stale home. Merged into any
-        # existing ``env`` so a user's own variables survive, and the key is
-        # REMOVED (not left stale) when there is no override.
-        pinned = _managed_mcp_env()
-        env = dict(entry.get("env") or {})
-        env.pop("KIROCREW_HOME", None)
-        env.update(pinned)
-        if env:
-            entry["env"] = env
-        else:
-            entry.pop("env", None)
-        # Seed autoApprove only for genuinely new entries; if the user
-        # deliberately removed autoApprove from an existing entry we
-        # must not re-add it on every refresh.
-        if "autoApprove" in spec and is_new:
-            entry["autoApprove"] = list(spec["autoApprove"])
+        # Strip any stale remote-transport fields from older builds, re-pin the
+        # registry marker and data-home env, and seed autoApprove only for a
+        # genuinely new entry — all via the same helper the fresh-build loop
+        # uses, so the two ownership rules can no longer hand-drift.
+        _enforce_managed_mcp_ownership(
+            entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
+        )
 
     # Edition-contributed MCP servers (PlatformContext).  ADD-only: only seed a
     # server the user doesn't already have, so user customizations on a refresh

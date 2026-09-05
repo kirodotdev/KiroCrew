@@ -65,6 +65,59 @@ loses nothing — existence is confirmed read-only under the folder-store lock
 only after the filing has landed, so a refused create leaves no folder-tree
 mutation behind.
 
+### What a created child inherits
+
+Creation copies two different kinds of state, and the split is deliberate.
+
+**Identity** — the child is created in the caller's workspace (the memory
+boundary; a child left in `default` would be both a boundary crossing and
+unaddressable by its own creator), inherits the caller's agent when none is
+named, takes that workspace's project directory as its cwd, and is attributed to
+the caller via `created_by` so the per-creator slot ceiling is countable.
+
+**Approval posture** — the caller's `_trust` and `_trust_reads` transfer, so a
+trusted operator's dispatched worker does not stall on a prompt nobody is
+watching. This is the posture `parent_trusted` already gives a `spawn_run`
+subagent, which reads the parent's stored `"auto"` policy; a `session_create`
+child previously started from `_ChatSlot.__init__`'s empty defaults, so the same
+delegation behaved differently depending only on whether it got a sidebar tab.
+No session-store write happens at creation: the child has no ACP session yet
+(`set_approval_policy` no-ops on a missing session), and `chat_runner` already
+derives the persistable policy from `_trust` on every session create/resume, so
+the subagent spawn gate sees it from the child's first turn.
+
+Two grants are excluded, and the exclusions are load-bearing:
+
+| Not inherited | Why |
+|---|---|
+| `_trusted_patterns` | Per-command grants ("`npm test` is fine"), not a posture. A pattern is judged against the session the operator was LOOKING at, while a dispatched worker runs model-authored work they have not seen, so the same glob can admit a command the grant was never asked about. Inheriting them also pays for itself in neither direction: with `_trust` set the child already auto-approves via `_slot_is_trusted`, so the list is dead weight, and because `chat_runner` matches patterns independently of `_trust` it changes an outcome only when the operator withheld session trust and approved single commands instead — the case that must keep asking |
+| `_trust_scope` | A TTL-bounded, SEL-audited `SafetyOverride` scope, re-checked on every approval. Forking the key would hand a second session a credential whose revocation this path cannot observe, so the child would keep auto-approving after the scope that justified it is gone. An unattended worker that needs one gets its own, from whatever owns its lifecycle |
+
+The posture that transfers is the one held at **allocation**, read off the
+re-resolved caller in the synchronous window after the last gate — not the one
+read on entry. Creation suspends three times before the slot exists (project
+directory, config load, folder confirmation), and an operator selecting `normal`
+in any of those windows would otherwise have a revoked posture resurrected by a
+create already in flight. Revoking mid-call yields an untrusted child.
+
+Nothing about trust is persisted at birth. The birth metadata carries
+`tab_id`, `origin`, `created_at`, `workspace`, `agent`, `project`, `title`,
+`memory_mode`, and `folder_id` / `created_by` when set — no trust field — so a
+restart returns the child to interactive along with its creator.
+
+The create's SEL record carries `agent`, `folder_id`, and what the child was
+born with: `inherited_trust` and `inherited_trust_reads`, present on both
+outcomes so `"false"` is positive evidence the posture did not transfer. That is
+what makes an auto-approved tool call in a dispatched session traceable to the
+creator's posture rather than unexplained.
+
+**Known gap.** Inheritance is transitive — a trusted child is itself an eligible
+creator — and revoking the creator's trust afterwards does not cascade to
+already-born workers, so one click covers a dispatch tree that outlives the
+click's scope. Bounded by the slot caps, by trust being in-memory only, and by
+the global Trust picker (no slot selected), which sets `normal` across every live
+slot. A per-slot revoke that walks `created_by` is tracked in issue #8589.
+
 `kirocrew-dashboard` rather than `kirocrew-core`, because these tools are not a
 capability every session should carry. That server is an **assignable set**: it
 is absent from the default agent's spec and loads only for an agent whose own

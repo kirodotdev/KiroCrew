@@ -1157,11 +1157,11 @@ class SubagentInfo:
     task: str
     started: float = field(default_factory=time.time)
     done: bool = False
-    # True for the record returned by a spawn that hit the stagger/concurrency
-    # gate and was QUEUED instead of started. Such a record is not registered in
-    # ``_agents`` and carries no live state — but its ``id`` IS the id the agent
-    # will run under once ``_drain_queue`` starts it (pre-assigned at accept
-    # time), so callers may print it or hold on to it.
+    # True for work accepted behind the stagger/concurrency gate but never
+    # started. The record returned by ``spawn`` is normally not registered in
+    # ``_agents``; a queued stop registers a synthetic copy temporarily so batch
+    # settlement can observe it, and keeps this discriminator True so running
+    # cancellation and live-resource monitoring do not treat it as executing.
     queued: bool = False
     result: str = ""
     result_path: str = ""
@@ -2359,11 +2359,17 @@ class SubagentManager:
                 info._cancel_retry_used = True
         task.cancel()
 
-    def _unqueue(self, agent_id: str) -> bool:
+    def _unqueue(self, agent_id: str) -> dict | None:
         return self._cancellation._unqueue_impl(agent_id)
+
+    def _report_queued_stop(self, params: dict) -> None:
+        return self._cancellation._report_queued_stop_impl(params)
 
     async def cancel(self, agent_id: str) -> bool:
         return await self._cancellation.cancel_impl(agent_id)
+
+    async def cancel_for_parent(self, parent_session_key: str) -> tuple[int, int]:
+        return await self._cancellation.cancel_for_parent_impl(parent_session_key)
 
     async def cancel_all(self) -> None:
         return await self._cancellation.cancel_all_impl()

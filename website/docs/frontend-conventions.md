@@ -106,7 +106,10 @@ Rules:
   `onKeyDown`. Prefer `Clickable`, which handles all three.
 - Every icon-only button needs an `aria-label` describing the action.
 - Modals need `role="dialog"`, `aria-modal="true"`, an `aria-label`, Escape
-  dismissal, and a focus trap.
+  dismissal, and a focus trap. `Modal` carries all four, plus keyboard isolation
+  from the page's global chords — but that isolation follows the React tree, so
+  an overlay rendered as a *sibling* of `<Modal>` is outside it. See
+  [Keyboard isolation](#keyboard-isolation-dialogs-and-the-overlays-above-them).
 - Dynamic content that updates in place (streaming messages, notifications) uses
   `aria-live="polite"`.
 - Do not use a raw `<button>`. Use `Btn` / `SendBtn` / `IconButton` (which carry
@@ -115,6 +118,87 @@ Rules:
 Tooling: `eslint-plugin-jsx-a11y` reports violations at lint time, and
 `@axe-core/react` scans the live DOM in dev mode (findings land in the browser
 console). Neither replaces a keyboard pass over a new control.
+
+## Keyboard isolation: dialogs, and the overlays above them
+
+The page binds its global shortcuts on a **bubble-phase `document` keydown**
+listener (`useKeyboardShortcuts`), and several chords deliberately fire while an
+input has focus — the Ctrl+digit session jumps and the Settings chord among
+them. A dialog holding unsaved input must stop those chords, or one mistyped
+Ctrl+digit navigates away and unmounts the dialog with the draft still in it.
+
+`Modal` owns that boundary for its consumers: `ModalDialog` puts a bubble-phase
+`onKeyDown` on the dialog **panel**, so every one of its ~24 call sites gets it
+without wiring anything.
+
+**The boundary follows the REACT tree — not the DOM tree, and not the stacking
+order.** React routes synthetic events through the React tree even across a
+portal, so what decides coverage is where a component sits in JSX:
+
+```tsx
+<Modal open={open} onClose={close} title="…">
+  …
+  <SimpleSelect … />   {/* COVERED: a React descendant. Its popup portals to    */}
+</Modal>                {/* document.body at z-[9999], and is still covered,     */}
+                        {/* because coverage is about the React tree.            */}
+{pickerOpen && (
+  <ProjectPicker … />   {/* NOT COVERED: a React SIBLING. It paints above the    */}
+)}                      {/* dialog but Modal's panel handler is not an ancestor  */}
+                        {/* on its dispatch path, so it needs its OWN boundary.  */}
+```
+
+Both of those overlays portal to `document.body` and both paint above the dialog
+at the same `z-[9999]`. Only one of them is inside the boundary. **Sharing a
+stacking context is a paint-order fact and implies nothing about event
+routing** — conflating the two is what kept #6833 open, so do not reason about
+coverage from a z-index.
+
+When you add an overlay that must appear above a dialog:
+
+1. **Prefer rendering it inside the `<Modal>`'s children.** It then inherits the
+   boundary, and nothing further is needed. A portal still escapes an
+   ancestor's `clip-path` / `transform` / `filter`, so being a React descendant
+   costs you no stacking freedom.
+2. **If it must be a sibling** — because it anchors to something outside the
+   dialog, or its lifecycle is owned above it — give its portal root the same
+   guard. `ProjectPicker` is the reference implementation:
+
+```tsx
+const isolateKeys = (e: React.KeyboardEvent) => {
+  if (e.key === 'Escape') { ime.claimKey(e); return }
+  e.stopPropagation()
+}
+return createPortal(<div onKeyDown={isolateKeys} …>…</div>, document.body)
+```
+
+Three properties of that guard are load-bearing:
+
+- **Bubble phase, on the overlay's own root.** Capture-phase listeners must keep
+  receiving keys: the Tab trap (`useDialogFocusTrap`, window capture) and list
+  navigation (`useListKeyboardNav`, document capture) both run before the event
+  reaches the target. A guard moved to capture phase, or onto `document`, would
+  pass a naive test while silently killing arrow-key navigation and the trap.
+- **Escape is excepted.** `Modal`'s own dismissal is a bubble-phase `window`
+  listener, and `stopPropagation()` on a synthetic event stops the native event
+  too — so a blanket stop breaks dismissal rather than isolating it. Leave
+  Escape exactly as you found it and let the overlay's own dismissal path own
+  it.
+- **An Escape the IME owns is claimed, not forwarded.** Mid-composition it is
+  cancelling a candidate list, not the dialog. Reuse the component's existing
+  IME guard (`useImeGuard`) or `useDocumentImeLatch` when the composing input
+  can be anywhere inside the overlay; do not hand-roll a second latch.
+
+Focus containment is a **separate** mechanism with a **different** scope: the Tab
+trap tests DOM containment (`container.contains(document.activeElement)`), so it
+reclaims focus from a sibling portal back into the dialog regardless of the
+keyboard boundary. A sibling overlay's own Tab handling therefore has to expect
+the trap to have run first.
+
+Pinned by `Modal.keyboardIsolation.test.tsx` and
+`ProjectPicker.keyboardIsolation.test.tsx`. Both open with a control that fires
+the same chord where the boundary is known to work — every other assertion in
+them is a negative, and a negative is worthless if the harness never delivered
+the key.
 
 ## Security: sanitize every HTML sink
 

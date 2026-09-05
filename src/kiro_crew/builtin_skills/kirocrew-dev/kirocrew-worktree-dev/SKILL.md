@@ -59,8 +59,11 @@ To clean up after merging: `git worktree remove ../kirocrew-wt-<name>`
 
 ## Rule 2 — The build gate (ALL must pass before PR)
 
-**`.github/workflows/ci.yml` is the canonical gate list** — it is what actually
-gates the PR; if this skill and CI disagree, CI wins. What this rule adds is
+**`.github/workflows/ci.yml` plus `.github/workflows/fast-gate.yml` are the
+canonical gate list** — they are what actually gates the PR; if this skill and
+CI disagree, CI wins. The eleven cheap blocking gates live in `fast-gate.yml`
+and `ci.yml` blocks on it through `await-fast-gate`, so reading only `ci.yml`
+shows you the expensive half of the gate list and none of the fast half. What this rule adds is
 the worktree-specific gotchas (parallelism, mypy CI-parity, dist ordering),
 not a replacement gate list.
 
@@ -102,7 +105,8 @@ python -m pytest -q --override-ini="addopts=--ignore=build/private -n auto --dis
 
 Never a bare `--override-ini=addopts=` (it silently drops `--dist loadgroup`).
 For the full gate list itself, don't trust any restated copy (including this
-one) — read `.github/workflows/ci.yml`, which is what actually gates the PR.
+one) — read `.github/workflows/ci.yml` AND `.github/workflows/fast-gate.yml`,
+which together are what actually gates the PR.
 
 **Triaging failures: blame your change last, but verify.** Some hosts carry
 environment-specific failures (permissions, missing optional binaries) that are
@@ -286,6 +290,19 @@ where a pod cannot run.
 
 3. **No preview at all (also valid).** For many changes, the build gate + unit
    tests are enough confidence to cut the PR. Previewing live is optional.
+
+### Turn a preview into proof
+
+A pod being healthy proves only that a gateway answered. To prove changed
+behavior, run the copy-pasteable trace in
+`docs/guides/worktree-verification-recipes.md` for the changed surface. The
+recipes use the feature map to select the owning endpoint, assert seeded backend
+state, run the packaged pod-e2e Playwright harness and preserve screenshot
+evidence, or diagnose and reclaim a failed pod.
+
+The recipes distinguish pod commands already on `main` from `pod api`, which
+arrives with PR #8218. They also record the current session-control compatibility
+gap rather than presenting an HTTP 403 as an agent-driving proof.
 
 ### Agent specs + MCP servers are a SEPARATE isolation axis from the data home
 

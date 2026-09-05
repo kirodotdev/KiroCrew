@@ -259,7 +259,16 @@ class TestCapAlignment:
     # table field -> CRON_ADD_SCHEMA field (where the names differ)
     _SCHEMA_NAME_MAP = {"agent_id": "agent"}
     # No boundary FieldSpec exists for these; the general ID cap applies.
-    _NO_SCHEMA_FIELDS = {"created_by", "session_key", "folder_id"}
+    _NO_SCHEMA_FIELDS = {
+        "created_by",
+        "session_key",
+        "folder_id",
+        # Secret-grant pins and the requesting session key are written only by
+        # the grant endpoint / cron_secret_request tool, never via
+        # CRON_ADD_SCHEMA (grants cannot be created through cron_add).
+        "secret_env_pin",
+        "secret_env_pending_pin",
+    }
 
     def test_table_caps_match_cron_add_schema(self):
         schema_caps = {spec.name: spec.max_len for spec in CRON_ADD_SCHEMA.fields}

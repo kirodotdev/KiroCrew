@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { acquireMicStream, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
 import type { AudioSample } from './mic'
+import { streamErrorMessage } from '../lib/sttProviders'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -218,7 +219,15 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
           // follow-up partial arrives (e.g. user stops mid-silence).
           onPartialRef.current(finalsRef.current.join(' '))
         } else if (msg.type === 'error') {
-          onErrorRef.current?.(msg.message || i18nT('hooks.useStreamingStt.stt_error'))
+          // Keyed off `code`, not `message`: the backend's message is advisory
+          // English and this UI renders in 12 languages. It reaches a state of its
+          // own in the consumer, which is what keeps the `onclose` below -- where a
+          // failed session has no finals to deliver -- from clearing the one
+          // explanation the user got.
+          onErrorRef.current?.(
+            streamErrorMessage(String(msg.code || ''), String(msg.message || '')) ||
+            i18nT('hooks.useStreamingStt.stt_error'),
+          )
           rejectReady(new Error(msg.message || 'stt error'))
         } else if (msg.type === 'endpoint') {
           // Backend semantic endpointer judged the utterance complete.

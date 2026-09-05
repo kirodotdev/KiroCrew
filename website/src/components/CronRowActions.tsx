@@ -111,7 +111,12 @@ export default function CronRowActions({
             <Folder size={13} className="shrink-0 text-muted" />
             <span>{i18nT('pages.schedulePage.cronFolders.move_to_folder')}</span>
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="min-w-[160px] max-h-[240px] overflow-y-auto">
+          {/* Intentional tighter cap composed via min() with the primitive's
+              available-height var: 240px keeps the folder submenu compact while
+              preserving the viewport never-clip floor (a bare max-h-[240px]
+              would override the primitive, since cn()'s tailwind-merge dedupes
+              max-h-*). overflow is left to the primitive. */}
+          <DropdownMenuSubContent className="min-w-[160px] max-h-[min(240px,var(--radix-dropdown-menu-content-available-height))]">
             <DropdownMenuItem onSelect={() => move('')}>
               <Folder size={13} className="shrink-0 text-muted" />
               <span>{i18nT('pages.schedulePage.cronFolders.ungrouped')}</span>

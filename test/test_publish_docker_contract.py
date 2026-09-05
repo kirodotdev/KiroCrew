@@ -165,7 +165,9 @@ def test_promotion_requires_a_recorded_digest_and_disables_rebuild_paths() -> No
 
     release = yaml.safe_load(CALLERS[1].read_text(encoding="utf-8"))
     call = release["jobs"]["publish-docker"]["with"]
-    assert call["promote"].endswith(" == 'stable' }}")
+    # promote_mode, not channel: a stable rebuild runs ON the stable channel and
+    # must build its own image rather than re-tag the candidate's digest.
+    assert call["promote"] == "${{ needs.version.outputs.promote_mode == 'true' }}"
     assert "resolve-promotion.outputs.docker_digest" in call["promote_digest"]
 
 

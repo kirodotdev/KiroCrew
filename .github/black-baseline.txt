@@ -128,11 +128,9 @@ src/kiro_crew/apps/builtins/ops_mission_control/backend/routes.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_index.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_notify_out.py
-src/kiro_crew/apps/builtins/ops_mission_control/tests/test_policy_store.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_providers_datadog_cov80.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
-src/kiro_crew/apps/builtins/ops_mission_control/tests/test_security.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_slack_out.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook.py
 src/kiro_crew/apps/builtins/papyrus/backend/gitops.py
@@ -189,9 +187,7 @@ src/kiro_crew/connections/registry.py
 src/kiro_crew/connections/tool_aliases.py
 src/kiro_crew/context_management.py
 src/kiro_crew/crew_chat.py
-src/kiro_crew/cron.py
 src/kiro_crew/cron_history.py
-src/kiro_crew/cron_script.py
 src/kiro_crew/dashboard/cautious_boot.py
 src/kiro_crew/dashboard/channel_folders.py
 src/kiro_crew/dashboard/chat_auto_tag.py
@@ -204,7 +200,6 @@ src/kiro_crew/dashboard/crash_dump_store.py
 src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/artifacts.py
 src/kiro_crew/dashboard/handlers/ask_question.py
-src/kiro_crew/dashboard/handlers/cron.py
 src/kiro_crew/dashboard/handlers/discover.py
 src/kiro_crew/dashboard/handlers/files.py
 src/kiro_crew/dashboard/handlers/hooks.py
@@ -225,7 +220,6 @@ src/kiro_crew/dashboard/handlers/themes.py
 src/kiro_crew/dashboard/handlers/tunnel.py
 src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/handlers/weixin_qr.py
-src/kiro_crew/dashboard/handlers_channel.py
 src/kiro_crew/dashboard/handlers_cloud.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
@@ -293,7 +287,6 @@ src/kiro_crew/mcp_apps_render.py
 src/kiro_crew/mcp_caller.py
 src/kiro_crew/mcp_cleanup.py
 src/kiro_crew/mcp_core.py
-src/kiro_crew/mcp_cron.py
 src/kiro_crew/mcp_discovery.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
@@ -331,7 +324,6 @@ src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/capability_bound.py
 src/kiro_crew/platform/update_layout.py
-src/kiro_crew/pod/cli.py
 src/kiro_crew/pod/config.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/pod/provision.py
@@ -364,7 +356,6 @@ src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
-src/kiro_crew/tips.py
 src/kiro_crew/vector_memory.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
@@ -405,7 +396,6 @@ test/test_agent_template_skills.py
 test/test_ai_agent_runner_coverage.py
 test/test_ai_backend_routes_coverage.py
 test/test_ai_pr_watchers_coverage.py
-test/test_ai_review_workflows.py
 test/test_ai_spine_driver_coverage.py
 test/test_api_agent_config_put_succeeds.py
 test/test_api_agents_order.py
@@ -479,7 +469,6 @@ test/test_bench_round18.py
 test/test_bench_round5.py
 test/test_bench_round6.py
 test/test_bench_round9.py
-test/test_bench_safepath.py
 test/test_bench_scorers.py
 test/test_bench_windows_symlink.py
 test/test_bootstrap.py
@@ -840,7 +829,6 @@ test/test_mcp_gateway_image_budget.py
 test/test_mcp_gateway_oversize.py
 test/test_mcp_gateway_pool_integ.py
 test/test_mcp_gateway_recaller.py
-test/test_mcp_gateway_rewriter_fingerprint.py
 test/test_mcp_gateway_session_inject.py
 test/test_mcp_gateway_shutdown_and_env.py
 test/test_mcp_gateway_stub_admission_fallback.py
@@ -928,7 +916,6 @@ test/test_perf_sampler.py
 test/test_persist_off_loop.py
 test/test_persistence_probe.py
 test/test_personal_shopper_no_purchase_capability.py
-test/test_pid_lifecycle.py
 test/test_platform_admission.py
 test/test_platform_compat_coverage.py
 test/test_playwright_e2e.py
@@ -989,7 +976,6 @@ test/test_safety_override.py
 test/test_sage_backend_routes_coverage.py
 test/test_sandbox_argv.py
 test/test_sandbox_backend_cache.py
-test/test_sandbox_cc_mode.py
 test/test_sandbox_default_fix.py
 test/test_sandbox_first_party_exec.py
 test/test_sandbox_hardlink_scan.py

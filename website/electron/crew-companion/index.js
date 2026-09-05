@@ -54,6 +54,13 @@ let fetchLocalToken = null;
 let log = () => {};
 let timer = null;
 let reconciling = false;
+// Latched true by suspendCrewCompanion() while an update install is stopping the
+// gateway and quitting. The reconcile loop treats a gateway it cannot reach as
+// "unknown" and LEAVES every window as-is, so without this latch the overlay
+// would float orphaned over the vanished dashboard during the quit handoff — and
+// a tick firing in the brief window where the gateway is still up (dispatch runs
+// BEFORE stopGateway is awaited) could even reopen a just-closed overlay.
+let suspended = false;
 /**
  * The token this poll reuses across ticks.
  *
@@ -278,6 +285,7 @@ function openDashboardSession(slotKey) {
 }
 
 async function reconcileOnce() {
+  if (suspended) return;
   if (reconciling) return;
   reconciling = true;
   try {
@@ -309,6 +317,11 @@ async function reconcileOnce() {
       }
     }
 
+    // Re-check AFTER the awaited probes: the top-of-function latch cannot stop a
+    // reconcile that was already in flight (past that check, awaiting the gateway)
+    // when suspendCrewCompanion() ran. Without this, that in-flight tick would
+    // resume here and reopen the overlay we just closed for the update quit.
+    if (suspended) return;
     if (state === "unknown") return; // leave every window exactly as it is
     if (state === "disabled") {
       if (petWindowCount() > 0) {
@@ -432,9 +445,36 @@ function shutdownCrewCompanion() {
   closePetWindow();
 }
 
+/**
+ * Close the overlays for an in-flight update install WITHOUT tearing the app
+ * down. Unlike shutdownCrewCompanion this keeps the reconcile timer, IPC
+ * handlers and cached token intact, so an install that FAILS resumes cleanly via
+ * resumeCrewCompanion() with no re-init (re-running initCrewCompanion would stack
+ * a second `crew-companion:focusable`/`turn-off` listener). The latch stops the
+ * still-running loop from reopening what we just closed.
+ */
+function suspendCrewCompanion() {
+  suspended = true;
+  closePanelWindow();
+  closeGalleryWindow();
+  closePetWindow();
+  log("crew-companion: overlays closed for update install");
+}
+
+/** Undo suspendCrewCompanion() when an update install did not proceed. The loop
+ * reopens the overlays on its next tick once the gateway is reachable again. */
+function resumeCrewCompanion() {
+  if (!suspended) return;
+  suspended = false;
+  log("crew-companion: update install did not proceed — resuming");
+  void reconcileOnce();
+}
+
 module.exports = {
   initCrewCompanion,
   shutdownCrewCompanion,
+  suspendCrewCompanion,
+  resumeCrewCompanion,
   // Exported for tests: they drive the tick directly rather than waiting 5s.
   reconcileOnce,
   probeEnabled,
