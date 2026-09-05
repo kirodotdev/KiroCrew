@@ -5227,6 +5227,34 @@ def test_agent_triggers_load() -> None:
     assert cfg.agents["weird"].triggers == ""
 
 
+def test_agent_description_non_string_normalized_on_load() -> None:
+    """A non-string `description` collapses to "" instead of surviving the load.
+
+    The field is declared ``str`` and the schema validator keeps a mismatched
+    value for its consumer to handle; this loader is that consumer. Letting an
+    object through hands every reader something it is not typed for — including
+    the dashboard's config view, whose redaction only recognizes ``str``, so
+    credential-shaped bytes nested in the object would reach the browser.
+    """
+    cfg = _load_from_dict(
+        {
+            "agents": {
+                "ok": {"kiro_agent": "kirocrew", "description": "deep research crew"},
+                "obj": {"kiro_agent": "kirocrew", "description": {"k": "AKIAIOSFODNN7EXAMPLE"}},
+                "num": {"kiro_agent": "kirocrew", "description": 7},
+                "lst": {"kiro_agent": "kirocrew", "description": ["a", "b"]},
+            },
+            "workspaces": {"default": {"dir": "workspace"}},
+        }
+    )
+    assert cfg.agents["ok"].description == "deep research crew"
+    for _name in ("obj", "num", "lst"):
+        assert cfg.agents[_name].description == "", _name
+    # The credential the object carried is gone from the loaded config entirely,
+    # so no downstream consumer can echo it.
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(cfg.to_dict())
+
+
 # ---------------------------------------------------------------------------
 # Tests for update_config_locked
 # ---------------------------------------------------------------------------
