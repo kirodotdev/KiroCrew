@@ -397,3 +397,47 @@ class TestLedgerTypeRecorded:
         skill_entry = get_entry("capability/skills/s")
         assert mcp_entry is not None and mcp_entry.type == "capability.mcp"
         assert skill_entry is not None and skill_entry.type == "capability.skills"
+
+
+@pytest.mark.asyncio
+class TestLedgerRefusalSurfacing:
+    """A ledger refusal must surface in each flow's own contract instead of
+    tearing through it: resolve_dependencies is failures-don't-prevent-install
+    by contract, and clean_dependencies has already performed the irreversible
+    uninstall by the time it records. The ledger file itself stays intact --
+    the refusal is never published over."""
+
+    async def test_install_reports_a_ledger_refusal_as_failed(
+        self, fake_manager, monkeypatch
+    ):
+        mgr = fake_manager()
+
+        def _refuse(*args, **kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr("kiro_crew.apps.dependencies.record_install", _refuse)
+        deps = Dependencies(capabilities=CapabilityDependencies(mcp=["some-mcp"]))
+        result = await resolve_dependencies("test-app", deps)
+        # The real install happened, and the recording failure is visible
+        # where the caller already looks -- not as an exception past the
+        # contract. The dep sits in BOTH lists on purpose: it is installed
+        # (true on disk, and uninstall bookkeeping depends on knowing that)
+        # and its ledger record failed.
+        assert mgr.calls == [("install_mcp", "some-mcp")]
+        assert result.failed == ["capability/mcp/some-mcp"]
+        assert result.installed == ["capability/mcp/some-mcp"]
+
+    async def test_clean_reports_a_ledger_refusal_and_keeps_the_result(
+        self, fake_manager, monkeypatch
+    ):
+        mgr = fake_manager()
+
+        def _refuse(*args, **kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr("kiro_crew.apps.dependencies.record_uninstall", _refuse)
+        cleaned = await clean_dependencies(
+            "test-app", [{"id": "capability/mcp/some-mcp", "type": "capability.mcp"}]
+        )
+        assert cleaned == ["capability/mcp/some-mcp"]
+        assert mgr.calls == [("uninstall_mcp", "some-mcp")]

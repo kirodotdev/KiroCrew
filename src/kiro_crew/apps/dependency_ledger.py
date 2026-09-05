@@ -194,15 +194,105 @@ def _locked_ledger(*, exclusive: bool = True) -> Iterator[None]:
 
 
 def _read_ledger_unlocked() -> dict[str, Any]:
-    """Read the ledger file without acquiring a lock (caller must hold lock)."""
+    """Read the ledger file without acquiring a lock (caller must hold lock).
+
+    A DISPLAY read: every failure degrades to an empty ledger so a render or a
+    lookup never crashes on a document it could not load. See
+    :func:`_read_ledger_for_update` for why a mutation may not stand on the
+    same answer. An absent file is silent -- that is a ledger with no
+    dependencies yet, not a fault; anything else is logged, because the state
+    this degrades into looks exactly like health: an empty ledger reads as
+    "nothing is tracked", which for the only record that an installed
+    dependency is still referenced is the one wrong answer nobody would
+    question.
+    """
     path = _ledger_path()
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # The file vanished between the is_file() check and the read.
+        return {}
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         logger.warning("Failed to read dependency ledger: %s", exc)
         return {}
+    if not isinstance(data, dict):
+        logger.warning("Dependency ledger root is not a JSON object; treating as empty")
+        return {}
+    return data
+
+
+def _read_ledger_for_update() -> dict[str, Any]:
+    """The ledger document a read-modify-write is allowed to publish over.
+
+    :func:`_read_ledger_unlocked` is a DISPLAY read: every failure collapses
+    to ``{}`` so a render never crashes on a document it could not load. That
+    reading is wrong as the base of a mutation, because all three mutations
+    below rewrite the WHOLE ledger from what they read -- an empty base there
+    does not mean "nothing to carry forward", it means "forget every app's
+    refcount". :func:`record_install` would publish a one-entry ledger over
+    every other app's references, and
+    :func:`classify_and_clean_for_uninstall` would wipe the ledger outright.
+    The sidecar lock does not help: it serializes writers, and the loss
+    happens inside it.
+
+    Only a MISSING file is a failure where ``{}`` is the truth (nothing has
+    been tracked yet). An unreadable one -- a transient EACCES/EIO, a scanner
+    holding the handle on Windows -- is a ledger we still have, so the error
+    propagates and the mutation is abandoned rather than published over state
+    nobody read.
+
+    Corruption propagates too (#7805, mirroring #8084): a document that failed
+    to parse carries nothing to merge into, but "cannot merge into" is not
+    "safe to destroy" -- a truncated file still holds most of its refcounts
+    verbatim. ``UnicodeDecodeError`` is folded into the same refusal: it is a
+    ``ValueError`` but NOT a ``json.JSONDecodeError``, so left unwrapped it
+    would slip past every corruption clause at the callers. Same for a root
+    that parses but is not an object: it carries no refcounts to merge into,
+    and normalizing it to ``{}`` would destroy a document nobody could read.
+
+    Plain ``json.JSONDecodeError`` rather than a named error type: no caller
+    of the three mutations needs to distinguish corruption from a transient
+    read failure -- both refuse -- and no cross-app import is wanted.
+    """
+    path = _ledger_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # The file vanished between the is_file() check and the read.
+        return {}
+    except UnicodeDecodeError as exc:
+        raise json.JSONDecodeError(
+            f"dependency ledger is not valid UTF-8: {exc.reason}",
+            exc.object.decode("utf-8", "replace")[:120],
+            0,
+        ) from exc
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError(
+            "dependency ledger root is not a JSON object", str(data)[:120], 0
+        )
+    return data
+
+
+def require_readable_ledger() -> None:
+    """Refuse loudly when the ledger cannot be read for a mutation.
+
+    A pre-flight for flows with IRREVERSIBLE steps around the mutation: the
+    uninstall handler tears the app down (onUninstall script, backend stop,
+    resource deregistration) before :func:`classify_and_clean_for_uninstall`
+    reads the ledger, so letting that strict read refuse mid-flow would strand
+    a half-uninstalled app, and a retry would rerun the non-idempotent
+    teardown. Reading here -- before anything destructive -- costs a handled
+    refusal instead. Raises whatever :func:`_read_ledger_for_update` raises
+    (``OSError`` for a transient read failure, ``json.JSONDecodeError`` for a
+    corrupt one); the mutation still re-checks under the lock, so a ledger
+    that goes bad between this call and the mutation refuses rather than
+    publishes.
+    """
+    _read_ledger_for_update()
 
 
 def _write_ledger_unlocked(data: dict[str, Any]) -> None:
@@ -225,7 +315,7 @@ def record_install(dep_key: str, app_name: str, dep_type: str) -> None:
     appends the current app to ``installedBy`` (no duplicates).
     """
     with _locked_ledger():
-        ledger = _read_ledger_unlocked()
+        ledger = _read_ledger_for_update()
         # Reuse the legacy spelling when that is where the entry already lives,
         # so an older ledger accrues refcounts in one place instead of splitting
         # across two keys for the same dependency.
@@ -252,7 +342,7 @@ def record_uninstall(dep_key: str, app_name: str) -> None:
     If the ``installedBy`` list becomes empty, the entry is deleted entirely.
     """
     with _locked_ledger():
-        ledger = _read_ledger_unlocked()
+        ledger = _read_ledger_for_update()
         key = _resolve_key(ledger, dep_key)
         entry = ledger.get(key)
         if not entry:
@@ -330,7 +420,7 @@ def classify_and_clean_for_uninstall(
     """
     keep = set(keep_specific or [])
     with _locked_ledger():
-        ledger = _read_ledger_unlocked()
+        ledger = _read_ledger_for_update()
         result = _classify_deps(app_name, declared_deps, ledger)
 
         # Update ledger for removable deps

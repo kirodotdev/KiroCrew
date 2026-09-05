@@ -1,5 +1,9 @@
 """Tests for kiro_crew.apps.dependency_ledger — reference-counted dependency tracking."""
+
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import pytest
 from hypothesis import given, settings
@@ -541,3 +545,107 @@ class TestUncleanableTypesArePreserved:
             assert _is_uncleanable(spelling) is True
         for spelling in ("mcp", "capability.mcp", "aim.skills", "", "unknown"):
             assert _is_uncleanable(spelling) is False
+
+
+# ---------------------------------------------------------------------------
+# Refuse to publish over an unreadable read (#7805-class, mirroring #8084)
+# ---------------------------------------------------------------------------
+
+
+def _corrupt_ledger() -> None:
+    """Seed the ledger file with a truncated document no parse can recover."""
+    from kiro_crew.apps.dependency_ledger import _ledger_path
+
+    path = _ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b'{"capability/mcp/aws-docs": {"installedBy": ["app-a"], "installedAt": "2026-01-01"'
+    )
+
+
+def _ledger_bytes() -> bytes:
+    from kiro_crew.apps.dependency_ledger import _ledger_path
+
+    return _ledger_path().read_bytes()
+
+
+class TestRefuseUnreadableMutationBase:
+    """A lenient read is correct for DISPLAY and data loss as the base of a
+    whole-file rewrite: every mutation here rewrites the whole ledger from
+    what it read, so a transient EACCES/EIO or a truncated document would
+    publish emptiness over every app's refcount. This ledger is the only
+    record that an installed dependency is still referenced, and its entries
+    hold mostly verbatim across a truncation."""
+
+    def test_corrupt_ledger_refuses_record_install(self):
+        _corrupt_ledger()
+        before = _ledger_bytes()
+        with pytest.raises(json.JSONDecodeError):
+            record_install("capability/mcp/new-dep", "app-b", "capability.mcp")
+        assert _ledger_bytes() == before
+
+    def test_corrupt_ledger_refuses_record_uninstall(self):
+        _corrupt_ledger()
+        with pytest.raises(json.JSONDecodeError):
+            record_uninstall("capability/mcp/aws-docs", "app-a")
+
+    def test_corrupt_ledger_refuses_classify_and_clean(self):
+        _corrupt_ledger()
+        before = _ledger_bytes()
+        with pytest.raises(json.JSONDecodeError):
+            classify_and_clean_for_uninstall("app-a", ["capability/mcp/aws-docs"])
+        assert _ledger_bytes() == before
+
+    def test_non_dict_root_refuses_mutations(self):
+        """A document that parses to a non-object carries no refcounts at all,
+        and publishing over it is the same destruction reached without a parse
+        failure."""
+        from kiro_crew.apps.dependency_ledger import _ledger_path
+
+        path = _ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"[1, 2]")
+        with pytest.raises(json.JSONDecodeError):
+            record_install("capability/mcp/new-dep", "app-b", "capability.mcp")
+
+    def test_unreadable_ledger_refuses_mutations_with_oserror(self, monkeypatch):
+        """A transient EACCES (a scanner holding the handle on Windows) must
+        abandon the mutation rather than publish an empty ledger."""
+        _write_raw_ledger({
+            "capability/mcp/aws-docs": {
+                "installedBy": ["app-a"], "installedAt": "2026-01-01", "type": "capability.mcp",
+            }
+        })
+        before = _ledger_bytes()
+        real_read_text = Path.read_text
+
+        def _eacces(self, *args, **kwargs):
+            if self.name == "dependency-ledger.json":
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _eacces)
+        with pytest.raises(PermissionError):
+            record_install("capability/mcp/new-dep", "app-b", "capability.mcp")
+        assert _ledger_bytes() == before
+
+    def test_display_reads_stay_lenient_on_corrupt(self):
+        """A render or a lookup must not crash on a document it could not
+        load -- the lenient half is what the mutation base refuses to share."""
+        _corrupt_ledger()
+        assert get_entry("capability/mcp/aws-docs") is None
+        assert list_by_app("app-a") == []
+        result = classify_for_uninstall("app-a", ["capability/mcp/aws-docs"])
+        assert result["userInstalled"] and not result["removable"]
+
+    def test_non_dict_root_degrades_display_read(self):
+        """A ledger whose root parses but is not an object crashes every
+        display read today (a list has no .get); the display read degrades to
+        an empty ledger with a loud log instead."""
+        from kiro_crew.apps.dependency_ledger import _ledger_path
+
+        path = _ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"[1, 2]")
+        assert get_entry("capability/mcp/aws-docs") is None
+        assert list_by_app("app-a") == []

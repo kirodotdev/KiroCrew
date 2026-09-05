@@ -14,6 +14,7 @@ unresolved instead of shelling out to any named binary.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 from dataclasses import dataclass, field
@@ -206,8 +207,26 @@ async def resolve_dependencies(
                 continue
             if ok:
                 result.installed.append(dep_key)
-                record_install(dep_key, app_name, capability_dep_type(dep_type))
-                logger.info("Installed dependency %s for app %s", dep_key, app_name)
+                try:
+                    record_install(dep_key, app_name, capability_dep_type(dep_type))
+                except (OSError, json.JSONDecodeError) as exc:
+                    # The dependency IS installed, but the ledger refused to
+                    # record it: a corrupt or unreadable document must not be
+                    # published over, and this function's contract is
+                    # failures-don't-prevent-install. Surface the failure so a
+                    # retry after the ledger is repaired re-records it; until
+                    # then the dependency reads as untracked.
+                    result.failed.append(dep_key)
+                    logger.warning(
+                        "Installed dependency %s for app %s but the ledger refused to "
+                        "record it (%s); repair dependency-ledger.json and re-run "
+                        "install to track it",
+                        dep_key,
+                        app_name,
+                        exc,
+                    )
+                else:
+                    logger.info("Installed dependency %s for app %s", dep_key, app_name)
             else:
                 result.failed.append(dep_key)
                 logger.warning(
@@ -299,7 +318,21 @@ async def clean_dependencies(
             logger.warning("Failed to uninstall %s: %s", dep_id, message[:200])
             continue
 
-        record_uninstall(dep_id, app_name)
+        try:
+            record_uninstall(dep_id, app_name)
+        except (OSError, json.JSONDecodeError) as exc:
+            # The dependency IS uninstalled; the ledger refused to record it.
+            # Abandoning the bookkeeping here is the safe direction -- the
+            # file keeps its bytes, and the stale refcount only makes a future
+            # cleanup keep a dependency around, never remove one still used.
+            # Swallowing keeps the rest of the cleanup loop running instead of
+            # stranding it mid-uninstall.
+            logger.warning(
+                "Uninstalled dependency %s for app %s but the ledger refused to " "record it (%s)",
+                dep_id,
+                app_name,
+                exc,
+            )
         cleaned.append(dep_id)
         logger.info("Cleaned dependency %s for app %s", dep_id, app_name)
 

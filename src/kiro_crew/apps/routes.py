@@ -52,6 +52,7 @@ from kiro_crew.apps.dependency_ledger import (
     classify_and_clean_for_uninstall,
     classify_for_uninstall,
     declared_capability_keys,
+    require_readable_ledger,
 )
 from kiro_crew.apps.dev_mode import dev_mode_granted_root, is_dev_mode_cached
 from kiro_crew.apps.event_bus import build_broadcast_fn
@@ -1033,6 +1034,22 @@ async def handle_uninstall_preview(request: web.Request) -> web.Response:
     )
 
 
+def _ledger_read_failure() -> str | None:
+    """Executor payload for the uninstall ledger pre-flight.
+
+    Returns ``None`` when the ledger can back a mutation, else the refusal
+    message. Blocking disk I/O must stay off the event loop, the same reason
+    every other disk read in the uninstall flow goes through the executor --
+    and a function that returns its failure hops that boundary more cleanly
+    than one that raises across it.
+    """
+    try:
+        require_readable_ledger()
+    except (OSError, json.JSONDecodeError) as exc:
+        return str(exc)
+    return None
+
+
 async def handle_uninstall_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/uninstall — uninstall an app.
 
@@ -1149,6 +1166,49 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+
+        # The dependency ledger is read strictly by the cleanup step below,
+        # and that read refusing is only cheap BEFORE anything destructive:
+        # past the onUninstall script a mid-flow failure strands a
+        # half-uninstalled app, and a retry reruns the non-idempotent
+        # teardown. Same shape as the grant precondition above -- refuse free
+        # now, keep the retry safe. Skipped when the caller keeps
+        # dependencies, because the cleanup step never touches the ledger.
+        # Offloaded: the precondition reads the ledger from disk, and this is
+        # an async handler -- the same reason every other disk read in this
+        # flow goes through the executor.
+        if not keep_dependencies:
+            ledger_failure = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _ledger_read_failure
+            )
+            if ledger_failure is not None:
+                logger.warning(
+                    "Uninstall of %s ABORTED: dependency ledger unreadable (%s)",
+                    name,
+                    ledger_failure,
+                )
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_uninstall",
+                    outcome="denied",
+                    resources=f"app={name}",
+                    error=f"dependency ledger unreadable, uninstall aborted: {ledger_failure}",
+                )
+                return web.json_response(
+                    {
+                        "error": (
+                            f"not uninstalling {name!r}: the dependency ledger is "
+                            f"unreadable ({ledger_failure}). Nothing has been changed -- "
+                            f"the ledger is the only record that an installed dependency "
+                            f"is still referenced, and the cleanup step would have "
+                            f"published emptiness over it. Repair or remove "
+                            f"dependency-ledger.json and retry."
+                        ),
+                        "code": "dependency_ledger_unreadable",
+                        "app": name,
+                    },
+                    status=500,
+                )
 
         # Step 1: Cron cleanup is the FIRST uninstall precondition, run BEFORE
         # the (possibly destructive, non-idempotent) onUninstall script and
@@ -1303,18 +1363,42 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             # and classification emits canonical ones — comparing the two raw
             # would drop the keep and delete a dep the user chose to keep.
             keep_canonical = [canonical_dep_key(k) for k in keep_specific]
-            classification = classify_and_clean_for_uninstall(
-                name,
-                declared_deps,
-                keep_specific=keep_canonical,
-            )
-            removable = [
-                d for d in classification.get("removable", []) if d.get("id") not in keep_canonical
-            ]
-            if removable:
-                cleaned_deps = await clean_dependencies(name, removable)
-                if cleaned_deps:
-                    uninstall_log.append(f"Cleaned {len(cleaned_deps)} dependency(ies)")
+            try:
+                classification = classify_and_clean_for_uninstall(
+                    name,
+                    declared_deps,
+                    keep_specific=keep_canonical,
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                # The pre-flight above read a healthy ledger, but the ledger
+                # went unreadable DURING teardown -- the onUninstall script is
+                # arbitrary code and can truncate or corrupt it. Refusing HERE
+                # strands a half-uninstalled app whose retry refuses at the
+                # pre-flight forever, so finish the uninstall without ledger
+                # cleanup instead: the ledger keeps its bytes, and the deps it
+                # tracked stay installed and untracked -- the safe direction,
+                # since untracked deps are skipped by every future cleanup
+                # rather than removed while still in use.
+                logger.warning(
+                    "Uninstall of %s: dependency ledger unreadable after teardown (%s); "
+                    "skipping dependency cleanup, ledger left untouched",
+                    name,
+                    exc,
+                )
+                uninstall_log.append(
+                    "Dependency ledger became unreadable; dependency cleanup skipped "
+                    "(ledger left untouched)"
+                )
+            else:
+                removable = [
+                    d
+                    for d in classification.get("removable", [])
+                    if d.get("id") not in keep_canonical
+                ]
+                if removable:
+                    cleaned_deps = await clean_dependencies(name, removable)
+                    if cleaned_deps:
+                        uninstall_log.append(f"Cleaned {len(cleaned_deps)} dependency(ies)")
 
         # Step 5: Remove files. Off-loop: rmtree of a large installed tree is
         # blocking filesystem I/O. (uninstall_app shares the
