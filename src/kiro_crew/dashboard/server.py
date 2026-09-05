@@ -3561,6 +3561,7 @@ async def start_dashboard(
         _ts_cfg.trust_identity,
         tailnet_effective_allowed_logins(_cfg.degraded_sections, _ts_cfg.allowed_logins),
         _ts_cfg.pin_scope,
+        bind_refresh_chains=_ts_cfg.bind_refresh_chains,
         # An unreadable tailnet policy resolves allowed_logins to [] and so
         # trust_identity to False, which is "no login restriction". The values
         # alone cannot tell that from "never configured"; degraded_sections can.
@@ -4343,6 +4344,7 @@ async def start_api_server(
         _ts_cfg.trust_identity,
         tailnet_effective_allowed_logins(_cfg.degraded_sections, _ts_cfg.allowed_logins),
         _ts_cfg.pin_scope,
+        bind_refresh_chains=_ts_cfg.bind_refresh_chains,
         identity_unknown=tailnet_identity_unknown(_cfg.degraded_sections),
         unreadable_files=tuple(degraded_config_files(_cfg.degraded_sections)),
     )

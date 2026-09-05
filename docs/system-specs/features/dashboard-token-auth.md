@@ -159,6 +159,42 @@ differently:
   new QR scan. Any child mobile/QR link minted by a peer-bound session carries
   the same `require_peer` + `peer_key` pair, so delegation cannot widen it.
 
+`require_peer` is no longer exclusive to the QR shape. An **ordinary** session
+whose `?token=` exchange resolved a daemon-verified allowed peer also opens its
+refresh chain with `require_peer` + that peer's `peer_key`, and the binding is
+recorded server-side in `refresh_chains.json` (`chain_peers`) as a second
+authority the presented token cannot influence. Rotation must satisfy every key
+either authority names, so a refresh cookie stolen from allowed node A and
+replayed from allowed node B is refused (`peer_identity_mismatch`) instead of
+rotating and re-pinning the replacement access token to B. A refusal does not
+revoke the chain — an unresolvable identity is a daemon blip as often as a theft,
+and burning a 30-day credential over one would turn a recoverable hiccup into a
+re-mint.
+
+Three properties bound the change:
+
+- **Roaming** is `pin_scope`'s decision, not this binding's. At `login` scope the
+  pin key is the identity (`ts:login:<login>`), so a person's other device
+  rotates normally. At `node` scope the ACCESS token was already device-pinned,
+  so an unbound chain was the only thing making cross-device use appear to work —
+  by laundering a fresh pin, which is the defect. `dashboard.tailscale.bind_refresh_chains`
+  (default `true`) is the explicit opt-out for an operator who needs cross-device
+  roaming at node scope and accepts that a stolen refresh cookie then renews from
+  any allowed node.
+- **Migration** is absence. A chain with neither the signed claim nor a
+  `chain_peers` record is unbound, which is every chain outstanding at upgrade
+  and every session opened with no verified peer, so nobody is logged out by the
+  change itself.
+- **Turning identity trust off later ends these sessions**, not just their
+  rotation. The claim is carried onto BOTH halves of the rotated pair — dropping
+  it on the access cookie would leave that credential with the same laundering
+  shape one credential over, re-pinned to whichever allowed node presented it
+  first after a restart — and an access cookie carrying `require_peer` fails
+  closed when no peer resolves. So a session bound this way needs one re-mint via
+  the `kirocrew token` URL after identity trust is switched off. This is the same
+  fail-closed posture the `require_peer` QR shape already has, and the reason the
+  claim is carried rather than confined to the refresh cookie.
+
 The guided setup writes the base `config.json`, then reloads the merged effective
 configuration. If user-owned `config.local.json` overrides any required identity
 or persistence field, the endpoint returns `409 config_overlay_conflict` with the

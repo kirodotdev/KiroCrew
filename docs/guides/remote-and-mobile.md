@@ -555,7 +555,7 @@ an error. `kirocrew token` defaults straight to `20h`. The 5-minute click window
 is not the session length: it only means a link left sitting in a DM overnight is
 dead and you need a fresh one.
 
-**When you do need a fresh link.** Four things end a refresh chain:
+**When you do need a fresh link.** Five things end a refresh chain:
 
 - **30 days idle** — nothing opened the dashboard inside the window.
 - **Signing out in the dashboard** (`POST /api/auth/logout`) — revokes that
@@ -569,9 +569,25 @@ dead and you need a fresh one.
   (RFC 6819 §5.2.2.3). The frontend reports `refresh_chain_revoked` and stops
   scheduling refreshes; the mint screen appears once the remaining access session
   runs out.
+- **Turning tailnet identity trust off**, for a chain that was opened under it.
+  See device binding below; the chain is refused rather than revoked, so one
+  fresh link restores you.
 
-Chains persist in `~/.kiro/crew/refresh_chains.json` (mode `0600`), so they
-survive a gateway restart. On a gateway old enough to predate the feature,
+**Device binding (tailnet identity trust only).** With
+`dashboard.tailscale.trust_identity` on, a chain is bound to the tailnet peer
+that opened it and only that peer can renew it, so a stolen refresh cookie
+cannot be replayed from another one of your allowed machines. What counts as
+"that peer" is `pin_scope`: at the default `node` it is the one device, at
+`login` it is your Tailscale identity, so one session follows you between your
+own devices. If you need one session to roam between devices at `node` scope, set
+`dashboard.tailscale.bind_refresh_chains: false` — the tradeoff is that a stolen
+refresh cookie then renews from any allowed node, which is what the binding
+exists to stop. Sessions that already exist keep whatever binding they were
+opened with; a chain bound this way stops renewing if you later turn identity
+trust off, and a fresh `kirocrew token` link gets you going again.
+
+Chains persist in `~/.kiro/crew/refresh_chains.json` (mode `0600`) — including
+the device binding above — so they survive a gateway restart. On a gateway old enough to predate the feature,
 `GET /api/auth/me` returns 404; the frontend logs once and falls back to the
 20-hour URL-mint behaviour.
 

@@ -401,6 +401,14 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     Implements the rotation-on-use semantics: each call consumes the
     presented refresh ``jti`` and issues a NEW one with the same ``chain_id``.
     Reuse outside the multi-tab grace window auto-revokes the chain.
+
+    A chain opened by a daemon-verified tailnet peer may only be rotated FOR
+    THAT PEER (issue #2417). The binding is read from two independent
+    authorities -- the HMAC-signed ``peer_key`` claim on the presented token and
+    the server-side record in ``refresh_chains.json`` -- and the request must
+    satisfy every key either of them names. A chain with neither is unbound,
+    which is every chain that predates the record and every session opened with
+    no verified peer.
     """
     # Defense-in-depth CSRF check. SameSite=Lax already blocks the
     # canonical cross-site POST attack, but a malicious origin loaded
@@ -444,8 +452,12 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
 
     state = _get_state()
 
-    # An identity-bound chain (the persistent QR session shape) may only be USED
-    # while a daemon-verified tailnet peer can be established. Placed here, ahead
+    # An identity-bound chain may only be USED while a daemon-verified tailnet
+    # peer can be established -- and while it matches the one that OPENED the
+    # chain. Two shapes are bound: the persistent QR session, whose credential is
+    # bounded by identity rather than by this process's lifetime, and (since issue
+    # #2417) any ordinary Phase-3 session whose chain was opened by a verified
+    # peer. Placed here, ahead
     # of BOTH the reuse branch and the mint, because every path below this line
     # hands the caller a live credential: the grace-replay branch re-serves the
     # cached pair and re-sets both cookies without minting anything, so a check
@@ -468,11 +480,32 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     # address pin would read as a pin while excluding nobody.
     carried_require_peer = refresh_token_requires_peer(refresh_token)
     carried_peer_key = refresh_token_peer_key(refresh_token) if carried_require_peer else ""
+    # Second authority: the server-side chain record in refresh_chains.json
+    # (issue #2417). The signed claim above cannot be forged, but it only binds a
+    # chain whose MINT path remembered to set it -- and this gap existed because
+    # one mint path did and every other one did not. A record the presented token
+    # cannot influence is what makes the next forgetful mint path fail closed
+    # rather than silently unbound.
+    #
+    # Absent means unbound, which is both "this chain had no verified peer" and
+    # "this chain predates the record" -- the migration rule: an upgrade must not
+    # invalidate the outstanding 30-day window.
+    recorded_peer_key = state.chain_peer(chain_id)
+    require_peer = carried_require_peer or bool(recorded_peer_key)
+    # Tightest-wins. When both authorities name a key they agree, because every
+    # rotation re-stamps the record from the same value it signs. If they ever
+    # DISAGREE that is our own state contradicting itself, so neither is trusted
+    # over the other: the request must satisfy both, and a mismatch is refused.
+    expected_peer_keys = {key for key in (carried_peer_key, recorded_peer_key) if key}
     verified_peer_key = (
-        await _verified_peer_key(request, carried_peer_key) if carried_require_peer else ""
+        await _verified_peer_key(request, carried_peer_key or recorded_peer_key)
+        if require_peer
+        else ""
     )
-    if carried_require_peer and (
-        not verified_peer_key or not carried_peer_key or verified_peer_key != carried_peer_key
+    if require_peer and (
+        not verified_peer_key
+        or not expected_peer_keys
+        or any(key != verified_peer_key for key in expected_peer_keys)
     ):
         if not verified_peer_key:
             outcome = "peer_unverified"
@@ -481,7 +514,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
                 "This device could not be verified on the tailnet, so the session "
                 "cannot be renewed. Reconnect to the tailnet and try again."
             )
-        elif not carried_peer_key:
+        elif not expected_peer_keys:
             outcome = "peer_binding_missing"
             code = "peer_binding_missing"
             message = (
@@ -565,7 +598,15 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     _carried_claims: dict[str, str] = {}
     if carried_boot:
         _carried_claims["boot"] = carried_boot
-    if carried_require_peer:
+    # The key the checks above proved this request satisfies. Taken from the
+    # presented credential rather than re-derived from the resolved peer, for the
+    # same reason ``carried_boot`` is: the rotated pair then says what the
+    # credential said, so a future change that admits a partially-validated token
+    # degrades to unbound instead of silently minting a live binding for it. The
+    # record is the fallback, so a claimless-but-recorded chain rotates FORWARD
+    # into a properly claimed one rather than staying claimless.
+    bound_peer_key = carried_peer_key or recorded_peer_key
+    if require_peer:
         # Carried onto BOTH halves of the rotated pair. Dropping it on either one
         # would make the FIRST rotation silently downgrade an identity-bound
         # session to an ordinary one — the same shape of defect as the review
@@ -575,7 +616,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         user_id,
         ttl_seconds=MAX_SESSION_TTL_SECS,
         register_nonce=False,
-        peer_key=carried_peer_key,
+        peer_key=bound_peer_key,
         extra=_carried_claims or None,
     )
     new_session_exp = now + MAX_SESSION_TTL_SECS
@@ -583,8 +624,8 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         user_id,
         chain_id=chain_id,
         boot=carried_boot,
-        require_peer=carried_require_peer,
-        peer_key=carried_peer_key,
+        require_peer=require_peer,
+        peer_key=bound_peer_key,
     )
 
     public_payload = {
@@ -611,13 +652,19 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         exp=now + MAX_REFRESH_TTL_SECS,
         ip=client_ip,
         replacement=json.dumps(grace_payload, separators=(",", ":")),
+        # Re-stamped in the SAME write as the consumption, so a rotation can
+        # never record that the old jti is spent while losing the binding that
+        # decides who may spend the new one. Empty for an unbound chain, which
+        # ``mark_consumed`` treats as "leave it alone" rather than storing a
+        # blank -- absent must stay distinguishable from bound-but-lost.
+        peer_key=bound_peer_key,
     )
 
-    if carried_require_peer:
+    if require_peer:
         # The signed claim, not a second whois result, is authoritative. The
         # request already proved it matches ``verified_peer_key`` above; mirror
         # that exact key into the hot in-memory map for posture/reporting.
-        bind_token_peer(new_access_token, carried_peer_key, new_session_exp)
+        bind_token_peer(new_access_token, bound_peer_key, new_session_exp)
     else:
         await _rebind_rotated_token_to_peer(
             request, new_access_token, new_session_exp, boot_bound=bool(carried_boot)

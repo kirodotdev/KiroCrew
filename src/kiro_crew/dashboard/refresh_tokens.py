@@ -15,6 +15,8 @@ Design (full spec in ``docs/system-specs/features/dashboard-token-auth.md``):
 - Reuse detection (RFC 6819 §5.2.2.3): a consumed ``jti`` presented again
   outside the multi-tab grace window auto-revokes the entire chain.
 - 60-second same-IP grace window absorbs benign multi-tab races.
+- Peer binding: a chain opened by a daemon-verified tailnet peer records that
+  peer, and only that peer may rotate it (see ``bind_chain_peer``).
 - Persistence: ``~/.kiro/crew/refresh_chains.json`` (mode ``0600``).
 """
 
@@ -116,6 +118,70 @@ REFRESH_GRACE_SECS = 60
 # imports stay cheap).
 _STATE_FILE_NAME = "refresh_chains.json"
 
+#: The persisted record lists, in the order ``_persist`` writes them. Named once
+#: so ``_load`` cannot check a different set than ``_persist`` produces.
+_RECORD_KEYS = ("consumed_jtis", "revoked_chains", "chain_peers")
+
+
+# --- Persisted-record decoding -----------------------------------------------
+
+
+def _record_list(data: object, key: str) -> list[dict] | None:
+    """Return ``data[key]``'s mapping records, or ``None`` if it is CORRUPT.
+
+    The one place every persisted record list is decoded, and the one place that
+    distinguishes the two cases a bare ``.get(key, [])`` collapses together:
+
+    - **absent** (no such key) -> ``[]``. A fresh install has no records, and an
+      install that never revoked anything has no ``revoked_chains``. Nothing was
+      lost, so empty is the truth.
+    - **present but not a list** (``{"revoked_chains": null}``, a scalar, an
+      object) -> ``None``, meaning CORRUPT. Records existed and cannot be read.
+
+    That distinction is load-bearing, because these lists are security controls,
+    not a cache. Reading a corrupt ``revoked_chains`` as empty makes
+    ``is_chain_revoked`` answer False for a chain that ``POST /api/auth/logout``
+    already killed, so a stolen refresh cookie rotates into fresh credentials --
+    and nothing self-corrects it: reuse detection only re-fires on a jti replay
+    the attacker need not cause, so the window persists until an unrelated logout
+    or restart. Same shape for ``consumed_jtis`` (RFC 6819 §5.2.2.3 reuse
+    detection) and ``chain_peers`` (the device binding, whose loss makes a chain
+    replayable from any allowed node). :meth:`_load` therefore marks the store
+    DEGRADED on ``None`` and :func:`validate_refresh_token` refuses to rotate,
+    rather than silently dropping the control.
+
+    A non-mapping ELEMENT is different again and is simply filtered: the callers'
+    per-field guards already skip it, and one junk entry beside good ones is not
+    evidence the good ones are untrustworthy.
+
+    Note what this does NOT change: an unparseable or unreadable FILE keeps
+    starting empty (see :meth:`_load`). ``atomic_write`` makes a torn write
+    impossible, so a file that will not parse at all is better read as "not our
+    state" than as "our records, lost" -- and that behaviour is pinned by
+    ``test_tr_i_17_corrupted_state_file_starts_empty``.
+
+    Deliberately a chokepoint rather than three guards: the original crash was
+    reported against ``chain_peers`` alone, but it was never specific to that
+    key, and guarding only the reported one leaves the identical defect on its
+    two siblings.
+    """
+    if not isinstance(data, dict):
+        return None
+    if key not in data:
+        return []
+    raw = data.get(key)
+    if not isinstance(raw, list):
+        # Logs the JSON field NAME and a type name, never a record value. The
+        # rule fires on the format string itself, whose "refresh_tokens:"
+        # prefix contains "token".
+        logger.warning(  # nosemgrep: python-logger-credential-disclosure
+            "refresh_tokens: %s is %s, not a list; refusing to rotate until repaired",
+            key,
+            type(raw).__name__,
+        )
+        return None
+    return [entry for entry in raw if isinstance(entry, dict)]
+
 
 # --- State manager -----------------------------------------------------------
 
@@ -123,9 +189,9 @@ _STATE_FILE_NAME = "refresh_chains.json"
 class RefreshStateManager:
     """Thread-safe state for refresh-token rotation and chain revocation.
 
-    Persists consumed-``jti`` and revoked-``chain_id`` records to disk so
-    reuse-detection state survives gateway restarts. Atomic-rename writes guard
-    against truncation on crash.
+    Persists consumed-``jti``, revoked-``chain_id`` and per-chain peer-binding
+    records to disk so reuse-detection and identity-binding state survive
+    gateway restarts. Atomic-rename writes guard against truncation on crash.
 
     The multi-tab grace state (``_grace_replacements``) is deliberately
     IN-MEMORY only — it is never serialized by ``_persist()``/``_load()``.
@@ -142,6 +208,13 @@ class RefreshStateManager:
         self._consumed_jtis: dict[str, float] = {}
         # chain_id -> exp (the latest member's session_exp)
         self._revoked_chains: dict[str, float] = {}
+        # chain_id -> (peer_key, exp) for a chain opened by a daemon-verified
+        # tailnet peer. A peer key is an IDENTIFIER, not a credential (see
+        # tailnet.peer_pin_key), so unlike the grace replacements this is safe to
+        # persist — and it MUST be, or a gateway restart would silently downgrade
+        # every bound chain to unbound, which is the shape of gap this record
+        # exists to close.
+        self._chain_peers: dict[str, tuple[str, float]] = {}
         # chain_id -> (jti, ts, ip, replacement_pair_json) for the single
         # most-recently-consumed jti on the chain (the CHAIN HEAD). The
         # multi-tab grace window re-serves this replacement pair instead of
@@ -156,6 +229,11 @@ class RefreshStateManager:
         # head token, so re-serving it can never roll a shared cookie jar back
         # to an already-consumed jti.
         self._grace_replacements: dict[str, tuple[str, float, str, str]] = {}
+        # Record keys whose persisted value was present but unreadable. Non-empty
+        # means the security controls this store enforces cannot be trusted, so
+        # ``validate_refresh_token`` refuses every rotation until the file is
+        # repaired -- see ``_record_list`` for why empty is not a safe reading.
+        self._corrupt_keys: tuple[str, ...] = ()
         self._state_path = state_path
         self._load()
 
@@ -168,11 +246,17 @@ class RefreshStateManager:
         exp: float,
         ip: str,
         replacement: str,
+        peer_key: str = "",
     ) -> None:
         """Record that ``jti`` was used to mint ``replacement``.
 
         ``replacement`` is the JSON-encoded payload we returned to the
         client (so the multi-tab grace window can return the same pair).
+
+        ``peer_key`` re-stamps the chain's peer binding with the rotation's own
+        expiry. Passed here rather than through a second call so one rotation
+        still costs exactly one state write — and so a bound chain can never
+        record a consumption without also carrying its binding forward.
 
         Auto-evicts expired entries on each call so the on-disk file
         cannot grow without bound (e.g. an attacker pumping rotations
@@ -180,6 +264,8 @@ class RefreshStateManager:
         """
         with self._lock:
             self._consumed_jtis[jti] = exp
+            if peer_key:
+                self._chain_peers[chain_id] = (peer_key, exp)
             # Chain-head-only: record ONLY this (the newest) consumed jti as
             # the grace authenticator, overwriting any prior entry for the
             # chain. An older rotated jti therefore can no longer authenticate
@@ -192,12 +278,63 @@ class RefreshStateManager:
         with self._lock:
             return jti in self._consumed_jtis
 
+    def bind_chain_peer(self, chain_id: str, peer_key: str, exp: float) -> None:
+        """Record that ``chain_id`` may only be rotated for ``peer_key``.
+
+        Called at initial mint (the ``?token=`` exchange) and re-stamped on each
+        rotation. The binding is ALSO signed into the refresh token itself; this
+        server-side copy is a second, independent authority, because the gap this
+        closes (issue #2417) was one mint path carrying the signed claim while
+        every other one silently did not. A record the presented token cannot
+        influence is what makes the next forgetful mint path fail closed rather
+        than unbound.
+
+        An empty ``peer_key`` is a no-op rather than a stored empty: absent means
+        "unbound, today's semantics", and writing a blank record would make an
+        unbound chain indistinguishable from a bound one whose key was lost.
+        """
+        if not peer_key:
+            return
+        with self._lock:
+            self._chain_peers[chain_id] = (peer_key, exp)
+        self.evict_expired()
+        self._persist()
+
+    def degraded_reason(self) -> str:
+        """Why this store cannot be trusted, or ``""`` when it can.
+
+        Non-empty when a persisted record list was present but unreadable, which
+        would otherwise read as "no revocations, no consumed jtis, no device
+        bindings" -- i.e. as every control being satisfied. Callers fail closed on
+        it, mirroring how ``validate_refresh_token`` already treats an unreadable
+        revocation counter.
+        """
+        with self._lock:
+            if not self._corrupt_keys:
+                return ""
+            return "unreadable persisted state: " + ", ".join(self._corrupt_keys)
+
+    def chain_peer(self, chain_id: str) -> str:
+        """The peer key ``chain_id`` is bound to, or ``""`` when unbound.
+
+        ``""`` covers both a chain opened with no verified peer and every chain
+        that predates this record — the migration rule from issue #2417: absent
+        binding means today's unbound semantics, so an upgrade does not log out
+        the whole outstanding 30-day window.
+        """
+        with self._lock:
+            entry = self._chain_peers.get(chain_id)
+            return entry[0] if entry else ""
+
     def revoke_chain(self, chain_id: str, exp: float) -> None:
         with self._lock:
             self._revoked_chains[chain_id] = exp
             # Drop any grace replacement so a revoked chain cannot
             # be served from cache.
             self._grace_replacements.pop(chain_id, None)
+            # The chain is dead; its binding has nothing left to authorize and
+            # must not outlive it for a future chain_id that collides.
+            self._chain_peers.pop(chain_id, None)
         self.evict_expired()
         self._persist()
 
@@ -265,6 +402,9 @@ class RefreshStateManager:
             for chain_id, exp in list(self._revoked_chains.items()):
                 if exp < now:
                     self._revoked_chains.pop(chain_id, None)
+            for chain_id, peer_entry in list(self._chain_peers.items()):
+                if peer_entry[1] < now:
+                    self._chain_peers.pop(chain_id, None)
             for chain_id, entry in list(self._grace_replacements.items()):
                 # Grace entries are short-lived: drop any whose recorded
                 # timestamp is older than 2x the grace window.
@@ -276,6 +416,7 @@ class RefreshStateManager:
         with self._lock:
             self._consumed_jtis.clear()
             self._revoked_chains.clear()
+            self._chain_peers.clear()
             self._grace_replacements.clear()
         self._persist()
 
@@ -294,31 +435,96 @@ class RefreshStateManager:
                 e,
             )
             return
+        if not isinstance(data, dict):
+            # Valid JSON, wrong shape (a list or scalar at the top level). It
+            # parsed, so this is not the "unreadable file" case above: something
+            # replaced our records with a document that cannot hold any. Refuse
+            # rather than read it as "no records" -- see ``_record_list``.
+            #
+            # Logs the state-file PATH and a type name, never a record value; the
+            # rule fires on the format string's "refresh_tokens:" prefix.
+            logger.error(  # nosemgrep: python-logger-credential-disclosure
+                "refresh_tokens: state in %s is %s, not an object; refusing to "
+                "rotate any refresh token until it is repaired or removed",
+                self._state_path,
+                type(data).__name__,
+            )
+            self._corrupt_keys = ("<document>",)
+            return
+        # Decoded BEFORE the lock so a corrupt list is detected before any record
+        # is admitted: a partial load must not leave the store looking populated.
+        records = {key: _record_list(data, key) for key in _RECORD_KEYS}
+        corrupt = tuple(key for key, value in records.items() if value is None)
+        if corrupt:
+            # Logs the unreadable KEY NAMES and the state-file path, never a
+            # record value; the rule fires on the "refresh_tokens:" prefix.
+            logger.error(  # nosemgrep: python-logger-credential-disclosure
+                "refresh_tokens: %s in %s could not be read; refusing to rotate "
+                "any refresh token until it is repaired or removed. Reading it as "
+                "empty would drop revocations and reuse-detection state.",
+                ", ".join(corrupt),
+                self._state_path,
+            )
+            self._corrupt_keys = corrupt
+            return
         with self._lock:
             # A single corrupt `exp` (e.g. "abc" or null) must not brick the
             # store: float() raises TypeError/ValueError, and this runs in the
             # RefreshStateManager constructor, so an unguarded coercion made
             # _get_state() — and thus EVERY /api/auth/refresh call — 500 until
             # the file was hand-repaired. Skip the malformed entry instead.
-            for entry in data.get("consumed_jtis", []):
-                if isinstance(entry, dict) and "jti" in entry and "exp" in entry:
+            for entry in records["consumed_jtis"] or []:
+                if "jti" in entry and "exp" in entry:
                     try:
                         self._consumed_jtis[str(entry["jti"])] = float(entry["exp"])
                     except (TypeError, ValueError):
                         logger.warning(
                             "refresh_tokens: dropping consumed_jti with bad exp: %r", entry
                         )
-            for entry in data.get("revoked_chains", []):
-                if isinstance(entry, dict) and "chain_id" in entry and "exp" in entry:
+            for entry in records["revoked_chains"] or []:
+                if "chain_id" in entry and "exp" in entry:
                     try:
                         self._revoked_chains[str(entry["chain_id"])] = float(entry["exp"])
                     except (TypeError, ValueError):
                         logger.warning(
                             "refresh_tokens: dropping revoked_chain with bad exp: %r", entry
                         )
+            # Peer bindings. Absent for every chain written before this record
+            # existed, which IS the migration: no record means unbound, i.e. the
+            # pre-change semantics, so an upgrade does not invalidate the
+            # outstanding 30-day window. A malformed record is DROPPED rather
+            # than read as unbound-but-present for the same reason the two loops
+            # above skip theirs: one bad entry must not take the file with it.
+            for entry in records["chain_peers"] or []:
+                if not ("chain_id" in entry and entry.get("peer_key") and "exp" in entry):
+                    if entry:
+                        logger.warning("refresh_tokens: dropping malformed chain_peer: %r", entry)
+                    continue
+                try:
+                    self._chain_peers[str(entry["chain_id"])] = (
+                        str(entry["peer_key"]),
+                        float(entry["exp"]),
+                    )
+                except (TypeError, ValueError):
+                    logger.warning("refresh_tokens: dropping chain_peer with bad exp: %r", entry)
 
     def _persist(self) -> None:
         if self._state_path is None:
+            return
+        if self._corrupt_keys:
+            # Writing here would replace the operator's unreadable file with our
+            # (empty) in-memory state: the records would be gone for good, and the
+            # NEXT start would load a clean empty store and silently resume
+            # rotating -- turning a refusal into exactly the bypass it prevents.
+            # Leave the file alone so it can be inspected and repaired.
+            # Logs the state-file path and the unreadable KEY NAMES, never a
+            # record value; the rule fires on the "refresh_tokens:" prefix.
+            logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                "refresh_tokens: not persisting over unreadable state in %s "
+                "(%s); repair or remove the file, then restart the gateway",
+                self._state_path,
+                ", ".join(self._corrupt_keys),
+            )
             return
         # Hold the lock across the FULL serialize+write+rename so concurrent
         # writers cannot clobber each other's atomic-rename. Per a security
@@ -336,6 +542,10 @@ class RefreshStateManager:
                 ],
                 "revoked_chains": [
                     {"chain_id": cid, "exp": exp} for cid, exp in self._revoked_chains.items()
+                ],
+                "chain_peers": [
+                    {"chain_id": cid, "peer_key": key, "exp": exp}
+                    for cid, (key, exp) in self._chain_peers.items()
                 ],
             }
             try:
@@ -386,6 +596,19 @@ def _get_state() -> RefreshStateManager:
             if _state_singleton is None:
                 _state_singleton = RefreshStateManager(state_path=config_dir() / _STATE_FILE_NAME)
     return _state_singleton
+
+
+def bind_chain_peer(chain_id: str, peer_key: str, exp: float) -> None:
+    """Record a chain's peer binding on the module singleton.
+
+    A module-level entry point so ``token_auth`` can record the binding at
+    initial mint without reaching into the private singleton accessor, keeping
+    the import direction one-way (``token_auth`` → ``refresh_tokens``).
+
+    Does synchronous file I/O — callers on the event loop must wrap it in
+    ``asyncio.to_thread``.
+    """
+    _get_state().bind_chain_peer(chain_id, peer_key, exp)
 
 
 # --- Token generation / validation -------------------------------------------
@@ -511,6 +734,14 @@ def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]
     if not chain_id or not jti:
         return False, "", "missing claims", "", "", 0.0
     state = _get_state()
+    # Fail closed when the persisted state could not be read. Placed BEFORE the
+    # revocation check because that check is the one being bypassed: a corrupt
+    # ``revoked_chains`` read as empty makes ``is_chain_revoked`` answer False for
+    # a chain logout already killed, and nothing self-corrects it. Same posture
+    # and same wording shape as the unreadable-revocation-counter check below.
+    degraded = state.degraded_reason()
+    if degraded:
+        return False, user_id, f"refresh state unavailable ({degraded})", chain_id, jti, session_exp
     if state.is_chain_revoked(chain_id):
         return False, user_id, "chain revoked", chain_id, jti, session_exp
     # Revocation generation: mirrors the access-cookie semantics in
@@ -566,11 +797,12 @@ def refresh_token_boot(token: str) -> str:
 def refresh_token_requires_peer(token: str) -> bool:
     """Whether this chain may only rotate for a daemon-verified tailnet peer.
 
-    Set on the QR "persistent" session shape, whose credential is bounded by
-    identity rather than by this process's lifetime. Same read-only,
-    validate-first contract as :func:`refresh_token_boot`, and the same
-    conservative failure direction is NOT available here: a decode failure must
-    answer ``True``, not ``False``. Answering ``False`` would let an
+    Set on the QR "persistent" session shape and on every ordinary Phase-3
+    session whose chain was opened by a verified peer (issue #2417), i.e. on any
+    chain whose safety rests on identity rather than on this process's lifetime.
+    Same read-only, validate-first contract as :func:`refresh_token_boot`, and
+    the same conservative failure direction is NOT available here: a decode
+    failure must answer ``True``, not ``False``. Answering ``False`` would let an
     undecodable-but-signed token rotate without the identity check the chain was
     minted to require, which is the one outcome this claim exists to prevent.
     """

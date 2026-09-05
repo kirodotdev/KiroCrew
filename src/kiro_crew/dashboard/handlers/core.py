@@ -1843,6 +1843,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # empty allowlist stays off; an unrecognised pin_scope falls back to node).
     "dashboard.tailscale.trust_identity": {"type": "bool"},
     "dashboard.tailscale.pin_scope": {"type": "str", "max_len": 8},
+    # Refresh-chain peer binding (issue #2417). Editable here because the only
+    # direction a caller can move it is the one an operator may legitimately
+    # need for roaming, and the loader resolves anything non-boolean back to the
+    # bound default — so a malformed write cannot reopen the replay path.
+    "dashboard.tailscale.bind_refresh_chains": {"type": "bool"},
     # Local OTEL metric collection — the Privacy panel's recording switch. Safe
     # to expose where beacon_endpoint is not: turning this on writes JSONL under
     # ~/.kiro/crew/metrics. It is NOT unconditionally local, though —

@@ -2023,6 +2023,21 @@ class TailscaleConfig:
             "effect on the next gateway start.",
         ),
     )
+    bind_refresh_chains: bool = field(
+        default=True,
+        metadata=_meta(
+            "Bind Refresh Chains To The Device",
+            "Bind a session's 30-day refresh chain to the tailnet peer that "
+            "opened it, so a stolen refresh cookie cannot be replayed from a "
+            "different allowed device. On by default. Only turn it off if you "
+            "need one session to roam between your DEVICES while pin_scope is "
+            "'node' — with pin_scope 'login' the pin is your identity, not the "
+            "device, so roaming already works. Turning it off means a stolen "
+            "refresh cookie renews from any allowed node. Existing chains keep "
+            "the binding they were opened with; the change applies to sessions "
+            "started after the next gateway start.",
+        ),
+    )
     keep_awake: bool = field(
         default=True,
         metadata=_meta(
@@ -2198,6 +2213,11 @@ def _tailscale_config_from(
         trust_identity=trust_identity,
         allowed_logins=allowed_logins,
         pin_scope=pin_scope,
+        # Defaults TRUE, and a non-boolean resolves to TRUE as well: this is a
+        # narrowing-only field like the two rules above, so an operator typo may
+        # only ever leave the binding ON, never silently reopen the replay path
+        # the binding closes (issue #2417).
+        bind_refresh_chains=_safe_bool(data.get("bind_refresh_chains"), True),
         keep_awake=_safe_bool(data.get("keep_awake"), True),
     )
 
