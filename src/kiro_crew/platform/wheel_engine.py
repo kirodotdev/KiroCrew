@@ -243,6 +243,90 @@ def running_from_managed_venv(layout: ManagedVenvLayout | None = None) -> bool:
     return layout.is_managed_tree(Path(sys.executable))
 
 
+def _legacy_nested_venv() -> Path:
+    """The venv an earlier ``cli.sh`` created INSIDE the data home.
+
+    Mirrors cli.sh's ``_OLD_VENV`` (``<data home>/venv``) exactly. The current
+    installer retires it: a re-run that lands a working tree beside the data
+    home repoints the stable link and the launcher at that tree, then
+    ``rm -rf``s this one. The gateway's own wheel auto-update drives that
+    re-run, so the deletion can happen underneath the running process.
+    """
+    return data_home() / "venv"
+
+
+def _respawn_tree_is_managed(layout: ManagedVenvLayout) -> bool:
+    """Is the tree serving THIS process one a restart may re-route?
+
+    Identity is read from the interpreter's ``bin/`` directory, not from the
+    interpreter file: ``python -m venv`` writes ``bin/python3`` as a symlink
+    to the base interpreter, so resolving the file lands outside every venv
+    and would answer "not managed" for every real install. The directory
+    resolves through the layout's own links (stable link -> versioned tree)
+    and stops there.
+
+    Two identities qualify. A tree of this layout (legacy or versioned), and
+    the retired in-data-home venv — our own environment from an earlier
+    installer, which the same cli.sh re-run that lands the new tree deletes
+    from under the running gateway; without the stable link that process has
+    no interpreter left to exec. This is the respawn identity only: the
+    dispatch predicate for the shadow-build path is
+    :func:`running_from_managed_venv`, which keeps its own rule.
+    """
+    bin_dir = Path(sys.executable).parent
+    if layout.is_managed_tree(bin_dir):
+        return True
+    try:
+        resolved = bin_dir.resolve()
+        nested = _legacy_nested_venv().resolve()
+    except OSError:
+        return False
+    return resolved == nested or resolved.is_relative_to(nested)
+
+
+def _interpreter_in(tree: Path) -> str | None:
+    """The usable interpreter inside *tree*'s ``bin/``, or ``None``.
+
+    Prefers this process's own interpreter name so a restart keeps the version
+    it was launched under, and falls back to ``python3``, which every venv
+    ships.
+    """
+    for name in (os.path.basename(sys.executable), "python3"):
+        candidate = tree / "bin" / name
+        try:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _respawn_fallback(layout: ManagedVenvLayout) -> str:
+    """The answer when the stable link cannot carry the restart.
+
+    ``sys.executable`` whenever it still exists — a broken, absent, or
+    outside-the-layout link must never take the restart path away from a
+    process whose own interpreter is fine.
+
+    When it does NOT exist, the cached path names nothing and the exec would
+    raise ENOENT. That is reachable: the installer re-run that retires the
+    in-data-home venv deletes it on the NEW tree's own import check, which is
+    independent of the stable-link repoint — the repoint is skipped when a real
+    directory sits at the stable name, and its failure is non-fatal. So the
+    nested venv is gone while the link is unusable. The legacy fixed tree is
+    the interpreter that re-run just built and import-verified, and this engine
+    never prunes it, so it is the honest last resort. Validated the same way as
+    the stable link's: inside the layout, present, executable.
+    """
+    if os.path.exists(sys.executable):
+        return sys.executable
+    if layout.is_managed_tree(layout.legacy):
+        candidate = _interpreter_in(layout.legacy)
+        if candidate is not None:
+            return candidate
+    return sys.executable
+
+
 def respawn_executable() -> str:
     """The interpreter a gateway restart should exec.
 
@@ -256,12 +340,21 @@ def respawn_executable() -> str:
 
     Falls back to ``sys.executable`` whenever the stable link does not exist
     or does not carry a usable interpreter, so a broken or absent link can
-    never take the restart path away.
+    never take the restart path away — except when ``sys.executable`` itself is
+    already gone, where :func:`_respawn_fallback` reaches the legacy tree
+    instead of handing back a path that no longer exists.
+
+    One more shape routes here: a process still served by the retired
+    in-data-home venv (:func:`_legacy_nested_venv`). The installer re-run that
+    migrates it deletes that venv after repointing the stable link, so
+    ``sys.executable`` is gone and the stable link is the only interpreter
+    left; before that re-run there is no stable link and the fallback keeps
+    the restart on the nested venv, unchanged.
     """
     if not IS_POSIX:
         return sys.executable
     layout = managed_venv_layout()
-    if not running_from_managed_venv(layout):
+    if not _respawn_tree_is_managed(layout):
         return sys.executable
     # The link's TARGET must resolve inside this layout's own trees before it
     # is trusted with an exec: a stable link repointed outside the managed
@@ -271,16 +364,11 @@ def respawn_executable() -> str:
     # own tree included), which is the RFC's accepted local-code-execution gap
     # and is not widened by the link.
     if not layout.is_managed_tree(layout.stable_link):
-        return sys.executable
-    candidate = layout.stable_link / "bin" / os.path.basename(sys.executable)
-    if not candidate.exists():
-        candidate = layout.stable_link / "bin" / "python3"
-    try:
-        if candidate.exists() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    except OSError:
-        pass
-    return sys.executable
+        return _respawn_fallback(layout)
+    candidate = _interpreter_in(layout.stable_link)
+    if candidate is not None:
+        return candidate
+    return _respawn_fallback(layout)
 
 
 # ── Manifest fetch and verification ─────────────────────────────────────────

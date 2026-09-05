@@ -691,6 +691,153 @@ class TestRespawnExecutable:
         monkeypatch.setattr(sys, "executable", str(exe))
         assert respawn_executable() == str(exe)
 
+    def test_symlinked_interpreter_still_routes_through_stable_link(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A real venv's bin/python3 is a symlink to the base interpreter.
+
+        Identity must come from the tree the link lives in, not from where it
+        points: resolving the file lands outside every venv and would make
+        every real managed install answer plain sys.executable.
+        """
+        base = tmp_path / "base-python" / "bin"
+        base.mkdir(parents=True)
+        base_exe = base / "python3.12"
+        base_exe.write_text("")
+        legacy = tmp_path / "crew-venv"
+        (legacy / "bin").mkdir(parents=True)
+        old_exe = legacy / "bin" / "python3"
+        old_exe.symlink_to(base_exe)
+        new_tree = tmp_path / "crew-venv-2.0.0"
+        (new_tree / "bin").mkdir(parents=True)
+        new_exe = new_tree / "bin" / "python3"
+        new_exe.write_text("")
+        new_exe.chmod(0o755)
+        (new_tree / "bin" / "kirocrew").write_text("")
+        stable = tmp_path / "crew-venv-current"
+        stable.symlink_to(new_tree)
+
+        monkeypatch.setenv("KIROCREW_VENV", str(legacy))
+        monkeypatch.setattr(sys, "executable", str(old_exe))
+        assert respawn_executable() == str(stable / "bin" / "python3")
+
+    def _nested_venv_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+        """A data home whose ``venv/`` is the retired in-data-home install."""
+        home = tmp_path / "crew"
+        nested = home / "venv"
+        (nested / "bin").mkdir(parents=True)
+        (nested / "bin" / "python3").write_text("")
+        (nested / "bin" / "kirocrew").write_text("")
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.delenv("KIROCREW_VENV", raising=False)
+        monkeypatch.setattr(sys, "executable", str(nested / "bin" / "python3"))
+        return home
+
+    def test_retired_nested_venv_routes_through_stable_link(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The installer re-run cli.sh performs on migration: it builds the
+        new tree BESIDE the data home, repoints the stable link at it, then
+        ``rm -rf``s the in-data-home venv this process is running from. The
+        restart must exec the stable link's interpreter — sys.executable no
+        longer exists."""
+        import shutil
+
+        home = self._nested_venv_home(monkeypatch, tmp_path)
+        new_tree = tmp_path / "crew-venv"
+        (new_tree / "bin").mkdir(parents=True)
+        new_exe = new_tree / "bin" / "python3"
+        new_exe.write_text("")
+        new_exe.chmod(0o755)
+        (new_tree / "bin" / "kirocrew").write_text("")
+        stable = tmp_path / "crew-venv-current"
+        stable.symlink_to(new_tree)
+        shutil.rmtree(home / "venv")
+
+        assert not Path(sys.executable).exists()
+        assert respawn_executable() == str(stable / "bin" / "python3")
+
+    def test_nested_venv_before_migration_keeps_sys_executable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No stable link yet (the installer has not been re-run): the nested
+        venv is the only interpreter, and the restart stays on it."""
+        home = self._nested_venv_home(monkeypatch, tmp_path)
+        assert respawn_executable() == str(home / "venv" / "bin" / "python3")
+
+    def _migrated_legacy_tree(self, tmp_path: Path) -> Path:
+        """The tree cli.sh's re-run builds beside the data home and verifies."""
+        new_tree = tmp_path / "crew-venv"
+        (new_tree / "bin").mkdir(parents=True)
+        exe = new_tree / "bin" / "python3"
+        exe.write_text("")
+        exe.chmod(0o755)
+        (new_tree / "bin" / "kirocrew").write_text("")
+        return new_tree
+
+    def test_unusable_stable_link_after_migration_uses_legacy_tree(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A real directory at the stable name makes cli.sh SKIP the repoint
+        (its guard only writes a symlink or an absent path), but the nested-venv
+        delete is gated on the new tree's own import check, so it still runs.
+        The cached interpreter is then gone and the stable link cannot be
+        trusted — the restart must take the import-verified legacy tree rather
+        than exec a path that no longer exists."""
+        import shutil
+
+        home = self._nested_venv_home(monkeypatch, tmp_path)
+        new_tree = self._migrated_legacy_tree(tmp_path)
+        (tmp_path / "crew-venv-current").mkdir()  # corrupt: a directory, not a link
+        shutil.rmtree(home / "venv")
+
+        assert not Path(sys.executable).exists()
+        assert respawn_executable() == str(new_tree / "bin" / "python3")
+
+    def test_failed_stable_link_repoint_after_migration_uses_legacy_tree(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """cli.sh's repoint failure is non-fatal (it warns and continues), so
+        the migration can delete the nested venv leaving no stable link at
+        all."""
+        import shutil
+
+        home = self._nested_venv_home(monkeypatch, tmp_path)
+        new_tree = self._migrated_legacy_tree(tmp_path)
+        shutil.rmtree(home / "venv")
+
+        assert not (tmp_path / "crew-venv-current").exists()
+        assert respawn_executable() == str(new_tree / "bin" / "python3")
+
+    def test_deleted_interpreter_with_no_usable_legacy_tree_keeps_sys_executable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The fallback never invents an interpreter: with the legacy tree
+        absent too there is nothing to validate, and the answer stays
+        ``sys.executable`` exactly as before."""
+        import shutil
+
+        home = self._nested_venv_home(monkeypatch, tmp_path)
+        nested_exe = home / "venv" / "bin" / "python3"
+        shutil.rmtree(home / "venv")
+
+        assert not (tmp_path / "crew-venv").exists()
+        assert respawn_executable() == str(nested_exe)
+
+    def test_live_interpreter_is_never_displaced_by_the_legacy_tree(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The legacy fallback is reached ONLY when the cached path is gone. A
+        process whose own interpreter still exists keeps it, so a corrupt
+        stable link cannot silently move a healthy gateway onto another
+        tree."""
+        home = self._nested_venv_home(monkeypatch, tmp_path)
+        self._migrated_legacy_tree(tmp_path)
+        (tmp_path / "crew-venv-current").mkdir()
+
+        assert Path(sys.executable).exists()
+        assert respawn_executable() == str(home / "venv" / "bin" / "python3")
+
 
 class TestReexecExecutableParameter:
     def test_reexec_uses_supplied_executable(self, monkeypatch: pytest.MonkeyPatch) -> None:

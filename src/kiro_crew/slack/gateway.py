@@ -9389,6 +9389,14 @@ class GatewayOrchestrator:
         from kiro_crew.platform.update_governance import min_version, update_required
         from kiro_crew.platform.update_provider import UpdateProvider
 
+        # Loaded BEFORE provider.apply(): the legacy-nested-venv migration the
+        # resolver exists for deletes the venv this process imports from, so a
+        # deferred import after a successful apply would raise
+        # ModuleNotFoundError and leave a closed-session gateway un-restarted
+        # (found in review). The module stays off the boot path either way —
+        # this method runs from the update timer, not from gateway start.
+        from kiro_crew.platform.wheel_engine import respawn_executable
+
         assert isinstance(provider, UpdateProvider)
 
         result = await provider.check()
@@ -9427,7 +9435,7 @@ class GatewayOrchestrator:
                 self.dashboard_state.push_update_progress("pulling", "Applying mandatory update…")
             success = await provider.apply()
             if success:
-                await self._restart_after_update()
+                await self._restart_after_update(respawn_executable)
             else:
                 if self.dashboard_state:
                     self.dashboard_state.push_update_progress(
@@ -9449,7 +9457,7 @@ class GatewayOrchestrator:
                     self.dashboard_state.push_update_progress("pulling", "Downloading update…")
                 success = await provider.apply()
                 if success:
-                    await self._restart_after_update()
+                    await self._restart_after_update(respawn_executable)
                 else:
                     if self.dashboard_state:
                         self.dashboard_state.push_update_progress(
@@ -9462,8 +9470,16 @@ class GatewayOrchestrator:
         else:
             print("👻 Already on latest version")
 
-    async def _restart_after_update(self) -> None:
-        """Save state and restart the process after a successful update apply."""
+    async def _restart_after_update(self, respawn: Callable[[], str]) -> None:
+        """Save state and restart the process after a successful update apply.
+
+        ``respawn`` is :func:`kiro_crew.platform.wheel_engine.respawn_executable`,
+        imported by the caller BEFORE ``provider.apply()`` ran: the apply may
+        have deleted the venv this process imports from, so nothing here may
+        import from disk. Calling it is still deferred to this point, because
+        the answer (stable link vs. ``sys.executable``) is only right after the
+        apply has repointed the link.
+        """
         logger.info("Update applied, restarting gateway")
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("restarting", "Restarting server…")
@@ -9494,7 +9510,8 @@ class GatewayOrchestrator:
             await asyncio.to_thread(flush_breadcrumb_writes, 2.0)
         except Exception:
             logger.debug("Breadcrumb flush before update restart failed", exc_info=True)
-        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
+        exe = await asyncio.to_thread(respawn)
+        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
 
     async def _check_for_updates_legacy(self) -> None:
         """Legacy update check — the existing layout-aware logic."""
@@ -9705,6 +9722,12 @@ class GatewayOrchestrator:
         # implementation of it (issue #4210 exists to close the two-conventions
         # gap, not to add a second helper).
         from kiro_crew.platform.update_provider import _kill_and_reap
+
+        # Loaded before the reinstall below for the same reason as the provider
+        # path: `pip install -e .` rewrites the package this process imports
+        # from, so the resolver must already be in memory when the restart
+        # needs it. Called only after the install succeeded (see the exec below).
+        from kiro_crew.platform.wheel_engine import respawn_executable
 
         try:
             # Every git call below reads a tree an agent can write, and several of
@@ -10414,7 +10437,8 @@ class GatewayOrchestrator:
             # Use -m kiro_crew rather than sys.argv[0] so the restart resolves
             # the freshly reinstalled entry point regardless of how the
             # original process was launched.
-            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
+            exe = await asyncio.to_thread(respawn_executable)
+            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
         except Exception:
             logger.warning("Auto-update failed", exc_info=True)
             if self.dashboard_state:
@@ -10448,6 +10472,12 @@ class GatewayOrchestrator:
         to a temp dir and atomically replaces via ``ln -sf``).
         """
         from kiro_crew.dashboard.handlers import _update_info
+
+        # Loaded before cli.sh runs: the installer's legacy-venv migration
+        # `rm -rf`s the venv this process imports from once the new tree is
+        # linked, so a deferred import after it would not find the module.
+        # Called only after the installer succeeded (see the exec below).
+        from kiro_crew.platform.wheel_engine import respawn_executable
 
         # Read the command through the SAME accessor the caller selected this
         # branch with. Reading a bare `_update_info["update_command"]` here is
@@ -10639,7 +10669,8 @@ class GatewayOrchestrator:
         except Exception:
             logger.debug("Breadcrumb flush before install restart failed", exc_info=True)
         # Restart into the freshly-installed version.
-        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
+        exe = await asyncio.to_thread(respawn_executable)
+        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
 
     # ------------------------------------------------------------------
     # Main run loop
