@@ -27,6 +27,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from skill_script_helpers import load_skill_script
+
 from kiro_crew import agent
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -246,6 +248,50 @@ class TestProbeSignalsAreDocumented:
         # A terminal report must not be nudged: there is nothing to re-arm.
         assert "not nudge" in action or "never nudge" in action
 
+    def test_every_firing_tag_has_a_row_in_the_action_table(self):
+        """The general rule: whoever authorizes a signal owns its spec row.
+
+        The tag set is read from the SCRIPT rather than restated here. A list in
+        the test would be one more place a new signal has to be registered, and
+        this check exists precisely because that registration is what gets
+        forgotten -- ``NOPROGRESS`` shipped into the probe against a table that
+        answered every tag except the new one, so the conductor received a line
+        with no defined action.
+        """
+        probe = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        cells = [
+            row.split("|")[1]
+            for row in _skill_section(self.HEADING).splitlines()
+            if row.startswith("|") and row.count("|") >= 3
+        ]
+        missing = sorted(tag for tag in probe._FIRING if not any(f"`{tag}`" in c for c in cells))
+        assert not missing, f"probe tags with no row in the action table: {missing}"
+
+    def test_the_noprogress_row_routes_to_effect_and_not_to_a_nudge(self):
+        """A row that exists but restates `IDLE`'s ladder rebuilds the defect one
+        level down. The tag is only reached for a session held WARM by inbound
+        traffic it never answers, so the reading it supports is an effect check,
+        and another nudge is more of the input that produced it."""
+        rows = [
+            row
+            for row in _skill_section(self.HEADING).splitlines()
+            if row.startswith("|") and "`NOPROGRESS`" in row.split("|")[1]
+        ]
+        assert rows, "the action table has no NOPROGRESS row"
+        action = rows[0].split("|")[2].lower()
+        assert "effect" in action
+        assert "never liveness" in action
+        assert "not a nudge" in action
+
+    def test_the_probe_makes_the_no_progress_comparison_itself(self):
+        """The procedure documented a manual two-cycle diff of ``i=``, which the
+        tag replaced. A comparison that lives in prose is enforced by nothing, so
+        leaving it written beside the tag gives the conductor two answers to one
+        question -- and the prose answer is the one that may never happen."""
+        probe = _flat(_skill_section(self.HEADING))
+        assert "the probe makes that comparison itself" in probe
+        assert "never diff two cycles by eye" in probe
+
     def test_tail_index_is_the_no_progress_discriminator(self):
         probe = _skill_section(self.HEADING)
         assert "i=" in probe
@@ -328,6 +374,22 @@ class TestProbeSignalsAreDocumented:
         assert "hold admission below `max_in_flight`" in probe
         assert "no `i=` leaves you no progress test" in probe
         assert "ages into `idle`" in probe
+
+
+class TestPatrolLoopEnumeratesTheTags:
+    """The armed `monitor_start` message is the per-cycle action list that
+    actually runs. A tag missing from the ACTION TABLE is a lookup that fails; a
+    tag missing from here is an instruction the conductor never receives."""
+
+    HEADING = "## Startup (once per run)"
+
+    def test_the_loop_message_names_noprogress_instead_of_a_manual_diff(self):
+        loop = _flat(_skill_section(self.HEADING))
+        assert "noprogress → check the effect" in loop
+        assert "never liveness" in loop
+        # The instruction the tag replaced. Left standing it is a second, weaker
+        # answer to the question the probe already answers.
+        assert "diff each fired line's `i=`" not in loop
 
 
 class TestConductorOwnedState:

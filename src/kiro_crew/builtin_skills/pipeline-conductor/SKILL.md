@@ -80,9 +80,8 @@ via `monitor_update`, see "Live steering"):
 > THEN PROBE: one `fleet_probe.py --config <path>` call. Act only on 🔔/BANNED
 > lines: ERR → batch resume; PR → record; GREEN → verify independently then
 > digest + backfill; STANDDOWN/PROPOSAL → disposition + backfill; TERMINAL →
-> close it out, never nudge; BLOCKED → adjudicate; IDLE → intervention ladder.
-> Diff each fired line's `i=` against the recorded one: unchanged index is no
-> progress. Mark each acted signal handled.
+> close it out, never nudge; BLOCKED → adjudicate; IDLE → intervention ladder;
+> NOPROGRESS → check the EFFECT, never liveness. Mark each acted signal handled.
 > Write every item change back as the WHOLE `artifacts` map in ONE
 > `session_ledger_record` call — a partial write ages an active item out — and
 > RECLAIM BEFORE YOU ADMIT: collapse settled entries and drop tally-covered ones
@@ -479,14 +478,15 @@ is read from disk — the read loads the whole transcript either way. The index 
 carried into the handled-set entry as well, so the comparison is available next
 cycle without you having to hold it.
 
-**An unchanged index across two probes is no progress**, whether or not a turn
-is open — it is the one discriminator a self-deadlocked worker cannot fake,
-because producing a message is the thing it cannot do. When the index has not
-moved, check the EFFECT and never liveness: did the artifact appear, did the
-remote head move, is there a new commit. "Still working" is not something the
-probe can tell you at all — that reading comes from `session_read_message`'s
-running flag, and an open turn is satisfied by a shell deadlocked on its own
-child just as well as by real work.
+**An unchanged index since you last acted is no progress**, whether or not a
+turn is open — it is the one discriminator a self-deadlocked worker cannot fake,
+because producing a message is the thing it cannot do. The probe makes that
+comparison itself and fires `NOPROGRESS`, so read the tag and **never diff two
+cycles by eye**: a comparison that lives in this document is enforced by
+nothing, so it may simply never happen. `i=` is the corroborating number, not
+the test. "Still working" is not something the probe can tell you at all — that
+reading comes from `session_read_message`'s running flag, and an open turn is
+satisfied by a shell deadlocked on its own child just as well as by real work.
 
 **One-time degradation on the first probe after an upgrade.** The fired-line
 digest is keyed on the classified tail text, so any change to what gets
@@ -505,6 +505,7 @@ digest keying, not a defect, and it does not recur.
 | `STANDDOWN` / `PROPOSAL` | Verify the evidence is stated; record the disposition; unclaim with an evidence comment; close or re-queue; backfill. |
 | `TERMINAL` | The last dispositioned protocol report was terminal and the session has gone quiet since. **Close it out** — confirm the disposition landed, release the claim, `session_close`. Do NOT nudge: a finished worker has nothing to re-arm, and a monitor loop is only correct while something EXTERNAL can still change. |
 | `IDLE` | Intervention ladder (below). |
+| `NOPROGRESS` | The session has produced nothing — no message, no tool row — since you last acted on it, and that mark is at least one `idle_alert_secs` old. Check the **EFFECT, never liveness**: did the artifact appear, did the remote head move, is there a new commit. Effect present → healthy-slow; extend and name the expected completion signal. Effect absent → enter the intervention ladder at its **Inspect** step. The first move is **not a nudge**: this tag is reached only for a session held WARM by inbound traffic it never answers, so another nudge adds more of the input that produced the reading. Ranked below `IDLE`, which already fully describes a cold transcript. |
 | `GONE` | Transcript missing — treat as reclaim: re-queue the item with evidence. |
 | `BANNED pid=…` | Banned-ops response (below), keyed by the line's OWNERSHIP CLASS: every class is recorded, and a stop is reserved for `cwd=fleet`. Never read this as a single actionable-or-not decision. |
 
