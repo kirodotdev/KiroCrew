@@ -14,12 +14,16 @@ import io
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+if sys.platform == "win32":  # pragma: no cover - platform-gated
+    import _winapi
 
 from conftest import requires_symlinks
 from kiro_crew.apps.builtins.design_tweak.backend import server
@@ -1415,6 +1419,67 @@ class TestHtmlScanDoesNotFollowSymlinks:
         code, _ctype, body = server._static_response(str(root), "/", "/p/")
         assert code == 404
         assert b"private-notes" not in body
+
+    def test_a_junctioned_directory_is_not_enumerated(self, tmp_path, monkeypatch):
+        """A junction is the case that actually reaches a Windows user.
+
+        Every other test in this class is `@requires_symlinks` and therefore skipped
+        on Windows, because a symlink there needs a privilege. A junction needs none
+        — so the one link type a Windows user can plant was the one the guard did not
+        cover. `is_symlink()` does not report a junction and a junction IS a
+        directory, so the walk fell to the `is_dir()` arm and listed the linked tree.
+        """
+        secret = tmp_path / "protected"
+        secret.mkdir()
+        (secret / "private-notes.html").write_text("<h1>secret</h1>")
+        root = tmp_path / "site"
+        root.mkdir()
+        link = root / "docs"
+        link.mkdir()
+        (link / "private-notes.html").write_text("<h1>secret</h1>")
+        (root / "real.html").write_text("<h1>ok</h1>")
+
+        monkeypatch.setattr(server, "is_link_or_junction", lambda p: Path(p) == link)
+        found = server._scan_html(root)
+
+        assert "real.html" in found
+        assert not any("private-notes" in f for f in found), found
+
+    def test_the_scan_consults_the_shared_link_helper(self, tmp_path, monkeypatch):
+        """A junction is only refused if the walk ASKS the shared helper about it —
+        the seam, not the outcome, is what `is_symlink()` got wrong."""
+        root = tmp_path / "site"
+        (root / "public").mkdir(parents=True)
+        (root / "public" / "a.html").write_text("x")
+        seen = []
+
+        def _spy(p):
+            seen.append(Path(p).name)
+            return False
+
+        monkeypatch.setattr(server, "is_link_or_junction", _spy)
+        server._scan_html(root)
+
+        assert "public" in seen
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="junctions are a Windows reparse point"
+    )
+    def test_a_real_windows_junction_is_not_enumerated(self, tmp_path):
+        """No stub and no elevation: the real reparse point, so the stubbed tests
+        above stand in for something rather than for nothing."""
+        secret = tmp_path / "protected"
+        secret.mkdir()
+        (secret / "private-notes.html").write_text("<h1>secret</h1>")
+        root = tmp_path / "site"
+        root.mkdir()
+        (root / "real.html").write_text("<h1>ok</h1>")
+        _winapi.CreateJunction(str(secret), str(root / "docs"))
+
+        found = server._scan_html(root)
+
+        assert "real.html" in found
+        assert not any("private-notes" in f for f in found), found
 
     def test_ordinary_nested_html_is_still_found(self, tmp_path):
         """The refusal must not break the diagnostic page it feeds."""

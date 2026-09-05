@@ -269,7 +269,15 @@ def scan_html(runtime: Any, root: Any, limit: int = 40, max_depth: int = 3) -> l
             # Check before ``is_dir()``, which follows links.  Diagnostic names
             # are visible to the preview page, so even listing a linked private
             # directory would disclose information.
-            if entry.is_symlink():
+            #
+            # ``is_link_or_junction``, not ``is_symlink()``: a Windows directory
+            # junction is a reparse point ``is_symlink()`` does NOT report, and a
+            # junction is precisely a DIRECTORY link — so it fell straight through
+            # to the ``is_dir()`` arm below and the walk enumerated the linked tree.
+            # Junctions need no elevation on Windows, while symlinks there do, so
+            # the symlink-only test withheld the listing exactly where a user cannot
+            # plant the link and allowed it where they can.
+            if runtime.is_link_or_junction(entry):
                 continue
             name = entry.name
             if entry.is_dir():
