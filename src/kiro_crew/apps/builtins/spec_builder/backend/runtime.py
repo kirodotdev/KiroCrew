@@ -818,6 +818,8 @@ async def _remove_orphaned_executions_with_service(state: Any, service: Any) -> 
         if slot is None:
             continue
         captured_task = getattr(slot, "task", None)
+        # Before the teardown await below, for the reason its docstring gives.
+        folder_committed_before_teardown = _parked_folder_membership(state, slot)
         observed_name = next(
             (
                 name
@@ -837,6 +839,7 @@ async def _remove_orphaned_executions_with_service(state: Any, service: Any) -> 
             # cancellation. Keep the slot addressable for another recovery
             # attempt and refuse Create while that task can still edit files.
             try:
+                _revalidate_parked_vocabulary(state, slot, folder_committed_before_teardown)
                 state._slots[slot_key] = slot
             except Exception:
                 logger.warning("could not restore a still-running orphan slot %s", slot_key)
@@ -1348,6 +1351,55 @@ def _discard_queued_work(slot: Any) -> None:
         logger.debug("could not clear _pending_synthesis during stop", exc_info=True)
 
 
+def _parked_folder_membership(state: Any, slot: Any) -> bool | None:
+    """Committed membership of *slot*'s folder, read BEFORE a teardown await.
+
+    A slot popped for teardown is unreachable from BOTH passes of a folder or tag
+    delete sweep: the captured list predates the pop and the live view no longer holds
+    it. So the restore below is the last place a deleted id can be caught, and this
+    reading is the evidence that separates "absent because deleted" from "absent
+    because never committed". It is only true if taken before the await.
+
+    ``None`` is UNKNOWN, which the validators treat as fail-open, so a state that
+    publishes no committed vocabulary proves nothing and prunes nothing.
+    """
+    reader = getattr(state, "committed_folder_membership", None)
+    if not callable(reader):
+        return None
+    try:
+        return reader(getattr(slot, "folder_id", ""))
+    except Exception:
+        logger.debug("could not read committed folder membership", exc_info=True)
+        return None
+
+
+def _revalidate_parked_vocabulary(state: Any, slot: Any, folder_committed: bool | None) -> None:
+    """Re-check *slot*'s ids before it re-enters the live registry.
+
+    The restore-side half of the protocol in :func:`_parked_folder_membership`, routing
+    through the same two validators every other adopter uses so a vocabulary deleted
+    while this slot was parked cannot come back durably attached to it.
+
+    A validator failure leaves the value untouched rather than propagating: the caller
+    restores this slot to keep the user's transcript reachable, and losing that to a
+    metadata check would trade a phantom folder for a lost conversation.
+    """
+    validate_folder = getattr(state, "folder_id_for_restore", None)
+    if callable(validate_folder):
+        try:
+            slot.folder_id = validate_folder(
+                getattr(slot, "folder_id", ""), was_committed=folder_committed
+            )
+        except Exception:
+            logger.debug("could not revalidate a parked folder id", exc_info=True)
+    validate_tags = getattr(state, "tag_ids_for_restore", None)
+    if callable(validate_tags):
+        try:
+            slot.tags = validate_tags(list(getattr(slot, "tags", None) or []))
+        except Exception:
+            logger.debug("could not revalidate parked tag ids", exc_info=True)
+
+
 async def _teardown_worker_slot(
     state: Any, name: str, *, only_slot: Any = _UNPINNED, require_archive: bool = False
 ) -> bool:
@@ -1398,6 +1450,9 @@ async def _teardown_worker_slot(
         state._slots.pop(slot_key, None)
     except Exception:
         logger.debug("slot registry pop failed for %s", slot_key, exc_info=True)
+    # Read HERE, before any post-pop await: that await is the window a delete commits
+    # in, and a parked slot is reachable from neither sweep pass.
+    folder_committed_before_save = _parked_folder_membership(state, slot)
     task = getattr(slot, "task", None)
     if getattr(slot, "running", False) and task is not None:
         task.cancel()
@@ -1422,6 +1477,7 @@ async def _teardown_worker_slot(
         logger.warning("closing save failed for %s", slot_key, exc_info=True)
         if require_archive:
             try:
+                _revalidate_parked_vocabulary(state, slot, folder_committed_before_save)
                 state._slots[slot_key] = slot
             except Exception:
                 logger.warning("could not restore slot %s after a failed archive", slot_key)

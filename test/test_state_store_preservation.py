@@ -186,7 +186,7 @@ class TestTagsPreservation:
         st._unparsed_tag_entries = []
         st._tag_boards = []
         st._unparsed_tag_board_entries = []
-        st._tags_authoritative = False
+        st._committed_tag_ids = None
         return st
 
     def test_load_keeps_malformed_tag_entries_inactive(self, cfg):
@@ -261,7 +261,7 @@ class TestTagBoardsPreservation:
         st._unparsed_tag_entries = []
         st._tag_boards = []
         st._unparsed_tag_board_entries = []
-        st._tags_authoritative = False
+        st._committed_tag_ids = None
         return st
 
     def test_load_keeps_malformed_columns_inactive(self, cfg):

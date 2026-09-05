@@ -4624,7 +4624,7 @@ class TestSessionRename:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state._tags = []
-        state._tags_authoritative = False  # load_tags() hit a parse/I/O error
+        state._committed_tag_ids = None  # load_tags() hit a parse/I/O error: UNKNOWN
         log = state.conversation_log
         log.append("dashboard:s1", "user", "hello")
         log.update_metadata("dashboard:s1", {"tags": ["tag-abc"], "auto_tagged": True})
@@ -4641,13 +4641,17 @@ class TestSessionRename:
         self, tmp_path, monkeypatch
     ):
         """A legitimately-empty vocabulary (last tag deleted, tags.json parsed
-        fine as []) IS authoritative: resume must prune the dangling id, or a
+        fine as []) IS knowledge: resume must prune the dangling id, or a
         crash between the vocab commit and slot cleanup would resurrect the
-        deleted tag id on this slot forever."""
+        deleted tag id on this slot forever.
+
+        ``frozenset()`` is what carries that -- it is KNOWN-empty and prunes, whereas
+        ``None`` is UNKNOWN and fails open. The two must never collapse.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state._tags = []
-        state._tags_authoritative = True  # tags.json parsed OK as []
+        state._committed_tag_ids = frozenset()  # tags.json parsed OK as []: KNOWN-empty
         log = state.conversation_log
         log.append("dashboard:s1", "user", "hello")
         log.update_metadata("dashboard:s1", {"tags": ["tag-abc"], "auto_tagged": True})
@@ -4659,36 +4663,42 @@ class TestSessionRename:
             assert slot.tags == []  # dangling id pruned
             assert slot._auto_tagged is True
 
-    def test_load_tags_sets_authoritative_flag(self, tmp_path, monkeypatch):
-        """load_tags() marks the vocabulary authoritative on a clean parse
-        (including a legitimately-empty []) and NOT authoritative on a parse
-        failure — the signal the restore-time pruning fail-open relies on."""
+    def test_load_tags_publishes_knownness_as_the_committed_snapshot(self, tmp_path, monkeypatch):
+        """load_tags() publishes a committed snapshot on a clean parse (including a
+        legitimately-empty []) and leaves it None on a parse failure — the single
+        signal the restore-time pruning fail-open relies on.
+
+        Knownness has exactly one encoding, so there is no parallel flag to keep in
+        sync and none that can go stale when a tag write moves disk. ``None`` vs
+        ``frozenset()`` carries the distinction that actually matters: fail open
+        versus prune.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        # Legitimately-empty vocabulary: parsed OK -> authoritative.
+        # Legitimately-empty vocabulary: parsed OK -> KNOWN-empty, which prunes.
         (tmp_path / "tags.json").write_text("[]", encoding="utf-8")
         state._tags = []
-        state._tags_authoritative = False
+        state._committed_tag_ids = None
         state.load_tags()
-        assert state._tags_authoritative is True
+        assert state._committed_tag_ids == frozenset()
         assert state._tags == []
 
-        # Corrupt file: parse failure -> NOT authoritative, data untouched.
+        # Corrupt file: parse failure -> UNKNOWN, data untouched.
         (tmp_path / "tags.json").write_text("{not json", encoding="utf-8")
         state._tags = [{"id": "keep-me", "name": "Keep", "status": False}]
-        state._tags_authoritative = True
+        state._committed_tag_ids = frozenset({"stale"})
         state.load_tags()
-        assert state._tags_authoritative is False
+        assert state._committed_tag_ids is None
         assert state._tags[0]["id"] == "keep-me"  # not re-seeded, not wiped
 
         # Valid JSON but NOT a list (e.g. {}): vocabulary state is unknown,
-        # same as a parse failure -- NOT authoritative, data untouched.
+        # same as a parse failure -- UNKNOWN, data untouched.
         (tmp_path / "tags.json").write_text("{}", encoding="utf-8")
         state._tags = [{"id": "keep-me", "name": "Keep", "status": False}]
-        state._tags_authoritative = True
+        state._committed_tag_ids = frozenset({"stale"})
         state.load_tags()
-        assert state._tags_authoritative is False
+        assert state._committed_tag_ids is None
         assert state._tags[0]["id"] == "keep-me"
 
 
@@ -12544,9 +12554,9 @@ class TestFolderTags:
             {"id": tid, "name": tid, "color": "#6b7280", "order": i}
             for i, tid in enumerate(tag_ids)
         ]
-        # A directly-seeded vocabulary is authoritative by definition — the
-        # constructor fails closed (False) until load_tags() runs.
-        state._tags_authoritative = True
+        # A directly-seeded vocabulary is KNOWN by definition — the constructor
+        # leaves the committed snapshot None (UNKNOWN) until load_tags() runs.
+        state.publish_committed_tag_ids(state._tags)
 
     @staticmethod
     def _app_with_tag_delete(state):
@@ -12623,8 +12633,8 @@ class TestFolderTags:
     @pytest.mark.asyncio
     async def test_unreadable_vocab_does_not_wipe_folder_tags(self, tmp_path, monkeypatch):
         """FAIL-OPEN parity with ``validate_folder_tag_ids``: when tags.json
-        was unreadable at boot (vocabulary UNKNOWN, ``_tags_authoritative``
-        False), a folder PATCH carrying ``tags`` must keep the ids rather than
+        was unreadable at boot (vocabulary UNKNOWN, ``_committed_tag_ids``
+        None), a folder PATCH carrying ``tags`` must keep the ids rather than
         intersecting them against the unknown (empty) vocabulary — that
         intersection would silently wipe the folder's tags and the PATCH would
         persist the loss."""
@@ -12641,7 +12651,7 @@ class TestFolderTags:
 
             # Simulate a later boot where tags.json failed to load.
             state._tags = []
-            state._tags_authoritative = False
+            state._committed_tag_ids = None
 
             # A PATCH that echoes the stored tags back (any rename flow does
             # this) must not wipe them; shape guards and dedupe still apply.

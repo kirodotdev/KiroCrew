@@ -360,18 +360,22 @@ def surface_channel_session(
     # filing write stores the inherited tags atomically with the filing marker
     # (see reconcile), so a restore after a crash — where the marker exists but
     # the slot never saved — recovers them from here. Validation is the shared
-    # authority-aware helper, matching the three sibling restore paths: it
-    # fails OPEN when the vocabulary is unreadable (_tags_authoritative=False),
-    # because pruning against an unknown vocabulary would drop every id, the
-    # next save would persist the loss, and the sticky filing marker blocks
-    # re-inheritance forever. Imported locally to avoid the module cycle
-    # through chat_persistence (chat_tags → chat_persistence → this module).
+    # authority-aware helper, matching the sibling restore paths: it fails OPEN
+    # when the vocabulary is UNKNOWN, because pruning against an unknown
+    # vocabulary would drop every id, the next save would persist the loss, and
+    # the sticky filing marker blocks re-inheritance forever. Imported locally to
+    # avoid the module cycle through chat_persistence (chat_tags →
+    # chat_persistence → this module).
     from kiro_crew.dashboard.chat_tags import validate_folder_tag_ids
 
     for tid in validate_folder_tag_ids(meta.get("tags"), state):
         if tid not in slot.tags:
             slot.tags.append(tid)
+    # Set by the default-filing branch below when the revalidation drops the id.
+    placement_rejected = False
     if meta.get("folder_id"):
+        # ADOPTED VERBATIM, as the base did. A malformed or deleted id is absorbed
+        # downstream: the sidebar renders it Unfiled. See history.md.
         slot.folder_id = meta["folder_id"]
     elif folder_id and needs_default_filing(meta):
         # Per-channel filing (off by default), applied on the pass that first
@@ -382,15 +386,38 @@ def surface_channel_session(
         # user moved it. `folder_id` is omitted from the metadata line when
         # empty, so the marker is the only thing that distinguishes "moved to the
         # top level" from "never filed".
-        slot.folder_id = folder_id
+        #
+        # FOURTH copy site, and REVALIDATED like the other three.
+        # ``reconcile_channel_slots`` resolves this id across one await
+        # (``lookup_channel_folder``) and PERSISTS it across another before
+        # surfacing, so a delete committing inside that window leaves it naming a
+        # folder that is already gone. The folder-delete sweep cannot cover that
+        # case even in principle: while the conversation is still PENDING no live
+        # slot names the folder, so the sweep finds nothing to clear and completes
+        # having touched it. Only checking at the assignment closes it.
+        kept = state.folder_id_for_restore(folder_id)
+        slot.folder_id = kept
         slot._channel_folder_filed = True
         # First filing = this chat's birth into the folder: copy the folder's
         # tags by value, the same creation-only inheritance the dashboard
         # slot-create path applies. The restore branch above deliberately does
         # not — a persisted folder_id means the filing already happened.
-        for tid in folder_tags or []:
-            if tid not in slot.tags:
-                slot.tags.append(tid)
+        #
+        # Gated on ``kept`` because the revalidation immediately above can REFUSE
+        # this filing: when the folder was deleted inside the resolve-then-persist
+        # window, ``kept`` is "" and the chat is not born into that folder at all,
+        # so there is nothing to inherit from. In every case the inheritance
+        # feature was designed for the folder exists, ``kept`` equals *folder_id*,
+        # and the tags are copied exactly as before.
+        if kept:
+            for tid in folder_tags or []:
+                if tid not in slot.tags:
+                    slot.tags.append(tid)
+        # Armed AFTER ``_rebuild_window`` below, not here: that helper ends with
+        # ``slot._dirty = False`` (the window it just built matches the file, so
+        # nothing is owed for it) and would silently swallow a flag set at this
+        # point. Carried as a local instead.
+        placement_rejected = not kept
     if meta.get("pinned"):
         slot.pinned = True
 
@@ -398,6 +425,14 @@ def surface_channel_session(
     # the frozen prefix a save never rewrites, and redact assistant content at
     # the read boundary.
     _rebuild_window(slot, messages)
+    if placement_rejected:
+        # The rejected placement is ALREADY ON DISK -- the caller persists it
+        # before surfacing, precisely so the tab cannot appear un-filed and be
+        # dragged elsewhere first -- so correcting it in memory alone would leave
+        # the dead id to be read back and republished. Arm the flush to rewrite
+        # the record from this now-corrected object. Not armed when the placement
+        # stands: that record is already right and re-saving it is pure churn.
+        slot._dirty = True
     # The window corresponds to the file as of this listing, so the refresh pass
     # has nothing to do until the channel writes again.
     slot._channel_window_mtime = float(session_info.get("modified", 0) or 0)
