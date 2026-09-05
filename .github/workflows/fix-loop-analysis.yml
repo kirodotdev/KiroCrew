@@ -93,7 +93,7 @@ jobs:
       - name: Classify and narrate (Fable 5)
         id: narrate
         continue-on-error: true # the issue is still filed from the numbers
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@fa2b2666b747000bf42767d1f332065b375e3c8f # v1
         with:
           # Model id form (bare regional `us.` inference profile) is
           # load-bearing — see design-review.yml. Write is granted for exactly
