@@ -116,7 +116,8 @@ describe('Spec Builder expanded rail grouping', () => {
       />,
     )
     fireEvent.change(getByLabelText(/filter specs by name/i), { target: { value: 'zzzz' } })
-    expect(getByText('No specs match that filter')).toBeTruthy()
+    // The shared FilteredEmpty state echoes the query that excluded everything.
+    expect(getByText(/zzzz/)).toBeTruthy()
     cleanup()
   })
 

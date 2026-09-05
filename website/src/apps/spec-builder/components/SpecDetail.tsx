@@ -35,6 +35,7 @@ import {
 import SpecStatePanel from './SpecStatePanel'
 import { ChatColumnSkeleton } from './Shimmer'
 import Modal from '../../../components/Modal'
+import ErrorNotice from '../../../components/ErrorNotice'
 
 import { i18nT } from '../../../i18n/t'
 export interface ReviewComment {
@@ -255,9 +256,13 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
   // Delete must NOT refetch this spec: the entry is gone, and a 404 here would
   // paint an error banner over a successful removal. Drop the detail cache and
   // refresh the list; the workspace clears the selection via onDeleted.
+  //
+  // No `onError` -> setErr here: the page-top banner sits BEHIND the confirm
+  // dialog's dimmed backdrop while focus is trapped inside the dialog, so a
+  // failed delete looked like nothing happened. The failure renders inside the
+  // dialog itself (ErrorNotice below), where the user actually is.
   const deleteMutation = useMutation({
     mutationFn: (id: SpecIdentity) => specApi.remove(name, id),
-    onError: (e) => setErr((e as Error).message),
     onSuccess: () => {
       setPendingRemove(null)
       void queryClient.removeQueries({ queryKey: ['spec-builder', 'spec', name] })
@@ -675,7 +680,12 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
                   <DropdownMenuItem
                     aria-label={i18nT('apps.specBuilder.components.specDetail.delete_spec_named', { name })}
                     disabled={deleteMutation.isPending}
-                    onSelect={() => setPendingRemove(specId())}
+                    onSelect={() => {
+                      // A failure from a previous attempt would otherwise greet
+                      // the freshly opened dialog as if this attempt had failed.
+                      deleteMutation.reset()
+                      setPendingRemove(specId())
+                    }}
                   >
                     <Trash2 className="lucide-inline shrink-0 text-danger" />
                     <span className="text-danger">
@@ -984,6 +994,19 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
           <p className="text-[13px] leading-relaxed text-text m-0 break-words">
             {i18nT('apps.specBuilder.components.specDetail.remove_spec_body', { name })}
           </p>
+          {/* The failure lives where the user is looking. The page-top banner
+              sits behind this dialog's dimmed backdrop with focus trapped in
+              here, so a failed delete used to read as the button silently
+              reverting — inviting blind retries. */}
+          {/* No hand-off: the agent chat navigation unmounts this whole view,
+              and SpecDetail can be holding stacked unsent review comments and
+              an in-progress DocView draft — the hand-off would silently
+              discard both. */}
+          <ErrorNotice
+            className="mt-2.5"
+            title={i18nT('apps.specBuilder.components.specDetail.couldn_t_remove_this_spec_try_again')}
+            message={deleteMutation.error ? (deleteMutation.error as Error).message : null}
+          />
         </Modal>
       )}
     </div>

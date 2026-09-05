@@ -6,7 +6,7 @@
 // surfacing.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import React from 'react'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -781,7 +781,7 @@ describe('SpecDetail delete', () => {
     expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
   })
 
-  it('surfaces a refused delete and leaves the spec open', async () => {
+  it('surfaces a refused delete inside the dialog and leaves the spec open', async () => {
     const setErr = vi.fn()
     const onDeleted = vi.fn()
     installFetch(BASE, (url) => (url.includes('/specs/checkout')
@@ -791,9 +791,37 @@ describe('SpecDetail delete', () => {
 
     await openRemoveConfirmation()
     fireEvent.click(await screen.findByRole('button', { name: 'Remove this spec' }))
-    await waitFor(() => expect(setErr).toHaveBeenCalledWith('stale client'), { timeout: 5_000 })
+
+    // The failure renders INSIDE the dialog, where focus is trapped. The
+    // page-top banner sits behind the dimmed backdrop, so routing the error
+    // there read as the button silently reverting (#7662).
+    const dialog = screen.getByRole('dialog', { name: 'Remove this spec?' })
+    const alert = await within(dialog).findByRole('alert')
+    expect(alert).toHaveTextContent('Couldn’t remove this spec — try again.')
+    expect(alert).toHaveTextContent('stale client')
+    expect(setErr).not.toHaveBeenCalled()
     expect(onDeleted).not.toHaveBeenCalled()
-    expect(screen.getByRole('dialog', { name: 'Remove this spec?' })).toBeInTheDocument()
+    expect(dialog).toBeInTheDocument()
+  })
+
+  it('opens a fresh dialog without the previous attempt’s failure', async () => {
+    installFetch(BASE, (url) => (url.includes('/specs/checkout')
+      ? Promise.resolve({ ok: false, status: 409, json: () => Promise.resolve({ error: 'stale client' }) })
+      : undefined))
+    renderDetail()
+
+    await openRemoveConfirmation()
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove this spec' }))
+    await within(screen.getByRole('dialog', { name: 'Remove this spec?' })).findByRole('alert')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove this spec?' })).not.toBeInTheDocument())
+
+    // Reopening must not greet the user with the failure of an attempt that
+    // belongs to a dialog they already dismissed.
+    await openRemoveConfirmation()
+    expect(await screen.findByRole('dialog', { name: 'Remove this spec?' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
 

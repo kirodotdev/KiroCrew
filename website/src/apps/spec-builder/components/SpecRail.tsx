@@ -14,7 +14,7 @@ import { ChevronsRight, Plus, FileText, Settings } from 'lucide-react'
 import type { SpecSummary } from '../api'
 import { phaseLabel as phaseLabelFor, PHASE_BUILDING_KEY, PHASE_READY_KEY, APP_VERSION } from '../api'
 import { ACCENT, SEL_BG, SEL_BORDER, PULSE_MOTION, Btn } from './shared'
-import { SearchInput } from '../../../components/ui'
+import { SearchInput, FilteredEmpty } from '../../../components/ui'
 import { SpecListSkeleton } from './Shimmer'
 import Clickable from '../../../components/Clickable'
 
@@ -235,9 +235,10 @@ export default function SpecRail({
             {archived.length > 0 && groupHeader(i18nT('apps.meetings.review.archivedSection'), archived.length)}
             {archived.map(row)}
             {specs.length > 0 && active.length === 0 && ready.length === 0 && archived.length === 0 && (
-              <div className="px-2.5 py-6 text-[13px] text-muted text-center leading-relaxed">
-                {i18nT('apps.specBuilder.components.specRail.no_matching_specs')}
-              </div>
+              /* The shared filtered-to-nothing state: echoes the query back and
+                 offers the one-click clear-filter exit (ui.tsx's FilteredEmpty
+                 is documented for exactly this case). */
+              <FilteredEmpty query={filter} onClear={() => setFilter('')} />
             )}
           </>
         )}
