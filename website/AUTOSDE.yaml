@@ -503,8 +503,8 @@ custom-rules:
       Exception: do not flag emoji usage in
       SecretaryPage.tsx (inline emoji reaction picker),
       folderEmoji.ts + FolderConfigModal.tsx (folder icon picker — FOLDER_EMOJIS
-      grid + custom-emoji input), ChatSidebar.tsx (FolderGlyph renders the
-      folder's icon as data),
+      grid + custom-emoji input), FolderGlyph.tsx (renders the
+      folder's stored icon as data; used by ChatSidebar.tsx and MoveUndoBar.tsx),
       scene components (src/pages/scenes/), useTheme.ts, or themeEditor.tsx
       (theme display names). These are intentional decorative/data uses.
 

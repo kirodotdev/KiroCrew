@@ -38,6 +38,8 @@ export type MovedItem = {
   toFolderName: string | null
   /** Destination folder color, for the glyph tint. */
   toFolderColor?: string
+  /** Destination folder emoji icon, so the glyph matches the sidebar's. */
+  toFolderIcon?: string
   /** Title of the moved item — the hover tooltip, since the row has no room. */
   itemTitle: string
 }
@@ -197,7 +199,7 @@ export default function MoveUndoBar({
           ) : (
             <>
               {!compact && <span className="shrink-0">{i18nT('components.sessionMoveUndoBar.moved_to')}</span>}
-              <FolderGlyph color={moved.toFolderColor} size={12} className="shrink-0" />
+              <FolderGlyph color={moved.toFolderColor} icon={moved.toFolderIcon} size={12} className="shrink-0" />
               <span className="truncate font-medium text-text-strong">{moved.toFolderName}</span>
             </>
           )}

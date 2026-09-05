@@ -13,9 +13,19 @@ const _FOLDER_GLYPH_CLASS = 'shrink-0 text-muted/70 group-hover:text-muted trans
  *  CLOSED shape takes the wash: FolderOpen's flap overlaps its body, so any
  *  fill paints the overlap as a solid slab; the open state stays stroke-only,
  *  which also reads lighter while the folder's contents are on screen.
+ *  When the folder carries an emoji `icon` (auto-generated or user-picked),
+ *  the emoji replaces the lucide shape entirely; `color` keeps applying only
+ *  where the default glyph renders, so the two marks never fight.
  *  Shared by the sidebar rows and the folder-settings modal's live preview. */
-export default function FolderGlyph({ color, size = 20, open = false, className = _FOLDER_GLYPH_CLASS, testId }: { color?: string; size?: number; open?: boolean; className?: string; testId?: string }) {
+export default function FolderGlyph({ color, icon, size = 20, open = false, className = _FOLDER_GLYPH_CLASS, testId }: { color?: string; icon?: string; size?: number; open?: boolean; className?: string; testId?: string }) {
   const Icon = open ? FolderOpen : Folder
+  if (icon) {
+    return (
+      <span data-testid={testId} aria-hidden className={`relative inline-flex items-center justify-center ${className}`} style={{ width: size, height: size, fontSize: Math.max(12, Math.round(size * 0.85)), lineHeight: 1 }}>
+        {icon}
+      </span>
+    )
+  }
   return (
     <span data-testid={testId} aria-hidden className={`relative inline-flex items-center justify-center ${className}`} style={{ width: size, height: size, ...(color ? { color: folderColorStroke(color) } : {}) }}>
       <Icon size={size} strokeWidth={2} fill={open ? 'none' : color ? folderColorWash(color) : 'var(--bg-elevated)'} style={{ transition: 'fill .2s' }} />

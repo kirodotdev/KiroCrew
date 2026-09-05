@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { Zap, FolderOpen, ChevronRight, TriangleAlert, Check } from 'lucide-react'
 import Modal from './Modal'
 import { Input, Btn } from './ui'
+import FolderGlyph from './FolderGlyph'
 import ProjectPicker from './ProjectPicker'
 import SimpleSelect from './SimpleSelect'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
@@ -11,12 +12,20 @@ import { ChatFolder, ChatTag } from '../types'
 import { i18nT } from '../i18n/t'
 
 /** The folder fields this modal owns. */
-export type FolderConfigField = 'name' | 'color' | 'projectDir' | 'defaultAgent' | 'tags'
+export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'tags'
 
 export interface FolderConfigDraft {
   name: string
   /** Palette hex for the folder glyph tint; '' = default gray. */
   color: string
+  /** Emoji icon replacing the default glyph; '' = default glyph. */
+  icon: string
+  /** True when the user asked for a fresh auto-generated icon ("reset to
+   *  auto"). Mutually exclusive with a manual `icon` edit — the backend
+   *  rejects the two in one request, so the modal never sends both: typing an
+   *  emoji clears this flag, and pressing Auto-generate restores the seeded
+   *  icon value. */
+  regenerateIcon: boolean
   projectDir: string
   defaultAgent: string
   /** Tag ids the folder carries; copied onto new chats filed into it. */
@@ -72,7 +81,7 @@ function ancestorChain(folders: ChatFolder[], id: string | undefined): ChatFolde
   return out
 }
 
-const EMPTY: FolderConfigDraft = { name: '', color: '', projectDir: '', defaultAgent: '', tags: [], touched: [] }
+const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', tags: [], touched: [] }
 
 /** Set-equality on two tag-id lists (order-insensitive): the picker toggles
  *  membership, so "changed?" is about which ids are present, not their order. */
@@ -151,6 +160,8 @@ export default function FolderConfigModal({
       ? {
         name: f.name ?? '',
         color: f.color ?? '',
+        icon: f.icon ?? '',
+        regenerateIcon: false,
         projectDir: f.project_dir ?? '',
         defaultAgent: f.default_agent ?? '',
         tags: Array.isArray(f.tags) ? (known ? f.tags.filter(t => vocab.has(t)) : [...f.tags]) : [],
@@ -224,6 +235,10 @@ export default function FolderConfigModal({
     const edited: FolderConfigField[] = []
     if (trimmedName !== seeded.name) edited.push('name')
     if (draft.color !== seeded.color) edited.push('color')
+    // An armed regenerate is an icon edit too — the value looks unchanged
+    // (Auto-generate restores the seeded emoji) but the user asked for a new
+    // one, and the caller branches on regenerateIcon before touched('icon').
+    if (draft.icon !== seeded.icon || draft.regenerateIcon) edited.push('icon')
     if (draft.projectDir !== seeded.projectDir) edited.push('projectDir')
     if (draft.defaultAgent !== seeded.defaultAgent) edited.push('defaultAgent')
     if (tagsEdited) edited.push('tags')
@@ -246,6 +261,7 @@ export default function FolderConfigModal({
   const touched: FolderConfigField[] = []
   if (draft.name !== seed.name) touched.push('name')
   if (draft.color !== seed.color) touched.push('color')
+  if (draft.icon !== seed.icon || draft.regenerateIcon) touched.push('icon')
   if (draft.projectDir !== seed.projectDir) touched.push('projectDir')
   if (draft.defaultAgent !== seed.defaultAgent) touched.push('defaultAgent')
   if (!sameTags(draft.tags, seed.tags)) touched.push('tags')
@@ -348,6 +364,53 @@ export default function FolderConfigModal({
               })}
             </div>
           </div>
+
+          {/* Icon — an emoji replacing the default folder glyph. Left empty on
+           *  create, the backend picks one from the name in the background; in
+           *  edit mode "Auto-generate" asks for a fresh pick (regenerate_icon)
+           *  while clearing the field falls back to the default glyph. Typing
+           *  clears a pending regenerate and vice versa: the backend rejects
+           *  icon + regenerate_icon in one request, so the two stay exclusive
+           *  here. No client-side emoji validation — the server 400s on
+           *  anything but a single emoji and the error renders above. */}
+          <label htmlFor="folder-config-icon-input" className="flex flex-col gap-1.5">
+            <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.icon')}</span>
+            <div className="flex items-center gap-2">
+              <FolderGlyph
+                color={draft.color || undefined}
+                icon={draft.regenerateIcon ? '' : draft.icon || undefined}
+                size={20}
+                className="shrink-0 text-muted"
+                testId="folder-config-icon-preview"
+              />
+              <Input
+                id="folder-config-icon-input"
+                className="w-24"
+                data-testid="folder-config-icon"
+                placeholder={i18nT('components.folderConfigModal.icon_placeholder')}
+                maxLength={16}
+                value={draft.regenerateIcon ? '' : draft.icon}
+                onChange={e => setDraft(d => ({ ...d, icon: e.target.value, regenerateIcon: false }))}
+              />
+              {mode === 'edit' && (
+                <Btn
+                  data-testid="folder-config-icon-regenerate"
+                  onClick={() => setDraft(d => ({ ...d, icon: seedRef.current.icon, regenerateIcon: true }))}
+                >
+                  {i18nT('components.folderConfigModal.icon_regenerate')}
+                </Btn>
+              )}
+            </div>
+            <span className="text-[11px] text-muted-strong">
+              {draft.regenerateIcon
+                ? i18nT('components.folderConfigModal.icon_regenerate_pending')
+                : mode === 'create'
+                  ? i18nT('components.folderConfigModal.icon_auto_hint')
+                  : draft.icon
+                    ? ''
+                    : i18nT('components.folderConfigModal.icon_cleared_hint')}
+            </span>
+          </label>
 
           {/* Tags — chips from the tag vocabulary, copied onto every new chat
            *  filed into this folder. Three vocabulary states, three renders:
