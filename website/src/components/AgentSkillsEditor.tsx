@@ -38,6 +38,14 @@ interface Props {
    * on agent B and the next edit writes them to B's spec.
    */
   onChange: (agentName: string, skills: string[]) => void
+  /**
+   * Resolves the template the edit should actually be written to, called just
+   * before each save. The Agent Template pane uses it for blueprint semantics:
+   * editing from a crew forks a private copy first and returns the copy's
+   * name, so the shared template file is never mutated. Omitted, the save
+   * writes to `agentName` (the Agent Templates tab's direct-edit behavior).
+   */
+  beforeSave?: () => Promise<string>
 }
 
 /**
@@ -48,7 +56,7 @@ interface Props {
  * agent's `resources`. Each edit saves immediately (same interaction model as
  * the model picker on this page) — there is no separate Save button to forget.
  */
-export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], onChange }: Props) {
+export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], onChange, beforeSave }: Props) {
   const [error, setError] = useState('')
   const btnRef = useRef<HTMLButtonElement>(null)
 
@@ -80,11 +88,15 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
   const save = useMutation({
     // The agent name travels WITH the request so the response can be matched to
     // the agent it was issued for, not to whatever is selected when it lands.
-    mutationFn: ({ agent, next }: { agent: string; next: string[] }) =>
-      api.agentPatch(agent, { skills: next }),
+    // `beforeSave` may redirect the write to a just-forked private copy; the
+    // resolved target is what onChange reports, so the caller tracks the copy.
+    mutationFn: async ({ agent, next }: { agent: string; next: string[] }) => {
+      const target = beforeSave ? await beforeSave() : agent
+      const res = await api.agentPatch(target, { skills: next })
+      return { res: res as { skills?: string[] }, target }
+    },
     onMutate: () => setError(''),
-    onSuccess: (res: { skills?: string[] }, { agent, next }) =>
-      onChange(agent, res?.skills ?? next),
+    onSuccess: ({ res, target }, { next }) => onChange(target, res?.skills ?? next),
     onError: (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
   })
 

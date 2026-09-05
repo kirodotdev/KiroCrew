@@ -7925,6 +7925,44 @@
       "confirm_discard": "Descartar dibujo",
       "already_attached": "Adjuntado: edita el lienzo para volver a dibujar",
       "load_failed": "No se pudo cargar el bloc de bocetos: revisa tu conexión y vuelve a abrirlo"
+    },
+    "agentTemplateDetail": {
+      "template_prefix": "Plantilla",
+      "customized": "Personalizado",
+      "changes_count_one": "{{count}} cambio",
+      "changes_count_many": "{{count}} cambios",
+      "changes_count_other": "{{count}} cambios",
+      "change_was": "antes: {{value}}",
+      "change_not_set": "sin definir",
+      "reset_my_changes": "Restablecer mis cambios",
+      "reset_confirm_title": "¿Restablecer este agente a “{{name}}”?",
+      "reset_confirm_body": "Tus cambios — “{{fields}}” — se descartarán. Este agente usará la plantilla “{{name}}” tal cual.",
+      "discard_my_changes": "Descartar mis cambios",
+      "save_as_new_template": "Guardar como nueva plantilla…",
+      "publish_title": "Guardar como una nueva plantilla",
+      "publish_hint": "Publica la definición de este agente como una plantilla desde la que pueden partir otros agentes. El nombre se convierte en la identidad permanente de la plantilla.",
+      "publish_name_label": "Nombre de la plantilla",
+      "publish_name_rule": "Usa letras, dígitos, puntos, guiones o guiones bajos (hasta 63 caracteres).",
+      "publish_action": "Guardar plantilla",
+      "switch_confirm_title": "¿Cambiar a “{{name}}”?",
+      "switch_confirm_body": "Tus cambios en “{{origin}}” (“{{fields}}”) se descartarán. Este agente usará la plantilla “{{name}}” tal cual.",
+      "discard_and_switch": "Descartar cambios y cambiar",
+      "based_on_hint": "Basado en la plantilla {{name}} — tus cambios se aplican solo a este agente y se guardan al instante.",
+      "edits_make_own_copy": "Los cambios aquí le dan a este agente su propia copia de la plantilla — se guardan al instante; la original y los demás agentes no se ven afectados.",
+      "config_file_info": "Guardado como {{filename}} en la carpeta compartida de agentes.",
+      "used_by_count": "la usan {{count}} agentes",
+      "used_by_this_agent_only": "solo la usa este agente",
+      "no_model_pinned": "Sin modelo fijado: se usa el de la cuenta",
+      "model_hint": "Fijado en la plantilla. Se guarda al instante; este agente puede anularlo en Modelo.",
+      "auto_approved_hint": "Se ejecuta sin preguntarte primero.",
+      "prompt_lives_in_a_file": "Estas instrucciones están en un archivo, no en la plantilla.",
+      "prompt_truncated": "Se muestran los primeros {{count}} caracteres: abre el archivo para leer el resto.",
+      "show_more": "+ {{count}} más",
+      "show_fewer": "Mostrar menos",
+      "loading": "Cargando la plantilla…",
+      "could_not_load": "No se pudo cargar la configuración de esta plantilla.",
+      "guardrails_hint": "Comandos que nunca se pueden ejecutar.",
+      "save_failed": "Ese cambio no se guardó — inténtalo de nuevo."
     }
   },
   "hooks": {
@@ -8071,6 +8109,11 @@
       "stream_error_max_duration": "El dictado alcanzó su límite de duración. Empieza una grabación nueva para continuar.",
       "stream_error_model_missing": "El modelo de voz aún no está listo. Descárgalo en los ajustes de voz a texto y vuelve a intentarlo.",
       "stream_error_session_failed": "La sesión de dictado falló. Vuelve a grabar."
+    },
+    "templateSource": {
+      "built_in": "Integrada",
+      "package": "Paquete",
+      "custom": "Personalizado"
     }
   },
   "nav": {

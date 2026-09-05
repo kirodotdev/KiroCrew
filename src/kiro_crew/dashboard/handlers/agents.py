@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import copy
 import dataclasses
 import functools
 import hashlib
@@ -23,7 +25,10 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import selectable_backend_values
 from kiro_crew.agent import (
     AGENT_FILENAME,
+    OWNED_KIRO_AGENT_FILES,
+    _atomic_json_write,
     _spec_path_is_safe,
+    agents_spec_lock,
     clear_model_pin,
     emission_eligible_mcp_servers,
     get_shipped_tools,
@@ -2266,6 +2271,503 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     )
 
 
+# A published template's filename is its permanent identity (no rename), so the
+# name is validated up front. Same charset the fork sanitizer produces, plus a
+# length cap that keeps the filename portable.
+_TEMPLATE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
+
+# Windows reserves these basenames (before the first dot, any extension) at the
+# filesystem level: creating CON.json raises, and some transports mangle them.
+# Checked wherever a template filename is chosen — user-supplied publish names
+# are refused, generated fork names are suffixed past them.
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def _is_reserved_basename(name: str) -> bool:
+    return name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+
+
+def _write_spec_file(dest: Path, data: dict) -> None:
+    """Exclusive create: 'x' refuses an existing destination — including a
+    differing-case sibling on case-insensitive filesystems — instead of
+    truncating it. Serialization happens here too so callers offload BOTH
+    to a thread; a near-limit spec would otherwise stall the event loop.
+
+    Governance runs HERE, at the single writer both fork and publish use:
+    a copied spec carries its source's ``allowedTools``/``autoApprove``
+    verbatim, and those are the two routes that skip the PreToolUse gate —
+    per ``sanitize_agent_config_governance``'s contract, every whole-config
+    writer must filter immediately before persisting.
+    """
+    from kiro_crew.platform.governance import sanitize_agent_config_governance
+
+    sanitize_agent_config_governance(data)
+    with open(dest, "x", encoding="utf-8") as f:
+        try:
+            f.write(json.dumps(data, indent=2) + "\n")
+        except BaseException:
+            # A partial write (ENOSPC) would leave a truncated, unparseable
+            # spec that every later create refuses as name_taken. The create
+            # is ours (exclusive), so removing it on failure is always safe.
+            with contextlib.suppress(OSError):
+                dest.unlink()
+            raise
+
+
+def _load_template_specs(
+    agents_dir: Path, name: str, operation: str
+) -> tuple[dict[str, Any] | None, str, set[str], Path | None]:
+    """Find the source spec and every name a new spec must not collide with.
+
+    ``taken`` is case-folded: 'Reviewer' and 'reviewer' are the same file on
+    the case-insensitive filesystems macOS and Windows default to. The source
+    PATH is returned too so create closures can RE-READ it inside
+    ``agents_spec_lock`` — this pre-lock snapshot can go stale against a
+    concurrent fork refresh.
+    """
+    source: dict[str, Any] | None = None
+    source_name = name
+    source_path: Path | None = None
+    taken: set[str] = set()
+    for f in sorted(agents_dir.glob("*.json")):
+        # An unreadable spec still occupies its filename.
+        taken.add(f.stem.lower())
+        spec = _read_agent_spec(f, operation=operation, source="dashboard")
+        if spec is None:
+            continue
+        declared = spec_str(spec, "name")
+        if declared:
+            taken.add(declared.lower())
+        if source is None and (declared == name or f.stem == name):
+            source = spec
+            source_name = declared or f.stem
+            source_path = f
+    return source, source_name, taken, source_path
+
+
+class _StaleBinding(Exception):
+    """The crew moved off the expected template between validation and write."""
+
+
+def _rebind_crew_locked(crew: str, expected: tuple[str, ...], new_target: str) -> None:
+    """Apply ONLY the binding delta to config.json, under the advisory lock.
+
+    A full ``cfg.save()`` snapshot races every other config writer (CLI,
+    settings PUTs): it re-writes fields from a load taken before this
+    handler's awaits, silently reverting concurrent changes. The stale-binding
+    check re-runs inside the critical section, so the 409 also covers a rebind
+    that landed after the handler's own validation read.
+    """
+
+    def _mutate(data: dict) -> dict | None:
+        entry = data.get("agents", {}).get(crew)
+        if not isinstance(entry, dict) or entry.get("kiro_agent") not in expected:
+            raise _StaleBinding()
+        if entry.get("kiro_agent") == new_target:
+            return None
+        entry["kiro_agent"] = new_target
+        return data
+
+    update_config_locked(mutate=_mutate)
+
+
+async def api_agent_fork(request: web.Request) -> web.Response:
+    """POST /api/agents/detail/{name}/fork — give one crew a private copy of a template.
+
+    Blueprint semantics: a crew's definition edits must not mutate the shared
+    template file that other crews (and kiro-cli) read. The first edit forks a
+    copy named after the crew, records lineage in the agent_state sidecar (the
+    spec itself cannot carry it — kiro-cli rejects unknown fields and drops the
+    whole agent), and rebinds the crew. All of it happens under the config lock
+    so the agents sync loop can never observe the new file unbound and
+    auto-create a ghost agent for it.
+    """
+    name = request.match_info["name"]
+    denied = await _require_owner(request, "agent_detail.fork")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+    crew = body.get("crew")
+    if not isinstance(crew, str) or not crew.strip():
+        return web.json_response({"error": "crew is required", "code": "crew_required"}, status=400)
+    crew = crew.strip()
+
+    state: DashboardState = request.app["state"]
+    async with _get_config_lock():
+        agents_dir = kiro_agents_dir_path()
+
+        source, source_name, taken, source_path = await asyncio.to_thread(
+            _load_template_specs, agents_dir, name, "api_agent_fork"
+        )
+        if source is None:
+            return web.json_response(
+                {"error": f"Template '{name}' not found", "code": "template_not_found"}, status=404
+            )
+
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if crew not in cfg.agents:
+            return web.json_response(
+                {"error": f"Agent '{crew}' not found", "code": "agent_not_found"}, status=404
+            )
+        agent = cfg.agents[crew]
+        # A stale or racing request must not clobber a newer binding: the fork
+        # was issued against the crew's current template, so require it still is.
+        if agent.kiro_agent not in (name, source_name):
+            return web.json_response(
+                {
+                    "error": f"'{crew}' is no longer bound to '{source_name}'",
+                    "code": "stale_binding",
+                },
+                status=409,
+            )
+
+        # Already this crew's own copy: nothing to fork. Idempotence keeps the
+        # frontend's fork-before-first-edit call safe to repeat.
+        fork = agent_state.get_fork_info(source_name)
+        if fork and fork["private_to"] == crew:
+            return web.json_response({"ok": True, "template": source_name, "already_private": True})
+
+        # The copy is named after the crew — the fork is invisible, so there is
+        # no naming step, and the crew's name is the one the user already knows.
+        # Sanitized because crew names are free text and this becomes a filename
+        # (a template's permanent identity; there is no rename). The declared
+        # "name" is set equal to the stem below, which is what keeps discovery's
+        # package-filename guess from misreading a dashed copy name.
+        # Bounded to keep the filename (plus a collision suffix) inside the
+        # 63-char template-name rule and every filesystem's component limit.
+        base = re.sub(r"[^A-Za-z0-9_.-]+", "-", crew)[:48].strip("-.") or "agent"
+
+        def _create_copy() -> tuple[str, Path]:
+            """Choose the name and create the file in ONE lock hold.
+
+            `taken` is a pre-scan and can go stale; the in-lock exists() probe
+            asks the filesystem with its own case semantics, and the exclusive
+            create refuses whatever both still missed rather than truncating it.
+            The SOURCE is re-read in-lock too: the pre-lock snapshot can miss a
+            concurrent refresh's writes (hooks, MCP commands), and copying it
+            would fork stale content. Reserved Windows basenames (CON, NUL, …)
+            are suffixed past like collisions — creating CON.json raises there.
+            """
+            with agents_spec_lock(agents_dir):
+                if source_path is None:
+                    raise FileNotFoundError(source_name)
+                fresh_source = _read_agent_spec(
+                    source_path, operation="api_agent_fork", source="dashboard"
+                )
+                if fresh_source is None:
+                    raise FileNotFoundError(source_path)
+                copy_name, suffix = base, 2
+                while (
+                    copy_name.lower() in taken
+                    or _is_reserved_basename(copy_name)
+                    or (agents_dir / f"{copy_name}.json").exists()
+                ):
+                    copy_name = f"{base}-{suffix}"
+                    suffix += 1
+                data = dict(fresh_source)
+                data["name"] = copy_name
+                # Same rule as every other spec writer: bookkeeping keys never
+                # reach a kiro spec (deny_unknown_fields drops the whole agent).
+                agent_state.lift_and_strip_bookkeeping(data, copy_name)
+                dest = agents_dir / f"{copy_name}.json"
+                _write_spec_file(dest, data)
+                return copy_name, dest
+
+        try:
+            copy_name, dest = await asyncio.to_thread(_create_copy)
+        except FileNotFoundError:
+            return web.json_response(
+                {
+                    "error": f"Template '{source_name}' changed on disk; retry.",
+                    "code": "source_changed",
+                },
+                status=409,
+            )
+
+        # Undo for every post-create failure (bookkeeping OR rebind): locked,
+        # prune before unlink so a concurrent refresh cannot resurrect the file
+        # as an orphan. The unlink runs even when the sidecar prune itself
+        # fails — an unbound spec left on disk surfaces as a shared template,
+        # which is worse than a stale sidecar row.
+        def _undo_fork() -> None:
+            with agents_spec_lock(agents_dir):
+                with contextlib.suppress(Exception):
+                    agent_state.prune(copy_name)
+                with contextlib.suppress(OSError):
+                    dest.unlink()
+
+        # Lineage + model tracking recorded before the rebind is persisted, so
+        # no window exists where the copy is bound but unrecorded (the setup
+        # refresh loop and the pane's provenance line both read this).
+        # Offloaded: the sidecar mutators take a blocking cross-process
+        # file_lock(wait=True), which must never run on the event loop.
+        def _record_fork_lineage() -> None:
+            agent_state.set_fork_info(copy_name, forked_from=source_name, private_to=crew)
+            managed = agent_state.get_model_managed(source_name)
+            if managed is not None:
+                agent_state.set_model_managed(copy_name, managed)
+
+        try:
+            await asyncio.to_thread(_record_fork_lineage)
+        except Exception:
+            logger.exception("fork bookkeeping failed for %r", copy_name)
+            await asyncio.to_thread(_undo_fork)
+            return web.json_response(
+                {"error": "Could not record the copy's lineage", "code": "bookkeeping_failed"},
+                status=500,
+            )
+
+        try:
+            await asyncio.to_thread(_rebind_crew_locked, crew, (name, source_name), copy_name)
+        except _StaleBinding:
+            await asyncio.to_thread(_undo_fork)
+            return web.json_response(
+                {
+                    "error": f"'{crew}' is no longer bound to '{source_name}'",
+                    "code": "stale_binding",
+                },
+                status=409,
+            )
+        except Exception:
+            logger.exception("fork rebind failed for crew %r", crew)
+            await asyncio.to_thread(_undo_fork)
+            return web.json_response(
+                {"error": "Could not update the crew's binding", "code": "rebind_failed"},
+                status=500,
+            )
+    clear_list_agents_cache()
+    state.push_refresh("agents")
+    return web.json_response(
+        {"ok": True, "template": copy_name, "filename": dest.name, "forked_from": source_name}
+    )
+
+
+async def api_agent_publish(request: web.Request) -> web.Response:
+    """POST /api/agents/detail/{name}/publish — save a crew's private copy as a named template.
+
+    The counterpart of the invisible fork: forking never asks for a name, so
+    the one place a template name is ever chosen is here, deliberately, by the
+    user. Publishes {name} (which must be *crew*'s private copy) under the
+    caller-supplied new name with NO fork lineage — a real, shareable template —
+    rebinds the crew to it, and removes the superseded private copy. A filename
+    is a template's permanent identity (there is no rename), which is why the
+    name is validated and collision-refused rather than suffixed.
+    """
+    name = request.match_info["name"]
+    denied = await _require_owner(request, "agent_detail.publish")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+    crew = body.get("crew")
+    new_name = body.get("name")
+    if not isinstance(crew, str) or not crew.strip():
+        return web.json_response({"error": "crew is required", "code": "crew_required"}, status=400)
+    if not isinstance(new_name, str) or not _TEMPLATE_NAME_RE.match(new_name.strip()):
+        return web.json_response(
+            {
+                "error": "name must be 1-63 letters, digits, dots, dashes or underscores",
+                "code": "invalid_template_name",
+            },
+            status=400,
+        )
+    if _is_reserved_basename(new_name.strip()):
+        # A filename Windows reserves at the filesystem level (CON, NUL, COM1…):
+        # creating CON.json raises there, so the name can never be portable.
+        return web.json_response(
+            {
+                "error": f"'{new_name.strip()}' is a reserved filename on Windows",
+                "code": "invalid_template_name",
+            },
+            status=400,
+        )
+    crew = crew.strip()
+    new_name = new_name.strip()
+    if f"{new_name.lower()}.json" in {f.lower() for f in OWNED_KIRO_AGENT_FILES}:
+        return web.json_response(
+            {"error": f"'{new_name}' is reserved", "code": "template_name_reserved"}, status=400
+        )
+
+    state: DashboardState = request.app["state"]
+    async with _get_config_lock():
+        agents_dir = kiro_agents_dir_path()
+
+        source, source_name, taken, source_path = await asyncio.to_thread(
+            _load_template_specs, agents_dir, name, "api_agent_publish"
+        )
+        if source is None:
+            return web.json_response(
+                {"error": f"Template '{name}' not found", "code": "template_not_found"}, status=404
+            )
+        # Case-folded: 'Reviewer' and 'reviewer' are the same file on the
+        # case-insensitive filesystems macOS and Windows default to.
+        if new_name.lower() in taken:
+            return web.json_response(
+                {"error": f"A template named '{new_name}' already exists", "code": "name_taken"},
+                status=409,
+            )
+
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if crew not in cfg.agents:
+            return web.json_response(
+                {"error": f"Agent '{crew}' not found", "code": "agent_not_found"}, status=404
+            )
+        # Only a private copy can be published: publishing a template that is
+        # already shared would silently duplicate it, and publishing another
+        # crew's copy would leak their customization.
+        fork = agent_state.get_fork_info(source_name)
+        if not fork or fork["private_to"] != crew:
+            return web.json_response(
+                {
+                    "error": f"'{source_name}' is not {crew}'s private copy",
+                    "code": "not_a_private_copy",
+                },
+                status=409,
+            )
+        # A stale publish must not rebind over a newer binding (same guard as
+        # fork). Fast pre-check only; the authoritative check re-runs inside
+        # _rebind_crew_locked's critical section.
+        if cfg.agents[crew].kiro_agent not in (name, source_name):
+            return web.json_response(
+                {
+                    "error": f"'{crew}' is no longer bound to '{source_name}'",
+                    "code": "stale_binding",
+                },
+                status=409,
+            )
+
+        def _create_published() -> Path:
+            """Create under the spec lock; the exclusive write refuses any
+            destination the pre-scan missed instead of truncating it. The
+            source is re-read in-lock: the pre-lock snapshot can miss a
+            concurrent refresh's writes and publish stale content."""
+            with agents_spec_lock(agents_dir):
+                if source_path is None:
+                    raise FileNotFoundError(source_name)
+                fresh_source = _read_agent_spec(
+                    source_path, operation="api_agent_publish", source="dashboard"
+                )
+                if fresh_source is None:
+                    raise FileNotFoundError(source_path)
+                data = dict(fresh_source)
+                data["name"] = new_name
+                agent_state.lift_and_strip_bookkeeping(data, new_name)
+                dest = agents_dir / f"{new_name}.json"
+                _write_spec_file(dest, data)
+                return dest
+
+        try:
+            dest = await asyncio.to_thread(_create_published)
+        except FileExistsError:
+            # A concurrent creator won the name between our pre-scan and the
+            # exclusive create. Publish never suffixes: the name is the user's.
+            return web.json_response(
+                {"error": f"A template named '{new_name}' already exists", "code": "name_taken"},
+                status=409,
+            )
+        except FileNotFoundError:
+            return web.json_response(
+                {
+                    "error": f"Template '{source_name}' changed on disk; retry.",
+                    "code": "source_changed",
+                },
+                status=409,
+            )
+
+        # Undo for every post-create failure (bookkeeping OR rebind): locked,
+        # prune before unlink so a concurrent refresh cannot resurrect the file
+        # as an orphan. The unlink runs even when the sidecar prune itself
+        # fails — an unbound published file would block every retry of this
+        # name with a spurious name_taken.
+        def _undo_publish() -> None:
+            with agents_spec_lock(agents_dir):
+                with contextlib.suppress(Exception):
+                    agent_state.prune(new_name)
+                with contextlib.suppress(OSError):
+                    dest.unlink()
+
+        # Offloaded: the sidecar mutators take a blocking cross-process
+        # file_lock(wait=True), which must never run on the event loop.
+        def _record_publish_model() -> None:
+            managed = agent_state.get_model_managed(source_name)
+            if managed is not None:
+                agent_state.set_model_managed(new_name, managed)
+
+        try:
+            await asyncio.to_thread(_record_publish_model)
+        except Exception:
+            logger.exception("publish bookkeeping failed for %r", new_name)
+            await asyncio.to_thread(_undo_publish)
+            return web.json_response(
+                {"error": "Could not record the template's model", "code": "bookkeeping_failed"},
+                status=500,
+            )
+
+        try:
+            await asyncio.to_thread(_rebind_crew_locked, crew, (name, source_name), new_name)
+        except _StaleBinding:
+            await asyncio.to_thread(_undo_publish)
+            return web.json_response(
+                {
+                    "error": f"'{crew}' is no longer bound to '{source_name}'",
+                    "code": "stale_binding",
+                },
+                status=409,
+            )
+        except Exception:
+            logger.exception("publish rebind failed for crew %r", crew)
+            await asyncio.to_thread(_undo_publish)
+            return web.json_response(
+                {"error": "Could not update the crew's binding", "code": "rebind_failed"},
+                status=500,
+            )
+
+        def _cleanup_superseded() -> None:
+            """Remove the superseded private copy — file first, lineage after.
+
+            Under the spec lock like every other spec mutation; lineage
+            outlives a failed delete, since pruning it while the file remains
+            would surface the private customization as a shared template.
+            """
+            old_file = agents_dir / f"{source_name}.json"
+            if not _spec_path_is_safe(old_file, agents_dir):
+                return
+            with agents_spec_lock(agents_dir):
+                try:
+                    old_file.unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("could not remove superseded copy %r", source_name, exc_info=True)
+                    return
+            # Non-throwing: the publish is already committed (rebind persisted,
+            # file created). A sidecar failure here must not turn a committed
+            # publish into an HTTP 500 whose retry then 404s; the stale lineage
+            # row is reconciled by the next refresh sweep.
+            with contextlib.suppress(Exception):
+                agent_state.prune(source_name)
+
+        await asyncio.to_thread(_cleanup_superseded)
+    clear_list_agents_cache()
+    state.push_refresh("agents")
+    return web.json_response({"ok": True, "template": new_name, "filename": dest.name})
+
+
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/DELETE/PATCH /api/agents/detail/{name} — view, delete, or update agent config."""
     name = request.match_info["name"]
@@ -2379,8 +2881,9 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     clear_list_agents_cache()
                     # Same reason `declared` goes through `spec_str` above:
                     # `prune` is typed `str` and a structured `name` would reach
-                    # it through the `or`.
-                    agent_state.prune(declared or name)
+                    # it through the `or`. Offloaded: prune takes the blocking
+                    # cross-process sidecar lock.
+                    await asyncio.to_thread(agent_state.prune, declared or name)
                     state.push_refresh("agents")
                     return web.json_response({"ok": True})
                 if request.method == "PATCH" and patch_body is not None:
@@ -2431,6 +2934,11 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 status=409,
                             )
                         data = reread_data
+                        # Pristine snapshot: the locked write below re-reads the
+                        # CURRENT disk state and re-applies only the keys this
+                        # PATCH changed relative to this snapshot, so it cannot
+                        # clobber a concurrent refresh's writes with stale data.
+                        before_patch = copy.deepcopy(reread_data)
                         # `spec_str` for the same reason as `declared` above: a
                         # hand-edited spec can carry a structured (non-string)
                         # "name", which would crash the sidecar helper's dict
@@ -2480,11 +2988,14 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 # default (re-synced by _refresh_dynamic_fields).
                                 # Shared with `kirocrew agent reset-model` so the
                                 # two surfaces cannot disagree on what clearing a
-                                # model means.
-                                clear_model_pin(data, agent_name)
+                                # model means. Offloaded: it writes the sidecar
+                                # under the blocking cross-process lock.
+                                await asyncio.to_thread(clear_model_pin, data, agent_name)
                             else:
                                 # Explicit pick: freeze it against default bumps.
-                                agent_state.set_model_managed(agent_name, False)
+                                await asyncio.to_thread(
+                                    agent_state.set_model_managed, agent_name, False
+                                )
                         # Never persist Kiro Crew bookkeeping into the kiro spec —
                         # kiro-cli rejects unknown fields and drops the agent. Same
                         # shared helper as the PUT handler and migrate_agent_specs(),
@@ -2498,7 +3009,51 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         await asyncio.to_thread(
                             agent_state.lift_and_strip_bookkeeping, data, agent_name
                         )
-                        f.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+                        def _locked_overwrite() -> None:
+                            # Same spec lock as fork/publish and the background
+                            # fork refresh — and a full read-merge-write inside
+                            # it: our `data` snapshot was taken before the lock,
+                            # so a concurrent refresh may have sanitized away a
+                            # ceiling-rejected grant since; writing the snapshot
+                            # verbatim would restore it. Merge only the keys THIS
+                            # patch changed onto the fresh read, then run the
+                            # mandated whole-config governance funnel immediately
+                            # before persisting (same contract as
+                            # _write_spec_file and the PUT handler).
+                            from kiro_crew.platform.governance import (
+                                sanitize_agent_config_governance,
+                            )
+
+                            with agents_spec_lock(f.parent):
+                                fresh = _read_agent_spec(
+                                    f, operation="api_agent_detail", source="dashboard"
+                                )
+                                if fresh is None:
+                                    raise FileNotFoundError(f)
+                                for key, value in data.items():
+                                    if key not in before_patch or before_patch[key] != value:
+                                        fresh[key] = value
+                                for key in before_patch:
+                                    if key not in data:
+                                        fresh.pop(key, None)
+                                sanitize_agent_config_governance(fresh)
+                                # Atomic replace: a direct write truncates first,
+                                # so ENOSPC mid-write would destroy the existing
+                                # template. Same tmp+rename helper as the fork
+                                # refresh and install paths.
+                                _atomic_json_write(f, fresh)
+
+                        try:
+                            await asyncio.to_thread(_locked_overwrite)
+                        except FileNotFoundError:
+                            return web.json_response(
+                                {
+                                    "error": f"'{name}' changed on disk during update; retry.",
+                                    "code": "agent_changed",
+                                },
+                                status=409,
+                            )
                     # The list_agents() cache keys on a (count, newest-mtime-ns)
                     # signature; two writes inside the same mtime granularity
                     # would otherwise serve a stale skill list.
@@ -2682,6 +3237,11 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 disc.name not in mc_kiro_agents
                 and disc.name not in cfg.agents
                 and disc.source != "kirocrew"
+                # A fork is one crew's private copy, not a standalone template:
+                # normally its owner's binding puts it in mc_kiro_agents, so this
+                # only fires for an ORPHANED copy (owner crew deleted) — which
+                # must not resurrect as a ghost agent.
+                and not disc.private_to
             ):
                 # EXECUTABLE INVARIANT enforcement (mirrors the seam-boundary
                 # LIVENESS bound in platform.capability_bound —

@@ -124,7 +124,12 @@ const AGENTS_RESPONSE = { agents: [DEFAULT_CREW, OTHER_CREW], default_agent: 'ki
 const WORKSPACES_RESPONSE = {
   workspaces: [{ name: 'default' }, { name: 'core-ws' }, { name: 'oncall' }],
 }
-const INSTALLED_RESPONSE = [{ name: 'kirocrew' }, { name: 'oncall-agent' }]
+const INSTALLED_RESPONSE = [
+  // Provenance included: the endpoint always reports it, and the template
+  // dropdown derives each row's source label from it.
+  { name: 'kirocrew', source: 'kirocrew', filename: 'kirocrew.json', kirocrew_owned: true },
+  { name: 'oncall-agent', source: 'builtin', filename: 'oncall-agent.json', kirocrew_owned: false },
+]
 const CONFIG_RESPONSE = { memory_stores: { default: {}, 'core-mem': {}, 'oncall-mem': {} } }
 
 beforeEach(() => {
@@ -579,7 +584,9 @@ describe('crew editor — create', () => {
     // exceeded), which then wedges React's act queue for every later test here.
     const template = within(sheet).getByRole('combobox', { name: 'Agent Template' })
     fireEvent.keyDown(template, { key: 'ArrowDown' })
-    fireEvent.click(await screen.findByRole('option', { name: 'oncall-agent' }))
+    // The row now carries a source suffix ("oncall-agent — Custom"), so anchor on
+    // the name rather than matching the whole accessible name exactly.
+    fireEvent.click(await screen.findByRole('option', { name: /^oncall-agent/ }))
     fireEvent.click(within(sheet).getByRole('button', { name: 'Create' }))
 
     await waitFor(() =>

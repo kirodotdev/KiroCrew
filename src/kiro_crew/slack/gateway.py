@@ -2570,7 +2570,11 @@ class GatewayOrchestrator:
         try:
             from kiro_crew.agent import rebuild_agent_config  # circular import
 
-            path = rebuild_agent_config()
+            # Off-loop, with the fork refresh deferred: the rebuild gates
+            # readiness, and per-fork work scales with fork count.
+            # rebuild_agent_config owns the deferral (skip + background
+            # schedule together), so this caller cannot get half the pair.
+            path = await asyncio.to_thread(rebuild_agent_config, refresh_forks="defer")
             logger.info("Agent config installed: %s", path)
 
             # Deliver shim + one-time stale-MCP purge automatically — the

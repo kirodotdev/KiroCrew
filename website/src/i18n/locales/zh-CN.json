@@ -7713,6 +7713,42 @@
       "confirm_discard": "丢弃画作",
       "already_attached": "已附加——继续编辑画布可再次草图",
       "load_failed": "草图板加载失败——请检查网络后重新打开"
+    },
+    "agentTemplateDetail": {
+      "template_prefix": "模板",
+      "customized": "已自定义",
+      "changes_count_other": "{{count}} 处改动",
+      "change_was": "原为：{{value}}",
+      "change_not_set": "未设置",
+      "reset_my_changes": "重置我的改动",
+      "reset_confirm_title": "将该代理重置为 “{{name}}”？",
+      "reset_confirm_body": "你的改动 — “{{fields}}” — 将被丢弃。该代理将原样使用 “{{name}}” 模板。",
+      "discard_my_changes": "丢弃我的改动",
+      "save_as_new_template": "另存为新模板…",
+      "publish_title": "另存为新模板",
+      "publish_hint": "把该代理的定义发布为一个模板，其他代理可以从它开始。这个名称将成为模板的永久标识。",
+      "publish_name_label": "模板名称",
+      "publish_name_rule": "使用字母、数字、点、短横线或下划线（最多 63 个字符）。",
+      "publish_action": "保存模板",
+      "switch_confirm_title": "切换到 “{{name}}”？",
+      "switch_confirm_body": "你在 “{{origin}}” 上的改动（“{{fields}}”）将被丢弃。该代理将原样使用 “{{name}}” 模板。",
+      "discard_and_switch": "丢弃改动并切换",
+      "based_on_hint": "基于 {{name}} 模板 — 你的编辑仅应用于此 Agent，并会即时保存。",
+      "edits_make_own_copy": "在此处进行的更改会让此 Agent 拥有模板的独立副本 — 即时保存；原模板和其他 Agent 不受影响。",
+      "config_file_info": "以 {{filename}} 保存在共享的代理文件夹中。",
+      "used_by_count": "{{count}} 个代理在用",
+      "used_by_this_agent_only": "只有这个代理在用",
+      "no_model_pinned": "没有固定模型 —— 用账号默认的",
+      "model_hint": "在模板里固定。改动会立刻保存；这个代理可以在“模型”里覆盖它。",
+      "auto_approved_hint": "不用先问你就会运行。",
+      "prompt_lives_in_a_file": "这些指令放在一个文件里，不在模板本身。",
+      "prompt_truncated": "只显示前 {{count}} 个字符 —— 剩下的要打开文件看。",
+      "show_more": "还有 {{count}} 个",
+      "show_fewer": "收起",
+      "loading": "正在加载模板……",
+      "could_not_load": "没能加载这个模板的配置。",
+      "guardrails_hint": "永远不允许运行的命令。",
+      "save_failed": "该更改未能保存 — 请重试。"
     }
   },
   "hooks": {
@@ -7859,6 +7895,11 @@
       "stream_error_max_duration": "口述已达到时长上限。重新开始录制即可继续。",
       "stream_error_model_missing": "语音模型还没准备好。请在语音转文字设置中下载它，然后重试。",
       "stream_error_session_failed": "口述会话失败。请重新录制。"
+    },
+    "templateSource": {
+      "built_in": "内置",
+      "package": "包",
+      "custom": "自定义"
     }
   },
   "nav": {

@@ -7925,6 +7925,44 @@
       "confirm_discard": "Elimina disegno",
       "already_attached": "Allegato — modifica la tela per disegnare di nuovo",
       "load_failed": "Impossibile caricare il blocco schizzi: controlla la connessione e riapri"
+    },
+    "agentTemplateDetail": {
+      "template_prefix": "Modello",
+      "customized": "Personalizzato",
+      "changes_count_one": "{{count}} modifica",
+      "changes_count_many": "{{count}} modifiche",
+      "changes_count_other": "{{count}} modifiche",
+      "change_was": "prima: {{value}}",
+      "change_not_set": "non impostato",
+      "reset_my_changes": "Ripristina le mie modifiche",
+      "reset_confirm_title": "Ripristinare questo agente a «{{name}}»?",
+      "reset_confirm_body": "Le tue modifiche — «{{fields}}» — verranno scartate. Questo agente userà il modello «{{name}}» così com’è.",
+      "discard_my_changes": "Scarta le mie modifiche",
+      "save_as_new_template": "Salva come nuovo modello…",
+      "publish_title": "Salva come nuovo modello",
+      "publish_hint": "Pubblica la definizione di questo agente come un modello da cui altri agenti possono partire. Il nome diventa l’identità permanente del modello.",
+      "publish_name_label": "Nome del modello",
+      "publish_name_rule": "Usa lettere, cifre, punti, trattini o trattini bassi (fino a 63 caratteri).",
+      "publish_action": "Salva modello",
+      "switch_confirm_title": "Passare a «{{name}}»?",
+      "switch_confirm_body": "Le tue modifiche a «{{origin}}» («{{fields}}») verranno scartate. Questo agente userà il modello «{{name}}» così com’è.",
+      "discard_and_switch": "Scarta le modifiche e passa",
+      "based_on_hint": "Basato sul modello {{name}} — le tue modifiche si applicano solo a questo agente e vengono salvate subito.",
+      "edits_make_own_copy": "Le modifiche qui danno a questo agente una propria copia del modello — salvate subito; l'originale e gli altri agenti non ne risentono.",
+      "config_file_info": "Salvato come {{filename}} nella cartella condivisa degli agenti.",
+      "used_by_count": "usato da {{count}} agenti",
+      "used_by_this_agent_only": "usato solo da questo agente",
+      "no_model_pinned": "Nessun modello fissato — quello dell’account",
+      "model_hint": "Fissato nel modello. Salvato subito; questo agente può sovrascriverlo in Modello.",
+      "auto_approved_hint": "Viene eseguito senza chiedertelo.",
+      "prompt_lives_in_a_file": "Queste istruzioni stanno in un file, non nel modello.",
+      "prompt_truncated": "Mostra i primi {{count}} caratteri: apri il file per leggere il resto.",
+      "show_more": "+ altri {{count}}",
+      "show_fewer": "Mostra meno",
+      "loading": "Caricamento del modello…",
+      "could_not_load": "Non è stato possibile caricare la configurazione di questo modello.",
+      "guardrails_hint": "Comandi che non possono mai essere eseguiti.",
+      "save_failed": "Questa modifica non è stata salvata — riprova."
     }
   },
   "hooks": {
@@ -8071,6 +8109,11 @@
       "stream_error_max_duration": "La dettatura ha raggiunto il limite di durata. Avvia una nuova registrazione per continuare.",
       "stream_error_model_missing": "Il modello vocale non è ancora pronto. Scaricalo nelle impostazioni di riconoscimento vocale, poi riprova.",
       "stream_error_session_failed": "La sessione di dettatura non è riuscita. Prova a registrare di nuovo."
+    },
+    "templateSource": {
+      "built_in": "Integrato",
+      "package": "Pacchetto",
+      "custom": "Personalizzato"
     }
   },
   "nav": {

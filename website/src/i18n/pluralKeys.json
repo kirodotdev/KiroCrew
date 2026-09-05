@@ -84,6 +84,7 @@
   "apps.pptxMaker.pptxMakerPage.slide_count",
   "apps.specBuilder.components.specDetail.pending_comment",
   "apps.workflows.workflowRunTree.agent",
+  "components.agentTemplateDetail.changes_count",
   "components.appstore.categoryRail.app",
   "components.artifactFolderDeleteDialog.artifact",
   "components.artifactFolderDeleteDialog.subfolder",

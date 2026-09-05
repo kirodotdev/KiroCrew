@@ -7,7 +7,7 @@ import json
 import os
 import sys
 import unittest.mock
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -570,13 +570,9 @@ class TestInstallAgent:
         assert entry["env"]["GOOD"] == "kept"
         for bad in ("PORT", "FLAG", "NOTHING", "LISTY", "NESTED"):
             assert bad not in entry["env"], bad
-        assert all(
-            isinstance(k, str) and isinstance(v, str) for k, v in entry["env"].items()
-        )
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in entry["env"].items())
 
-    def test_fresh_install_pins_our_data_home_against_a_declared_home(
-        self, tmp_path: Path
-    ):
+    def test_fresh_install_pins_our_data_home_against_a_declared_home(self, tmp_path: Path):
         """A declared ``HOME`` cannot relocate a managed shim's data home.
 
         ``HOME`` is deliberately NOT in ``env.py``'s deny set -- a user's own MCP
@@ -2557,9 +2553,7 @@ class TestToolBloatFixes:
 
         assert "@notion" not in config["tools"]
 
-    def test_removed_oauth_hints_do_not_survive_a_rebuild_of_a_managed_entry(
-        self, tmp_path: Path
-    ):
+    def test_removed_oauth_hints_do_not_survive_a_rebuild_of_a_managed_entry(self, tmp_path: Path):
         """Row 3 of the ownership table, through the real rebuild.
 
         The dashboard store owns this name, and the custom-update API removes a
@@ -2645,9 +2639,7 @@ class TestToolBloatFixes:
         user_home = tmp_path / "kirocrew_home"
         user_home.mkdir(parents=True, exist_ok=True)
         # Hand-edited garbage under the same name as the global server below.
-        (user_home / "mcp.json").write_text(
-            json.dumps({"mcpServers": {"handmade": "not-a-dict"}})
-        )
+        (user_home / "mcp.json").write_text(json.dumps({"mcpServers": {"handmade": "not-a-dict"}}))
         (tmp_path / "fake_kiro_mcp.json").write_text(
             json.dumps(
                 {
@@ -2668,9 +2660,7 @@ class TestToolBloatFixes:
         assert entry["oauthScopes"] == ["read:user"]
         assert entry["oauth"] == {"clientId": "hand-authored", "issuer": "https://issuer"}
 
-    def test_a_globally_disabled_server_is_not_remounted_by_the_store_entry(
-        self, tmp_path: Path
-    ):
+    def test_a_globally_disabled_server_is_not_remounted_by_the_store_entry(self, tmp_path: Path):
         """An operator disable must survive a same-named dashboard-store entry.
 
         `POST /api/mcp/toggle enabled:false` writes `disabled: true` into the
@@ -2690,11 +2680,7 @@ class TestToolBloatFixes:
         # Kiro global: the operator's disable lives here and only here.
         (tmp_path / "fake_kiro_mcp.json").write_text(
             json.dumps(
-                {
-                    "mcpServers": {
-                        "notion": {"url": "https://mcp.notion.com/mcp", "disabled": True}
-                    }
-                }
+                {"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp", "disabled": True}}}
             )
         )
 
@@ -2747,9 +2733,7 @@ class TestToolBloatFixes:
         config = json.loads(path.read_text(encoding="utf-8"))
 
         assert "@acme-notion" not in config.get("tools", []), "disabled server must not mount"
-        assert "@acme-notion" not in config.get(
-            "allowedTools", []
-        ), "and must not be auto-approved"
+        assert "@acme-notion" not in config.get("allowedTools", []), "and must not be auto-approved"
 
     def test_an_agent_config_only_server_keeps_its_oauth_hints_verbatim(self, tmp_path: Path):
         """The agent config is a merge source, so its own entries are preserved.
@@ -2857,9 +2841,9 @@ class TestToolBloatFixes:
             assert entry is not None, "the aliased server must stay mounted"
             assert entry.get("oauthScopes") == ["acme:read"], "a live source keeps its scopes"
             assert entry.get("oauth", {}).get("clientId") == "acme-client"
-            assert not [k for k in servers if k.startswith("acme-notion-")], (
-                f"no duplicate sibling may be minted, got {sorted(servers)}"
-            )
+            assert not [
+                k for k in servers if k.startswith("acme-notion-")
+            ], f"no duplicate sibling may be minted, got {sorted(servers)}"
         assert counts[0] == counts[1] == counts[2], f"entry count must not grow: {counts}"
 
     def test_a_slashed_store_name_owns_its_aliased_config_entry(self, tmp_path: Path):
@@ -2895,9 +2879,9 @@ class TestToolBloatFixes:
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
 
         assert "oauthScopes" not in servers["acme-notion"], "the cleared scopes must not survive"
-        assert not [k for k in servers if k.startswith("acme-notion-")], (
-            f"no duplicate sibling may be minted, got {sorted(servers)}"
-        )
+        assert not [
+            k for k in servers if k.startswith("acme-notion-")
+        ], f"no duplicate sibling may be minted, got {sorted(servers)}"
 
     def test_a_malformed_exact_name_does_not_hide_a_valid_aliased_owner(self, tmp_path: Path):
         """A malformed store value contributes nothing -- including no veto.
@@ -2916,9 +2900,7 @@ class TestToolBloatFixes:
         url = "https://mcp.acme.com/mcp"
 
         store.write_text(
-            json.dumps(
-                {"mcpServers": {"acme:@acme/notion": {"url": url, "scopes": ["acme:read"]}}}
-            )
+            json.dumps({"mcpServers": {"acme:@acme/notion": {"url": url, "scopes": ["acme:read"]}}})
         )
         path = _run_install(tmp_path, cfg_dir)
         assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["acme-notion"][
@@ -2939,12 +2921,12 @@ class TestToolBloatFixes:
         path = _run_install(tmp_path, cfg_dir)
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
 
-        assert "oauthScopes" not in servers["acme-notion"], (
-            "the valid aliased owner's clear must apply"
-        )
-        assert not [k for k in servers if k.startswith("acme-notion-")], (
-            f"no duplicate sibling may be minted, got {sorted(servers)}"
-        )
+        assert (
+            "oauthScopes" not in servers["acme-notion"]
+        ), "the valid aliased owner's clear must apply"
+        assert not [
+            k for k in servers if k.startswith("acme-notion-")
+        ], f"no duplicate sibling may be minted, got {sorted(servers)}"
 
     def test_an_alias_match_binds_hints_only_to_the_same_server(self, tmp_path: Path):
         """One rule for every alias binding, keyed on the direction of the effect.
@@ -2988,22 +2970,18 @@ class TestToolBloatFixes:
 
         # GRANT site, legitimate case: the aliased entry IS this server (same url).
         (user_home / "mcp.json").write_text(
-            json.dumps(
-                {"mcpServers": {"foo/bar": {"url": user_url, "scopes": ["managed:read"]}}}
-            )
+            json.dumps({"mcpServers": {"foo/bar": {"url": user_url, "scopes": ["managed:read"]}}})
         )
         (tmp_path / "fake_kiro_mcp.json").write_text(
             json.dumps({"mcpServers": {"foo-bar": {"url": user_url}}})
         )
         path = _run_install(tmp_path, cfg_dir)
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
-        assert any(e.get("oauthScopes") == ["managed:read"] for e in servers.values()), (
-            "the same server's hints must still bind through the alias"
-        )
+        assert any(
+            e.get("oauthScopes") == ["managed:read"] for e in servers.values()
+        ), "the same server's hints must still bind through the alias"
 
-    def test_the_disabled_guard_stays_name_based_across_an_alias_collision(
-        self, tmp_path: Path
-    ):
+    def test_the_disabled_guard_stays_name_based_across_an_alias_collision(self, tmp_path: Path):
         """Over-denying is safe; under-denying is the hole tightest-wins closes."""
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -3036,9 +3014,7 @@ class TestToolBloatFixes:
         user_home.mkdir(parents=True, exist_ok=True)
         url = "https://mcp.notion.com/mcp"
         (tmp_path / "fake_kiro_mcp.json").write_text(
-            json.dumps(
-                {"mcpServers": {"notion-2": {"url": url, "oauthScopes": ["hand:write"]}}}
-            )
+            json.dumps({"mcpServers": {"notion-2": {"url": url, "oauthScopes": ["hand:write"]}}})
         )
         (user_home / "mcp.json").write_text(
             json.dumps(
@@ -3132,9 +3108,7 @@ class TestToolBloatFixes:
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
 
         stale = [
-            k
-            for k, e in servers.items()
-            if e.get("url") == managed_url and "oauthScopes" in e
+            k for k, e in servers.items() if e.get("url") == managed_url and "oauthScopes" in e
         ]
         assert not stale, f"the owner's clear must reach its suffixed entry, stale in {stale}"
 
@@ -5081,12 +5055,12 @@ class TestSpecEnvPathIsExpandedOnEmit:
         monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
         cfg_dir = _bundled_defaults(tmp_path)
         servers = {"wrapped": {"command": "/opt/wrapped", "env": {"PATH": "/opt/shims"}}}
-        first = _run_install_mcp_merge(
-            tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers
-        )["mcpServers"]["wrapped"]["env"]["PATH"]
-        second = _run_install_mcp_merge(
-            tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers
-        )["mcpServers"]["wrapped"]["env"]["PATH"]
+        first = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers)[
+            "mcpServers"
+        ]["wrapped"]["env"]["PATH"]
+        second = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers)[
+            "mcpServers"
+        ]["wrapped"]["env"]["PATH"]
         assert first == second
         assert len(first.split(os.pathsep)) == len(set(first.split(os.pathsep)))
 
@@ -5582,9 +5556,7 @@ class TestSpecPathPrefersTheDeclaredName:
         monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
         return agents
 
-    def test_a_filename_declaring_another_agent_is_not_selected(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_a_filename_declaring_another_agent_is_not_selected(self, tmp_path: Path, monkeypatch):
         """The resolver prefers the declared name. (The WRITE path additionally
         refuses this state outright -- see TestResetRefusesAnAmbiguousName --
         because the runtime's choice between the two files is undefined.)"""
@@ -5618,9 +5590,7 @@ class TestSpecPathPrefersTheDeclaredName:
         assert spec_path.name == "foo.json"
         assert previous == "m"
 
-    def test_the_filename_is_accepted_when_it_declares_no_name(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_the_filename_is_accepted_when_it_declares_no_name(self, tmp_path: Path, monkeypatch):
         import kiro_crew.agent as agent_mod
 
         agents = self._dir(tmp_path, monkeypatch)
@@ -5646,9 +5616,7 @@ class TestResetRefusesAnAmbiguousName:
     model from a spec nothing reads.
     """
 
-    def test_a_declared_match_plus_a_filename_match_is_refused(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_a_declared_match_plus_a_filename_match_is_refused(self, tmp_path: Path, monkeypatch):
         import kiro_crew.agent as agent_mod
 
         agents = tmp_path / "agents"
@@ -5740,9 +5708,7 @@ class TestSpecReadsAreSizeCapped:
         with pytest.raises(FileNotFoundError):
             agent_mod.reset_agent_model("kirocrew")
 
-    def test_a_normal_sized_spec_under_the_same_cap_still_resets(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_a_normal_sized_spec_under_the_same_cap_still_resets(self, tmp_path: Path, monkeypatch):
         """The A-side of the cap test: proves the refusal above is the SIZE, not
         the lowered cap breaking every read."""
         import kiro_crew.agent as agent_mod
@@ -5814,17 +5780,11 @@ class TestResetOutputEscapesUntrustedPaths:
 
         agents = tmp_path / "agents"
         agents.mkdir()
-        (agents / "kirocrew.json").write_text(
-            json.dumps({"name": "other"}), encoding="utf-8"
-        )
-        (agents / "elsewhere.json").write_text(
-            json.dumps({"name": "kirocrew"}), encoding="utf-8"
-        )
+        (agents / "kirocrew.json").write_text(json.dumps({"name": "other"}), encoding="utf-8")
+        (agents / "elsewhere.json").write_text(json.dumps({"name": "kirocrew"}), encoding="utf-8")
         monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
         # Inject the hostile path as the CONFLICTING file, portably.
-        monkeypatch.setattr(
-            agent_mod, "_conflicting_spec_for", lambda n, c, d: Path(self.HOSTILE)
-        )
+        monkeypatch.setattr(agent_mod, "_conflicting_spec_for", lambda n, c, d: Path(self.HOSTILE))
 
         with pytest.raises(ValueError) as exc:
             agent_mod.reset_agent_model("kirocrew")
@@ -5889,3 +5849,265 @@ class TestSelHookRejectedRedaction:
         _sel_hook_rejected("preToolUse", "c" * 250, "denied")
         assert len(events) == 1
         assert events[0].resources == f"event=preToolUse command={'c' * 200}"
+
+
+@contextmanager
+def _fork_env(tmp_path: Path):
+    """Patch agent module globals for fork-refresh tests, mirroring _run_install.
+
+    Yields ``(kiro_dir, prompt_path)``. The bundled defaults carry
+    ``hooks={"preToolUse": "audit"}`` and a prompt.md, so a refresh can rewrite
+    hooks and a ``file://`` prompt.
+    """
+    cfg_dir = _bundled_defaults(tmp_path)
+    kiro_dir = tmp_path / "kiro_agents"
+    kiro_dir.mkdir(exist_ok=True)
+    prompt = cfg_dir / "prompt.md"
+    mc_config = tmp_path / "empty_mc_config.json"
+    mc_config.write_text(json.dumps({"agent": {"kiro_hooks_autoimport": False}}))
+    _user_home = tmp_path / "kirocrew_home"
+    patches = [
+        patch.multiple(
+            "kiro_crew.agent",
+            KIRO_AGENTS_DIR=kiro_dir,
+            _BUNDLED_CFG_DIR=cfg_dir,
+            _KIROCREW_BIN="/usr/bin/kirocrew",
+            _MANAGED_MCP_SERVERS=_DEFAULT_MANAGED_MCPS,
+            _KIRO_MCP_JSON=tmp_path / "fake_kiro_mcp.json",
+            _CC_MCP_JSON=tmp_path / "fake_cc_mcp.json",
+        ),
+        patch("kiro_crew.agent._user_dir", lambda: _user_home),
+        patch("kiro_crew.agent._prompt_path", return_value=prompt),
+        patch("kiro_crew.agent._shipped_defaults", return_value=cfg_dir / "defaults.json"),
+        patch("kiro_crew.agent._project_dir", return_value=None),
+        patch("kiro_crew.agent._aim_skill_paths", return_value=[]),
+        patch("kiro_crew.agent.shutil.which", side_effect=lambda c, **kw: c),
+        patch("kiro_crew.agent._mc_config_path", return_value=mc_config),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        yield kiro_dir, prompt
+
+
+class TestForkModeRefresh:
+    """`_refresh_dynamic_fields(..., fork=True)` protects a crew's private copy:
+    an inline prompt and the deniedCommands guardrails are the human's, so they
+    are left alone; a still-machine-shaped `file://` prompt is refreshed."""
+
+    def test_inline_prompt_preserved_in_fork_mode(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        config = {"prompt": "You are a bespoke reviewer.", "mcpServers": {}}
+        with _fork_env(tmp_path):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=True)
+
+        assert config["prompt"] == "You are a bespoke reviewer."
+
+    def test_file_uri_prompt_refreshed_in_fork_mode(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        config = {"prompt": "file:///stale/old/prompt.md", "mcpServers": {}}
+        with _fork_env(tmp_path) as (_kiro, prompt):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=True)
+
+        assert config["prompt"] == f"file://{prompt}"
+
+    def test_prompt_always_overwritten_when_not_fork(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        config = {"prompt": "human words that would be clobbered", "mcpServers": {}}
+        with _fork_env(tmp_path) as (_kiro, prompt):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=False)
+
+        assert config["prompt"] == f"file://{prompt}"
+
+    def test_denied_commands_kept_in_fork_mode(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        config = {
+            "prompt": "inline",
+            "mcpServers": {},
+            "toolsSettings": {"execute_bash": {"deniedCommands": ["curl"]}},
+        }
+        with _fork_env(tmp_path):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=True)
+
+        assert config["toolsSettings"]["execute_bash"]["deniedCommands"] == ["curl"]
+
+    def test_denied_commands_stripped_when_not_fork(self, tmp_path: Path):
+        """Control: on a non-fork refresh the legacy guardrails ARE stripped."""
+        import kiro_crew.agent as agent_mod
+
+        config = {
+            "prompt": "inline",
+            "mcpServers": {},
+            "toolsSettings": {"execute_bash": {"deniedCommands": ["curl"]}},
+        }
+        with _fork_env(tmp_path):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=False)
+
+        assert "toolsSettings" not in config
+
+
+class TestRefreshForkedTemplates:
+    """`_refresh_forked_templates` refreshes only forks whose forked_from CHAIN
+    reaches an owned template (kirocrew*) AND whose `private_to` crew is really
+    bound to them in config.json — the sidecar is agent-writable, so lineage
+    alone must never drive a write to a spec file."""
+
+    @staticmethod
+    def _seed_binding(*bindings: tuple[str, str]) -> None:
+        """Persist config.json with each (crew, kiro_agent) binding."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agents = {crew: KiroCrewAgentConfig(kiro_agent=agent) for crew, agent in bindings}
+        cfg.save()
+
+    def _write_fork(self, kiro_dir: Path, name: str, **extra) -> Path:
+        spec = {"name": name, "prompt": "file:///stale/prompt.md", "mcpServers": {}}
+        spec.update(extra)
+        path = kiro_dir / f"{name}.json"
+        path.write_text(json.dumps(spec), encoding="utf-8")
+        return path
+
+    def test_kirocrew_origin_fork_is_refreshed(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            path = self._write_fork(kiro_dir, "my-crew", hooks={"old": "hook"})
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        assert result["prompt"] == f"file://{prompt}"
+        assert result["hooks"] == {"preToolUse": "audit"}
+        # Managed MCP servers seeded from defaults.
+        assert "kirocrew-cron" in result["mcpServers"]
+        assert "kirocrew-core" in result["mcpServers"]
+
+    def test_custom_origin_fork_is_left_untouched(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            path = self._write_fork(kiro_dir, "cust-crew", hooks={"old": "hook"})
+            agent_state.set_fork_info(
+                "cust-crew", forked_from="user-template", private_to="cust-crew"
+            )
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        # A fork of a non-owned template inherits no machine plumbing.
+        assert result["prompt"] == "file:///stale/prompt.md"
+        assert result["hooks"] == {"old": "hook"}
+        assert result["mcpServers"] == {}
+
+    def test_fork_of_fork_chain_reaching_owned_is_refreshed(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            self._write_fork(kiro_dir, "mid")
+            leaf = self._write_fork(kiro_dir, "leaf")
+            agent_state.set_fork_info("mid", forked_from="kirocrew", private_to="c1")
+            agent_state.set_fork_info("leaf", forked_from="mid", private_to="c2")
+            self._seed_binding(("c1", "mid"), ("c2", "leaf"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        # The leaf's chain (leaf -> mid -> kirocrew) reaches an owned root.
+        assert json.loads(leaf.read_text(encoding="utf-8"))["prompt"] == f"file://{prompt}"
+
+    def test_forged_lineage_without_binding_never_writes(self, tmp_path: Path):
+        """A sidecar entry whose crew is NOT bound to the spec drives no write:
+        the agent-writable sidecar alone must not rewrite an arbitrary spec."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            victim = self._write_fork(kiro_dir, "custom-spec")
+            agent_state.set_fork_info("custom-spec", forked_from="kirocrew", private_to="crewA")
+            # crewA exists but is bound elsewhere — the lineage is forged.
+            self._seed_binding(("crewA", "some-other-agent"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        assert json.loads(victim.read_text(encoding="utf-8"))["prompt"] == "file:///stale/prompt.md"
+
+    def test_cycle_in_chain_does_not_hang_and_skips(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            a = self._write_fork(kiro_dir, "a")
+            b = self._write_fork(kiro_dir, "b")
+            # a -> b -> a: never reaches an owned root; must terminate, not loop.
+            agent_state.set_fork_info("a", forked_from="b", private_to="ca")
+            agent_state.set_fork_info("b", forked_from="a", private_to="cb")
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        # Neither is refreshed (no owned root); both left as written.
+        assert json.loads(a.read_text(encoding="utf-8"))["prompt"] == "file:///stale/prompt.md"
+        assert json.loads(b.read_text(encoding="utf-8"))["prompt"] == "file:///stale/prompt.md"
+
+    def test_refresh_runs_governance_passes_before_write(self, tmp_path: Path, monkeypatch):
+        """The fork-refresh writer must filter allowedTools through the ceiling
+        and strip ungoverned autoApprove — the two paths that never reach the
+        PreToolUse gate. A fork carrying grants the ceiling later tightened
+        against must not persist them verbatim (security-class regression)."""
+        import kiro_crew.agent as agent_mod
+
+        ceiling_calls: list[str] = []
+
+        def fake_ceiling(config: dict, *, source: str) -> None:
+            ceiling_calls.append(source)
+            config["allowedTools"] = ["kept-by-ceiling"]
+
+        def fake_strip(servers: dict) -> dict:
+            return {"stripped": {"command": "x"}}
+
+        monkeypatch.setattr(agent_mod, "_apply_allowed_tools_ceiling", fake_ceiling)
+        monkeypatch.setattr(agent_mod, "_strip_ungoverned_auto_approve", fake_strip)
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            path = self._write_fork(kiro_dir, "my-crew", allowedTools=["stale-grant"])
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        assert ceiling_calls == ["fork-refresh:my-crew"]
+        assert result["allowedTools"] == ["kept-by-ceiling"]
+        assert result["mcpServers"] == {"stripped": {"command": "x"}}
+
+
+class TestForkPromptRefreshGuard:
+    """On a fork, only the MANAGED prompt pointer is refreshed: a live custom
+    file:// prompt is user content and must survive, exactly like an inline
+    prompt (GPT round-8 security-class finding)."""
+
+    def test_custom_live_file_prompt_preserved_on_fork(self, tmp_path):
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        custom = tmp_path / "my-prompt.md"
+        custom.write_text("custom", encoding="utf-8")
+        config = {"prompt": f"file://{custom}"}
+        _refresh_dynamic_fields(config, fork=True)
+        assert config["prompt"] == f"file://{custom}"
+
+    def test_dangling_file_prompt_repaired_on_fork(self, tmp_path):
+        from kiro_crew.agent import _prompt_path, _refresh_dynamic_fields
+
+        # A pointer whose file no longer exists is stale by definition —
+        # the moved-data-home case this refresh exists to repair.
+        config = {"prompt": f"file://{tmp_path / 'gone' / 'prompt.md'}"}
+        _refresh_dynamic_fields(config, fork=True)
+        assert config["prompt"] == f"file://{_prompt_path()}"
+
+    def test_managed_pointer_still_refreshed_and_inline_preserved_on_fork(self):
+        from kiro_crew.agent import _prompt_path, _refresh_dynamic_fields
+
+        managed = {"prompt": f"file://{_prompt_path()}"}
+        _refresh_dynamic_fields(managed, fork=True)
+        assert managed["prompt"] == f"file://{_prompt_path()}"
+
+        inline = {"prompt": "You are a helpful crew."}
+        _refresh_dynamic_fields(inline, fork=True)
+        assert inline["prompt"] == "You are a helpful crew."

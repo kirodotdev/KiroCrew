@@ -169,3 +169,41 @@ class TestAgentSyncFsCheckIsOffloaded:
         src = inspect.getsource(agents._do_agents_sync)
         assert "await asyncio.to_thread(" in src
         assert "_namespaced_agent_file_exists(_dn)" in src, "the FS check must run off-loop"
+
+
+class TestAgentSyncSkipsForks:
+    """An orphaned fork (private_to set, owner crew gone) must NOT resurrect as a
+    ghost agent. Normally the owner's binding puts the fork in mc_kiro_agents so
+    the add branch never sees it; the guard fires only for the orphaned copy."""
+
+    def _fork_agent(self, name: str, private_to: str) -> AgentInfo:
+        return AgentInfo(
+            name=name,
+            filename=f"{name}.json",
+            description="orphaned crew copy",
+            model="auto",
+            source="builtin",
+            private_to=private_to,
+        )
+
+    @pytest.mark.asyncio
+    async def test_orphaned_fork_is_not_auto_created(self):
+        cfg = _make_config({})
+        aim_list = [self._fork_agent("ex-crew-copy", private_to="ex-crew")]
+
+        body = await _run_sync(cfg, aim_list)
+
+        assert "ex-crew-copy" not in body["synced"]
+        assert "ex-crew-copy" not in cfg.agents
+        cfg.save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_same_agent_without_private_to_would_be_created(self):
+        """Control: the ONLY thing keeping the fork out is private_to."""
+        cfg = _make_config({})
+        twin = self._fork_agent("would-be-agent", private_to="")
+
+        body = await _run_sync(cfg, [twin])
+
+        assert body["synced"] == ["would-be-agent"]
+        assert "would-be-agent" in cfg.agents

@@ -7,6 +7,7 @@ import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import type { SubagentInfo } from '../types'
 import Clickable from '../components/Clickable'
 import { SourceBadge, PageHeader, EmptyState, Btn, Input, SearchInput, Card, CardTitle, Badge } from '../components/ui'
+import { templateSourceLabel, templateSourceBadge } from '../lib/templateSource'
 import ModelDropdownList from '../components/ModelDropdownList'
 import AgentSkillsEditor from '../components/AgentSkillsEditor'
 import SimpleSelect from '../components/SimpleSelect'
@@ -117,6 +118,9 @@ interface InstalledAgent {
   mcp_servers: string[]
   package?: string
   filename?: string
+  /** Display-only: the file is one Kiro Crew maintains itself. Outranks a
+   *  package-shaped filename when labelling where the template came from. */
+  kirocrew_owned?: boolean
 }
 
 /**
@@ -799,7 +803,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                   <div className="flex items-center gap-2 flex-wrap">
                     {isMobile && <ListDetailBack label={i18nT('pages.agentsPage.installed_agents')} onBack={closeDetail} />}
                     <span className="text-[15px] font-mono font-bold text-text-strong">{selectedAgent.name}</span>
-                    {listed?.source && <SourceBadge source={listed.source} />}
+                    {listed?.source && <SourceBadge source={listed.source} tone="neutral">{templateSourceBadge(listed)}</SourceBadge>}
                     {defaultAgent === selectedAgent.name && (
                       <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent-subtle px-2 py-[1.5px] text-[11px] text-accent">
                         <Star className="lucide-inline" aria-hidden="true" />{i18nT('pages.agentsPage.default')}
@@ -906,7 +910,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
 
                     <Section title={i18nT('pages.agentsPage.where_it_comes_from')}>
                       <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
-                        <Kv label={i18nT('pages.agentsPage.source')} value={listed?.source || '—'} />
+                        <Kv label={i18nT('pages.agentsPage.source')} value={templateSourceLabel(listed) || '—'} />
                         {listed?.package && <Kv label={i18nT('pages.agentsPage.package')} value={listed.package} />}
                         {listed?.filename && <Kv label={i18nT('pages.agentsPage.config_file')} value={listed.filename} />}
                       </div>

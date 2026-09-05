@@ -31,6 +31,7 @@ const INSTALLED = [
     skills: ['prepare-pr', 'babysit', 'llm-council'],
     mcp_servers: ['kirocrew-core', 'playwright'],
     filename: 'kirocrew.json',
+    kirocrew_owned: true,
   },
   {
     name: 'kirocrew-lite',
@@ -40,24 +41,27 @@ const INSTALLED = [
     skills: ['babysit'],
     mcp_servers: [],
     filename: 'kirocrew-lite.json',
+    kirocrew_owned: true,
   },
   {
     name: 'reviewer',
     description: 'Reads a diff and answers with findings only.',
-    source: 'user',
+    source: 'builtin',
     model: 'claude-sonnet-4.6',
     skills: ['adversarial-review'],
     mcp_servers: [],
     filename: 'reviewer.json',
+    kirocrew_owned: false,
   },
   {
     name: 'scratch',
     description: 'A copy to experiment on. No crew points at it, so it can be deleted.',
-    source: 'user',
+    source: 'builtin',
     model: '',
     skills: [],
     mcp_servers: [],
     filename: 'scratch.json',
+    kirocrew_owned: false,
   },
   {
     name: 'oncall-triage',
@@ -68,6 +72,7 @@ const INSTALLED = [
     mcp_servers: ['builder-mcp'],
     package: 'oncall-radar',
     filename: 'local-oncall-radar.json',
+    kirocrew_owned: false,
   },
 ]
 

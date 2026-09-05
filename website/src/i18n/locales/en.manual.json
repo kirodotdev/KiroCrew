@@ -2715,6 +2715,43 @@
       "copy_failed_select_the_link_and_copy_it_manually": "Copy failed — select the link and copy it manually.",
       "could_not_create_a_link_try_again": "Could not create a link — try again.",
       "phone_connection_is_disabled_by_policy_on_this_dep": "Phone connection is disabled by policy on this deployment."
+    },
+    "agentTemplateDetail": {
+      "template_prefix": "Template",
+      "customized": "Customized",
+      "changes_count_one": "{{count}} change",
+      "changes_count_other": "{{count}} changes",
+      "change_was": "was: {{value}}",
+      "change_not_set": "not set",
+      "reset_my_changes": "Reset my changes",
+      "reset_confirm_title": "Reset this agent to “{{name}}”?",
+      "reset_confirm_body": "Your changes — “{{fields}}” — will be discarded. This agent will use the “{{name}}” template as-is.",
+      "discard_my_changes": "Discard my changes",
+      "save_as_new_template": "Save as new template…",
+      "publish_title": "Save as a new template",
+      "publish_hint": "Publishes this agent's definition as a template other agents can start from. The name becomes the template's permanent identity.",
+      "publish_name_label": "Template name",
+      "publish_name_rule": "Use letters, digits, dots, dashes or underscores (up to 63 characters).",
+      "publish_action": "Save template",
+      "switch_confirm_title": "Switch to “{{name}}”?",
+      "switch_confirm_body": "Your changes to “{{origin}}” (“{{fields}}”) will be discarded. This agent will use the “{{name}}” template as-is.",
+      "discard_and_switch": "Discard changes and switch",
+      "based_on_hint": "Based on the {{name}} template — your edits apply to this agent only and are saved as you go.",
+      "edits_make_own_copy": "Changes here give this agent its own copy of the template — saved as you go; the original and other agents are not affected.",
+      "config_file_info": "Stored as {{filename}} in the shared agents folder.",
+      "used_by_count": "used by {{count}} agents",
+      "used_by_this_agent_only": "used by this agent only",
+      "no_model_pinned": "No model pinned — account default",
+      "model_hint": "Pinned in the template. Saved immediately; this agent can override it under Model.",
+      "auto_approved_hint": "Runs without asking you first.",
+      "prompt_lives_in_a_file": "These instructions live in a file, not in the template record.",
+      "prompt_truncated": "Showing the first {{count}} characters — open the file to read the rest.",
+      "show_more": "+ {{count}} more",
+      "show_fewer": "Show fewer",
+      "loading": "Loading the template…",
+      "could_not_load": "Could not load this template's configuration.",
+      "guardrails_hint": "Commands that are never allowed to run.",
+      "save_failed": "That change didn’t save — try again."
     }
   },
   "hooks": {
@@ -5734,6 +5771,11 @@
       "stream_error_max_duration": "Dictation reached its length limit. Start a new recording to continue.",
       "stream_error_model_missing": "The speech model is not ready yet. Download it in the speech-to-text settings, then try again.",
       "stream_error_session_failed": "The dictation session failed. Try recording again."
+    },
+    "templateSource": {
+      "built_in": "Built-in",
+      "package": "Package",
+      "custom": "Custom"
     }
   },
   "autoImprovement": {

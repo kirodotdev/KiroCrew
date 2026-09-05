@@ -7925,6 +7925,44 @@
       "confirm_discard": "Abandonner le dessin",
       "already_attached": "Joint — modifiez le canevas pour dessiner à nouveau",
       "load_failed": "Impossible de charger le bloc de croquis — vérifiez votre connexion et rouvrez-le"
+    },
+    "agentTemplateDetail": {
+      "template_prefix": "Modèle",
+      "customized": "Personnalisé",
+      "changes_count_one": "{{count}} modification",
+      "changes_count_many": "{{count}} modifications",
+      "changes_count_other": "{{count}} modifications",
+      "change_was": "avant : {{value}}",
+      "change_not_set": "non défini",
+      "reset_my_changes": "Réinitialiser mes modifications",
+      "reset_confirm_title": "Réinitialiser cet agent sur « {{name}} » ?",
+      "reset_confirm_body": "Tes modifications — « {{fields}} » — seront abandonnées. Cet agent utilisera le modèle « {{name}} » tel quel.",
+      "discard_my_changes": "Abandonner mes modifications",
+      "save_as_new_template": "Enregistrer comme nouveau modèle…",
+      "publish_title": "Enregistrer comme un nouveau modèle",
+      "publish_hint": "Publie la définition de cet agent comme un modèle dont d’autres agents peuvent partir. Le nom devient l’identité permanente du modèle.",
+      "publish_name_label": "Nom du modèle",
+      "publish_name_rule": "Utilise des lettres, des chiffres, des points, des tirets ou des traits de soulignement (jusqu’à 63 caractères).",
+      "publish_action": "Enregistrer le modèle",
+      "switch_confirm_title": "Passer à « {{name}} » ?",
+      "switch_confirm_body": "Tes modifications sur « {{origin}} » (« {{fields}} ») seront abandonnées. Cet agent utilisera le modèle « {{name}} » tel quel.",
+      "discard_and_switch": "Abandonner les modifications et changer",
+      "based_on_hint": "Basé sur le modèle {{name}} — vos modifications ne s'appliquent qu'à cet agent et sont enregistrées au fur et à mesure.",
+      "edits_make_own_copy": "Les modifications ici donnent à cet agent sa propre copie du modèle — enregistrées au fur et à mesure ; l'original et les autres agents ne sont pas affectés.",
+      "config_file_info": "Enregistré sous {{filename}} dans le dossier partagé des agents.",
+      "used_by_count": "utilisé par {{count}} agents",
+      "used_by_this_agent_only": "utilisé par cet agent seulement",
+      "no_model_pinned": "Aucun modèle fixé — celui du compte",
+      "model_hint": "Fixé dans le modèle. Enregistré immédiatement ; cet agent peut le remplacer dans Modèle.",
+      "auto_approved_hint": "S’exécute sans te demander.",
+      "prompt_lives_in_a_file": "Ces instructions sont dans un fichier, pas dans le modèle.",
+      "prompt_truncated": "Affiche les {{count}} premiers caractères — ouvre le fichier pour lire la suite.",
+      "show_more": "+ {{count}} de plus",
+      "show_fewer": "Afficher moins",
+      "loading": "Chargement du modèle…",
+      "could_not_load": "Impossible de charger la configuration de ce modèle.",
+      "guardrails_hint": "Commandes qui ne peuvent jamais être exécutées.",
+      "save_failed": "Cette modification n'a pas été enregistrée — réessayez."
     }
   },
   "hooks": {
@@ -8071,6 +8109,11 @@
       "stream_error_max_duration": "La dictée a atteint sa durée maximale. Lance un nouvel enregistrement pour continuer.",
       "stream_error_model_missing": "Le modèle vocal n'est pas encore prêt. Télécharge-le dans les paramètres de reconnaissance vocale, puis réessaie.",
       "stream_error_session_failed": "La session de dictée a échoué. Réessaie d'enregistrer."
+    },
+    "templateSource": {
+      "built_in": "Intégré",
+      "package": "Package",
+      "custom": "Personnalisé"
     }
   },
   "nav": {

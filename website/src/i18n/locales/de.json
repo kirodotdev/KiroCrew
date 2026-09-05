@@ -7819,6 +7819,43 @@
       "confirm_discard": "Zeichnung verwerfen",
       "already_attached": "Angehängt — Canvas bearbeiten, um erneut zu skizzieren",
       "load_failed": "Skizzenblock konnte nicht geladen werden – Verbindung prüfen und erneut öffnen"
+    },
+    "agentTemplateDetail": {
+      "template_prefix": "Vorlage",
+      "customized": "Angepasst",
+      "changes_count_one": "{{count}} Änderung",
+      "changes_count_other": "{{count}} Änderungen",
+      "change_was": "vorher: {{value}}",
+      "change_not_set": "nicht festgelegt",
+      "reset_my_changes": "Meine Änderungen zurücksetzen",
+      "reset_confirm_title": "Diesen Agenten auf „{{name}}“ zurücksetzen?",
+      "reset_confirm_body": "Deine Änderungen — „{{fields}}“ — werden verworfen. Dieser Agent verwendet die Vorlage „{{name}}“ unverändert.",
+      "discard_my_changes": "Meine Änderungen verwerfen",
+      "save_as_new_template": "Als neue Vorlage speichern…",
+      "publish_title": "Als neue Vorlage speichern",
+      "publish_hint": "Veröffentlicht die Definition dieses Agenten als Vorlage, von der andere Agenten ausgehen können. Der Name wird zur dauerhaften Identität der Vorlage.",
+      "publish_name_label": "Vorlagenname",
+      "publish_name_rule": "Verwende Buchstaben, Ziffern, Punkte, Bindestriche oder Unterstriche (bis zu 63 Zeichen).",
+      "publish_action": "Vorlage speichern",
+      "switch_confirm_title": "Zu „{{name}}“ wechseln?",
+      "switch_confirm_body": "Deine Änderungen an „{{origin}}“ („{{fields}}“) werden verworfen. Dieser Agent verwendet die Vorlage „{{name}}“ unverändert.",
+      "discard_and_switch": "Änderungen verwerfen und wechseln",
+      "based_on_hint": "Basiert auf der Vorlage {{name}} — deine Änderungen gelten nur für diesen Agenten und werden sofort gespeichert.",
+      "edits_make_own_copy": "Änderungen hier geben diesem Agenten eine eigene Kopie der Vorlage — sofort gespeichert; das Original und andere Agenten bleiben unberührt.",
+      "config_file_info": "Gespeichert als {{filename}} im gemeinsamen Agenten-Ordner.",
+      "used_by_count": "von {{count}} Agenten verwendet",
+      "used_by_this_agent_only": "nur von diesem Agenten verwendet",
+      "no_model_pinned": "Kein Modell festgelegt — Konto-Standard",
+      "model_hint": "In der Vorlage festgelegt. Wird sofort gespeichert; dieser Agent kann es unter Modell überschreiben.",
+      "auto_approved_hint": "Läuft ohne vorherige Rückfrage.",
+      "prompt_lives_in_a_file": "Diese Anweisungen liegen in einer Datei, nicht in der Vorlage selbst.",
+      "prompt_truncated": "Zeigt die ersten {{count}} Zeichen — öffne die Datei für den Rest.",
+      "show_more": "+ {{count}} weitere",
+      "show_fewer": "Weniger anzeigen",
+      "loading": "Vorlage wird geladen…",
+      "could_not_load": "Die Konfiguration dieser Vorlage konnte nicht geladen werden.",
+      "guardrails_hint": "Befehle, die niemals ausgeführt werden dürfen.",
+      "save_failed": "Diese Änderung wurde nicht gespeichert — bitte erneut versuchen."
     }
   },
   "hooks": {
@@ -7965,6 +8002,11 @@
       "stream_error_max_duration": "Das Diktat hat seine Längenbegrenzung erreicht. Starte eine neue Aufnahme, um weiterzumachen.",
       "stream_error_model_missing": "Das Sprachmodell ist noch nicht bereit. Lade es in den Spracherkennungseinstellungen herunter und versuche es dann noch einmal.",
       "stream_error_session_failed": "Die Diktiersitzung ist fehlgeschlagen. Nimm es noch einmal auf."
+    },
+    "templateSource": {
+      "built_in": "Integriert",
+      "package": "Paket",
+      "custom": "Benutzerdefiniert"
     }
   },
   "nav": {

@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import requires_symlinks
+from kiro_crew import agent_state
 from kiro_crew.agent_discovery import (
     SCOPE_GLOBAL,
     SCOPE_PROJECT,
@@ -524,9 +525,13 @@ class TestSpecModelCoercion:
         assert info.model == "auto"
         assert info.source == "builtin"
         assert info.package == ""
-        # to_dict() is the wire shape the dashboard renders.
+        # to_dict() is the wire shape the dashboard renders. Non-string fields
+        # are excluded by NAME, not skipped silently: the lists render as chips
+        # (one element each) and `kirocrew_owned` is the bool provenance flag —
+        # everything else must be a plain string or React error #31 returns.
         assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers"))
+                   ("skills", "mcp_servers", "kirocrew_owned"))
+        assert isinstance(info.to_dict()["kirocrew_owned"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
         """`skills` / `mcp_servers` are rendered as chips, one element each.
@@ -968,3 +973,35 @@ class TestSystematicScanFailureWarning:
         warnings = _discovery_warnings(caplog)
         assert len(warnings) == 1
         assert warnings[0].args[0] == 1
+
+
+class TestForkLineageEnrichment:
+    """list_agents stamps forked_from/private_to onto global-scope rows from the
+    agent_state sidecar (global scope only — forks are recorded against
+    user-level templates). The sidecar lives under the isolated KIROCREW_HOME."""
+
+    def test_forked_row_is_enriched(self, tmp_path):
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "design-crew.json").write_text(json.dumps({"name": "design-crew"}))
+        (d / "plain.json").write_text(json.dumps({"name": "plain"}))
+        agent_state.set_fork_info("design-crew", forked_from="kirocrew", private_to="design-crew")
+
+        clear_list_agents_cache()
+        by_name = {a.name: a for a in list_agents(agents_dir=d)}
+
+        assert by_name["design-crew"].forked_from == "kirocrew"
+        assert by_name["design-crew"].private_to == "design-crew"
+        # An un-forked sibling keeps the empty defaults.
+        assert by_name["plain"].forked_from == ""
+        assert by_name["plain"].private_to == ""
+
+    def test_unforked_rows_have_empty_lineage_when_no_sidecar(self, tmp_path):
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "solo.json").write_text(json.dumps({"name": "solo"}))
+
+        clear_list_agents_cache()
+        (agent,) = list_agents(agents_dir=d)
+        assert agent.forked_from == ""
+        assert agent.private_to == ""

@@ -184,6 +184,12 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.papyrus.workspace.co_author_conflict_discard_confirm', // #4676
   'apps.papyrus.workspace.delete_file_confirm', // quoted by #4677
   'autoImprovement.commitConfirm', // bare {{branch}} #4821
+  // Template-pane confirms interpolate template names AND the changed-field
+  // list; both are user-facing prose, so all operands carry the glyph pair.
+  'components.agentTemplateDetail.reset_confirm_body',
+  'components.agentTemplateDetail.reset_confirm_title',
+  'components.agentTemplateDetail.switch_confirm_body',
+  'components.agentTemplateDetail.switch_confirm_title',
   // The code-execution grant's title AND body. #5725 quoted only the title, which left
   // the scope sentence one line under it reading as prose about every app (#6016).
   'components.appstore.trustAppModal.failed', // bare {{app}} #6016

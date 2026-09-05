@@ -7,13 +7,17 @@ the default agent (``--agent <name>`` resolves to default with only a stderr
 per-agent bookkeeping OUT of the kiro spec and in this sidecar, so every spec
 stays schema-valid for kiro-cli.
 
-Two values are tracked, both kept in this sidecar rather than the kiro spec:
+Two values are tracked per agent, plus fork lineage, all kept in this sidecar
+rather than the kiro spec:
 
 - ``model_managed`` (bool): whether an agent's ``model`` should track the
   shipped ``defaults.json`` (so a default bump propagates) or is an explicit
   user pick frozen against future bumps.
 - ``cc_model`` (str): a per-agent model for the ``claude_code`` provider (that
   backend can't pick a per-agent model from ``--agent`` the way kiro-cli does).
+- ``forked_from`` / ``private_to`` (str): recorded on a template that is one
+  crew's private copy of another template (blueprint semantics — editing a
+  crew's definition forks a copy instead of mutating the shared file).
 
 State file (``~/.kiro/crew/agent_model_state.json``, honoring ``KIROCREW_HOME``)::
 
@@ -29,11 +33,13 @@ This is a near-leaf module: it imports only the stdlib plus the leaf
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import threading
 from pathlib import Path
-from typing import MutableMapping
+from typing import Iterator, MutableMapping
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
@@ -43,10 +49,42 @@ logger = logging.getLogger(__name__)
 _STATE_FILENAME = "agent_model_state.json"
 _MODEL_MANAGED = "model_managed"
 _CC_MODEL = "cc_model"
+# Fork lineage: a private copy created so a crew's definition edits stop
+# landing on the shared template ("blueprint" semantics, copy-on-first-edit).
+_FORKED_FROM = "forked_from"
+_PRIVATE_TO = "private_to"
 
 # Guards in-process read-modify-write races (e.g. dashboard PATCH vs gateway
-# refresh). Cross-process atomicity is provided by ``atomic_write``.
+# refresh). ``atomic_write`` makes each WRITE atomic, but two processes can
+# still interleave read-modify-write and the later stale snapshot wins —
+# ``_locked()`` below adds the cross-process half.
 _lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def _locked() -> Iterator[None]:
+    """Hold the in-process lock AND a cross-process advisory file lock.
+
+    A dashboard fork (gateway process) racing a CLI model-state write is two
+    processes doing read-modify-write on the same file; without this, the
+    later whole-file replacement silently erases the other's entry (e.g. fork
+    lineage — the private copy then surfaces as shared). Sidecar lockfile, not
+    the state file's own fd, because ``atomic_write`` replaces the inode.
+    """
+    with _lock:
+        # Lazy: platform_compat pulls in executors, and this module's
+        # near-leaf import contract is what keeps it out of the
+        # agent <-> config.loader cycle.
+        from kiro_crew.platform_compat import file_lock
+
+        lock_path = _state_path().with_suffix(".json.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            with file_lock(fd, exclusive=True, wait=True):
+                yield
+        finally:
+            os.close(fd)
 
 
 def _state_path() -> Path:
@@ -79,7 +117,7 @@ def get_model_managed(name: str) -> bool | None:
 
 
 def set_model_managed(name: str, value: bool) -> None:
-    with _lock:
+    with _locked():
         data = _read()
         entry = data.get(name)
         if not isinstance(entry, dict):
@@ -98,7 +136,7 @@ def get_cc_model(name: str) -> str | None:
 
 def set_cc_model(name: str, value: str | None) -> None:
     """Set (or clear, when ``value`` is falsy) the agent's claude_code model."""
-    with _lock:
+    with _locked():
         data = _read()
         entry = data.get(name)
         if not isinstance(entry, dict):
@@ -114,9 +152,57 @@ def set_cc_model(name: str, value: str | None) -> None:
         _write(data)
 
 
+def get_fork_info(name: str) -> dict | None:
+    """Return ``{"forked_from": str, "private_to": str}`` for a forked copy, else None.
+
+    A template spec cannot carry this itself (kiro-cli rejects unknown fields),
+    so lineage lives here: ``forked_from`` names the template the copy was made
+    from, ``private_to`` names the ONE crew whose edits land on this copy.
+    """
+    with _lock:
+        entry = _entry(_read(), name)
+    origin = entry.get(_FORKED_FROM)
+    owner = entry.get(_PRIVATE_TO)
+    if isinstance(origin, str) and origin and isinstance(owner, str) and owner:
+        return {_FORKED_FROM: origin, _PRIVATE_TO: owner}
+    return None
+
+
+def set_fork_info(name: str, forked_from: str, private_to: str) -> None:
+    """Record that template *name* is *private_to*'s copy of *forked_from*."""
+    with _locked():
+        data = _read()
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry[_FORKED_FROM] = str(forked_from)
+        entry[_PRIVATE_TO] = str(private_to)
+        data[name] = entry
+        _write(data)
+
+
+def all_fork_info() -> dict[str, dict]:
+    """Map of template name -> fork info for every recorded fork (one read).
+
+    Bulk form for scans (``list_agents`` enriches every row); per-name callers
+    use :func:`get_fork_info`.
+    """
+    with _lock:
+        data = _read()
+    out: dict[str, dict] = {}
+    for name, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        origin = entry.get(_FORKED_FROM)
+        owner = entry.get(_PRIVATE_TO)
+        if isinstance(origin, str) and origin and isinstance(owner, str) and owner:
+            out[name] = {_FORKED_FROM: origin, _PRIVATE_TO: owner}
+    return out
+
+
 def prune(name: str) -> None:
     """Drop an agent's entry entirely (call when the agent is deleted)."""
-    with _lock:
+    with _locked():
         data = _read()
         if name in data:
             data.pop(name, None)

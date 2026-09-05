@@ -7713,6 +7713,42 @@
       "confirm_discard": "그림 삭제",
       "already_attached": "첨부됨 — 캔버스를 편집하면 다시 스케치할 수 있습니다",
       "load_failed": "스케치 패드를 불러오지 못했습니다. 연결을 확인하고 다시 열어 주세요"
+    },
+    "agentTemplateDetail": {
+      "template_prefix": "템플릿",
+      "customized": "사용자 지정됨",
+      "changes_count_other": "{{count}}개 변경",
+      "change_was": "이전: {{value}}",
+      "change_not_set": "설정 안 됨",
+      "reset_my_changes": "내 변경 사항 초기화",
+      "reset_confirm_title": "이 에이전트를 ‘{{name}}’(으)로 초기화하시겠습니까?",
+      "reset_confirm_body": "변경 사항 — ‘{{fields}}’ — 이(가) 삭제됩니다. 이 에이전트는 ‘{{name}}’ 템플릿을 그대로 사용합니다.",
+      "discard_my_changes": "내 변경 사항 버리기",
+      "save_as_new_template": "새 템플릿으로 저장…",
+      "publish_title": "새 템플릿으로 저장",
+      "publish_hint": "이 에이전트의 정의를 다른 에이전트가 시작점으로 삼을 수 있는 템플릿으로 게시합니다. 이 이름이 템플릿의 영구 식별자가 됩니다.",
+      "publish_name_label": "템플릿 이름",
+      "publish_name_rule": "문자, 숫자, 점, 대시, 밑줄을 사용하세요(최대 63자).",
+      "publish_action": "템플릿 저장",
+      "switch_confirm_title": "‘{{name}}’(으)로 전환할까요?",
+      "switch_confirm_body": "‘{{origin}}’에 대한 변경 사항(‘{{fields}}’)이 삭제됩니다. 이 에이전트는 ‘{{name}}’ 템플릿을 그대로 사용합니다.",
+      "discard_and_switch": "변경 사항 버리고 전환",
+      "based_on_hint": "{{name}} 템플릿 기반 — 편집 내용은 이 에이전트에만 적용되며 즉시 저장됩니다.",
+      "edits_make_own_copy": "여기서 변경하면 이 에이전트가 템플릿의 자체 사본을 갖게 됩니다 — 즉시 저장되며, 원본과 다른 에이전트에는 영향이 없습니다.",
+      "config_file_info": "공유 에이전트 폴더에 {{filename}}(으)로 저장됩니다.",
+      "used_by_count": "{{count}}개 에이전트가 사용",
+      "used_by_this_agent_only": "이 에이전트만 사용",
+      "no_model_pinned": "지정된 모델 없음 — 계정 기본값",
+      "model_hint": "템플릿에 지정되어 있습니다. 바로 저장되며, 이 에이전트는 모델에서 덮어쓸 수 있습니다.",
+      "auto_approved_hint": "묻지 않고 바로 실행됩니다.",
+      "prompt_lives_in_a_file": "이 지침은 템플릿이 아니라 파일에 있습니다.",
+      "prompt_truncated": "앞의 {{count}}자만 보여줍니다 — 나머지는 파일을 열어 확인하세요.",
+      "show_more": "+ {{count}}개 더",
+      "show_fewer": "적게 보기",
+      "loading": "템플릿을 불러오는 중…",
+      "could_not_load": "이 템플릿의 설정을 불러올 수 없습니다.",
+      "guardrails_hint": "실행이 허용되지 않는 명령입니다.",
+      "save_failed": "변경 사항이 저장되지 않았습니다 — 다시 시도하세요."
     }
   },
   "hooks": {
@@ -7859,6 +7895,11 @@
       "stream_error_max_duration": "구술이 길이 제한에 도달했습니다. 계속하려면 새로 녹음하세요.",
       "stream_error_model_missing": "음성 모델이 아직 준비되지 않았습니다. 음성 텍스트 변환 설정에서 내려받은 후 다시 시도하세요.",
       "stream_error_session_failed": "구술 세션이 실패했습니다. 다시 녹음하세요."
+    },
+    "templateSource": {
+      "built_in": "기본 제공",
+      "package": "패키지",
+      "custom": "사용자 지정"
     }
   },
   "nav": {

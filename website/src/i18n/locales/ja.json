@@ -7713,6 +7713,42 @@
       "confirm_discard": "描画を破棄",
       "already_attached": "添付済み — キャンバスを編集すると再度スケッチできます",
       "load_failed": "スケッチパッドを読み込めませんでした。接続を確認して再度開いてください"
+    },
+    "agentTemplateDetail": {
+      "template_prefix": "テンプレート",
+      "customized": "カスタマイズ済み",
+      "changes_count_other": "{{count}} 件の変更",
+      "change_was": "以前: {{value}}",
+      "change_not_set": "未設定",
+      "reset_my_changes": "自分の変更をリセット",
+      "reset_confirm_title": "このエージェントを 「{{name}}」 にリセットしますか？",
+      "reset_confirm_body": "あなたの変更 — 「{{fields}}」 — は破棄されます。このエージェントは 「{{name}}」 テンプレートをそのまま使います。",
+      "discard_my_changes": "自分の変更を破棄",
+      "save_as_new_template": "新しいテンプレートとして保存…",
+      "publish_title": "新しいテンプレートとして保存",
+      "publish_hint": "このエージェントの定義を、他のエージェントの出発点になるテンプレートとして公開します。この名前がテンプレートの恒久的な識別名になります。",
+      "publish_name_label": "テンプレート名",
+      "publish_name_rule": "文字、数字、ピリオド、ダッシュ、アンダースコアを使えます（最大 63 文字）。",
+      "publish_action": "テンプレートを保存",
+      "switch_confirm_title": "「{{name}}」 に切り替えますか？",
+      "switch_confirm_body": "「{{origin}}」 へのあなたの変更（「{{fields}}」）は破棄されます。このエージェントは 「{{name}}」 テンプレートをそのまま使います。",
+      "discard_and_switch": "変更を破棄して切り替え",
+      "based_on_hint": "{{name}} テンプレートに基づいています — 編集はこのエージェントにのみ適用され、その場で保存されます。",
+      "edits_make_own_copy": "ここでの変更により、このエージェントはテンプレートの独自コピーを持ちます — その場で保存され、元のテンプレートや他のエージェントには影響しません。",
+      "config_file_info": "共有エージェントフォルダーに {{filename}} として保存されます。",
+      "used_by_count": "{{count}} 個のエージェントが使用",
+      "used_by_this_agent_only": "このエージェントだけが使用",
+      "no_model_pinned": "モデル指定なし — アカウントの既定",
+      "model_hint": "テンプレートで指定されています。すぐに保存され、このエージェントはモデルで上書きできます。",
+      "auto_approved_hint": "確認なしで実行されます。",
+      "prompt_lives_in_a_file": "この指示はテンプレート本体ではなくファイルにあります。",
+      "prompt_truncated": "先頭 {{count}} 文字を表示しています — 残りはファイルを開いてください。",
+      "show_more": "他 {{count}} 件",
+      "show_fewer": "表示を減らす",
+      "loading": "テンプレートを読み込み中…",
+      "could_not_load": "このテンプレートの設定を読み込めませんでした。",
+      "guardrails_hint": "実行が許可されていないコマンド。",
+      "save_failed": "変更を保存できませんでした — もう一度お試しください。"
     }
   },
   "hooks": {
@@ -7859,6 +7895,11 @@
       "stream_error_max_duration": "口述が長さの上限に達しました。続けるには新しい録音を開始してください。",
       "stream_error_model_missing": "音声モデルの準備がまだできていません。音声入力の設定でダウンロードしてから、もう一度お試しください。",
       "stream_error_session_failed": "口述セッションが失敗しました。もう一度録音してみてください。"
+    },
+    "templateSource": {
+      "built_in": "組み込み",
+      "package": "パッケージ",
+      "custom": "カスタム"
     }
   },
   "nav": {

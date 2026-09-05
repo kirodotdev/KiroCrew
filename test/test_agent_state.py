@@ -85,3 +85,68 @@ def test_falsy_cc_model_strips_without_lifting(caplog):
     assert "cc_model" not in config
     assert agent_state.get_cc_model("kirocrew") is None
     assert caplog.text == ""
+
+
+# --- Fork lineage sidecar (forked_from / private_to) -------------------------
+#
+# A template spec cannot carry fork lineage (kiro-cli's deny_unknown_fields
+# drops the whole agent on any unknown key), so it lives in the same sidecar as
+# model_managed / cc_model. Both keys must be non-empty strings to count.
+
+
+def test_fork_info_roundtrips():
+    agent_state.set_fork_info("design-crew", forked_from="kirocrew", private_to="design-crew")
+
+    info = agent_state.get_fork_info("design-crew")
+    assert info == {"forked_from": "kirocrew", "private_to": "design-crew"}
+
+
+def test_get_fork_info_none_when_unset():
+    assert agent_state.get_fork_info("never-forked") is None
+
+
+def test_fork_info_survives_alongside_model_bookkeeping():
+    """Fork keys and model keys share one entry and must not clobber each other."""
+    agent_state.set_model_managed("copy", True)
+    agent_state.set_fork_info("copy", forked_from="kirocrew", private_to="a-crew")
+
+    assert agent_state.get_fork_info("copy") == {
+        "forked_from": "kirocrew",
+        "private_to": "a-crew",
+    }
+    assert agent_state.get_model_managed("copy") is True
+
+
+def test_get_fork_info_ignores_empty_strings():
+    """An entry with a blank forked_from or private_to is not a real fork."""
+    agent_state.set_fork_info("blank", forked_from="", private_to="crew")
+    assert agent_state.get_fork_info("blank") is None
+
+    agent_state.set_fork_info("blank2", forked_from="kirocrew", private_to="")
+    assert agent_state.get_fork_info("blank2") is None
+
+
+def test_get_fork_info_ignores_non_string_values():
+    """A non-string forked_from/private_to (e.g. hand-edited JSON) is not a fork.
+
+    Written straight to the sidecar so the type guard is exercised without
+    set_fork_info's str() coercion masking it.
+    """
+    from kiro_crew import agent_state as _st
+
+    _st._write({"weird": {_st._FORKED_FROM: 123, _st._PRIVATE_TO: ["c"]}})
+    assert agent_state.get_fork_info("weird") is None
+    assert "weird" not in agent_state.all_fork_info()
+
+
+def test_all_fork_info_returns_only_valid_entries():
+    agent_state.set_fork_info("f1", forked_from="kirocrew", private_to="c1")
+    agent_state.set_fork_info("f2", forked_from="kirocrew-lite", private_to="c2")
+    # A model-only entry carries no fork keys and must not appear.
+    agent_state.set_model_managed("plain", False)
+
+    allf = agent_state.all_fork_info()
+    assert allf == {
+        "f1": {"forked_from": "kirocrew", "private_to": "c1"},
+        "f2": {"forked_from": "kirocrew-lite", "private_to": "c2"},
+    }

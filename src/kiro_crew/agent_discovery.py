@@ -20,7 +20,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
+from kiro_crew import agent_state
+from kiro_crew.agent_files import (
+    AGENT_FILENAME,
+    LITE_AGENT_FILENAME,
+    OWNED_KIRO_AGENT_FILES,
+)
 from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
@@ -87,6 +92,16 @@ class AgentInfo:
     source: str = "builtin"  # "kirocrew" | "package" | "builtin"
     package: str = ""  # AIM package name (e.g. "Customer360GenAIContext")
     scope: str = SCOPE_GLOBAL  # "global" | "project"
+    # Display-only provenance, deliberately NOT folded into ``source``: that field
+    # also gates agent auto-creation and delete-blocking, so widening it to cover
+    # the helper specs would silently change both.
+    kirocrew_owned: bool = False
+    # Fork lineage from the agent_state sidecar: set when this template is one
+    # crew's private copy of another (blueprint semantics). ``private_to`` also
+    # gates the sync loop's agent auto-creation — a private copy is not a
+    # standalone template deserving its own agent.
+    forked_from: str = ""
+    private_to: str = ""
 
     def __post_init__(self) -> None:
         """Make the annotations above TRUE, at every construction site.
@@ -121,6 +136,8 @@ class AgentInfo:
             ("source", "builtin"),
             ("package", ""),
             ("scope", SCOPE_GLOBAL),
+            ("forked_from", ""),
+            ("private_to", ""),
         ):
             if not isinstance(getattr(self, name), str):
                 setattr(self, name, fallback)
@@ -129,6 +146,9 @@ class AgentInfo:
         # so a spec with one bad entry keeps the rest.
         self.skills = [s for s in self.skills if isinstance(s, str)]
         self.mcp_servers = [s for s in self.mcp_servers if isinstance(s, str)]
+        # The out-of-tree edition seam passes this through from a raw row, and a
+        # truthy non-bool would render as a provenance claim nothing verified.
+        self.kirocrew_owned = self.kirocrew_owned is True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -820,6 +840,7 @@ def _with_edition_agents(disk_agents: list[AgentInfo]) -> list[AgentInfo]:
                 mcp_servers=list(row.get("mcp_servers") or []),
                 source=row.get("source", "builtin"),
                 package=row.get("package", ""),
+                kirocrew_owned=row.get("kirocrew_owned", False),
             )
         except Exception:
             logger.debug("Skipping malformed edition agent row: %r", row)
@@ -864,6 +885,7 @@ def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
         source=source,
         package=package,
         scope=SCOPE_GLOBAL,
+        kirocrew_owned=f.name in OWNED_KIRO_AGENT_FILES,
     )
 
 
@@ -884,6 +906,7 @@ def _project_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
         source="builtin",
         package="",
         scope=SCOPE_PROJECT,
+        kirocrew_owned=False,
     )
 
 
@@ -955,6 +978,15 @@ def list_agents(
                 logger.debug("Skipping invalid agent config: %s", f)
                 continue
         _warn_on_systematic_scan_failure(d, user_candidates, user_parsed)
+        # One sidecar read for the whole scan, not one per row. Global scope
+        # only: forks are made from (and recorded against) user-level templates.
+        forks = agent_state.all_fork_info()
+        if forks:
+            for a in agents:
+                fork_info = forks.get(a.name)
+                if fork_info:
+                    a.forked_from = fork_info["forked_from"]
+                    a.private_to = fork_info["private_to"]
 
     # Deduplicate by name — prefer package-installed (has package) over fallback
     seen: dict[str, AgentInfo] = {}
