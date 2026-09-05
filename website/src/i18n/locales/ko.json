@@ -4075,7 +4075,6 @@
         "create_one_above_or_clone_an_existing_repository": "위에서 하나를 만들거나 기존 저장소를 클론하세요.",
         "delete_paper": "{{name}} 삭제",
         "delete_paper_confirm": "‘{{name}}’와(과) 모든 파일을 삭제하시겠습니까? 되돌릴 수 없습니다.",
-        "dismiss_error": "닫기",
         "downloading_compiler_progress": "다운로드 중… {{total}} 중 {{done}}",
         "install_compiler": "컴파일러 설치",
         "installing_compiler": "설치 중…",
@@ -4537,7 +4536,6 @@
         "page_label": "Spec Builder"
       },
       "specBuilderPage": {
-        "dismiss_error": "오류 닫기",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "아이디어를 함께 이야기하고 계획을 검토한 뒤 에이전트가 구축하게 하세요."
       }

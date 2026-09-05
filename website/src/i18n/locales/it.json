@@ -4166,7 +4166,6 @@
         "create_one_above_or_clone_an_existing_repository": "Creane uno qui sopra, oppure clona un repository esistente.",
         "delete_paper": "Elimina {{name}}",
         "delete_paper_confirm": "Eliminare «{{name}}» e tutti i suoi file? Questa azione non può essere annullata.",
-        "dismiss_error": "Ignora",
         "downloading_compiler_progress": "Download… {{done}} di {{total}}",
         "install_compiler": "Installa compilatore",
         "installing_compiler": "Installazione…",
@@ -4640,7 +4639,6 @@
         "configuration_1": "Scegli una cartella di progetto e la modalità Feature, Bug o Quick, crea facoltativamente un nuovo worktree, quindi revisiona e approva ogni fase generata prima di avviare la build."
       },
       "specBuilderPage": {
-        "dismiss_error": "Ignora l'errore",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "Discuti un'idea, rivedi il piano e poi lascia che un agente la realizzi."
       }

@@ -4095,7 +4095,6 @@
         "create_one_above_or_clone_an_existing_repository": "উপরে একটি তৈরি করুন, বা বিদ্যমান কোনও রিপোজিটরি ক্লোন করুন।",
         "delete_paper": "{{name}} মুছুন",
         "delete_paper_confirm": "“{{name}}” এবং এর সব ফাইল মুছে ফেলবেন? এটি আর ফেরানো যাবে না।",
-        "dismiss_error": "বাতিল করুন",
         "downloading_compiler_progress": "ডাউনলোড হচ্ছে… {{total}}-এর মধ্যে {{done}}",
         "install_compiler": "কম্পাইলার ইনস্টল করুন",
         "installing_compiler": "ইনস্টল করা হচ্ছে…",
@@ -4563,7 +4562,6 @@
         "page_label": "Spec Builder"
       },
       "specBuilderPage": {
-        "dismiss_error": "ত্রুটি সরান",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "একটি ভাবনা নিয়ে আলোচনা করুন, পরিকল্পনা পর্যালোচনা করুন, তারপর একজন এজেন্টকে দিয়ে তা বানান।"
       }

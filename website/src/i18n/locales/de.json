@@ -4146,7 +4146,6 @@
         "create_one_above_or_clone_an_existing_repository": "Erstellen Sie oben eines, oder klonen Sie ein bestehendes Repository.",
         "delete_paper": "{{name}} löschen",
         "delete_paper_confirm": "„{{name}}“ und alle zugehörigen Dateien löschen? Dies kann nicht rückgängig gemacht werden.",
-        "dismiss_error": "Verwerfen",
         "downloading_compiler_progress": "Wird heruntergeladen… {{done}} von {{total}}",
         "install_compiler": "Compiler installieren",
         "installing_compiler": "Installation läuft…",
@@ -4614,7 +4613,6 @@
         "configuration_1": "Wähle einen Projektordner und den Modus Feature, Bug oder Quick, erstelle optional einen neuen Worktree und prüfe und genehmige dann jede erzeugte Phase, bevor du den Build startest."
       },
       "specBuilderPage": {
-        "dismiss_error": "Fehler schließen",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "Besprechen Sie eine Idee, prüfen Sie den Plan und lassen Sie dann einen Agenten sie umsetzen."
       }

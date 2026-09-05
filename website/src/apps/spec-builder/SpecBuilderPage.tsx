@@ -11,10 +11,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { X } from 'lucide-react'
 import { AppApiProvider } from '../../app-sdk'
 import { specApi, LS, type SpecSummary } from './api'
-import { Btn } from './components/shared'
+import ErrorNotice from '../../components/ErrorNotice'
 import Workspace from './components/Workspace'
 import NewSpecView from './components/NewSpecView'
 import SettingsModal from './components/SettingsModal'
@@ -94,12 +93,14 @@ function SpecBuilderInner() {
         </div>
       )}
 
-      {err && (
-        <div role="alert" aria-live="assertive" className="bg-danger-subtle text-danger px-3.5 py-2 text-[12px] shrink-0 flex justify-between items-center border-b border-border">
-          <span>{err}</span>
-          <Btn label={<X className="lucide-inline" />} ariaLabel={i18nT('apps.specBuilder.specBuilderPage.dismiss_error')} onClick={() => setErr('')} />
-        </div>
-      )}
+      {/* No hand-off: below this banner is either the new-spec form or the
+          workspace's spec chat composer, both holding unsaved text. */}
+      <ErrorNotice
+        className="shrink-0 m-2"
+        message={err}
+        onDismiss={() => setErr('')}
+        testId="spec-builder-error"
+      />
 
       {creating ? (
         <NewSpecView

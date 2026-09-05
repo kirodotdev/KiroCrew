@@ -752,8 +752,9 @@ describe('a provider row cannot paint a control the backend will reject', () => 
 
   it('reports a rejected write outside the block the toggle gates', () => {
     // The error <p> used to live inside `enabled ? …`, so the click that failed most often
-    // failed in complete silence.
-    const errorAt = panel.indexOf('writeError ? (')
+    // failed in complete silence. The rejected write now renders as one ErrorNotice per
+    // mutation; the config write is the first of them.
+    const errorAt = panel.indexOf('configMutation.isError ? (')
     const blockEnd = panel.indexOf('OUTSIDE the block the enable toggle gates')
     expect(blockEnd).toBeGreaterThan(0)
     expect(errorAt).toBeGreaterThan(blockEnd)

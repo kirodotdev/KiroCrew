@@ -72,10 +72,12 @@ describe('SpecBuilderPage', () => {
 
     renderPage()
 
+    // The banner is the shared ErrorNotice: `role="alert"` carries an implicit
+    // `aria-live="assertive"`, so the announcement no longer needs the attribute.
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveAttribute('aria-live', 'assertive')
+    expect(alert).toHaveTextContent('boom')
     // Icon-only dismiss must carry an accessible name, not just a tooltip.
-    expect(screen.getByRole('button', { name: 'Dismiss error' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
   })
 })
 

@@ -4095,7 +4095,6 @@
         "create_one_above_or_clone_an_existing_repository": "ऊपर एक नया बनाएँ, या कोई मौजूदा रिपॉज़िटरी क्लोन करें।",
         "delete_paper": "{{name}} हटाएँ",
         "delete_paper_confirm": "“{{name}}” और उसकी सभी फ़ाइलें हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
-        "dismiss_error": "हटाएँ",
         "downloading_compiler_progress": "डाउनलोड हो रहा है… {{total}} में से {{done}}",
         "install_compiler": "कंपाइलर इंस्टॉल करें",
         "installing_compiler": "इंस्टॉल हो रहा है…",
@@ -4563,7 +4562,6 @@
         "page_label": "Spec Builder"
       },
       "specBuilderPage": {
-        "dismiss_error": "त्रुटि हटाएं",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "किसी विचार पर बात करो, योजना की समीक्षा करो, और फिर किसी एजेंट से उसे बनवाओ।"
       }

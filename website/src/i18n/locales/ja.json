@@ -4075,7 +4075,6 @@
         "create_one_above_or_clone_an_existing_repository": "上記を作成するか、既存のリポジトリーをクローンしてください。",
         "delete_paper": "{{name}} を削除",
         "delete_paper_confirm": "「{{name}}」とそのすべてのファイルを削除しますか？これは取り消せません。",
-        "dismiss_error": "閉じる",
         "downloading_compiler_progress": "ダウンロード中… {{done}} / {{total}}",
         "install_compiler": "コンパイラーをインストール",
         "installing_compiler": "インストール中…",
@@ -4537,7 +4536,6 @@
         "page_label": "Spec Builder"
       },
       "specBuilderPage": {
-        "dismiss_error": "エラーを閉じる",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "アイデアについて話し合い、プランを確認してからエージェントに実装させます。"
       }

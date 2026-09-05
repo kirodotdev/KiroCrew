@@ -4024,7 +4024,6 @@
         "create_one_above_or_clone_an_existing_repository": "在上方新建一篇，或克隆一个已有的仓库。",
         "delete_paper": "删除 {{name}}",
         "delete_paper_confirm": "删除“{{name}}”及其所有文件？此操作无法撤销。",
-        "dismiss_error": "忽略",
         "downloading_compiler_progress": "正在下载…… {{done}} / {{total}}",
         "install_compiler": "安装编译器",
         "installing_compiler": "正在安装……",
@@ -4486,7 +4485,6 @@
         "page_label": "Spec Builder"
       },
       "specBuilderPage": {
-        "dismiss_error": "关闭错误提示",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "聊清一个想法，审阅方案，然后让代理去实现。"
       }

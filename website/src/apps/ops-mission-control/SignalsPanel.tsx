@@ -32,6 +32,7 @@ import {
   BellOff,
 } from 'lucide-react'
 import { Badge, Btn, Card, CardTitle, EmptyState } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import {
   describeSourceHealth,
   opsApi,
@@ -278,12 +279,17 @@ export default function SignalsPanel() {
                           from config alone can still fail on expired credentials, and the
                           message is what tells the two apart; the age is what tells a
                           failure we just observed from one recorded minutes ago. */}
-                      {status.state === 'failed' || status.state === 'backing_off' ? (
-                        <span
-                          className={`flex items-start gap-1 ${
-                            status.state === 'failed' ? 'text-danger' : 'text-warn'
-                          }`}
-                        >
+                      {status.state === 'failed' ? (
+                        // A failed poll is the provider's own last_error — an error, not a
+                        // status. Status panel, nothing on screen is a draft.
+                        <ErrorNotice
+                          variant="inline"
+                          className="break-all"
+                          message={`${status.detail}${status.at ? ` (${age(status.at)})` : ''}`}
+                          askAgent
+                        />
+                      ) : status.state === 'backing_off' ? (
+                        <span className="flex items-start gap-1 text-warn">
                           <AlertTriangle className="lucide-inline" />
                           <span className="break-all">
                             {status.detail}
@@ -350,9 +356,7 @@ export default function SignalsPanel() {
             </span>
           ) : null}
           {signalsQuery.isError ? (
-            <span className="text-[12px] text-danger">
-              {(signalsQuery.error as Error).message}
-            </span>
+            <ErrorNotice variant="inline" message={(signalsQuery.error as Error).message} askAgent />
           ) : null}
         </div>
 
@@ -560,9 +564,7 @@ export default function SignalsPanel() {
         ) : null}
 
         {claimMutation.isError ? (
-          <p className="text-[12px] text-danger mt-2">
-            {(claimMutation.error as Error).message}
-          </p>
+          <ErrorNotice className="mt-2" message={(claimMutation.error as Error).message} askAgent />
         ) : null}
       </Card>
 

@@ -4217,7 +4217,6 @@
         "create_one_above_or_clone_an_existing_repository": "Créez-en un ci-dessus, ou clonez un dépôt existant.",
         "delete_paper": "Supprimer {{name}}",
         "delete_paper_confirm": "Supprimer « {{name}} » et tous ses fichiers ? Cette action est irréversible.",
-        "dismiss_error": "Ignorer",
         "downloading_compiler_progress": "Téléchargement… {{done}} sur {{total}}",
         "install_compiler": "Installer le compilateur",
         "installing_compiler": "Installation…",
@@ -4691,7 +4690,6 @@
         "configuration_1": "Choisis un dossier de projet et le mode Feature, Bug ou Quick, crée éventuellement un nouveau worktree, puis relis et approuve chaque étape générée avant de lancer la réalisation."
       },
       "specBuilderPage": {
-        "dismiss_error": "Masquer l'erreur",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "Discute d'une idée, relis le plan, puis laisse un agent la construire."
       }

@@ -354,8 +354,10 @@ describe('LibraryPage trust gate', () => {
 
     fireEvent.click(confirmBtn())
 
+    // `toContain`, not `toBe`: the failure renders through the shared ErrorNotice,
+    // whose `role="alert"` node also carries the agent hand-off button's label.
     await waitFor(() => expect(screen.getByRole('alert').textContent)
-      .toBe(`${K}.failed LaunchDarkly`))
+      .toContain(`${K}.failed LaunchDarkly`))
     expect(modalTitle()).toBeTruthy()
   })
 
@@ -441,7 +443,7 @@ describe('registry install trust gate', () => {
     fireEvent.click(confirmBtn())
 
     await waitFor(() => expect(screen.getByRole('alert').textContent)
-      .toBe(`${K}.failed LaunchDarkly`))
+      .toContain(`${K}.failed LaunchDarkly`))
     expect(modalTitle()).toBeTruthy()
   })
 
@@ -462,7 +464,7 @@ describe('registry install trust gate', () => {
     // Nothing was left behind, so the copy must say that rather than sending the
     // user to Settings to remove a grant that is already gone.
     await waitFor(() => expect(screen.getByRole('alert').textContent)
-      .toBe(`${K}.failed_generic LaunchDarkly`))
+      .toContain(`${K}.failed_generic LaunchDarkly`))
     expect(modalTitle()).toBeTruthy()
   })
 
@@ -479,7 +481,7 @@ describe('registry install trust gate', () => {
     fireEvent.click(confirmBtn())
 
     await waitFor(() => expect(screen.getByRole('alert').textContent)
-      .toBe(`${K}.failed LaunchDarkly`))
+      .toContain(`${K}.failed LaunchDarkly`))
     expect(untrustApp).not.toHaveBeenCalled()
   })
 
@@ -525,7 +527,7 @@ describe('registry install trust gate', () => {
     // Nothing was left behind, so the copy says so rather than sending the user to
     // Settings after a grant that is already gone.
     await waitFor(() => expect(screen.getByRole('alert').textContent)
-      .toBe(`${K}.failed_generic LaunchDarkly`))
+      .toContain(`${K}.failed_generic LaunchDarkly`))
   })
 
   it('rolls the grant back when the retried install is ABORTED', async () => {

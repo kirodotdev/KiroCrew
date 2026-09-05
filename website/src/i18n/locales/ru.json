@@ -4237,7 +4237,6 @@
         "create_one_above_or_clone_an_existing_repository": "Создайте статью выше или клонируйте существующий репозиторий.",
         "delete_paper": "Удалить {{name}}",
         "delete_paper_confirm": "Удалить «{{name}}» и все её файлы? Это действие нельзя отменить.",
-        "dismiss_error": "Скрыть",
         "downloading_compiler_progress": "Загрузка… {{done}} из {{total}}",
         "install_compiler": "Установить компилятор",
         "installing_compiler": "Установка…",
@@ -4717,7 +4716,6 @@
         "page_label": "Spec Builder"
       },
       "specBuilderPage": {
-        "dismiss_error": "Скрыть ошибку",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "Обсудите идею, проверьте план, а затем поручите агенту её реализовать."
       }

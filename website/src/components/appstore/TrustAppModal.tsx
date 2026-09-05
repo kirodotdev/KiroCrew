@@ -24,6 +24,7 @@ import { Code2, GitBranch, Loader2, Server, ShieldAlert, Terminal } from 'lucide
 
 import { api } from '../../api/client'
 import Modal from '../Modal'
+import ErrorNotice from '../ErrorNotice'
 import { Badge, Btn } from '../ui'
 import { i18nT } from '../../i18n/t'
 import { sourceLabel, type RegistryApp } from './types'
@@ -407,16 +408,20 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
           <p className="text-muted leading-relaxed">
             {i18nT('components.appstore.trustAppModal.revocable')}
           </p>
+          {/* Two failure strings, because the two cases need different advice: if
+              the grant landed and only the enable failed, the user has state to
+              clean up; if nothing was written, telling them to go check Settings
+              sends them after something that isn't there. askAgent on: a trust
+              decision dialog holds no draft. */}
           {failed && (
-            /* Two failure strings, because the two cases need different advice: if
-               the grant landed and only the enable failed, the user has state to
-               clean up; if nothing was written, telling them to go check Settings
-               sends them after something that isn't there. */
-            <p role="alert" className="text-danger leading-relaxed">
-              {granted
-                ? i18nT('components.appstore.trustAppModal.failed', { app: name })
-                : i18nT('components.appstore.trustAppModal.failed_generic', { app: name })}
-            </p>
+            <ErrorNotice
+              message={
+                granted
+                  ? i18nT('components.appstore.trustAppModal.failed', { app: name })
+                  : i18nT('components.appstore.trustAppModal.failed_generic', { app: name })
+              }
+              askAgent
+            />
           )}
         </div>
       )}

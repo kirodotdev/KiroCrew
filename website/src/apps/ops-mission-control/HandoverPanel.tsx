@@ -35,6 +35,7 @@ import {
   UserCheck,
 } from 'lucide-react'
 import { Badge, Btn, Card, CardTitle, EmptyState } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import {
   blockedLabel,
   describeSourceHealth,
@@ -158,7 +159,7 @@ export default function HandoverPanel() {
   if (query.isError) {
     return (
       <Card>
-        <p className="text-[13px] text-danger">{(query.error as Error).message}</p>
+        <ErrorNotice message={(query.error as Error).message} askAgent />
       </Card>
     )
   }

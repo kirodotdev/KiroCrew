@@ -43,6 +43,7 @@ import {
   StatCard,
 } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import SegmentedControl from '../../components/SegmentedControl'
 import { SearchInput } from '../../components/ui'
@@ -243,10 +244,14 @@ function SettingsView() {
         </SendBtn>
         {draft !== null && <Btn onClick={() => setDraft(null)}>{i18nT('apps.pptxMaker.pptxMakerPage.reset')}</Btn>}
       </div>
+      {/* The hand-off is offered only while no directory is typed above: `draft`
+          is that unsaved value, and Save failing is exactly when it is still here. */}
       {saveMutation.isError && (
-        <div className="mt-3 text-[13px] text-danger">
-          {(saveMutation.error as Error).message}
-        </div>
+        <ErrorNotice
+          className="mt-3"
+          message={(saveMutation.error as Error).message}
+          askAgent={draft === null}
+        />
       )}
       {saveMutation.isSuccess && (
         <div className="mt-3 text-[13px] text-ok">
@@ -380,10 +385,9 @@ export default function PptxMakerPage() {
                   </div>
                 ))}
               </div>
+              {/* The decks view holds no draft (the search box is a filter). */}
               {startChat.isError && (
-                <div className="mt-3 text-[13px] text-danger">
-                  {(startChat.error as Error).message}
-                </div>
+                <ErrorNotice className="mt-3" message={(startChat.error as Error).message} askAgent />
               )}
             </Card>
 

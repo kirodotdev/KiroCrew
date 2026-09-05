@@ -36,6 +36,7 @@ import {
 } from 'lucide-react'
 import { Badge, Btn, Card, CardTitle, EmptyState, PageHeader, StatCard } from '../../components/ui'
 import SegmentedControl from '../../components/SegmentedControl'
+import ErrorNotice from '../../components/ErrorNotice'
 import SettingsPanel from './SettingsPanel'
 import SignalsPanel from './SignalsPanel'
 import HandoverPanel from './HandoverPanel'
@@ -247,7 +248,7 @@ function ClosedPostmortem({ incidentId }: { incidentId: string }) {
     return <p className="text-xs text-muted">{i18nT('apps.opsMissionControl.opsMissionControlPage.reading_the_postmortem')}</p>
   }
   if (query.isError) {
-    return <p className="text-xs text-danger">{(query.error as Error).message}</p>
+    return <ErrorNotice variant="inline" message={(query.error as Error).message} askAgent />
   }
   if (!log) {
     // Two different empties, and neither is "the investigation found nothing". Say which,
@@ -314,7 +315,7 @@ function ClosedIncidents() {
       {query.isLoading ? (
         <p className="text-sm text-muted mt-2">{i18nT('apps.opsMissionControl.opsMissionControlPage.loading')}</p>
       ) : query.isError ? (
-        <p className="text-[13px] text-danger mt-2">{(query.error as Error).message}</p>
+        <ErrorNotice className="mt-2" message={(query.error as Error).message} askAgent />
       ) : closed.length === 0 ? (
         <p className="text-sm text-muted mt-2">
           {i18nT('apps.opsMissionControl.opsMissionControlPage.nothing_has_closed_yet_when_an_incident_is_resol')}
@@ -624,25 +625,24 @@ export default function OpsMissionControlPage() {
           if (!map) return null
           const failed = Object.entries(map).filter(([, v]) => v === 'still_firing')
           if (failed.length === 0) return null
+          const headline =
+            failed.length === 1
+              ? i18nT('apps.opsMissionControl.opsMissionControlPage.verification_failed_one', { id: failed[0][0] })
+              : i18nT('apps.opsMissionControl.opsMissionControlPage.verification_failed_many', {
+                count: failed.length,
+                ids: failed.map(([id]) => id).join(', '),
+              })
+          // Dispatch inputs are already persisted, so the hand-off loses nothing.
           return (
-            <p className="text-[13px] text-danger mb-4 flex items-start gap-1.5">
-              <AlertTriangle className="lucide-inline shrink-0 mt-0.5" />
-              <span>
-                {failed.length === 1
-                  ? i18nT('apps.opsMissionControl.opsMissionControlPage.verification_failed_one', { id: failed[0][0] })
-                  : i18nT('apps.opsMissionControl.opsMissionControlPage.verification_failed_many', {
-                    count: failed.length,
-                    ids: failed.map(([id]) => id).join(', '),
-                  })}{' '}
-                {i18nT('apps.opsMissionControl.opsMissionControlPage.expand_the_row_below_for_what_was_attempted_the')}
-              </span>
-            </p>
+            <ErrorNotice
+              className="mb-4"
+              message={`${headline} ${i18nT('apps.opsMissionControl.opsMissionControlPage.expand_the_row_below_for_what_was_attempted_the')}`}
+              askAgent
+            />
           )
         })()}
         {dispatchMutation.isError ? (
-          <p className="text-[13px] text-danger mb-4">
-            {(dispatchMutation.error as Error).message}
-          </p>
+          <ErrorNotice className="mb-4" message={(dispatchMutation.error as Error).message} askAgent />
         ) : null}
 
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
@@ -895,24 +895,31 @@ export default function OpsMissionControlPage() {
                                     >
                                       {i18nT('apps.opsMissionControl.opsMissionControlPage.reject')}
                                     </Btn>
-                                    {/* The gate's own words on a 403, and the digest
-                                        mismatch on a 409. Both are refusals the operator
-                                        has to see: silently doing nothing on click is how
-                                        an approval looks like it worked. */}
-                                    {deciding ? null : decideMutation.isError &&
-                                      decideMutation.variables?.id === inc.incident_id ? (
-                                      <span className="text-[11px] text-danger">
-                                        {(decideMutation.error as Error).message}
-                                      </span>
-                                    ) : decideMutation.data &&
-                                      decideMutation.variables?.id === inc.incident_id &&
-                                      !decideMutation.data.ok ? (
-                                      <span className="text-[11px] text-danger">
-                                        {decideMutation.data.error ||
-                                          i18nT('apps.opsMissionControl.opsMissionControlPage.the_decision_was_refused')}
-                                      </span>
-                                    ) : null}
                                   </div>
+                                  {/* The gate's own words on a 403, and the digest
+                                      mismatch on a 409. Both are refusals the operator
+                                      has to see: silently doing nothing on click is how
+                                      an approval looks like it worked. On its own row
+                                      BELOW the buttons: the notice carries the hand-off
+                                      button, and inside the row it would be a third
+                                      action (max-two-buttons-per-row). */}
+                                  {deciding ? null : decideMutation.isError &&
+                                    decideMutation.variables?.id === inc.incident_id ? (
+                                    <ErrorNotice
+                                      message={(decideMutation.error as Error).message}
+                                      askAgent
+                                    />
+                                  ) : decideMutation.data &&
+                                    decideMutation.variables?.id === inc.incident_id &&
+                                    !decideMutation.data.ok ? (
+                                    <ErrorNotice
+                                      message={
+                                        decideMutation.data.error ||
+                                        i18nT('apps.opsMissionControl.opsMissionControlPage.the_decision_was_refused')
+                                      }
+                                      askAgent
+                                    />
+                                  ) : null}
                                 </div>
                               )
                             })()
@@ -1127,9 +1134,7 @@ export default function OpsMissionControlPage() {
                         </div>
 
                         {transitionMutation.isError && selectedIncident?.incident_id === inc.incident_id ? (
-                          <p className="text-xs text-danger">
-                            {(transitionMutation.error as Error).message}
-                          </p>
+                          <ErrorNotice message={(transitionMutation.error as Error).message} askAgent />
                         ) : null}
 
                         {/* Whether a reply typed into the Slack thread will actually reach
@@ -1281,11 +1286,13 @@ export default function OpsMissionControlPage() {
               </p>
             ) : null}
             {rotation.roster.error ? (
-              <p className="text-xs text-danger mt-2">
-                {i18nT('apps.opsMissionControl.opsMissionControlPage.schedule_problem', {
+              <ErrorNotice
+                className="mt-2"
+                message={i18nT('apps.opsMissionControl.opsMissionControlPage.schedule_problem', {
                   error: rotation.roster.error,
                 })}
-              </p>
+                askAgent
+              />
             ) : null}
           </Card>
         ) : null}

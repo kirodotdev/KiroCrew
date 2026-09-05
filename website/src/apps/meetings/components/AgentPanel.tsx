@@ -53,6 +53,7 @@ import {
 
 import { i18nT } from '../../../i18n/t'
 import { useConfirm } from '../../../components/ConfirmDialog'
+import ErrorNotice from '../../../components/ErrorNotice'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import { Btn, Card, CardTitle, Input, SendBtn } from '../../../components/ui'
 import type { AgentDef, OutputEdit } from '../api'
@@ -77,7 +78,7 @@ interface Props {
   onSendMessage: (text: string) => void
   /** Absent for an agent whose output is not editable (html widgets, chat agents). */
   onSaveOutput?: (content: string) => Promise<unknown>
-  onRevertOutput?: () => void
+  onRevertOutput?: () => Promise<unknown>
 }
 
 export default function AgentPanel({
@@ -108,15 +109,20 @@ export default function AgentPanel({
   const showChat = chatView || isChatAgent
   const editable = onSaveOutput != null && !showChat
   const editing = draft !== null
+  // The session hook's toast fades; a save or revert that did not land is a state
+  // this panel must keep showing until the next attempt.
+  const [outputError, setOutputError] = useState<string | null>(null)
 
   const saveDraft = async () => {
     if (draft === null || onSaveOutput == null) return
     const submittedDraft = draft
+    setOutputError(null)
     try {
       await onSaveOutput(submittedDraft)
     } catch {
       // The session hook reports the transport error. Keep the draft open: closing
       // here would turn a failed save into permanent loss of the user's correction.
+      setOutputError(i18nT('apps.meetings.session.minutesSaveFailed'))
       return
     }
     // Saving is asynchronous but the textarea remains editable. Only close the
@@ -132,7 +138,13 @@ export default function AgentPanel({
       body: i18nT('apps.meetings.agentPanel.revertHint', { name: agent.name }),
       confirmLabel: i18nT('apps.meetings.agentPanel.revert'),
     })
-    if (confirmed) onRevertOutput()
+    if (!confirmed) return
+    setOutputError(null)
+    try {
+      await onRevertOutput()
+    } catch {
+      setOutputError(i18nT('apps.meetings.session.minutesRevertFailed'))
+    }
   }
 
   const send = () => {
@@ -206,6 +218,9 @@ export default function AgentPanel({
     return (
       <Card className="col-span-2 flex flex-col gap-2">
         {header}
+        {/* A revert that rejects after the user switched to the chat view must still
+            say so here. No hand-off: the message input below holds unsent text. */}
+        <ErrorNotice message={outputError} />
         <div className="flex-1 min-h-[120px] max-h-[320px] overflow-y-auto flex flex-col gap-2">
           {sent.length === 0 ? (
             <p className="text-[13px] text-muted">
@@ -299,6 +314,8 @@ export default function AgentPanel({
           spellCheck
           className="min-h-[280px] max-h-[520px] resize-y bg-transparent border border-border rounded-md outline-none p-3 text-[13px] leading-relaxed text-text font-body focus-ring"
         />
+        {/* No hand-off: the minutes draft in the textarea above is unsaved. */}
+        <ErrorNotice message={outputError} />
         <div className="flex items-center justify-end gap-2">
           <Btn onClick={() => setDraft(null)} disabled={editSaving}>
             {i18nT('apps.meetings.agentPanel.cancel')}
@@ -317,6 +334,8 @@ export default function AgentPanel({
   return (
     <Card className="col-span-2 flex flex-col gap-2">
       {header}
+      {/* No hand-off: this panel's message-to-agent input holds unsent text. */}
+      <ErrorNotice message={outputError} />
       {(editable || (edit && onRevertOutput)) && (
         <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-border">
           {editable && (

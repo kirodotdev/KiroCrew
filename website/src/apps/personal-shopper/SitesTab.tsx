@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Globe, Plus, Trash2 } from 'lucide-react'
 import * as shopApi from './api'
 import { Btn, EmptyState, Input } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -130,14 +131,12 @@ export function SitesTab() {
         {i18nT('apps.personalShopper.sitesTab.shopping_sources_the_advisor_can_browse_login_en')}
       </p>
 
-      {errorCode && (
-        <div
-          role="alert"
-          className="text-xs px-3 py-2 rounded-lg bg-[var(--danger-subtle)] text-[var(--danger)] border border-[var(--danger)]"
-        >
-          {i18nT('apps.personalShopper.sitesTab.save_failed', { code: errorCode })}
-        </div>
-      )}
+      {/* The hand-off is offered only while the site form's name and URL are
+          empty: a rejected add is exactly when they are still typed here. */}
+      <ErrorNotice
+        message={errorCode ? i18nT('apps.personalShopper.sitesTab.save_failed', { code: errorCode }) : null}
+        askAgent={!newName && !newUrl}
+      />
 
       {/* Site list */}
       {sites.length === 0 && !showAddForm && (
