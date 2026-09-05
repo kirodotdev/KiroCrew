@@ -17,7 +17,6 @@ src/kiro_crew/apps/__init__.py
 src/kiro_crew/apps/app_storage.py
 src/kiro_crew/apps/backend.py
 src/kiro_crew/apps/bridges.py
-src/kiro_crew/apps/builtins/auto_improvement/backend/routes.py
 src/kiro_crew/apps/builtins/auto_improvement/spine/gate.py
 src/kiro_crew/apps/builtins/auto_improvement/spine/git_safety.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_data_home_isolation.py
