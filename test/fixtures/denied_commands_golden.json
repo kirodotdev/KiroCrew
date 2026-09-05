@@ -892,5 +892,11 @@
     "pattern": "(?:(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*|kernel\\.system|io\\.popen)(?:\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:pkill|killall)\\b[^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b|[\\s\\(\\[]*['\"][\\w.:/\\\\-]*(?:pkill|killall)['\"][\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"][^'\"]*(?:kiro[-.]?crew|irocrew))|(?:os\\.kill(?:pg)?|process\\.kill|\\bkillpg)\\s*\\([^)]*irocrew)",
     "category": "self-protection",
     "description": "Blocks an interpreter payload that terminates a kirocrew process through a library call rather than as a shell command -- a pkill/killall command and the product name inside one quoted string passed to an executing sink such as `os.system(...)` or `execSync(...)`. Sink-qualified so prose, a commit message or a regex literal naming both is not a kill."
+  },
+  {
+    "id": "sandbox-escape-ssh-self",
+    "pattern": "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*(?:[\\w.:/\\\\-]*[/\\\\])?(?:ssh|scp|sftp|rsync)(?:\\.exe)?\\s+(?:\\S*@)?(?:localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[?::1\\]?|\\$\\(\\s*hostname|`\\s*hostname|\\$\\{?hostname\\}?)(?=[\\s:'\\\");&|#]|\\Z)",
+    "category": "sandbox-escape",
+    "description": "Blocks ssh/scp/sftp/rsync targeting this same machine (localhost, 127.x.x.x, ::1, $(hostname), or this host's own name/addresses), which re-enters the host OUTSIDE the agent sandbox: a command run through `ssh localhost` bypasses every other control here, and passwordless sudo on the far side completes a full escape. Connections to OTHER hosts are unaffected."
   }
 ]

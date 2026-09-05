@@ -1693,6 +1693,45 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "operator's own terminal, which these rules do not govern."
         ),
     ),
+    DeniedCommandRule(
+        id="sandbox-escape-ssh-self",
+        # The agent's shell runs inside a sandbox; sshd does not.  ``ssh
+        # localhost`` therefore re-enters this same machine OUTSIDE every
+        # control in this module — the far side of the connection is a fresh
+        # unsandboxed login shell (observed live: a uid-remapped sandbox where
+        # ``sudo`` is broken locally but ``ssh localhost sudo …`` grants root).
+        #
+        # Scoped to the connection TARGET in operand position.  The verb is
+        # anchored to command position (start of input or after a separator,
+        # optionally path-qualified), and the self host must be the operand
+        # DIRECTLY after it (with an optional ``user@`` prefix) — so a word
+        # like "localhost" inside a REMOTE command run on some other host
+        # (``ssh far-host 'curl localhost:80'``) is a later operand and does
+        # not match, even after the matcher's quote-normalization.  No
+        # option-skipping group on purpose: the star-of-options shape fails
+        # ``is_safe_user_regex`` (which would disable the rule outright), so
+        # this raw-text pattern is a human-auditable SUBSET like the
+        # credential-mint rule's: option-interspersed spellings (``ssh -p 22
+        # localhost``), separated option values, the scp/rsync ``host:path``
+        # second operand, and this machine's OWN hostname/FQDN/addresses are
+        # resolved by the argv-structural floor (``_is_ssh_to_self``), which
+        # carries enforcement.
+        pattern=(
+            "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*(?:[\\w.:/\\\\-]*[/\\\\])?"
+            "(?:ssh|scp|sftp|rsync)(?:\\.exe)?\\s+(?:\\S*@)?"
+            "(?:localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[?::1\\]?"
+            "|\\$\\(\\s*hostname|`\\s*hostname|\\$\\{?hostname\\}?)"
+            "(?=[\\s:'\\\");&|#]|\\Z)"
+        ),
+        category="sandbox-escape",
+        description=(
+            "Blocks ssh/scp/sftp/rsync targeting this same machine (localhost, 127.x.x.x, ::1, "
+            "$(hostname), or this host's own name/addresses), which re-enters the host OUTSIDE "
+            "the agent sandbox: a command run through `ssh localhost` bypasses every other "
+            "control here, and passwordless sudo on the far side completes a full escape. "
+            "Connections to OTHER hosts are unaffected."
+        ),
+    ),
     # ── Legacy security.py deny globs (converted to regex) ──
     # These predate the agent-config ``deniedCommands`` list and were NOT part
     # of it, so they are not in the 130 ported patterns.  They cover explicit
@@ -1924,6 +1963,7 @@ _SELF_PROTECTION_FLOOR_RULE_IDS: frozenset[str] = frozenset(
         "self-protection-gateway-restart",
         "self-protection-cloud",
         "self-protection-dev-mode-out-of-root-confirm",
+        "sandbox-escape-ssh-self",
     }
 )
 _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
@@ -1979,6 +2019,12 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "shell de-escaping resolves an argument to the operator's "
         "`--confirm-out-of-install-root` attestation flag, which agent commands "
         "may never carry."
+    ),
+    "sandbox-escape-ssh-self": (
+        "Matched structurally on the command's argv, not by the pattern text above: "
+        "the ssh/scp/sftp/rsync target resolves to THIS machine (localhost, a loopback "
+        "address, or this host's own name), which would re-enter the host outside the "
+        "agent sandbox."
     ),
 }
 
@@ -5923,6 +5969,785 @@ def _is_dev_mode_out_of_root_confirm(text_lower: str) -> bool:
                 "", _normalize_operand(token)
             ):
                 return True
+    return False
+
+
+# ── Sandbox-escape floor (ssh back into this same host) ──
+# The agent's shell runs inside a sandbox; sshd does not.  A connection whose
+# TARGET is this same machine re-enters it outside every control in this
+# module, so the floor resolves the target in OPERAND POSITION — behind
+# options (``ssh -p 22 localhost``), redirects, a ``user@`` prefix, URI
+# schemes, bracketed/bare IPv6 and numeric IPv4 literals, and quoting the
+# raw-text regex cannot see through — and refuses it when it names this host.
+#
+# Named residuals, fail-open BY DESIGN (failing closed on any of these would
+# deny every legitimate remote ssh, which this box's workflows depend on):
+# config-level routing that needs ssh's own config resolution (``-F`` files,
+# ``ProxyCommand``, ssh_config Host aliases), and a substitution that only
+# resolves to this host at run time (``$(some-command)``).  The literal
+# ``hostname``-substitution spellings and ``-o hostname=``/``-o proxyjump=``
+# values ARE checked below, as text.
+
+# Names every machine answers to on loopback, plus the two spellings that
+# reach the wildcard/unspecified address (both connect to loopback in
+# practice).
+_LOOPBACK_HOST_NAMES: frozenset[str] = frozenset(
+    {
+        "localhost",
+        "localhost.localdomain",
+        "localhost4",
+        "localhost4.localdomain4",
+        "localhost6",
+        "localhost6.localdomain6",
+        "ip6-localhost",
+        "ip6-loopback",
+        "0",
+        "0.0.0.0",
+        "::",
+        "::1",
+    }
+)
+
+# Operand spellings that resolve to this host's name at run time, matched as
+# TEXT inside a single argv token.  The substitution forms are substring
+# matches ("$(hostname -f)" still hits); the variable forms are exact or
+# dot-suffixed ("$hostname", "$hostname.example") so an unrelated variable
+# like "$hostname_backup" is NOT read as this host.
+_HOSTNAME_SUBSTITUTION_HINTS: tuple[str, ...] = ("$(hostname", "`hostname")
+_HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
+
+# ``${VAR:-word}`` / ``${VAR:=word}`` / ``${VAR:+word}`` — bash substitutes the
+# embedded WORD before exec, so a self-host hiding in the default IS the
+# destination when the variable is unset (``ssh "${TARGET:-localhost}"``).
+# The word is statically visible, so it is checked; a bare ``$VAR`` whose
+# value only exists at run time remains the documented fail-open residual.
+_EXPANSION_DEFAULT_RE = re.compile(r"\$\{[^{}:]*:[-=+?]([^{}]+)\}")
+
+_SSH_FAMILY_VERBS: frozenset[str] = frozenset({"ssh", "scp", "sftp", "rsync"})
+
+# rsync reads its remote-shell command from the ``RSYNC_RSH`` environment
+# variable exactly as it does from ``-e``/``--rsh``, but a LEADING assignment
+# (``RSYNC_RSH='ssh localhost' rsync …``) rides BEFORE the verb, where the
+# operand walk in ``_is_ssh_to_self`` never sees it.  The captured value is a
+# command line rsync execs FROM HERE, so it recurses the floor.  Tokens reach
+# the walk lowercased; IGNORECASE keeps the match robust regardless.  The wider
+# remote-shell env-var family (``GIT_SSH_COMMAND`` and the like) is a documented
+# residual, deliberately out of this floor's scope.
+_RSYNC_RSH_ASSIGN_RE = re.compile(r"^rsync_rsh=(.+)$", re.IGNORECASE)
+
+# Sentinel bytes standing in for a ``;`` / ``|`` that was QUOTED or backslash-
+# escaped in the raw source, so it is literal DATA rather than a command
+# separator.  ``_self_tokens`` runs shlex, which resolves quotes BEFORE the
+# operand walk in ``_is_ssh_to_self`` runs, so by token time a quoted ``a;b`` is
+# indistinguishable from a glued unquoted operator ``a;b`` -- yet the first is
+# one operand and the second is a command boundary.  The distinguishing
+# information exists only in the SOURCE, before tokenization, so the raw text is
+# scanned there and every data separator is rewritten to a sentinel that
+# ``_ends_argv`` does not treat as a boundary.  A real, unquoted separator keeps
+# its character and still ends the walk.  NUL/SOH are used because a real shell
+# command never contains them.  Found in review (Opus), round 6.
+_QUOTED_SEP_SENTINELS = {";": "\x00", "|": "\x01"}
+
+
+def _mask_quoted_separators(text: str) -> str:
+    """Rewrite quoted/escaped ``;`` and ``|`` in *text* to sentinel bytes.
+
+    Single-pass quote-state scan over the RAW source:
+
+    * inside single quotes -- ``;``/``|`` are literal data, so they become
+      sentinels; a single quote takes no escapes, so a backslash inside is an
+      ordinary character.
+    * inside double quotes -- ``;``/``|`` are literal data, so they become
+      sentinels; a backslash does not change a separator's literalness, so each
+      character is handled on its own.
+    * outside quotes -- a backslash escapes the next character, so an escaped
+      ``;``/``|`` is data and becomes a sentinel (the backslash is kept so shlex
+      still de-escapes downstream, and an escaped quote never opens a context).
+    * every other character is copied verbatim; an unterminated quote leaves the
+      rest of the string quoted, matching how bash reads it.
+
+    Idempotent for this floor's purposes: a sentinel byte already present in
+    hostile input is left in place, and ``_unmask_separators`` later turns it
+    into a real separator -- which only ends the walk EARLIER, widening the deny
+    (the safe direction).  The mask feeds ``_self_tokens`` (shlex) and recursive
+    floor calls, both of which discard quotes anyway, so it never changes the
+    resolved tokens beyond neutralizing the boundary ambiguity it exists to
+    close.
+    """
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote is None:
+            if ch == "\\" and i + 1 < n:
+                # Escaped char: an escaped separator is data (mask it); keep the
+                # backslash so shlex de-escapes downstream, and consume the next
+                # char here so an escaped quote never opens a quote context.
+                nxt = text[i + 1]
+                out.append(ch)
+                out.append(_QUOTED_SEP_SENTINELS.get(nxt, nxt))
+                i += 2
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+            out.append(ch)
+        elif ch == quote:
+            quote = None
+            out.append(ch)
+        else:
+            # Inside a quote: a separator is literal data; everything else
+            # (backslash included) is copied verbatim.
+            out.append(_QUOTED_SEP_SENTINELS.get(ch, ch))
+        i += 1
+    return "".join(out)
+
+
+def _unmask_separators(text: str) -> str:
+    """Reverse :func:`_mask_quoted_separators` -- restore ``;`` and ``|``."""
+    for sep, sentinel in _QUOTED_SEP_SENTINELS.items():
+        text = text.replace(sentinel, sep)
+    return text
+
+
+# An EMPTY command substitution expands to nothing, so ``s$()sh`` runs ``ssh``
+# and ``local$()host`` resolves to ``localhost`` -- the same glue-evasion the
+# self-kill floor names for ``p$()kill``, but aimed at the verb gate and at the
+# operand.  Collapsing these in the SOURCE text (before the gate and before
+# tokenization) makes both the substring gate and every resolved operand read
+# the spliced-out spelling.  Only ``$()``/backticks are matched: an empty
+# ``${}`` is a bash syntax error, not an expansion, so it never splices.
+_EMPTY_EXPANSION_RE = re.compile(r"\$\(\s*\)|`\s*`")
+
+# ssh options whose VALUE is a forward/bind spec or a login name, not a
+# destination this process connects to from here (lowered text collapses
+# ``-L``/``-l`` and ``-W``/``-w``): ``-L``/``-R``/``-D``/``-W`` forward specs
+# name listen addresses and far-side hops, ``-b`` a local bind address, and
+# ``-l`` a login name.  Their values are exempt from the fail-closed operand
+# check — ``ssh -L 127.0.0.1:8080:db:5432 far-host`` is the recommended way
+# to reach a remote service and must stay allowed.  ``-J`` deliberately stays
+# checked: the jump connection originates from THIS machine.
+_SSH_FORWARD_OPT_LETTERS: frozenset[str] = frozenset("lrdwb")
+
+# This machine's own names/addresses, lowered.  Seeded SYNCHRONOUSLY from
+# ``socket.gethostname()`` on first use — a local syscall (uname), not DNS, so
+# it is safe on the event loop and closes the resolution race where the first
+# ``ssh <own-hostname>`` arrived before any name was known.  The DNS-backed
+# enrichment (``socket.getfqdn``/``socket.getaddrinfo``) runs in a BACKGROUND
+# thread: those are synchronous network calls, and ``is_denied`` runs inline
+# on the gateway's event loop (the PreToolUse gate), where a hung resolve
+# would freeze every session — the AUTOSDE no-blocking-call-on-the-loop rule
+# names them.  Until enrichment lands the own-name half covers only the
+# machine's own reported hostname; the hard-coded loopback half above is
+# fully synchronous and never depends on any of this.  A failed enrichment
+# retries on a later miss after a backoff rather than caching the failure for
+# the process lifetime.
+_OWN_HOST_NAMES_CACHE: "frozenset[str] | None" = None
+_OWN_HOST_RESOLVE_DONE = False
+_OWN_HOST_RESOLVE_LOCK = threading.Lock()
+_OWN_HOST_RESOLVE_NEXT_TRY: float = 0.0
+_OWN_HOST_RESOLVE_BACKOFF_SECS = 60.0
+# single-flight latch — True while an enrichment worker is alive; gates the
+# spawn in ``_own_host_names`` and is cleared in the worker's finally.
+_OWN_HOST_RESOLVE_IN_FLIGHT = False
+
+
+def _own_host_seed() -> "frozenset[str]":
+    """The synchronously-knowable own names: gethostname + its short form."""
+    names: set[str] = set()
+    try:
+        short = socket.gethostname().strip().lower()
+        if short:
+            names.add(short)
+            names.add(short.split(".", 1)[0])
+    except Exception:  # pragma: no cover - hostname lookup is best-effort
+        pass
+    return frozenset(names)
+
+
+def _own_interface_addresses() -> "set[str]":
+    """This machine's local interface addresses (lowered), best-effort.
+
+    DNS enrichment misses an interface IP that has no DNS record -- a DHCP
+    lease, a secondary NIC -- yet ``ssh <that-IP>`` still re-enters THIS host,
+    so the own-name set needs them too.  Enumerated from the stdlib in layers,
+    each wrapped on its own so a platform missing a facility contributes nothing
+    and raises nothing.
+    """
+    addrs: set[str] = set()
+    # 1. gethostbyname_ex extra IPv4s.  On Windows this returns every interface
+    #    address, which is that platform's own enumeration.
+    try:
+        addrs.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except Exception:
+        pass
+    # 2. UDP-connect trick per family: a datagram ``connect`` sends no packet
+    #    but binds the primary outbound address for that family, even when it
+    #    has no DNS record.  The peers are TEST-NET-2 / documentation addresses,
+    #    so nothing is ever contacted.
+    for _family, _probe in (
+        (socket.AF_INET, ("198.51.100.1", 53)),
+        (socket.AF_INET6, ("2001:db8::1", 53)),
+    ):
+        try:
+            with socket.socket(_family, socket.SOCK_DGRAM) as _sock:
+                _sock.connect(_probe)
+                addrs.add(_sock.getsockname()[0])
+        except Exception:
+            pass
+    # 3. Per-interface sweep for addresses the layers above miss.  fcntl/struct
+    #    are imported lazily (Windows has no fcntl); the import lives inside the
+    #    linux guard so it never runs off Linux regardless.
+    # ponytail: Linux-only -- macOS gets layers 1-2 only because SIOCGIFADDR
+    # differs there; upgrade path is a darwin ioctl branch or a psutil dep.
+    if sys.platform.startswith("linux"):
+        try:
+            import fcntl
+            import struct
+
+            for _idx, _ifname in socket.if_nameindex():
+                # SIOCGIFADDR (0x8915): an interface with no IPv4 address raises
+                # OSError -- skip it.
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _sock:
+                        _packed = struct.pack("256s", _ifname.encode()[:15])
+                        _info = fcntl.ioctl(_sock.fileno(), 0x8915, _packed)
+                        addrs.add(socket.inet_ntoa(_info[20:24]))
+                except Exception:
+                    pass
+            # IPv6 has no ioctl equivalent; /proc/net/if_inet6 lists them, the
+            # first whitespace field being 32 hex chars.
+            try:
+                with open("/proc/net/if_inet6") as _fh:
+                    for _line in _fh:
+                        try:
+                            addrs.add(str(ipaddress.IPv6Address(int(_line.split()[0], 16))))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+    # Drop scope ids (``fe80::1%eth0``) so every result parses as a bare
+    # address, and lower/skip empties.
+    out: set[str] = set()
+    for _addr in addrs:
+        _norm = str(_addr).split("%", 1)[0].strip().lower()
+        if _norm:
+            out.add(_norm)
+    return out
+
+
+def _resolve_own_host_names() -> "tuple[frozenset[str], bool]":
+    """Resolve this machine's own hostname/FQDN/addresses (lowered).
+
+    Blocking (DNS) — call from a worker thread, never on the event loop.
+    Returns ``(resolved, complete)``: *resolved* is the set of names/addresses
+    found (empty when nothing could be resolved), and *complete* is False when
+    the FQDN lookup or ANY per-name address lookup raised — so a pass that
+    enriched only some names is not mistaken for a full one.  The set content is
+    unchanged by *complete*; a caller publishes the partial set but withholds the
+    resolved-once latch when it is False.
+    """
+    names: set[str] = set(_own_host_seed())
+    complete = True
+    try:
+        fqdn = socket.getfqdn().strip().lower()
+        if fqdn and fqdn != "localhost":
+            names.add(fqdn)
+    except Exception:  # pragma: no cover - fqdn lookup is best-effort
+        complete = False
+    for name in sorted(names):
+        try:
+            for info in socket.getaddrinfo(name, None):
+                addr = str(info[4][0]).strip().lower()
+                if addr:
+                    names.add(addr)
+        except Exception:
+            complete = False
+            continue
+    # Interface addresses DNS does not know are merged in here.  A miss inside
+    # the enumeration is NOT an incomplete resolve -- the retry latch is for DNS
+    # enrichment, and a host with no IPv6 route is not a partial pass -- so this
+    # never touches ``complete`` (and the helper is best-effort, never raising).
+    names |= _own_interface_addresses()
+    return frozenset(n for n in names if n), complete
+
+
+def _resolve_own_host_names_into_cache() -> None:
+    """Worker-thread body: publish resolved names, latch DONE only when complete.
+
+    Merges into the existing cache (a later partial pass never SHRINKS it) and
+    publishes whenever anything resolved, so partial results still protect.  The
+    resolved-once latch (``_OWN_HOST_RESOLVE_DONE``) is set ONLY on a complete
+    resolve: an incomplete one leaves it False so ``_own_host_names`` keeps
+    scheduling the backoff retry for the names that failed to enrich, instead of
+    caching a partial set for the process lifetime.  The worker clears the
+    single-flight latch on exit (success, partial, or raise) so the backoff
+    retry can spawn again.
+    """
+    global _OWN_HOST_NAMES_CACHE, _OWN_HOST_RESOLVE_DONE, _OWN_HOST_RESOLVE_IN_FLIGHT
+    try:
+        resolved, complete = _resolve_own_host_names()
+        if resolved:
+            existing = _OWN_HOST_NAMES_CACHE or frozenset()
+            _OWN_HOST_NAMES_CACHE = existing | resolved
+        if complete:
+            _OWN_HOST_RESOLVE_DONE = True
+    finally:
+        with _OWN_HOST_RESOLVE_LOCK:
+            _OWN_HOST_RESOLVE_IN_FLIGHT = False
+
+
+def _own_host_names() -> "frozenset[str]":
+    """The own-name set: the synchronous seed at once, DNS enrichment later.
+
+    Non-blocking: the first call publishes the gethostname seed inline (so an
+    own-hostname target is denied from the very first command — no resolution
+    race), then kicks the DNS enrichment off in a daemon thread and returns
+    whatever is published.  The enrichment is single-flight: at most one worker
+    at a time, retried after the backoff while it keeps failing.
+    """
+    global _OWN_HOST_NAMES_CACHE, _OWN_HOST_RESOLVE_NEXT_TRY, _OWN_HOST_RESOLVE_IN_FLIGHT
+    if _OWN_HOST_RESOLVE_DONE:
+        cached = _OWN_HOST_NAMES_CACHE
+        return cached if cached is not None else frozenset()
+    with _OWN_HOST_RESOLVE_LOCK:
+        if _OWN_HOST_NAMES_CACHE is None:
+            _OWN_HOST_NAMES_CACHE = _own_host_seed()
+        now = time.monotonic()
+        if now >= _OWN_HOST_RESOLVE_NEXT_TRY and not _OWN_HOST_RESOLVE_IN_FLIGHT:
+            _OWN_HOST_RESOLVE_NEXT_TRY = now + _OWN_HOST_RESOLVE_BACKOFF_SECS
+            _OWN_HOST_RESOLVE_IN_FLIGHT = True
+            try:
+                threading.Thread(
+                    target=_resolve_own_host_names_into_cache,
+                    name="kirocrew-own-host-resolve",
+                    daemon=True,
+                ).start()
+            except Exception:
+                _OWN_HOST_RESOLVE_IN_FLIGHT = False
+                raise
+        return _OWN_HOST_NAMES_CACHE
+
+
+def _host_is_self(host: str) -> bool:
+    """True if *host* (already isolated) names this machine.
+
+    Checks the hard-coded loopback names, the ``127.`` prefix, IP-literal
+    forms — bare IPv6 (``::1``, ``::ffff:127.0.0.1``), and the numeric IPv4
+    spellings ``inet_aton`` accepts (``2130706433``, ``0x7f000001``,
+    ``0177.0.0.1``) — and finally the resolved own-name set.
+    """
+    host = host.rstrip(".")
+    if not host:
+        return False
+    if host in _LOOPBACK_HOST_NAMES or host.startswith("127."):
+        return True
+    try:
+        ip: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(
+            host
+        )
+        # Unwrap IPv4-mapped IPv6 (::ffff:127.0.0.1) explicitly: is_loopback
+        # only delegates to the mapped address from Python 3.12.4 on, and
+        # requires-python admits older 3.12 micros where it reads False.
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        if ip.is_loopback or ip.is_unspecified:
+            return True
+        if str(ip).lower() in _own_host_names():
+            return True
+    except ValueError:
+        pass
+    try:
+        packed = socket.inet_aton(host)
+        ip4 = ipaddress.IPv4Address(packed)
+        if ip4.is_loopback or ip4.is_unspecified:
+            return True
+        if str(ip4) in _own_host_names():
+            return True
+    except OSError:
+        pass
+    return host in _own_host_names()
+
+
+def _operand_targets_self(operand: str) -> bool:
+    """True if *operand* names THIS machine as a connection target.
+
+    Resolves the host part the way the ssh family reads an operand: an
+    optional ``ssh://``/``scp://``/``sftp://``/``rsync://`` scheme (authority
+    isolated before any path), an optional ``user@`` prefix stripped from the
+    HOST part only (an ``@`` in a remote PATH is not userinfo), a bracketed
+    IPv6 literal, a bare IPv6/numeric IP literal, and a ``host:path`` colon
+    form.  A bare word equal to a self-host name also counts: for ssh/sftp it
+    IS the positional target, and for scp/rsync a local file named exactly
+    ``localhost`` is not worth carving an allowance for (over-blocking is the
+    safer direction, and the catalog pattern must stay a SUBSET of this
+    predicate — see ``test_retained_pattern_is_a_subset_of_its_predicate``).
+    """
+    t = operand.strip().strip("\"'")
+    if not t or t.startswith("-"):
+        return False
+    # A glued shell operator (``ssh localhost;true`` hands the operand
+    # ``localhost;true``) is never part of a hostname, so consult the
+    # operator-cut spelling too -- the same ``(token, _cut_at_operator(token))``
+    # idiom the git-push floor uses.  This only WIDENS the deny: the cut token
+    # has no operator left, so the recursive call cuts nothing and does not
+    # recurse again, and a bare ``$VAR`` (no operator to cut) is unaffected.
+    cut = _cut_at_operator(t)
+    if cut != t and _operand_targets_self(cut):
+        return True
+    for hint in _HOSTNAME_SUBSTITUTION_HINTS:
+        if hint in t:
+            return True
+    for var in _HOSTNAME_VARIABLE_FORMS:
+        if t == var or t.startswith(var + ".") or t.startswith(var + ":"):
+            return True
+    # An expansion's embedded default is the destination when the variable is
+    # unset — check every ``${…:-word}``-style word (recursion terminates:
+    # the word is strictly shorter than the operand).
+    for match in _EXPANSION_DEFAULT_RE.finditer(t):
+        if _operand_targets_self(match.group(1)):
+            return True
+    for scheme in ("ssh://", "scp://", "sftp://", "rsync://"):
+        if t.startswith(scheme):
+            # Isolate the URI authority before any path, so an ``@`` or ``:``
+            # in the remote path cannot masquerade as userinfo or a port.
+            t = t[len(scheme) :].split("/", 1)[0]
+            break
+    # A bare loopback/IP literal is a host even when it CONTAINS colons
+    # (``::1``, ``::ffff:127.0.0.1``): check the whole token before
+    # colon-splitting, which would read an IPv6 literal as an empty host.
+    if _host_is_self(t):
+        return True
+    if t.startswith("[") or "@[" in t:
+        # Bracketed IPv6, optionally behind userinfo: user@[::1]:path
+        host = t.split("[", 1)[1].partition("]")[0]
+    else:
+        # host[:path] first, THEN userinfo — in that order, so an ``@`` in
+        # the path part (``localhost:/tmp/a@b``) is never taken as userinfo.
+        host = t.partition(":")[0]
+        if "@" in host:
+            host = host.rsplit("@", 1)[1]
+    return _host_is_self(host)
+
+
+def _ssh_family_verb(token: str) -> "str | None":
+    """The ssh-family verb *token* invokes, or None.
+
+    Path-qualified (``/usr/bin/ssh``) and Windows (``ssh.exe``) spellings
+    resolve to the bare verb.
+    """
+    base = _program_basename(_strip_redirect(token.strip("\"'")))
+    if base.endswith(".exe"):
+        base = base[: -len(".exe")]
+    return base if base in _SSH_FAMILY_VERBS else None
+
+
+# ssh_config keywords that SET the destination.  ``-o hostname=…`` rewrites
+# the host the positional operand merely aliases, and ``-o proxyjump=…``
+# opens a connection of its own — so a self value in either is a self
+# connection regardless of the operand.  Generic ``opt=value`` spellings
+# (rsync ``--exclude=localhost``) name data, not a destination.
+_SSH_ROUTING_OPTION_KEYS: tuple[str, ...] = ("hostname", "proxyjump")
+
+# ssh_config keywords whose VALUE is a command line ssh runs LOCALLY, not a
+# host.  ``-o proxycommand="ssh localhost x"`` and ``-o localcommand=…`` both
+# exec their value on THIS machine, so a value that itself opens a channel to
+# this host is a self connection; ``-o knownhostscommand=…`` likewise runs its
+# value locally (to print known_hosts lines), so it is scanned the same way.
+# scp/sftp forward ``-o`` to ssh, so the same hole reaches them.  The value is
+# checked by recursing the whole floor on it.
+_SSH_COMMAND_OPTION_KEYS: tuple[str, ...] = ("proxycommand", "localcommand", "knownhostscommand")
+
+
+def _proxyjump_value_targets_self(value: str) -> bool:
+    """True if any hop in a ProxyJump chain names this host.
+
+    A ProxyJump value is a COMMA-SEPARATED chain (``localhost,far``); ssh dials
+    the first hop directly from HERE, so a self-host anywhere in the chain is a
+    self dial.  Each hop is checked (fail-closed): over-blocking a later hop is
+    the safe direction, and it keeps this simple.
+    """
+    return any(_operand_targets_self(hop) for hop in value.split(","))
+
+
+def _routing_option_key_value_targets_self(key: str, value: str) -> bool:
+    """True if ssh option *key* routes *value* to this host.
+
+    ``-o`` may be GLUED to the keyword (``-ohostname=…``), so a leading ``o`` in
+    front of a longer name is the option letter, not part of the keyword.
+    ProxyJump is a comma-chain; ProxyCommand/LocalCommand values are local
+    command lines that recurse the floor (the value is strictly shorter than the
+    token, so the recursion terminates); Hostname is a single host.
+    """
+    if key.startswith("o") and len(key) > 1:
+        key = key[1:]
+    if key == "proxyjump":
+        return _proxyjump_value_targets_self(value)
+    if key in _SSH_ROUTING_OPTION_KEYS:  # "hostname" (proxyjump handled above)
+        return _operand_targets_self(value)
+    if key in _SSH_COMMAND_OPTION_KEYS:
+        return _is_ssh_to_self(value)
+    return False
+
+
+def _routing_option_value_targets_self(token: str, *, value_slot: bool) -> bool:
+    """True if *token* carries a routing option value naming this host.
+
+    Covers the ``key=value`` spelling, the config-style WHITESPACE spelling
+    OpenSSH equally accepts (``-o "Hostname localhost"`` resolves to the same
+    routing -- verified against ``ssh -G``), and the attached jump-host form
+    (``-Jlocalhost``, ``-Jlocalhost,far``, which opens a connection of its own).
+    The whitespace form is only read in a VALUE SLOT (an option's argument, or
+    attached to the option itself): in plain operand position a two-word token
+    is remote command data (``ssh far 'hostname localhost'``), not routing.
+    """
+    head, eq, value = token.partition("=")
+    if eq:
+        if _routing_option_key_value_targets_self(head.lstrip("-"), value):
+            return True
+    elif value_slot:
+        parts = token.strip().split(None, 1)
+        if len(parts) == 2 and _routing_option_key_value_targets_self(
+            parts[0].lstrip("-"), parts[1]
+        ):
+            return True
+    if token.startswith("-"):
+        bare = token.lstrip("-")
+        if len(bare) > 1 and bare[0] == "j" and _proxyjump_value_targets_self(bare[1:]):
+            return True
+    return False
+
+
+def _is_ssh_to_self(text_lower: str) -> bool:
+    """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
+
+    Structural for the same reason the other floors are: the target hides
+    behind options, redirects, quoting, and prefixes.  The argv walk is
+    FAIL-CLOSED about option grammar: instead of a per-verb table of which
+    options take values (the shape that mis-consumed ``scp -r localhost:…``),
+    EVERY token that could be an operand — including one sitting where an
+    option's value would go — is checked against the self-host set.  A
+    non-forwarding option value (a port, a cipher) never names this host, so
+    the check costs nothing; a self-host hiding in value position is denied.
+    The one carved-out value class is the forward/bind specs
+    (``_SSH_FORWARD_OPT_LETTERS``): ``ssh -L 127.0.0.1:8080:db:5432
+    far-host`` names a local LISTEN address, not a destination, and must
+    stay allowed.
+    ssh/sftp consume their FIRST unshadowed operand as the positional host
+    (later operands are the remote command, where a word like "localhost" is
+    data, not a destination); scp/rsync accept a target in any operand
+    position.  ``opt=value`` tokens (``-ohostname=localhost``,
+    ``-o proxyjump=localhost``) have their value checked too.  Redirections
+    are stepped over the way bash removes them from argv.  Same argv-boundary
+    discipline as the self-kill floor: the walk is substitution-aware and
+    stops at this command's own separator.
+
+    Two evasions are neutralized before the walk.  Empty command substitutions
+    (``s$()sh``, ``local$()host``) expand to nothing, so they are collapsed out
+    of the source text first -- otherwise they hide the verb from the substring
+    gate and the self-host from an operand.  Quote and backslash splices
+    (``ss""h``, ``s\\sh``) are rejoined by shlex in the tokens but still hide the
+    verb from the raw-substring gate, so the gate probes a splice-stripped copy.
+    Two value classes are command lines this host runs LOCALLY rather than
+    hosts, and both recurse this floor on the value: ssh's
+    ``-o proxycommand=``/``-o localcommand=`` (in
+    ``_routing_option_value_targets_self``) and rsync's ``-e``/``--rsh``.
+    rsync also honors a leading ``RSYNC_RSH=`` environment assignment as the
+    same selector -- handled in the walk below; the wider remote-shell env-var
+    family (``GIT_SSH_COMMAND`` and the like) is a documented residual, as are
+    the shell-builtin export spellings (``declare -x``/``typeset -x``), which
+    are not leading-assignment syntax and so are not modeled by the walk.
+    """
+    # Collapse empty expansions in the SOURCE so the gate and tokenization both
+    # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
+    text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
+    # Mask every ``;``/``|`` that is QUOTED or backslash-escaped in the source to
+    # a sentinel BEFORE tokenization, so a quoted separator surviving into a
+    # shlex-dequoted token (``scp 'a;b' localhost:/x``) is no longer read as a
+    # command boundary by ``_ends_argv`` -- which would end the walk before the
+    # real target and let the connection through.  It is restored only at the
+    # faithful operand/routing checks below; recursion sites receive the masked
+    # text unchanged (the mask is idempotent -- their quotes are already gone).
+    # Found in review (Opus), round 6.
+    text_lower = _mask_quoted_separators(text_lower)
+    # Quote/backslash splices survive into the tokens (shlex rejoins them) but
+    # defeat this raw-substring gate, so probe a copy with them stripped out.
+    probe = text_lower.replace('"', "").replace("'", "").replace("\\", "")
+    if not any(verb in probe for verb in _SSH_FAMILY_VERBS):
+        return False
+    for tokens in _self_token_frames(text_lower):
+        programs = _argv_programs(tokens)
+        # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
+        # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb
+        # so the operand walk below never sees it.  When rsync runs live, that
+        # value is a local command line that recurses the floor.  Bash applies a
+        # leading assignment to the WHOLE simple command that follows -- the
+        # command word and every child it execs, wrappers of any shape
+        # (``env``/``command``/``timeout`` …) included -- so an ordinary word
+        # does NOT drop the pending value; only a command separator ends that
+        # simple command and clears it (tracked substitution-aware, so a ``;``
+        # inside ``$( … )`` does not).  ``export`` makes the value persist for
+        # the rest of the line, so an exported value is remembered separately
+        # and survives separators.
+        rsync_rsh_pending: "str | None" = None
+        rsync_rsh_exported: "str | None" = None
+        prev_stripped_tok: "str | None" = None
+        outer_depth = 0
+        for i, token in enumerate(tokens):
+            verb = _ssh_family_verb(token)
+            if verb is None:
+                stripped_tok = token.strip("\"'")
+                assign = _RSYNC_RSH_ASSIGN_RE.match(stripped_tok)
+                if assign is not None:
+                    value = assign.group(1).strip("\"'")
+                    rsync_rsh_pending = value
+                    # A preceding ``export`` makes the assignment persist into
+                    # every later segment's environment for real, so remember it
+                    # where no separator clears it.
+                    if prev_stripped_tok == "export":
+                        rsync_rsh_exported = value
+                else:
+                    outer_depth += _substitution_depth_delta(token)
+                    if outer_depth <= 0 and _ends_argv(token):
+                        # A command separator ends the simple command the
+                        # leading assignment prefixed; pending does not cross it.
+                        rsync_rsh_pending = None
+                    outer_depth = max(outer_depth, 0)
+                prev_stripped_tok = stripped_tok
+                continue
+            # A verb starts a fresh simple command, so the ``export`` adjacency
+            # run ends here.
+            prev_stripped_tok = None
+            # ``echo ssh localhost`` prints two words; it connects to nothing.
+            if _data_consumer_exempt(i, token, programs, tokens):
+                continue
+            # rsync execs a pending ``RSYNC_RSH`` value as its remote shell FROM
+            # HERE, so a value that opens a channel to this host is a self dial.
+            # An unexported value applies only to this simple command; an
+            # exported one persists, so fall back to it when nothing is pending.
+            if verb == "rsync":
+                rsync_rsh = (
+                    rsync_rsh_pending
+                    if rsync_rsh_pending is not None
+                    else rsync_rsh_exported
+                )
+                if rsync_rsh is not None and _is_ssh_to_self(rsync_rsh):
+                    return True
+            positional_pending = verb in ("ssh", "sftp")
+            option_shadow = False  # previous token was an option that may take a value
+            forward_value_pending = False  # previous token was a forward/bind option
+            redirect_target_pending = False  # previous token was a detached redirect op
+            rsh_value_pending = False  # previous token was rsync -e/--rsh (value is a local cmd)
+            depth = 0
+            for arg in tokens[i + 1 :]:
+                stripped = arg.strip("\"'")
+                # Classify BEFORE testing whether the token ends the argv
+                # (same order as the self-kill floor): a quoted remote payload
+                # may contain separator characters, and for scp/rsync a
+                # target can legally follow it.
+                if redirect_target_pending:
+                    # The filename after a detached ``>``/``2>``/``<`` — bash
+                    # removes both words from argv before exec.
+                    redirect_target_pending = False
+                elif rsh_value_pending:
+                    # The detached value of rsync ``-e``/``--rsh``: a
+                    # remote-shell command line rsync execs FROM HERE, so
+                    # ``-e 'ssh localhost'`` opens a local ssh into this host.
+                    # Recurse the floor on the value (strictly shorter than the
+                    # whole command, so this terminates).  Checked first so the
+                    # value is consumed whatever it looks like.
+                    rsh_value_pending = False
+                    option_shadow = False
+                    if _is_ssh_to_self(stripped):
+                        return True
+                elif ">" in stripped or "<" in stripped:
+                    # A redirection construct.  The part before the operator is
+                    # an ordinary word when non-numeric
+                    # (``localhost>/dev/null``); a bare or fd-prefixed operator
+                    # (``>``, ``2>``) also consumes the NEXT token as its
+                    # target, unless the target is attached (``>/dev/null``,
+                    # ``2>&1``).
+                    remainder = _strip_redirect(stripped)
+                    if remainder and not remainder.isdigit():
+                        checkable = positional_pending or verb in ("scp", "rsync")
+                        if checkable and _operand_targets_self(_unmask_separators(remainder)):
+                            return True
+                        if not option_shadow:
+                            positional_pending = False
+                    elif stripped.endswith((">", "<")):
+                        redirect_target_pending = True
+                    option_shadow = False
+                elif stripped.startswith("-") and len(stripped) > 1:
+                    # An option.  Its attached ``=value`` is checked only for
+                    # the ROUTING options ssh resolves a destination from
+                    # (``-ohostname=localhost``, ``-oproxyjump=localhost``) —
+                    # a generic ``--opt=value`` (rsync ``--exclude=localhost``)
+                    # names data, not a destination.
+                    if _routing_option_value_targets_self(
+                        _unmask_separators(stripped), value_slot=True
+                    ):
+                        return True
+                    # rsync runs its ``-e``/``--rsh`` value as the remote-shell
+                    # command FROM HERE, so ``-e 'ssh localhost'`` execs a local
+                    # ssh into this host: the value is a command line, not a
+                    # host, and must recurse this floor.  It rides in-token for
+                    # ``--rsh=…`` and for a single-dash bundle that reaches
+                    # ``e`` with letters after it (``-e'ssh …'`` tokenizes to
+                    # ``-essh …``); a bare ``--rsh`` or a bundle ENDING in ``e``
+                    # (``-ave``) takes the NEXT token via ``rsh_value_pending``.
+                    # Only exactly ``rsh`` among double-dash options consumes a
+                    # value, so ``--exclude=localhost`` stays data.
+                    if verb == "rsync":
+                        bare_opt = stripped.lstrip("-")
+                        if stripped == "--rsh":
+                            rsh_value_pending = True
+                        elif stripped.startswith("--rsh="):
+                            if _is_ssh_to_self(stripped.partition("=")[2]):
+                                return True
+                        elif not stripped.startswith("--") and "e" in bare_opt:
+                            attached = bare_opt.partition("e")[2]
+                            if attached and _is_ssh_to_self(attached):
+                                return True
+                            if not attached:
+                                rsh_value_pending = True
+                    option_shadow = True
+                    bare = stripped.lstrip("-")
+                    # Forward/bind exemption is ssh-ONLY: scp/rsync have no
+                    # forward options, and their `-r`/`-l` are the valueless
+                    # flags whose mis-classification hid `scp -r localhost:…`
+                    # in review round one.
+                    forward_value_pending = (
+                        verb == "ssh" and len(bare) == 1 and bare in _SSH_FORWARD_OPT_LETTERS
+                    )
+                elif forward_value_pending:
+                    # The value of a forward/bind option (see
+                    # ``_SSH_FORWARD_OPT_LETTERS``) names a listen address or
+                    # a far-side hop, not a destination this process connects
+                    # to from here — exempt from the fail-closed check.
+                    forward_value_pending = False
+                    option_shadow = False
+                else:
+                    # An operand, or the value of the preceding option.  Check
+                    # it either way (fail-closed — see the docstring); only an
+                    # UNSHADOWED operand consumes the ssh/sftp positional slot.
+                    checkable = positional_pending or verb in ("scp", "rsync")
+                    if checkable and _operand_targets_self(_unmask_separators(stripped)):
+                        return True
+                    if _routing_option_value_targets_self(
+                        _unmask_separators(stripped), value_slot=option_shadow
+                    ):
+                        return True
+                    if not option_shadow:
+                        positional_pending = False
+                    option_shadow = False
+                depth += _substitution_depth_delta(arg)
+                if depth <= 0 and _ends_argv(arg):
+                    break
+                depth = max(depth, 0)
     return False
 
 
@@ -17926,6 +18751,7 @@ def is_denied(
         ("self-protection-gateway-restart", _is_self_gateway_restart),
         ("self-protection-cloud", _is_self_cloud_destructive),
         ("self-protection-dev-mode-out-of-root-confirm", _is_dev_mode_out_of_root_confirm),
+        ("sandbox-escape-ssh-self", _is_ssh_to_self),
     ):
         pattern = _SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:

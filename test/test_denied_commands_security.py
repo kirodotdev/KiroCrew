@@ -38,10 +38,10 @@ class TestCatalog:
         # deniedCommands list + 7 legacy security.py globs (secret-fetch tool
         # names + boto3 underscore destructive forms) restored as regexes,
         # plus later additions (e.g. the dev-mode out-of-install confirmation
-        # flag, #6907).
-        assert len(BUILTIN_DENIED_RULES) == 149
+        # flag, #6907, and the ssh-to-self sandbox-escape deny).
+        assert len(BUILTIN_DENIED_RULES) == 150
         ids = [r.id for r in BUILTIN_DENIED_RULES]
-        assert len(set(ids)) == 149
+        assert len(set(ids)) == 150
 
     def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
         """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway
@@ -180,7 +180,7 @@ class TestCatalog:
     def test_patterns_match_manifest_verbatim(self):
         golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
         golden_by_id = {g["id"]: g for g in golden}
-        assert len(golden_by_id) == 149
+        assert len(golden_by_id) == 150
         for rule in BUILTIN_DENIED_RULES:
             g = golden_by_id[rule.id]
             assert rule.pattern == g["pattern"]
@@ -194,7 +194,7 @@ class TestCatalog:
 
     def test_builtin_denied_rules_accessor_returns_dicts(self):
         rules = builtin_denied_rules()
-        assert len(rules) == 149
+        assert len(rules) == 150
         first = rules[0]
         assert set(first.keys()) == {"id", "pattern", "category", "description"}
         assert isinstance(first["id"], str)
@@ -5958,3 +5958,582 @@ class TestPolynomialBacktrackingStaysBounded:
         matcher.match(subject)
         elapsed = time.perf_counter() - start
         assert elapsed < 1.0, f"deny evaluation took {elapsed:.1f}s — gate would stall"
+
+
+class TestSandboxEscapeSshSelf:
+    """``ssh localhost`` re-enters this machine OUTSIDE the sandbox.
+
+    The far side of a loopback/own-host connection is a fresh unsandboxed
+    login shell (and passwordless sudo there completes a full escape), so the
+    ssh family refuses a target that resolves to THIS machine.  Same two-tier
+    build as the other self-protection floors: a lint-safe positional regex in
+    the catalog (the human-auditable subset) plus the ``_is_ssh_to_self`` argv
+    floor that resolves options, quoting, ``user@`` prefixes, and this host's
+    own names.  Connections to OTHER hosts must stay allowed — including a
+    remote command that merely mentions "localhost" as data.
+    """
+
+    _RULE = "sandbox-escape-ssh-self"
+
+    @staticmethod
+    def _effective():
+        return list(compute_effective_denied(BUILTIN_DENIED_RULES, (), False, (), ()))
+
+    @pytest.fixture(autouse=True)
+    def _pin_own_host_cache(self, monkeypatch):
+        # None of this class's parametrized deny cases target the machine's own
+        # hostname dynamically -- they use localhost / 127.0.0.1 / ::1 / the
+        # literal ``$(hostname)`` text hint -- so a fixed cache with the
+        # resolved-once latch set covers them, and it keeps ``_own_host_names``
+        # from seeding the module globals and spawning the real
+        # ``kirocrew-own-host-resolve`` getfqdn/getaddrinfo daemon thread (a
+        # no-test-side-effects violation, plus leaked global state for the
+        # worker). ``_OWN_HOST_RESOLVE_DONE`` short-circuits ``_own_host_names``
+        # before the lock, so there is no seed and no thread; monkeypatch
+        # restores the globals afterward. The resolver unit tests below re-pin
+        # these same globals and call the cache fn directly, so this autouse pin
+        # does not interfere with them.
+        own = security.socket.gethostname().strip().lower()
+        pinned = frozenset(name for name in {own, own.split(".", 1)[0]} if name)
+        monkeypatch.setattr(security, "_OWN_HOST_NAMES_CACHE", pinned)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+
+    def test_rule_is_registered_on_both_tiers(self):
+        assert self._RULE in {r.id for r in BUILTIN_DENIED_RULES}
+        assert self._RULE in security._SELF_PROTECTION_FLOOR_RULE_IDS
+        assert self._RULE in security._SELF_PROTECTION_FLOOR_NOTES
+        assert _rule_pattern(self._RULE) in self._effective()
+        # A pattern that fails the safety lint is silently DISABLED by
+        # ``_DenyMatcher`` — the rule would report as present while enforcing
+        # nothing, which is exactly how the first draft of this rule failed.
+        assert is_safe_user_regex(_rule_pattern(self._RULE))
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Regex-tier spellings (target directly after the verb).
+            "ssh localhost 'sudo -n true'",
+            "ssh 127.0.0.1 whoami",
+            "ssh ::1 uptime",
+            "ssh user@localhost id",
+            "scp localhost:/var/tmp/f .",
+            "true; ssh localhost id",
+            "ssh $(hostname) id",
+            "ssh.exe localhost id",
+            # Floor-only spellings (options/quoting the regex cannot resolve).
+            "ssh -o StrictHostKeyChecking=no localhost 'sudo -n true'",
+            "ssh -p 22 localhost id",
+            'ssh "localhost" id',
+            "ssh 127.1 whoami",
+            "bash -c 'ssh localhost id'",
+            "rsync -av /var/tmp/d/ localhost:/var/tmp/b/",
+            "sftp user@localhost",
+            "ssh ssh://localhost:22 id",
+            # Option-shadow fail-closed: a valueless-in-scp/rsync flag must
+            # not swallow the target (the shape that defeated round one).
+            "scp -r localhost:/dir .",
+            "rsync -r localhost:/src /dst",
+            "ssh -q localhost id",
+            "ssh -vp 22 localhost id",
+            # Redirections are removed from argv the way bash removes them.
+            "ssh >/dev/null localhost id",
+            "ssh > /dev/null localhost id",
+            "ssh 2>&1 localhost id",
+            "ssh -p 22 localhost>/dev/null",
+            # Routing options set the destination regardless of the operand —
+            # in both the ``key=value`` and OpenSSH's config-style whitespace
+            # spellings, and the attached jump-host form.
+            "ssh -ohostname=localhost far-alias id",
+            "ssh -o hostname=localhost far-alias id",
+            "ssh -o proxyjump=localhost far-host id",
+            'ssh -o "Hostname localhost" far-alias id',
+            'ssh -o "ProxyJump localhost" far-host id',
+            "ssh -Jlocalhost far-host id",
+            # URI authority and @-in-path parsing.
+            "rsync rsync://localhost/module/x .",
+            "scp -v localhost:/tmp/a@b .",
+            # IP-literal forms: IPv6, IPv4-mapped, decimal, hex.
+            "ssh ::ffff:127.0.0.1 id",
+            "ssh 2130706433 id",
+            "ssh 0x7f000001 id",
+            # An expansion's embedded default is the destination when the
+            # variable is unset — bash substitutes it before exec.
+            "ssh ${TARGET:-localhost} id",
+            'ssh "${TARGET:-localhost}" id',
+            "ssh ${H:=127.0.0.1} id",
+            # Empty command substitutions expand to nothing, and quote/backslash
+            # splices rejoin, so ``s$()sh``/``ss""h``/``s\sh`` all run ``ssh`` and
+            # ``local$()host`` resolves to ``localhost``.
+            "s$()sh localhost 'id'",
+            "ssh local$()host id",
+            'ss""h localhost id',
+            "s\\sh localhost id",
+            # ProxyJump is a comma-separated hop chain dialed from HERE; a self
+            # host anywhere in it is a self dial (``-o`` and attached ``-J``).
+            "ssh -o proxyjump=localhost,far.example.com far.example.com",
+            "ssh -Jlocalhost,far.example.com far.example.com",
+            # ProxyCommand/LocalCommand values are command lines run LOCALLY, so
+            # a self ssh inside one reaches the local sshd; scp forwards ``-o``.
+            'ssh -o proxycommand="ssh localhost sh" far.example.com',
+            'scp -o proxycommand="ssh localhost x" far.example.com:/a /tmp/b',
+            # rsync execs its ``-e``/``--rsh`` value from HERE (detached,
+            # ``--rsh=`` attached, and bundle-final ``-e`` like ``-ave``).
+            "rsync -e 'ssh localhost' /tmp/f far.example.com:/p",
+            "rsync --rsh='ssh localhost' /tmp/f far.example.com:/p",
+            "rsync -ave 'ssh localhost' /tmp/f far.example.com:/p",
+            # rsync also reads its remote shell from a leading ``RSYNC_RSH=``
+            # environment assignment, which rides BEFORE the verb where the
+            # operand walk never sees it -- including the ``env VAR=x prog``
+            # spelling that puts the assignment after the word ``env``.
+            "RSYNC_RSH='ssh localhost' rsync /tmp/f far:/f",
+            "env RSYNC_RSH='ssh localhost' rsync /tmp/f far:/f",
+            "RSYNC_RSH='ssh localhost' OTHER=1 rsync /tmp/f far:/f",
+            # A glued shell operator after the target is a word BOUNDARY, not
+            # part of the hostname, so ``ssh localhost;true`` connects HERE --
+            # the own-name compare reads the operator-cut spelling too.
+            "ssh localhost;true",
+            "printf 'id\\n' | ssh localhost;",
+            # OpenSSH runs KnownHostsCommand LOCALLY, exactly like
+            # Proxy/LocalCommand, so a self ssh in its value reaches the local
+            # sshd -- the ``-o key=value`` and glued ``-okey=value`` spellings
+            # alike.
+            "ssh -o KnownHostsCommand='ssh localhost id' far-host uptime",
+            "ssh -oKnownHostsCommand='ssh localhost id' far-host uptime",
+            # A wrapper (``command``/``exec``) between the leading ``RSYNC_RSH``
+            # and rsync does not end the simple command, so the assignment still
+            # applies when rsync execs -- the self remote-shell runs from here.
+            "RSYNC_RSH='ssh localhost' command rsync -a /src/ far:/dst/",
+            "RSYNC_RSH='ssh localhost' exec rsync -a /src/ far:/dst/",
+            # A non-wrapper word (``timeout 5``) between the assignment and rsync
+            # does not clear it either: bash applies a leading assignment to the
+            # WHOLE simple command that follows, wrappers of any shape included.
+            "RSYNC_RSH='ssh localhost' timeout 5 rsync remote-host:/x .",
+            # ``export`` makes the value persist for the rest of the line, so it
+            # crosses the ``;`` into the later rsync.
+            "export RSYNC_RSH='ssh localhost' ; rsync remote-host:/x .",
+            # Regression: the base leading-assignment form stays denied.
+            "RSYNC_RSH='ssh localhost' rsync remote-host:/x .",
+            # A separator that was QUOTED (or backslash-escaped) in the source
+            # is DATA, not a command boundary -- shlex dequotes it, so the walk
+            # must not stop at the token carrying it and miss the real self
+            # target that follows.  (Opus round-6 bypass: masked before the
+            # walk, restored only at the faithful operand/routing checks.)
+            "scp 'a;b' localhost:/tmp/x",
+            "ssh -o 'remotecommand=id;' localhost",
+            # A quoted separator INSIDE the rsync remote-shell value still
+            # denies: the value recurses the floor and finds ssh-to-self.
+            "rsync -e 'ssh localhost; true' remote-host:/x .",
+        ],
+    )
+    def test_self_targets_are_denied(self, cmd):
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The remote command is DATA: "localhost" in a later operand is not
+            # a destination, quoted or not.
+            "ssh far-host.example.com 'curl localhost:8080/health'",
+            "ssh far-host.example.com curl localhost:8080/health",
+            "ssh far-host 'grep localhost /var/tmp/hostsfile'",
+            # Ordinary remote work stays allowed.
+            "ssh clu1767-ops.example.com uptime",
+            "scp file.txt far-host:/var/tmp/",
+            "rsync -av src/ far-host:/dst/",
+            "sftp far-host",
+            "ssh -o proxycommand='nc %h %p' far-host id",
+            "ssh -l ubuntu far-host id",
+            # Non-connection mentions.
+            "grep -r localhost src/",
+            "echo ssh localhost",
+            "curl http://localhost:8080/api",
+            "man ssh",
+            # Subset/false-positive guards from review: a REMOTE host that
+            # merely starts with "localhost", an IPv6 that merely starts with
+            # "::1", an unrelated program name, an unrelated variable, and a
+            # data-naming opt=value.
+            "ssh localhost.example.com id",
+            "ssh ::10 id",
+            "notssh localhost",
+            "ssh $HOSTNAME_BACKUP id",
+            "rsync --exclude=localhost src/ far-host:/d/",
+            # The whitespace routing form is read only in a VALUE SLOT: in
+            # operand position a two-word token is remote command data.
+            "ssh far-host 'hostname localhost'",
+            # Forward/bind specs name listen addresses and far-side hops, not
+            # a destination this process connects to from here.
+            "ssh -L 127.0.0.1:8080:db:5432 far-host",
+            "ssh -D localhost:1080 far-host",
+            "ssh -R localhost:2222:localhost:22 far-host",
+            "ssh -W localhost:22 far-host",
+            "ssh -b localhost far-host id",
+            "ssh -l ubuntu far-host uptime",
+            # A remote-host default in an expansion stays allowed; only the
+            # embedded word is checked, and a bare $VAR is the documented
+            # run-time residual.
+            "ssh ${TARGET:-far-host} id",
+            # A remote command that merely contains an empty expansion is data,
+            # not a self dial.
+            "ssh far.example.com 'echo $()'",
+            # A ProxyJump chain of only remote hops stays allowed (``-o`` and
+            # detached ``-J`` alike).
+            "ssh -o proxyjump=far1.example.com,far2.example.com target.example.com",
+            "ssh -J far1.example.com,far2.example.com target.example.com",
+            # rsync ``--rsh`` naming plain ``ssh`` (no self host) is the
+            # normal remote-shell selector; ``--exclude`` names data.  (The
+            # detached ``-e ssh`` spelling is floor-allowed too -- asserted in
+            # test_rsync_detached_rsh_floor_allows_plain_ssh -- but the
+            # pre-existing ``reverse-shell-nc`` catalog rule substring-matches
+            # ``rsy[nc -e]``, so end-to-end it is denied by that older rule.)
+            "rsync --rsh=ssh /tmp/f far.example.com:/p",
+            "rsync --exclude=localhost /tmp/f far.example.com:/p",
+            # A leading ``RSYNC_RSH`` naming a REMOTE shell target is the
+            # ordinary selector; and a mention with no live rsync verb (``echo
+            # RSYNC_RSH=…``) connects to nothing.
+            "RSYNC_RSH='ssh far-host' rsync /tmp/f other:/f",
+            "echo RSYNC_RSH='ssh localhost'",
+            # A quoted mention that is never executed connects to nothing.
+            'echo "ssh localhost"',
+            # A glued operator after a REMOTE target is still just a boundary:
+            # ``ssh far-host;true`` connects to far-host, not here.
+            "ssh far-host;true",
+            # KnownHostsCommand naming a non-ssh local helper is not a self dial
+            # -- the value recurses the floor and finds no ssh-to-self.
+            "ssh -o KnownHostsCommand='/usr/bin/true' far-host uptime",
+            # An env-preserving wrapper with a REMOTE ``RSYNC_RSH`` is the
+            # ordinary remote-shell selector, not a self dial.
+            "RSYNC_RSH='ssh far-host' command rsync -a /s/ d:/d/",
+            # A non-exported leading ``RSYNC_RSH`` applies only to its own simple
+            # command, so it does NOT cross a ``;`` into a later rsync.
+            "RSYNC_RSH='ssh localhost' true ; rsync remote-host:/x .",
+            # A leading ``RSYNC_RSH`` naming a REMOTE shell through a wrapper is
+            # the ordinary selector, not a self dial.
+            "RSYNC_RSH='ssh far-host' timeout 5 rsync remote-host:/x .",
+            # A QUOTED separator is data, so the walk keeps going past it -- but
+            # the target after it is REMOTE, so the command still stays allowed.
+            "scp 'a;b' far-host:/tmp/x",
+            # A REAL (unquoted) separator still ends the walk, so a self host in
+            # the NEXT simple command is not this command's ssh target.
+            "scp f.txt far-host:/x; ping localhost",
+            "ssh far-host; echo localhost",
+        ],
+    )
+    def test_other_hosts_and_mentions_stay_allowed(self, cmd):
+        assert _denied_by(cmd) is None, cmd
+
+    def test_floor_spawns_no_dns_resolver_thread(self):
+        # With the own-host cache pinned by the autouse fixture, evaluating a
+        # representative allow case through the floor must NOT spawn the real
+        # ``kirocrew-own-host-resolve`` daemon (DONE=True short-circuits
+        # ``_own_host_names`` before the thread).
+        assert _denied_by("ssh far-host.example.com uptime") is None
+        assert not any(
+            t.name == "kirocrew-own-host-resolve" for t in threading.enumerate()
+        ), "the DNS-enrichment daemon thread was spawned during the floor scan"
+
+    def test_rsync_detached_rsh_floor_allows_plain_ssh(self):
+        # THIS floor must not deny the normal detached remote-shell selector;
+        # the end-to-end deny of this string comes from the unrelated
+        # ``reverse-shell-nc`` catalog rule (unanchored ``nc -e.*`` matching
+        # inside ``rsync -e``), which predates this change.
+        assert not security._is_ssh_to_self("rsync " + "-e ssh /tmp/f far.example.com:/p")
+
+    def test_mask_quoted_separators_round_trip(self):
+        # The mask rewrites only QUOTED / backslash-escaped ``;``/``|`` to
+        # sentinels and leaves a real operator alone; unmask is its exact
+        # inverse.  This is the mechanism that keeps a shlex-dequoted separator
+        # from ending the operand walk early (Opus round-6 bypass).
+        mask = security._mask_quoted_separators
+        unmask = security._unmask_separators
+        semi = security._QUOTED_SEP_SENTINELS[";"]
+        pipe = security._QUOTED_SEP_SENTINELS["|"]
+        # Single-quoted separators are data -> sentinels.
+        assert mask("scp 'a;b' localhost:/x") == "scp 'a" + semi + "b' localhost:/x"
+        # Double-quoted separators (both forms) are data -> sentinels.
+        assert mask('echo "a;b|c"') == 'echo "a' + semi + "b" + pipe + 'c"'
+        # A backslash-escaped separator OUTSIDE quotes is data -> sentinel; the
+        # backslash is kept so shlex still de-escapes downstream.
+        assert mask("a\\;b") == "a\\" + semi + "b"
+        # An UNQUOTED, unescaped separator is a real operator -> untouched.
+        masked_real = mask("ssh far; echo x")
+        assert masked_real == "ssh far; echo x"
+        assert ";" in masked_real and semi not in masked_real
+        # An unterminated quote leaves the rest of the string quoted.
+        assert mask("ssh 'a;b") == "ssh 'a" + semi + "b"
+        # unmask reverses the mask exactly (round-trip identity).
+        for s in (
+            "scp 'a;b' localhost:/x",
+            'echo "a;b|c"',
+            "a\\;b",
+            "ssh far; echo x",
+            "ssh 'a;b",
+        ):
+            assert unmask(mask(s)) == s
+
+    def test_own_hostname_is_denied_once_resolved(self, monkeypatch):
+        # The enriched set reads the published cache; enrichment happens in a
+        # worker thread (see test_own_name_resolution below), so the deny path
+        # is tested against a directly-published set.
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(
+            security, "_OWN_HOST_NAMES_CACHE", frozenset({"myhost.example.com", "myhost"})
+        )
+        assert _denied_by("ssh myhost.example.com sudo id") == self._RULE
+        assert _denied_by("ssh user@myhost id") == self._RULE
+        assert _denied_by("ssh otherhost.example.com id") is None
+
+    def test_first_own_host_command_is_denied_without_waiting_for_dns(self, monkeypatch):
+        # The gethostname seed is published SYNCHRONOUSLY on first use, so the
+        # very first `ssh <own-hostname>` is denied even while DNS enrichment
+        # has not run (no resolution race).
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(security, "_OWN_HOST_NAMES_CACHE", None)
+        # Backoff pushed to the future so no enrichment thread spawns in-test.
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(security.socket, "gethostname", lambda: "MyHost.Example.Com")
+        assert _denied_by("ssh myhost.example.com sudo id") == self._RULE
+        assert _denied_by("ssh myhost id") == self._RULE
+        assert _denied_by("ssh otherhost.example.com id") is None
+
+    def test_unresolved_own_names_still_block_loopback(self, monkeypatch):
+        # The loopback half never depends on the seed or on DNS enrichment.
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(security, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+
+        def _boom():
+            raise OSError("no hostname")
+
+        monkeypatch.setattr(security.socket, "gethostname", _boom)
+        assert _denied_by("ssh -p 22 localhost id") == self._RULE
+        assert security._own_host_names() == frozenset()
+
+    def test_mapped_loopback_denial_does_not_rely_on_is_loopback_delegation(
+        self, monkeypatch
+    ):
+        # Before Python 3.12.4, IPv6Address("::ffff:127.0.0.1").is_loopback is
+        # False (no ipv4_mapped delegation).  _host_is_self must unwrap the
+        # mapped address itself, so the deny holds on every supported micro.
+        # Simulate the old semantics by pinning the IPv6 properties to False.
+        import ipaddress as _ipaddress
+
+        monkeypatch.setattr(
+            _ipaddress.IPv6Address, "is_loopback", property(lambda self: False)
+        )
+        monkeypatch.setattr(
+            _ipaddress.IPv6Address, "is_unspecified", property(lambda self: False)
+        )
+        assert _denied_by("ssh ::ffff:127.0.0.1 id") == self._RULE
+
+    def test_own_name_resolution_is_best_effort(self, monkeypatch):
+        # The resolver itself (thread body) tolerates hostname/DNS failures, and
+        # reports the pass INCOMPLETE so the caller does not latch a partial set.
+        def _boom():
+            raise OSError("no hostname")
+
+        monkeypatch.setattr(security.socket, "gethostname", _boom)
+        monkeypatch.setattr(security.socket, "getfqdn", _boom)
+        # Interface enumeration is a separate, DNS-independent source (Fix 3);
+        # stub it empty here so this test isolates the DNS-failure path it
+        # targets.  raising=False keeps it valid on a tree without the helper.
+        monkeypatch.setattr(security, "_own_interface_addresses", set, raising=False)
+        resolved, complete = security._resolve_own_host_names()
+        assert resolved == frozenset()
+        assert complete is False
+        monkeypatch.setattr(security.socket, "gethostname", lambda: "MyHost.Example.Com")
+        monkeypatch.setattr(security.socket, "getfqdn", lambda: "myhost.example.com")
+        monkeypatch.setattr(
+            security.socket, "getaddrinfo", lambda *a, **k: (_ for _ in ()).throw(OSError())
+        )
+        resolved, complete = security._resolve_own_host_names()
+        assert {"myhost.example.com", "myhost"} <= resolved
+        assert complete is False
+
+    def test_partial_resolve_publishes_but_leaves_retryable(self, monkeypatch):
+        # A pass where one name enriches and another fails must PUBLISH the
+        # successes yet leave DONE False -- otherwise the FQDN that failed to
+        # resolve latches a partial set and bypasses the floor forever.
+        monkeypatch.setattr(security, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(security.socket, "gethostname", lambda: "MyHost.Example.Com")
+        monkeypatch.setattr(security.socket, "getfqdn", lambda: "myhost.example.com")
+
+        def _gai(name, *a, **k):
+            if name == "myhost":
+                return [(None, None, None, None, ("10.0.0.9", 0))]
+            raise OSError("no addr")
+
+        monkeypatch.setattr(security.socket, "getaddrinfo", _gai)
+        security._resolve_own_host_names_into_cache()
+        assert security._OWN_HOST_NAMES_CACHE is not None
+        assert {"myhost", "10.0.0.9"} <= security._OWN_HOST_NAMES_CACHE
+        assert security._OWN_HOST_RESOLVE_DONE is False
+
+    def test_hung_resolver_spawns_no_overlapping_workers(self, monkeypatch):
+        # A DNS resolve that hangs past the 60s backoff must NOT stack a new
+        # daemon per call: the single-flight latch gates the spawn while a
+        # worker is alive, and the worker clears it on exit so the retry can
+        # spawn again (single-flight, not single-shot).
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(security, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        # raising=False so this test also runs against pre-fix code (which lacks
+        # the attribute) and fails on the behavioral overlap assert, not on a
+        # missing attribute -- the parent's proof pass reverts the hunk and
+        # expects THIS test to fail there.
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_IN_FLIGHT", False, raising=False)
+
+        spawned: list[threading.Thread] = []
+        hang = threading.Event()
+
+        def _hang():
+            spawned.append(threading.current_thread())
+            hang.wait(timeout=10)
+            return frozenset(), False
+
+        monkeypatch.setattr(security, "_resolve_own_host_names", _hang)
+
+        def _poll_until(pred, timeout=1.0, step=0.01):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if pred():
+                    return True
+                time.sleep(step)
+            return pred()
+
+        try:
+            security._own_host_names()
+            assert _poll_until(lambda: len(spawned) == 1), "first worker did not start"
+            # Backoff expired again, worker still hung: no new thread may spawn.
+            for _ in range(2):
+                monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+                security._own_host_names()
+            assert len(spawned) == 1, "overlapping resolver workers were spawned"
+        finally:
+            hang.set()
+            for t in spawned:
+                t.join(timeout=10)
+
+        # The latch clears when the worker exits, so the retry can spawn again.
+        cleared = _poll_until(lambda: security._OWN_HOST_RESOLVE_IN_FLIGHT is False)
+        assert cleared, "single-flight latch was not cleared on worker exit"
+        # A fresh call after the worker exited spawns the retry (hang is set, so
+        # this worker returns at once).
+        spawned.clear()
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        security._own_host_names()
+        try:
+            assert _poll_until(lambda: len(spawned) == 1), "retry did not spawn after exit"
+        finally:
+            for t in spawned:
+                t.join(timeout=10)
+
+    def test_complete_resolve_latches_done(self, monkeypatch):
+        # A fully successful pass (fqdn + every address) latches DONE so the
+        # backoff retry stops.
+        monkeypatch.setattr(security, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(security.socket, "gethostname", lambda: "MyHost.Example.Com")
+        monkeypatch.setattr(security.socket, "getfqdn", lambda: "myhost.example.com")
+        monkeypatch.setattr(
+            security.socket,
+            "getaddrinfo",
+            lambda *a, **k: [(None, None, None, None, ("10.0.0.9", 0))],
+        )
+        security._resolve_own_host_names_into_cache()
+        assert security._OWN_HOST_NAMES_CACHE is not None
+        assert {"myhost.example.com", "myhost", "10.0.0.9"} <= security._OWN_HOST_NAMES_CACHE
+        assert security._OWN_HOST_RESOLVE_DONE is True
+
+    def test_partial_resolve_merges_without_shrinking(self, monkeypatch):
+        # A later partial pass UNIONS into the cache rather than replacing it, so
+        # a name learned by an earlier pass is never dropped by one that missed
+        # it -- and it still does not latch DONE while incomplete.
+        monkeypatch.setattr(security, "_OWN_HOST_NAMES_CACHE", frozenset({"a"}))
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(security, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(
+            security, "_resolve_own_host_names", lambda: (frozenset({"b"}), False)
+        )
+        security._resolve_own_host_names_into_cache()
+        assert security._OWN_HOST_NAMES_CACHE == frozenset({"a", "b"})
+        assert security._OWN_HOST_RESOLVE_DONE is False
+
+    def test_pattern_is_a_subset_of_the_floor_predicate(self):
+        """The catalog-visible pattern must never claim more than the floor.
+
+        Mirror of ``test_retained_pattern_is_a_subset_of_its_predicate``: every
+        command the pattern denies must also be denied by ``_is_ssh_to_self``,
+        or the displayed text and the enforcement drift apart.
+        """
+        rx = re.compile(_rule_pattern(self._RULE), re.IGNORECASE)
+        corpus = [
+            "ssh localhost id",
+            "scp localhost x",
+            "rsync localhost x",
+            "sftp localhost",
+            "ssh user@127.0.0.1",
+            "ssh ::1",
+            "scp localhost:/var/tmp/f .",
+            "ssh $(hostname) id",
+            "ssh ${HOSTNAME} id",
+            "true; ssh localhost",
+            "ssh.exe localhost id",
+            "dir/ssh localhost",
+            "/usr/bin/ssh localhost id",
+            "ssh localhost:",
+        ]
+        for cmd in corpus:
+            if rx.search(cmd.lower()):
+                assert security._is_ssh_to_self(cmd.lower()), (
+                    f"pattern matched but predicate did not: {cmd}"
+                )
+
+    def test_opt_out_disables_both_tiers(self):
+        effective = compute_effective_denied(
+            BUILTIN_DENIED_RULES, (self._RULE,), False, (), ()
+        )
+        assert is_denied("ssh -p 22 localhost id", denied_regexes=list(effective)) is None
+        assert is_denied("ssh localhost id", denied_regexes=list(effective)) is None
+
+    def test_tokenizer_failure_does_not_allow_the_regex_form(self, monkeypatch):
+        # Union, not replacement: with the floor's tokenizer down, the raw-text
+        # pattern must still catch the adjacent spelling.
+        def _boom(_cmd):
+            raise ValueError("simulated tokenizer failure")
+
+        monkeypatch.setattr(security, "normalize_shell_command", _boom)
+        assert _denied_by("ssh localhost id") == self._RULE
+
+    def test_resolver_includes_interface_addresses(self, monkeypatch):
+        # An interface IP with no DNS record (a DHCP lease, a secondary NIC)
+        # still names this machine, so the resolver must union in
+        # ``_own_interface_addresses``.  The DNS halves are stubbed to fixed
+        # values so the test is network-free; raising=False so it also runs
+        # against the pre-fix tree (where the helper is absent) and fails on the
+        # missing address rather than on a patch error.
+        monkeypatch.setattr(security.socket, "gethostname", lambda: "myhost")
+        monkeypatch.setattr(security.socket, "getfqdn", lambda: "myhost.example.com")
+        monkeypatch.setattr(security.socket, "getaddrinfo", lambda *a, **k: [])
+        monkeypatch.setattr(
+            security, "_own_interface_addresses", lambda: {"203.0.113.7"}, raising=False
+        )
+        resolved, _complete = security._resolve_own_host_names()
+        assert "203.0.113.7" in resolved
+
+    def test_own_interface_addresses_returns_parseable_addresses(self):
+        # The real helper is best-effort but must only ever return strings that
+        # parse as IP addresses.  On Linux the per-interface sweep sees loopback,
+        # so the set is non-empty; off-Linux the sweep is skipped, so only the
+        # parseability contract is asserted there.
+        import ipaddress
+        import sys as _sys
+
+        addrs = security._own_interface_addresses()
+        for addr in addrs:
+            ipaddress.ip_address(addr)  # raises ValueError if unparseable
+        if _sys.platform.startswith("linux"):
+            assert addrs, "Linux loopback should always enumerate at least one address"

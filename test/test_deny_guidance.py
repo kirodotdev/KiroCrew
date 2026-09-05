@@ -151,8 +151,8 @@ def _rule_tier_reason(rule: security.DeniedCommandRule) -> str:
     :mod:`kiro_crew.security` emits through, precisely so the micro-format cannot
     drift between them, so calling it is driving the producer rather than pinning
     a copy of its output. The end-to-end tests below additionally go through
-    ``is_denied`` with a real command; this form is what lets every one of the 148
-    catalog rows be asserted without inventing 148 commands, several of which an
+    ``is_denied`` with a real command; this form is what lets every catalog
+    row be asserted without inventing one command per row, several of which an
     always-on floor would answer before their rule ever spoke.
     """
     return security._deny_reason(rule.pattern, None)
