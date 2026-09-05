@@ -10126,7 +10126,11 @@
       "session_color": "세션 색상",
       "session_color_hint": "이 에이전트가 시작한 세션은 세션 자체 색상이 없으면 이 색상을 사용합니다. 변경하면 해당 세션이 다시 착색됩니다. 에이전트 색상을 사용하지 않으려면 비워 두세요.",
       "session_color_hex": "세션 색상 16진수 값",
-      "session_color_clear": "지우기"
+      "session_color_clear": "지우기",
+      "discard_unsaved_changes": "저장하지 않은 변경 사항을 취소하시겠어요?",
+      "discard_unsaved_body": "이 크루에는 저장되지 않은 편집 내용이 있습니다. 지금 닫으면 삭제됩니다.",
+      "discard_confirm": "변경 사항 취소",
+      "discard_also_crew_edits": "이 크루의 다른 저장되지 않은 편집 내용도 함께 삭제됩니다."
     },
     "knowledge": {
       "detailView": {

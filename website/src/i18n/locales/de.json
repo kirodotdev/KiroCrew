@@ -10273,7 +10273,11 @@
       "session_color": "Sitzungsfarbe",
       "session_color_hint": "Von diesem Agenten gestartete Sitzungen verwenden diese Farbe, sofern die Sitzung keine eigene Farbe hat. Eine Änderung färbt diese Sitzungen neu ein. Leer lassen für keine Agentenfarbe.",
       "session_color_hex": "Hex-Wert der Sitzungsfarbe",
-      "session_color_clear": "Entfernen"
+      "session_color_clear": "Entfernen",
+      "discard_unsaved_changes": "Nicht gespeicherte Änderungen verwerfen?",
+      "discard_unsaved_body": "Diese Crew hat Änderungen, die nie gespeichert wurden. Wenn Sie jetzt schließen, gehen sie verloren.",
+      "discard_confirm": "Änderungen verwerfen",
+      "discard_also_crew_edits": "Die übrigen nicht gespeicherten Änderungen dieser Crew gehen damit ebenfalls verloren."
     },
     "knowledge": {
       "detailView": {

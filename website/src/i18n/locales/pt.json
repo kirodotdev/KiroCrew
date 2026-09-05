@@ -10420,7 +10420,11 @@
       "session_color": "Cor da sessão",
       "session_color_hint": "As sessões iniciadas por este agente usam esta cor, a menos que a sessão tenha uma cor própria. Editá-la recolore essas sessões. Deixe vazio para nenhuma cor de agente.",
       "session_color_hex": "Valor hexadecimal da cor da sessão",
-      "session_color_clear": "Limpar"
+      "session_color_clear": "Limpar",
+      "discard_unsaved_changes": "Descartar alterações não salvas?",
+      "discard_unsaved_body": "Este grupo tem edições que nunca foram salvas. Fechar agora vai descartá-las.",
+      "discard_confirm": "Descartar alterações",
+      "discard_also_crew_edits": "As outras edições não salvas deste grupo serão descartadas junto com ele."
     },
     "knowledge": {
       "detailView": {

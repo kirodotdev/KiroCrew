@@ -32,6 +32,7 @@ import { SourceBadge } from '../components/SourceBadge'
 import { errMessage } from '../utils/thunkError'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
 
+import { useConfirm } from '../components/ConfirmDialog'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
 /** Common shape returned by the agent/workspace mutation endpoints. */
@@ -840,6 +841,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
   const closeSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setConfirmDelete(false) }, [])
 
+  /** Async discard confirm for the editor's dismissal paths. `confirmOpen` is
+   *  read below so a dismissal while the confirm is up does not re-ask. */
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+
   /**
    * Identity of the CURRENT panel opening, bumped on every open and every
    * close.
@@ -850,6 +855,17 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    * cannot tell those two apart. A per-opening counter can.
    */
   const sheetEpoch = useRef(0)
+
+  /**
+   * The discard confirm currently on screen, as a promise of the user's answer;
+   * `null` when none is up.
+   *
+   * The epoch above cannot express a question that has not been answered yet: it
+   * only moves once the sheet actually closes. A save that is still STAGING an
+   * upload therefore needs this to know it must not commit through a live
+   * question — see the wait in `saveEdit` and the assignment in `attemptClose`.
+   */
+  const discardAnswer = useRef<Promise<boolean> | null>(null)
 
   /**
    * Apply a finished write's outcome ONLY if the panel it was fired from is
@@ -975,6 +991,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         ? { kind: 'image', promote: true, token: stagedToken }
         : { kind: 'image' }
     }
+    // A discard confirm raised WHILE this save was staging owns the outcome, so
+    // wait for the user's answer instead of racing it: a PUT fired mid-question
+    // would persist exactly the edits the question is about, and the epoch check
+    // below cannot see an answer that has not arrived yet. Once answered there
+    // is nothing to wait for — Discard closed the sheet and moved the epoch, so
+    // that check carries the same decision.
+    const pendingDiscard = discardAnswer.current
+    if (pendingDiscard && (await pendingDiscard)) return
     if (epoch !== sheetEpoch.current) return
     updateMut.mutate({
       name,
@@ -1070,6 +1094,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const sheetBusy =
     createMut.isPending || updateMut.isPending || deleteMut.isPending || avatarUploading
 
+  /**
+   * A write that has reached the server and cannot be recalled — the subset of
+   * `sheetBusy` that has already committed something.
+   *
+   * `avatarUploading` is deliberately EXCLUDED. That leg of saveEdit only
+   * STAGES a picture, and its own epoch check abandons the PUT when the sheet
+   * closes underneath it, so during staging nothing is committed and every edit
+   * is still genuinely discardable. `attemptClose` reads this rather than
+   * `sheetBusy` for that reason: skipping the discard confirm there would let a
+   * dismissal drop the whole save silently.
+   */
+  const committing = updateMut.isPending || deleteMut.isPending
+
   /** Which rail pane the editor body is showing. Reset whenever the editor is
    *  pointed somewhere else, so a crew never opens on the pane the previous one
    *  happened to be left on. */
@@ -1114,8 +1151,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setPane(key)
   }, [schedDraft, pane])
 
-  /** Editor dismissal (footer Cancel, Escape, overlay click) routes through
-   *  here: same draft, same guard, same reason as the pane switch above. */
+  /** The schedule-draft leg of editor dismissal (footer Cancel, Escape,
+   *  overlay click): same draft, same guard, same reason as the pane switch
+   *  above. attemptClose below fronts every dismissal path and routes here
+   *  when a draft is open; the closeSheet fall-through keeps this callable on
+   *  its own without re-testing the flag at each call site. */
   const requestClose = useCallback(() => {
     if (schedDraft) { setDiscardAsk('close'); return }
     closeSheet()
@@ -1238,6 +1278,74 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (schedDraft) out.add('schedules')
     return out
   }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar])
+
+  /**
+   * Guarded dismissal for the editor's Cancel / Escape / overlay-click paths.
+   *
+   * A successful save closes through settleFor/closeSheet directly and must
+   * never route here — only user-initiated dismissal is guarded. The create
+   * form's dirtiness is not tracked by dirtyPanes (scoped `!creating`, matching
+   * the unsaved-changes note in the footer), so it always closes immediately.
+   *
+   * An open schedule draft keeps its OWN confirm via requestClose rather than
+   * this generic one, and is therefore tested FIRST — dirtyPanes contains
+   * 'schedules' while the draft is open, so the order is what decides which
+   * dialog the user sees. That confirm is not interchangeable with this one: it
+   * locks its destructive button while the draft's create POST is in flight
+   * (discarding cannot cancel the request) and unlocks it after a grace period,
+   * neither of which the shared useConfirm expresses. It does have to widen its
+   * QUESTION when it is the one shown, though — `discardTakesSheet` below — or
+   * a dialog naming only the typed schedule would take the crew's other unsaved
+   * panes with it.
+   *
+   * A COMMITTING write in flight is dismissed WITHOUT the confirm. The values
+   * on screen are the ones the user just submitted, so there is nothing unsaved
+   * to discard, and the request is not cancellable — offering "Discard changes"
+   * there would promise a rollback the backend will not honor and the edits
+   * would land anyway. Dismissing mid-write stays allowed, as the DialogContent
+   * note explains: sheetEpoch/settleFor is what makes the abandoned write land
+   * harmlessly on the UI. This reads `committing`, NOT `sheetBusy`: the
+   * avatar-staging leg holds sheetBusy while nothing is committed yet, and
+   * skipping the confirm there would silently drop the entire save.
+   *
+   * A confirm raised DURING that staging leg is published on `discardAnswer` so
+   * the save waits for the answer rather than committing through the question —
+   * without it the upload could finish mid-question and fire the PUT, and a
+   * Discard would then close the editor over edits the server had already been
+   * told to keep.
+   */
+  const attemptClose = useCallback(async () => {
+    if (schedDraft) { requestClose(); return }
+    if (creating || committing || dirtyPanes.size === 0) { closeSheet(); return }
+    // Published on the ref BEFORE the await so a save still staging an upload
+    // sees the question and holds its PUT until it is answered.
+    const answer = confirm({
+      title: i18nT('pages.kiroCrewAgentsPage.discard_unsaved_changes'),
+      body: i18nT('pages.kiroCrewAgentsPage.discard_unsaved_body'),
+      confirmLabel: i18nT('pages.kiroCrewAgentsPage.discard_confirm'),
+    })
+    discardAnswer.current = answer
+    const discard = await answer
+    // Identity-checked: a second confirm answers the first `false` and takes
+    // over the ref, so clearing unconditionally would drop the live one.
+    if (discardAnswer.current === answer) discardAnswer.current = null
+    if (discard) closeSheet()
+  }, [schedDraft, requestClose, creating, committing, dirtyPanes, confirm, closeSheet])
+
+  /**
+   * Whether the schedule confirm's pending target destroys the WHOLE editor
+   * while panes OTHER than the draft are dirty — the case where its question
+   * has to name them.
+   *
+   * 'close' and 'chat' both end with closeSheet, so answering "Discard
+   * schedule" over a dialog that mentioned only the typed schedule is how an
+   * untouched-looking Model or Triggers edit disappears without ever being
+   * asked about. A pane switch and a form collapse keep the sheet, so the
+   * narrow question is the true one there and neither escalates.
+   */
+  const discardTakesSheet =
+    (discardAsk === 'close' || discardAsk === 'chat')
+    && [...dirtyPanes].some(k => k !== 'schedules')
 
   const sections = useCrewEditorSections({
     templateLabel: provider.labels.agentTemplateField,
@@ -1424,7 +1532,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         )}
       </div>
 
-      <Dialog open={!!sheet} onOpenChange={next => { if (!next) requestClose() }}>
+      {/* While the discard confirm is open it owns Escape/outside-click; a
+          dismissal reaching the editor here would re-ask the guard the confirm
+          just raised, so it is ignored until the confirm settles.
+          modal is dropped while the confirm is up: the confirm is a body-portal
+          Modal outside this Radix DialogContent, so keeping Radix's focus scope
+          active would trap focus back onto Save behind the confirm and let
+          Enter persist the edits the confirm is asking to discard. Releasing
+          the scope hands focus to the confirm's own trap. The schedule-draft
+          confirm below needs neither guard: it is a nested Radix Dialog inside
+          this DialogContent, so Radix's own layering already keeps it on top
+          and keeps this editor from treating its Escape as a dismissal. */}
+      <Dialog open={!!sheet} modal={!confirmOpen} onOpenChange={next => { if (!next && !confirmOpen) attemptClose() }}>
         <DialogContent
           /* The rail needs horizontal room; the create form does not have one. */
           maxWidth={creating ? 560 : 790}
@@ -1748,7 +1867,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   : i18nT('components.crewEditor.unsaved_changes')}
               </span>
             )}
-            <Btn onClick={requestClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
+            <Btn onClick={attemptClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
             {creating ? (
               <SendBtn onClick={create} disabled={sheetBusy}>
                 {createMut.isPending ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}
@@ -1781,12 +1900,30 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               alternative, because a bare "Cancel" beside the editor's own
               footer Cancel is the ambiguity this PR removes elsewhere. */}
           <Dialog open={discardAsk !== null} onOpenChange={next => { if (!next) setDiscardAsk(null) }}>
-            <DialogContent maxWidth={440} className="z-[110]" aria-label={i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')}>
+            <DialogContent
+              maxWidth={440}
+              className="z-[110]"
+              aria-label={discardTakesSheet
+                ? i18nT('pages.kiroCrewAgentsPage.discard_unsaved_changes')
+                : i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')}
+            >
               <DialogHeader>
-                <DialogTitle>{i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')}</DialogTitle>
+                <DialogTitle>
+                  {discardTakesSheet
+                    ? i18nT('pages.kiroCrewAgentsPage.discard_unsaved_changes')
+                    : i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')}
+                </DialogTitle>
               </DialogHeader>
               <DialogBody>
                 <p className="m-0 text-sm text-text">{i18nT('pages.kiroCrewAgentsPage.discard_new_schedule_body')}</p>
+                {/* Full contrast, same as the line above: this is the half of
+                    the consequence the narrow question left out, so it must not
+                    read as a footnote to it. */}
+                {discardTakesSheet && (
+                  <p className="mb-0 mt-2 text-sm text-text" data-testid="crew-sched-discard-also-crew">
+                    {i18nT('pages.kiroCrewAgentsPage.discard_also_crew_edits')}
+                  </p>
+                )}
                 {/* The reason Discard is locked, as VISIBLE text: the button's
                     `title` never reaches keyboard or touch users, and browsers
                     often suppress titles on disabled controls entirely. */}
@@ -1815,7 +1952,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   title={schedSaving ? i18nT('components.jobForm.saving') : undefined}
                   data-testid="crew-sched-discard-confirm"
                 >
-                  {i18nT('pages.kiroCrewAgentsPage.discard_schedule_confirm')}
+                  {discardTakesSheet
+                    ? i18nT('pages.kiroCrewAgentsPage.discard_confirm')
+                    : i18nT('pages.kiroCrewAgentsPage.discard_schedule_confirm')}
                 </Btn>
               </DialogFooter>
             </DialogContent>
@@ -1834,6 +1973,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           )}
         </DialogContent>
       </Dialog>
+      {confirmDialog}
     </>
   )
 }

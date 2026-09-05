@@ -3922,7 +3922,11 @@
       "session_color": "Session Color",
       "session_color_hint": "Sessions this agent starts use this color unless the session has a color of its own. Editing it re-tints those sessions. Leave empty for no agent color.",
       "session_color_hex": "Session color hex value",
-      "session_color_clear": "Clear"
+      "session_color_clear": "Clear",
+      "discard_unsaved_changes": "Discard unsaved changes?",
+      "discard_unsaved_body": "This crew has edits that were never saved. Closing now throws them away.",
+      "discard_confirm": "Discard changes",
+      "discard_also_crew_edits": "The crew's other unsaved edits are thrown away with it."
     },
     "knowledge": {
       "detailView": {

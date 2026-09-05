@@ -10420,7 +10420,11 @@
       "session_color": "Colore sessione",
       "session_color_hint": "Le sessioni avviate da questo agente usano questo colore a meno che la sessione non abbia un colore proprio. Modificarlo ricolora quelle sessioni. Lasciare vuoto per nessun colore agente.",
       "session_color_hex": "Valore esadecimale del colore sessione",
-      "session_color_clear": "Cancella"
+      "session_color_clear": "Cancella",
+      "discard_unsaved_changes": "Ignorare le modifiche non salvate?",
+      "discard_unsaved_body": "Questa crew ha modifiche che non sono mai state salvate. Chiudere ora le eliminerà.",
+      "discard_confirm": "Ignora le modifiche",
+      "discard_also_crew_edits": "Anche le altre modifiche non salvate di questa crew andranno perse insieme a essa."
     },
     "knowledge": {
       "detailView": {

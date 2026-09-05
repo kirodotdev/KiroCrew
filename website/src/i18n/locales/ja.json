@@ -10126,7 +10126,11 @@
       "session_color": "セッションの色",
       "session_color_hint": "このエージェントが開始したセッションは、セッション自身の色がない限りこの色を使用します。変更するとそれらのセッションが再着色されます。エージェントの色を設定しない場合は空欄にしてください。",
       "session_color_hex": "セッションの色の16進値",
-      "session_color_clear": "クリア"
+      "session_color_clear": "クリア",
+      "discard_unsaved_changes": "保存していない変更を破棄しますか？",
+      "discard_unsaved_body": "このクルーには保存されていない編集があります。今閉じると破棄されます。",
+      "discard_confirm": "変更を破棄",
+      "discard_also_crew_edits": "このクルーの他の未保存の編集も一緒に破棄されます。"
     },
     "knowledge": {
       "detailView": {

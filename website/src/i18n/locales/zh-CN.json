@@ -10126,7 +10126,11 @@
       "session_color": "会话颜色",
       "session_color_hint": "由此代理启动的会话在自身没有颜色时使用此颜色。修改它会重新为这些会话着色。留空则不使用代理颜色。",
       "session_color_hex": "会话颜色十六进制值",
-      "session_color_clear": "清除"
+      "session_color_clear": "清除",
+      "discard_unsaved_changes": "放弃未保存的更改？",
+      "discard_unsaved_body": "此团队有从未保存的编辑内容。现在关闭将会丢弃它们。",
+      "discard_confirm": "放弃更改",
+      "discard_also_crew_edits": "此团队其他未保存的编辑内容也会随之丢弃。"
     },
     "knowledge": {
       "detailView": {

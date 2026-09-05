@@ -10420,7 +10420,11 @@
       "session_color": "Couleur de session",
       "session_color_hint": "Les sessions lancées par cet agent utilisent cette couleur, sauf si la session a sa propre couleur. La modifier recolore ces sessions. Laisser vide pour aucune couleur d’agent.",
       "session_color_hex": "Valeur hexadécimale de la couleur de session",
-      "session_color_clear": "Effacer"
+      "session_color_clear": "Effacer",
+      "discard_unsaved_changes": "Abandonner les modifications non enregistrées ?",
+      "discard_unsaved_body": "Cet équipage a des modifications qui n’ont jamais été enregistrées. Fermer maintenant les supprimera.",
+      "discard_confirm": "Abandonner les modifications",
+      "discard_also_crew_edits": "Les autres modifications non enregistrées de cet équipage seront supprimées avec elle."
     },
     "knowledge": {
       "detailView": {
