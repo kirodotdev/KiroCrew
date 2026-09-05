@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -78,24 +77,6 @@ class SlotBufferCoordinator:
         return slot.release_pending_chunks()
 
     @staticmethod
-    def append_pending_context(
-        slot: Any,
-        entry: dict[str, Any],
-        *,
-        max_pending_context: int,
-        entry_expired: Callable[[dict[str, Any], float], bool],
-    ) -> None:
-        now = time.time()
-        if entry_expired(entry, now):
-            return
-        slot._pending_context[:] = [
-            current for current in slot._pending_context if not entry_expired(current, now)
-        ]
-        while len(slot._pending_context) >= max_pending_context:
-            slot._pending_context.pop(0)
-        slot._pending_context.append(entry)
-
-    @staticmethod
     def drop_foreign_authorized_notes(
         slot: Any,
         *,
@@ -113,7 +94,27 @@ class SlotBufferCoordinator:
         ]
         dropped = len(slot._pending_context) - len(kept_context)
         if dropped:
+            # HELD, NOT DESTROYED. This slot may not inject content stamped for
+            # another session, but discarding it deletes a durable copy the API
+            # already acknowledged: `pending_context` is slot-owned, so the next save
+            # writes this slot's (now shorter) queue and the stored copy goes with it.
+            # That is unrecoverable, and it fires on a spelling this hydration merely
+            # could not PROVE belongs here -- a folded transcript stem is ambiguous by
+            # construction, because `_safe_key` maps every separator onto `_` and
+            # leaves a literal `_` alone, so `discord:crew_agent:direct:user_1` cannot
+            # be told from a key that really carried underscores there. Holding the
+            # entries lets `export_pending_context` write them back unchanged, so the
+            # copy survives until a live binding resolves the key and the session they
+            # were stamped for can claim them.
+            _foreign = [entry for entry in slot._pending_context if entry not in kept_context]
+            slot._ctx_held_foreign = [
+                *(getattr(slot, "_ctx_held_foreign", None) or []),
+                *_foreign,
+            ]
             slot._pending_context[:] = kept_context
+            # A DESTRUCTIVE MUTATION THE EXPORT'S GENERATION CHECK MUST SEE: a save that
+            # snapshotted before this transfer would otherwise commit the pre-move state.
+            slot._pending_context_gen = getattr(slot, "_pending_context_gen", 0) + 1
 
         kept_messages = [
             message

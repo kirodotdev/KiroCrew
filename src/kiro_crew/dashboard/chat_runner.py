@@ -177,6 +177,7 @@ from kiro_crew.deny_guidance import (
     resolve_credential_tool_hint,
 )
 from kiro_crew.executors import run_in_embed_pool, subprocess_executor
+from kiro_crew.history import same_transcript
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_POST_TOOL_USE,
@@ -371,9 +372,80 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
     rather than duplicated inline where a key rename could silently break a
     consumer while its producer's own tests stay green.
     """
+    # RECOVER ORPHANS FIRST -- and "first" means BEFORE the authorization filter
+    # below, not merely before the drain. `_ctx_inflight` is non-empty here only if a
+    # previous turn drained but never reached delivery -- it exited between the
+    # hand-off and the first stream iteration. Those entries are undelivered, and
+    # assigning `_ctx_inflight` below would DESTROY them, so they are folded back to
+    # the front of the queue and re-delivered now.
+    #
+    # This is what makes the no-loss property STRUCTURAL rather than a list of
+    # patched exits: any termination path that leaves entries in flight -- the two
+    # dispatch-gate `return`s, an exception out of any await in that window, or a
+    # path added later by someone who does not know this invariant exists -- is
+    # recovered here without naming it. Enumerating exits could not be complete,
+    # because every `await` in the window is also an exit.
+    _orphans = [
+        e
+        for e in (getattr(slot, "_ctx_inflight", None) or [])
+        if not context_entry_expired(e, time.time())
+    ]
+    if _orphans:
+        logger.warning(
+            "Recovering %d undelivered pending-context entr%s for slot=%s: a previous "
+            "turn drained them but never reached delivery",
+            len(_orphans),
+            "y" if len(_orphans) == 1 else "ies",
+            slot.key,
+        )
+        slot._pending_context[:0] = _orphans
+        slot._ctx_inflight = []
     # A note's halves resolve their destination here, not at the POST, so a slot
     # rebound since the write must not hand its content to the new session.
+    #
+    # ORDER IS LOAD-BEARING: this runs AFTER the recovery above so the filter sees
+    # the recovered entries. It filters `_pending_context` and `messages` only --
+    # `_ctx_inflight` is NOT one of the lists it walks -- so recovering afterwards
+    # would splice unchecked entries in behind its back. The leak that opens is
+    # concrete: session A queues a note, the turn exits before delivery leaving it
+    # in flight, the slot is rebound to B, and the next drain hands A's note to B.
     slot.drop_foreign_authorized_notes()
+    # ORIGIN-OWNED CONTEXT MUST NOT DRAIN HERE. The durable copy stays with the
+    # transcript that owns it, so injecting via a rebound target replays it later.
+    _ctx_origin = getattr(slot, "_ctx_persisted_key", "")
+    # A REAL non-empty string gates the rest: a stand-in slot (a MagicMock, as several
+    # suites use) auto-creates every attribute as a truthy non-string.
+    if isinstance(_ctx_origin, str) and _ctx_origin and slot._pending_context:
+        _live_ctx_key = slot_history_key(slot)
+        _rebound = isinstance(_live_ctx_key, str) and not same_transcript(
+            _ctx_origin, _live_ctx_key
+        )
+        if _rebound:
+            # ONLY what the old transcript holds: parking the whole queue also withheld
+            # entries queued AFTER the rebind, which have no copy anywhere.
+            _origin_ids = getattr(slot, "_ctx_origin_ids", None)
+            if not isinstance(_origin_ids, set):
+                _origin_ids = set()
+            _old = [
+                e
+                for e in slot._pending_context
+                if not isinstance(e.get("ctxId"), str) or e["ctxId"] in _origin_ids
+            ]
+            if _old:
+                # Parked, not dropped: `_ctx_held_foreign` is the existing bucket for
+                # entries this slot may not INJECT but must not DESTROY.
+                logger.info(
+                    "withholding %d origin-owned pending-context entr%s for slot=%s: the "
+                    "durable copy belongs to %r, so draining here would replay it",
+                    len(_old),
+                    "y" if len(_old) == 1 else "ies",
+                    getattr(slot, "key", "?"),
+                    _ctx_origin,
+                )
+                slot._ctx_held_foreign.extend(_old)
+                slot._pending_context[:] = [
+                    e for e in slot._pending_context if not any(e is o for o in _old)
+                ]
     if not slot._pending_context:
         return ""
     now = time.time()
@@ -392,8 +464,161 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
             f'{entry["content"]}\n'
             f"[End of background context]\n"
         )
+    # HAND-OFF point, not a retirement. The entries move to `_ctx_inflight` rather
+    # than being dropped: they are still exported, so a save or crash between here
+    # and delivery persists ONE copy instead of an empty queue.
+    #
+    # `_dirty` is deliberately NOT set here. Setting it arms the periodic flush,
+    # and that flush is a TIMER -- nothing orders it after delivery -- so arming it
+    # at the hand-off is what durably empties the queue for content that may never
+    # be delivered. `commit_drained_context` arms it once the prompt has reached the
+    # client; `requeue_drained_context` puts the entries back if the turn is
+    # cancelled first.
+    slot._ctx_inflight = [e for e in slot._pending_context if not context_entry_expired(e, now)]
     slot._pending_context.clear()
+    # NOT PROMOTED HERE: the drained entries move to `_ctx_inflight`, which the budget
+    # still counts, so promotion would refuse. It runs in `commit_drained_context`.
+    # Bump the generation so a slot save that exported this queue before this line --
+    # the save runs in an executor thread, this runs on the event loop -- discards its
+    # now-stale copy instead of persisting a shape that no longer describes the slot.
+    slot._pending_context_gen += 1
     return "\n".join(ctx_parts) + "\n" if ctx_parts else ""
+
+
+#: Event kinds that prove THIS prompt reached the provider. ALLOWLIST, not a denylist.
+_PROMPT_ATTRIBUTABLE_EVENTS = frozenset(
+    {
+        EVENT_TEXT_CHUNK,
+        EVENT_THINKING_CHUNK,
+        EVENT_TOOL_CALL,
+        EVENT_TOOL_CALL_UPDATE,
+        EVENT_TOOL_RESULT,
+        EVENT_PERMISSION_REQUEST,
+        EVENT_COMPLETE,
+    }
+)
+
+
+#: The ONLY stop reasons that prove the provider answered this prompt. An ALLOWLIST,
+#: deliberately: a denylist fails OPEN on every reason it has not enumerated.
+_DELIVERY_STOP_REASONS = frozenset(
+    {
+        STOP_REASON_END_TURN,
+        STOP_REASON_REFUSAL,
+    }
+)
+
+
+def event_confirms_delivery(event: object) -> bool:
+    """True when this event proves THIS prompt reached the provider.
+
+    The six streaming kinds are self-proving: the provider emitted something.
+    ``EVENT_COMPLETE`` is not, because it is also SYNTHESIZED locally when a turn
+    ends without a result -- a stale turn, a local timeout, an unacked cancel, a tool
+    stall, a failed compaction -- so accepting it bare would retire durable context
+    that was never delivered, the exact loss this change exists to stop.
+
+    The reason set is an ALLOWLIST because a denylist fails OPEN: several of these
+    terminal events carry a bare literal reason rather than one of the module's
+    constants, so any set enumerating what to REFUSE silently admits the ones it has
+    not met, and admits every reason added later. ``refusal`` is admitted here on
+    purpose -- the provider answering "no" proves it received the prompt.
+
+    Retiring nothing is safe: a genuine turn emits a streaming kind first and
+    :func:`commit_drained_context` is idempotent, so real delivery is already
+    confirmed by then, and an unconfirmed queue is re-delivered rather than lost.
+
+    ATTRIBUTION IS CHECKED FIRST, because the kind alone does not identify whose
+    prompt an event answers. ``runtime_global`` marks a frame that named no owner and
+    was fanned out to every session on the runtime -- another tenant's traffic, which
+    ``AcpEvent`` itself says a consumer "must not read as ITS OWN activity" -- and a
+    non-empty ``sub_session_id`` names a different session's sub-agent. Either one
+    would otherwise retire context this prompt never delivered.
+    """
+    if getattr(event, "runtime_global", False):
+        return False
+    if getattr(event, "sub_session_id", ""):
+        return False
+    kind = getattr(event, "kind", None)
+    if kind not in _PROMPT_ATTRIBUTABLE_EVENTS:
+        return False
+    if kind != EVENT_COMPLETE:
+        return True
+    if getattr(event, "synthetic_completion", False):
+        return False
+    return getattr(event, "stop_reason", "") in _DELIVERY_STOP_REASONS
+
+
+def commit_drained_context(slot: "_ChatSlot") -> None:
+    """Retire drained entries once the prompt has been handed to the client.
+
+    This is the ONLY path that durably empties the queue, which is what makes the
+    invariant hold: the retirement is committed strictly after delivery, never
+    before. Marking dirty here lets the periodic flush persist the emptied queue.
+
+    Idempotent, and a no-op when nothing was drained, so it is safe on a turn that
+    injected no context.
+
+    THE CALLER MUST GATE ON :data:`_PROMPT_ATTRIBUTABLE_EVENTS`. "An event came back"
+    is NOT proof this prompt was delivered: the runtime is shared, so an unrelated
+    passive event — an MCP server initializing, a subagent list, a steer
+    acknowledgement — can be the first thing the stream yields. Committing on one of
+    those and then having the user press Stop before the prompt is processed is
+    unrecoverable, because this function clears ``_ctx_inflight``, which is exactly
+    what :func:`requeue_drained_context` needs to put the entries back: the
+    ``CancelledError`` arm then finds nothing in flight and silently keeps the
+    durable clear. That loses content a 200 already acknowledged, which is the bug
+    class this whole change exists to close.
+
+    The gate is an ALLOWLIST so the failure direction is safe by construction. A new
+    event kind added later is not attributable until someone says so, which leaves
+    the entries in flight — recovered by ``drain_pending_context`` at the cost of at
+    most one duplicate injection, the residual this change already accepts. A
+    denylist would fail the other way, silently promoting each new kind to proof of
+    delivery. ``EVENT_TODO_UPDATE`` is deliberately absent for the same reason: it
+    can follow the model's own tool call, but it is not exclusively prompt-driven, so
+    it is treated as not-proof rather than assumed.
+    """
+    if not getattr(slot, "_ctx_inflight", None):
+        return
+    slot._ctx_inflight = []
+    # SEATS FREE HERE, not at the drain: promoting earlier was refused and never retried,
+    # so acknowledged surplus expired undelivered. Promoted entries stay origin-owned.
+    _promote = getattr(slot, "promote_overflow_context", None)
+    if callable(_promote):
+        _n = _promote()
+        if _n:
+            logger.info(
+                "promoted %d overflow context entr(y/ies) for %s",
+                _n,
+                getattr(slot, "key", "?"),
+            )
+    slot._pending_context_gen += 1
+    slot._dirty = True
+
+
+def requeue_drained_context(slot: "_ChatSlot") -> int:
+    """Return drained-but-undelivered entries to the live queue. Count requeued.
+
+    Called when a turn is cancelled between the drain and delivery -- a close during
+    `build_message` is the measured case. Without this the content is gone from the
+    live queue while never having reached the model, and the only surviving copy is
+    whatever the last save happened to record.
+
+    Entries go back at the FRONT: they were queued before anything that arrived
+    while the turn was in flight, and the drain is FIFO. Routed through
+    `append_pending_context` would re-run the ceiling and could REFUSE its own
+    content back, so the requeue is a direct splice -- these entries were already
+    admitted, and refusing them here would be the same loss by another route.
+    """
+    inflight = getattr(slot, "_ctx_inflight", None) or []
+    if not inflight:
+        return 0
+    slot._ctx_inflight = []
+    slot._pending_context[:0] = inflight
+    slot._pending_context_gen += 1
+    slot._dirty = True
+    return len(inflight)
 
 
 def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
@@ -6947,6 +7172,17 @@ async def _run_chat(
             _user_msg_for_mirror = message
             # Drain pending context injections (silent background context
             # from apps/subagents).  Expired entries are discarded.
+            # The drain HANDS OFF rather than retires: entries move to
+            # `slot._ctx_inflight`, which `export_pending_context` still reports, so a
+            # save or crash between here and delivery persists ONE copy rather than an
+            # empty queue. `commit_drained_context` durably empties the queue only after
+            # the prompt reaches the client, and the CancelledError arm below requeues
+            # if the turn dies first (a close during `build_message` is the measured
+            # case). An earlier shape marked the slot dirty HERE and relied on the
+            # periodic flush landing after delivery -- but that flush is a timer, so
+            # nothing ordered it, and it could durably empty the queue for content that
+            # was never delivered. The residual is now ONE duplicate injection, which a
+            # restart recovers from, instead of a deletion, which nothing can.
             _ctx_prefix = drain_pending_context(slot)
             if _ctx_prefix:
                 message = _ctx_prefix + message
@@ -7315,7 +7551,16 @@ async def _run_chat(
         if monitor_completion is not None:
             monitor_completion.mark_accepted()
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
+        # The drained context is NOT retired at this construction. `client.stream(...)`
+        # only builds a lazy async generator -- the provider turn opens on the first
+        # iteration -- and the dispatch gates above `return` without ever sending the
+        # prompt, so committing here retired content that reached nobody. The commit
+        # sits inside the loop instead, making delivery a precondition by construction.
         async for event in event_stream:
+            # DELIVERY IS PROVEN ONLY BY A PROMPT-ATTRIBUTABLE EVENT. The runtime is
+            # shared, so a passive one can arrive without this prompt being seen.
+            if event_confirms_delivery(event):
+                commit_drained_context(slot)
             # Heartbeat every 5s during long operations
             if time.time() - last_heartbeat > 5:
                 state.broadcast_ws("heartbeat", {"slot": slot.key, "ts": time.time()})
@@ -11066,6 +11311,21 @@ async def _run_chat(
         if not is_slash:
             await _deliver_cross_surface_reply(state, session_key, assistant_text)
     except asyncio.CancelledError:
+        # Undelivered drained context goes back to the live queue BEFORE anything
+        # else in this arm. A cancellation here can land between the drain and the
+        # hand-off to the client (a close during `build_message`), in which case the
+        # entries were removed from the queue and never reached the model. A no-op
+        # once `commit_drained_context` has run, so a cancellation after delivery
+        # does not resurrect content the model already saw.
+        _requeued = requeue_drained_context(slot)
+        if _requeued:
+            logger.warning(
+                "Turn cancelled before delivery: requeued %d pending-context entr%s "
+                "for slot=%s so acknowledged content is not lost",
+                _requeued,
+                "y" if _requeued == 1 else "ies",
+                slot.key,
+            )
         if assistant_text:
             slot.purge_chunks()
             _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]

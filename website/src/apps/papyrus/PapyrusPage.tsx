@@ -85,6 +85,13 @@ const FLUSH_FAILED = 'papyrus: buffer flush failed'
 
 /** True for the flush-abort sentinel above, so a mutation that bailed on an
  *  unsaveable buffer does not overwrite the real write error with it. */
+/** Residency bound for the co-author nudge, matching the artifact companion's hour.
+ *
+ *  Every in-repo `/context` caller bounds how long its entry may sit queued; `ephemeral`
+ *  is an orthogonal choice about DURABILITY, and on its own leaves residency to the
+ *  queue-level backstop rather than to this caller's intent. */
+const PAPYRUS_CONTEXT_MAX_AGE_S = 3600
+
 const isFlushAbort = (err: Error): boolean => err.message === FLUSH_FAILED
 
 /**
@@ -650,7 +657,6 @@ export default function PapyrusPage() {
   const companionContext = useCallback(() => {
     return companionContextLines(project ?? '', mainFile).join('\n')
   }, [project, mainFile])
-
   const startSession = useCallback(async () => {
     if (!project || slotCreating) return
     setSlotCreating(true)
@@ -670,6 +676,7 @@ export default function PapyrusPage() {
       } as ChatSlot))
       api.chatSlotContext(key, companionContext(), {
         source: 'papyrus-co-author', ephemeral: true,
+        maxAge: PAPYRUS_CONTEXT_MAX_AGE_S,
       }).catch(() => undefined)
       dispatch(fetchSlots())
       saveSlot(project, key)

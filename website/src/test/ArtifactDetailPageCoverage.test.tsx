@@ -814,22 +814,19 @@ describe('ArtifactDetailPage — mutation paths', () => {
     expect(await screen.findByText('chat page')).toBeInTheDocument()
   })
 
-  it('re-opening a stale session injects a fresh context entry', async () => {
+  it('re-opening a stale session nudges instead of silently taking a baseline', async () => {
     vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([
       { key: 'slot-bound', title: 'Artifact: CR Queue', messages: 3, running: false,
         artifact: SLUG, last_activity_ts: '2026-05-21T22:00:00.000000+00:00' },
     ])
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
-    // updated_at is AFTER the session's last activity, so the agent would
-    // otherwise act on a stale version.
+    // The marker is persisted now, so an empty one means "never injected" rather than
+    // "reloaded"; suppressing here left a resumed agent on a stale version for good.
+    sessionStorage.clear()
     await mount(mkArtifact({ updated_at: '2026-05-22T09:00:00.000000+00:00' }))
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
-    await waitFor(() =>
-      expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledWith(
-        'slot-bound', expect.stringContaining(SLUG),
-        { source: 'artifact-companion', ephemeral: true },
-      ),
-    )
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
     expect(vi.mocked(api).createChatSlot).not.toHaveBeenCalled()
   })
 

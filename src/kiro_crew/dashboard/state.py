@@ -2470,7 +2470,97 @@ _CHIP_STATUS_KEYS = ("ci", "state", "mergeable", "mergeStateStatus")
 _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
 # FIFO ceiling on a slot's pending-context queue (app-kit context inject +
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
+#: Boundary cap on a single context entry's ``content``, in SOURCE CHARACTERS.
+#: Canonical here for the same reason as the source-label pair below: chat_handlers
+#: imports this module, so this is the only direction that is not circular, and the
+#: persistence budget has to be derived from the same number the boundary enforces.
+MAX_CONTEXT_CONTENT = 40_000
+
+#: Generous queue-level TTL for an entry that set no ``maxAge``. Not a per-entry
+#: contract: it exists so a dormant slot's queue cannot refuse posts indefinitely.
+DEFAULT_CONTEXT_TTL_SECS = 7 * 24 * 60 * 60
+
+#: Worst-case JSON expansion per SOURCE character. ``json.dumps`` defaults to
+#: ``ensure_ascii=True``, so a non-BMP character (an emoji) is written as a
+#: surrogate pair — ``\\udXXX\\udXXX``, twelve ASCII bytes for one character. A BMP
+#: non-ASCII character costs six. This asymmetry between character count and
+#: serialized width is the whole reason the budget below is not expressed in
+#: characters: a payload the boundary accepts as 40 000 chars can serialize to
+#: 480 002 bytes.
+_JSON_WORST_CASE_BYTES_PER_CHAR = 12
+
+#: Byte budget for the pending-context copy on the session METADATA line. Sized to
+#: fit ONE worst-case VALID entry with room for its sibling keys, because anything
+#: smaller silently discards content the boundary accepted — the export would return
+#: nothing and the close would remove the only copy.
+#:
+#: Still far below ``history._SESSION_MAX_BYTES`` (10MB) on purpose: the rotation
+#: budget can only drop message lines, so a metadata line approaching that ceiling
+#: makes rotation truncate the transcript on every append instead. See
+#: ``export_pending_context``.
+_MAX_PERSISTED_CONTEXT_BYTES = MAX_CONTEXT_CONTENT * _JSON_WORST_CASE_BYTES_PER_CHAR + 4096
+
 _MAX_PENDING_CONTEXT = 50
+
+
+#: Source-label limits. Canonical home is here rather than in chat_handlers because
+#: BOTH consumers need them and only this direction of import is legal:
+#: chat_handlers already imports this module, while importing chat_handlers from here
+#: would be circular. The HTTP boundary (``_validate_source``) and the restore path
+#: (``_usable_context_source``) therefore judge a label by one spelling, not two.
+MAX_SOURCE_LEN = 64
+SOURCE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _usable_context_source(source: object) -> bool:
+    """True if a restored ``source`` label is safe to interpolate into the frame.
+
+    ``drain_pending_context`` renders ``[Background context from "<source>"]``, so
+    a label carrying a NEWLINE can forge a frame boundary and make injected content
+    read as a separate, trusted block. That newline is what is rejected here:
+    ``SOURCE_CTRL_RE`` covers the C0 range plus DEL, and the length cap bounds the
+    rest. A quote or bracket is deliberately NOT rejected — the frame occupies one
+    line, so without a newline a crafted label cannot open a second block, and
+    saying otherwise would document a check neither this predicate nor
+    ``_validate_source`` performs. The boundary validator applies that same
+    control-character rule with a 400; a restored entry never passes through it, so
+    the rule is repeated here.
+
+    An absent or blank label is "unusable" in the sense that it carries nothing —
+    the caller drops the key and the drain's own default names it.
+    """
+    if not isinstance(source, str):
+        return False
+    if SOURCE_CTRL_RE.search(source):
+        return False
+    stripped = source.strip()
+    return bool(stripped) and len(stripped) <= MAX_SOURCE_LEN
+
+
+def _finite_number(value: object) -> bool:
+    """True for a real, finite int/float — excluding bool.
+
+    ``bool`` is an ``int`` subclass, so a bare ``isinstance(v, (int, float))``
+    admits ``True``/``False`` into arithmetic that then compares as 1/0. NaN and
+    Inf are excluded because they make ``injected_at + max_age`` non-comparable,
+    which is the case :func:`_validate_max_age` rejects at the HTTP boundary for
+    exactly that reason.
+
+    An arbitrary-precision ``int`` passes ``isinstance`` and then raises
+    ``OverflowError`` inside ``isfinite``'s float conversion — so a metadata line
+    carrying a 310-digit integer would raise out of the hydrate rather than be
+    rejected. ``_validate_max_age`` already wraps the identical call for the
+    identical reason, so this mirrors the boundary rather than inventing a
+    pattern. An unconvertible magnitude is not a usable TTL, so it reports False.
+    """
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def context_entry_expired(entry: dict, now: float) -> bool:
@@ -2479,11 +2569,39 @@ def context_entry_expired(entry: dict, now: float) -> bool:
     Shared by the drain, the per-source cap count, and the deferred-note
     promotion so they cannot disagree about which entries are still live. It
     lives here rather than in chat_runner because ``_ChatSlot`` itself needs it.
+
+    An absent ``maxAge`` means no PER-ENTRY expiry, not immortality: the queue-level
+    ``DEFAULT_CONTEXT_TTL_SECS`` backstop still ages such an entry out, because
+    eviction was replaced by refusal and an immortal seat wedges the queue.
+    But a PRESENT value that is not a finite number reports EXPIRED rather than
+    doing the arithmetic, which used to raise ``TypeError`` on
+    ``entry.get("injectedAt", 0) + max_age`` (``int + str``). Raising here was
+    reachable from every restore path, and the boundary validators
+    (``_validate_max_age`` / ``_validate_source``) only guard the LIVE enqueue —
+    an entry rehydrated from an operator-editable metadata line never passes
+    through them.
+
+    Reporting EXPIRED, not "never expires", is the deliberate direction: a
+    malformed entry is pruned by the callers that already drop expired ones,
+    whereas treating it as non-expiring would make unparseable data immortal and
+    re-persisted on every save.
     """
     max_age = entry.get("maxAge")
     if max_age is None:
-        return False
-    return entry.get("injectedAt", 0) + max_age < now
+        # QUEUE-LEVEL BACKSTOP, not a per-entry TTL: without it a no-`maxAge` entry
+        # holds its seat forever and a dormant slot refuses every later post with 429.
+        injected_at = entry.get("injectedAt", 0)
+        if not _finite_number(injected_at) or injected_at <= 0:
+            # Unstamped, so unaged: keep the documented never-expires behaviour rather
+            # than treating a missing stamp as infinitely old.
+            return False
+        return injected_at + DEFAULT_CONTEXT_TTL_SECS < now
+    if not _finite_number(max_age):
+        return True
+    injected_at = entry.get("injectedAt", 0)
+    if not _finite_number(injected_at):
+        return True
+    return injected_at + max_age < now
 
 
 def _note_authorized_elsewhere(stamped: object, live_session: str) -> bool:
@@ -3260,6 +3378,10 @@ class _ChatSlot:
         "memory_mode",
         "_ephemeral",
         "_pending_context",
+        "_pending_context_gen",
+        "_ctx_inflight",
+        "_ctx_held_foreign",
+        "_ctx_overflow",
         "_deferred_notes",
         "_app",
         "_human_seen",
@@ -3277,6 +3399,10 @@ class _ChatSlot:
         "_disk_window_len",
         "_disk_meta_created_at",
         "_disk_meta_observed",
+        "_disk_meta_key",
+        "_ctx_persisted_key",
+        "_ctx_origin_ids",
+        "_ctx_owner_by_id",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
         "_pending_rewrite",
@@ -3746,6 +3872,35 @@ class _ChatSlot:
         self.memory_mode: str = memory_mode
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
+        #: Bumped on every DESTRUCTIVE removal from the queue -- a drain, and the
+        #: expiry prune an append performs.
+        #: The slot save captures this before exporting the queue and re-checks it
+        #: immediately before writing: the save runs in an executor thread while
+        #: the drain runs on the event loop, so without the check a flush that
+        #: exported before a drain could write entries the drain has already fed
+        #: to the model — and a crash before the next save would re-inject them.
+        #: Appends deliberately do NOT bump it: persisting a subset is safe (the
+        #: next save catches up) whereas persisting a consumed entry is not.
+        self._pending_context_gen: int = 0
+        # Entries DRAINED but not yet known-delivered. The drain hands content to the
+        # prompt and empties the live queue, but delivery happens later, after an
+        # `await` that can be cancelled (a close during `build_message`). Emptying the
+        # queue DURABLY at drain time therefore loses content the API answered 200 for:
+        # the retirement is committed while the delivery is not. Marking the slot dirty
+        # is enough to lose it -- the periodic flush is a TIMER, so nothing orders it
+        # after delivery.
+        #
+        # These entries stay visible to `export_pending_context`, so a save or crash in
+        # that window persists ONE copy (a restore re-injects, the accepted duplicate
+        # residual) instead of an empty queue. They are cleared only once the prompt has
+        # been handed to the client, and requeued if the turn is cancelled first.
+        self._ctx_inflight: list[dict[str, Any]] = []
+        # Entries this slot may not INJECT but must not DESTROY: content stamped for
+        # another session, held so the save writes it back instead of clearing it.
+        self._ctx_held_foreign: list[dict[str, Any]] = []
+        #: Entries this slot OWNS but had no seat for, promoted once seats free. NEVER
+        #: merged with ``_ctx_held_foreign``, which holds another session's content.
+        self._ctx_overflow: list[dict[str, Any]] = []
         self._deferred_notes: list[dict[str, Any]] = []
         self._app: str = ""  # App identity tag (App Kit §5.2)
         # FIX 1 (unattended approval park). Evidence that a HUMAN has driven
@@ -3839,8 +3994,30 @@ class _ChatSlot:
         # evidence" and let a save racing a permanent delete recreate the
         # deleted transcript. The bit supplies the missing-file witness for
         # legacy sessions; the identity COMPARISON still requires a non-empty
-        # ``created_at`` on both sides.
+        # ``created_at`` on both sides. Like the identity, it is consulted only
+        # for the transcript named by ``_disk_meta_key`` below.
         self._disk_meta_observed: bool = False
+        # The TRANSCRIPT the identity above was observed under. The identity is
+        # per-FILE, but a slot can be rebound to a different transcript (a cron or
+        # workflow binding an unbound slot moves where its saves land), and the
+        # guard then compares the NEW file's `created_at` against an identity
+        # observed on the OLD one. They differ for two unrelated healthy files, so
+        # the guard reads "deleted and recreated" and aborts the save — every save,
+        # permanently, because only a committed save re-records the identity.
+        # Pairing the two makes the identity consultable only for the file it
+        # actually describes; a mismatch means "not yet observed here", which is the
+        # same no-evidence state as a fresh slot.
+        self._disk_meta_key: str = ""
+        # The transcript this slot last WROTE a `pending_context` copy into. A
+        # rebind moves where the slot persists, so this is what lets a save tell
+        # "I am writing the transcript my queue came FROM" -- which is when held
+        # entries must be preserved rather than filtered out, since that file holds
+        # the only durable copy. Nothing is cleared from the previous transcript.
+        self._ctx_persisted_key: str = ""
+        # ``ctxId`` of every entry whose durable copy lives in ``_ctx_persisted_key``.
+        # Identity, not timestamp ordering, which a clock rollback misclassifies.
+        self._ctx_owner_by_id: dict[str, str] = {}
+        self._ctx_origin_ids: set[str] = set()
         # The newest ``ts`` seen on disk at the last save, INCLUDING rows this
         # slot never observed. A subagent, cron, or CLI appending to a session a
         # live tab also has open writes rows that ``_save_slot_to_history``
@@ -4394,14 +4571,465 @@ class _ChatSlot:
         """Drop finalized stream chunks from the transcript and live queue."""
         return self._buffers.purge_chunks(self)
 
-    def append_pending_context(self, entry: dict[str, Any]) -> None:
-        """Append one live context entry after expiry pruning and FIFO eviction."""
-        self._buffers.append_pending_context(
-            self,
-            entry,
-            max_pending_context=_MAX_PENDING_CONTEXT,
-            entry_expired=context_entry_expired,
+    # NOTE on the #6915 decomposition: that refactor had moved the queue mutation into
+    # a `slot_buffers.append_pending_context` helper whose policy was "expiry pruning
+    # and FIFO eviction". This method does NOT reproduce the eviction, because popping
+    # a live entry discards content the boundary already answered 200 for. The policy
+    # here REFUSES instead, visible as a 429 at the POST, and nothing accepted is ever
+    # evicted.
+    #
+    # It marks the slot `_dirty` so the periodic flush persists the queue. It does NOT
+    # bump `_pending_context_gen` for the append itself: the generation exists to
+    # invalidate a snapshot taken before a DESTRUCTIVE mutation, and adding an entry
+    # destroys nothing. The bump inside this method fires only on the arm where the
+    # expiry prune actually dropped entries, which is such a mutation.
+    #
+    # That helper is DELETED in this change rather than left dead: `state.py` was its
+    # only caller, this method replaced that call, and a dead body carrying the very
+    # evict-on-full policy the change declares defective is a trap for the next reader.
+    # Every producer reaches the queue through this slot method (`chat_handlers.py` at
+    # the /context and /note sites), so no path still evicts.
+    @staticmethod
+    def _context_entry_cost(entry: dict[str, Any]) -> int:
+        """Serialized byte cost of one entry, or -1 if it cannot be serialized."""
+        try:
+            return len(json.dumps(entry).encode("utf-8"))
+        except (TypeError, ValueError):
+            return -1
+
+    def pending_context_budget_room(self, entry: dict[str, Any]) -> bool:
+        """True if *entry* fits the PERSISTENCE budget alongside the live queue.
+
+        The queue's durability is bounded by what one metadata line can carry, and
+        that bound cannot be raised to cover the boundary's worst case: fifty
+        entries of ``MAX_CONTEXT_CONTENT`` characters escape to roughly 24MB, well
+        past ``history._SESSION_MAX_BYTES``, and a metadata line
+        near that ceiling makes rotation truncate the transcript on every append.
+
+        So the queue REFUSES what it could not persist, rather than accepting it and
+        dropping it later at export. Truncating after acknowledgement is the defect:
+        a caller told 200 has no way to learn its content was discarded. A refusal
+        is visible at the POST, so the caller can retry, split, or wait for a drain.
+
+        KNOWN LIMIT OF THAT CHOICE, measured rather than argued: refusal is bounded
+        in SIZE but not in TIME. Expired entries are excluded from both the byte and
+        seat counts below, so a queue of entries carrying ``maxAge`` frees its own
+        seats as they age out. An entry with NO ``maxAge`` has no PER-ENTRY expiry, so
+        the queue-level ``DEFAULT_CONTEXT_TTL_SECS`` backstop is what frees its seat --
+        without it a queue filled with those on a slot that never takes another user
+        turn refused every later POST indefinitely, because the
+        drain that would free the seats runs only on a turn. Eviction previously hid
+        this by discarding the oldest entry, which is the acknowledged-then-dropped
+        defect above; the trade was taken deliberately. The indefinite refusal that
+        left is SETTLED by ``DEFAULT_CONTEXT_TTL_SECS``: the backstop frees such a
+        seat rather than leaving the endpoint permanently degraded.
+        """
+        cost = self._context_entry_cost(entry)
+        if cost < 0:
+            return False
+        now = time.time()
+        # IN-FLIGHT ENTRIES OCCUPY BYTES AND SEATS. An entry drained but not yet
+        # known-delivered has left `_pending_context` for `_ctx_inflight`, yet it is
+        # still exported and can still be requeued -- so it is part of what the queue
+        # will hold, and counting only the live queue UNDER-COUNTS by exactly the
+        # in-flight set. A full queue then drains, a concurrent /context is told 200
+        # against the freed space, the save exports both halves, and the restore --
+        # which re-seats through this same ceiling -- silently refuses the surplus.
+        # That is the acknowledged-then-dropped defect this budget exists to prevent,
+        # reached through the accounting rather than through eviction.
+        #
+        # This is the single capacity chokepoint: `append_pending_context` delegates
+        # here, and the two endpoint sites call it directly, so counting in-flight
+        # here covers every producer.
+        inflight = [
+            e
+            for e in (getattr(self, "_ctx_inflight", None) or [])
+            if not context_entry_expired(e, now)
+        ]
+        # HELD ENTRIES OCCUPY THE SAME BUDGET. `export_pending_context` returns
+        # `[*inflight, *self._pending_context, *held]`, so a parked foreign entry is
+        # PERSISTED into the metadata line and costs exactly the bytes and the seat
+        # that a live one does. Counting only the live queue therefore let held
+        # entries ride free: a full queue plus a held tail exceeded the budget the
+        # export must fit, and the tail was refused at the next restore and then
+        # deleted by the following save -- the acknowledged-then-dropped defect this
+        # chokepoint exists to prevent, reached through the one queue it did not see.
+        held = [
+            e
+            for e in (getattr(self, "_ctx_held_foreign", None) or [])
+            if not context_entry_expired(e, now)
+        ]
+        overflow = [
+            e
+            for e in (getattr(self, "_ctx_overflow", None) or [])
+            if not context_entry_expired(e, now)
+        ]
+        live = (
+            [e for e in self._pending_context if not context_entry_expired(e, now)]
+            + inflight
+            + held
+            + overflow
         )
+        # BYTES ONLY FOR WHAT REACHES DISK: the export withholds an ephemeral entry, so
+        # charging its bytes refuses a durable post over space never used. Seats count it.
+        used = sum(max(self._context_entry_cost(e), 0) for e in live if not e.get("ephemeral"))
+        # COUNT ceiling, not just the byte budget. The queue is bounded on BOTH
+        # dimensions, and checking only bytes let fifty-one small entries through:
+        # the preflight accepted the fifty-first, then the append evicted the
+        # oldest — silently discarding an entry the caller had a 200 for. Refusing
+        # at the ceiling is the same rule the byte budget already follows, applied
+        # to the dimension that was missing.
+        seats = len(live)
+        # RESERVE the deferred notes' context halves too. Each held note carries a
+        # `context` entry that `flush_deferred_notes` promotes into this same queue
+        # later, so budgeting only the live queue lets ordinary /context fill the
+        # space a note was already acknowledged for — and the promotion is then
+        # refused, losing content the caller was told 200 for. A reservation makes
+        # the refusal land on the NEW entry, whose caller can still act on it.
+        #
+        # Includes the `noteSession` key the promotion stamps on at flush time
+        # (state.py's flush sets it, not the endpoint), because a reservation that
+        # under-counts by exactly that field would still let the promotion fail.
+        for note in self._deferred_notes:
+            ctx = note.get("context")
+            if not isinstance(ctx, dict) or context_entry_expired(ctx, now):
+                continue
+            # A held note occupies a SEAT as well as bytes: the flush promotes it
+            # into this same queue, so counting only the live queue would let
+            # ordinary /context fill the last seats and then evict on promotion.
+            seats += 1
+            reserved = max(self._context_entry_cost(ctx), 0)
+            if "noteSession" not in ctx:
+                reserved += self._NOTE_SESSION_RESERVE_BYTES
+            used += reserved
+        if seats + 1 > _MAX_PENDING_CONTEXT:
+            return False
+        return used + cost <= _MAX_PERSISTED_CONTEXT_BYTES
+
+    # Bytes the promotion adds for the ``noteSession`` key it stamps onto a
+    # promoted note's context entry. A FLAT CEILING rather than a per-note
+    # measurement: the widest plausible shape,
+    # ``json.dumps({"noteSession": "x" * 128})``, is 147 bytes, and this term is
+    # noise against ``_MAX_PERSISTED_CONTEXT_BYTES``, whose 4096-byte slack absorbs
+    # it many times over. Measuring each note exactly bought accuracy the budget
+    # cannot spend.
+    _NOTE_SESSION_RESERVE_BYTES = 160
+
+    def append_pending_context(self, entry: dict[str, Any]) -> bool:
+        """Append one built context entry, pruning expired ones and refusing overflow.
+
+        Returns whether the entry was seated. Every distinct post that fits is seated,
+        including one repeating content already queued -- see the note below on why no
+        deduplication happens here.
+
+        Shared by /context, /note, the deferred-note promotion and the restore, so
+        the four cannot drift on the ceiling. Expired entries are pruned first, which
+        is what frees capacity: a dead entry must not hold a seat or budget against a
+        live arrival. Once the prune has run, an entry that still does not fit is
+        REFUSED -- nothing live is evicted to make room for it (see the note below on
+        the FIFO shape this replaced). An entry that arrives already expired is
+        dropped outright rather than seated.
+
+        This is also the single chokepoint where the PERSISTENCE budget is
+        enforced, which is what lets ``export_pending_context`` persist the queue
+        whole instead of truncating it. Every path into the queue passes through
+        here, so "the queue only ever holds what can be persisted" is an invariant
+        rather than an aspiration.
+        """
+        now = time.time()
+        # A held note's maxAge can elapse while its turn runs, so an entry can
+        # arrive dead; seating it would evict a live one the drain would keep.
+        if context_entry_expired(entry, now):
+            return False
+        live = [e for e in self._pending_context if not context_entry_expired(e, now)]
+        if len(live) != len(self._pending_context):
+            # A destructive mutation the export's generation check must see, for the
+            # same reason the drain bumps it: a snapshot taken before this prune
+            # would otherwise be written back over the pruned queue.
+            self._pending_context[:] = live
+            self._pending_context_gen += 1
+        # NO DEDUPLICATION HERE, DELIBERATELY. An earlier shape collapsed an entry
+        # matching one already queued, to absorb a page reload's repost. It was
+        # removed because it cannot tell that repost from two GENUINELY repeated
+        # posts: identical content sent twice on purpose is legitimate, both were
+        # answered 200, and swallowing the second drops acknowledged context --
+        # the very defect this PR exists to close.
+        #
+        # The reload case is now handled where the duplicate originates instead:
+        # the artifact companion takes a BASELINE for a slot it has not seen this
+        # page lifetime rather than re-posting (ArtifactDetailPage.tsx), so nothing
+        # arrives here that needs collapsing.
+        # NOTHING LIVE IS EVICTED. An earlier shape FIFO-popped the oldest entry to
+        # make room, which discarded content the boundary had already answered 200
+        # for — the same "truncate after acknowledgement" defect the byte budget
+        # exists to prevent, just reached through the count dimension. The ceiling
+        # is enforced inside `pending_context_budget_room`, so the refusal is
+        # visible at the POST (429) and the caller can retry after a drain.
+        if not self.pending_context_budget_room(entry):
+            return False
+        self._pending_context.append(entry)
+        # The queue is DURABLE state now, so mutating it has to enter the same
+        # dirty-save path an appended message does. Without this the periodic
+        # flush's no-op skip (a resumed slot whose window has not grown and whose
+        # `_dirty` is false) steps over a slot that has queued context, so a crash
+        # loses content already acknowledged to the caller with a 200.
+        #
+        # Set HERE rather than at each producer so /context, /note and the
+        # deferred-note promotion cannot drift on it — the same reason
+        # `append_pending_context` owns the expiry and ceiling rules.
+        self._dirty = True
+        return True
+
+    def adopt_ctx_owner(self, transcript_key: str) -> None:
+        """Record *transcript_key* as the durable owner of every entry held right now.
+
+        Called by each hydration site beside its ``_ctx_persisted_key`` assignment. A
+        single origin key cannot survive a CHAINED rebind: after A->B->C it names only
+        the newest, so entries still owned by B read as unowned and get COPIED through C
+        while B's copy remains, injecting the same content twice. Ownership is therefore
+        per ``ctxId`` and only ever narrowed by what a save actually commits.
+        """
+        if not isinstance(transcript_key, str) or not transcript_key:
+            return
+        owners = dict(getattr(self, "_ctx_owner_by_id", None) or {})
+        for entry in [
+            *self._pending_context,
+            *(getattr(self, "_ctx_inflight", None) or []),
+            *(getattr(self, "_ctx_overflow", None) or []),
+            *(getattr(self, "_ctx_held_foreign", None) or []),
+        ]:
+            if isinstance(entry, dict) and isinstance(entry.get("ctxId"), str):
+                owners[entry["ctxId"]] = transcript_key
+        self._ctx_owner_by_id = owners
+
+    def record_ctx_committed(self, transcript_key: str, committed_ids: set[str]) -> None:
+        """Move ownership of exactly *committed_ids* to *transcript_key*.
+
+        Per-subset, never wholesale: a save writes some entries and defers others, so
+        replacing the whole record would claim entries this write never persisted.
+        """
+        if not isinstance(transcript_key, str) or not transcript_key:
+            return
+        owners = dict(getattr(self, "_ctx_owner_by_id", None) or {})
+        for ctx_id in committed_ids:
+            owners[ctx_id] = transcript_key
+        self._ctx_owner_by_id = owners
+
+    def ctx_owner_of(self, entry: object) -> str:
+        """The transcript that holds *entry*'s durable copy, or ``""`` when unrecorded."""
+        if not isinstance(entry, dict):
+            return ""
+        ctx_id = entry.get("ctxId")
+        if not isinstance(ctx_id, str):
+            return ""
+        owner = (getattr(self, "_ctx_owner_by_id", None) or {}).get(ctx_id)
+        return owner if isinstance(owner, str) else ""
+
+    def promote_overflow_context(self) -> int:
+        """Seat entries the ceiling had no room for, once seats have freed.
+
+        Returns how many were promoted. A handover can leave more acknowledged entries
+        on one metadata line than a single queue seats, so the surplus is held durable
+        in ``_ctx_overflow``; without this it stays undelivered forever AND keeps
+        occupying budget, so later posts answer 429 while the content never arrives.
+
+        Only ``_ctx_overflow`` is promotable. ``_ctx_held_foreign`` holds content stamped
+        for ANOTHER session, and seating that would be a cross-session leak.
+        """
+        overflow = getattr(self, "_ctx_overflow", None) or []
+        if not overflow:
+            return 0
+        now = time.time()
+        promoted = 0
+        remaining: list[dict[str, Any]] = []
+        # EMPTIED FIRST, because the budget chokepoint COUNTS this bucket: leaving a
+        # candidate in it while testing its own seat would refuse every promotion.
+        self._ctx_overflow = []
+        for entry in overflow:
+            if context_entry_expired(entry, now):
+                continue
+            if self.append_pending_context(entry):
+                promoted += 1
+            else:
+                remaining.append(entry)
+        self._ctx_overflow = remaining
+        return promoted
+
+    def export_pending_context(self) -> list[dict[str, Any]]:
+        """Return the still-live pending-context entries, for persistence.
+
+        Expired entries are filtered out rather than written: they would be
+        dropped on the way back in anyway (see :meth:`restore_pending_context`),
+        and persisting them only inflates the metadata line.
+
+        NOTHING IS TRUNCATED HERE. An earlier shape enforced the persistence byte
+        budget at this point, which meant a caller could be told 200 and then have
+        its content silently dropped at save time, with no surface reporting the
+        loss. The budget is enforced at :meth:`append_pending_context` instead —
+        the single chokepoint every producer passes through — so by the time an
+        entry is in the queue it is already known to be persistable, and this
+        method can hand back the whole queue.
+
+        The bound itself cannot simply be raised to cover the boundary's worst
+        case: fifty entries of ``MAX_CONTEXT_CONTENT`` characters escape to roughly
+        24MB, far past ``history._SESSION_MAX_BYTES``, and a metadata line near that
+        ceiling makes ``_maybe_rotate`` truncate the transcript on every append —
+        it can only drop message lines, never the metadata one. Refusing at the
+        door is the only disposition that neither loses acknowledged content nor
+        destroys history.
+        """
+        now = time.time()
+        # IN-FLIGHT ENTRIES COUNT AS STILL-LIVE. They have been drained into a prompt
+        # but not yet known-delivered, so persisting the queue without them is exactly
+        # the durable-retire-before-delivery loss this field exists to prevent: a save
+        # landing in that window would record an empty queue while the content had
+        # reached nobody. They come FIRST because they were queued before anything still
+        # in the live queue, and `restore_pending_context` re-seats in order.
+        inflight = getattr(self, "_ctx_inflight", None) or []
+        # HELD-FOREIGN ENTRIES ARE PERSISTED TOO, and are the reason a slot that could
+        # not prove a persisted binding belongs to it no longer deletes the copy: they
+        # are written back verbatim without ever being injected. They come LAST so a
+        # claim by their own session re-seats them after anything this slot owns.
+        held = getattr(self, "_ctx_held_foreign", None) or []
+        # OWNED-BUT-UNSEATED ENTRIES ARE PERSISTED TOO, before the foreign ones: they are
+        # this slot's own, so a restore should seat them ahead of another session's.
+        overflow = getattr(self, "_ctx_overflow", None) or []
+        # A HELD NOTE'S CONTEXT HALF IS PERSISTED TOO, and restores as an ordinary
+        # queued entry: the deferral's reason is a live turn, and none survives a restart.
+        _held_notes = [
+            ctx
+            for note in (getattr(self, "_deferred_notes", None) or [])
+            if isinstance((ctx := note.get("context")), dict)
+        ]
+        # DEDUPED BY ``ctxId``: the four lists are NOT disjoint, and a note promoted
+        # concurrently with an export otherwise restores as two injections.
+        _seen_ids: set[str] = set()
+        _out: list[dict] = []
+        for e in [*inflight, *self._pending_context, *_held_notes, *overflow, *held]:
+            if context_entry_expired(e, now):
+                continue
+            # MEMORY-ONLY BY REQUEST, honoured at the one seam between queue and disk
+            # rather than downgraded to a no-op by the durability fix.
+            if e.get("ephemeral"):
+                continue
+            _eid = e.get("ctxId")
+            if isinstance(_eid, str):
+                if _eid in _seen_ids:
+                    continue
+                _seen_ids.add(_eid)
+            _out.append(e)
+        return _out
+
+    def restore_pending_context(self, entries: object) -> None:
+        """Re-seat persisted pending-context entries.
+
+        Routed through :meth:`append_pending_context` deliberately, so expiry and
+        the per-slot ceilings are applied by the same code that governs a live
+        enqueue — a restore cannot smuggle in a dead entry or overflow the queue.
+        Reaching a ceiling REFUSES the arriving entry (the behaviour behind the
+        boundary's 429 ``context_not_queued``); nothing already seated is evicted
+        to make room, so a restore can drop a tail entry but never a seated one.
+
+        Expiry is therefore WALL-CLOCK across the close: ``maxAge`` keeps running
+        while the tab is shut, so a long-closed session does not reopen holding
+        stale background context. An entry with no ``maxAge`` has no per-entry expiry
+        and comes back until the queue-level ``DEFAULT_CONTEXT_TTL_SECS`` backstop
+        ages it out.
+
+        Returns nothing. An earlier revision returned a seated count that no
+        caller read.
+
+        VALIDATION, and why it is here rather than trusted from the file. Session
+        metadata is the same operator-editable JSONL the rest of the hydrate
+        reads, and the boundary validators (``_validate_source`` /
+        ``_validate_max_age``) run only on the LIVE enqueue — nothing revalidates
+        an entry that arrives from disk. So each field is re-checked against the
+        same rules the boundary applies:
+
+        * ``content`` must be a non-empty string, else the entry is skipped.
+        * ``maxAge`` / ``injectedAt``, when present, must be finite numbers, and
+          ``maxAge`` must additionally be POSITIVE — the same value
+          :func:`_validate_max_age` 400s at the boundary. The reachable case is a
+          non-positive TTL paired with an ``injectedAt`` that is not in the past
+          (clock skew, or a hand-edited line): ``injected_at + max_age`` then still
+          lies ahead, so :func:`context_entry_expired` reports False and the entry
+          would be seated on a TTL the boundary would have refused. Where
+          ``injectedAt`` is already past, the expiry prune drops it regardless.
+          :func:`context_entry_expired` no longer raises on a bad one, but a
+          malformed entry is dropped here too so garbage never occupies a seat.
+        * ``source`` is interpolated straight into the
+          ``[Background context from "<source>"]`` prompt frame by the drain, so a
+          crafted label could forge a frame boundary. An unusable label is
+          REMOVED rather than the entry skipped — the content is still the
+          caller's, and the drain's own ``or "app"`` fallback then labels it.
+
+        Entries authorized against a DIFFERENT session are PARKED, not dropped: a
+        slot can be rebound between the write and the restore, so this slot must
+        not inject them, but skipping them here would delete the only durable copy.
+        They are held and written back verbatim by
+        :meth:`export_pending_context` instead.
+        """
+        if not isinstance(entries, list):
+            return
+        # circular import: chat_utils imports state at module scope
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        auth_key = effective_session_key(self)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if not isinstance(entry.get("content"), str) or not entry["content"]:
+                continue
+            # LENGTH AGREES WITH THE BOUNDARY. `api_chat_slot_context` 400s past
+            # `MAX_CONTEXT_CONTENT`, and a metadata line is operator-editable.
+            if len(entry["content"]) > MAX_CONTEXT_CONTENT:
+                continue
+            if "maxAge" in entry and entry["maxAge"] is not None:
+                # `_finite_number` first, so a NaN never reaches the comparison.
+                # The `<= 0` arm is what makes this agree with the boundary:
+                # `_validate_max_age` 400s a non-positive TTL. It bites where
+                # `injectedAt` is NOT already past (skew, or a hand-edited line) --
+                # `injected_at + max_age` then still lies ahead, so the expiry prune
+                # sees a live entry and would seat a TTL the boundary refuses.
+                if not _finite_number(entry["maxAge"]) or entry["maxAge"] <= 0:
+                    continue
+            if "injectedAt" in entry and not _finite_number(entry["injectedAt"]):
+                continue
+            if _note_authorized_elsewhere(entry, auth_key):
+                # PARKED, NOT DISCARDED. This slot may not inject content stamped for
+                # another session, but skipping it here is what deletes it: the entry
+                # never reaches the queue, so the next forced save writes a
+                # `pending_context` without it and the only durable copy goes. Holding
+                # it makes `export_pending_context` write it back verbatim.
+                self._ctx_held_foreign = [
+                    *(getattr(self, "_ctx_held_foreign", None) or []),
+                    dict(entry),
+                ]
+                continue
+            seated = dict(entry)
+            if not _usable_context_source(seated.get("source")):
+                seated.pop("source", None)
+            if not self.append_pending_context(seated) and not context_entry_expired(
+                seated, time.time()
+            ):
+                # OVERFLOW, NOT FOREIGN: dropping it deletes it, and parking it as
+                # foreign strands it, because that bucket is never injected.
+                self._ctx_overflow = [
+                    *(getattr(self, "_ctx_overflow", None) or []),
+                    seated,
+                ]
+        # EVERY hydration site lands here, so ownership cannot be left unrecorded at one
+        # of them and let a later rebind copy and drain what the origin still holds.
+        # ``_ctx_overflow`` IS INCLUDED: omitting it let a promoted surplus escape the
+        # withhold and inject the origin's content into the rebound session.
+        _restored = [
+            *self._pending_context,
+            *(getattr(self, "_ctx_overflow", None) or []),
+            *(getattr(self, "_ctx_held_foreign", None) or []),
+        ]
+        self._ctx_origin_ids = {
+            e["ctxId"] for e in _restored if isinstance(e, dict) and isinstance(e.get("ctxId"), str)
+        }
 
     def drop_foreign_authorized_notes(self) -> int:
         """Drop note content whose authorization belongs to another session."""

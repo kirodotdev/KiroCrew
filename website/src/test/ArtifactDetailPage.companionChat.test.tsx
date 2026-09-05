@@ -107,7 +107,7 @@ describe('ArtifactDetailPage companion chat', () => {
     vi.mocked(api).artifactEvents = vi.fn().mockResolvedValue({ slug: 'cr-queue', events: [] })
     vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({ comments: [] })
     vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'slot-new', title: 'Artifact: CR Queue' })
-    vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
+    vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true, durable: true })
     vi.mocked(api).deleteChatSlot = vi.fn().mockResolvedValue({ ok: true })
     vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
   })
@@ -136,7 +136,7 @@ describe('ArtifactDetailPage companion chat', () => {
     await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
   })
 
-  it('injects the artifact context ephemerally in the background', async () => {
+  it('injects the artifact context with a bounded TTL in the background', async () => {
     renderPage()
     await waitForLoaded()
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
@@ -145,8 +145,82 @@ describe('ArtifactDetailPage companion chat', () => {
     expect(slot).toBe('slot-new')
     expect(content).toContain('cr-queue')
     expect(content).toContain('artifact_get_comments')
-    // Ephemeral: consumed on the NEXT user message, never persisted as a turn.
-    expect(opts).toEqual({ source: 'artifact-companion', ephemeral: true })
+    // No `ephemeral`: the server accepts and IGNORES it, so the reference caller must
+    // not send it. The TTL is what actually bounds the entry.
+    expect(opts).toEqual({ source: 'artifact-companion', maxAge: 3600 })
+  })
+
+  it('leaves no injected-version marker when the context POST is rejected', async () => {
+    // A 429 must NOT record a delivered injection: the marker suppresses the
+    // retry after a reload, so writing it on a rejection loses context for good.
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('429 Too Many Requests'))
+    renderPage()
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    expect(sessionStorage.getItem('mc-artifact-injected:slot-new')).toBeNull()
+  })
+
+  it('a queue-full refusal does not persist a claim that suppresses later nudges', async () => {
+    // UX finding: holding the claim on a 429 marked the version injected though it never
+    // was, so that version's freshness nudge was skipped on EVERY later reload.
+    localStorage.clear()
+    sessionStorage.clear()
+    const refusal = Object.assign(new Error('context_not_queued'), {
+      status: 429,
+      body: JSON.stringify({ code: 'context_not_queued' }),
+    })
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(refusal)
+    renderPage()
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    // Positive control: the refusal really was recognised as one, so the null below is
+    // the released claim rather than a path that never ran.
+    expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1)
+    expect(sessionStorage.getItem('mc-artifact-injected:slot-new')).toBeNull()
+  })
+
+  it('still nudges on a cold resolve when the artifact is stale', async () => {
+    // The marker was in-memory only, so it was empty on EVERY reload and this branch
+    // suppressed the stale-version POST for good. The persisted claim prevents the dup.
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({
+      key: 'chat-bound', artifact: 'cr-queue', last_activity_ts: '2026-05-01T00:00:00Z',
+    })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    // The artifact's updated_at is newer than the slot's last activity, so the resumed
+    // agent must be told, rather than silently acting on a stale version.
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    // And the claim is now PERSISTED at the artifact's version (the fixture's is 2),
+    // which is what stops the next reload duplicating it.
+    expect(sessionStorage.getItem('mc-artifact-injected:chat-bound')).toBe('2')
+  })
+
+  it('does not persist the claim when the server cannot confirm durability', async () => {
+    // GPT F1: a bare 200 was recorded as durable delivery, so a crash before the server's
+    // flush left a persisted claim suppressing the repost of content that never landed.
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true, durable: false })
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({
+      key: 'chat-bound', artifact: 'cr-queue', last_activity_ts: '2026-05-01T00:00:00Z',
+    })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    // Positive control: the POST really was issued, so the null below is the withheld
+    // claim rather than a branch that never ran.
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    expect(sessionStorage.getItem('mc-artifact-injected:chat-bound')).toBeNull()
   })
 
   it('embeds ChatPage in single-session chrome with URL sync off', async () => {
