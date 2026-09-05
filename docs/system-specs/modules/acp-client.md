@@ -87,12 +87,45 @@ Both the shared runtime and the legacy direct `AcpClient` route permission
 frames through `_dispatch.build_permission_event`, including the same provenance
 flags. A shell-cache hit whose value is `False` sets `shell_classified=True` —
 it is a resolved non-shell call, not a cache miss — and a structured-params
-cache hit sets `raw_params_trusted=True`. The raw-params cache is read without
-consuming it, so a repeated permission frame for the same `toolCallId` keeps the
-original tool-call arguments authoritative instead of falling back to the
-permission frame's agent-authored inline input. A genuine miss may carry inline
-data for display, but both provenance flags remain false and consumers that
-need trusted arguments fail closed.
+cache hit sets `raw_params_trusted=True`.
+
+The shell cache is written **only** from a usable backend `kind` string. A
+`tool_call` frame that omits `kind` writes nothing — even when its
+`_meta.kiro.mcpServerName` proves the call MCP-served — because a cached `False`
+reads back as a RESOLVED non-shell classification (`shell_classified=True`),
+which flips `AcpEvent.child_low_fidelity` to `False` and would un-gate the
+content-matching auto-approve paths (title-keyed `auto_approve_tools`) for a
+call whose title is agent-authored and whose mutating/read nature nothing
+verified. The transport signal instead feeds the identity-only lane: the
+`_meta.kiro` identity caches (below) carry it to the permission event, where
+`AcpEvent.child_mcp_identity_trusted` and the CLI consumer's
+`_unverifiable_shell` escape consume it without ever minting a classification.
+A miss keeps reading as an absent classification, and a frame reporting
+`kind: "execute"` caches `True` whatever its `_meta` says — the transport
+identity never waives a shell check.
+
+For a CHILD event, the identity lane only helps a consumer the handle actually
+delivers to: the session handle fail-closes every low-fidelity child permission
+request whose consumer never set `child_fidelity_aware`
+(`child_low_fidelity_unaware_consumer`). The dashboard runner and `kirocrew
+chat` both opt in — the CLI qualifies because its approval path runs no
+content-matching auto-approve: hook gate, then the `_unverifiable_shell`
+fail-close, then an interactive prompt that shows only non-model-authored
+context (the cached command, the `_meta.kiro` identity, the target path). The
+opt-in admits every low-fidelity child event, not just MCP-served ones, so the
+CLI's own first check re-applies the boundary: a low-fidelity child event is
+rejected (`child_unverified_context`) unless its identity is verified, consumed
+as `not child_unconditional_grant_eligible` — the same hoisted expression the
+other grant-path consumers use, never a re-spelling — the
+trusted transport identity is the one context that survives an empty params
+cache and can be shown to the human, while a child edit with no cached
+parameters would prompt without a Path line, an undisclosed write.
+
+The raw-params cache is read without consuming it, so a repeated permission frame
+for the same `toolCallId` keeps the original tool-call arguments authoritative
+instead of falling back to the permission frame's agent-authored inline input. A
+genuine miss may carry inline data for display, but both provenance flags remain
+false and consumers that need trusted arguments fail closed.
 
 The host always sends one-shot approvals (`always=False`, the default). KiroCrew — not the agent — owns the trust scope (`slot._trust`, `slot._trust_reads`, `slot._trusted_patterns`, `safety_override`, `channel.trusted`, parent session `approval_policy`). Per-call `session/request_permission` is required so KiroCrew's PreToolUse hooks (`auto_deny_tools`, sensitive-path checks, credential redaction) fire on every tool invocation. The `always=True` path is reserved for a future "skip KiroCrew hooks for this exact tool" feature; no caller passes it today.
 
@@ -104,12 +137,13 @@ session durable trust merely because the display cache was already consumed.
 
 A remote (HTTP) MCP server's initial `tool_call` legitimately streams an empty or
 absent `rawInput`, so the params cache stays empty and every child permission
-request for such a tool is low-fidelity (`AcpEvent.child_low_fidelity`). The
-`_meta.kiro` identity caches are written unconditionally from the same frame, so
-the permission event still carries the verified `mcp_server_name`/`tool_name`
-pair plus the explicit `mcp_identity_trusted` provenance flag (set only when
-BOTH cache reads hit — mirroring `raw_params_trusted`, so an inline fallback
-can never count as verified); `AcpEvent.child_mcp_identity_trusted` exposes
+request for such a tool is low-fidelity (`AcpEvent.child_low_fidelity`) on the
+arguments half. The `_meta.kiro` identity caches are written unconditionally from
+the same frame, so the permission event still carries the verified
+`mcp_server_name`/`tool_name` pair plus the explicit `mcp_identity_trusted`
+provenance flag (set only when BOTH cache reads hit — mirroring
+`raw_params_trusted`, so an inline fallback can never count as verified);
+`AcpEvent.child_mcp_identity_trusted` exposes
 that verified-identity half (arguments unverified) and
 `AcpEvent.child_unconditional_grant_eligible` hoists the grant-eligibility
 expression for the unconditional grant paths documented in

@@ -7422,9 +7422,14 @@ def test_child_mcp_identity_trusted_isolates_verified_identity():
     assert ev.child_mcp_identity_trusted is True
     # A parent event never needs the split.
     assert _ev(sub_session_id="").child_mcp_identity_trusted is False
-    # Unresolved shell classification: is_shell=False is only the miss
-    # default, so nothing proves this is not a shell tool.
-    assert _ev(shell_classified=False).child_mcp_identity_trusted is False
+    # An unresolved shell classification is NOT disqualifying: a backend may
+    # omit `kind` on its MCP frames, and the trusted transport identity is
+    # itself proof the call is MCP-served and not a host shell command. The
+    # composite stays low-fidelity, so content-matching auto-approval
+    # (title-keyed auto_approve_tools) remains gated for such an event.
+    kindless = _ev(shell_classified=False)
+    assert kindless.child_mcp_identity_trusted is True
+    assert kindless.child_low_fidelity is True
     # A resolved SHELL tool: its deny gates need the command bytes this
     # event lacks — never identity-eligible.
     assert _ev(is_shell=True).child_mcp_identity_trusted is False
@@ -7970,6 +7975,147 @@ def test_missing_kind_is_not_a_resolved_shell_classification():
     assert shell_cache.get("tc-rk") is False  # resolved non-shell
 
 
+def test_trusted_mcp_transport_earns_identity_trust_without_a_classification():
+    """A kind-less frame whose `_meta.kiro.mcpServerName` is populated earns the
+    IDENTITY-trusted half only: the transport discriminator is backend-authored,
+    and an MCP-served tool is not a host shell command, so unconditional grant
+    paths (parent_policy=auto, session trust-all) may honor the call. It must
+    NOT mint a resolved shell classification: shell_classified stays False and
+    child_low_fidelity stays True, keeping every content-matching auto-approve
+    path (title-keyed auto_approve_tools) gated against the agent-authored
+    title."""
+    from kiro_crew.acp._dispatch import _build_tool_call_event, build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    shell_cache: dict[str, bool] = {}
+    raw_cache: dict[str, dict] = {}
+    server_cache: dict[str, str] = {}
+    name_cache: dict[str, str] = {}
+    ev = _build_tool_call_event(
+        {
+            "title": "Asking the knowledge service",
+            "toolCallId": "tc-mcp",
+            "rawInput": {"question": "why"},
+            "_meta": {"kiro": {"mcpServerName": "kb", "toolName": "ask"}},
+        },
+        None,
+        shell_cache=shell_cache,
+        raw_params_cache=raw_cache,
+        mcp_server_name_cache=server_cache,
+        tool_name_cache=name_cache,
+    )
+    assert ev.is_shell is False
+    assert "tc-mcp" not in shell_cache  # no kind -> no classification minted
+
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 11,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "sessionId": "child-a",
+                "toolCall": {"toolCallId": "tc-mcp", "title": "Asking the knowledge service"},
+                "options": [],
+            },
+        }
+    )
+    event, _ = build_permission_event(
+        msg,
+        shell_cache=shell_cache,
+        raw_params_cache=raw_cache,
+        mcp_server_name_cache=server_cache,
+        tool_name_cache=name_cache,
+    )
+    event.sub_session_id = "child-a"
+    assert event.shell_classified is False
+    assert event.is_shell is False
+    assert event.mcp_identity_trusted is True
+    # The split: identity trusted (unconditional grants may honor it) ...
+    assert event.child_mcp_identity_trusted is True
+    assert event.child_unconditional_grant_eligible is True
+    # ... while the composite stays low-fidelity (title matching stays gated).
+    assert event.child_low_fidelity is True
+
+
+def test_trusted_mcp_transport_never_waives_a_reported_shell_kind():
+    """The transport identity may only ever vouch for a non-shell call, never
+    waive a shell check: an execute-kind frame still caches True even with a
+    server name, so the command-bytes gates keep firing -- and the identity
+    split stays closed for it."""
+    from kiro_crew.acp._dispatch import _build_tool_call_event, build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    shell_cache: dict[str, bool] = {}
+    server_cache: dict[str, str] = {}
+    name_cache: dict[str, str] = {}
+    _build_tool_call_event(
+        {
+            "title": "Running: ls",
+            "kind": "execute",
+            "toolCallId": "tc-both",
+            "_meta": {"kiro": {"mcpServerName": "kb", "toolName": "ask"}},
+        },
+        None,
+        shell_cache=shell_cache,
+        mcp_server_name_cache=server_cache,
+        tool_name_cache=name_cache,
+    )
+    assert shell_cache.get("tc-both") is True
+
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 13,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "sessionId": "child-a",
+                "toolCall": {"toolCallId": "tc-both", "title": "Running: ls"},
+                "options": [],
+            },
+        }
+    )
+    event, _ = build_permission_event(
+        msg,
+        shell_cache=shell_cache,
+        mcp_server_name_cache=server_cache,
+        tool_name_cache=name_cache,
+    )
+    event.sub_session_id = "child-a"
+    assert event.is_shell is True
+    assert event.child_mcp_identity_trusted is False
+
+
+def test_inline_mcp_server_name_on_a_permission_frame_earns_no_classification():
+    """The agent-reachable permission payload is not a provenance channel: an
+    inline `_meta`/`mcpServerName` there cannot manufacture the identity trust
+    that only the preceding tool_call's cache write can grant."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    shell_cache: dict[str, bool] = {}
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 12,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "sessionId": "child-a",
+                "toolCall": {
+                    "toolCallId": "tc-forged",
+                    "title": "Asking the knowledge service",
+                    "_meta": {"kiro": {"mcpServerName": "kb", "toolName": "ask"}},
+                },
+                "options": [],
+            },
+        }
+    )
+    event, _ = build_permission_event(msg, shell_cache=shell_cache)
+    event.sub_session_id = "child-a"
+    assert "tc-forged" not in shell_cache
+    assert event.shell_classified is False
+    assert event.mcp_identity_trusted is False
+    assert event.child_mcp_identity_trusted is False
+    assert event.child_unconditional_grant_eligible is False
+    assert event.child_low_fidelity is True
+
+
 def test_shared_permission_event_carries_redaction_provenance_without_secret():
     """The shared-runtime cache must remember that its display input changed.
 
@@ -8154,6 +8300,102 @@ async def test_fidelity_unaware_consumer_gate_rejects_and_audits():
                 answer = frame
         assert answer is not None
         assert answer["result"]["outcome"]["outcome"] in ("selected", "cancelled")
+    finally:
+        await _drain_audits(rt)
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_aware_consumer_receives_kindless_mcp_child_permission():
+    """The end of the auto-deny, driven through the handle's own dispatch
+    loop: a consumer that opted into the child-fidelity contract (as
+    `kirocrew chat` now does) receives the low-fidelity permission event for
+    a kindless MCP child call -- yielded with the trusted transport identity
+    attached -- instead of the handle rejecting it as
+    `child_low_fidelity_unaware_consumer`."""
+    from kiro_crew.acp.types import (
+        EVENT_PERMISSION_REQUEST,
+        METHOD_REQUEST_PERMISSION,
+        METHOD_SESSION_UPDATE,
+    )
+
+    rt, reader, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.child_fidelity_aware = True
+
+    audited: list[tuple[object, str, str]] = []
+    handle._audit_handle_reject = (  # type: ignore[method-assign]
+        lambda request_id, title, error, sub_session_id="": audited.append(
+            (request_id, title, error)
+        )
+    )
+
+    task = await _start_reader(rt)
+    try:
+        events = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=3.0):
+                events.append(ev)
+                if ev.kind == EVENT_PERMISSION_REQUEST:
+                    # Answer it so the turn can end.
+                    await handle.reject_tool(ev.request_id)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        _feed(
+            reader,
+            {
+                "method": "_kiro.dev/subagent/list_update",
+                "params": {"subagents": [{"sessionId": "child-a"}]},
+            },
+        )
+        # The child's tool_call: NO kind, backend `_meta.kiro` identity only.
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "child-a",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-88",
+                        "title": "Asking the knowledge service",
+                        "rawInput": {"question": "why"},
+                        "_meta": {"kiro": {"mcpServerName": "kb", "toolName": "ask"}},
+                    },
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "jsonrpc": "2.0",
+                "id": 88,
+                "method": METHOD_REQUEST_PERMISSION,
+                "params": {
+                    "sessionId": "child-a",
+                    "toolCall": {"toolCallId": "tc-88", "title": "Asking the knowledge service"},
+                    "options": [
+                        {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}
+                    ],
+                },
+            },
+        )
+        _feed(reader, {"jsonrpc": "2.0", "id": req_id, "result": {"stopReason": "end_turn"}})
+        await asyncio.wait_for(driver, timeout=5.0)
+
+        perm = [ev for ev in events if ev.kind == EVENT_PERMISSION_REQUEST]
+        assert perm, "the permission event never reached the aware consumer"
+        ev = perm[0]
+        # Low fidelity is preserved (title matching stays gated elsewhere) --
+        # the aware consumer receives it rather than the handle rejecting it.
+        assert ev.child_low_fidelity is True
+        assert ev.mcp_identity_trusted is True
+        assert ev.mcp_server_name == "kb"
+        assert ev.tool_name == "ask"
+        assert not audited  # the fail-close gate never fired
     finally:
         await _drain_audits(rt)
         await _stop_reader(task)

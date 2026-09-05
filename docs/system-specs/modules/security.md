@@ -1920,7 +1920,17 @@ it only when their extractors actually produced an identity pair (a frame
 without `_meta.kiro` populates nothing and asserts no provenance), and
 `_to_llm_event` copies it; it mirrors
 `raw_params_trusted`, so a future inline population path fails closed instead
-of counting as verified on non-emptiness alone). The grant-eligibility
+of counting as verified on non-emptiness alone). `child_mcp_identity_trusted`
+does NOT require a resolved shell classification: a backend may omit `kind` on
+its MCP `tool_call` frames, leaving the shell cache unwritten, and the trusted
+transport identity is itself proof the call is MCP-served and not a host shell
+command (a host shell or builtin never carries a server name — `acp-client.md`
+§ Tool Permission Protocol). That proof stays confined to the identity-only
+property: minting a resolved `shell_classified` from it would flip
+`child_low_fidelity` to `False` and un-gate the content-matching auto-approve
+paths for a kindless mutating call with a read-looking, agent-authored title.
+A `kind` that resolved to execute still caches `is_shell=True`, which keeps
+the identity split closed for shell calls. The grant-eligibility
 expression is hoisted to one place,
 `AcpEvent.child_unconditional_grant_eligible`
 (`not child_low_fidelity or child_mcp_identity_trusted`), consumed by all
