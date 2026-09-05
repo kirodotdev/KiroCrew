@@ -81,3 +81,31 @@ describe('Chinese day-part words never eat ordinary text', () => {
     expect(words.filter((w) => w.length < 2)).toEqual([])
   })
 })
+
+describe('the shared resolution rules hold from the Chinese side too', () => {
+  // Built from local hours so the assertions hold in any timezone the suite runs in.
+  const at = (h: number) => { const d = new Date(); d.setHours(h, 0, 0, 0); return d }
+
+  it('refuses a 今天 clock that has already passed instead of rolling to tomorrow', () => {
+    // 今天 names TODAY; the day-rollover rule is right for a bare 下午3点 and wrong
+    // here. Pinned from this caller so the shared rule cannot drift per language.
+    const r = parseReminder('今天下午3点开会', at(17), '提醒')
+    expect(r.needsSchedule).toBe(true)
+    expect(r.fireAt).toBeNull()
+    expect(r.text).toBe('今天下午3点开会')
+  })
+
+  it('still schedules 今天下午3点 while it is in the future', () => {
+    const r = parseReminder('今天下午3点开会', at(10), '提醒')
+    expect(r.needsSchedule).toBe(false)
+    expect(new Date(r.fireAt!).getHours()).toBe(15)
+  })
+
+  it('asks instead of crashing on a count that overflows Date', () => {
+    // Unbounded, the delay reached new Date and toISOString() threw out of the
+    // submit handler.
+    const r = parseReminder('99999999999999999999分钟后喝水', at(10), '提醒')
+    expect(r.needsSchedule).toBe(true)
+    expect(r.fireAt).toBeNull()
+  })
+})
