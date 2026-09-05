@@ -24,7 +24,6 @@
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/narrate.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/record_template.py
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/verify_align.py
-3 src/kiro_crew/apps/builtins/file_explorer/server.py
 1 src/kiro_crew/apps/builtins/issue_radar/backend/azure_client.py
 3 src/kiro_crew/apps/builtins/md_notebook/server.py
 1 src/kiro_crew/apps/builtins/pptx_maker/backend/engine.py
