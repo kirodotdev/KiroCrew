@@ -1422,3 +1422,208 @@ class TestParserBranchTable:
         # anti-obfuscation branches are upstream of this parser and unaffected.
         got = security._git_publish_floor_tags("git push origin $(echo main)")
         assert got == frozenset({security._GIT_PUBLISH_UNGATED})
+
+
+class TestArgumentBoundaryHelpers:
+    """Direct unit pins on the boundary seam fixed for #8695 / #8700.
+
+    The nine end-to-end failures shared one root cause: the argument list was
+    derived once by ``_git_push_args`` (operator-cut words, redirects stepped
+    over) and then re-modelled by the walk, which expects RAW spellings. These
+    pin each helper's contract so a future change to either side fails here
+    first, with the mechanism named, instead of nine assertion diffs away.
+    """
+
+    def test_the_extractor_returns_raw_words(self):
+        # Operator-cutting starved the walk: ``@(main)`` arrived as ``@`` and
+        # took the ambiguous-ref row instead of the wildcard row.
+        assert security._git_push_args("git push origin @(main)") == ["origin", "@(main)"]
+        assert security._git_push_args("git push origin main>log") == ["origin", "main>log"]
+
+    def test_the_extractor_consumes_the_heredoc_strip_delimiter(self):
+        # ``<<-`` is one operator; with ``<<`` matched instead, the ``-`` read
+        # as an attached target and ``EOF`` survived as a phantom refspec.
+        assert security._git_push_args("git push origin <<- EOF") == ["origin"]
+        assert security._git_push_args("git push origin <<-EOF") == ["origin"]
+
+    def test_the_extractor_keeps_a_process_substitution_word(self):
+        # A redirect TARGET process substitution is consumed by the shell; a
+        # WORD-position one is a /dev/fd word the walk must land on the
+        # ungated branch -- stripping it like a redirect erased the construct.
+        assert security._git_push_args("git push origin <(echo x)") == ["origin", "<(echo x)"]
+        assert security._git_push_args("git push origin my-feature > >(tee log.txt)") == [
+            "origin",
+            "my-feature",
+        ]
+
+    def test_a_payload_quoted_git_token_does_not_anchor_the_wrapper_line(self):
+        # The ``git`` inside the -c payload is quoted text of ANOTHER shell's
+        # command line; anchoring on it parsed the wrapper as a push of the
+        # payload's trailing fragment. The nested-payload walk judges it.
+        assert security._git_push_args("bash -c '(cd /tmp && git push origin my-feature)'") is None
+        # A quote that opens WITHIN the anchor token still anchors.
+        assert security._git_push_args('"git" push origin my-feature') == ["origin", "my-feature"]
+
+    def test_quoted_separators_do_not_split_a_push_segment(self):
+        # The quote-blind regex split cut 'feature|x' mid-ref, leaving an open
+        # quote fragment the cumulative check escalated to the ungated deny.
+        assert security._split_push_segments("git push origin 'feature|x'") == [
+            "git push origin 'feature|x'"
+        ]
+        assert security._split_push_segments("git push origin feat; echo x") == [
+            "git push origin feat",
+            " echo x",
+        ]
+        assert not security._git_publish_floor_tags("git push origin 'feature|x'")
+        assert not security._git_publish_floor_tags("git push origin 'a;b'")
+
+    def test_a_quoted_newline_still_lands_on_the_ungated_branch(self):
+        # Quote-aware splitting consumes every unquoted newline, so one left in
+        # a segment is bash splicing (``ma\`` + newline + ``in`` pushes main).
+        tags = security._git_publish_floor_tags("git push origin ma\\\nin")
+        assert security._GIT_PUBLISH_UNGATED in tags
+
+    def test_a_glued_verb_escalates_to_ungated_only_when_dirty(self):
+        # ``(git`` is an obfuscation-shaped spelling: a finding must not land
+        # on a single disableable row. A clean feature push in the same shape
+        # stays allowed -- the parse still sees the target.
+        assert security._push_anchor_glued("(git push origin main)") is True
+        assert security._push_anchor_glued("git push origin main") is False
+        assert security._push_anchor_glued('"git" push origin main') is False
+        assert security._git_publish_floor_tags("(git push origin fix/x)") == frozenset()
+
+    def test_a_quoted_paren_cannot_stretch_a_process_substitution(self):
+        # GPT 5.6 pre-push review on #8695: str.count-based depth read a
+        # QUOTED '(' as an opener, so the construct swallowed the trailing
+        # refspec and a protected push was allowed.
+        assert security._git_push_args("git push origin my-feature > >(printf '(') main") == [
+            "origin",
+            "my-feature",
+            "main",
+        ]
+        assert "git-publish-push-protected-branch-name" in security._git_publish_floor_tags(
+            "git push origin my-feature > >(printf '(') main"
+        )
+        # Deny direction unchanged: an unquoted ')' still closes the construct.
+        assert security._git_push_args("git push origin feat > >(echo ')' x) main") == [
+            "origin",
+            "feat",
+            "main",
+        ]
+
+    def test_a_wrapper_deferral_cannot_vouch_for_top_level_residue(self):
+        # Opus pre-push review on #8695: the payload-quoted anchor gate made
+        # the wrapper segment defer entirely, so a top-level push riding a
+        # single '&' behind an expansion was judged by nothing.
+        cmd = "bash -c 'cd /tmp && git push origin feat' & $x push origin main"
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(cmd)
+        # A protected NAME at top level is residue too, expansion or not.
+        cmd2 = "bash -c 'cd /tmp && git push origin feat' & main"
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(cmd2)
+        # The clean wrapper still defers: allowed at this level, the payload
+        # walk judges the quoted script.
+        assert not security._git_publish_floor_tags(
+            "bash -c '(cd /tmp && git push origin my-feature)'"
+        )
+        # A $ INSIDE the payload's single quotes is literal data to bash, not
+        # top-level expansion -- the residue gate must not over-deny it
+        # (verifier round on #8695).
+        assert not security._git_publish_floor_tags(
+            "bash -c '$HOME/bin/helper && git push origin my-feature'"
+        )
+        # Unquoted and double-quoted expansion at top level stay hazards.
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(
+            "bash -c 'cd /tmp && git push origin feat' & \"$x\" push origin main"
+        )
+
+    def test_a_multi_line_quoted_payload_defers_to_the_payload_reading(self):
+        # Opus advisory on #8695: a newline QUOTED inside a -c payload is a
+        # multi-line SCRIPT, not a spliced word -- the payload walk judges it
+        # (the outer line is not itself a publish, so enforcement-level is the
+        # honest assertion; the payload's feature push is allowed).
+        assert security.is_denied("bash -c 'git push origin feature\ncd x'") is None
+        assert security.is_denied("bash -c 'git push origin main\ncd x'") is not None
+        # No payload: the newline really is splicing -- ungated stands.
+        tags = security._git_publish_floor_tags("git push origin ma\\\nin")
+        assert security._GIT_PUBLISH_UNGATED in tags
+
+    def test_an_ansi_c_escaped_quote_does_not_close_the_span(self):
+        # Opus advisory on #8695: inside $'...' a backslash escapes, so \'
+        # is data -- without the rule the splitter cut at a separator bash
+        # treats as quoted text.
+        assert security._split_push_segments("git push origin $'a\\'; b'") == [
+            "git push origin $'a\\'; b'"
+        ]
+
+    def test_a_separator_inside_a_process_substitution_is_not_a_boundary(self):
+        # GPT 5.6 round 1 on PR #8727: splitting at the ';' inside >(...) cut
+        # the construct mid-way and the trailing protected ref landed in a
+        # segment with no git token to judge it.
+        cmd = "git push origin feature > >(tee /dev/null; :) main"
+        assert security._split_push_segments(cmd) == [cmd]
+        assert "git-publish-push-protected-branch-name" in security._git_publish_floor_tags(cmd)
+        # An unquoted separator OUTSIDE the construct still splits.
+        assert security._split_push_segments("git push origin feat; echo") == [
+            "git push origin feat",
+            " echo",
+        ]
+        # Round 2: a plain nested paren inside the construct nests too -- the
+        # first ')' must not close it early (GPT 5.6).
+        cmd2 = "git push origin feature > >( (echo x); :) main"
+        assert security._split_push_segments(cmd2) == [cmd2]
+        assert "git-publish-push-protected-branch-name" in security._git_publish_floor_tags(cmd2)
+
+    def test_a_deferral_cannot_vouch_for_a_sibling_top_level_push(self):
+        # GPT 5.6 + Opus 4.8 round 1 on PR #8727: the quoted-newline deferral
+        # let a top-level sibling push (--all / HEAD / bare) ride a benign
+        # payload past the sole git-publish enforcement. The top-level view
+        # (quoted spans blanked) reading as a publish is now a hazard.
+        UNGATED = security._GIT_PUBLISH_UNGATED
+        assert UNGATED in security._git_publish_floor_tags(
+            "bash -c 'git push origin feature\n:' & git push --all origin"
+        )
+        assert UNGATED in security._git_publish_floor_tags(
+            "bash -c 'git push origin feature\ncd x' & git push origin head"
+        )
+        assert UNGATED in security._git_publish_floor_tags(
+            "bash -c 'git push origin feature\n:' & git push"
+        )
+        # The clean multi-line wrapper still defers to the payload reading.
+        assert security.is_denied("bash -c 'git push origin feature\ncd x'") is None
+        # Round 2: quote glue and a quoted program word are inert to bash --
+        # the top-level view resolves them like argv words (GPT: g""it;
+        # Opus: 'git'), so neither spelling rides the deferral.
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(
+            "bash -c 'git push origin feature\n:' & g\"\"it push --all origin"
+        )
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(
+            "bash -c 'git push origin feature\n:' & 'git' push --all origin"
+        )
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(
+            "bash -c 'git push origin feature\n:' & 'git' push origin head"
+        )
+        # Round 3 advisory: ANSI-C quoting resolves without its $ ($'git' is
+        # git to bash), and an ANSI escape in a residue token is a hazard.
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(
+            "bash -c 'git push origin feature\n:' & $'git' $'push' --all origin"
+        )
+        assert security._push_top_level_view("$'git' x") == "git x"
+        assert security._push_token_expands("$'g\\x69t'") is True
+        # Round 4: an unquoted glob resolves to the git binary by pathname
+        # expansion, evading a literal shape check -- the hazard set now
+        # covers the full expansion inventory the positional walk models.
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(
+            "bash -c 'git push origin feature\n:' & /usr/bin/g?t push --all origin"
+        )
+        assert security._push_token_expands("/usr/bin/g?t") is True
+        assert security._push_token_expands("@(git)") is True
+        assert security._push_token_expands("'g?t'") is False  # quoted glob is data
+
+    def test_a_subshell_closer_tail_is_punctuation_not_fusion(self):
+        # ``my-feature)`` inside ``( ... )`` is the word plus the closer; the
+        # protective fallback for it over-blocked ordinary subshell pushes,
+        # while a protected name under the same glue is still read.
+        assert not security._git_publish_floor_tags("(cd /tmp; git push origin my-feature)")
+        assert "git-publish-push-protected-branch-name" in security._git_publish_floor_tags(
+            "(cd /tmp; git push origin main)"
+        )

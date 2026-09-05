@@ -1023,6 +1023,45 @@ the dangerous-PREFIX axis is not precedent against these tables: prefix matching
 is a set intersection where extra names are inert, while arity decides which
 tokens are refspecs at all, so a table here does change outcomes.)
 
+**The argument boundary is derived once, faithfully (#8695 / #8700).** The two
+halves of the scan share one seam: `_git_push_args` derives the positional words
+from a segment, and `_push_segment_targets_protected` models the shell syntax on
+those words' RAW spellings. Four boundary rules keep both directions honest.
+(1) Segments are split quote-aware (`_split_push_segments`): a `;` `|` `&&` `||`
+or newline inside quotes or behind a backslash is data, so `git push origin
+'feature|x'` is ONE push of a legal ref instead of a fragment ending in an open
+quote — while an unquoted newline still separates, so any newline REMAINING in a
+push segment was quoted or escaped, i.e. bash splices words across it, and the
+segment lands on the ungated sentinel. (2) `_git_push_args` returns raw words
+(operator-cutting them had starved the walk: `@(main)` arrived as `@` and took
+the wrong catalog row), steps over standalone redirect constructs with the
+shell's arity — `<<-` folds its `-` into the operator so the separated heredoc
+delimiter is consumed, not read as a refspec — and keeps a process-substitution
+WORD (`<(cmd)` / `>(cmd)` at word start) as one argument for the walk to land on
+the ungated branch, while a process substitution that is a redirect TARGET
+(`> >(tee log.txt)`) is consumed by the shell and never poisons a feature push.
+(3) A token that BEGINS inside a quoted span opened by an earlier token is a
+wrapper's payload text (`bash -c '(cd /tmp && git push origin my-feature)'`), so
+it never anchors the outer line as a push — the nested-payload walk judges the
+quoted script instead. (4) A pure subshell-closer tail glued to a word
+(`my-feature)` / `main)&`) is punctuation after the word, not fusion into it:
+the word flows where a plain word would (a protected name in it is still read),
+whereas a segment whose GIT ANCHOR itself carried operator glue (`(git push
+origin main)`) escalates any finding to the ungated sentinel — the spelling is
+obfuscation-shaped, so no single disableable row may carry it, while the parse
+still seeing the target is what keeps `(git push origin fix/x)` an ordinary
+allowed feature push. Two pre-push review rounds hardened the boundary further:
+process-substitution spans are measured with a quote-aware walk (a quoted `(`
+in the body is data -- counting it stretched the construct over a trailing
+protected refspec), and every wrapper DEFERRAL is gated on the segment's
+top-level residue: an unquoted token carrying `$`, a leading `~`, or a
+protected branch name means words in THIS shell would go unjudged
+(`bash -c '...feat...' & $x push origin main`), so the segment keeps the
+ungated posture instead of deferring. A newline surviving the quote-aware
+split defers the same way when a nested payload is itself a publish (a
+multi-line quoted script is a script, not a splice) and stays ungated
+otherwise.
+
 **Opt-out state — keystone `denied_commands.json`.** The opt-out state is a
 security ceiling, so it lives in its OWN keystone file
 `~/.kiro/crew/denied_commands.json` (respecting `KIROCREW_HOME`) — NOT in the
