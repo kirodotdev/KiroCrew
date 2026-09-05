@@ -404,6 +404,7 @@ _CORE_MANAGED_MCP_NAMES = frozenset(
         "kirocrew-cron",
         "kirocrew-computer",
         "kirocrew-dashboard",
+        "kirocrew-panel",
         "openclaw-core",
         "openclaw-cron",
         "openclaw-computer",

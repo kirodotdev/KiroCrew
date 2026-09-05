@@ -4,8 +4,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { ArrowLeft, AlertTriangle, ExternalLink, GitFork, Loader2, User, MessageSquare, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { safeHttpUrl } from '../lib/safeUrl'
-import { sanitizeCssValue } from '../lib/cssSanitize'
-import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
+import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { PageHeader, Card, Badge, Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
@@ -18,16 +17,6 @@ import type { ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
-function readThemeVars(): Record<string, string> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
-  const computed = getComputedStyle(document.documentElement)
-  const out: Record<string, string> = {}
-  for (const name of THEME_VAR_NAMES) {
-    const v = sanitizeCssValue(computed.getPropertyValue(name))
-    if (v) out[name] = v
-  }
-  return out
-}
 
 /** Shape of the `GET /api/remote-artifacts/{provider}/{external_id}` response.
  *  These are the provider `fetch_content` contract fields — flat **snake_case**

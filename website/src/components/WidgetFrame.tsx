@@ -3,8 +3,7 @@ import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight
 import { Maximize2, Minimize2, ExternalLink, Download, Star, RotateCw } from 'lucide-react'
 import { Btn, IconButton, IconButtonGroup } from './ui'
 import { useTheme } from '../hooks/useTheme'
-import { sanitizeCssValue } from '../lib/cssSanitize'
-import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
+import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import { effectiveWidgetSlug } from '../lib/widgetSlug'
 import { analyzeWidgetComplexity } from '../lib/widgetComplexity'
 import { api, ApiError } from '../api/client'
@@ -81,16 +80,6 @@ export function staggeredBuildWait(baseWait: number, slot: number): number {
 let jumpBuildSlot = 0
 let jumpBuildResetAt = 0
 
-function readThemeVars(): Record<string, string> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
-  const computed = getComputedStyle(document.documentElement)
-  const out: Record<string, string> = {}
-  for (const name of THEME_VAR_NAMES) {
-    const v = sanitizeCssValue(computed.getPropertyValue(name))
-    if (v) out[name] = v
-  }
-  return out
-}
 
 /** Probe result for a widget's backing artifact.
  *

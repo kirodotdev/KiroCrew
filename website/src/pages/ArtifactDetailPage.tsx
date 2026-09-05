@@ -13,8 +13,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { fetchSlots, addSlotOptimistic, removeSlotOptimistic } from '../store/dashboardSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
-import { sanitizeCssValue } from '../lib/cssSanitize'
-import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
+import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { PageHeader, Card, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
@@ -60,16 +59,6 @@ function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): ChatSlot | 
     (b.last_activity_ts || '').localeCompare(a.last_activity_ts || ''))[0]
 }
 
-function readThemeVars(): Record<string, string> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
-  const computed = getComputedStyle(document.documentElement)
-  const out: Record<string, string> = {}
-  for (const name of THEME_VAR_NAMES) {
-    const v = sanitizeCssValue(computed.getPropertyValue(name))
-    if (v) out[name] = v
-  }
-  return out
-}
 
 export { isEditableKind }
 

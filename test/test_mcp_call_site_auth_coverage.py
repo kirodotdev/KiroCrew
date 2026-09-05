@@ -91,6 +91,7 @@ _SOURCES = (
     _CORE,
     _SRC / "mcp_shared.py",
     _SRC / "mcp_dashboard.py",
+    _SRC / "mcp_panel.py",
     _SRC / "mcp_computer.py",
     _SRC / "cli_commands.py",
     _SRC / "cli_server.py",

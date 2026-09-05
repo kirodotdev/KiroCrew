@@ -12,6 +12,7 @@ import stat
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -420,6 +421,15 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # cookie auth and are refused before the handler's own session
         # recognition can run.
         "/api/session-ledger",
+        # MCP-only (panel_publish / panel_templates tools); no browser caller --
+        # the drawer READS through "/api/members/{slug}/panel", which is
+        # registered by the same module a few lines below and deliberately NOT
+        # under this prefix so it keeps cookie auth. Prefix matching covers both
+        # "/api/agent-panel/publish" and "/api/agent-panel/templates". Same
+        # wiring class as the ledger above: without this entry the
+        # internal-secret call falls through to cookie auth and every publish
+        # fails with 403.
+        "/api/agent-panel",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.
@@ -1335,21 +1345,30 @@ def _precompute_telemetry(state: "DashboardState") -> None:
         _log.debug("telemetry.record_event(gateway_start) failed", exc_info=True)
 
 
-def _deferred_session_control(handler_name: str) -> Callable:
-    """Bind a session-control route without importing the subsystem at boot.
+def _deferred(module_name: str, handler_name: str) -> Callable:
+    """Bind a route without importing its handler module at gateway boot.
 
-    Session control is feature-flagged (``agent.session_control``), and the
-    enabled check lives inside the handler -- so a module-level import would be
-    an eager import of an optional subsystem whose gate runs after it, which the
-    boot-path rule names explicitly. Route registration itself is allowed at
-    boot; only the import moves to first request, so an operator who disabled the
-    feature never pays for loading it.
+    The boot-path rule forbids an eager import of an OPTIONAL subsystem inside
+    ``_register_mcp_routes``: it runs on every gateway launch before the socket
+    binds, so an operator who never enables the feature still pays to load it, and
+    for a feature-flagged subsystem the import precedes its own gate. Route
+    registration at boot is fine -- only the import moves to first request.
+
+    Both current callers wanted exactly this and differed only in which module they
+    named, so the module is a parameter rather than a second copy of the closure:
+
+    * ``session_control`` -- feature-flagged (``agent.session_control``), with the
+      enabled check inside the handler.
+    * ``agent_panel`` -- the crew webview store, whose MCP server ships gated off
+      (``opt_in``) and which most installs never publish to.
+
+    ``module_name`` is a submodule of ``kiro_crew.dashboard.handlers``, not a
+    dotted path, so this cannot be pointed at an arbitrary module.
     """
 
     async def _route(request: web.Request) -> web.StreamResponse:
-        from kiro_crew.dashboard.handlers import session_control
-
-        handler = getattr(session_control, handler_name)
+        module = import_module(f"kiro_crew.dashboard.handlers.{module_name}")
+        handler = getattr(module, handler_name)
         return await handler(request)
 
     _route.__name__ = handler_name
@@ -1377,6 +1396,22 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)
     app.router.add_get("/api/session-ledger", handlers.api_session_ledger_get)
     app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
+    # The write half of the agent panel surface -- MCP-only, like the ledger
+    # above. The READ, "/api/members/{slug}/panel", is registered here too and
+    # stays on cookie auth because a browser is its only caller.
+    #
+    # Registered route-by-route through the deferred binder rather than by
+    # calling the module's own `register_agent_panel_routes`: that call would
+    # import the module at boot, which is what the boot-path rule forbids for an
+    # optional subsystem. The paths are duplicated from that function, and
+    # `test_agent_panel_routes` pins both spellings against each other.
+    app.router.add_get(
+        "/api/agent-panel/templates", _deferred("agent_panel", "api_agent_panel_templates")
+    )
+    app.router.add_post(
+        "/api/agent-panel/publish", _deferred("agent_panel", "api_agent_panel_publish")
+    )
+    app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)
@@ -1414,19 +1449,19 @@ def _register_mcp_routes(app: web.Application) -> None:
     # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict
     # pins by deriving the route set from the router rather than a hand-copied list.
     app.router.add_post(
-        "/api/session-control/create", _deferred_session_control("api_session_control_create")
+        "/api/session-control/create", _deferred("session_control", "api_session_control_create")
     )
     app.router.add_post(
-        "/api/session-control/stop", _deferred_session_control("api_session_control_stop")
+        "/api/session-control/stop", _deferred("session_control", "api_session_control_stop")
     )
     app.router.add_post(
-        "/api/session-control/close", _deferred_session_control("api_session_control_close")
+        "/api/session-control/close", _deferred("session_control", "api_session_control_close")
     )
     app.router.add_post(
-        "/api/session-control/send", _deferred_session_control("api_session_control_send")
+        "/api/session-control/send", _deferred("session_control", "api_session_control_send")
     )
     app.router.add_get(
-        "/api/session-control/read", _deferred_session_control("api_session_control_read")
+        "/api/session-control/read", _deferred("session_control", "api_session_control_read")
     )
     app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
     app.router.add_put("/api/browser/token", handlers.api_browser_token_put)

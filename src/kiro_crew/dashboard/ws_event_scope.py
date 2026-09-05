@@ -354,6 +354,13 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # shape (per-event opt-in), and it is the one declaration that exists in
     # the tree today (the workflows app), so the name must not change.
     "workflow_run_event": "workflow_run_event",
+    # Metadata only ({slug}) and no slot -- but the slug NAMES a crew, which is
+    # the same reason `skills.pending_changed` above takes an explicit
+    # declaration rather than riding Tier 0: an app has no business learning the
+    # roster from a refresh ping. The frame deliberately carries nothing else
+    # (the ownership digest is withheld), and a client that acts on it re-reads
+    # through the panel route, which re-applies the ownership check.
+    "panel_published": "panels",
     # Privileged
     "log": "log",
     "browser_event": "browser",

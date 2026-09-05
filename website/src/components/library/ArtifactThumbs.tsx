@@ -4,11 +4,10 @@ import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight
 import { getImageDims, rememberImageDims } from '../../utils/imageDims'
 import { sanitize } from '../../api/helpers'
 import { useTheme } from '../../hooks/useTheme'
-import { sanitizeCssValue } from '../../lib/cssSanitize'
 import { framablePreviewUrl } from '../../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../../hooks/useCloudDeploymentEnabled'
 import { useAppPreview } from '../WebAppArtifactCard'
-import { THEME_VAR_NAMES, buildSrcdoc } from '../../lib/widgetSrcdoc'
+import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import MarkdownRenderer from '../MarkdownRenderer'
 import { i18nT } from '../../i18n/t'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
@@ -18,16 +17,6 @@ import type { Artifact } from '../../types'
 /** Read the current computed theme CSS vars (capped to the known set, each
  * value sanitized) so a sandboxed preview iframe matches the dashboard theme.
  * Mirrors the helper in ArtifactDetailPage. */
-function readThemeVars(): Record<string, string> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
-  const computed = getComputedStyle(document.documentElement)
-  const out: Record<string, string> = {}
-  for (const name of THEME_VAR_NAMES) {
-    const v = sanitizeCssValue(computed.getPropertyValue(name))
-    if (v) out[name] = v
-  }
-  return out
-}
 
 /** Key space for cached thumbnail heights. These are measured at BASE_W and
  *  clamped to VIEWPORT_H, so they are not comparable with the heights a
