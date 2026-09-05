@@ -468,11 +468,15 @@ candidate is pure staging until consolidated.
 
 ---
 
-## Result record (write one per change)
+## Result record (return one per change)
 
-Write `~/.kiro/crew/apps/code-review-sage/data/results/<change-id>.json`. This is
-the durable source of truth the Focus Report reads. **Findings JSON contract**
-(kept stable so the deterministic scorer is decoupled from prompt wording):
+Return the complete record in the reviewer response, wrapped exactly once in
+`<code-review-sage-result>` and `</code-review-sage-result>` tags. Do not write
+it to a filesystem path: reviewer sessions share an operating-system identity,
+so a filesystem location cannot authenticate one reviewer to the driver. The
+driver validates the response and persists it after the worker turns finish.
+**Findings JSON contract** (kept stable so the deterministic scorer is decoupled
+from prompt wording):
 
 ```json
 {

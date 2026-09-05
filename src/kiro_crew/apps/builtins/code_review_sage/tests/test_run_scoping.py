@@ -12,6 +12,7 @@ the cooperative ``cancelled=`` predicate added to ``review_driver.run_review``:
   * ``run_review`` scopes its records/report to the run dir and honors a
     ``cancelled`` predicate by skipping unstarted changes (no dispatch).
 """
+
 import json
 import os
 import re
@@ -27,13 +28,18 @@ from sage_lib import review_driver as D  # noqa: N812
 from sage_lib import store
 
 
-def _rec(change_id, verdict="PASS", risk="low", blast="SMALL", red=0, yellow=0,
-         deep=True, title="t"):
+def _rec(
+    change_id, verdict="PASS", risk="low", blast="SMALL", red=0, yellow=0, deep=True, title="t"
+):
     """A minimal but contract-valid result record (mirrors test_report._rec)."""
     return {
-        "schema": "code-review-sage-result", "version": 1, "change_id": change_id,
-        "platform": "github", "repo_identity": "github.com/o/r",
-        "url": f"https://github.com/o/r/pull/{change_id}", "title": title,
+        "schema": "code-review-sage-result",
+        "version": 1,
+        "change_id": change_id,
+        "platform": "github",
+        "repo_identity": "github.com/o/r",
+        "url": f"https://github.com/o/r/pull/{change_id}",
+        "title": title,
         "phase1": {"gate_verdict": verdict, "design_risk": risk, "criticality": "low"},
         "blast_radius": {"rating": blast, "signals": {}},
         "counts": {"red": red, "yellow": yellow},
@@ -67,10 +73,12 @@ class TestRunScopedResults(_RootTest):
         self.assertIn("run-a", str(dir_a))
         self.assertIn("run-b", str(dir_b))
 
-        self.assertEqual([r["change_id"] for r in results.list_results(self.root, "run-a")],
-                         ["CR-A"])
-        self.assertEqual([r["change_id"] for r in results.list_results(self.root, "run-b")],
-                         ["CR-B"])
+        self.assertEqual(
+            [r["change_id"] for r in results.list_results(self.root, "run-a")], ["CR-A"]
+        )
+        self.assertEqual(
+            [r["change_id"] for r in results.list_results(self.root, "run-b")], ["CR-B"]
+        )
 
     def test_clearing_one_run_leaves_the_other_intact(self):
         results.write_result(_rec("CR-A"), self.root, run_id="run-a")
@@ -80,17 +88,18 @@ class TestRunScopedResults(_RootTest):
         self.assertEqual(removed, 1)
         self.assertEqual(results.list_results(self.root, "run-a"), [])
         # sibling run untouched
-        self.assertEqual([r["change_id"] for r in results.list_results(self.root, "run-b")],
-                         ["CR-B"])
+        self.assertEqual(
+            [r["change_id"] for r in results.list_results(self.root, "run-b")], ["CR-B"]
+        )
 
     def test_run_id_none_uses_legacy_shared_paths(self):
         # Back-compat: no run_id == the pre-existing shared dirs.
-        self.assertEqual(results.results_dir(self.root, None),
-                         store.data_dir(self.root) / "results")
-        self.assertEqual(RP.reports_dir(self.root, None),
-                         store.data_dir(self.root) / "reports")
+        self.assertEqual(
+            results.results_dir(self.root, None), store.data_dir(self.root) / "results"
+        )
+        self.assertEqual(RP.reports_dir(self.root, None), store.data_dir(self.root) / "reports")
 
-        results.write_result(_rec("CR-LEG"), self.root)   # no run_id
+        results.write_result(_rec("CR-LEG"), self.root)  # no run_id
         self.assertTrue((store.data_dir(self.root) / "results" / "CR-LEG.json").exists())
         self.assertEqual([r["change_id"] for r in results.list_results(self.root)], ["CR-LEG"])
         # a shared-dir write is invisible to any run-scoped view
@@ -99,14 +108,16 @@ class TestRunScopedResults(_RootTest):
     def test_reviewed_and_config_stay_global_not_per_run(self):
         rid = "run-xyz"
         # reviewed.json + config.json live in data/, never under data/runs/<id>/.
-        self.assertEqual(results.reviewed_path(self.root),
-                         store.data_dir(self.root) / "reviewed.json")
+        self.assertEqual(
+            results.reviewed_path(self.root), store.data_dir(self.root) / "reviewed.json"
+        )
         self.assertNotIn(rid, str(results.reviewed_path(self.root)))
         cfg_path = store.data_dir(self.root) / "config.json"
         self.assertNotIn(rid, str(cfg_path))
 
         results.mark_reviewed(
-            {"CR-A": {"head_sha": "abc", "reviewed_at": "t", "run_id": rid}}, self.root)
+            {"CR-A": {"head_sha": "abc", "reviewed_at": "t", "run_id": rid}}, self.root
+        )
         self.assertTrue((store.data_dir(self.root) / "reviewed.json").exists())
         # not duplicated into the run subtree
         self.assertFalse((store.runs_root(self.root) / rid / "reviewed.json").exists())
@@ -121,13 +132,14 @@ class TestSafeRunId(_RootTest):
             sid = store.safe_run_id(raw)
             self.assertNotIn("/", sid)
             self.assertNotIn(os.sep, sid)
-            self.assertTrue(sid)   # never empty
+            self.assertTrue(sid)  # never empty
 
     def test_run_dir_stays_inside_runs_root(self):
         rr = store.runs_root(self.root).resolve()
         for raw in ("../../etc", "a/b", "normal-id"):
-            self.assertEqual(store.run_dir(raw, self.root).resolve().parent, rr,
-                             f"{raw!r} escaped runs_root")
+            self.assertEqual(
+                store.run_dir(raw, self.root).resolve().parent, rr, f"{raw!r} escaped runs_root"
+            )
 
     def test_run_dir_dotdot_is_contained(self):
         # Regression: the _UNSAFE_RUN_ID character filter treats '.' as SAFE, so a
@@ -136,8 +148,9 @@ class TestSafeRunId(_RootTest):
         # all-dots rejection in safe_run_id is what closes that.
         rr = store.runs_root(self.root).resolve()
         for raw in ("..", ".", "...", "./.."):
-            self.assertEqual(store.run_dir(raw, self.root).resolve().parent, rr,
-                             f"{raw!r} escaped runs_root")
+            self.assertEqual(
+                store.run_dir(raw, self.root).resolve().parent, rr, f"{raw!r} escaped runs_root"
+            )
         self.assertEqual(store.safe_run_id(".."), "unknown")
 
 
@@ -171,7 +184,7 @@ class TestRunDirLifecycle(_RootTest):
         self.assertEqual(store.list_run_ids(self.root), [])
         store.ensure_run_layout("run-a", self.root)
         store.ensure_run_layout("run-b", self.root)
-        self.assertEqual(store.list_run_ids(self.root), ["run-a", "run-b"])   # sorted
+        self.assertEqual(store.list_run_ids(self.root), ["run-a", "run-b"])  # sorted
         store.remove_run_dir("run-a", self.root)
         self.assertEqual(store.list_run_ids(self.root), ["run-b"])
 
@@ -244,41 +257,69 @@ class TestRunReviewScoping(unittest.TestCase):
         """Single-pass reviewer model (mirrors test_review_driver._fake_dispatch)
         but writes/reads under ``run_id`` so the driver's run-scoped read hits the
         same file the (fake) worker wrote."""
+
         def dispatch(task, timeout=0):
             with self.lock:
                 self.calls.append(task)
+            output = "done"
             m = re.search(r"CR-\d+", task)
             if m:
                 cid = m.group(0)
                 if "SINGLE thorough pass" in task:
-                    results.write_result({
-                        "schema": "code-review-sage-result", "version": 1,
-                        "change_id": cid, "platform": "github",
-                        "repo_identity": "github.com/o/r", "revision": "1",
-                        "phase1": {"gate_verdict": verdict, "design_risk": "low",
-                                   "criticality": "low"},
+                    record = {
+                        "schema": "code-review-sage-result",
+                        "version": 1,
+                        "change_id": cid,
+                        "platform": "github",
+                        "repo_identity": "github.com/o/r",
+                        "revision": "1",
+                        "phase1": {
+                            "gate_verdict": verdict,
+                            "design_risk": "low",
+                            "criticality": "low",
+                        },
                         "blast_radius": {"rating": "SMALL", "signals": {}},
                         "counts": {"red": 0, "yellow": 1},
-                        "findings": [{"dimension": "correctness", "severity": "yellow",
-                                      "file": "f", "line": 1, "snippet": "x",
-                                      "observation": "o", "consequence": "c",
-                                      "suggestion": "s"}],
-                        "deep_reviewed": True, "title": cid,
-                        "files_covered": ["f"], "coverage_complete": True,
-                    }, self.root, run_id=run_id)
+                        "findings": [
+                            {
+                                "dimension": "correctness",
+                                "severity": "yellow",
+                                "file": "f",
+                                "line": 1,
+                                "snippet": "x",
+                                "observation": "o",
+                                "consequence": "c",
+                                "suggestion": "s",
+                            }
+                        ],
+                        "deep_reviewed": True,
+                        "title": cid,
+                        "files_covered": ["f"],
+                        "coverage_complete": True,
+                    }
+                    output = (
+                        "<code-review-sage-result>"
+                        + json.dumps(record)
+                        + "</code-review-sage-result>"
+                    )
                 elif "pre-redacted DRAFT review comments" in task:
                     rec = results.read_result(cid, self.root, run_id=run_id) or {}
                     pending = rec.get("pending_comments", []) or []
                     rec["posted_comments"] = len(pending)
-                    rec["design_comment_posted"] = any(
-                        e.get("kind") == "design" for e in pending)
+                    rec["design_comment_posted"] = any(e.get("kind") == "design" for e in pending)
                     results.write_result(rec, self.root, run_id=run_id)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": output, "error": ""}
+
         return dispatch
 
     def test_run_review_run_id_writes_report_into_run_dir(self):
-        out = D.run_review(["CR-1"], dispatch=self._fake_dispatch(run_id="run-x"),
-                           archiver=self._archiver, root=self.root, run_id="run-x")
+        out = D.run_review(
+            ["CR-1"],
+            dispatch=self._fake_dispatch(run_id="run-x"),
+            archiver=self._archiver,
+            root=self.root,
+            run_id="run-x",
+        )
         self.assertTrue(out["ok"])
         self.assertEqual(out["report_slug"], "sage-report-test")
 
@@ -290,8 +331,13 @@ class TestRunReviewScoping(unittest.TestCase):
         self.assertFalse((store.data_dir(self.root) / "reports" / "report.json").is_file())
 
     def test_run_review_run_id_scopes_result_records(self):
-        D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(run_id="run-y"),
-                     generate_report=False, root=self.root, run_id="run-y")
+        D.run_review(
+            ["CR-1", "CR-2"],
+            dispatch=self._fake_dispatch(run_id="run-y"),
+            generate_report=False,
+            root=self.root,
+            run_id="run-y",
+        )
         # records live under the run's private dir, not the shared one
         self.assertEqual(len(results.list_results(self.root, "run-y")), 2)
         self.assertEqual(results.list_results(self.root), [])
@@ -305,14 +351,19 @@ class TestRunReviewScoping(unittest.TestCase):
             with plock:
                 seen.append((cid, phase))
 
-        out = D.run_review(["CR-1", "CR-2", "CR-3"],
-                           dispatch=self._fake_dispatch(run_id="run-c"),
-                           generate_report=False, root=self.root, run_id="run-c",
-                           cancelled=lambda: True, progress=prog)
+        out = D.run_review(
+            ["CR-1", "CR-2", "CR-3"],
+            dispatch=self._fake_dispatch(run_id="run-c"),
+            generate_report=False,
+            root=self.root,
+            run_id="run-c",
+            cancelled=lambda: True,
+            progress=prog,
+        )
 
         # every change reported cancelled, none dispatched
         self.assertEqual(out["cancelled"], 3)
-        self.assertEqual(self.calls, [])   # NO review/poster task dispatched at all
+        self.assertEqual(self.calls, [])  # NO review/poster task dispatched at all
         self.assertFalse(any("SINGLE thorough pass" in c for c in self.calls))
 
         # each change surfaced via the progress callback as 'cancelled'
@@ -329,10 +380,14 @@ class TestRunReviewScoping(unittest.TestCase):
         self.assertNotIn("report_slug", out)
 
     def test_run_review_cancelled_false_behaves_normally(self):
-        out = D.run_review(["CR-1", "CR-2"],
-                           dispatch=self._fake_dispatch(run_id="run-n"),
-                           archiver=self._archiver, root=self.root, run_id="run-n",
-                           cancelled=lambda: False)
+        out = D.run_review(
+            ["CR-1", "CR-2"],
+            dispatch=self._fake_dispatch(run_id="run-n"),
+            archiver=self._archiver,
+            root=self.root,
+            run_id="run-n",
+            cancelled=lambda: False,
+        )
         self.assertTrue(out["ok"])
         self.assertEqual(out["changes"], 2)
         self.assertEqual(out["cancelled"], 0)

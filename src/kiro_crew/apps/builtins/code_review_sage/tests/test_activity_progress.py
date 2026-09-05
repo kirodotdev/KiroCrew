@@ -7,6 +7,7 @@ standalone CLI and test fakes pass a plain ``(task, timeout)`` callable.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -49,12 +50,20 @@ class TestActivityRelay(unittest.TestCase):
     def _progress(self, cid, phase, extra=None):
         self.seen.append((cid, phase, dict(extra or {})))
 
+    def _write_review_result(self, task: str) -> None:
+        capability = re.search(r"result_capability` exactly as `([^`]+)`", task)
+        if capability is None:
+            self.fail("review task omitted its result capability")
+        record = _record()
+        record["result_capability"] = capability.group(1)
+        results.write_result(record, self.root)
+
     def test_relays_the_reviewers_tool_calls_as_activity(self):
         def dispatch(task, timeout=0, on_activity=None):
             if on_activity is not None:
                 on_activity("execute_bash", 1)
                 on_activity("fs_read", 2)
-            results.write_result(_record(), self.root)
+            self._write_review_result(task)
             return {"ok": True, "output": "done", "error": ""}
 
         D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
@@ -72,7 +81,7 @@ class TestActivityRelay(unittest.TestCase):
 
         def dispatch(task, timeout=0):
             calls.append(task)
-            results.write_result(_record(), self.root)
+            self._write_review_result(task)
             return {"ok": True, "output": "done", "error": ""}
 
         out = D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
@@ -95,7 +104,7 @@ class TestActivityRelay(unittest.TestCase):
             # itself, not rely on the pool's guard being the only net.
             if on_activity is not None:
                 on_activity("execute_bash", 1)
-            results.write_result(_record(), self.root)
+            self._write_review_result(task)
             return {"ok": True, "output": "done", "error": ""}
 
         def boom(cid, phase, extra=None):

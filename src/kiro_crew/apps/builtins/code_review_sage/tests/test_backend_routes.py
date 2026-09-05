@@ -2544,8 +2544,8 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
         return report.__file__
 
 
-class TestWholeRunsSerialize:
-    """A second run's body must not start while the first is still reviewing."""
+class TestIndependentRunsUseTheBoundedPool:
+    """Different claimed changes may review concurrently with bound results."""
 
     @pytest.mark.asyncio
     async def test_run_bodies_do_not_overlap(self, monkeypatch, tmp_path):
@@ -2589,16 +2589,11 @@ class TestWholeRunsSerialize:
         await asyncio.gather(*(mod._run_review_bg(r, [f"https://x/pull/{i}"])
                                for i, r in enumerate(runs)))
 
-        assert not overlapped, "two run bodies were inside run_review at once"
+        assert overlapped, "independent run bodies should share the bounded pool"
 
 
-class TestReviewersSerialize:
-    """Reviewers inside one run are serialized.
-
-    Workers share the staging directory and each has file tools, so two live at
-    once lets one write another change's record between that slot being cleared
-    and its own worker writing -- findings attributed to the wrong pull request.
-    """
+class TestReviewersUsePoolConcurrency:
+    """Run-scoped reviewers use the pool after capability-bound adoption."""
 
     @pytest.mark.asyncio
     async def test_one_reviewer_at_a_time(self, monkeypatch, tmp_path):
@@ -2633,8 +2628,8 @@ class TestReviewersSerialize:
         await asyncio.gather(*(mod._run_review_bg(r, [f"https://x/pull/{i}"])
                                for i, r in enumerate(runs)))
 
-        assert seen.get("concurrency") == 1, (
-            "the backend must ask for one reviewer at a time; got "
+        assert seen.get("concurrency") == 0, (
+            "the backend must delegate concurrency to the bounded pool; got "
             f"{seen.get('concurrency')!r}")
 
 

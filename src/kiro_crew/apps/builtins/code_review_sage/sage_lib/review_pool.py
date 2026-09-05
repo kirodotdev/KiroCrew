@@ -29,6 +29,7 @@ The executor is async; the (synchronous, threaded) review driver bridges to it
 via ``asyncio.run_coroutine_threadsafe`` on the gateway event loop, and brackets
 each run with ``begin_batch()`` / ``end_batch()``. See ``backend/routes.py``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -106,12 +107,16 @@ def runtime_preflight() -> str:
     otherwise stall the whole loop.
     """
     if AcpRuntime is None:
-        return ("the reviewer cannot run: the ACP runtime "
-                "(kiro_crew.acp.runtime) is not importable in this install")
+        return (
+            "the reviewer cannot run: the ACP runtime "
+            "(kiro_crew.acp.runtime) is not importable in this install"
+        )
     if resolve_kiro_cli is not None and resolve_kiro_cli() is None:
-        return ("the reviewer cannot run: no kiro-cli executable was found on "
-                "this host (the reviewer session is driven by kiro-cli — "
-                "install it or add it to PATH)")
+        return (
+            "the reviewer cannot run: no kiro-cli executable was found on "
+            "this host (the reviewer session is driven by kiro-cli — "
+            "install it or add it to PATH)"
+        )
     return ""
 
 
@@ -126,17 +131,22 @@ def _is_abnormal_stop(reason: str) -> bool:
     r = (reason or "").strip().lower()
     if not r:
         return False
-    if r in (str(STOP_REASON_TOOL_STALL).lower(),
-             str(STOP_REASON_STALE_RECOVER).lower(), "timeout"):
+    if r in (
+        str(STOP_REASON_TOOL_STALL).lower(),
+        str(STOP_REASON_STALE_RECOVER).lower(),
+        "timeout",
+    ):
         return True
     return r.startswith("error")
 
 
 # ── Tunables (resource limits live here for easy future updates) ──
-MAX_CONCURRENT = 5        # default max reviews running at once (config: review.max_concurrent)
+MAX_CONCURRENT = 5  # default max reviews running at once (config: review.max_concurrent)
 MAX_CONCURRENT_CEIL = 30  # hard ceiling — "review all" can raise concurrency up to here
-MAX_STARTING = 2          # (legacy) retained for back-compat stats; single runtime has no cold-start throttle
-DEFAULT_TASK_TIMEOUT = 5400.0   # 90 min per review turn. The single-pass review
+MAX_STARTING = (
+    2  # (legacy) retained for back-compat stats; single runtime has no cold-start throttle
+)
+DEFAULT_TASK_TIMEOUT = 5400.0  # 90 min per review turn. The single-pass review
 #   is ONE heavier turn (design + all code dimensions) that replaces up to 5 old
 #   turns, so the old 30-min cap force-killed legitimately-working large-PR reviews
 #   (stop_reason='timeout'). 90 min gives real headroom while staying well under the
@@ -144,7 +154,7 @@ DEFAULT_TASK_TIMEOUT = 5400.0   # 90 min per review turn. The single-pass review
 REVIEW_AGENT = "code-review-sage-reviewer"  # dedicated lean reviewer agent (shell-
 #   enabled so it can run the `gh` CLI to fetch/post GitHub PR reviews). The per-task
 #   prompt loads the `sage-review` skill on top of it.
-_FALLBACK_AGENT = "kirocrew"     # default agent when the reviewer agent isn't installed
+_FALLBACK_AGENT = "kirocrew"  # default agent when the reviewer agent isn't installed
 
 # Reasoning/thinking effort for the review workers. Empty string = "no explicit
 # override; inherit the model/provider default" (the config default), rather than
@@ -220,11 +230,10 @@ def _resolve_review_agent(preferred: str = REVIEW_AGENT) -> str:
 
 def _review_work_dir() -> Optional[str]:
     """Working directory for a review worker = the installed app root, so the
-    gate/deep prompts' RELATIVE paths (`sage_lib/pipeline.py`, `data/results/<id>.json`)
-    resolve to exactly where the driver reads/writes. Without this the worker's
-    default cwd (<config_dir>/workspace) sends the result record to the wrong dir
-    and the driver sees "gate produced no verdict". Falls back to the AcpClient
-    default if the app root can't be resolved."""
+    gate/deep prompts' relative `sage_lib/pipeline.py` invocation resolves to the
+    installed app. Result records return through the dispatcher, so no worker
+    writes a handoff file in this directory. Falls back to the AcpClient default
+    if the app root can't be resolved."""
     try:
         return str(store.app_root())
     except Exception:
@@ -247,8 +256,7 @@ def _reviewer_model(agent: str) -> str:
     if kiro_agents_dir is None:  # pragma: no cover - standalone fallback
         return _DEFAULT_REVIEW_MODEL
     try:
-        cfg = json.loads(
-            (kiro_agents_dir() / f"{agent}.json").read_text(encoding="utf-8"))
+        cfg = json.loads((kiro_agents_dir() / f"{agent}.json").read_text(encoding="utf-8"))
         model = cfg.get("model")
         if isinstance(model, str) and model:
             return model
@@ -263,9 +271,12 @@ def reviewer_info() -> dict:
     thinking effort level (user-configured) applied to both review phases."""
     agent = _resolve_review_agent()
     settings = _get_review_settings()
-    return {"agent": agent, "model": _reviewer_model(agent),
-            "effort": settings.get("effort", _DEFAULT_EFFORT),
-            "model_source": "config" if settings.get("model") else "agent-default"}
+    return {
+        "agent": agent,
+        "model": _reviewer_model(agent),
+        "effort": settings.get("effort", _DEFAULT_EFFORT),
+        "model_source": "config" if settings.get("model") else "agent-default",
+    }
 
 
 def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT) -> None:
@@ -352,7 +363,7 @@ class _BatchRuntimeHolder:
             rt = None
             if self._batches == 0:
                 rt, self._runtime = self._runtime, None
-        if rt is not None:          # kill outside the lock (SIGTERM->SIGKILL can block)
+        if rt is not None:  # kill outside the lock (SIGTERM->SIGKILL can block)
             await self._kill(rt)
 
     async def acquire(self) -> "AcpRuntime":
@@ -372,7 +383,7 @@ class _BatchRuntimeHolder:
         rt = self._runtime
         if rt is not None and rt.is_alive():
             return rt
-        if rt is not None:                          # reap a dead one first
+        if rt is not None:  # reap a dead one first
             await self._kill(rt)
         if AcpRuntime is None:
             raise RuntimeError("AcpRuntime unavailable (kiro_crew.acp.runtime not importable)")
@@ -382,8 +393,10 @@ class _BatchRuntimeHolder:
         if self._work_dir:
             try:
                 _write_effort_overlay(
-                    self._work_dir, _reviewer_model(self._agent),
-                    _get_review_settings().get("effort", _DEFAULT_EFFORT))
+                    self._work_dir,
+                    _reviewer_model(self._agent),
+                    _get_review_settings().get("effort", _DEFAULT_EFFORT),
+                )
             except Exception:
                 logger.debug("could not write review effort overlay", exc_info=True)
         # work_dir + sandbox_mode="auto" mirror the old AcpClient worker: the
@@ -393,8 +406,9 @@ class _BatchRuntimeHolder:
         rt = AcpRuntime(agent=self._agent, work_dir=self._work_dir, sandbox_mode="auto")
         await rt.spawn()
         self._runtime = rt
-        logger.info("code-review-sage runtime spawned (agent=%s, cwd=%s)",
-                    self._agent, self._work_dir)
+        logger.info(
+            "code-review-sage runtime spawned (agent=%s, cwd=%s)", self._agent, self._work_dir
+        )
         return rt
 
     async def _kill(self, rt: "AcpRuntime") -> None:
@@ -476,9 +490,13 @@ class ReviewPool:
         """Close a review batch — kills the runtime once the last batch drains."""
         await self._holder.end_batch()
 
-    async def send(self, task: str, timeout: float = DEFAULT_TASK_TIMEOUT,
-                   on_activity: Callable[[str, int], None] | None = None,
-                   keep_session_key: str | None = None) -> str:
+    async def send(
+        self,
+        task: str,
+        timeout: float = DEFAULT_TASK_TIMEOUT,
+        on_activity: Callable[[str, int], None] | None = None,
+        keep_session_key: str | None = None,
+    ) -> str:
         """Run one review task on its own session of the shared runtime and return
         the final assistant text. Auto-approves every tool permission (the reviewer
         runs the `gh` CLI + shell) and emits a per-tool SEL audit.
@@ -515,11 +533,9 @@ class ReviewPool:
                             steps += 1
                             if on_activity is not None:
                                 try:
-                                    on_activity(
-                                        str(getattr(ev, "title", "") or ""), steps)
+                                    on_activity(str(getattr(ev, "title", "") or ""), steps)
                                 except Exception:
-                                    logger.debug("activity callback failed",
-                                                 exc_info=True)
+                                    logger.debug("activity callback failed", exc_info=True)
                         elif kind == EVENT_PERMISSION_REQUEST:
                             # Auto-approve (the reviewer needs `gh` + shell) AND record
                             # the permission DECISION in the security ledger, tagged with
@@ -533,8 +549,8 @@ class ReviewPool:
                                 logger.debug("tool approve failed", exc_info=True)
                             else:
                                 await self._audit_tool(
-                                    handle, ev, request_id=req_id,
-                                    outcome="auto_approved")
+                                    handle, ev, request_id=req_id, outcome="auto_approved"
+                                )
                         elif kind == EVENT_COMPLETE:
                             stop_reason = getattr(ev, "stop_reason", "") or ""
                             break
@@ -552,7 +568,8 @@ class ReviewPool:
                 # the PR reviewed or posts on partial output.
                 if _is_abnormal_stop(stop_reason):
                     raise RuntimeError(
-                        f"review turn ended abnormally (stop_reason={stop_reason!r})")
+                        f"review turn ended abnormally (stop_reason={stop_reason!r})"
+                    )
                 # Keep the transcript AFTER the health gate above: a session whose
                 # turn died has no findings to be asked about, and recording it
                 # would leave a file nothing will ever load.
@@ -583,15 +600,19 @@ class ReviewPool:
         try:
             handle.keep_transcript = True  # type: ignore[attr-defined]
             followup.write_descriptor(
-                run_id, change_id, sid=sid, agent=self._agent,
-                cwd=self._work_dir or "")
+                run_id, change_id, sid=sid, agent=self._agent, cwd=self._work_dir or ""
+            )
         except Exception:
-            logger.debug("could not keep the review session resumable",
-                         exc_info=True)
+            logger.debug("could not keep the review session resumable", exc_info=True)
 
-    async def _audit_tool(self, handle: object, ev: object, *,
-                          request_id: object = None,
-                          outcome: str = "auto_approved") -> None:
+    async def _audit_tool(
+        self,
+        handle: object,
+        ev: object,
+        *,
+        request_id: object = None,
+        outcome: str = "auto_approved",
+    ) -> None:
         """Emit a per-tool SEL audit (the runtime layer has no ``audit_source``,
         so without this the reviewer's tool calls would never reach the security log
         — parity with ``AcpClient._maybe_audit_tool_call``). Best-effort + bounded:
@@ -635,9 +656,13 @@ class ReviewPool:
         h = self._holder.stats()
         active = h["active_sessions"]
         return {
-            "workers": active, "idle": 0, "busy": active,
-            "max": self._max, "starting_max": MAX_STARTING,
-            "runtime_alive": h["runtime_alive"], "active_sessions": active,
+            "workers": active,
+            "idle": 0,
+            "busy": active,
+            "max": self._max,
+            "starting_max": MAX_STARTING,
+            "runtime_alive": h["runtime_alive"],
+            "active_sessions": active,
             "batches": h["batches"],
         }
 
@@ -674,9 +699,16 @@ def pool_stats() -> dict:
         # No pool yet (before the first review) — report the static default cap.
         # Avoid effective_max_concurrent() here: it reads config.json, and this
         # runs synchronously on the gateway event loop from the /runs handler.
-        return {"workers": 0, "idle": 0, "busy": 0,
-                "max": MAX_CONCURRENT, "starting_max": MAX_STARTING,
-                "runtime_alive": False, "active_sessions": 0, "batches": 0}
+        return {
+            "workers": 0,
+            "idle": 0,
+            "busy": 0,
+            "max": MAX_CONCURRENT,
+            "starting_max": MAX_STARTING,
+            "runtime_alive": False,
+            "active_sessions": 0,
+            "batches": 0,
+        }
     return _POOL.stats()
 
 
@@ -699,16 +731,25 @@ def make_sync_dispatch(
     Never raises — failures come back in the ``error`` field so the driver's phase
     switch can react deterministically."""
 
-    def dispatch(task: str, timeout: float = default_timeout,
-                 on_activity: Callable[[str, int], None] | None = None,
-                 keep_session_key: str | None = None) -> dict:
+    def dispatch(
+        task: str,
+        timeout: float = default_timeout,
+        on_activity: Callable[[str, int], None] | None = None,
+        keep_session_key: str | None = None,
+    ) -> dict:
         try:
             # The callback fires on the gateway loop's thread while the driver's
             # worker thread blocks here; the progress writer it feeds is lock-
             # guarded and copy-on-write, so that crossing is safe.
             fut = asyncio.run_coroutine_threadsafe(
-                pool.send(task, timeout=timeout, on_activity=on_activity,
-                          keep_session_key=keep_session_key), loop)
+                pool.send(
+                    task,
+                    timeout=timeout,
+                    on_activity=on_activity,
+                    keep_session_key=keep_session_key,
+                ),
+                loop,
+            )
             # Give the bridge a little headroom past the task timeout so the
             # pool's own timeout fires first with a cleaner error.
             out = fut.result(timeout=timeout + 60)

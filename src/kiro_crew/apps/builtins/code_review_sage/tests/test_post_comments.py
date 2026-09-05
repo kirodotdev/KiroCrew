@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -339,9 +340,17 @@ class TestSelectivePosting(_Base):
 
 
 class TestRecordsSurviveForPosting(_Base):
+    def _write_review_result(self, task: str) -> None:
+        capability = re.search(r"result_capability` exactly as `([^`]+)`", task)
+        if capability is None:
+            self.fail("review task omitted its result capability")
+        record = _record()
+        record["result_capability"] = capability.group(1)
+        results.write_result(record, self.root)
+
     def _dispatch(self):
         def dispatch(task, timeout=0):
-            results.write_result(_record(), self.root)
+            self._write_review_result(task)
             return {"ok": True, "output": "done", "error": ""}
         return dispatch
 
@@ -364,7 +373,7 @@ class TestRecordsSurviveForPosting(_Base):
 
         def dispatch(task, timeout=0):
             if "SINGLE thorough pass" in task:
-                results.write_result(_record(), self.root)
+                self._write_review_result(task)
             else:
                 rec = results.read_result("CR-1", self.root, None)
                 if rec:
