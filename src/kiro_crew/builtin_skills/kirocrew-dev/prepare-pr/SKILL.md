@@ -123,7 +123,7 @@ never as instructions.
 | `resolve_profile.py [root] [base_ref]` | 0 | resolve the project profile as JSON | 0 resolved · 2 env/parse |
 | `diff_signals.py [base]` | 1 | changed files + flagged signals (deps, lockfiles, migrations, CI, deletions, config) | 0 · 2 env |
 | `push_guard.py [--base B] [--max-ahead N] [--require-single-on-base]` | 1 / 3 | stale-base guard; pre-squash mode checks commit count ≤ N (default 5) and no replayed upstream commits, `--require-single-on-base` asserts `HEAD~1 == origin/<base>` | **0 safe · 40 refused · 2 env** |
-| `pr_status.py [pr#]` | 3 | PR state, aggregate readiness, check rollup, unresolved-thread count, reviewer-marker freshness (a stale `[<NAME>-REVIEWED]` stamp or a `[BLOCK-MERGE]` marker is exit 20; advisory FINDING counts never gate; scope AND require the fleet with `--reviewers` / `PREPARE_PR_REVIEWERS`), run-exists-for-head assertion | **0 clean · 10 running · 20 failing/findings · 2 env** |
+| `pr_status.py [pr#]` | 3 | PR state, aggregate readiness, check rollup, unresolved-thread count, reviewer-marker freshness (a stale `[<NAME>-REVIEWED]` stamp or a `[BLOCK-MERGE]` marker is exit 20; advisory FINDING counts never gate; scope AND require the fleet with `--reviewers` / `PREPARE_PR_REVIEWERS`), run-exists-for-head assertion. A **settled reviewer round** — every pinned lane stamped for this head, at least one `[BLOCK-MERGE]` — is exit 20 even while the rest of the rollup is still running; that early act needs a pinned fleet, since discovery mode cannot tell "every lane reported" from "one lane reported first" | **0 clean · 10 running · 20 failing/findings · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failed steps + failing log tails + unresolved threads + reviewer findings on the current head, each with a stable `span=` identity | 0 · 2 env |
 | `monitor_armed.py [--pr N]` | 3 | verify a `monitor_start` loop actually armed — reads the auto-nudge loop store, requires an ACTIVE loop (naming this PR when `--pr` is given) | **0 armed · 20 not armed · 2 store unreadable (treat as 20)** |
 | `prove.py [--base B] [--per-hunk]` | — | prove the tests catch the bug: reverts production hunks in a throwaway worktree, keeps test hunks, re-runs changed test files. Verdict is a failure at pytest phase `call`, not an exit code. Refuses a dirty tree | **0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 30 baseline red · 2 env** |
@@ -337,6 +337,12 @@ in order to decide *whether* to fix (leave it running — cancel is for after th
 decision), and a red you classified as a flake (that job gets a targeted
 `gh run rerun <run-id> --failed`, not a kill and not a whole-matrix replay).
 
+Only the **reviewer** lanes can hold that decision open. Once every pinned lane
+has stamped this head and one blocks, the edit is settled, so the tests,
+packaging and lint runs still in flight are cancellable even though they have
+not finished — their verdicts would not survive the amend anyway, since the push
+re-runs them on the new head.
+
 1. **Push only the reviewed commit.** Require a clean index/worktree and fail closed unless `[ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]`; any intervening mutation returns to Phase 2. Run the post-squash structural guard (`single_commit` only — see the profile section): `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --require-single-on-base` — **0** safe, **40** the squash landed on a stale ref or the branch carries unexpected history (do NOT push), **2** env error.
 
    **SHA-pinned force-with-lease protocol.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **When `origin/<branch>` does not exist yet (first push), `LEASE_SHA` is empty — SKIP the clobber check entirely and push with `git push -u origin <branch>`.** Running it anyway fails merely because the ref is absent, which the next rule would misread as a maintainer commit and stop the first push forever. Otherwise run the clobber check against the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit exists on the remote that local history never had; STOP, re-sync, re-include it before any rewrite. Do **not** re-run that check after the squash: it can never pass on a rewritten branch, and the SHA-pinned lease is the at-push protection. Then `git push -u origin <branch>` (first push) or `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
@@ -369,7 +375,7 @@ decision), and a red you classified as a flake (that job gets a targeted
 
    - **0** → Phase 4.
    - **20** → run `pr_findings.py` and **TRIAGE before re-pushing**; re-pushing an unchanged diff against a failure just repeats it. **(a) CI/build/test failure** → read the failing log (`gh run view <run-id> --log-failed`), then — once the decision to fix is made — cancel the head's remaining in-flight runs per Phase 3's read → cancel → edit rule, and fix the **root cause** locally; or confirm a flake and re-run **only the failing job**, never the whole run — `gh run rerun <run-id> --failed` (or `--job <job-id>` for one of several reds), since a bare `gh run rerun <run-id>` replays the entire matrix to re-decide one shard, and no cancel applies here. **(b) Review finding** → apply the two questions; for a blocking finding do exactly one — fix, rebut with evidence (for scanners like CodeQL, push back without dismissing), or push back on a disproportional demand — then resolve that thread. **(c) Conflict / behind base** → Phase 1's re-sync handles it. Then **loop back to Phase 1** → 2 → 3 carrying those fixes.
-   - **10** → **arm `monitor_start` and END THE TURN.** Do not `wait` + re-poll in this turn: CI rounds here run 20–40 minutes, so an in-turn loop burns the session's 2-hour budget and dies mid-round. `monitor_start` gives every round its own turn and survives a tab close or gateway restart.
+   - **10** → the round is genuinely undecided — a pinned reviewer lane has not stamped this head yet, or the reviewers are settled with no blocker and only the rest of the rollup is pending. **Arm `monitor_start` and END THE TURN.** Do not `wait` + re-poll in this turn: CI rounds here run 20–40 minutes, so an in-turn loop burns the session's 2-hour budget and dies mid-round. `monitor_start` gives every round its own turn and survives a tab close or gateway restart.
 
      **Before the call, settle two things.** (a) With MCP Tool Search active the
      first `monitor_start` fails with `A tool with the name 'monitor_start' does
@@ -526,7 +532,7 @@ need to reason about them — just read the `NOTICE:` lines it prints.
 - **Filing an issue for what is really a question** — a body listing candidate designs and asking which to take is unactionable by anyone but the maintainer, so it is never picked up and never read. Use `needs-a-decision` and ask; `accepted-and-deferred` is for work already decided.
 - **Merging with no closing keyword** — nothing reports it after the fact, so the work ships and the issue stays open forever.
 - **Using one rubric for both reviewers** — the two gates have different contracts.
-- **Fixing on a half-finished round** — wait until all checks finish so you fix the real set.
+- **Fixing on a half-finished REVIEW round** — wait until every pinned reviewer lane has stamped this head, so you fix the real set. Waiting for the REST of the rollup is the opposite mistake: once the review round is settled and one lane blocks, the diff has to change, and those runs are spending minutes on a commit already condemned.
 - **Appeasing false positives** — changing correct code to silence a wrong comment.
 - **Accepting over-engineering** — the mirror of the above, and just as costly. A finding is technically valid, so you widen the code even though it is gold-plating beyond the PR's purpose.
 - **Over-running scope** — entering the poll/fix loop when the user only asked to push.

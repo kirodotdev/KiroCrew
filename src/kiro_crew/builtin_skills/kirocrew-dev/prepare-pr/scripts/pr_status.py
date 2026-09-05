@@ -993,6 +993,10 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
       stale     -- sorted reviewer names with no fresh stamp for the head
       blocking  -- sorted reviewer names with [BLOCK-MERGE] <current head>
       findings  -- {name: advisory FINDING-line count} for fresh comments
+      pinned    -- whether ``only`` named the fleet. Empty ``stale`` means
+                   "every REQUIRED lane stamped this head" only when pinned;
+                   in discovery mode it means "every lane that POSTED is
+                   fresh", which cannot see a lane that has not spoken yet.
 
     STRUCTURAL INVARIANT -- reviewer identity comes from WORKFLOW-AUTHORED
     bytes, never from model output. ``bindings`` maps each lane's comment
@@ -1011,7 +1015,14 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
     posted is not required, its CI gate covers absence).
     """
     if comments is None or not head_sha:
-        return {"ok": False, "stale": [], "blocking": [], "findings": {}, "elided": []}
+        return {
+            "ok": False,
+            "stale": [],
+            "blocking": [],
+            "findings": {},
+            "elided": [],
+            "pinned": only is not None,
+        }
     fresh_by_name: dict = {name: False for name in (only or ())}
     findings: dict = {}
     blocking = set()
@@ -1051,7 +1062,37 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
         "blocking": sorted(blocking),
         "findings": findings,
         "elided": sorted(elided),
+        "pinned": only is not None,
     }
+
+
+def reviewer_round_settled(marker_eval):
+    """Whether the AI-review round is decided, regardless of the other checks.
+
+    True only when the fleet was PINNED (``--reviewers`` / the loop's own
+    profile names), the comments were readable, every pinned lane carries a
+    fresh ``[<NAME>-REVIEWED]`` stamp for this head, and at least one posted
+    ``[BLOCK-MERGE]``. That combination is terminal for the head: the diff has
+    to change, so the tests, packaging and lint runs still in flight are
+    running on a commit that is already condemned.
+
+    Deliberately narrow in three ways. It needs a pinned fleet, because in
+    discovery mode an empty ``stale`` only says every lane that has SPOKEN is
+    fresh -- a lane still composing its review is invisible, and acting on the
+    first blocker would throw its verdict away. It needs a blocker, because a
+    settled round with no blocker has nothing to act on and must fall through
+    to the normal running/clean path. And it says nothing about failing
+    non-reviewer checks: a red test while a lane is still pending stays a
+    wait, so one round still fixes one full set of findings.
+    """
+    if not marker_eval:
+        return False
+    return bool(
+        marker_eval.get("pinned")
+        and marker_eval.get("ok")
+        and not marker_eval.get("stale")
+        and marker_eval.get("blocking")
+    )
 
 
 def head_run_exists(repo, head_sha):
@@ -1196,7 +1237,13 @@ def decide(
        belongs to the old head. Ranking in-flight checks first reports "running"
        forever while nothing can complete -- a stall only a human notices.
        BEHIND, draft and CHANGES_REQUESTED behave the same way: each survives
-       any amount of waiting and needs the author to act. The disposition
+       any amount of waiting and needs the author to act. A SETTLED reviewer
+       round (``reviewer_round_settled``) joins them: once every pinned lane
+       has stamped this head and one blocks, the edit is required, so the
+       backend/frontend runs still in flight are spending minutes on a commit
+       already condemned -- Phase 3 cancels them instead of waiting them out.
+       Only the AI-review lanes gate this; a non-reviewer check still running
+       does not hold the decision open, and a red one does not force it. The disposition
        evaluation (``disposition_eval``, built from disposition_violations)
        belongs here too, in BOTH its states: a violation is cleared only by
        the author editing or deleting the offending comment, and an
@@ -1237,6 +1284,20 @@ def decide(
         blocked_now.append("PR is a draft")
     if decision == "CHANGES_REQUESTED":
         blocked_now.append("review decision is CHANGES_REQUESTED")
+    if reviewer_round_settled(marker_eval):
+        # The reviewer round is DONE even though the rollup is not: every
+        # pinned lane stamped this head and at least one blocks. Waiting for
+        # the remaining lanes (backend/frontend tests, packaging) cannot
+        # change that the diff must be edited, and their verdicts do not
+        # survive the edit anyway -- the push re-runs them on the new head.
+        # So this belongs with the other "waiting cannot fix this" conditions
+        # ABOVE the running gate. Requires a PINNED fleet: discovery mode
+        # cannot tell "all lanes reported" from "one lane reported first",
+        # and acting there would drop a verdict that was still coming.
+        blocked_now.append(
+            "reviewer round complete with blocking marker [BLOCK-MERGE] on "
+            "current head from: " + ", ".join(sorted(marker_eval["blocking"]))
+        )
     if disposition_eval is not None:
         # A disposition violation is a condition waiting cannot fix -- only the
         # AUTHOR editing or deleting the comment clears it -- so it belongs
