@@ -256,7 +256,8 @@ it as hung clicks again or reloads mid-scan.
 
 Relies on `kiro_crew.pod` subpackage (optional import — degrades gracefully if unavailable):
 
-- `runtime.active_names(cfg)` — systemctl list (blocking, offloaded via `run_in_executor`)
+- `runtime.active_names(cfg)` — one point-in-time systemctl/launchctl listing per fleet build
+  (blocking, offloaded via `run_in_executor`), shared by every worktree row
 - `runtime.derive_port(cfg, name)` — cksum-based port derivation (blocking, offloaded)
 - `runtime.health(cfg, name, port, timeout)` — identity-gated HTTP probe (blocking,
   offloaded). Takes the pod's NAME, not just its port, because a derived port is

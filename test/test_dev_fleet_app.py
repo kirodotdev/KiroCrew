@@ -6454,6 +6454,30 @@ async def test_fleet_pod_health_is_identity_gated_not_a_bare_port_probe():
 
 
 @pytest.mark.asyncio
+async def test_fleet_enumerates_active_pods_once_for_all_worktrees():
+    """Fleet polling must not run one full service-manager query per row."""
+    active_names = MagicMock(return_value=set())
+    fake_cfg = SimpleNamespace()
+    worktrees = [
+        {"path": "/repo", "branch": "main", "is_main": True},
+        *[
+            {"path": f"/repo-wt-{idx}", "branch": f"feat/{idx}", "is_main": False}
+            for idx in range(4)
+        ],
+    ]
+    with patch.object(runtime_mod.rt, "active_names", active_names):
+        fleet = await _fleet_with(
+            worktrees,
+            _POD_AVAILABLE=True,
+            _POD_IMPORTED=True,
+            _load_cfg=lambda: fake_cfg,
+        )
+
+    active_names.assert_called_once_with(fake_cfg)
+    assert all(not row["running"] for row in fleet["worktrees"])
+
+
+@pytest.mark.asyncio
 async def test_fleet_payload_marks_an_inferred_main_checkout():
     with patch.object(repository_mod, "MAIN_REPO_INFERRED", True):
         fleet = await _fleet_with(

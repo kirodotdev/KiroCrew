@@ -947,6 +947,17 @@ async def _build_fleet() -> dict:
     staged_path = live._staged_target()
     worktrees = await repository._discover_worktrees()
     cfg = runtime._load_cfg()
+    loop = asyncio.get_running_loop()
+    active_pod_names: set[str] = set()
+    if runtime._POD_AVAILABLE and cfg and any(not wt.get("is_main", False) for wt in worktrees):
+        try:
+            # One point-in-time service-manager snapshot keeps every row
+            # consistent and avoids repeating the same subprocess per worktree.
+            active_pod_names = await loop.run_in_executor(
+                subprocess_executor(), runtime.rt.active_names, cfg
+            )
+        except Exception:  # noqa: BLE001
+            pass
     legacy_prefixes = tuple(
         f"{r.split('/')[-1].lower()}-wt-" for r in (repository._FALLBACK_REPOS or [])
     )
@@ -965,7 +976,6 @@ async def _build_fleet() -> dict:
         health = None
         has_venv = False
         has_dist = False
-        loop = asyncio.get_running_loop()
         # Build state is a plain filesystem check (``.venv`` binary present /
         # ``static/dist`` directory present) and is therefore knowable on EVERY
         # platform — report it even where pods cannot run, so the Fleet view
@@ -986,12 +996,9 @@ async def _build_fleet() -> dict:
                 pass
         # Pod state, by contrast, only exists where pods can run.
         if runtime._POD_AVAILABLE and cfg and not is_main:
-            try:
-                active = await loop.run_in_executor(
-                    subprocess_executor(), runtime.rt.active_names, cfg
-                )
-                running = name in active
-                if running:
+            running = name in active_pod_names
+            if running:
+                try:
                     port = await loop.run_in_executor(
                         subprocess_executor(), runtime.rt.derive_port, cfg, name
                     )
@@ -1005,8 +1012,8 @@ async def _build_fleet() -> dict:
                     health = await loop.run_in_executor(
                         subprocess_executor(), runtime.rt.health, cfg, name, port, 2
                     )
-            except Exception:  # noqa: BLE001
-                pass
+                except Exception:  # noqa: BLE001
+                    pass
 
         ahead = await repository._git_ahead(path)
         # "shipped" drives the UI's "safe to remove" affordance — require a
