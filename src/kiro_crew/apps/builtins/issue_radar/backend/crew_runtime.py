@@ -1388,13 +1388,20 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
     # wrong-empty one (the same unknown-vs-empty distinction the /deps route
     # makes). Keep whatever we have; the sweep after the issues cache warms
     # will refresh.
+    # Captured BEFORE the issues snapshot is read — the snapshot is the graph's
+    # SCOPE, so the rebuilt graph is as old as its oldest input, not as old as
+    # the edge fetch alone (same reasoning as the /deps route). Under-claiming
+    # age is the safe direction for the store's compare-and-set (#5638).
+    fetch_started = time.time()
     open_issues = store.read_issues_cache(key.owner, key.repo, scope, state="open")
     if open_issues is None:
         return cached
     try:
         hints: dict[int, dict] = {}
         edges, nodes = github_client.fetch_dependency_edges(key.owner, key.repo, open_issues, hints)
-        store.write_deps_cache(key.owner, key.repo, edges, nodes, root=scope)
+        store.write_deps_cache(
+            key.owner, key.repo, edges, nodes, root=scope, fetched_at=fetch_started
+        )
         return store.read_deps_cache(key.owner, key.repo, scope)
     except Exception:
         logger.debug(

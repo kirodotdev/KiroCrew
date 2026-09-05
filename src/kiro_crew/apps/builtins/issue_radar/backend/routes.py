@@ -1641,6 +1641,15 @@ async def _rebuild_deps(app: web.Application, key: provider.RepoKey) -> dict:
     """
     owner, repo = key.owner, key.repo
     async with _deps_rebuild_lock(app, key):
+        # Captured BEFORE the issue snapshot is loaded — the snapshot is the
+        # graph's SCOPE, so the rebuilt graph is as old as its oldest input,
+        # not as old as the edge fetch alone. A later stamp would let a rebuild
+        # scoped by a stale snapshot outrank a concurrent producer (the sweep,
+        # in another process, which the mutex above cannot reach) that used a
+        # fresher one, and suppress its scope changes for the TTL (#5638).
+        # Under-claiming age is the safe direction: this rebuild can only lose
+        # a CAS race it might have won, never persist stale data as fresh.
+        fetch_started = time.time()
         try:
             issues = await _load_open_issues_for_reco(key)
         except GhCliError as exc:
@@ -1650,7 +1659,7 @@ async def _rebuild_deps(app: web.Application, key: provider.RepoKey) -> dict:
         edges, nodes = await asyncio.to_thread(
             partial(github_client.fetch_dependency_edges, owner, repo, issues, hints)
         )
-        await _st(key, store.write_deps_cache, owner, repo, edges, nodes)
+        await _st(key, store.write_deps_cache, owner, repo, edges, nodes, fetched_at=fetch_started)
         stored = await _st(key, store.read_deps_cache, owner, repo)
     if stored is not None:
         return stored
