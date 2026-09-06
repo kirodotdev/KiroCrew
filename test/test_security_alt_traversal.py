@@ -189,6 +189,9 @@ def test_fd_without_delivery_or_fence_is_allowed(command: str) -> None:
         f"true && grep -r secret {CREW}",
         f"cd /tmp; grep -r secret {CREW}",
         f"grep -r secret {CREW_LEGACY}",
+        # No root operand at all: the root is the directory the same line entered.
+        f"cd {CREW}; rg secret",
+        f"cd {CREW} && grep -r secret",
     ],
 )
 def test_recursive_read_rooted_above_fence_is_denied(command: str) -> None:
@@ -639,11 +642,6 @@ def test_size_lister_without_sink_or_fence_is_allowed(command: str) -> None:
         "plocate id_rsa | xargs cat",
         # A name list delivered through a command substitution rather than xargs.
         f"cat $(fd '^\\.env$' {CREW})",
-        # A traversal with NO root operand, after the same line moved into the
-        # fenced directory. The root is the shell's working directory, which this
-        # pass resolves against the gateway's rather than the shell's. The
-        # explicit-root spelling of the same read IS denied, by the cd-taint pass.
-        f"cd {CREW}; rg secret",
         # A whole-directory COPIER rooted at the fence reaches the same bytes
         # without searching for them. Treating copiers as traversals is a new
         # program class with its own false positives, so it is named rather than

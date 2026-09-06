@@ -14448,6 +14448,12 @@ def _find_traversal_reaches_fence(
     if len(root_readings) > _FIND_ROOT_BUDGET:
         return _FIND_ROOT_OVER_BUDGET_REASON
     for root in root_readings:
+        if _is_cwd_relative(root):
+            # The shell's directory, which no `cd` on the line named: unknowable from
+            # the text, so there is nothing to compare against the fence. It has
+            # already counted toward the width and brace budgets above -- those refuse
+            # on the text's shape, not on where the directory is.
+            continue
         if is_sensitive_path(root) or _dir_holds_sensitive_leaf(root):
             return root
         try:
@@ -14771,6 +14777,7 @@ def _find_traversal_in_view(view: str, captured: bool) -> str | None:
             reading: list[str] = []
         else:
             reading = parsed.roots or ["."]
+        reading = _find_anchor_relative_roots(reading, view)
         named = _find_traversal_reaches_fence(
             reading,
             parsed.name_pats,
@@ -14782,6 +14789,42 @@ def _find_traversal_in_view(view: str, captured: bool) -> str | None:
         if named:
             return named
     return None
+
+
+def _find_anchor_relative_roots(roots: list[str], view: str) -> list[str]:
+    """Anchor the roots spelled relative to the shell's working directory.
+
+    A relative ``find`` root (``.``, ``./src``) means the SHELL's directory, which
+    is the directory a ``cd`` on this line entered -- never this gateway process's
+    own directory, where the agent's shell does not run and which for the desktop
+    app is ``/``, an ancestor of every fenced store. Resolving there refused every
+    ``find . -name '*.py' -exec grep X {} +`` regardless of the ``cd`` before it.
+
+    With a ``cd`` base on the line, each relative root becomes its join onto every
+    base and the traversal is judged on those real paths. With none, the directory
+    is unknowable from the text and the root is kept as written: the width and
+    brace budgets still apply to it (a refusal is about the TEXT, not the
+    directory), and ``_find_traversal_reaches_fence`` then skips the fence
+    comparison for it, the module's documented stance for a root it cannot place
+    (see ``_find_root_readings``). Anchored roots -- absolute, ``~``, a
+    still-unexpanded variable -- pass through unchanged.
+    """
+    if not any(_is_cwd_relative(root) for root in roots):
+        return roots
+    stages, _truncated = _alt_pipeline_stages_bounded(view)
+    bases = _alt_cd_bases(stages, _alt_assignments(stages)) if stages else []
+    if not bases:
+        return roots
+    anchored: list[str] = []
+    for root in roots:
+        if not _is_cwd_relative(root):
+            anchored.append(root)
+            continue
+        for base in bases:
+            joined = os.path.join(base, root)
+            if joined not in anchored:
+                anchored.append(joined)
+    return anchored
 
 
 def _check_sensitive_via_normalizer(command: str) -> str | None:
@@ -20321,13 +20364,15 @@ _IMDS_IPV6 = "fd00:ec2::254"
 #     positives (``cp -r ./src /tmp`` must stay allowed, and a copier names its
 #     DESTINATION as an operand too), which is a separate change rather than one
 #     more entry here. Named so this list does not read as complete.
-#   * A traversal that names no root at all AFTER a ``cd`` into the fence
-#     (``cd ~/.kiro/crew; rg secret``). A root spelled relative to a ``cd`` IS
-#     covered -- the bases that ``cd`` moves to are collected and relative roots are
-#     joined onto them -- but with no operand at all there is nothing to join, and
-#     the working directory this pass can see is the gateway's rather than the
-#     shell's. The explicit-root spelling of the same read is denied here, and the
-#     no-root one is denied by the cd-taint pass.
+#
+# A root spelled RELATIVE to the shell's directory (``.``, ``./src``, or no root at
+# all, which is ``.``) resolves against the directory a ``cd`` on the same line
+# entered, and against nothing else. It is never this gateway process's own
+# directory: the agent's shell does not run there, and the desktop app's gateway
+# runs from ``/``, under which every fenced store sits, so reading ``.`` as the
+# gateway's directory refused every ``grep -r X .`` whatever ``cd`` preceded it.
+# With no ``cd`` on the line the root is unknowable from the text and is left to
+# the sandbox, the same stance taken for a root held in an unread variable.
 #   * A traversal that names NO root at all, reached through a word this pass does
 #     not recognise as something-that-runs-a-program (``busybox rg secret``,
 #     ``stdbuf -o L rg secret``). The traversal itself is still FOUND -- it is
@@ -21204,9 +21249,9 @@ def _alt_stage_readings(
 
     * the stage HEAD, with everything that can sit in front of a program peeled
       (:func:`_alt_stage_head`). This is the reading that may fall back to the
-      working directory when the traversal names no root at all, because a word in
-      the program position with no root operand really is ``rg secret`` walking
-      ``.``;
+      shell's working directory -- the base a ``cd`` on the same line entered --
+      when the traversal names no root at all, because a word in the program
+      position with no root operand really is ``rg secret`` walking ``.``;
     * EVERY other token that names a traversal program. Enumerating what may
       precede a program is unbounded -- ``command``, ``nice``, ``sudo``,
       ``busybox``, ``stdbuf -o L``, ``timeout -s KILL 5``, and the next wrapper
@@ -21214,7 +21259,7 @@ def _alt_stage_readings(
       instead of by its position. These readings require an EXPLICIT root that
       reaches the fence: a bare mention of a program name is ordinary text
       (``which rg``, ``sudo cp rg /usr/bin/``), and letting it assume the working
-      directory would refuse those outright whenever the gateway runs from a
+      directory would refuse those outright whenever the line has entered a
       directory that holds the crew home.
 
     The head reading is usually one of the scanned ones as well. The duplicate is
@@ -21578,7 +21623,15 @@ def _alt_substitution_assignment_fences(stages: list[list[str]]) -> dict[str, st
         for token in tokens:
             # The closing `)` of the substitution rides on the last word.
             for cand in _path_candidates(token.rstrip(")`\"'")):
-                if cand and not cand.startswith("-") and path_contains_sensitive(cand):
+                if not cand or cand.startswith("-"):
+                    continue
+                # A relative token (`D=$(ls .)`) names the shell's directory, which
+                # this pass cannot place -- the same rule as `_alt_root_reaching_fence`.
+                # Resolving it against this process's own cwd read `.` as the fenced
+                # directory whenever the gateway happened to start above one.
+                if _is_cwd_relative(cand):
+                    continue
+                if path_contains_sensitive(cand):
                     for name in computed:
                         fences.setdefault(name, cand)
                     break
@@ -21749,6 +21802,25 @@ def _alt_root_reaching_fence(
                 if not cand or cand == "-" or cand.startswith("--"):
                     continue
                 work.spend("candidate")
+                if _is_cwd_relative(cand):
+                    # A relative root is relative to the SHELL's directory, which is
+                    # the directory a `cd` on this line entered. It is never this
+                    # gateway process's own directory: the agent's shell does not
+                    # run there, and the desktop app's gateway runs from `/`, under
+                    # which every fenced store sits, so resolving `.` against it
+                    # refused every `grep -r ... .` regardless of the `cd` before
+                    # it. With no `cd` on the line the root is unknowable from the
+                    # text and, like a root held in an unread variable, is left to
+                    # the sandbox rather than guessed.
+                    for base in bases:
+                        joined = os.path.join(base, cand)
+                        if path_contains_sensitive(joined):
+                            return joined
+                        for expanded in _alt_glob_root_readings(joined):
+                            work.spend("glob")
+                            if path_contains_sensitive(expanded):
+                                return expanded
+                    continue
                 if path_contains_sensitive(cand):
                     return cand
                 # A glob is expanded by the shell before this gate sees a path, so
@@ -21757,22 +21829,32 @@ def _alt_root_reaching_fence(
                     work.spend("glob")
                     if path_contains_sensitive(expanded):
                         return expanded
-                # A relative root resolves against the `cd`, not against us.
-                if bases and not os.path.isabs(cand) and not cand.startswith("~"):
-                    for base in bases:
-                        joined = os.path.join(base, cand)
-                        if path_contains_sensitive(joined):
-                            return joined
     return None
 
 
-def _alt_implicit_cwd_root() -> str | None:
+def _is_cwd_relative(path: str) -> bool:
+    """Is *path* spelled relative to the shell's working directory?
+
+    Absolute paths, home-anchored paths and paths that still carry an expansion
+    (``$D/x``, ``%APPDATA%``) are anchored by their own text; everything else
+    (``.``, ``./src``, ``crew``) means whatever the shell's directory is.
+    """
+    return not (os.path.isabs(path) or path[:1] in ("~", "$", "%"))
+
+
+def _alt_implicit_cwd_root(cd_bases: list[str]) -> str | None:
     """The fenced-holding answer for a traversal given no root at all.
 
     ``fd .env -x cat`` walks the working directory, so the root is real even
-    though no operand names it.
+    though no operand names it. That directory is the one a ``cd`` on the same
+    line entered; without one it is unknowable from the text (never this gateway
+    process's own directory, see ``_alt_root_reaching_fence``), so the answer is
+    then None.
     """
-    return "." if path_contains_sensitive(".") else None
+    for base in cd_bases:
+        if path_contains_sensitive(base):
+            return base
+    return None
 
 
 def _alt_names_an_explicit_root(operands: list[str]) -> bool:
@@ -22109,7 +22191,7 @@ def _check_alt_traversal_reaches_fence(command: str) -> str | None:
                 and may_assume_cwd
                 and not _alt_names_an_explicit_root(roots)
             ):
-                root = _alt_implicit_cwd_root()
+                root = _alt_implicit_cwd_root(cd_bases)
             if root is not None:
                 return (
                     "Blocked: recursive traversal rooted at a directory that holds "
