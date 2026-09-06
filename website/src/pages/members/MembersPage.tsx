@@ -854,9 +854,18 @@ export default function MembersPage() {
               <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
             </div>
           </dl>
-          {/* Honest disclosure: per-member memory isolation does not exist yet. */}
+          {/* Honest disclosure, always rendered, worded for this member's store.
+              Only the markdown layer (preferences, project notes) is read from a
+              named memory_store; conversation memory and lessons live in the
+              one global vector store every member reads, so "what you tell it
+              is known to all of them" stays true on a dedicated store too.
+              Store identity is a config fact — never inferred from the roster. */}
           <div className="mt-3 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
-            {t('pages.membersPage.memory_shared_note')}
+            {String(active.memory_store || 'default') === 'default'
+              ? t('pages.membersPage.memory_shared_note')
+              : t('pages.membersPage.memory_dedicated_note', {
+                  store: String(active.memory_store),
+                })}
           </div>
           <button
             onClick={() => navigate(CREW_MANAGER_PATH)}

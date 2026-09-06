@@ -14035,6 +14035,7 @@
       "member_count_many": "{{count}} membri",
       "member_count_one": "{{count}} membro",
       "member_count_other": "{{count}} membri",
+      "memory_dedicated_note": "Le preferenze e le note di progetto arrivano dall’archivio {{store}} invece che da quello predefinito condiviso. La memoria delle conversazioni e le lezioni non sono ancora separate: ciò che dici a questo membro lo sanno comunque tutti.",
       "memory_shared_note": "I membri condividono attualmente una sola memoria. Ciò che dici a uno lo sanno tutti.",
       "memory_store": "Archivio memoria",
       "model": "Modello",

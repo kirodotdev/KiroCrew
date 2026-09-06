@@ -11,6 +11,8 @@
  *   04-roster-light  light theme parity
  *   06-driving       drawer "Driving sessions": radar's workers by
  *                    created_by, status dots, fold/expand, empty state (fixer)
+ *   07-dedicated     scout on memory_store 'scout-own': the drawer note uses
+ *                    the store-aware wording, not the default-store sentence
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6831 --strictPort   # in another shell
@@ -25,7 +27,7 @@ mkdirSync(OUT, { recursive: true })
 
 const MEMBERS = [
   { name: 'radar', slug: 'radar', bound: true, slot_key: 'member-radar', running: true, kiro_agent: 'kirocrew-autofix', workspace: 'autofix', memory_store: 'default', model: '', last_active_ts: 1000, last_message: 'Six new issues: four covered by open PRs.' },
-  { name: 'scout', slug: 'scout', bound: false, slot_key: '', running: false, kiro_agent: 'kirocrew-research', workspace: 'default', memory_store: 'default', model: 'claude-opus-5' },
+  { name: 'scout', slug: 'scout', bound: false, slot_key: '', running: false, kiro_agent: 'kirocrew-research', workspace: 'default', memory_store: 'scout-own', model: 'claude-opus-5' },
   { name: 'fixer', slug: 'fixer', bound: true, slot_key: 'member-fixer', running: false, kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', model: '', last_active_ts: 900, last_message: 'Two PRs opened for the queue.' },
   { name: 'scribe', slug: 'scribe', bound: false, slot_key: '', running: false, kiro_agent: 'kirocrew-lite', workspace: 'docs', memory_store: 'default', model: '' },
 ]
@@ -249,6 +251,23 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   })
   check('05-wide composer input width', inputCap === '816px', `maxWidth=${inputCap}`)
   await page.screenshot({ path: `${OUT}/05-thread-wide-1920.png` })
+  await page.close()
+}
+
+// 07 — dedicated-store member: scout reads its markdown memory from
+// memory_store 'scout-own', so the drawer's disclosure switches to the
+// store-aware wording (markdown separate, conversation memory still shared)
+// instead of the default-store sentence. Frame 02 (radar, default store) is
+// the counterpart showing the default wording where it applies.
+{
+  const page = await newPage('dark')
+  await page.getByText('scout', { exact: true }).first().click()
+  await page.getByTestId('member-drawer').waitFor()
+  const drawer = await page.getByTestId('member-drawer').textContent()
+  check('07-dedicated-store store shown', /scout-own/.test(drawer || ''), 'memory store row present')
+  check('07-dedicated-store store-aware note', /from the scout-own store/.test(drawer || '') && /not separated yet/.test(drawer || ''), 'store-aware wording rendered')
+  check('07-dedicated-store default wording absent', !/share one memory/i.test(drawer || ''), 'default-store sentence absent')
+  await page.screenshot({ path: `${OUT}/07-dedicated-store-dark.png` })
   await page.close()
 }
 

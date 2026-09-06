@@ -13857,6 +13857,7 @@
       "inherited": "Geerbt",
       "member_count_one": "{{count}} Mitglied",
       "member_count_other": "{{count}} Mitglieder",
+      "memory_dedicated_note": "Einstellungen und Projektnotizen kommen aus dem Speicher {{store}} statt aus dem gemeinsamen Standardspeicher. Gesprächsgedächtnis und Lektionen sind noch nicht getrennt: Was du diesem Mitglied sagst, wissen weiterhin alle.",
       "memory_shared_note": "Mitglieder teilen sich derzeit ein Gedächtnis. Was du einem Mitglied sagst, wissen alle.",
       "memory_store": "Speicher",
       "model": "Modell",

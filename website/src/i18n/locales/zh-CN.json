@@ -13679,6 +13679,7 @@
       "empty_roster": "还没有团队成员。在团队管理页创建一个 crew 后会显示在这里。",
       "inherited": "继承",
       "member_count_other": "{{count}} 位成员",
+      "memory_dedicated_note": "偏好与项目笔记读取自 {{store}} 存储，而非共享的默认存储。对话记忆与经验尚未分开：告诉这位成员的内容，其他成员仍然知道。",
       "memory_shared_note": "成员目前共享同一份记忆：告诉一位成员的内容，其他成员也知道。",
       "memory_store": "记忆存储",
       "model": "模型",

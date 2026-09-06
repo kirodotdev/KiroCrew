@@ -6834,6 +6834,7 @@
       "inherited": "Inherited",
       "member_count_one": "{{count}} member",
       "member_count_other": "{{count}} members",
+      "memory_dedicated_note": "Preferences and project notes come from the {{store}} store rather than the shared default. Conversation memory and lessons are not separated yet: what you tell this member is still known to every member.",
       "memory_shared_note": "Members currently share one memory. What you tell one member is known to all of them.",
       "memory_store": "Memory store",
       "model": "Model",

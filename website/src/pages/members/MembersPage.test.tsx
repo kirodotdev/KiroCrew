@@ -213,6 +213,38 @@ describe('MembersPage drawer and edit jump', () => {
     expect(drawer).toHaveTextContent(/share one memory/i)
   })
 
+  it('words the disclosure for a member on a dedicated store: markdown separate, conversation shared', async () => {
+    // A named memory_store scopes only the markdown layer (preferences,
+    // project notes). Conversation memory and lessons live in the one global
+    // vector store every member reads, so the drawer must say BOTH halves
+    // rather than go silent — silence would imply an isolation that does
+    // not exist.
+    await renderPage([
+      row({ bound: true, slot_key: 'member-oncall', memory_store: 'oncall-own' }),
+      row({ name: 'beta', slug: 'beta', memory_store: 'default' }),
+    ])
+    fireEvent.click(await screen.findByText('oncall'))
+    const drawer = await screen.findByTestId('member-drawer')
+    expect(drawer).toHaveTextContent(/from the oncall-own store/i)
+    expect(drawer).toHaveTextContent(/not separated yet/i)
+    expect(drawer).toHaveTextContent(/still known to every member/i)
+    expect(drawer).not.toHaveTextContent(/share one memory/i)
+  })
+
+  it('keys the wording on the store itself, not on roster membership', async () => {
+    // Two members on the same named store still get the store-scoped note:
+    // whether the store is shared is a backend fact about which layers it
+    // scopes, not something to infer client-side from who else uses it.
+    await renderPage([
+      row({ bound: true, slot_key: 'member-oncall', memory_store: 'triage' }),
+      row({ name: 'beta', slug: 'beta', memory_store: 'triage' }),
+    ])
+    fireEvent.click(await screen.findByText('oncall'))
+    const drawer = await screen.findByTestId('member-drawer')
+    expect(drawer).toHaveTextContent(/from the triage store/i)
+    expect(drawer).not.toHaveTextContent(/share one memory/i)
+  })
+
   it('toggles the drawer via the Details button', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await screen.findByText('oncall'))

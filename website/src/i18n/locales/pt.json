@@ -14035,6 +14035,7 @@
       "member_count_many": "{{count}} membros",
       "member_count_one": "{{count}} membro",
       "member_count_other": "{{count}} membros",
+      "memory_dedicated_note": "As preferências e as notas de projeto vêm do armazenamento {{store}} em vez do padrão compartilhado. A memória de conversa e as lições ainda não estão separadas: o que você diz a este membro todos continuam sabendo.",
       "memory_shared_note": "Os membros compartilham atualmente uma única memória. O que você diz a um deles todos saberão.",
       "memory_store": "Armazenamento de memória",
       "model": "Modelo",

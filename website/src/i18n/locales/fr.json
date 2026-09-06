@@ -14036,6 +14036,7 @@
       "member_count_many": "{{count}} membres",
       "member_count_one": "{{count}} membre",
       "member_count_other": "{{count}} membres",
+      "memory_dedicated_note": "Les préférences et les notes de projet viennent du magasin {{store}} plutôt que du magasin partagé par défaut. La mémoire de conversation et les leçons ne sont pas encore séparées : ce que tu dis à ce membre reste connu de tous.",
       "memory_shared_note": "Les membres partagent actuellement une seule mémoire. Ce que vous dites à l'un est connu de tous.",
       "memory_store": "Mémoire",
       "model": "Modèle",
