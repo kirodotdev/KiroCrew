@@ -123,7 +123,7 @@ class TestBothSurfacesAreNotified:
         note cannot drift into saying different things about the same event."""
         state = _fake_state()
         dm = self._drive(state, _svc_with(_loop()))
-        body = _unattended_expiry_text(1)
+        body = _unattended_expiry_text(1, "dashboard")
         assert state.notify.call_args.args[2] == body
         assert body in dm.call_args.args[1]
 
@@ -171,14 +171,14 @@ class TestTheNoticeNamesTheRemedy:
 
         Mutation: drop the mention -- this test fails.
         """
-        body = _unattended_expiry_text(3)
+        body = _unattended_expiry_text(3, "dashboard")
         assert "until_shutdown" in body
         assert "yolo_duration" in body
 
     def test_the_body_states_the_consequence_not_just_the_event(self) -> None:
         """"Your grant expired" is not actionable at 4am; "your run is now waiting
         on approvals nobody will give" is."""
-        body = _unattended_expiry_text(2)
+        body = _unattended_expiry_text(2, "dashboard")
         assert "2 monitor loop(s)" in body
         assert "approval" in body
 
@@ -243,7 +243,7 @@ class TestTheNoticeDoesNotOverclaimTheStall:
 
     def test_the_stall_is_conditional_not_asserted_of_every_cycle(self) -> None:
         """Mutation: restore the unconditional 'each cycle now waits' -- fails here."""
-        body = _unattended_expiry_text(1)
+        body = _unattended_expiry_text(1, "dashboard")
         assert "each cycle now waits" not in body
         assert "relied on it" in body
 
@@ -251,7 +251,34 @@ class TestTheNoticeDoesNotOverclaimTheStall:
         """An operator whose loop keeps working needs to know why, or the notice
         reads as a bug in the notice rather than a description of their setup.
         """
-        assert "trust" in _unattended_expiry_text(1).lower()
+        assert "trust" in _unattended_expiry_text(1, "dashboard").lower()
+
+
+class TestPolicyRevocationSuppressesTheUnFollowableRemedy:
+    """After a POLICY revocation both halves of the usual remedy — re-enabling
+    auto-approve and ``until_shutdown`` (a ``yolo_duration`` scope member) — are
+    refused by the same fail-closed ``approval_modes`` gate that revoked the
+    grant. Suggesting them directs the one operator who is not present into a
+    wall (issue #8850), so the policy-source body names the cause instead. The
+    stall description is unchanged: the loops really are waiting either way.
+    """
+
+    def test_policy_source_drops_the_remedy_and_names_the_cause(self) -> None:
+        from kiro_crew.safety_override import POLICY_REVOKED_SOURCE
+
+        body = _unattended_expiry_text(2, POLICY_REVOKED_SOURCE)
+        assert "organization policy" in body
+        assert "Re-enable auto-approve" not in body
+        assert "until_shutdown" not in body
+        # The stall description survives the split.
+        assert "monitor loop(s) are still running" in body
+
+    def test_non_policy_sources_keep_the_remedy(self) -> None:
+        for source in ("slack", "dashboard", "config"):
+            body = _unattended_expiry_text(1, source)
+            assert "Re-enable auto-approve" in body
+            assert "until_shutdown" in body
+            assert "organization policy" not in body
 
 
 class TestTheNoticeHasItsOwnChannel:

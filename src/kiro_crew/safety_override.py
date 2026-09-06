@@ -55,6 +55,14 @@ def sel():  # noqa: ANN201 — thin wrapper kept for test patchability
     return _get_sel()
 
 
+# The ``source`` sentinel a policy revocation carries into ``deactivate`` and the
+# ``on_expired`` callback. Exported as a module constant because the OTHER end of
+# the contract lives in ``dashboard/server.py`` (the expiry DM words the notice by
+# this value): a bare literal on both ends lets a re-spelling here silently drop
+# the policy-specific wording there with every test still green.
+POLICY_REVOKED_SOURCE = "policy"
+
+
 # ─── Result dataclasses ──────────────────────────────────────────────────────
 
 
@@ -849,11 +857,11 @@ class SafetyOverride:
                 with self._lock:
                     had_grant = self._active
                 if had_grant:
-                    self.deactivate("policy")
+                    self.deactivate(POLICY_REVOKED_SOURCE)
                     cb = self._on_expired
                     if cb is not None:
                         try:
-                            cb("policy")
+                            cb(POLICY_REVOKED_SOURCE)
                         except Exception:
                             logger.warning(
                                 "on_expired callback raised after a policy revocation",
