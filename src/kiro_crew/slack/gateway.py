@@ -42,7 +42,15 @@ from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeCli
 
 import kiro_crew
 import kiro_crew.crash_guard as crash_guard
-from kiro_crew import agent_scratch, beacon, dep_sync, name_grant, platform_compat, shutdown_event
+from kiro_crew import (
+    agent_scratch,
+    autonudge_selfarm,
+    beacon,
+    dep_sync,
+    name_grant,
+    platform_compat,
+    shutdown_event,
+)
 from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.agent_sdk import AgentTurnUsage
 from kiro_crew.agents_janitor import sweep_agents_dir
@@ -6438,6 +6446,16 @@ class GatewayOrchestrator:
                 loop.cycle_count,
             )
             return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+        # Crew/member slot boundary, for EVERY dashboard loop -- prompt loops
+        # included, not only the structured/gated ones the completion hook
+        # covers below. Such a slot accepts a wake only from a loop its own
+        # turn armed, proven by the persisted bit AND the keystone-gated trust
+        # record together (see ``_dashboard_mode_admits``). The hook path
+        # re-checks right before provider entry for the TOCTOU window; this is
+        # the gate that applies when there is no hook at all.
+        if not await self._dashboard_mode_admits(loop, slot):
+            await self._audit_fire_refused(loop, slot)
+            return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
         # Show nudge as a distinct "nudge" role message in the slot history.
         # The structured meta lets the dashboard render a compact cycle chip
         # instead of echoing the whole instruction payload as a chat bubble.
@@ -6499,10 +6517,24 @@ class GatewayOrchestrator:
 
             async def _authorize_dashboard_turn(monitor_id: str, fingerprint: str) -> bool:
                 current_slot = dashboard_state.get_slot(loop.slot_key)
+                # A crew/member slot refuses a wake armed from OUTSIDE the
+                # session; a loop the slot's OWN turn armed is the member keeping
+                # itself awake and must fire. Same rule as ``autonudge_authz``.
+                # TWO sources must agree, because the loop store is agent-
+                # writable and this is the one bit that relaxes a session
+                # boundary: the persisted ``self_armed`` must be the boolean True
+                # (``is True`` -- a forged string is truthy; ``_load`` normalises
+                # too) AND the keystone-gated trust record the authorizer wrote
+                # at arm time (``autonudge_selfarm``, which agent file tools
+                # cannot reach) must name this loop on this slot. A forged
+                # boolean in the store has no trust entry and refuses.
+                mode_refused = not await self._dashboard_mode_admits(loop, turn_slot)
+                if mode_refused:
+                    await self._audit_fire_refused(loop, turn_slot)
                 if (
                     current_slot is not turn_slot
                     or getattr(turn_slot, "_closing", False)
-                    or str(getattr(turn_slot, "mode", "")) in {"crew", "member"}
+                    or mode_refused
                     or str(getattr(turn_slot, "memory_mode", "persistent")) != "persistent"
                 ):
                     _settle_admission(MonitorDispatchResult.UNAVAILABLE)
@@ -6529,6 +6561,13 @@ class GatewayOrchestrator:
             )
 
         run_kwargs: dict[str, Any] = {}
+        # This turn IS the loop's delivered wake on its own slot. The directive
+        # consumer treats that as self-arm provenance alongside a human-started
+        # turn, so a member re-arming or revising its loop from inside a cycle
+        # is admitted; a cron, app or sub-agent turn on the same slot never
+        # carries this mark. On a crew/member slot the wake only exists because
+        # ``_dashboard_mode_admits`` already proved the loop self-armed.
+        run_kwargs["_directive_self_wake"] = True
         if completion_hook is not None:
             run_kwargs["monitor_completion"] = completion_hook
             # Structured monitor turns own a single durable budgeted turn.
@@ -6586,6 +6625,58 @@ class GatewayOrchestrator:
             task.add_done_callback(_settle_unstarted_admission)
             return _delivery_result(wake_message, await admission)
         return _delivery_result(wake_message, MonitorDispatchResult.DISPATCHED)
+
+    @staticmethod
+    async def _dashboard_mode_admits(loop: NudgeLoop, slot: Any) -> bool:
+        """Whether *slot*'s mode admits a wake from *loop*.
+
+        Any mode but crew/member admits. A crew/member slot refuses a wake armed
+        from OUTSIDE the session; a loop the slot's OWN turn armed is the
+        member keeping itself awake and must fire. Same rule as
+        ``autonudge_authz``. TWO sources must agree, because the loop store is
+        agent-writable and this is the one bit that relaxes a session boundary:
+        the persisted ``self_armed`` must be the boolean True (``is True`` -- a
+        forged string is truthy; ``_load`` normalises too) AND the
+        keystone-gated trust record the authorizer wrote at arm time
+        (``autonudge_selfarm``, unreachable by agent file tools) must name this
+        loop on this slot. A forged boolean in the store has no trust entry and
+        refuses. The record read is file IO, so it is offloaded.
+        """
+        if str(getattr(slot, "mode", "")) not in {"crew", "member"}:
+            return True
+        if getattr(loop, "self_armed", False) is not True:
+            return False
+        return bool(
+            await asyncio.to_thread(autonudge_selfarm.is_recorded_self_arm, loop.id, loop.slot_key)
+        )
+
+    @staticmethod
+    async def _audit_fire_refused(loop: NudgeLoop, slot: Any) -> None:
+        """SEL-record a fire-time refusal at the crew/member boundary.
+
+        A permission decision that keeps an unattended turn OUT of a session is
+        as audit-worthy as the arm that let one in (backend-security-controls):
+        without it an operator reading the trail sees a loop armed and never
+        fired, with nothing saying why. Best-effort and offloaded -- the
+        refusal stands whether or not the write lands.
+        """
+        mode = str(getattr(slot, "mode", ""))
+        try:
+            await asyncio.to_thread(
+                lambda: sel().log_tool_invocation(
+                    session_key=loop.slot_key,
+                    source="autonudge",
+                    tool_name="monitor_fire",
+                    outcome="denied",
+                    error=f"{mode}-mode session refuses a wake it did not arm itself",
+                    metadata={
+                        "loop_id": loop.id,
+                        "self_armed_bit": getattr(loop, "self_armed", False) is True,
+                    },
+                )
+            )
+        except Exception:  # noqa: BLE001 - auditing must never break the fire path
+            logger.warning("fire-refusal SEL audit failed for loop %s", loop.id, exc_info=True)
 
     def _monitor_completion_hook(self, loop: NudgeLoop) -> MonitorCompletionHook | None:
         """Bind a structured loop's in-flight identity to controller accounting."""

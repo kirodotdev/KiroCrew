@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
@@ -31,6 +32,7 @@ from kiro_crew.autonudge import (
     NudgeAdmissionRefused,
     is_channel_key,
 )
+from kiro_crew.autonudge_selfarm import forget_self_arm, record_self_arm
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.monitoring.models import MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS, MonitorState
 from kiro_crew.security import (
@@ -41,6 +43,41 @@ from kiro_crew.security import (
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
+
+# Dashboard slot modes that refuse automation turns armed from OUTSIDE the
+# session. A crew-mode slot is driven by its orchestrator and a member-mode
+# slot is a named member's own thread; neither may have work injected by a
+# cron, another session or an app through a nudge loop. The refusal is NOT
+# about the mode being unable to run a loop -- a member is a self-directed
+# resident agent, and its own ``monitor_start`` is the normal way it keeps
+# itself awake -- so the one admitted exception is a SELF-ARM: the arming
+# request came from a turn of the bound session itself. See
+# :func:`is_self_arm`.
+_EXTERNAL_ARM_REFUSED_MODES = frozenset({"crew", "member"})
+
+
+def is_self_arm(slot_key: str, initiator_slot_key: str) -> bool:
+    """Return whether the arm request originated from the target session's own turn.
+
+    ``initiator_slot_key`` is the binding key of the session whose TURN issued
+    the request, as established by the caller that owns that identity -- the
+    session-directive consumer (``dashboard/session_directive_apply.py``)
+    applies a directive to the exact session that produced it, so it passes
+    that session's binding. Surfaces with no such provenance (REST, workflow
+    ``ctx.nudge``, app handlers) pass nothing, and nothing never matches: the
+    default is external. Blank never equals blank, so a caller that forgot to
+    resolve the target key cannot self-arm by accident.
+    """
+    initiator = (initiator_slot_key or "").strip()
+    return bool(initiator) and initiator == (slot_key or "").strip()
+
+
+def external_arm_refusal(mode: str) -> str:
+    """The user-facing reason a crew/member slot refuses an outside arm."""
+    return (
+        f"{mode}-mode sessions do not accept direct automation turns armed from "
+        "outside the session (only the session's own turn may arm a loop on itself)"
+    )
 
 
 @runtime_checkable
@@ -65,8 +102,13 @@ async def authorize_and_update_monitor(
     patch: dict[str, Any],
     source: str,
     caller: str = "",
+    initiator_slot_key: str = "",
 ) -> tuple[Any | None, str | None, int]:
-    """Audit-or-deny one ownership-resolved structured monitor patch."""
+    """Audit-or-deny one ownership-resolved structured monitor patch.
+
+    ``initiator_slot_key`` names the session whose own turn issued the patch
+    (see :func:`is_self_arm`); a crew/member slot admits only such a self-patch.
+    """
     safe_patch = dict(patch)
     wake_instructions = safe_patch.get("wake_instructions")
     if isinstance(wake_instructions, str):
@@ -112,10 +154,16 @@ async def authorize_and_update_monitor(
             await _audit("denied", error)
             return None, error, 404
         mode = str(getattr(current, "mode", ""))
-        if mode in {"crew", "member"}:
-            error = f"{mode}-mode sessions do not accept direct automation turns"
-            await _audit("denied", error)
-            return None, error, 409
+        if mode in _EXTERNAL_ARM_REFUSED_MODES:
+            if not is_self_arm(session_key, initiator_slot_key):
+                error = external_arm_refusal(mode)
+                await _audit("denied", error)
+                return None, error, 409
+            # The grant audit is audit-or-deny like ``invoked`` above: a
+            # self-arm admitted on a crew/member slot with no SEL record of the
+            # grant would be an unaudited relaxation of the ceiling.
+            if not await _audit("self_armed"):
+                return None, "audit log unavailable — monitor not updated", 503
         if str(getattr(current, "memory_mode", "persistent")) != "persistent":
             error = "incognito and temporary sessions cannot host automation loops"
             await _audit("denied", error)
@@ -472,6 +520,10 @@ async def authorize_and_add_nudge(
     replace_stopped: bool = False,
     expected_existing_monitor_id: str | None = None,
     expected_existing_config_generation: int | None = None,
+    # Binding key of the session whose OWN TURN issued this arm request, or ""
+    # when the caller has no such provenance (REST, workflow ctx.nudge, apps).
+    # Decides the crew/member self-arm exception -- see ``is_self_arm``.
+    initiator_slot_key: str = "",
 ) -> tuple[Any | None, str | None, int]:
     """Validate + authorize + arm a nudge loop; return ``(loop, error, status)``.
 
@@ -569,6 +621,9 @@ async def authorize_and_add_nudge(
     if banner_channel_error:
         return _deny(banner_channel_error, 400)
     admission_check: Callable[[], bool]
+    # Set only on the dashboard branch, when a crew/member slot is armed by its
+    # own turn; channel-bound loops have no slot mode and stay False.
+    self_armed = False
     if is_channel_key(slot_key):
         # Channel-bound loop (Slack / Discord ...). Validate the session is
         # routable so a nudge fired later has somewhere to reply.
@@ -667,16 +722,38 @@ async def authorize_and_add_nudge(
             return _deny(f"unknown slot {slot_key}", 404)
         authorized_slot = state._slots.get(slot_key)
         slot_mode = str(getattr(authorized_slot, "mode", ""))
-        if slot_mode in {"crew", "member"}:
-            return _deny(f"{slot_mode}-mode sessions do not accept direct automation turns", 409)
+        if slot_mode in _EXTERNAL_ARM_REFUSED_MODES:
+            # Crew/member slots refuse an arm from OUTSIDE the session (a cron,
+            # another session, an app) -- nothing may inject work into a
+            # member's thread. The session's OWN turn arming a loop on itself is
+            # the one admitted case, because a member that cannot schedule its
+            # own wake is a resident agent that never wakes: the conductor
+            # member thread went silent for a night exactly this way, with the
+            # MCP tool reporting the arm as "requested" and the store holding no
+            # loop. Audited under its own outcome so the trail distinguishes
+            # "member armed itself" from an ordinary success.
+            if not is_self_arm(slot_key, initiator_slot_key):
+                return _deny(external_arm_refusal(slot_mode), 409)
+            self_armed = True
+            _audit("self_armed")
         if str(getattr(authorized_slot, "memory_mode", "persistent")) != "persistent":
             return _deny("incognito and temporary sessions cannot host automation loops", 403)
 
         def _dashboard_admission() -> bool:
             current = state._slots.get(slot_key)
+            current_mode = str(getattr(current, "mode", ""))
+            # A self-armed loop keeps its slot's crew/member mode by
+            # construction; what it must NOT do is follow the slot into a
+            # DIFFERENT mode between authorization and commit. An externally
+            # armed loop keeps the original rule: never into crew/member.
+            mode_ok = (
+                current_mode == slot_mode
+                if self_armed
+                else current_mode not in _EXTERNAL_ARM_REFUSED_MODES
+            )
             return (
                 current is authorized_slot
-                and str(getattr(current, "mode", "")) not in {"crew", "member"}
+                and mode_ok
                 and str(getattr(current, "memory_mode", "persistent")) == "persistent"
             )
 
@@ -746,6 +823,7 @@ async def authorize_and_add_nudge(
                 "max_tokens": monitor.budgets.max_tokens,
                 "max_provider_errors": monitor.budgets.max_provider_errors,
                 "caller": caller,
+                "self_armed": self_armed,
             }
         return {
             "slot_key": slot_key,
@@ -753,6 +831,7 @@ async def authorize_and_add_nudge(
             "max_cycles": int(max_cycles),
             "max_runtime_secs": int(max_runtime_secs),
             "caller": caller,
+            "self_armed": self_armed,
         }
 
     def _critical_invoked_audit() -> None:
@@ -770,6 +849,50 @@ async def authorize_and_add_nudge(
     except Exception:  # noqa: BLE001 - fail closed: no audit ⇒ no loop
         logger.error("autonudge arm denied: SEL audit unavailable", exc_info=True)
         return None, "audit log unavailable — nudge loop not armed", 503
+    # AUTHENTICATED PROVENANCE, fail closed, and BEFORE the store is touched.
+    # The persisted ``self_armed`` bit lives in an agent-writable store, so on
+    # its own it authorizes nothing; the fire-time guard also requires the
+    # keystone-gated record (``autonudge_selfarm``), which only gateway code
+    # writes. The record needs the loop's id, so the id is minted HERE and
+    # handed to the service rather than read back after the add. Writing the
+    # record first is what makes the failure mode safe: a failed trust write
+    # denies with the store untouched -- in particular a stopped loop this arm
+    # would have displaced is still there -- instead of arming, failing to
+    # record, and removing a loop to roll back (which took the displaced loop
+    # with it). It also closes the ordering race a post-add write had: a
+    # concurrent removal of the new loop now runs AFTER the entry exists, so its
+    # revoke (``remove_sync``) finds and drops the entry. If the add itself
+    # fails, the orphaned entry is forgotten best-effort below.
+    self_arm_loop_id: str | None = None
+    if self_armed:
+        # Reserve a COLLISION-FREE id before touching the trust record. The
+        # record is an upsert keyed by loop id, so an id already held by a live
+        # loop would overwrite that loop's entry -- and the add's conflict
+        # refusal would then forget it, revoking a loop this arm never owned.
+        # Eight hex chars make that a 2^-32 event per arm; the check makes it
+        # impossible rather than unlikely, and a service that cannot answer
+        # the question (no ``get_by_id``) is a caller bug, not a reason to
+        # guess, so the arm is denied.
+        get_by_id = getattr(svc, "get_by_id", None)
+        if not callable(get_by_id):
+            return _deny("self-arm requires a loop store that can resolve ids", 503)
+        for _attempt in range(8):
+            candidate = uuid.uuid4().hex[:8]
+            if get_by_id(candidate) is None:
+                self_arm_loop_id = candidate
+                break
+        if self_arm_loop_id is None:
+            return _deny("could not reserve a loop id — loop not armed", 503)
+        try:
+            await asyncio.to_thread(record_self_arm, self_arm_loop_id, slot_key)
+        except OSError:
+            logger.error("self-arm record unavailable; loop not armed", exc_info=True)
+            return _deny("self-arm record unavailable — loop not armed", 503)
+
+    def _forget_orphaned_self_arm() -> None:
+        if self_arm_loop_id is not None:
+            forget_self_arm(self_arm_loop_id)  # never raises
+
     try:
         if monitor is None:
             add_kwargs: dict[str, Any] = {
@@ -787,6 +910,11 @@ async def authorize_and_add_nudge(
                 add_kwargs["replace_existing"] = False
             if replace_stopped:
                 add_kwargs["replace_stopped"] = True
+            if self_armed:
+                # Conditional so the kwargs shape an external arm produces is
+                # unchanged (contract tests compare the dict by equality).
+                add_kwargs["self_armed"] = True
+                add_kwargs["loop_id"] = self_arm_loop_id
             loop = await svc.add(
                 **add_kwargs,
             )
@@ -805,6 +933,9 @@ async def authorize_and_add_nudge(
                 add_monitor_kwargs["replace_existing"] = False
             if replace_stopped:
                 add_monitor_kwargs["replace_stopped"] = True
+            if self_armed:
+                add_monitor_kwargs["self_armed"] = True
+                add_monitor_kwargs["loop_id"] = self_arm_loop_id
             if expected_existing_monitor_id is not None:
                 add_monitor_kwargs["expected_existing_monitor_id"] = expected_existing_monitor_id
                 add_monitor_kwargs["expected_existing_config_generation"] = (
@@ -814,10 +945,13 @@ async def authorize_and_add_nudge(
                 **add_monitor_kwargs,
             )
     except NudgeAdmissionRefused:
+        await asyncio.to_thread(_forget_orphaned_self_arm)
         return _deny("session changed before nudge arm committed", 409)
     except MonitorUpdateConflict as exc:
+        await asyncio.to_thread(_forget_orphaned_self_arm)
         return _deny(str(exc), 409)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
+        await asyncio.to_thread(_forget_orphaned_self_arm)
         _audit("error", f"svc.add failed: {type(exc).__name__}")
         raise
     try:

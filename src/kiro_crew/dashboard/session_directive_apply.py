@@ -54,6 +54,7 @@ from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
     MONITOR_TERMINAL_REASON,
+    is_channel_key,
 )
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.session_surface import has_dashboard_surface
@@ -67,6 +68,101 @@ QUESTION_CARD_SHOWN_PREFIX = "Question card shown in this session."
 # the current turn to own the slot it would mutate.
 _DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question"})
 _USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation"})
+# Directives whose effect is "this session will be woken later". A refusal of
+# one of these is the failure the caller can least observe: the MCP tool has
+# already answered "requested" over its own pipe by the time this consumer
+# runs, and the model's turn is over -- so a refusal that stays in the log
+# leaves a session that believes it armed a loop and is never woken again.
+_ARMING_DIRECTIVES = frozenset({"monitor_start", "monitor_watch"})
+
+# Transcript row prefix for a refused arm. Fixed text so the frontend and tests
+# can match on it; the authorizer's reason follows the colon.
+ARM_REFUSAL_NOTICE_PREFIX = "⚠️ Automation loop NOT armed: "
+ARM_SUCCESS_NOTICE_PREFIX = "✅ Automation loop armed: "
+
+
+def _surface_arm_refusal(state: Any, slot: Any, kind: str, reason: str) -> None:
+    """Append a ``notice`` row so a refused arm is VISIBLE where the session lives.
+
+    The directive consumer runs AFTER the model received the tool's own
+    non-committal ack ("Monitor loop requested ...", see
+    ``mcp_tools/control.py``), and gateway-off the applier's string cannot
+    replace that ack -- it only overwrites the tool_result row. The one surface
+    that reliably reaches whoever is watching the session (the user, a member
+    thread's reader, the next turn's transcript replay) is a row of its own, so
+    a refusal gets one. Slot-less callers (a channel transport's TurnDriver)
+    have no transcript window; the returned string is their only surface.
+
+    Best-effort: a notice is telemetry about a refusal that has already been
+    audited, so it must never turn a clean denial into an exception.
+    """
+    if slot is None:
+        return
+    try:
+        # Local import: state -> chat_utils -> ... cycles with this module the
+        # same way ``sel`` does (see the module docstring).
+        from kiro_crew.dashboard.state import append_and_surface
+        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+        # The reason interpolates the authorizer's message, which can echo an
+        # LLM-derived value (a target, a slot key), so scrub it like every other
+        # transcript egress before it is persisted or broadcast.
+        text, _ = redact_exfiltration_urls(f"{ARM_REFUSAL_NOTICE_PREFIX}{reason}")
+        text, _ = redact_credentials(text)
+        append_and_surface(state, slot, "notice", text, "msg msg-info")
+    except Exception:
+        logger.debug("arm-refusal notice for %s could not be surfaced", kind, exc_info=True)
+
+
+def _surface_arm_success(state: Any, slot: Any, summary: str) -> None:
+    """Append a ``notice`` row saying the loop IS armed, and how.
+
+    The twin of :func:`_surface_arm_refusal`, for the same reason: the MCP
+    tool's own ack is deliberately non-committal ("requested"), so without a
+    row of its own a successful arm is as invisible as a refused one. Same
+    best-effort contract -- a notice failure never fails the arm.
+    """
+    if slot is None:
+        return
+    try:
+        from kiro_crew.dashboard.state import append_and_surface
+        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+        text, _ = redact_exfiltration_urls(f"{ARM_SUCCESS_NOTICE_PREFIX}{summary}")
+        text, _ = redact_credentials(text)
+        append_and_surface(state, slot, "notice", text, "msg msg-info")
+    except Exception:
+        logger.debug("arm-success notice could not be surfaced", exc_info=True)
+
+
+def _describe_interval(secs: int) -> str:
+    secs = int(secs)
+    if secs % 3600 == 0:
+        hours = secs // 3600
+        return f"{hours} hour" + ("" if hours == 1 else "s")
+    if secs % 60 == 0:
+        minutes = secs // 60
+        return f"{minutes} min"
+    return f"{secs}s"
+
+
+def _describe_next_wake(loop: Any, *, verb: str = "first wake") -> str:
+    """Render the armed record's next deadline as "first wake in ~Ns (HH:MM:SS UTC)".
+
+    Read off the ARMED loop, never off the request: ``next_due_ts`` is what the
+    timer actually arms toward, so this is the one number that cannot disagree
+    with the fire. An unset or unreadable deadline yields "" and the caller
+    omits the clause rather than inventing a time.
+    """
+    try:
+        due = float(getattr(loop, "next_due_ts", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return ""
+    if due <= 0:
+        return ""
+    remaining = max(0, int(round(due - time.time())))
+    stamp = time.strftime("%H:%M:%S UTC", time.gmtime(due))
+    return f"{verb} in ~{remaining}s ({stamp})"
 
 
 def _has_user_surface(session_key: str) -> bool:
@@ -111,6 +207,7 @@ async def apply_session_directive(
     args: dict[str, Any],
     *,
     producer_is_user_facing: bool = False,
+    producer_is_self_wake: bool = False,
 ) -> str:
     """Apply directive *kind* with *args* to *slot*/*session_key*; return a
     confirmation string for the model. Fail-soft: any error is returned as a
@@ -161,13 +258,29 @@ async def apply_session_directive(
             f"sub-agents are refused (this turn is {session_key!r}). "
             "Nothing was changed."
         )
+    # SELF-ARM PROVENANCE: which turns count as "the session's own" for the
+    # crew/member rule. Two producers, each named explicitly: a turn a HUMAN
+    # started in this session (the same authenticated-human flag the
+    # set_project / reset_conversation gate uses), and the delivered wake of a
+    # loop bound to this very slot (marked by ``_fire_dashboard_nudge``) -- a
+    # member's loop firing on the member's slot is the member keeping itself
+    # awake, so the re-arm or revision it issues from inside that cycle is its
+    # own act. Everything else -- a cron injection, an app-driven turn, a
+    # sub-agent sharing the slot -- carries neither mark and is refused. This is
+    # NOT the user-surface gate below: ``set_project`` / ``reset_conversation``
+    # stay human-only, a wake must never retarget the slot's project.
+    self_arm_ok = bool(producer_is_user_facing or producer_is_self_wake)
     try:
         if kind == "monitor_start":
-            result = await _monitor_start(state, session_key, args)
+            result = await _monitor_start(
+                state, session_key, args, slot=slot, self_arm_ok=self_arm_ok
+            )
         elif kind == "monitor_watch":
-            result = await _monitor_watch(state, session_key, args)
+            result = await _monitor_watch(
+                state, session_key, args, slot=slot, self_arm_ok=self_arm_ok
+            )
         elif kind == "monitor_update":
-            result = await _monitor_update(state, session_key, args)
+            result = await _monitor_update(state, session_key, args, self_arm_ok=self_arm_ok)
         elif kind == "monitor_stop":
             result = await _monitor_stop(session_key, args)
         elif kind == "autonudge_stop":
@@ -191,6 +304,8 @@ async def apply_session_directive(
             kind,
             exc,
         )
+        if kind in _ARMING_DIRECTIVES:
+            _surface_arm_refusal(state, slot, kind, str(exc))
         return str(exc)
     except Exception as exc:  # never propagate into the turn loop
         logger.warning("apply_session_directive(%s) failed", kind, exc_info=True)
@@ -220,7 +335,14 @@ def _structured_binding(session_key: str) -> str | None:
     return structured_monitor_binding_key_for(session_key)
 
 
-async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> str:
+async def _monitor_start(
+    state: Any,
+    session_key: str,
+    args: dict[str, Any],
+    *,
+    slot: Any = None,
+    self_arm_ok: bool = False,
+) -> str:
     from kiro_crew.autonudge import get_instance
     from kiro_crew.autonudge_authz import authorize_and_add_nudge
 
@@ -240,7 +362,7 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
     # the flag existed must not read as an opt-out.
     raw_gate = args.get("gate")
     gate = True if raw_gate is None else bool(raw_gate)
-    loop, error, _status = await authorize_and_add_nudge(
+    loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
         slot_key=binding,
@@ -262,11 +384,21 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         # STOPPED row: monitor_update's approval-stall refusal names
         # monitor_start as the remedy, so refusing here deadlocks it.
         replace_stopped=True,
+        # SELF-ARM provenance: this consumer applies the directive to the exact
+        # session whose turn produced it (module docstring), so the binding IS
+        # the initiator -- for the two producers ``apply_session_directive``
+        # admits (a human-started turn, or this slot's own loop wake). A cron
+        # injection, a sub-agent sharing the slot or an app-driven turn runs in
+        # the same session without being it, and a loop such a turn armed would
+        # be the outsider's loop wearing the member's key; those pass "".
+        initiator_slot_key=binding if self_arm_ok else "",
     )
     if error is not None:
         # The authorizer already audited its own refusal; the wrapper's record
         # for THIS directive must agree (denied), not overwrite it as success.
-        raise _DirectiveDenied(f"Failed to start monitor loop: {error}")
+        # The status rides along so the reader can tell a 409 refusal (mode,
+        # existing automation) from a 404 (session gone) or 503 (audit down).
+        raise _DirectiveDenied(f"Failed to start monitor loop: {error} [status {status}]")
     cap = f", stopping after {max_cycles} cycles" if max_cycles else ", with NO cycle cap"
     if max_runtime_secs:
         cap += f", wall-clock budget {max_runtime_secs}s"
@@ -283,16 +415,33 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         )
     else:
         cadence = f"the message re-injects every {idle_secs}s"
+    loop_id = str(getattr(loop, "id", "?"))
+    first_wake = _describe_next_wake(loop)
+    _surface_arm_success(
+        state,
+        slot,
+        f"loop {loop_id} · every {_describe_interval(idle_secs)} · "
+        + ("no cycle cap" if not max_cycles else f"{max_cycles}-cycle cap")
+        + (f" · {first_wake}" if first_wake else ""),
+    )
     return (
-        f"Monitor loop {getattr(loop, 'id', '?')} started on this session: {cadence} "
+        f"Monitor loop {loop_id} started on this session: {cadence} "
         f"(user messages defer a due fire "
-        f"to their turn's end without restarting the countdown){cap}. "
-        "End your turn now — the loop wakes you. Call autonudge_stop when the "
+        f"to their turn's end without restarting the countdown){cap}"
+        + (f"; {first_wake}" if first_wake else "")
+        + ". End your turn now — the loop wakes you. Call autonudge_stop when the "
         "exit condition is met."
     )
 
 
-async def _monitor_watch(state: Any, session_key: str, args: dict[str, Any]) -> str:
+async def _monitor_watch(
+    state: Any,
+    session_key: str,
+    args: dict[str, Any],
+    *,
+    slot: Any = None,
+    self_arm_ok: bool = False,
+) -> str:
     from kiro_crew.autonudge import get_instance
     from kiro_crew.autonudge_authz import authorize_and_add_nudge
     from kiro_crew.monitoring.models import MonitorBudgets, MonitorState
@@ -318,7 +467,7 @@ async def _monitor_watch(state: Any, session_key: str, args: dict[str, Any]) -> 
         cadence_secs=int(args["cadence_secs"]),
         wake_instructions=str(args.get("wake_instructions") or ""),
     )
-    loop, error, _status = await authorize_and_add_nudge(
+    loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
         slot_key=binding,
@@ -333,19 +482,38 @@ async def _monitor_watch(state: Any, session_key: str, args: dict[str, Any]) -> 
         # inspection must not block this session's next directive arm.
         replace_stopped=True,
         monitor=monitor,
+        # Self-arm provenance, same rule as _monitor_start: human-started turns only.
+        initiator_slot_key=binding if self_arm_ok else "",
     )
     if error is not None:
-        raise _DirectiveDenied(f"Failed to start structured monitor: {error}")
+        raise _DirectiveDenied(f"Failed to start structured monitor: {error} [status {status}]")
     if loop is None:
         raise _DirectiveDenied(
             "Failed to start structured monitor: no monitor record was returned."
         )
-    return f"Structured monitor {loop.id} started on this session."
+    first_probe = _describe_next_wake(loop, verb="first probe")
+    _surface_arm_success(
+        state,
+        slot,
+        f"structured monitor {loop.id} on {monitor.target} · every "
+        f"{_describe_interval(monitor.cadence_secs)}"
+        + (f" · {first_probe}" if first_probe else ""),
+    )
+    return f"Structured monitor {loop.id} started on this session" + (
+        f"; {first_probe}." if first_probe else "."
+    )
 
 
-async def _monitor_update(state: Any, session_key: str, args: dict[str, Any]) -> str:
+async def _monitor_update(
+    state: Any, session_key: str, args: dict[str, Any], *, self_arm_ok: bool = False
+) -> str:
     from kiro_crew.autonudge import get_instance, is_structured_monitor_loop
-    from kiro_crew.autonudge_authz import authorize_and_update_nudge
+    from kiro_crew.autonudge_authz import (
+        _EXTERNAL_ARM_REFUSED_MODES,
+        authorize_and_update_nudge,
+        external_arm_refusal,
+        is_self_arm,
+    )
 
     svc = get_instance()
     # Not-applied paths raise (audited denied) — see _monitor_start.
@@ -361,7 +529,9 @@ async def _monitor_update(state: Any, session_key: str, args: dict[str, Any]) ->
     if is_structured_monitor_loop(loop):
         if _structured_binding(session_key) != binding:
             raise _DirectiveDenied("monitor_update is not supported from this session type.")
-        return await _structured_monitor_update(state, svc, loop, patch)
+        return await _structured_monitor_update(
+            state, svc, loop, patch, initiator=binding if self_arm_ok else ""
+        )
     structured_only = sorted(
         set(patch)
         & {
@@ -496,6 +666,26 @@ async def _monitor_update(state: Any, session_key: str, args: dict[str, Any]) ->
                 + (f" of {current_cap}" if current_cap else ", no cap")
                 + f"). monitor_update will not resume it as a side effect: {bound}."
             )
+    # CREW/MEMBER GATE for the legacy loop, the twin of the one
+    # ``authorize_and_update_monitor`` applies to a structured monitor. The
+    # legacy chokepoint ``authorize_and_update_nudge`` holds an opaque loop id
+    # and no session identity (its REST caller is user-token gated), so the mode
+    # rule has to be applied HERE, where the provenance lives: ``message`` is
+    # the instruction every future wake executes, and before this PR a
+    # crew/member slot could hold no loop at all, so a revision of one is a
+    # NEW surface. Only the session's own turn (``self_arm_ok``) may revise it;
+    # a cron injection, an app-driven turn or a sub-agent sharing the slot is
+    # refused with the same reason the arm path gives. Same predicate as the
+    # arm path (``is_self_arm``) so the two never drift apart. The mode is read
+    # off the live slot; a binding with no live slot has no mode to refuse on
+    # and keeps the pre-existing behaviour (the store's own miss handling).
+    if not is_channel_key(binding):
+        current = (getattr(state, "_slots", None) or {}).get(binding)
+        mode = str(getattr(current, "mode", ""))
+        if mode in _EXTERNAL_ARM_REFUSED_MODES and not is_self_arm(
+            binding, binding if self_arm_ok else ""
+        ):
+            raise _DirectiveDenied(f"Failed to update monitor loop: {external_arm_refusal(mode)}")
     _new_loop, error, _status = await authorize_and_update_nudge(
         svc=svc,
         loop_id=loop.id,
@@ -561,7 +751,9 @@ def _no_loop_message(svc: Any, binding: str) -> str:
     )
 
 
-async def _structured_monitor_update(state: Any, svc: Any, loop: Any, patch: dict[str, Any]) -> str:
+async def _structured_monitor_update(
+    state: Any, svc: Any, loop: Any, patch: dict[str, Any], *, initiator: str = ""
+) -> str:
     from kiro_crew.autonudge_authz import authorize_and_update_monitor
 
     # ``banner`` is a message-loop-only field (a structured monitor shows its
@@ -605,6 +797,10 @@ async def _structured_monitor_update(state: Any, svc: Any, loop: Any, patch: dic
         patch=structured,
         source="mcp-directive",
         caller="session-directive",
+        # The SESSION'S OWN binding, handed down by _monitor_update -- never the
+        # loop's key echoed back, which would make the self-arm test trivially
+        # true at this site. The authorizer compares it against the loop's slot.
+        initiator_slot_key=initiator,
     )
     if error is not None:
         raise _DirectiveDenied(f"Failed to update structured monitor: {error}")

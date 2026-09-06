@@ -1171,12 +1171,15 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
             "fire to their turn's end without restarting the countdown)"
             + (f", stopping after {max_cycles} cycles" if max_cycles else ", with NO cycle cap")
             + (f", wall-clock budget {max_runtime_secs}s" if max_runtime_secs else "")
-            + ". End your turn now; once the loop is armed it wakes you on "
-            "that interval — but arming happens when this turn's result is "
-            "processed, and only a live dashboard/Slack/Discord session can "
-            "host a loop, so do NOT assume it armed. Call autonudge_stop when "
-            "the exit condition is met; hitting the cap is a runaway backstop, "
-            "not a finish. Use monitor_update if the instruction goes stale."
+            + ". End your turn now. Arming happens when this turn's result is "
+            "processed, so this ack cannot confirm it; the outcome is reported "
+            'as a transcript notice on this session — "Automation loop armed: '
+            'loop <id> … next wake …" or "Automation loop NOT armed: <reason> '
+            "[status N]\" — and the applier's own result replaces this text in "
+            "the transcript. If the notice says NOT armed, read the reason "
+            "before trying again. Call autonudge_stop when the exit condition is "
+            "met; hitting the cap is a runaway backstop, not a finish. Use "
+            "monitor_update if the instruction goes stale."
         ),
     )
 
