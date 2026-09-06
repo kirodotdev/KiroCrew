@@ -64,6 +64,23 @@ def _redact_memory_field(val: object) -> object:
     return val
 
 
+#: The session-search row fields carrying LLM-authored or peer-supplied prose,
+#: which every pass returning such a row must put through
+#: :func:`kiro_crew.security.redact` before egress.
+#:
+#: Three passes return these rows -- ``api_sessions_search``, and
+#: ``api_instances_search_sessions``' local-row and peer-row passes -- and each
+#: used to hand-copy both the redaction chain AND this field list. The chain
+#: already had an owner (``security.redact`` composes the exfiltration-URL and
+#: credential passes in that order); this tuple gives the field list one too, so
+#: a caller cannot redact ``title`` and quietly forget ``snippet``. That is the
+#: drift half of #3940 follow-up 3, and the quieter half: a missing field reads
+#: as correct at the call site.
+#:
+#: Order is irrelevant; membership is the contract.
+SESSION_SEARCH_TEXT_FIELDS: tuple[str, ...] = ("title", "snippet")
+
+
 # Shared body cap for the small JSON-object endpoints that must bound the
 # request BEFORE decoding (the strict-internal notification routes). Kept
 # module-level and in one place so the security-relevant cap cannot drift

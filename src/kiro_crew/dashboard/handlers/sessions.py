@@ -29,6 +29,7 @@ from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.handlers import kiro_usage_api
+from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
@@ -1252,16 +1253,10 @@ async def api_sessions_search(request: web.Request) -> web.Response:
         None, state.conversation_log.search_sessions, q, limit
     )
     for s in sessions:
-        title = s.get("title")
-        if title:
-            title, _ = _h.redact_exfiltration_urls(title)
-            title, _ = _h.redact_credentials(title)
-            s["title"] = title
-        snip = s.get("snippet")
-        if snip:
-            snip, _ = _h.redact_exfiltration_urls(snip)
-            snip, _ = _h.redact_credentials(snip)
-            s["snippet"] = snip
+        for field in SESSION_SEARCH_TEXT_FIELDS:
+            value = s.get(field)
+            if value:
+                s[field] = redact(value)
     return web.json_response({"sessions": sessions})
 
 

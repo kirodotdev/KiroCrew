@@ -29,8 +29,8 @@ from urllib.parse import unquote
 from aiohttp import web
 
 import kiro_crew
-import kiro_crew.dashboard.handlers as _h
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     build_transfer_bundle_async,
@@ -52,6 +52,7 @@ from kiro_crew.instances.registry import (
 )
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelState
 from kiro_crew.instances.warm_set import resolve_warm_set_cap
+from kiro_crew.security import redact
 from kiro_crew.sel import sel
 from kiro_crew.validation import sanitize_string
 
@@ -835,9 +836,8 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
                 # ship megabyte strings to the browser (or feed the redaction
                 # regexes unbounded input).
                 value = value[:_PEER_FIELD_MAX_CHARS]
-                if field in ("title", "snippet"):
-                    value, _ = _h.redact_exfiltration_urls(value)
-                    value, _ = _h.redact_credentials(value)
+                if field in SESSION_SEARCH_TEXT_FIELDS:
+                    value = redact(value)
                 out[field] = value
         for field in ("modified", "messages"):
             value = row.get(field)
@@ -866,12 +866,10 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
         # here before the rows reach the browser.
         redacted_local: list[dict] = []
         for row in local_rows:
-            for field in ("title", "snippet"):
+            for field in SESSION_SEARCH_TEXT_FIELDS:
                 value = row.get(field)
                 if isinstance(value, str) and value:
-                    value, _ = _h.redact_exfiltration_urls(value)
-                    value, _ = _h.redact_credentials(value)
-                    row[field] = value
+                    row[field] = redact(value)
             redacted_local.append(row)
         sources.append(redacted_local)
     for iid, result in zip(connected, results[1:]):
