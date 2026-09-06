@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -9,12 +10,13 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, sandbox, security
 from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
 from kiro_crew.apps.builtins.auto_improvement.backend.clone_setup import (
     DISABLED_NO_PUSH,
     CloneSpec,
 )
+from kiro_crew.platform_compat import rmtree_force
 
 
 def _seeded_bare(tmp_path: Path) -> Path:
@@ -192,6 +194,237 @@ def test_retire_unsafe_clone_preserves_bytes_off_canonical_path(
     retained = sorted(tmp_path.glob(".clone.unsafe-*"))
     assert len(retained) == clone_setup._UNSAFE_CLONE_RETENTION
     assert latest.exists()
+
+
+@pytest.fixture
+def marker_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the quarantine marker's crew-home root at a temp dir.
+
+    ``_quarantine_root`` resolves it through ``config.paths.data_home()``, the real crew data
+    home -- writing markers there from a test would leak state between runs and could refuse
+    a developer's own clone. Patched on the name ``clone_setup`` imported, so the redirect
+    holds however the caller reaches it.
+    """
+    home = tmp_path / "crewhome"
+    home.mkdir()
+    monkeypatch.setattr(clone_setup, "data_home", lambda: home)
+    return home / clone_setup._QUARANTINE_DIR_LEAF
+
+
+def test_a_quarantined_clone_is_refused_for_reuse(tmp_path: Path, marker_root: Path) -> None:
+    """A clone whose rollback AND retirement both failed must not be reused.
+
+    Reuse attests git metadata, config and origin URLs -- none of which look at what the
+    branch tip points AT -- so a clone still carrying a REFUSED, unscanned provisional commit
+    passes every one of those checks. The next run would commit its winner on top and publish
+    the refused commit as an ancestor. The marker is what makes the refusal outlive the
+    process that discovered it, since the un-rolled-back commit is on disk.
+    """
+    bare = _seeded_bare(tmp_path)
+    root = tmp_path / "root"
+    result, err = _setup(bare, root)
+    assert result and not err
+    clone = Path(result["clone"])
+
+    marker = clone_setup._mark_clone_quarantined(clone, "rollback to abc0123456 failed")
+    assert marker is not None
+
+    again, err = _setup(bare, root)
+    assert again == {}
+    assert "quarantined" in err
+
+
+def test_the_marker_lives_outside_the_tree_the_agent_works_in(
+    tmp_path: Path, marker_root: Path
+) -> None:
+    """The marker must not sit in the scratch directory, which the agent writes to.
+
+    It lives at a TOP-LEVEL crew-home leaf that is bind-masked from every agent sandbox and
+    fenced from agent file tools. Top-level matters on its own: a mask covers the name it is
+    bound over and not that name's ancestors, so a leaf under an agent-writable directory
+    could be renamed out from under the mount.
+    """
+    bare = _seeded_bare(tmp_path)
+    root = tmp_path / "root"
+    result, _ = _setup(bare, root)
+    clone = Path(result["clone"])
+
+    marker = clone_setup._quarantine_marker(clone)
+    assert marker is not None
+    assert marker.parent == marker_root, "the marker is not under the masked crew-home leaf"
+    assert not marker.is_relative_to(root), "the marker is inside the agent's scratch root"
+    assert not marker.is_relative_to(clone)
+    # The name is a hash of the clone path, so a repository name cannot steer it.
+    assert marker.name.endswith(".json") and len(marker.stem) == 64
+    assert "/" not in marker.stem and "\\" not in marker.stem
+    # Both gates that fence the leaf name it, so neither can drift from the other.
+    # ``sensitive_home_dirs`` reports crew-home-PREFIXED paths, one per home spelling.
+    assert clone_setup._QUARANTINE_DIR_LEAF in sandbox._CREW_HIDDEN_LEAVES
+    fenced = [
+        d for d in security.sensitive_home_dirs() if d.endswith(clone_setup._QUARANTINE_DIR_LEAF)
+    ]
+    assert fenced, "the quarantine leaf is masked from sandboxes but not fenced from file tools"
+
+
+def test_a_dangling_marker_symlink_reads_as_quarantined(tmp_path: Path, marker_root: Path) -> None:
+    """A planted entry can only make the guard MORE conservative, never less.
+
+    The marking open refuses to follow links, so a dangling symlink at the marker name is an
+    existing entry to it -- while `exists()` would call the same entry absent. Split that way,
+    a planted dangling link would let marking report success while the guard read no marker,
+    and the poisoned clone would be reused. `lstat` closes it: anything at the name counts.
+    """
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    marker = clone_setup._quarantine_marker(clone)
+    assert marker is not None
+    try:
+        marker.symlink_to(tmp_path / "does-not-exist")
+    except OSError as exc:  # pragma: no cover - host policy may forbid links
+        pytest.skip(f"cannot create a symlink: {exc}")
+
+    assert marker.exists() is False, "precondition: a dangling link looks absent to exists()"
+    assert clone_setup._clone_is_quarantined(clone) is True
+    # And marking over it reports the guard as standing rather than claiming a fresh write.
+    assert clone_setup._mark_clone_quarantined(clone, "planted") == marker
+
+
+def test_a_linked_marker_root_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A link planted at the ROOT would put every marker outside the fence, and no per-marker
+    check can see that -- so the root is refused and the guard fails closed."""
+    home = tmp_path / "crewhome"
+    home.mkdir()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    try:
+        platform_compat.symlink_or_junction(foreign, home / clone_setup._QUARANTINE_DIR_LEAF)
+    except OSError as exc:  # pragma: no cover - host policy may forbid links
+        pytest.skip(f"cannot create a directory link: {exc}")
+    monkeypatch.setattr(clone_setup, "data_home", lambda: home)
+
+    assert clone_setup._quarantine_root() is None
+    assert clone_setup._mark_clone_quarantined(tmp_path, "unusable root") is None
+    # Fails CLOSED: a guard that cannot be consulted must not certify the clone.
+    assert clone_setup._clone_is_quarantined(tmp_path) is True
+
+
+def test_the_marker_write_cannot_truncate_an_existing_file(
+    tmp_path: Path, marker_root: Path
+) -> None:
+    """`O_TRUNC` is absent from the open, so an existing marker is never shortened.
+
+    An existing marker is the guard already standing, not a failure -- presence is the whole
+    signal and the contents are diagnostic -- so marking twice reports the same path and
+    leaves the first write intact.
+    """
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    first = clone_setup._mark_clone_quarantined(clone, "first failure")
+    assert first is not None
+    before = first.read_bytes()
+
+    second = clone_setup._mark_clone_quarantined(clone, "second failure")
+
+    assert second == first
+    assert first.read_bytes() == before, "the second mark truncated or rewrote the first"
+    assert clone_setup._clone_is_quarantined(clone) is True
+
+
+def test_the_quarantine_marker_clears_when_the_clone_is_gone(
+    tmp_path: Path, marker_root: Path
+) -> None:
+    """The guard is scoped to the DIRECTORY it names, which is how it answers "when does it
+    clear": a later successful retirement, or an operator removing the tree, removes the thing
+    the marker names, so nothing is left permanently refusing a name whose bytes are gone. The
+    stale marker is pruned on the way past rather than accumulating one file per clone."""
+    bare = _seeded_bare(tmp_path)
+    root = tmp_path / "root"
+    result, _ = _setup(bare, root)
+    clone = Path(result["clone"])
+    marker = clone_setup._mark_clone_quarantined(clone, "retirement failed")
+    assert marker is not None and clone_setup._clone_is_quarantined(clone) is True
+
+    rmtree_force(clone)
+
+    assert clone_setup._clone_is_quarantined(clone) is False
+    assert not marker.exists(), "the stale marker was not pruned"
+    fresh, err = _setup(bare, root)
+    assert fresh and not err, err
+
+
+def test_the_marker_survives_a_clone_that_cannot_be_written_into(
+    tmp_path: Path, marker_root: Path
+) -> None:
+    """Retirement fails on Windows because a handle is held INSIDE the tree, and that same
+    cause would block a marker written under it -- which is one reason the marker is not a
+    child of the clone. Here the clone directory is made unwritable to stand in for that."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    original = clone.stat().st_mode
+    os.chmod(clone, 0o500)
+    try:
+        marker = clone_setup._mark_clone_quarantined(clone, "retirement failed")
+        assert marker is not None, "a read-only clone must not defeat the marker"
+        assert marker.exists()
+        assert clone_setup._clone_is_quarantined(clone) is True
+    finally:
+        os.chmod(clone, original)
+
+
+def test_an_unwritable_marker_root_refuses_every_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root that reads but cannot be written is the one state that fails OPEN otherwise.
+
+    The marking open fails, so nothing is recorded; the reuse check then finds no marker and
+    certifies the clone, with both halves reporting nothing wrong. Proving writability turns
+    that into a refusal, because the root that could not take the write fails the probe.
+    """
+    home = tmp_path / "crewhome"
+    home.mkdir()
+    root = home / clone_setup._QUARANTINE_DIR_LEAF
+    root.mkdir()
+    monkeypatch.setattr(clone_setup, "data_home", lambda: home)
+    original = root.stat().st_mode
+    os.chmod(root, 0o500)
+    try:
+        if os.access(root, os.W_OK):  # pragma: no cover - root or a permissive filesystem
+            pytest.skip("cannot make a directory unwritable for this user")
+        assert clone_setup._quarantine_root() is None
+        assert clone_setup._mark_clone_quarantined(tmp_path, "unwritable root") is None
+        # The clone is NOT certified: a guard that cannot record cannot clear anything.
+        assert clone_setup._clone_is_quarantined(tmp_path) is True
+    finally:
+        os.chmod(root, original)
+
+
+def test_a_clone_is_removed_when_neither_marker_nor_retirement_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canonical name must not survive all three levers.
+
+    Recording a marker and renaming the tree aside fail from independent causes, so either
+    alone suffices. When both fail the clone still sits at the name the next run looks up, so
+    the tree is removed outright -- a destination that exists without a `.git` directory is
+    refused by `_setup_safe_clone`.
+    """
+    from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    monkeypatch.setattr(clone_setup, "_mark_clone_quarantined", lambda *_a, **_k: None)
+    monkeypatch.setattr(clone_setup, "_retire_unsafe_clone", lambda _clone: None)
+    # A real Driver without ``__init__``, the convention the dogfood suite uses: a
+    # SimpleNamespace is not a Driver, so mypy rejects it as the self argument.
+    d = object.__new__(D.Driver)
+    d.clone = clone
+    d.log = logging.getLogger("t")
+    d._repository_retired = False
+    monkeypatch.setattr(D.Driver, "_progress", lambda _self, **_k: None)
+
+    D.Driver._quarantine_unrolled_clone(d, "abc0123456")
+
+    assert not clone.exists(), "the clone survived every guard and is still reusable"
 
 
 def test_linked_scratch_root_is_refused_before_mutation(tmp_path: Path) -> None:

@@ -13,7 +13,9 @@ element.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -26,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from kiro_crew.config.paths import data_home
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import (
     first_linked_ancestor,
@@ -414,6 +417,165 @@ def _retire_unsafe_clone(repo: Path) -> Path | None:
     return retired
 
 
+#: The quarantine markers' root: a TOP-LEVEL crew-home leaf, not a path under
+#: ``apps/auto-improvement/data/``. Two structural reasons.
+#:
+#: The leaf is bind-masked from every agent sandbox (``sandbox._CREW_HIDDEN_LEAVES``) and
+#: fenced from agent file tools (``security.sensitive_home_dirs``), which is what makes the
+#: marker something an agent cannot plant, rewrite or delete. Nothing inside a sandbox reads
+#: it -- the marker is written and read host-side by this module -- so HIDDEN is the right
+#: disposition of the three that list offers.
+#:
+#: A mask covers the name it is bound over, not that name's ancestors, so a leaf under
+#: ``apps/auto-improvement/data/`` would sit beneath a directory an agent CAN rename, taking
+#: the mount with it. At the top level the only ancestors are the data home and ``$HOME``,
+#: the residual every other fenced leaf already stands on. This mirrors
+#: ``aws_control.storage.STAGING_DIR_LEAF``, top-level for exactly this reason. Raised by the
+#: GPT review of this branch.
+_QUARANTINE_DIR_LEAF = "quarantined-clones"
+
+
+def _quarantine_root() -> Path | None:
+    """The masked directory quarantine markers live in, or ``None`` if it is unusable.
+
+    On a sandboxed host this exists before any agent runs: the sandbox materialises it ahead
+    of every namespace spawn (``sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES``), because a mask
+    can only bind over a name that exists. The ``mkdir`` here therefore matters only where
+    nothing is masking anything -- sandbox off, or Windows.
+
+    The root itself must be a REAL directory: a link planted at the root would put every
+    marker outside the fence, and no per-marker check can see that. Same guard
+    ``aws_control.storage._preview_staging_parent`` stands on.
+
+    IT MUST ALSO PROVE IT IS WRITABLE, by creating and removing a probe entry. A root that
+    exists and can be READ but not written is the one state where this guard fails OPEN: the
+    marking open fails, so nothing is recorded, while the reuse check finds no marker and
+    certifies the clone -- the poisoned tree is then reused with both halves of the mechanism
+    reporting nothing wrong. Proving writability at every call collapses that case into a
+    refusal, because the same root that could not take the write cannot pass the probe either.
+    ``os.access`` is not enough: it answers from the permission bits and is wrong under an ACL
+    or a read-only mount. Raised by the GPT review of this branch.
+    """
+    root = data_home() / _QUARANTINE_DIR_LEAF
+    try:
+        if is_link_or_junction(root) or first_linked_ancestor(root):
+            logger.error("quarantine marker root %s is under a link; refusing to use it", root)
+            return None
+        root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if is_link_or_junction(root):
+            return None
+        probe = root / f".probe-{secrets.token_hex(8)}"
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        probe.unlink()
+    except OSError:
+        logger.exception("quarantine marker root %s is not usable for recording", root)
+        return None
+    return root
+
+
+def _quarantine_marker(repo: Path) -> Path | None:
+    """Where the refusal-to-reuse marker for *repo* lives, or ``None`` if unusable.
+
+    Keyed by the HASH of the clone's absolute path, so the name cannot be steered by a
+    repository name: it is fixed-length, has no separators to traverse with, and cannot
+    collide with another clone's marker.
+    """
+    root = _quarantine_root()
+    if root is None:
+        return None
+    digest = hashlib.sha256(str(repo.absolute()).encode("utf-8", "surrogateescape")).hexdigest()
+    return root / f"{digest}.json"
+
+
+def _mark_clone_quarantined(repo: Path, reason: str) -> Path | None:
+    """Persist "this clone must never be reused". The marker path, or ``None``.
+
+    WRITTEN BEFORE RETIREMENT IS ATTEMPTED, not after it fails. :func:`_retire_unsafe_clone`
+    renaming the tree aside is the primary guard and needs no marker, because a clone renamed
+    away from its canonical name is not found and not reused. The marker covers the window
+    that guard cannot: the caller persists it first, so a process that dies between the two
+    steps, or a rename that fails outright, still leaves a durable refusal behind rather than a
+    poisoned tree sitting at the name the next run looks up. A marker whose clone is retired or
+    removed clears itself, which is what the next paragraph is about.
+
+    WHEN IT CLEARS is the question a persisted latch has to answer, and this one answers it
+    structurally rather than on a timer or an event: the marker names a specific DIRECTORY, so
+    :func:`_clone_is_quarantined` reports it only while that directory still exists. A later
+    successful retirement, or an operator removing the tree, therefore clears the guard as a
+    side effect of removing the thing it guards -- there is no state where the bytes are gone
+    and the refusal outlives them, and none where the bytes are present and the refusal has
+    expired.
+
+    ``O_EXCL``, NEVER ``O_TRUNC``: this open must not be able to shorten an existing file, so
+    the truncating flag is simply not in the set. An existing ENTRY at the marker name is then
+    not a failure but the guard already standing, and it is reported as such.
+
+    THE TWO SIDES MUST AGREE ON WHAT "PRESENT" MEANS, which is why the reader below uses
+    ``lstat`` and not ``exists``. A DANGLING SYMLINK is an existing entry to this open --
+    ``O_CREAT|O_EXCL`` refuses it -- and an absent file to ``exists``. Split that way, a
+    planted dangling link would make marking report success while the guard read no marker at
+    all. Raised by the GPT review of this branch.
+
+    Best-effort by construction: if even this write fails there is nothing further to try, and
+    the caller logs that the clone is unsafe in place.
+    """
+    marker = _quarantine_marker(repo)
+    if marker is None:
+        return None
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    body = json.dumps({"clone": str(repo.absolute()), "reason": reason}, ensure_ascii=True)
+    try:
+        fd = os.open(marker, flags, 0o600)
+        try:
+            os.write(fd, body.encode("ascii", "replace")[:4096])
+        finally:
+            os.close(fd)
+    except FileExistsError:
+        return marker  # an entry already stands here; presence is the signal, not contents
+    except OSError:
+        logger.exception("could not mark clone %s as quarantined", repo)
+        return None
+    return marker
+
+
+def _clone_is_quarantined(repo: Path) -> bool:
+    """Is *repo* marked unreusable AND still the tree that was marked?
+
+    ``lstat`` rather than ``exists``: the question is whether an ENTRY stands at the marker
+    name, not whether it resolves to a readable file -- see
+    :func:`_mark_clone_quarantined` for why the two sides have to agree. Anything at that
+    name counts, so a planted entry can only make this MORE conservative: it reports the
+    clone quarantined, which refuses it.
+
+    Fails CLOSED on an unusable root, and on an ``lstat`` that raises for any reason other
+    than absence: "I could not look" is not "I looked and it was clean". A marker whose clone
+    is gone is stale -- that is how the guard clears -- and it is removed on the way past so
+    the directory does not accumulate one file per clone the app has ever retired.
+    """
+    marker = _quarantine_marker(repo)
+    if marker is None:
+        return True  # the guard cannot be consulted, so do not certify the clone
+    try:
+        os.lstat(marker)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.exception("could not read the quarantine marker for %s", repo)
+        return True
+    try:
+        if repo.exists():
+            return True
+    except OSError:
+        logger.exception("could not stat the quarantined clone %s", repo)
+        return True
+    try:
+        marker.unlink()
+    except OSError:
+        logger.warning("could not prune the stale quarantine marker %s", marker)
+    return False
+
+
 def _push_disabled(repo: Path) -> bool:
     return _origin_urls(repo, push=True) == [DISABLED_NO_PUSH] and _origin_urls(
         repo, push=False
@@ -572,6 +734,22 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
 
     if is_link_or_junction(dest):
         return {}, f"Destination is a link or junction (refused for safety): {dest}"
+
+    # REFUSE A QUARANTINED CLONE BEFORE ANY OTHER JUDGEMENT ABOUT IT. The marker is written
+    # whenever a rollback fails, before retirement is attempted, and it is what stops reuse
+    # when that retirement then fails or never runs -- so a clone still sitting at this name
+    # carries a provisional commit that was REFUSED and never scanned. Every reuse
+    # attestation below is about the clone's git metadata and remotes -- none of them look at
+    # what the branch tip points AT -- so a poisoned clone passes all of them and the next
+    # run commits its winner on top of the refused commit and publishes it as an unscanned
+    # ancestor. Checked ahead of the `.git` probe because the name is burned, not just its
+    # metadata: a tree whose `.git` was destroyed by the same failure must not fall through
+    # to the fresh-clone path and reuse the directory either.
+    if _clone_is_quarantined(dest):
+        return {}, (
+            f"Existing clone at {dest} is quarantined after a failed rollback and must not "
+            "be reused -- remove the directory to clear the marker and clone fresh."
+        )
 
     git_dir = dest / ".git"
     if is_link_or_junction(git_dir):

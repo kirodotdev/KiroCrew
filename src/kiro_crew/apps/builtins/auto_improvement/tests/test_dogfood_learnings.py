@@ -117,6 +117,73 @@ class TestMetricDirectionIsPlumbed:
         assert keep_min is False
 
 
+#: The object id every retry-path double reports as the fetched tip. The retry captures that id
+#: from `git fetch --porcelain` STDOUT instead of reading the mutable `FETCH_HEAD` ref:
+#: that ref is a FILE the pre-push reviewer's shell can rewrite between the fetch and the
+#: rebase, which would replay onto a substituted parent whose content nothing scanned. So every
+#: double on this path has to answer the fetch, and one that does not is correctly refused.
+FETCHED_BASE = "ba5e" + "0" * 36
+
+
+def _porcelain_fetch(argv: list[str]) -> "subprocess.CompletedProcess | None":
+    """The `git fetch --porcelain` reply for *argv*, or ``None`` if it is not a fetch.
+
+    Shape measured against real git 2.50: one line per ref, ``<flag> <old-oid> <new-oid>
+    <local-ref>``, and for a `FETCH_HEAD`-style fetch the local-ref column reads ``FETCH_HEAD``
+    while the new-oid column carries the tip. Shared so the doubles state it once.
+    """
+    if argv[:1] != ["fetch"]:
+        return None
+    return subprocess.CompletedProcess(
+        args=argv,
+        returncode=0,
+        stdout=f"* {'0' * 40} {FETCHED_BASE} FETCH_HEAD\n",
+        stderr="",
+    )
+
+
+def _replay_identity(argv: list[str]) -> "subprocess.CompletedProcess | None":
+    """The expected-tree reply for *argv*, or ``None`` if it is not one of those reads.
+
+    Before publishing, the retry checks that the replay carries the tree a replay of the
+    AUTHORIZED source produces, because the id it works from is captured from ambient `HEAD`
+    and a process that moves HEAD before that read has every later check bind to its
+    substitute. Identity of object ids cannot express this -- a replay is a new object -- and
+    a patch identity would ignore hunk positions, so the binding is the tree: the expected one
+    from `merge-tree --write-tree`, the actual one from `log -1 --format=%T`.
+
+    ONE CONSTANT FOR BOTH READS, which is what "the replay carries the authorized content"
+    looks like from here. A double that answered one but not the other would report an empty
+    tree and refuse, so both are stated. Shared so the doubles state it once.
+
+    ATTRIBUTION IS ANSWERED HERE TOO, for the same reason and with the same shape. The retry
+    pins the replay's committer to the identity the authorized object already holds, then
+    compares the replayed commit's author, committer and message against that object's -- so a
+    double that answered neither read would refuse before reaching what its test is about. One
+    constant again: both revisions get the same answer, which is the equal case every test in
+    this class except the attribution one depends on.
+    """
+    if argv[:2] == ["merge-tree", "--write-tree"] or argv[:3] == ["log", "-1", "--format=%T"]:
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout="7ea5" + "0" * 36 + "\n", stderr=""
+        )
+    if argv[:3] == ["log", "-1", "--format=%cn%x00%ce"]:
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout="pipeline\x00pipeline@example.invalid\n", stderr=""
+        )
+    if len(argv) >= 3 and argv[:2] == ["log", "-1"] and argv[2].startswith("--format=%an"):
+        return subprocess.CompletedProcess(
+            args=argv,
+            returncode=0,
+            stdout=(
+                "author\x00author@example.invalid\x00pipeline"
+                "\x00pipeline@example.invalid\x00the authorized change\n"
+            ),
+            stderr="",
+        )
+    return None
+
+
 class TestPushRetriesOnRace:
     """3 of 6 gate survivors were lost to a branch that moved mid-run."""
 
@@ -163,21 +230,669 @@ class TestPushRetriesOnRace:
 
         gits: list[list[str]] = []
 
-        def _fake_git(a, cwd):
+        def _fake_git(a, cwd, **_kw):
             gits.append(a)
-            return subprocess.CompletedProcess(args=a, returncode=0, stdout="", stderr="")
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            # The retry resolves the REPLAYED commit to a full object id and pushes THAT
+            # rather than `HEAD`, so the double has to answer that question; an empty
+            # answer is correctly treated as "cannot resolve" and refuses to push.
+            # `rev-list --count FETCH_HEAD..HEAD` proves the rebase replayed exactly ONE
+            # commit: an equivalent upstream patch makes git drop ours, and an
+            # unanswered count is correctly read as "not one" and refuses.
+            if a[:2] == ["rev-list", "--count"]:
+                out = "1\n"
+            elif a[:1] == ["rev-list"]:
+                out = "rebasedsha0000000000000000000000000000\n"
+            else:
+                out = ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
 
         monkeypatch.setattr(D.subprocess, "run", _fake_run)
         monkeypatch.setattr(D, "_git", _fake_git)
         import logging
 
         d = self._driver(tmp_path, logging.getLogger("t"))
-        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt")
+        out = D.Driver._push_with_rebase(
+            d, "https://x/y.git", "b", "tgt", src="rebasedsha0000000000000000000000000000"
+        )
         assert out is not None
         assert out.returncode == 0
         assert len(pushes) == 2, "should push, rebase, push again"
-        assert ["fetch", "https://x/y.git", "b"] in gits
-        assert ["rebase", "FETCH_HEAD"] in gits
+        assert ["fetch", "--porcelain", "https://x/y.git", "b"] in gits, (
+            "the fetch must ask for --porcelain: that is where the tip's object id comes from, "
+            "instead of the mutable FETCH_HEAD ref"
+        )
+        # BOTH ends of the rebase are object ids. `rebase FETCH_HEAD` with no revision replays
+        # whatever the BRANCH points at, and that bare form is rejected (`src` is
+        # required); naming FETCH_HEAD as the BASE is a defect, since that ref is a
+        # mutable file the reviewer can repoint at an unscanned commit.
+        assert [
+            "rebase",
+            FETCHED_BASE,
+            "rebasedsha0000000000000000000000000000",
+        ] in gits, gits
+        assert not any(
+            g[:1] == ["rebase"] and "FETCH_HEAD" in g for g in gits
+        ), "the rebase still keys on the mutable FETCH_HEAD ref"
+        # And the retry publishes the REPLAYED OBJECT BY ID, not `HEAD`: a symbolic ref is
+        # resolved by the push itself, i.e. after the re-verify and after the scan.
+        assert "rebasedsha0000000000000000000000000000:refs/heads/b" in pushes[1], pushes[1]
+        assert "HEAD:refs/heads/b" not in pushes[1], pushes[1]
+        # It also REPORTS that object, which is what the caller records in the ledger -- a
+        # post-push `rev-parse HEAD` would name whatever HEAD points at by then.
+        assert d._pushed_object == "rebasedsha0000000000000000000000000000"
+
+    def test_the_retry_refuses_a_replayed_object_that_does_not_scan_clean(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rebase REPLAYS the commit as a new object, and the caller's credential scan
+        covered the PRE-rebase one -- so without a scan here the retry published an object
+        nothing had ever scanned. A non-fast-forward retry is not an edge case on this path:
+        this class exists because 3 of 6 gate survivors were lost to that race.
+
+        Raised by the GPT review of this branch, which called it the one place the
+        object/ref binding was still broken."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        pushes: list[list[str]] = []
+        gits: list[list[str]] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            rc = 1 if len(pushes) == 1 else 0
+            err = "! [rejected] HEAD -> b (non-fast-forward)" if rc else ""
+            return subprocess.CompletedProcess(args=argv, returncode=rc, stdout="", stderr=err)
+
+        def _fake_git(a, cwd, **_kw):
+            gits.append(a)
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            # The scan reads the pushable OBJECTS, not a rendered diff: `cat-file commit`
+            # for the header bytes, `diff-tree` to list the changed blobs, then
+            # `cat-file blob` for each blob's RAW bytes. The credential is planted in the
+            # blob the listing points at, so it reaches the scanner exactly as the push
+            # would transfer it.
+            blob_sha = "b10b" + "0" * 36
+            if a[:2] == ["cat-file", "commit"]:
+                # Benign, non-empty commit metadata: an empty read would fail closed.
+                return subprocess.CompletedProcess(
+                    args=a,
+                    returncode=0,
+                    stdout="tree 7ea5\nauthor a <a@x> 0 +0000\ncommitter a <a@x> 0 +0000\n\nfix\n",
+                    stderr="",
+                )
+            if a[:1] == ["diff-tree"]:
+                # `:<src mode> <dst mode> <src sha> <dst sha> <status>\t<path>` -- one
+                # modified blob pointing at the credential-bearing object below.
+                return subprocess.CompletedProcess(
+                    args=a,
+                    returncode=0,
+                    stdout=f":100644 100644 {'a' * 40} {blob_sha} M\tapp.py\n",
+                    stderr="",
+                )
+            if a[:2] == ["cat-file", "blob"] and a[2:3] == [blob_sha]:
+                # The REPLAYED object carries a credential the first scan never saw. This
+                # exact form was checked against the real `scan_content_for_secrets`: the
+                # uppercase `AWS_SECRET_ACCESS_KEY = '...'` spelling is NOT flagged, so a
+                # test using it would pass for the wrong reason.
+                return subprocess.CompletedProcess(
+                    args=a, returncode=0, stdout="AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\n", stderr=""
+                )
+            # `rev-list --count FETCH_HEAD..HEAD` proves the rebase replayed exactly ONE
+            # commit: an equivalent upstream patch makes git drop ours, and an
+            # unanswered count is correctly read as "not one" and refuses.
+            if a[:2] == ["rev-list", "--count"]:
+                out = "1\n"
+            elif a[:1] == ["rev-list"]:
+                out = "rebasedsha0000000000000000000000000000\n"
+            else:
+                out = ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+        out = D.Driver._push_with_rebase(
+            d, "https://x/y.git", "b", "tgt", src="rebasedsha0000000000000000000000000000"
+        )
+
+        assert len(pushes) == 1, "the replayed object was published without scanning clean"
+        assert out is not None and out.returncode == 1, "the original rejection must be returned"
+        # And the branch is NOT promoted onto a replay that failed the scan: promotion belongs
+        # only on the path where every check passed.
+        assert not any(
+            g[:2] == ["branch", "-f"] for g in gits
+        ), "the branch was force-moved onto a replay that did not scan clean"
+
+    def test_the_retry_refuses_when_the_replayed_commit_cannot_be_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """Fail closed: not being able to name the replacement is the ABSENCE of the check,
+        so it must not fall back to pushing the symbolic ref.
+
+        The MESSAGE is asserted, not just the refusal, because the later HEAD-equality check
+        would also refuse an empty id -- so without pinning which one fired, deleting this
+        check would leave no test red. Same reason the first-push tests assert which of their
+        two identity checks refused."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        pushes: list[list[str]] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            rc = 1 if len(pushes) == 1 else 0
+            err = "(fetch first)" if rc else ""
+            return subprocess.CompletedProcess(args=argv, returncode=rc, stdout="", stderr=err)
+
+        # The pre-fetch tamper read is answered (`src` is required now, so it always runs);
+        # every LATER answer is empty, including the `rev-list` that resolves the replacement.
+        # Both reads are the same argv, so they are told apart by ORDER -- which is also what
+        # makes the message assertion below necessary rather than decorative.
+        reads: list[list[str]] = []
+
+        def _fake_git(a, cwd, **_kw):
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            out = ""
+            if a[:1] == ["rev-list"]:
+                reads.append(a)
+                out = "authorizedsrc00\n" if len(reads) == 1 else ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        log = logging.getLogger("retry-unresolvable")
+        d = TestPushRetriesOnRace._driver(tmp_path, log)
+        with caplog.at_level(logging.ERROR, logger="retry-unresolvable"):
+            out = D.Driver._push_with_rebase(
+                d, "https://x/y.git", "b", "tgt", src="authorizedsrc00"
+            )
+
+        assert len(pushes) == 1, "an unresolvable replacement was published anyway"
+        assert out is not None and out.returncode == 1
+        assert any("cannot resolve the rebased commit" in r.getMessage() for r in caplog.records), [
+            r.getMessage() for r in caplog.records
+        ]
+
+    def test_the_retry_refuses_when_head_moves_while_the_build_gate_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`_reverify_head` runs the repository-under-improvement's OWN test suite, so arbitrary
+        code from the tree being published executes inside that call. Resolving the replacement
+        commit AFTER it let a test teardown move HEAD and have the moved object captured,
+        scanned and pushed as though the gate had measured it -- credentials still covered, but
+        nothing had built or tested the thing that landed.
+
+        The replacement is therefore resolved BEFORE the gate and HEAD must still be that
+        object afterwards. Here the gate itself moves HEAD, which is exactly the teardown's
+        capability. Raised by the GPT review of this branch."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        pushes: list[list[str]] = []
+        gate_ran: list[str] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            rc = 1 if len(pushes) == 1 else 0
+            err = "! [rejected] HEAD -> b (non-fast-forward)" if rc else ""
+            return subprocess.CompletedProcess(args=argv, returncode=rc, stdout="", stderr=err)
+
+        def _fake_git(a, cwd, **_kw):
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            out = ""
+            if a[:1] == ["rev-list"]:
+                # Before the gate: the replayed commit. After it: a DIFFERENT object, which is
+                # what a teardown moving HEAD looks like from here.
+                out = "movedsha00000000000000000000000000000\n" if gate_ran else "rebased0000\n"
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+
+        def _gate_that_moves_head(*, worktree, src):
+            gate_ran.append("yes")
+            return SimpleNamespace(passed=True, detail="green", commit_sha="")
+
+        d.profile.build_gate.build_and_test = _gate_that_moves_head  # type: ignore[attr-defined]
+
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="rebased0000")
+
+        assert gate_ran, "the build gate never ran, so nothing was injected"
+        assert len(pushes) == 1, "a tree the gate never measured was published"
+        assert out is not None and out.returncode == 1
+
+    def test_the_retry_refuses_to_rebase_a_head_that_is_no_longer_the_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`git rebase` replays the CURRENT BRANCH, not the revision handed to this method. So
+        if HEAD moved after the caller's checks, the retry would replay the moved commit and
+        then bind its own capture, verify and scan to THAT -- every check passing while the
+        published content never descended from the authorized object. The rebase input is
+        therefore checked first. Raised by the GPT review of this branch."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        pushes: list[list[str]] = []
+        gits: list[list[str]] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            rc = 1 if len(pushes) == 1 else 0
+            err = "(fetch first)" if rc else ""
+            return subprocess.CompletedProcess(args=argv, returncode=rc, stdout="", stderr=err)
+
+        def _fake_git(a, cwd, **_kw):
+            gits.append(a)
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            # HEAD is something OTHER than the authorized source.
+            # `rev-list --count FETCH_HEAD..HEAD` proves the rebase replayed exactly ONE
+            # commit: an equivalent upstream patch makes git drop ours, and an
+            # unanswered count is correctly read as "not one" and refuses.
+            if a[:2] == ["rev-list", "--count"]:
+                out = "1\n"
+            elif a[:1] == ["rev-list"]:
+                out = "movedhead000\n"
+            else:
+                out = ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="authorized00")
+
+        assert len(pushes) == 1, "a moved HEAD was rebased and republished"
+        assert not any(g[:1] == ["rebase"] for g in gits), "the rebase ran on an unauthorized HEAD"
+        assert not any(g[:1] == ["fetch"] for g in gits), "it should refuse before fetching"
+        assert out is not None and out.returncode == 1
+
+    def test_a_rewritten_fetch_head_cannot_substitute_the_rebase_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The base comes from the FETCH's OWN STDOUT, so repointing `FETCH_HEAD` does nothing.
+
+        `FETCH_HEAD` is a mutable FILE in the clone, not a value, and the pre-push reviewer's
+        shell can rewrite it between the fetch and the rebase. Measured on a throwaway repo with
+        a bare remote: with `.git/FETCH_HEAD` rewritten to a prepared child,
+        `rev-list --count FETCH_HEAD..HEAD` still reported 1 while the truth against the real tip
+        was 2, the scanned range held only our own file, and the remote ACCEPTED the push -- the
+        foreign file landed through a scanner that believed it had looked. Both the rebase input
+        and the count read that same name, so they agreed with the substitution instead of
+        catching it. This asserts the id the fetch REPORTED is what both of them use, and that
+        the ref name appears in neither."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        gits: list[list[str]] = []
+        pushes: list[list[str]] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            rc = 1 if len(pushes) == 1 else 0
+            return subprocess.CompletedProcess(
+                args=argv, returncode=rc, stdout="", stderr="(fetch first)" if rc else ""
+            )
+
+        def _fake_git(a, cwd, **_kw):
+            gits.append(a)
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            out = ""
+            if a[:2] == ["rev-list", "--count"]:
+                out = "1\n"
+            elif a[:1] == ["rev-list"]:
+                out = "rebasedsha00\n"
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="rebasedsha00")
+
+        assert out is not None and out.returncode == 0
+        assert ["rebase", FETCHED_BASE, "rebasedsha00"] in gits, gits
+        assert [
+            "rev-list",
+            "--count",
+            f"{FETCHED_BASE}..rebasedsha00",
+        ] in gits, (
+            "the replayed-commit count must name BOTH captured ids: a `..HEAD` far end resolves "
+            "at read time, after the build gate ran the target repo's own tests, and it is not "
+            "the range the push publishes"
+        )
+        assert not any(
+            g[:2] == ["rev-list", "--count"] and any("HEAD" in f for f in g[2:]) for g in gits
+        ), "the replayed-commit count still has an ambient endpoint"
+        assert not any("FETCH_HEAD" in "".join(g) for g in gits if g[:1] != ["fetch"]), (
+            "something on the retry path still names FETCH_HEAD, so a rewrite of that file "
+            "can still substitute an unscanned parent"
+        )
+
+    def test_the_retry_refuses_when_the_fetch_reports_no_object_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fail closed: an id it could not obtain is the absence of the check, not a pass.
+
+        Also covers an older git that does not understand `--porcelain` -- there the fetch fails
+        outright -- and a ref DELETION, which reports the all-zero null id."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        gits: list[list[str]] = []
+        pushes: list[list[str]] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            return subprocess.CompletedProcess(
+                args=argv, returncode=1, stdout="", stderr="(fetch first)"
+            )
+
+        def _fake_git(a, cwd, **_kw):
+            gits.append(a)
+            # The fetch SUCCEEDS but says nothing usable -- the null id of a deleted ref.
+            if a[:1] == ["fetch"]:
+                zero = "0" * 40
+                return subprocess.CompletedProcess(
+                    args=a, returncode=0, stdout=f"- {zero} {zero} FETCH_HEAD\n", stderr=""
+                )
+            out = "rebasedsha00\n" if a[:1] == ["rev-list"] else ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="rebasedsha00")
+
+        assert out is not None and out.returncode == 1
+        assert len(pushes) == 1, "it published without knowing what it rebased onto"
+        assert not any(g[:1] == ["rebase"] for g in gits), "it rebased onto an unknown base"
+
+    def test_the_retry_replays_the_retained_object_and_only_then_moves_the_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`git rebase <base-oid> <rev>` replays an immutable object id ONTO an immutable object
+        id, so nothing that rewrites a ref during the `fetch` can substitute either end. A bare
+        `git rebase FETCH_HEAD` could substitute the replayed side, because it replays whatever
+        the branch points at; naming `FETCH_HEAD` as the BASE could substitute the other side,
+        because that ref is a mutable file the pre-push reviewer can repoint at a commit nothing
+        scanned. This form detaches HEAD, so the branch is promoted onto the result afterwards,
+        and ONLY after re-verification, the HEAD-identity check and the credential scan have
+        passed. Raised by the GPT review of this branch and ruled on by the conductor."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        pushes: list[list[str]] = []
+        gits: list[list[str]] = []
+        order: list[str] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            order.append("push")
+            rc = 1 if len(pushes) == 1 else 0
+            err = "(fetch first)" if rc else ""
+            return subprocess.CompletedProcess(args=argv, returncode=rc, stdout="", stderr=err)
+
+        def _fake_git(a, cwd, **_kw):
+            gits.append(a)
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            order.append(" ".join(a[:2]))
+            # `rev-list --count FETCH_HEAD..HEAD` proves the rebase replayed exactly ONE
+            # commit: an equivalent upstream patch makes git drop ours, and an
+            # unanswered count is correctly read as "not one" and refuses.
+            if a[:2] == ["rev-list", "--count"]:
+                out = "1\n"
+            elif a[:1] == ["rev-list"]:
+                out = "rebasedsha00\n"
+            else:
+                out = ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+
+        def _gate(*, worktree, src):
+            order.append("verify")
+            return SimpleNamespace(passed=True, detail="green", commit_sha="")
+
+        d.profile.build_gate.build_and_test = _gate  # type: ignore[attr-defined]
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="rebasedsha00")
+
+        assert out is not None and out.returncode == 0
+        # The replay names the object, not the ref.
+        assert ["rebase", FETCHED_BASE, "rebasedsha00"] in gits, gits
+        assert not any(
+            g[:1] == ["rebase"] and "FETCH_HEAD" in g for g in gits
+        ), "the rebase base is a mutable ref name, not the id the fetch reported"
+        # The branch is promoted onto the replay, then re-attached.
+        assert ["branch", "-f", "b", "rebasedsha00"] in gits, gits
+        assert ["checkout", "b"] in gits, gits
+        # Ordering is the point: promote only after the gate ran, and before the second push.
+        assert order.index("verify") < order.index("branch -f"), order
+        assert order.index("branch -f") < len(order) - 1, order
+        assert "rebasedsha00:refs/heads/b" in pushes[1], pushes[1]
+
+    def test_a_failed_rebase_leaves_the_branch_alone_and_publishes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`git branch -f` is only correct when HEAD IS the replayed result. After a rebase
+        that fails, conflicts or aborts, HEAD is something else -- so forcing the branch onto
+        it would publish the wrong tree while the branch looked healthy. The promotion is
+        therefore reached only on the success path; a failure re-attaches without moving
+        anything. Required by the conductor's ruling on this change."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        pushes: list[list[str]] = []
+        gits: list[list[str]] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            return subprocess.CompletedProcess(
+                args=argv, returncode=1, stdout="", stderr="(fetch first)"
+            )
+
+        def _fake_git(a, cwd, **_kw):
+            gits.append(a)
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            if a[:1] == ["rebase"] and a[1:2] != ["--abort"]:
+                return subprocess.CompletedProcess(
+                    args=a, returncode=1, stdout="", stderr="CONFLICT"
+                )
+            # `rev-list --count FETCH_HEAD..HEAD` proves the rebase replayed exactly ONE
+            # commit: an equivalent upstream patch makes git drop ours, and an
+            # unanswered count is correctly read as "not one" and refuses.
+            if a[:2] == ["rev-list", "--count"]:
+                out = "1\n"
+            elif a[:1] == ["rev-list"]:
+                out = "rebasedsha00\n"
+            else:
+                out = ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+        # `src` matches what the double resolves HEAD to, so the pre-rebase tamper check passes
+        # and the flow actually reaches the rebase this test is about.
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="rebasedsha00")
+
+        assert len(pushes) == 1, "a failed rebase still published"
+        assert ["rebase", "--abort"] in gits, "the failed rebase was not aborted"
+        assert not any(
+            g[:2] == ["branch", "-f"] for g in gits
+        ), "the branch was force-moved after a rebase that failed"
+        assert ["checkout", "b"] in gits, "the clone was left detached after the failed rebase"
+        assert out is not None and out.returncode == 1
+
+    def test_the_retry_refuses_when_the_rebase_dropped_the_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the remote already carries an equivalent patch, `git rebase` drops ours as
+        already-applied and leaves HEAD at the remote tip. Every check downstream would then
+        bind to THAT, consistently, and the ledger would record an unrelated commit as the one
+        this pipeline landed. So the retry proves exactly one commit was replayed. Raised by
+        the GPT review of this branch."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        pushes: list[list[str]] = []
+        gits: list[list[str]] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            return subprocess.CompletedProcess(
+                args=argv, returncode=1, stdout="", stderr="(fetch first)"
+            )
+
+        def _fake_git(a, cwd, **_kw):
+            gits.append(a)
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            if a[:2] == ["rev-list", "--count"]:
+                out = "0\n"  # the rebase dropped our commit
+            elif a[:1] == ["rev-list"]:
+                out = "rebasedsha00\n"
+            else:
+                out = ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="rebasedsha00")
+
+        assert len(pushes) == 1, "a dropped commit was published as though it were ours"
+        assert not any(
+            g[:2] == ["branch", "-f"] for g in gits
+        ), "the branch was promoted onto a commit the rebase did not replay"
+        assert out is not None and out.returncode == 1
+
+    def test_a_failed_branch_restore_aborts_the_push(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ref lock or a checkout failure means the repository is not in the state the push
+        assumes -- publishing then leaves the clone detached or its durable branch stale while
+        the remote moves on. The restore's status is therefore checked, not logged. Raised by
+        the GPT review of this branch."""
+        import logging
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        pushes: list[list[str]] = []
+
+        def _fake_run(argv, **_kw):
+            pushes.append(argv)
+            return subprocess.CompletedProcess(
+                args=argv, returncode=1, stdout="", stderr="(fetch first)"
+            )
+
+        def _fake_git(a, cwd, **_kw):
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            if a[:2] == ["branch", "-f"]:
+                return subprocess.CompletedProcess(
+                    args=a, returncode=1, stdout="", stderr="cannot lock ref"
+                )
+            if a[:2] == ["rev-list", "--count"]:
+                out = "1\n"
+            elif a[:1] == ["rev-list"]:
+                out = "rebasedsha00\n"
+            else:
+                out = ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr(D.subprocess, "run", _fake_run)
+        monkeypatch.setattr(D, "_git", _fake_git)
+
+        d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"))
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="rebasedsha00")
+
+        assert len(pushes) == 1, "the push went ahead despite a failed branch restore"
+        assert out is not None and out.returncode == 1
+
+    def test_every_git_read_here_ignores_replacement_refs(self) -> None:
+        """`git replace` is not on the pre-push reviewer's denylist, and git substitutes
+        replaced objects in READS while the push sends the ORIGINAL -- so any read that a
+        replacement can redirect is a place where what this code inspects and what it
+        publishes come apart. Two instances were found one at a time (the credential scan,
+        then the rebase), so the setting belongs at the single chokepoint every read goes
+        through rather than on the next call someone remembers. Raised by the GPT review."""
+        import inspect
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        src = inspect.getsource(D._git)
+        assert (
+            '"core.useReplaceRefs=false"' in src
+        ), "driver._git no longer disables replacement refs, so a `git replace` can redirect it"
 
     def test_a_non_race_failure_is_not_retried(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -197,7 +912,7 @@ class TestPushRetriesOnRace:
         import logging
 
         d = self._driver(tmp_path, logging.getLogger("t"))
-        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt")
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="authorizedsrc00")
         assert out is not None
         assert out.returncode == 1
         assert len(pushes) == 1, "a non-race failure must not be retried"
@@ -216,17 +931,26 @@ class TestPushRetriesOnRace:
                 args=argv, returncode=1, stdout="", stderr="(fetch first)"
             )
 
-        def _fake_git(a, cwd):
+        def _fake_git(a, cwd, **_kw):
             gits.append(a)
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
             rc = 1 if a[:1] == ["rebase"] and a != ["rebase", "--abort"] else 0
-            return subprocess.CompletedProcess(args=a, returncode=rc, stdout="", stderr="")
+            # `src` is required now, so the pre-fetch tamper check ALWAYS runs; answer its read
+            # so the check this test exists to measure is still the one that refuses.
+            out = "authorizedsrc00\n" if a[:1] == ["rev-list"] else ""
+            return subprocess.CompletedProcess(args=a, returncode=rc, stdout=out, stderr="")
 
         monkeypatch.setattr(D.subprocess, "run", _fake_run)
         monkeypatch.setattr(D, "_git", _fake_git)
         import logging
 
         d = self._driver(tmp_path, logging.getLogger("t"))
-        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt")
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="authorizedsrc00")
         assert out is not None
         assert out.returncode == 1
         assert ["rebase", "--abort"] in gits, "a conflicted rebase must be aborted"
@@ -268,9 +992,26 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
                 args=argv, returncode=rc, stdout="", stderr="(fetch first)" if rc else ""
             )
 
-        def _fake_git(a, cwd):
+        def _fake_git(a, cwd, **_kw):
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
             order.append(a[0])
-            return subprocess.CompletedProcess(args=a, returncode=0, stdout="", stderr="")
+            # See the sibling class: the retry resolves the replayed commit to a full object
+            # id and pushes THAT, so the double must answer `rev-list`.
+            # `rev-list --count FETCH_HEAD..HEAD` proves the rebase replayed exactly ONE
+            # commit: an equivalent upstream patch makes git drop ours, and an
+            # unanswered count is correctly read as "not one" and refuses.
+            if a[:2] == ["rev-list", "--count"]:
+                out = "1\n"
+            elif a[:1] == ["rev-list"]:
+                out = "rebasedsha0000000000000000000000000000\n"
+            else:
+                out = ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
 
         monkeypatch.setattr(D.subprocess, "run", _fake_run)
         monkeypatch.setattr(D, "_git", _fake_git)
@@ -285,7 +1026,9 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
 
         d.profile.build_gate.build_and_test = _counting_gate  # type: ignore[attr-defined]
 
-        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt")
+        out = D.Driver._push_with_rebase(
+            d, "https://x/y.git", "b", "tgt", src="rebasedsha0000000000000000000000000000"
+        )
         assert out is not None
         assert out.returncode == 0
         assert verified == ["gate"], "the rebased tree must be re-verified exactly once"
@@ -319,9 +1062,18 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
 
         gits: list[list[str]] = []
 
-        def _fake_git(args, _cwd):
+        def _fake_git(args, _cwd, **_kw):
             gits.append(args)
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+            porcelain = _porcelain_fetch(args)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(args)
+            if identity is not None:
+                return identity
+            # `src` is required now, so the pre-fetch tamper check ALWAYS runs; answer its read
+            # so the check this test exists to measure is still the one that refuses.
+            out = "authorizedsrc00\n" if args[:1] == ["rev-list"] else ""
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=out, stderr="")
 
         monkeypatch.setattr(D.subprocess, "run", _fake_run)
         monkeypatch.setattr(D, "_git", _fake_git)
@@ -330,7 +1082,7 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
         d._repository_retired = False
         d._progress = lambda **_event: None
 
-        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt")
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="authorizedsrc00")
 
         assert out is None
         assert retired == [tmp_path / "clone"]
@@ -364,7 +1116,14 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
         monkeypatch.setattr(
             D,
             "_git",
-            lambda args, _cwd: subprocess.CompletedProcess(args, 0, "", ""),
+            # Answers the pre-fetch tamper read, plus the replay-identity and attribution
+            # reads, so the re-verification failure is still what this test measures
+            # (`src` is required now).
+            lambda args, _cwd, **_kw: _porcelain_fetch(args)
+            or _replay_identity(args)
+            or subprocess.CompletedProcess(
+                args, 0, "authorizedsrc00\n" if args[:1] == ["rev-list"] else "", ""
+            ),
         )
         d = TestPushRetriesOnRace._driver(
             tmp_path / "clone", logging.getLogger("t"), reverify=reverify, raises=raises
@@ -373,7 +1132,7 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
         d._repository_retired = False
         d._progress = lambda **_event: None
 
-        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt")
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="authorizedsrc00")
 
         assert out is None
         assert d._repository_retired is True
@@ -393,14 +1152,23 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
                 args=argv, returncode=1, stdout="", stderr="(fetch first)"
             )
 
-        def _fake_git(a, cwd):
-            return subprocess.CompletedProcess(args=a, returncode=0, stdout="", stderr="")
+        def _fake_git(a, cwd, **_kw):
+            porcelain = _porcelain_fetch(a)
+            if porcelain is not None:
+                return porcelain
+            identity = _replay_identity(a)
+            if identity is not None:
+                return identity
+            # `src` is required now, so the pre-fetch tamper check ALWAYS runs; answer its read
+            # so the check this test exists to measure is still the one that refuses.
+            out = "authorizedsrc00\n" if a[:1] == ["rev-list"] else ""
+            return subprocess.CompletedProcess(args=a, returncode=0, stdout=out, stderr="")
 
         monkeypatch.setattr(D.subprocess, "run", _fake_run)
         monkeypatch.setattr(D, "_git", _fake_git)
 
         d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"), reverify=False)
-        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt")
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="authorizedsrc00")
         assert out is not None
         assert out.returncode == 1, "the original rejection is returned"
         assert len(pushes) == 1, "an unverified rebased tree must never be pushed"
@@ -423,11 +1191,19 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
         monkeypatch.setattr(
             D,
             "_git",
-            lambda a, cwd: subprocess.CompletedProcess(args=a, returncode=0, stdout="", stderr=""),
+            # Answers the pre-fetch tamper read so the RAISING gate is still what this
+            # test measures (`src` is required now).
+            lambda a, cwd, **_kw: _porcelain_fetch(a)
+            or subprocess.CompletedProcess(
+                args=a,
+                returncode=0,
+                stdout="authorizedsrc00\n" if a[:1] == ["rev-list"] else "",
+                stderr="",
+            ),
         )
 
         d = TestPushRetriesOnRace._driver(tmp_path, logging.getLogger("t"), raises=True)
-        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt")
+        out = D.Driver._push_with_rebase(d, "https://x/y.git", "b", "tgt", src="authorizedsrc00")
         assert out is not None
         assert out.returncode == 1
         assert len(pushes) == 1, "a gate that raised must not be read as a pass"
@@ -438,6 +1214,12 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
         Measured on a real repo: ``eb828444`` before the rebase, ``11aff54a`` after. The
         pre-fix ledger row said ``cr=eb828444`` — a sha nowhere in the remote's history,
         so anyone auditing "what did the bot land?" chases a commit that does not exist.
+
+        The FIX for that was originally a post-push ``rev-parse HEAD``, which this asserted.
+        That read was itself the same defect one step later: HEAD can move between the push
+        and the read, so the ledger could name an unrelated commit for a change that really
+        did land. The publish helper now REPORTS the object it sent, and that is what gets
+        recorded -- an id, not a re-read ref.
         """
         import inspect
 
@@ -445,7 +1227,19 @@ class TestARebasedTreeIsReVerifiedBeforePublishing:
 
         push_src = inspect.getsource(Driver._direct_push)
         assert "pushed_sha" in push_src, "_direct_push must publish the landed sha"
-        assert "rev-parse" in push_src, "the landed sha must be read back from the clone"
+        assert (
+            "_pushed_object" in push_src
+        ), "the landed sha must be the object the push REPORTED sending, not a re-read ref"
+        assert (
+            "rev-parse" not in push_src.split("pushed_sha")[-1]
+        ), "a ref is re-read after the push again -- HEAD can move in between"
+        # And no fallback to the caller's pre-push snapshot. That fallback was unreachable --
+        # the only return preceding `_pushed_object = src` routes to `_direct_push`'s own
+        # `return None` -- and its stated reason ("callers that do not pass an explicit source")
+        # described callers that do not exist once `src` became required.
+        assert (
+            "self.pushed_sha = sent\n" in push_src
+        ), "the recorded sha has a fallback again; it must be the object the push reported"
 
         body = inspect.getsource(Driver)
         for site in ("direct-pushed to {self.branch}", "direct-pushed bug fix to {self.branch}"):
@@ -5145,6 +5939,62 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
             "would execute host-side"
         )
 
+    def test_the_publish_helper_has_no_symbolic_source_default(self) -> None:
+        """`src` must be REQUIRED, so no caller can publish a symbolic ref by omission.
+
+        It shipped as `src: str = "HEAD"` "for callers that have nothing more specific". There
+        were none: one production caller, which resolves the committed object and passes it.
+        The default kept three arms alive that fired only for a symbolic source -- skipping the
+        pre-fetch tamper check, replaying the BRANCH instead of the object, and re-reading HEAD
+        after the push for the ledger. Each was the check-then-use shape this whole change
+        exists to remove, reachable by anyone who later added a caller and omitted the argument.
+        A default is invisible at the call site, which is why this is pinned on the SIGNATURE:
+        reviving it changes nothing observable until someone omits the argument, and then it
+        changes what gets published. Asked for by the first-principles review, which wanted the
+        subtraction rather than a fourth guard."""
+        import inspect
+
+        from kiro_crew.apps.builtins.auto_improvement.spine.driver import Driver
+
+        param = inspect.signature(Driver._push_with_rebase).parameters["src"]
+        assert (
+            param.default is inspect.Parameter.empty
+        ), f"`src` has a default again ({param.default!r}) -- a symbolic source is publishable"
+        body = inspect.getsource(Driver._push_with_rebase)
+        assert '"HEAD"' not in body, "a `HEAD` literal is back in the publish helper"
+
+    def test_the_replay_is_authorized_against_an_exact_tree(self) -> None:
+        """The publish gate must compare TREES, never a patch identity.
+
+        `git patch-id` ignores hunk positions -- that is what lets it recognise a change
+        replayed onto a moved base -- so a commit whose added and removed lines match the
+        authorized change while sitting elsewhere in the file carries the same identity. A
+        tree names the exact content of every path, so relocation is a different tree.
+
+        Pinned on the SOURCE because the failure is silent. Both forms produce a well-formed
+        value, the gate keeps passing honest replays, and nothing observable changes until a
+        relocated substitution arrives -- there is no behavioural test that fails if this
+        regresses to a patch identity. Raised by the GPT review.
+        """
+        import inspect
+
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        body = inspect.getsource(D._expected_replay_tree)
+        assert '"merge-tree", "--write-tree"' in body, (
+            "_expected_replay_tree no longer states the expected tree from the two immutable "
+            "ids, so the replay is not bound to the authorized content"
+        )
+        gate = inspect.getsource(D.Driver._push_with_rebase)
+        assert "_expected_replay_tree(base, src" in gate, "the publish gate lost the tree check"
+        assert "_commit_tree(rebased_id" in gate, "the gate no longer reads the replay's tree"
+        # The ARGV element, not the word: the comments here name patch-id to explain why a
+        # tree is used instead, and flagging prose would make this assertion unmaintainable.
+        assert '"patch-id"' not in gate and '"patch-id"' not in body, (
+            "a patch identity is back in the publish path; it ignores hunk positions, so the "
+            "same lines relocated would authorize"
+        )
+
     def test_the_post_agent_status_probes_are_hardened(self) -> None:
         """`author_bug_fix`/`author_perf_fix` run `git status --porcelain` on the HOST right
         after the agent turn to see whether it produced work. `git status` consults (and can
@@ -6922,3 +7772,602 @@ class TestBugPrRecordsTheTestedBaseNotTheFix:
         assert "base_anchor=f\"{self.branch} @ {base_sha[:12]}\"" in src, (
             "the perf path's base anchor changed shape — it must keep using base_sha"
         )
+
+
+class TestOnlyTheCommitThePipelineMadeIsPublished:
+    """Only the commit the pipeline made is published: do not push what a worker did not commit.
+
+    The direct push sent ``HEAD:refs/heads/<dest>`` while the pipeline verified, measured
+    and recorded ONE specific commit. Between the two sits the pre-push review gate, which
+    runs an agent in the SAME clone with ``Bash`` for up to 30 turns, and whose git denylist
+    covers only ``push`` and ``remote set-url`` -- so ``git commit --amend`` is permitted there.
+    That prompt is now report-only and its ``Edit`` grant is withdrawn, but neither is an
+    enforcement boundary: a prompt is an instruction, and a shell can write files whatever the
+    tool list says. Nothing compared the published commit against the verified one, so "what the
+    pipeline verified" and "what got pushed" could come apart with nothing flagging it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _safe_repository(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(clone_setup, "_repository_is_safe", lambda _clone: True)
+        monkeypatch.setattr(clone_setup, "_push_disabled", lambda _clone: True)
+        monkeypatch.setattr(clone_setup, "_repository_is_isolated", lambda _clone: True)
+
+    def test_the_report_only_reviewer_has_no_edit_grant(self) -> None:
+        """The prompt lost the sentence sanctioning an in-place fix; the CAPABILITY has to go
+        with it. What decides whether a reviewer can modify the clone is the tool list, not the
+        prose telling it what to do, so removing the instruction while keeping `Edit` leaves a
+        reviewer that may still edit with no sanctioned reason to -- a grant with no consumer.
+
+        This is least privilege, not the boundary: `Bash` stays, because the review has to run
+        git to read the diff, and a shell can write files and commit. The boundary is the
+        identity check that compares the published object against the verified one -- which is
+        why this test asserts the grant is gone AND that the check is still what refuses a moved
+        HEAD. Raised by the first-principles review of this branch."""
+        import inspect
+
+        from kiro_crew.apps.builtins.auto_improvement.spine.driver import Driver
+
+        src = inspect.getsource(Driver._prepush_review_clean)
+        assert '"Edit"' not in src, "the report-only reviewer may still edit the clone"
+        assert '"Write"' not in src, "an edit-capable grant came back under another name"
+        assert '"Bash"' in src, (
+            "the review needs a shell to read the diff; removing it would make the gate "
+            "vacuous rather than safer"
+        )
+
+    @staticmethod
+    def _repo(tmp_path: Path) -> tuple[Path, str]:
+        """A real one-commit clone; returns ``(clone, full 40-hex object id)``.
+
+        REAL git rather than a stubbed ``_git``: the publish path validates that its anchor
+        is a full forty-hex object id and refuses anything else, and a stub cannot exercise
+        that -- a text comparison would pass against canned output while refusing every real
+        push. The anchor is the id ``git rev-parse HEAD`` produces, never an abbreviation.
+        """
+        clone = tmp_path / "clone"
+        clone.mkdir()
+
+        def git(*args: str) -> str:
+            done = subprocess.run(
+                ["git", "-C", str(clone), *args],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=clone,
+                check=True,
+            )
+            return done.stdout.strip()
+
+        git("init", "-q", "-b", "work")
+        git("config", "user.email", "pipeline@example.invalid")
+        git("config", "user.name", "pipeline")
+        git("config", "commit.gpgsign", "false")
+        (clone / "f.py").write_text("def g():\n    return 2\n", encoding="utf-8")
+        git("add", "f.py")
+        git("commit", "-q", "-m", "the verified change")
+        return clone, git("rev-parse", "HEAD")
+
+    @staticmethod
+    def _driver(clone: Path, reviewer: object):  # type: ignore[no-untyped-def]
+        """A Driver whose only stub is the PUBLISH call, so the gate itself stays real.
+
+        ``_push_with_rebase`` is recorded rather than executed: it is what publishing IS,
+        and the gate under test sits upstream of it. Everything the gate reads -- the clone,
+        its git, the abbreviated sha -- is real.
+        """
+        from kiro_crew.apps.builtins.auto_improvement.spine.driver import Driver
+
+        recorded: list = []
+        publishes: list[tuple[str, str, str, str]] = []
+
+        def _publish(  # type: ignore[no-untyped-def]
+            fetch_url: str, dest: str, target: str, src: str = "HEAD"
+        ):
+            # `src` is recorded, not ignored: WHICH REVISION is handed to the push is the
+            # whole subject of this class, so a spy that dropped it could not tell publishing the
+            # verified object from publishing whatever `HEAD` happens to be.
+            publishes.append((fetch_url, dest, target, src))
+            return subprocess.CompletedProcess(args=["push"], returncode=0, stdout="", stderr="")
+
+        d = object.__new__(Driver)
+        d.clone = clone  # type: ignore[attr-defined]
+        d.log = logging.getLogger("t")  # type: ignore[attr-defined]
+        d.branch = "work"  # type: ignore[attr-defined]
+        d.direct_commit = True  # type: ignore[attr-defined]
+        d.prepush_review = reviewer is not None  # type: ignore[attr-defined]
+        d._agent_runner = reviewer  # type: ignore[attr-defined]
+        d.pushed_sha = ""  # type: ignore[attr-defined]
+        d.ledger = SimpleNamespace(record=recorded.append)  # type: ignore[assignment]
+        d.profile = SimpleNamespace(  # type: ignore[attr-defined]
+            pr_recipe=SimpleNamespace(fetch_url="https://example.invalid/y.git"),
+        )
+        d._push_with_rebase = _publish  # type: ignore[method-assign]
+        return d, recorded, publishes
+
+    def test_a_reviewer_amend_between_commit_and_push_refuses_to_publish(
+        self, tmp_path: Path
+    ) -> None:
+        """The real fault at the real seam: the pre-push reviewer amends the clone."""
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        clone, verified = self._repo(tmp_path)
+
+        class _AmendingReviewer:
+            """Takes the pre-push prompt's own invitation to edit the clone."""
+
+            def run(self, _prompt: str, **_kw: object):  # type: ignore[no-untyped-def]
+                (clone / "f.py").write_text("def g():\n    return 99\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(clone), "add", "f.py"], cwd=clone, check=True)
+                subprocess.run(
+                    ["git", "-C", str(clone), "commit", "-q", "--amend", "--no-edit"],
+                    cwd=clone,
+                    check=True,
+                )
+                return SimpleNamespace(text="REVIEW: clean")
+
+        d, recorded, publishes = self._driver(clone, _AmendingReviewer())
+        out = D.Driver._direct_push(d, fp="fp", kind="bug", target="tgt", sha=verified)
+
+        # The injection APPLIED: an assertion about a fault that never occurred is vacuous.
+        head_now = subprocess.run(
+            ["git", "-C", str(clone), "rev-list", "-1", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+        assert head_now != verified, "the reviewer stub did not move HEAD"
+
+        assert out is False
+        assert publishes == [], "a commit the pipeline never verified must not be published"
+        notes = [getattr(e, "note", "") for e in recorded]
+        # Pin WHICH gate refused. There are two identity checks -- one before the credential
+        # scan, one after it -- and the later one would absorb this case silently if the
+        # earlier one were removed, so asserting only "HEAD moved" would leave the pre-scan
+        # gate unmeasured. It must be the PRE-SCAN one: an amend during the review has
+        # already happened by then, and refusing before the scan means the scanner never
+        # reads a substituted commit and the recorded reason is the true one rather than
+        # whatever that commit's content happens to trip.
+        assert any(n.startswith("direct-push refused: HEAD moved") for n in notes), notes
+        assert not any("after the scan" in n for n in notes), notes
+
+    def test_an_unmoved_head_still_publishes(self, tmp_path: Path) -> None:
+        """The accepting case: a gate with no reachable yes is an outage, not a guard, and
+        only this direction can tell the two apart."""
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        clone, verified = self._repo(tmp_path)
+
+        class _CleanReviewer:
+            def run(self, _prompt: str, **_kw: object):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(text="REVIEW: clean")
+
+        d, recorded, publishes = self._driver(clone, _CleanReviewer())
+        out = D.Driver._direct_push(d, fp="fp", kind="bug", target="tgt", sha=verified)
+        assert out is True, [getattr(e, "note", "") for e in recorded]
+        assert len(publishes) == 1
+        assert publishes[0][1] == "work"
+        # It publishes the FULL OBJECT ID, not `HEAD`. A symbolic ref is resolved by the push
+        # itself, which is after every check; an id names one immutable commit.
+        full = subprocess.run(
+            ["git", "-C", str(clone), "rev-list", "-1", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+        assert publishes[0][3] == full, publishes[0]
+        assert publishes[0][3] != "HEAD"
+
+    def test_a_move_after_the_scan_cannot_change_what_is_published(self, tmp_path: Path) -> None:
+        """The residual time-of-check/time-of-use window: the identity check passes, and only
+        THEN do the credential scan and the push run. Re-reading ``HEAD`` at each step opens
+        this window: a background process the reviewer left behind could move it in between --
+        the scan would read one commit and the push would publish another, neither of them
+        verified.
+
+        Two things close it, and this test pins both. The push is handed the retained OBJECT
+        ID, which cannot be repointed. And the identity is re-checked after the scan, so a
+        move during the scan window is refused rather than published unscanned. Here the move
+        is injected by the credential scanner itself, which is the last thing to run before
+        the push. Raised by the GPT review of this branch."""
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        clone, verified = self._repo(tmp_path)
+
+        class _CleanReviewer:
+            def run(self, _prompt: str, **_kw: object):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(text="REVIEW: clean")
+
+        d, recorded, publishes = self._driver(clone, _CleanReviewer())
+        before = subprocess.run(
+            ["git", "-C", str(clone), "rev-list", "-1", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+
+        def _scan_then_amend(_blob: str):  # type: ignore[no-untyped-def]
+            """Stands in for a background amend landing while the scan runs."""
+            (clone / "f.py").write_text("def g():\n    return 99\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(clone), "add", "f.py"], cwd=clone, check=True)
+            subprocess.run(
+                ["git", "-C", str(clone), "commit", "-q", "--amend", "--no-edit"],
+                cwd=clone,
+                check=True,
+            )
+            return True, 0
+
+        # Patched on `push_policy`, not on `driver`: `_direct_push` imports the scanner
+        # INSIDE the function, so the name it binds is looked up on the source module at
+        # call time and a `driver`-level attribute would never be consulted.
+        from kiro_crew.apps.builtins.auto_improvement.spine import push_policy as PP
+
+        monkey = PP.scan_content_for_secrets
+        try:
+            PP.scan_content_for_secrets = _scan_then_amend  # type: ignore[assignment]
+            out = D.Driver._direct_push(d, fp="fp", kind="bug", target="tgt", sha=verified)
+        finally:
+            PP.scan_content_for_secrets = monkey  # type: ignore[assignment]
+
+        after = subprocess.run(
+            ["git", "-C", str(clone), "rev-list", "-1", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+        assert after != before, "the injected move did not apply, so this proves nothing"
+
+        assert out is False
+        assert publishes == [], "a move during the scan window must not reach the push"
+        notes = [getattr(e, "note", "") for e in recorded]
+        assert any("after the scan" in n for n in notes), notes
+
+    def test_the_credential_scan_reads_the_committed_object_not_head(self, tmp_path: Path) -> None:
+        """The scan must read the object that gets published, bound by ID rather than by
+        timing. While it read ``HEAD``, a concurrent writer in the clone could point HEAD at a
+        clean decoy for the duration of the ``git diff`` and restore it afterwards: the
+        scanner saw the decoy, every identity check still passed, and the real commit was
+        published having never been scanned. A later re-check cannot close that -- it is
+        itself a check-then-use pair -- so the range is the object id.
+
+        The move is injected here between the pre-scan gate and the scan, which is exactly the
+        window a backgrounded process would use. Raised by the GPT review of this branch."""
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+        from kiro_crew.apps.builtins.auto_improvement.spine import push_policy as PP
+
+        clone, verified = self._repo(tmp_path)
+
+        class _CleanReviewer:
+            def run(self, _prompt: str, **_kw: object):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(text="REVIEW: clean")
+
+        d, recorded, publishes = self._driver(clone, _CleanReviewer())
+        # The move must land INSIDE the window -- after the pre-scan gate, before the scan --
+        # so the seam is the gate's own return. Two seams were tried and rejected:
+        # `driver.normalize_branch` is imported INSIDE `_direct_push`, so patching it on the
+        # driver module is inert (the injection never fired and this test passed against a
+        # deliberately broken gate -- caught by the mutation, not by the green run); patching
+        # it on `push_policy` fires too EARLY, because `authorize_direct_push` calls it before
+        # the gate, which refuses and the scan never runs.
+        real_gate = D.Driver._head_is_the_committed_sha
+        real_scan = PP.scan_content_for_secrets
+        scanned: list[str] = []
+        gate_calls: list[int] = []
+
+        def _gate_then_swap_head(committed_id: str):  # type: ignore[no-untyped-def]
+            out = real_gate(d, committed_id)
+            gate_calls.append(1)
+            if len(gate_calls) == 1:  # only after the PRE-scan gate, not the post-scan one
+                (clone / "f.py").write_text("def g():\n    return 99\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(clone), "add", "f.py"], cwd=clone, check=True)
+                subprocess.run(
+                    ["git", "-C", str(clone), "commit", "-q", "--amend", "--no-edit"],
+                    cwd=clone,
+                    check=True,
+                )
+            return out
+
+        def _record(blob: str):  # type: ignore[no-untyped-def]
+            scanned.append(blob)
+            return True, 0
+
+        d._head_is_the_committed_sha = _gate_then_swap_head  # type: ignore[method-assign]
+        try:
+            PP.scan_content_for_secrets = _record  # type: ignore[assignment]
+            D.Driver._direct_push(d, fp="fp", kind="bug", target="tgt", sha=verified)
+        finally:
+            PP.scan_content_for_secrets = real_scan  # type: ignore[assignment]
+
+        head_now = subprocess.run(
+            ["git", "-C", str(clone), "rev-list", "-1", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+        original = subprocess.run(
+            ["git", "-C", str(clone), "rev-list", "-1", f"{verified}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+        assert gate_calls, "the pre-scan gate never ran, so nothing was injected"
+        assert head_now != original, "the injection did not move HEAD, so this proves nothing"
+        assert scanned, "the credential scan never ran, so this proves nothing"
+        # The scan reads the commit OBJECT and its tree content as separate passes, so the
+        # assertion covers everything handed to the scanner rather than one pass by index.
+        blob = "\n".join(scanned)
+        assert "return 2" in blob, f"the scan did not read the verified object: {blob!r}"
+        assert "return 99" not in blob, f"the scan read the decoy at HEAD instead: {blob!r}"
+
+    def test_a_ref_named_the_abbreviation_cannot_shadow_the_committed_object(
+        self, tmp_path: Path
+    ) -> None:
+        """The anchor is a full object id from the start, so no abbreviation is ever resolved
+        and there is no second reading for a ref to capture. Git resolves a revision through
+        ref names before abbreviated object ids, so if the anchor were a short sha a reviewer
+        could amend and then create a branch named that short sha, and a late re-resolution
+        would point at the amended HEAD -- both sides equal, gate satisfied, unverified commit
+        published. Two things now hold. A planted ref named the short sha changes nothing,
+        because the publish path anchors on the full id the finalizer produced. And a short
+        sha handed in as the anchor is REFUSED rather than resolved, so the abbreviation never
+        becomes a lookup a ref could shadow."""
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        clone, verified = self._repo(tmp_path)
+        short = subprocess.run(
+            ["git", "-C", str(clone), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+
+        class _ShadowingReviewer:
+            """Amends, then points a ref named the OLD short sha at the new commit."""
+
+            def run(self, _prompt: str, **_kw: object):  # type: ignore[no-untyped-def]
+                (clone / "f.py").write_text("def g():\n    return 99\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(clone), "add", "f.py"], cwd=clone, check=True)
+                subprocess.run(
+                    ["git", "-C", str(clone), "commit", "-q", "--amend", "--no-edit"],
+                    cwd=clone,
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(clone), "branch", short, "HEAD"],
+                    cwd=clone,
+                    check=True,
+                )
+                return SimpleNamespace(text="REVIEW: clean")
+
+        d, recorded, publishes = self._driver(clone, _ShadowingReviewer())
+        out = D.Driver._direct_push(d, fp="fp", kind="bug", target="tgt", sha=verified)
+
+        # Both halves of the injection APPLIED: the ref named the short sha exists AND it
+        # resolves to the amended commit, which is what would defeat a late re-resolution of
+        # an abbreviation.
+        shadow = subprocess.run(
+            ["git", "-C", str(clone), "rev-list", "-1", f"{short}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+        head = subprocess.run(
+            ["git", "-C", str(clone), "rev-list", "-1", "HEAD^{commit}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout.strip()
+        assert shadow == head, "the shadow ref did not capture the abbreviation"
+
+        # The anchor is the full id, so the planted ref changes nothing: the gate compares the
+        # full id against the amended HEAD, they differ, and the publish is refused.
+        assert out is False
+        assert publishes == [], "a shadowed abbreviation must not authorize a publish"
+        notes = [getattr(e, "note", "") for e in recorded]
+        # The PRE-SCAN gate must be the one that refuses: the post-scan re-check would
+        # otherwise absorb this case and leave the pre-scan gate unmeasured.
+        assert any(n.startswith("direct-push refused: HEAD moved") for n in notes), notes
+        assert not any("after the scan" in n for n in notes), notes
+
+        # And the new validation: a SHORT sha handed in as the anchor is refused rather than
+        # resolved, so an abbreviation never becomes a lookup a ref could shadow. A fresh clone
+        # keeps the reviewer from mattering here -- the point is the anchor's shape.
+        second = tmp_path / "second"
+        second.mkdir()
+        clean_clone, _full = self._repo(second)
+        clean_short = subprocess.run(
+            ["git", "-C", str(clean_clone), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clean_clone,
+            check=True,
+        ).stdout.strip()
+
+        class _CleanReviewer:
+            def run(self, _prompt: str, **_kw: object):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(text="REVIEW: clean")
+
+        d2, recorded2, publishes2 = self._driver(clean_clone, _CleanReviewer())
+        out2 = D.Driver._direct_push(d2, fp="fp", kind="bug", target="tgt", sha=clean_short)
+        assert out2 is False, "a short sha anchor was resolved instead of refused"
+        assert publishes2 == [], "a short sha anchor must not authorize a publish"
+        notes2 = [getattr(e, "note", "") for e in recorded2]
+        assert any(n.startswith("direct-push refused: cannot resolve") for n in notes2), notes2
+
+    def test_a_replacement_ref_cannot_substitute_what_the_scan_reads(self, tmp_path: Path) -> None:
+        """Git substitutes objects named by ``refs/replace/<oid>`` transparently in READS --
+        ``diff`` and ``show`` included -- while the push transport sends the ORIGINAL object.
+        A reviewer can run ``git replace`` (its runner's denylist covers only ``push`` and
+        ``remote set-url``), point a replacement at clean content, and have the credential
+        scan read the decoy while the real object is transferred. The scan therefore reads
+        with replace refs disabled. Real git, because this is git behaviour rather than
+        anything a stub could express. Raised by the GPT review of this branch."""
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+        from kiro_crew.apps.builtins.auto_improvement.spine import push_policy as PP
+
+        clone, verified = self._repo(tmp_path)
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(clone), *args],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=clone,
+                check=True,
+            ).stdout.strip()
+
+        # A DECOY commit with clean-looking content, then a replacement ref pointing the
+        # verified object at it.
+        original_id = git("rev-list", "-1", f"{verified}^{{commit}}")
+        git("checkout", "-q", "--detach", original_id)
+        (clone / "f.py").write_text("def g():\n    return 777\n", encoding="utf-8")
+        git("add", "f.py")
+        git("commit", "-q", "--amend", "--no-edit")
+        decoy_id = git("rev-list", "-1", "HEAD^{commit}")
+        git("checkout", "-q", "work")
+        git("replace", "-f", original_id, decoy_id)
+        assert git("rev-parse", "--verify", f"refs/replace/{original_id}"), "no replacement ref"
+
+        class _CleanReviewer:
+            def run(self, _prompt: str, **_kw: object):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(text="REVIEW: clean")
+
+        d, recorded, publishes = self._driver(clone, _CleanReviewer())
+        real_scan = PP.scan_content_for_secrets
+        scanned: list[str] = []
+
+        def _record(blob: str):  # type: ignore[no-untyped-def]
+            scanned.append(blob)
+            return True, 0
+
+        try:
+            PP.scan_content_for_secrets = _record  # type: ignore[assignment]
+            D.Driver._direct_push(d, fp="fp", kind="bug", target="tgt", sha=verified)
+        finally:
+            PP.scan_content_for_secrets = real_scan  # type: ignore[assignment]
+
+        # Control: the replacement really is in effect for an ordinary read.
+        replaced_read = subprocess.run(
+            ["git", "-C", str(clone), "show", "--format=", "--root", original_id],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout
+        assert (
+            "777" in replaced_read
+        ), "the replacement ref is not in effect, so this proves nothing"
+
+        assert scanned, "the credential scan never ran"
+        # The scan reads the commit OBJECT and its tree content as separate passes, so the
+        # assertion covers everything handed to the scanner rather than one pass by index.
+        blob = "\n".join(scanned)
+        assert "return 2" in blob, f"the scan read the replacement, not the real object: {blob!r}"
+        assert "return 777" not in blob, f"the scan read the substituted content: {blob!r}"
+
+    def test_an_unresolvable_committed_revision_fails_closed(self, tmp_path: Path) -> None:
+        """Not being able to look must not read as having looked and found nothing wrong:
+        an amended-away commit can be pruned, which is exactly when this check matters
+        most."""
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        clone, _verified = self._repo(tmp_path)
+
+        class _CleanReviewer:
+            def run(self, _prompt: str, **_kw: object):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(text="REVIEW: clean")
+
+        d, recorded, publishes = self._driver(clone, _CleanReviewer())
+        out = D.Driver._direct_push(d, fp="fp", kind="bug", target="tgt", sha="0" * 12)
+        assert out is False
+        assert publishes == []
+        notes = [getattr(e, "note", "") for e in recorded]
+        # Pre-scan gate again: an unresolvable object should stop the push before the
+        # credential scan spends a git diff on a revision that does not exist.
+        assert any(n.startswith("direct-push refused: cannot resolve") for n in notes), notes
+        assert not any("after the scan" in n for n in notes), notes
+
+    def test_a_credential_in_the_committer_identity_refuses_to_publish(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A commit carries HEADER BYTES as well as content, and the push transfers both.
+
+        `git rebase` takes the committer identity from CONFIGURATION rather than from the
+        commit it replays, so a process able to write the clone's git config chooses those
+        bytes -- the same actor this path already refuses to trust for `git replace`, whose
+        runner denylist covers only `push` and `remote set-url`. A scan reading only the tree
+        diff cannot see them, and the root-commit branch suppresses headers outright with
+        `--format=`, so a key-shaped identity would reach the remote unread. Exposure to a
+        remote is not recoverable, which is why this fails closed rather than warning.
+
+        The plant goes through the ENVIRONMENT here because this suite's conftest pins
+        ``GIT_COMMITTER_EMAIL`` for hermetic runs and that takes precedence over config. Which
+        of the two carries it is incidental to what is being proved: the bytes land in the
+        commit object either way, and the question is whether the scanner reads them.
+        """
+        from kiro_crew.apps.builtins.auto_improvement.spine import driver as D
+
+        clone, _verified = self._repo(tmp_path)
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(clone), *args],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=clone,
+                check=True,
+            ).stdout.strip()
+
+        # The tree content stays CLEAN; only the identity is poisoned. A commit that carried
+        # the key in its content would be caught by the pre-existing content scan and would
+        # prove nothing about metadata.
+        (clone / "f.py").write_text("def g():\n    return 3\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_COMMITTER_EMAIL", "AKIAIOSFODNN7EXAMPLE@example.invalid")
+        git("add", "f.py")
+        git("commit", "-q", "-m", "a clean-looking change")
+        poisoned = git("rev-parse", "HEAD")
+
+        # Control 1: the identity really did land in the object's committer line.
+        raw = git("cat-file", "commit", poisoned)
+        assert "AKIAIOSFODNN7EXAMPLE" in raw, f"the identity did not reach the object: {raw!r}"
+
+        # Control 2: the TREE DIFF is clean, so a refusal cannot come from the content path.
+        # Without this the test would pass even if metadata were still unscanned.
+        diff_only = subprocess.run(
+            ["git", "-C", str(clone), "diff", "--no-ext-diff", f"{poisoned}~1..{poisoned}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=clone,
+            check=True,
+        ).stdout
+        assert "AKIAIOSFODNN7EXAMPLE" not in diff_only, "the content path would catch this"
+
+        d = object.__new__(D.Driver)
+        d.clone = clone  # type: ignore[attr-defined]
+        clean, note = D.Driver._revision_scans_clean(d, poisoned)
+        assert clean is False, "a credential in the committer identity was scanned as clean"
+        # The note is a fixed literal from `describe_scan`, so nothing scanned reaches a log.
+        assert "AKIAIOSFODNN7EXAMPLE" not in note, note

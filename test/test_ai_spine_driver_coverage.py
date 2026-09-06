@@ -67,7 +67,26 @@ class _Git:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.inputs: list[str] = []
+        self.configs: list[tuple[str, tuple[str, ...]]] = []
         self._script: dict[str, list[tuple[int, str, str]]] = {}
+        # PRECONDITIONS OF THE RETRY PATH, answered by default. Before replaying, it reads the
+        # authorized object's own committer identity to pin the replay to it; afterwards it
+        # compares the replayed commit's author, committer and message against that object's.
+        # Both run on every retry regardless of what a test is about, and an unscripted key
+        # returns empty stdout -- which those checks correctly read as "cannot tell" and
+        # refuse, failing every test in the class for a reason unrelated to its subject. One
+        # answer for both revisions, so the comparison is equal unless a test overrides it.
+        self._script["log -1 --format=%cn%x00%ce"] = [
+            (0, "pipeline\x00pipeline@example.invalid\n", "")
+        ]
+        self._script["log -1 --format=%an"] = [
+            (
+                0,
+                "author\x00author@example.invalid\x00pipeline"
+                "\x00pipeline@example.invalid\x00the authorized change\n",
+                "",
+            )
+        ]
 
     def script(self, key: str, *results) -> None:
         norm: list[tuple[int, str, str]] = []
@@ -85,7 +104,7 @@ class _Git:
         seq = self._script[best]
         return seq.pop(0) if len(seq) > 1 else seq[0]
 
-    def git(self, args, cwd):
+    def git(self, args, cwd, **kwargs):
         toks = [str(a) for a in args]
         clean: list[str] = []
         index = 0
@@ -97,8 +116,19 @@ class _Git:
             index += 1
         joined = " ".join(clean)
         self.calls.append(joined)
+        # ``config`` arrives by KEYWORD, so it is absent from *args* and invisible to the
+        # scripting keys. Recorded separately, keyed by the same joined string, so a test can
+        # assert what a call was pinned to without the pins disturbing how results are matched.
+        self.configs.append((joined, tuple(str(c) for c in kwargs.get("config", ()))))
         rc, out, err = self._take(joined)
         return subprocess.CompletedProcess(args=list(args), returncode=rc, stdout=out, stderr=err)
+
+    def config_for(self, prefix: str) -> tuple[str, ...]:
+        """The ``-c`` pins the first call matching *prefix* was given."""
+        for joined, config in self.configs:
+            if joined.startswith(prefix):
+                return config
+        return ()
 
     def run(self, argv, **kwargs):
         toks = [str(a) for a in argv]
@@ -374,6 +404,11 @@ def _proposal(cand_id="c1", *, kind=TRACK_PERF, target="mod.py::sym", diff="", s
 
 DIFF = "--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-old\n+new\n"
 
+#: A full 40-char lowercase-hex commit id. The finalizers hand back a validated forty-hex
+#: object id and `_direct_push` validates its `sha` the same way, so the id a test passes in
+#: and the id the clone resolves to must both be real object ids, never an abbreviation.
+COMMITTED_HEAD = "c0ffee" + "0" * 34
+
 
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
@@ -397,6 +432,20 @@ def git(monkeypatch):
     monkeypatch.setattr(drv, "_git", g.git)
     monkeypatch.setattr(drv, "subprocess", types.SimpleNamespace(run=g.run))
     monkeypatch.setattr(drv, "require_pinned", lambda cwd: None)
+    # `_direct_push`'s HEAD-identity gate resolves the clone's HEAD with `rev-list -1`
+    # and refuses when it differs from the full object id it was handed. Scripted here
+    # rather than per test because every direct-push test needs the SAME answer, and the
+    # default for an unscripted key is rc 0 with EMPTY stdout, which that gate correctly
+    # reads as "cannot resolve" and fails closed on. A test that wants to exercise the
+    # refusal overrides this with its own longer-prefix script.
+    g.script("rev-list -1", (0, f"{COMMITTED_HEAD}\n", ""))
+    # And the retry proves the rebase replayed exactly ONE commit; the longer
+    # prefix wins over `rev-list -1`, so the two questions stay separable.
+    g.script("rev-list --count", (0, "1\n", ""))
+    # The retry captures the fetched tip's object id from `git fetch --porcelain` STDOUT rather
+    # than from the mutable `FETCH_HEAD` ref, so the fetch has to report one; an
+    # unscripted fetch yields empty stdout, which the capture correctly reads as a refusal.
+    g.script("fetch --porcelain", (0, f"* {'0' * 40} {'ba5e' + '0' * 36} FETCH_HEAD\n", ""))
     return g
 
 
@@ -597,7 +646,9 @@ def test_preflight_uses_an_explicitly_injected_boot_verbatim(tmp_path, monkeypat
     _stub_preflight(monkeypatch, capture=seen)
     sentinel = object()
     boot = lambda: sentinel  # noqa: E731 — a one-expression fake boot
-    d = _make(tmp_path, profile=_Profile(isolation=_Isolation(boot=lambda: None)), boot_callable=boot)
+    d = _make(
+        tmp_path, profile=_Profile(isolation=_Isolation(boot=lambda: None)), boot_callable=boot
+    )
     d.preflight()
     assert seen["boot"] is boot
 
@@ -769,52 +820,215 @@ def test_reverify_head_refuses_an_unverifiable_tree(tmp_path, git):
 def test_push_succeeds_on_the_first_attempt(tmp_path, git):
     git.script("push", 0)
     d = _make(tmp_path)
-    assert d._push_with_rebase("https://example.invalid/r.git", "feature", "mod.py::sym").returncode == 0
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "mod.py::sym", COMMITTED_HEAD
+        ).returncode
+        == 0
+    )
     assert git.seen("fetch") == []
 
 
 def test_a_non_race_push_failure_is_returned_untouched(tmp_path, git):
     git.script("push", (1, "", "fatal: authentication failed"))
     d = _make(tmp_path)
-    res = d._push_with_rebase("https://example.invalid/r.git", "feature", "mod.py::sym")
+    res = d._push_with_rebase(
+        "https://example.invalid/r.git", "feature", "mod.py::sym", COMMITTED_HEAD
+    )
     assert res.returncode == 1
     assert git.seen("fetch") == []  # no retry masks a real error
 
 
 def test_a_lost_race_with_a_failing_fetch_returns_the_rejection(tmp_path, git):
     git.script("push", (1, "", "! [rejected] non-fast-forward"))
-    git.script("fetch", 1)
+    git.script("fetch --porcelain", 1)
     d = _make(tmp_path)
-    assert d._push_with_rebase("https://example.invalid/r.git", "feature", "t").returncode == 1
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 1
+    )
     assert git.seen("rebase") == []
 
 
 def test_a_conflicting_rebase_aborts_and_does_not_push(tmp_path, git):
     git.script("push", (1, "", "fetch first"))
-    git.script("fetch", 0)
-    git.script("rebase FETCH_HEAD", 1)
+    git.script("rebase", 1)
     git.script("rebase --abort", 0)
     d = _make(tmp_path)
-    assert d._push_with_rebase("https://example.invalid/r.git", "feature", "t").returncode == 1
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 1
+    )
     assert git.seen("rebase --abort")
 
 
 def test_an_unverifiable_rebased_tree_is_not_published(tmp_path, git):
     git.script("push", (1, "", "non-fast-forward"))
-    git.script("fetch", 0)
-    git.script("rebase FETCH_HEAD", 0)
+    git.script("rebase", 0)
     d = _make(tmp_path, profile=_Profile(build_gate=_BuildGate(passed=False)))
-    assert d._push_with_rebase("https://example.invalid/r.git", "feature", "t").returncode == 1
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 1
+    )
     assert len(git.seen("push")) == 1  # never pushed a second time
 
 
 def test_a_reverified_rebase_retries_the_push_once(tmp_path, git):
     git.script("push", (1, "", "non-fast-forward"), (0, "", ""))
-    git.script("fetch", 0)
-    git.script("rebase FETCH_HEAD", 0)
+    git.script("rebase", 0)
+    _script_matching_replay(git)
     d = _make(tmp_path)
-    assert d._push_with_rebase("https://example.invalid/r.git", "feature", "t").returncode == 0
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 0
+    )
     assert len(git.seen("push")) == 2
+
+
+def _script_matching_replay(git, *, tree: str = "a" * 40) -> None:
+    """Make the replay's tree equal the tree a replay of the source produces.
+
+    ``merge-tree --write-tree`` states the expected tree from the two immutable ids, and
+    ``log -1 --format=%T`` reads the tree the captured commit actually carries; equal means
+    the published content is the authorized content.
+    """
+    git.script("merge-tree --write-tree", (0, f"{tree}\n", ""))
+    git.script("log -1 --format=%T", (0, f"{tree}\n", ""))
+
+
+def test_a_replay_carrying_the_authorized_tree_is_published(tmp_path, git):
+    """The gate is a binding, not a blanket refusal: a replay whose tree matches passes."""
+    git.script("push", (1, "", "non-fast-forward"), (0, "", ""))
+    git.script("rebase", 0)
+    _script_matching_replay(git)
+    d = _make(tmp_path)
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 0
+    )
+    assert git.seen("merge-tree --write-tree"), "the expected replay tree was never computed"
+
+
+def test_a_replay_whose_attribution_differs_is_not_published(tmp_path, git):
+    """A replay writes a NEW commit, and git takes its committer from configuration.
+
+    Author and message carry over, but the committer does not, so a process able to write the
+    repository's config -- the reviewing agent's shell, whose git denylist covers only `push`
+    and `remote set-url` -- chooses who the published commit says committed it. The retry pins
+    the replay's committer to the identity the authorized object already holds, and this is the
+    check behind that pin: the ``GIT_COMMITTER_*`` environment outranks a ``-c`` override, so
+    the published object's attribution is compared against the authorized one rather than
+    assumed. Content passing every other gate is exactly the case this catches -- the tree
+    matches here, so nothing else in the path objects.
+    """
+    git.script("push", (1, "", "non-fast-forward"), (0, "", ""))
+    git.script("rebase", 0)
+    _script_matching_replay(git)
+    # Same key, two answers: the authorized object's, then the replay's. A queue pops in call
+    # order, and the retry reads `src` first.
+    git.script(
+        "log -1 --format=%an",
+        (0, "a\x00a@example.invalid\x00pipeline\x00pipeline@example.invalid\x00m\n", ""),
+        (0, "a\x00a@example.invalid\x00intern\x00intern@example.invalid\x00m\n", ""),
+    )
+    d = _make(tmp_path)
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 1
+    )
+    assert len(git.seen("push")) == 1, "a falsely attributed commit was published"
+
+
+def test_the_replay_pins_its_committer_to_the_authorized_object(tmp_path, git):
+    """The pin is what keeps an honest retry working rather than merely refusing.
+
+    Refusing on a mismatch alone would hand the agent a denial of service: writing one config
+    value would make every retry decline, and the retry exists because a moving branch lost
+    gate survivors. Reading the identity off `src` -- an immutable object the pipeline
+    committed before any agent ran -- needs no config to be trustworthy at replay time.
+    """
+    git.script("push", (1, "", "non-fast-forward"), (0, "", ""))
+    git.script("rebase", 0)
+    _script_matching_replay(git)
+    d = _make(tmp_path)
+    d._push_with_rebase("https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD)
+    rebases = [c for c in git.calls if c.startswith("rebase")]
+    assert rebases, "the replay never ran"
+    pins = git.config_for("rebase")
+    assert "user.name=pipeline" in pins, pins
+    assert "user.email=pipeline@example.invalid" in pins, pins
+
+
+def test_a_replay_carrying_a_different_tree_is_not_published(tmp_path, git):
+    """A commit substituted into HEAD before the capture is caught by the tree comparison.
+
+    Every later check binds to the captured id, so they all agree ABOUT THE SUBSTITUTE --
+    including the HEAD-equality check, which compares HEAD against that same id. Only
+    reaching back to what a replay of the authorized `src` must produce refuses it.
+    """
+    git.script("push", (1, "", "non-fast-forward"), (0, "", ""))
+    git.script("rebase", 0)
+    git.script("merge-tree --write-tree", (0, "a" * 40 + "\n", ""))
+    git.script("log -1 --format=%T", (0, "b" * 40 + "\n", ""))
+    d = _make(tmp_path)
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 1
+    )
+    assert len(git.seen("push")) == 1, "a substituted commit was published"
+
+
+def test_the_same_lines_in_a_different_place_are_a_different_tree(tmp_path, git):
+    """The reason this is a tree and not a patch identity.
+
+    A patch identity ignores hunk positions, so a commit whose added and removed lines match
+    the authorized change while sitting elsewhere in the file carries the SAME identity. Its
+    tree differs, so the tree comparison refuses it where a patch identity would not.
+    """
+    git.script("push", (1, "", "non-fast-forward"), (0, "", ""))
+    git.script("rebase", 0)
+    # Same change, relocated: the merge result and the captured commit disagree on content.
+    git.script("merge-tree --write-tree", (0, "c" * 40 + "\n", ""))
+    git.script("log -1 --format=%T", (0, "d" * 40 + "\n", ""))
+    d = _make(tmp_path)
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 1
+    )
+    assert len(git.seen("push")) == 1
+
+
+def test_an_uncomputable_expected_tree_refuses_the_publish(tmp_path, git):
+    """Fail-closed: a conflicted or unsupported merge prints no usable tree, and two empty
+    answers would compare EQUAL, so emptiness must refuse."""
+    git.script("push", (1, "", "non-fast-forward"), (0, "", ""))
+    git.script("rebase", 0)
+    git.script("merge-tree --write-tree", (1, "", "CONFLICT"))
+    git.script("log -1 --format=%T", (0, "a" * 40 + "\n", ""))
+    d = _make(tmp_path)
+    assert (
+        d._push_with_rebase(
+            "https://example.invalid/r.git", "feature", "t", COMMITTED_HEAD
+        ).returncode
+        == 1
+    )
+    assert len(git.seen("push")) == 1
 
 
 # ─────────────────────────── pre-push review gate ───────────────────────────
@@ -957,36 +1171,96 @@ def test_direct_push_refuses_a_missing_commit_sha(tmp_path, git, sha):
 def test_direct_push_refuses_a_disabled_remote_url(tmp_path, git):
     git.script("remote get-url", (0, "DISABLED_NO_PUSH\n", ""))
     d = _direct_push_driver(tmp_path, profile=_Profile(fetch_url=""))
-    assert d._direct_push(fp="fp", kind="perf", target="t", sha="abc") is False
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is False
     assert d.ledger._seen["fp"].note == "direct-push: no usable remote url"
 
 
-def test_direct_push_refuses_an_unreadable_pushable_diff(tmp_path, git):
-    git.script("rev-parse --verify", 0)
-    git.script("diff --no-ext-diff HEAD~1..HEAD", (128, "", "fatal"))
+def test_direct_push_refuses_when_the_pushable_blobs_cannot_be_listed(tmp_path, git):
+    # A git READ that fails must refuse rather than be read as nothing to scan. The scan
+    # lists the revision's own changed blobs and reads each one, so both reads are load-
+    # bearing: a failing `diff-tree` cannot enumerate what to scan, and a failing
+    # `cat-file blob` leaves a real blob unread. The `_Git` double matches by argv prefix
+    # (longest wins), so `diff-tree` and `cat-file blob` are scripted independently.
+    # `COMMITTED_HEAD` is what the shared `git` fixture scripts `rev-list -1` to return.
+    git.script("diff-tree", (128, "", "fatal"))
     d = _direct_push_driver(tmp_path)
-    assert d._direct_push(fp="fp", kind="perf", target="t", sha="abc") is False
-    assert d.ledger._seen["fp"].note == (
-        "direct-push refused: could not read the pushable diff"
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is False
+    assert d.ledger._seen["fp"].note == ("direct-push refused: could not list the pushable blobs")
+    assert git.seen("push") == []
+
+
+def test_direct_push_refuses_when_a_pushable_blob_cannot_be_read(tmp_path, git):
+    # The listing enumerates one added blob, but reading its raw bytes fails. An unreadable
+    # blob is the absence of the scan, not a clean scan, so the push is refused.
+    git.script(
+        "diff-tree",
+        (0, ":000000 100644 " + "0" * 40 + " " + "d" * 40 + " A\tm.py\n", ""),
     )
+    git.script("cat-file blob", (128, "", "fatal"))
+    d = _direct_push_driver(tmp_path)
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is False
+    assert d.ledger._seen["fp"].note == ("direct-push refused: could not read a pushable blob")
+    assert git.seen("push") == []
 
 
-def test_direct_push_scans_a_root_commit_with_show(tmp_path, git, monkeypatch):
-    git.script("rev-parse --verify", 1)  # no parent → root commit
-    git.script("show --no-ext-diff --format=", (0, DIFF, ""))
-    git.script("rev-parse HEAD", (0, "landedsha\n", ""))
+def test_direct_push_scans_a_root_commit_through_the_single_listing(tmp_path, git):
+    # A root commit has no parent, and `diff-tree --root` lists its blobs in the SAME
+    # listing every other commit goes through -- so a root commit is still fully scanned
+    # with no separate branch. Each listed blob's raw bytes are read and scanned clean.
+    git.script(
+        "diff-tree",
+        (0, ":000000 100644 " + "0" * 40 + " " + "e" * 40 + " A\tm.py\n", ""),
+    )
+    git.script("cat-file blob", (0, "clean content\n", ""))
     git.script("push", 0)
     d = _direct_push_driver(tmp_path)
-    assert d._direct_push(fp="fp", kind="perf", target="t", sha="abc") is True
-    assert git.seen("show --no-ext-diff --format=")
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is True
+    assert git.seen("diff-tree")
+    assert git.seen("cat-file blob " + "e" * 40)
+
+
+def test_direct_push_scans_a_binary_blobs_raw_bytes_and_refuses_a_credential(
+    tmp_path, git, monkeypatch
+):
+    # THE HOLE THIS CLOSES. `git diff` renders a blob it judges binary as one summary line,
+    # `Binary files a and b differ`, with none of its content -- and a single NUL byte is
+    # enough to make git judge a blob binary, which whatever writes the tree chooses freely.
+    # A scan that read diff output would see that summary line and zero occurrences of the
+    # key. The push transfers OBJECTS, not a diff, so the scan reads each changed blob's raw
+    # bytes with `cat-file blob`; a credential in those bytes must refuse the push.
+    seen_blob_scan: list = []
+
+    def _scan(text):
+        # Record only whether the raw blob bytes reached the scanner, never the text itself.
+        if "AKIAIOSFODNN7EXAMPLE" in text:
+            seen_blob_scan.append(True)
+            return False, PP.SCAN_HIT
+        return True, PP.SCAN_OK
+
+    monkeypatch.setattr(PP, "scan_content_for_secrets", _scan)
+    # A realistic added-blob listing line; the raw blob is binary (NUL-wrapped) and carries
+    # the key, exactly the shape a rendered diff would collapse to "Binary files ... differ".
+    git.script(
+        "diff-tree",
+        (0, ":000000 100644 " + "0" * 40 + " " + "f" * 40 + " A\tsecret.bin\n", ""),
+    )
+    git.script("cat-file blob", (0, "\x00AKIAIOSFODNN7EXAMPLE\x00", ""))
+    d = _direct_push_driver(tmp_path)
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is False
+    assert d.ledger._seen["fp"].note == (
+        "direct-push refused: content scan found credential/exfiltration finding(s)"
+    )
+    assert git.seen("cat-file blob " + "f" * 40)
+    # NON-VACUOUS: the refusal happened because the scanner actually SAW the raw blob bytes,
+    # not because nothing was scanned.
+    assert seen_blob_scan == [True], "the raw blob bytes never reached the scanner"
+    assert git.seen("push") == []
 
 
 def test_direct_push_refuses_content_the_scanner_flags(tmp_path, git, monkeypatch):
     monkeypatch.setattr(PP, "scan_content_for_secrets", lambda text: (False, PP.SCAN_HIT))
-    git.script("rev-parse --verify", 0)
-    git.script("diff --no-ext-diff HEAD~1..HEAD", (0, DIFF, ""))
     d = _direct_push_driver(tmp_path)
-    assert d._direct_push(fp="fp", kind="perf", target="t", sha="abc") is False
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is False
     assert d.ledger._seen["fp"].note == (
         "direct-push refused: content scan found credential/exfiltration finding(s)"
     )
@@ -994,47 +1268,57 @@ def test_direct_push_refuses_content_the_scanner_flags(tmp_path, git, monkeypatc
 
 
 def test_direct_push_records_a_failed_push(tmp_path, git):
-    git.script("rev-parse --verify", 0)
-    git.script("diff --no-ext-diff HEAD~1..HEAD", (0, DIFF, ""))
-    git.script("rev-parse HEAD", (0, "headsha\n", ""))
     git.script("push", (1, "", "remote rejected"))
     d = _direct_push_driver(tmp_path)
-    assert d._direct_push(fp="fp", kind="perf", target="t", sha="abc") is False
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is False
     assert "direct-push failed" in d.ledger._seen["fp"].note
-    assert d.pushed_sha == "headsha"
+    # The recorded sha is the OBJECT THAT WAS SENT -- the full object id the gate retained
+    # and pushed -- not a later re-read of `HEAD`.
+    assert d.pushed_sha == COMMITTED_HEAD
 
 
 def test_direct_push_reports_the_sha_that_actually_landed(tmp_path, git):
-    git.script("rev-parse --verify", 0)
-    git.script("diff --no-ext-diff HEAD~1..HEAD", (0, DIFF, ""))
-    git.script("rev-parse HEAD", (0, "rebasedsha\n", ""))
+    """The sha recorded must be the object the push transferred.
+
+    `_push_with_rebase` reports the revision it sent, and the ledger follows that rather than
+    a post-push `rev-parse HEAD`: reading HEAD after the push would name whatever HEAD points
+    at by then, so a concurrent move could put an unrelated commit in the ledger for a change
+    that really did land. `rev-parse HEAD` is deliberately scripted to a DIFFERENT value here,
+    so a regression to reading the ref reddens.
+    """
+    git.script("rev-parse HEAD", (0, "someotherhead\n", ""))
     git.script("push", 0)
     d = _direct_push_driver(tmp_path)
-    assert d._direct_push(fp="fp", kind="perf", target="t", sha="presha") is True
-    assert d.pushed_sha == "rebasedsha"
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is True
+    assert d.pushed_sha == COMMITTED_HEAD
+    assert d.pushed_sha != "someotherhead", "the ledger followed the ref, not the pushed object"
 
 
-def test_direct_push_falls_back_to_the_snapshot_sha_when_rev_parse_blanks(tmp_path, git):
-    git.script("rev-parse --verify", 0)
-    git.script("diff --no-ext-diff HEAD~1..HEAD", (0, DIFF, ""))
+def test_direct_push_reporting_survives_a_blank_rev_parse(tmp_path, git):
+    """Pins that this path does not fall back to the caller's snapshot when `rev-parse HEAD`
+    blanks. That fallback is unreachable here, because the recorded sha comes from the object
+    that was sent rather than from a post-push ref read -- which is a stronger version of the
+    same guarantee ("a reporting hiccup cannot blank a real sha"). The fallback itself remains
+    for callers that do not pass an explicit source.
+    """
     git.script("rev-parse HEAD", (0, "   \n", ""))
     git.script("push", 0)
     d = _direct_push_driver(tmp_path)
-    assert d._direct_push(fp="fp", kind="perf", target="t", sha="snapshot") is True
-    assert d.pushed_sha == "snapshot"
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is True
+    assert d.pushed_sha == COMMITTED_HEAD, "a blank ref read must not affect the recorded sha"
 
 
 def test_direct_push_reads_the_fetch_url_off_the_clone_when_the_profile_has_none(tmp_path, git):
     git.script("remote get-url", (0, "https://example.invalid/from-clone.git\n", ""))
-    git.script("rev-parse --verify", 0)
-    git.script("diff --no-ext-diff HEAD~1..HEAD", (0, DIFF, ""))
-    git.script("rev-parse HEAD", (0, "sha\n", ""))
     git.script("push", 0)
     d = _direct_push_driver(tmp_path, profile=_Profile(fetch_url=""))
-    assert d._direct_push(fp="fp", kind="perf", target="t", sha="abc") is True
+    assert d._direct_push(fp="fp", kind="perf", target="t", sha=COMMITTED_HEAD) is True
     pushes = git.seen("push")
+    # The refspec source is the OBJECT ID the gate retained, not `HEAD`: an id cannot
+    # be repointed, so nothing in the clone can change what is published after the check.
+    # `COMMITTED_HEAD` is what the shared `git` fixture scripts `rev-list -1` to return.
     assert pushes == [
-        "push https://example.invalid/from-clone.git HEAD:refs/heads/auto_improvement/feature"
+        f"push https://example.invalid/from-clone.git {COMMITTED_HEAD}:refs/heads/auto_improvement/feature"
     ]
 
 
@@ -1116,24 +1400,198 @@ def test_a_provisional_commit_never_names_the_candidate(tmp_path, git):
     assert commits == ["commit -q -m wip(auto-improvement): staging a verified candidate"]
 
 
-@pytest.mark.parametrize("pre_sha", ["", "abc123"])
-def test_reset_provisional_is_a_no_op_when_nothing_advanced(tmp_path, git, pre_sha):
-    git.script("rev-parse HEAD", (0, "abc123\n", ""))
+@pytest.mark.parametrize(
+    "stdout,expect",
+    [
+        # The real shape, measured against git 2.50: `<flag> <old-oid> <new-oid> <local-ref>`.
+        (f"* {'0' * 40} {'a' * 40} FETCH_HEAD\n", "a" * 40),
+        # A deletion reports the NULL id, which is not a tip anything can rebase onto.
+        (f"- {'a' * 40} {'0' * 40} FETCH_HEAD\n", ""),
+        # Nothing usable: an older git that rejected --porcelain, or a silent fetch.
+        ("", ""),
+        ("From https://example.invalid/r.git\n * branch main -> FETCH_HEAD\n", ""),
+        # Not an object id in the id column.
+        (f"* {'0' * 40} refs/heads/main FETCH_HEAD\n", ""),
+        # Short of forty hex, so not an id either.
+        (f"* {'0' * 40} {'a' * 39} FETCH_HEAD\n", ""),
+    ],
+)
+def test_fetched_tip_oid_only_accepts_a_real_object_id(stdout, expect):
+    """The retry rebases onto the id the FETCH reported, never onto `FETCH_HEAD` -- that ref is a
+    mutable file the pre-push reviewer can repoint at a commit nothing scanned, so neither the
+    rebase nor the replayed-commit count reads it. Anything this cannot parse must come
+    back empty so the caller refuses: an id it could not obtain is the absence of the check."""
+    assert drv._fetched_tip_oid(stdout) == expect
+
+
+def test_reset_provisional_does_nothing_without_a_pre_sha(tmp_path, git):
+    """REPLACES a test that asserted no `reset --hard` when nothing advanced. The rollback is
+    now a single idempotent `checkout -f -B <branch> <pre_sha>`, so "nothing advanced" needs no
+    special case -- but an ABSENT pre_sha must still touch nothing at all."""
     d = _make(tmp_path)
-    d._reset_provisional(pre_sha)
-    assert git.seen("reset --hard abc123") == []
+    d._reset_provisional("")
+    assert git.seen("checkout") == [], "it moved a ref with no sha to roll back to"
 
 
-def test_reset_provisional_rolls_the_branch_back(tmp_path, git):
-    git.script("rev-parse HEAD", (0, "newsha\n", ""))
+def test_reset_provisional_rolls_the_branch_back_atomically(tmp_path, git):
+    """ONE command that NAMES the branch. `git reset --hard` acts on whatever is checked out,
+    and this runs after the pre-push reviewer has had a shell in the clone where `git checkout`
+    is permitted -- so a read-then-reset pair lets a backgrounded `setsid git checkout victim`
+    land in between and destroy commits on `victim`. An intermediate fix read HEAD, checked the
+    branch out if it differed, then reset, which was the same pair one level up. Raised across
+    three rounds of the GPT review of this branch."""
     d = _make(tmp_path)
     d._reset_provisional("oldsha")
-    assert git.seen("reset --hard oldsha")
+    moves = git.seen("checkout")
+    assert moves == [
+        "checkout -f -B auto_improvement/feature oldsha"
+    ], f"the rollback is not a single branch-naming command: {moves}"
+    # Nothing that acts on "whatever is checked out", and no read whose answer could go stale
+    # before the write, may remain.
+    assert git.seen("reset --hard") == [], "a reset on the current branch is back"
+    assert git.seen("rev-parse --abbrev-ref") == [], "it reads HEAD then acts -- a stale check"
+
+
+def test_restore_branch_undoes_the_promotion_when_the_checkout_fails(tmp_path, git, caplog):
+    """`git branch -f` lands BEFORE the checkout can fail, so a concurrent index lock would
+    otherwise leave the branch promoted to a replay this reports as unrestored -- the push
+    aborts and the unpushed commit stays on the durable branch. Raised by the GPT review."""
+    git.script("rev-parse b", (0, "wasthere\n", ""))
+    git.script("checkout", (1, "", "index.lock exists"))
+    d = _make(tmp_path)
+    assert d._restore_branch("b", promote="replaysha") is False
+    moves = git.seen("branch -f")
+    assert "branch -f b replaysha" in moves, moves
+    assert "branch -f b wasthere" in moves, "the promotion was not undone after the failure"
+
+
+def test_a_failed_rollback_quarantines_the_clone_so_a_later_run_cannot_adopt_it(tmp_path, git):
+    """THE GUARD MUST OUTLIVE THE PROCESS, because the thing it guards does.
+
+    `_rollback_failed` stops the run it is set in, but the un-rolled-back commit is on DISK and
+    the clone is REUSED: a later run starts with a clear latch on a clone that still carries the
+    refused commit, commits the next winner on top, and publishes an ancestor its single-revision
+    scan never looked at. An in-memory guard is checking something shorter-lived than the hazard.
+
+    This crosses the boundary that matters rather than re-proving the in-run halt: it fails a
+    rollback, then asserts the predicate a LATER run's clone setup branches on. Reuse in
+    `clone_setup._setup_safe_clone` hinges on the canonical `<dest>/.git` being a directory, so
+    once retirement has renamed the clone aside, the next run cannot adopt it and clones fresh.
+    A fresh Driver on the same path is built to make the point explicit: its latch is clear, and
+    that is exactly why the protection cannot live there. Raised by the GPT review of this branch;
+    quarantine was the conductor's choice over a persisted latch, whose clearing condition would
+    itself have to be got right."""
+    d = _make(tmp_path)
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True, exist_ok=True)
+    assert (clone / ".git").is_dir(), "precondition: the clone looks reusable"
+    git.script("checkout -f -B", (1, "", "cannot checkout"))
+
+    assert d._reset_provisional("oldsha") is False
+    assert d._repository_retired is True, "the clone was not quarantined"
+
+    # The predicate `_setup_safe_clone` branches on for reuse (clone_setup.py: `git_dir.is_dir()`).
+    assert not (clone / ".git").is_dir(), (
+        "the canonical clone still looks reusable, so a later run would adopt the commit that "
+        "was refused and never published"
+    )
+    retirements = [p for p in tmp_path.iterdir() if p.name.startswith(".clone.unsafe-")]
+    assert retirements, f"no retirement container beside the clone: {list(tmp_path.iterdir())}"
+    assert (retirements[0] / "clone").is_dir(), "the bytes were not preserved for diagnosis"
+
+    # A NEW run is a new Driver with a CLEAR latch -- which is the whole reason the protection
+    # cannot be the latch alone.
+    fresh = _make(tmp_path)
+    assert fresh._rollback_failed is False, "the in-memory latch does not survive, as expected"
+
+
+def test_a_second_rollback_after_quarantine_is_a_no_op_and_does_not_mislead(tmp_path, git, caplog):
+    """`_reset_provisional` is called from five sites, so it can be reached again after the clone
+    has already been renamed aside. Without the already-retired short circuit it would try to
+    check out a path that is gone, fail, and then report "left unsafe in place" -- which
+    is false and is exactly the wrong thing to tell whoever is reading the log during an
+    incident, because the clone WAS quarantined properly."""
+    d = _make(tmp_path)
+    (tmp_path / "clone" / ".git").mkdir(parents=True, exist_ok=True)
+    git.script("checkout -f -B", (1, "", "cannot checkout"))
+    assert d._reset_provisional("oldsha") is False
+    before = len(git.seen("checkout"))
+    with caplog.at_level(logging.ERROR, logger=LOG.name):
+        caplog.clear()
+        assert d._reset_provisional("oldsha") is False, "a retired clone reported a good rollback"
+    assert len(git.seen("checkout")) == before, "it tried to roll back a clone that is gone"
+    assert "left unsafe in place" not in caplog.text, (
+        "it reported the clone as unquarantined after having quarantined it -- the opposite of "
+        "what an operator needs during an incident"
+    )
+
+
+def test_a_failed_rollback_halts_the_run_and_says_why(tmp_path, git, caplog):
+    """A failed rollback is not a log line. HEAD keeps the commit that was refused and never
+    published, so the NEXT winner commits on top of it and that winner's single-revision scan
+    (`<rev>~1..<rev>`) cannot see the parent its own push would publish -- the refused content
+    lands through a scanner that never looked at it. Nothing local repairs that, since the
+    rollback IS the repair, so the run stops. Raised by the GPT review of this branch."""
+    git.script("checkout -f -B", (1, "", "cannot checkout"))
+    d = _make(tmp_path)
+    with caplog.at_level(logging.ERROR, logger=LOG.name):
+        assert d._reset_provisional("oldsha") is False, "a failed rollback reported success"
+    assert d._rollback_failed is True, "the failure did not latch"
+    assert d._stop is True, "the run was allowed to continue after an unrepairable HEAD"
+    assert "could not roll back the provisional commit" in caplog.text
+    assert "refused and never published" in caplog.text
+
+
+def test_a_successful_rollback_reports_success_and_does_not_halt(tmp_path, git):
+    """The positive control: the latch must not fire on the ordinary path, or the flag would
+    read as "always broken" and prove nothing."""
+    d = _make(tmp_path)
+    assert d._reset_provisional("oldsha") is True
+    assert d._rollback_failed is False
+    assert d._stop is False
+
+
+def test_a_failed_rollback_stops_every_further_winner_before_any_push(tmp_path, git, caplog):
+    """The halt has to be UNCONDITIONAL, and the publish gate alone is not enough.
+
+    `_apply_bug_winner` calls `pr_pipeline.emit_bug` BEFORE `_direct_push`, and that path reaches
+    `pr_recipe._push_fix_branch`, which pushes `HEAD:refs/heads/<branch>` and knows nothing about
+    the latch. So a second bug winner in the SAME cycle would publish the un-rolled-back commit
+    through the PR branch before the direct-push gate was ever consulted. Guarded at the top of
+    both winner-applying methods, which is upstream of every push either one can reach.
+
+    The control is structural: `archive.save_candidate` is the first thing both methods do, so a
+    double that raises proves the guard returned before any work -- and reddens if it is removed.
+    """
+    d = _make(tmp_path)
+    d._rollback_failed = True
+
+    def _boom(**_kw):
+        raise AssertionError("a winner was applied after the rollback failed")
+
+    d.archive = types.SimpleNamespace(save_candidate=_boom)  # type: ignore[assignment]
+    with caplog.at_level(logging.ERROR, logger=LOG.name):
+        assert d._apply_verdict(1, "basesha", None, [], 0, "") == 0
+        assert d._apply_bug_winner(1, None, None) is None
+    assert "refusing to apply any further winner" in caplog.text
+
+
+def test_direct_push_refuses_after_a_failed_rollback(tmp_path, git):
+    """Checked at the PUBLISH gate, not only through the run's stop flag: that flag is read at
+    cycle boundaries, and one cycle can hold SEVERAL bug winners (`for prop, bug_res in
+    bug_winners`), each reaching `_direct_push`. So the second winner in the same cycle is
+    exactly the case a stop-flag-only fix would miss."""
+    d = _direct_push_driver(tmp_path)
+    d._rollback_failed = True
+    assert d._direct_push(fp="fp", kind="bug", target="t", sha="abc") is False
+    assert "provisional rollback failed" in d.ledger._seen["fp"].note
+    assert git.seen("push") == [], "it published from a clone with an unpublished commit at HEAD"
 
 
 def test_reset_provisional_logs_a_failed_rollback(tmp_path, git, caplog):
-    git.script("rev-parse HEAD", (0, "newsha\n", ""))
-    git.script("reset --hard", (1, "", "cannot reset"))
+    """Fail closed and SAY SO: a provisional commit left behind is resolved by the next cycle's
+    stage step, but it must not pass silently."""
+    git.script("checkout -f -B", (1, "", "cannot checkout"))
     d = _make(tmp_path)
     with caplog.at_level(logging.ERROR, logger=LOG.name):
         d._reset_provisional("oldsha")
@@ -1141,10 +1599,12 @@ def test_reset_provisional_logs_a_failed_rollback(tmp_path, git, caplog):
 
 
 def test_finalize_winner_commit_skips_the_amend_for_an_empty_diff(tmp_path, git):
-    git.script("rev-parse --short HEAD", (0, "shorty\n", ""))
+    git.script("rev-parse HEAD", (0, "a" * 40 + "\n", ""))
     d = _make(tmp_path)
-    got = d._finalize_winner_commit(_proposal(diff=""), verify=_measurement(), cycle=1, diff_ref="d")
-    assert got == "shorty"
+    got = d._finalize_winner_commit(
+        _proposal(diff=""), verify=_measurement(), cycle=1, diff_ref="d"
+    )
+    assert got == "a" * 40
     assert git.seen("commit -q --amend") == []
 
 
@@ -1156,18 +1616,20 @@ def test_finalize_winner_commit_amends_with_the_reproduce_numbers(tmp_path, git,
         return "perf: real numbers"
 
     monkeypatch.setattr(drv.D, "perf_commit_message", _msg)
-    git.script("rev-parse --short HEAD", (0, "amended\n", ""))
+    git.script("rev-parse HEAD", (0, "b" * 40 + "\n", ""))
     d = _make(tmp_path)
     reproduce = _measurement(delta=-4.0)
     got = d._finalize_winner_commit(
         _proposal(diff=DIFF), verify=_measurement(), reproduce=reproduce, cycle=3, diff_ref="d.diff"
     )
-    assert got == "amended"
+    assert got == "b" * 40
     assert seen["reproduce"] is reproduce
     assert git.seen("commit -q --amend")
 
 
-def test_finalize_winner_commit_falls_back_to_verify_without_a_reproduce(tmp_path, git, monkeypatch):
+def test_finalize_winner_commit_falls_back_to_verify_without_a_reproduce(
+    tmp_path, git, monkeypatch
+):
     seen: dict = {}
     monkeypatch.setattr(drv.D, "perf_commit_message", lambda **kw: seen.update(kw) or "m")
     git.script("rev-parse --short HEAD", (0, "x\n", ""))
@@ -1230,7 +1692,7 @@ def test_a_provisional_bug_commit_never_names_the_candidate(tmp_path, git):
 
 def test_finalize_bug_commit_amends_with_the_red_green_narrative(tmp_path, git, monkeypatch):
     monkeypatch.setattr(drv.D, "bug_commit_message", lambda **kw: "fix: red to green")
-    git.script("rev-parse --short HEAD", (0, "bugsha\n", ""))
+    git.script("rev-parse HEAD", (0, "c" * 40 + "\n", ""))
     d = _make(tmp_path)
     got = d._finalize_bug_winner_commit(
         _proposal(kind=TRACK_BUG, diff=DIFF),
@@ -1238,12 +1700,12 @@ def test_finalize_bug_commit_amends_with_the_red_green_narrative(tmp_path, git, 
         cycle=2,
         diff_ref="d.diff",
     )
-    assert got == "bugsha"
+    assert got == "c" * 40
     assert git.seen("commit -q --amend")
 
 
 def test_finalize_bug_commit_skips_the_amend_for_an_empty_diff(tmp_path, git):
-    git.script("rev-parse --short HEAD", (0, "same\n", ""))
+    git.script("rev-parse HEAD", (0, "d" * 40 + "\n", ""))
     d = _make(tmp_path)
     got = d._finalize_bug_winner_commit(
         _proposal(kind=TRACK_BUG, diff=""),
@@ -1251,7 +1713,7 @@ def test_finalize_bug_commit_skips_the_amend_for_an_empty_diff(tmp_path, git):
         cycle=1,
         diff_ref="d",
     )
-    assert got == "same"
+    assert got == "d" * 40
     assert git.seen("commit -q --amend") == []
 
 
@@ -1262,7 +1724,13 @@ def test_a_skipped_proposal_records_its_own_terminal_status(tmp_path, git):
     d = _make(tmp_path)
     prop = _proposal(skipped=True, skip_status=L.STATUS_NO_DEFECT, skip_reason="nothing found")
     d._work_one_proposal(
-        prop, base_sha="b", cycle=1, proposals=[prop], perf_survivors=[], bug_winners=[], gated_sha={}
+        prop,
+        base_sha="b",
+        cycle=1,
+        proposals=[prop],
+        perf_survivors=[],
+        bug_winners=[],
+        gated_sha={},
     )
     fp = L.fingerprint(kind=TRACK_PERF, target="mod.py::sym")
     assert d.ledger._seen[fp].status == L.STATUS_NO_DEFECT
@@ -1273,7 +1741,13 @@ def test_a_skipped_proposal_from_a_real_error_counts_as_one(tmp_path, git):
     d = _make(tmp_path)
     prop = _proposal(skipped=True, skip_status=L.STATUS_ERROR, skip_reason="")
     d._work_one_proposal(
-        prop, base_sha="b", cycle=1, proposals=[prop], perf_survivors=[], bug_winners=[], gated_sha={}
+        prop,
+        base_sha="b",
+        cycle=1,
+        proposals=[prop],
+        perf_survivors=[],
+        bug_winners=[],
+        gated_sha={},
     )
     assert d.stats.errors == 1
     fp = L.fingerprint(kind=TRACK_PERF, target="mod.py::sym")
@@ -1311,7 +1785,13 @@ def test_a_rejected_bug_fix_maps_onto_the_shared_ledger_vocabulary(
     d.gate = _Gate(bug_result=BugGateResult(passed=False, reason=reason, detail="why"))
     prop = _proposal(kind=TRACK_BUG)
     d._work_one_proposal(
-        prop, base_sha="b", cycle=1, proposals=[prop], perf_survivors=[], bug_winners=[], gated_sha={}
+        prop,
+        base_sha="b",
+        cycle=1,
+        proposals=[prop],
+        perf_survivors=[],
+        bug_winners=[],
+        gated_sha={},
     )
     fp = L.fingerprint(kind=TRACK_BUG, target="mod.py::sym")
     assert d.ledger._seen[fp].status == expected_status
@@ -1418,7 +1898,7 @@ def test_an_unreproduced_perf_keep_rolls_the_branch_back(tmp_path, git):
     verdict = Verdict(keep=True, status=KEPT, winner=prop, measurement=meas, reason="win")
     d._apply_verdict(1, "base", verdict, [(prop, KEPT, meas)], 1, {})
     assert d.stats.kept == 0  # the keep did not become a reproduced win
-    assert git.seen("reset --hard presha")
+    assert git.seen("checkout -f -B auto_improvement/feature presha")
 
 
 def test_a_direct_committed_perf_win_records_the_landed_sha(tmp_path, git):
@@ -1457,7 +1937,7 @@ def test_a_refused_direct_push_rolls_the_commit_back_and_unwinds_the_keep(tmp_pa
 
     assert d.stats.kept == 0
     assert d.stats.filed == 0
-    assert git.seen("reset --hard presha")
+    assert git.seen("checkout -f -B auto_improvement/feature presha")
 
 
 # ─────────────────────────── the bug verdict ───────────────────────────
@@ -1489,13 +1969,13 @@ def test_a_filed_bug_fix_files_then_returns_head_to_where_it_started(tmp_path, g
     assert d.stats.filed == 1
     assert d.pr_pipeline.bug_kwargs["base_anchor"] == "auto_improvement/feature @ presha"
     assert [e for e in events if "cr_filed" in e][0]["cr_filed"]["kind"] == "bug"
-    assert git.seen("reset --hard presha")
+    assert git.seen("checkout -f -B auto_improvement/feature presha")
 
 
 def test_a_direct_committed_bug_fix_records_committed_once(tmp_path, git):
     d = _make(tmp_path, direct_commit=True)
     d.pr_pipeline = _Pipeline(CrOutcome(fp="fp-bc", status="committed", committed_ready=True))
-    git.script("rev-parse --short HEAD", (0, "bshort\n", ""))
+    git.script("rev-parse HEAD", (0, "e" * 40 + "\n", ""))
     d._direct_push = lambda **kwargs: True
     d.pushed_sha = ""
 
@@ -1505,7 +1985,7 @@ def test_a_direct_committed_bug_fix_records_committed_once(tmp_path, git):
 
     entry = d.ledger._seen["fp-bc"]
     assert entry.status == L.STATUS_COMMITTED
-    assert entry.cr == "bshort"  # fell back to the pre-push short sha
+    assert entry.cr == "e" * 40  # fell back to the finalizer's full head id
     assert (d.stats.kept, d.stats.filed) == (1, 1)
 
 
@@ -1521,7 +2001,7 @@ def test_a_refused_bug_push_rolls_back_without_touching_the_keep_counter(tmp_pat
     )
 
     assert d.stats.kept == 0  # never incremented, so never decremented
-    assert git.seen("reset --hard presha")
+    assert git.seen("checkout -f -B auto_improvement/feature presha")
 
 
 def test_an_unfiled_bug_fix_leaves_head_where_it_was(tmp_path, git):
@@ -1532,7 +2012,7 @@ def test_an_unfiled_bug_fix_leaves_head_where_it_was(tmp_path, git):
         1, _proposal(kind=TRACK_BUG, diff=""), BugGateResult(passed=True, reason=BUG_FILED)
     )
     assert d.stats.filed == 0
-    assert git.seen("reset --hard presha")
+    assert git.seen("checkout -f -B auto_improvement/feature presha")
 
 
 # ─────────────────────────── the per-cycle workflow ───────────────────────────

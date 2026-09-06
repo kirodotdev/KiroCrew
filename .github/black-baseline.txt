@@ -377,7 +377,6 @@ test/test_agent_template_skills.py
 test/test_ai_agent_runner_coverage.py
 test/test_ai_backend_routes_coverage.py
 test/test_ai_pr_watchers_coverage.py
-test/test_ai_spine_driver_coverage.py
 test/test_api_agent_config_put_succeeds.py
 test/test_api_agents_order.py
 test/test_api_file_diff.py

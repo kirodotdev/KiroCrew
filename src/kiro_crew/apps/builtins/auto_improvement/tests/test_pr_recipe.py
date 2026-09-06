@@ -519,21 +519,45 @@ class TestEveryPushPathScansContent:
 
     def test_the_shared_scanner_is_the_single_implementation(self) -> None:
         """Each push path must call ``push_policy.scan_content_for_secrets``, not its own
-        copy — three drifting copies is how one of them ends up without the fix."""
+        copy -- three drifting copies is how one of them ends up without the fix.
+
+        Every path also clears the external diff helper (``diff.external=``) on the git
+        read it scans, so a repository-writable ``diff.external`` cannot run an attacker
+        binary in place of the read. The two paths that render a human diff also pass
+        ``--no-ext-diff`` for the same reason; the driver reads objects with ``cat-file``
+        instead of rendering a diff, so it carries no ``--no-ext-diff`` and must render no
+        ``git diff`` at all.
+        """
         from pathlib import Path
 
         root = Path(__file__).resolve().parent.parent
-        for rel in (
-            "profiles/github_repo/pr_recipe.py",
-            "spine/driver.py",
-            "backend/commit.py",
+        # ``renders_diff`` says whether the path scans rendered ``git diff`` output (and so
+        # must neutralize the external helper with ``--no-ext-diff``) or reads objects
+        # directly (and so must not render a diff to scan).
+        for rel, renders_diff in (
+            ("profiles/github_repo/pr_recipe.py", True),
+            ("spine/driver.py", False),
+            ("backend/commit.py", True),
         ):
             src = (root / rel).read_text(encoding="utf-8")
             assert "scan_content_for_secrets" in src, f"{rel} does not scan pushed content"
-            assert "--no-ext-diff" in src, f"{rel} permits external diff execution"
             assert "diff.external=" in src, f"{rel} does not clear the external diff helper"
+            if renders_diff:
+                assert "--no-ext-diff" in src, f"{rel} permits external diff execution"
             # No path may re-import the raw scanners and hand-roll the decision.
             assert "redact_credentials" not in src, f"{rel} should delegate, not re-implement"
+
+        # The driver reads objects directly, so its scan method must not fall back to
+        # scanning a rendered diff, whose binary-file summary hides a credential the object
+        # itself carries. Scoped to the method rather than the file: other driver methods
+        # render diffs for unrelated reasons.
+        import inspect
+
+        from kiro_crew.apps.builtins.auto_improvement.spine.driver import Driver
+
+        scan_src = inspect.getsource(Driver._revision_scans_clean)
+        assert "--no-ext-diff" not in scan_src, "the driver scan renders a diff"
+        assert '"diff"' not in scan_src, "the driver scan renders a diff"
 
     def test_scanner_refuses_a_credential(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.spine.push_policy import (
@@ -554,30 +578,78 @@ class TestEveryPushPathScansContent:
         # An empty range is not a finding: nothing to publish means nothing to refuse.
         assert scan_content_for_secrets("")[0] is True
 
-    def test_the_direct_push_scan_range_is_not_self_diffing(self) -> None:
-        """A scanner that is CALLED but on an EMPTY range is not a gate. The driver's F10
-        push diffed ``{dest}..HEAD`` where ``dest`` is the local branch HEAD sits on the
-        tip of — so ``git diff <branch>..HEAD`` compared a ref to itself and returned
-        nothing, and the fail-closed credential scan passed on a 0-byte input. Measured:
-        a commit adding an AWS key gave a 0-byte ``<branch>..HEAD`` diff and a 144-byte
-        ``HEAD~1..HEAD`` diff. Pin the source so the self-diffing range cannot return.
-        Raised by the GPT review of this branch.
+    def test_the_direct_push_blob_listing_cannot_be_read_as_clean(self) -> None:
+        """A scanner that is CALLED but on an unread or empty listing is not a gate. The
+        driver enumerates the revision's changed blobs with ``diff-tree`` and reads each
+        one; if that listing read fails it exits non-zero with empty stdout, and treating
+        empty stdout as "nothing to scan" would pass the fail-closed credential gate on a
+        blob it never saw. The scan therefore refuses on the listing's exit status, and
+        its per-blob loop can only reach ``clean`` by reading every listed blob.
+
+        The listing is taken PER REVISION: ``diff-tree`` names the explicit ``rev`` with
+        ``--root`` so a root commit (which has no parent) is covered by the same listing,
+        and the scanned object is bound to the pushed object by construction. The scan is
+        NOT anchored on ``HEAD``, which each git call re-resolves separately, so a
+        concurrent writer cannot make the scanned object and the published object differ.
         """
+        import ast
         import inspect
+        import re
+        import textwrap
 
         from kiro_crew.apps.builtins.auto_improvement.spine.driver import Driver
 
-        src = inspect.getsource(Driver._direct_push)
-        assert "HEAD~1..HEAD" in src, "the push scan no longer diffs the committed range"
-        # The buggy construct was `scan_range = f"{dest}..HEAD"` fed to `git diff`. Match the
-        # CODE, not a mention in a comment: an f-string building a `<var>..HEAD` diff range.
-        import re
+        scan_src = inspect.getsource(Driver._revision_scans_clean)
 
-        code_lines = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
-        code = "\n".join(code_lines)
+        def _executable_code(text: str) -> str:
+            """The method's executable statements only -- its docstring and comments
+            describe history that names ``HEAD`` and ranges the code itself must not use."""
+            tree = ast.parse(textwrap.dedent(text))
+            func = tree.body[0]
+            # Narrowed for the type checker as much as for the reader: this helper is only
+            # ever handed one method's source, so anything else is a caller mistake.
+            assert isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)), type(func)
+            body = func.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                body = body[1:]  # drop the docstring
+            return "\n".join(ast.unparse(node) for node in body)
+
+        scan_code = _executable_code(scan_src)
+
+        # The listing enumerates the explicit revision's own objects with ``diff-tree``,
+        # rooted so a parentless commit is covered, rather than diffing a range.
+        assert re.search(
+            r"'diff-tree'.*'--root'.*rev", scan_code, re.DOTALL
+        ), "the scan does not list the revision's own blobs per revision with --root"
+        assert "'cat-file', 'blob'" in scan_code, "the scan does not read each blob's bytes"
+
+        # The listing read must fail closed: an empty or unread listing cannot reach clean.
+        assert (
+            "could not list the pushable blobs" in scan_code
+        ), "a failed blob listing does not fail closed"
+        assert (
+            "listing.returncode != 0" in scan_code
+        ), "the scan does not refuse on the listing's exit status"
+
+        # No self-diffing range may return: the scan reads objects, not a ``<ref>..<ref>``
+        # diff, so no ``..`` range and no ``HEAD``-anchored range appears in the code.
+        assert ".." not in scan_code, "a two-dot scan range is back in the code"
+        assert (
+            "HEAD" not in scan_code
+        ), "the scan is anchored on HEAD again, so it is not bound to the pushed object"
+
+        # ``_direct_push`` must delegate to the shared per-revision scan rather than
+        # re-growing its own range.
+        push_code = _executable_code(inspect.getsource(Driver._direct_push))
+        assert "_revision_scans_clean(" in push_code, "the push path does not scan its content"
         assert not re.search(
-            r'f"\{[A-Za-z_]+\}\.\.HEAD"', code
-        ), "a self-diffing f-string scan range is back in the code"
+            r"f'\{[A-Za-z_]+\}\.\.HEAD'", push_code
+        ), "a self-diffing f-string scan range is back in the push path"
 
     def test_a_committed_secret_is_actually_in_the_scanned_range(self, tmp_path) -> None:
         """End to end against a real repo: the range the driver scans for a one-commit
@@ -827,30 +899,43 @@ class TestLoggedStringsAreRebuiltFromConstants:
 
 
 class TestAFailedDiffIsNeverVacuouslyClean:
-    """A credential gate that reads an EMPTY diff must not conclude "clean".
+    """A credential gate that reads an EMPTY git output must not conclude "clean".
 
-    Raised by review of this branch against the driver's direct-push path. `_git` does not
-    raise, so a diff against a ref with no local head exits non-zero with empty stdout —
-    and `scan_content_for_secrets` reads blank text as "nothing to publish" and returns OK.
-    The fail-closed gate was therefore skipped and the commit would be pushed unscanned.
-    Reproduced before fixing: `git diff no-such-branch..HEAD` exits 128 with empty stdout.
+    ``_git`` does not raise, so a failed git read exits non-zero with empty stdout, and
+    ``scan_content_for_secrets`` reads blank text as "nothing to publish" and returns OK.
+    A path that treats empty stdout as nothing-to-scan therefore skips the fail-closed
+    gate and pushes the commit unscanned. The premise holds against a real repo:
+    ``git diff no-such-branch..HEAD`` exits 128 with empty stdout.
 
-    The scanner's blank-input shortcut is correct in itself — an empty range genuinely has
-    nothing to refuse — so the guard belongs at every CALL SITE, which is why this asserts
-    on all three rather than changing the scanner.
+    The scanner's blank-input shortcut is correct in itself -- an empty input genuinely
+    has nothing to refuse -- so the guard belongs at every git read in every CALL SITE.
+    The driver reads three kinds of object (the commit, the changed-blob listing, and
+    each blob), so all three of its reads must refuse on a non-zero exit.
     """
 
     def test_all_three_push_paths_check_the_git_exit_status(self) -> None:
+        import inspect
         from pathlib import Path
+
+        from kiro_crew.apps.builtins.auto_improvement.spine.driver import Driver
 
         root = Path(__file__).resolve().parent.parent
         for rel, marker in (
-            ("spine/driver.py", "proc.returncode != 0"),
             ("profiles/github_repo/pr_recipe.py", "proc.returncode != 0"),
             ("backend/commit.py", "scanned.returncode == 0"),
         ):
             src = (root / rel).read_text(encoding="utf-8")
-            assert marker in src, f"{rel} does not check the diff's exit status"
+            assert marker in src, f"{rel} does not check the git read's exit status"
+
+        # The driver reads three objects and each read must fail closed on a non-zero exit
+        # rather than scan its empty stdout as nothing-to-scan.
+        scan_src = inspect.getsource(Driver._revision_scans_clean)
+        for marker in (
+            "meta.returncode != 0",
+            "listing.returncode != 0",
+            "blob.returncode != 0",
+        ):
+            assert marker in scan_src, f"the driver scan does not refuse on `{marker}`"
 
     def test_blank_input_still_reads_as_clean(self) -> None:
         """Documents WHY the guard lives at the call sites: this shortcut is intended."""

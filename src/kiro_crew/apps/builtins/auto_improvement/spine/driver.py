@@ -118,19 +118,185 @@ class PushEnabledError(RuntimeError):
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 
-def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+def _git(
+    args: list[str], cwd: Path, *, config: tuple[str, ...] = ()
+) -> subprocess.CompletedProcess:
     require_pinned(cwd)
+    # ``config`` carries EXTRA ``-c`` pairs for the one caller that needs them, spliced into the
+    # flag section so *args* still begins with the subcommand. Keeping that position stable is
+    # deliberate: this module's own callers and its test doubles both read argv by its leading
+    # verb, and a flag pushed in front of it would make the same call unrecognisable to them.
+    # ``core.useReplaceRefs=false`` on EVERY call in this module, not just the credential scan.
+    # Git substitutes objects named by ``refs/replace/<oid>`` transparently in reads while the
+    # push transport sends the ORIGINAL, and `git replace` is not on the pre-push reviewer's
+    # denylist -- so any read here that a replacement could redirect is a place where what this
+    # code inspects and what it publishes come apart. Two instances were found one at a time
+    # (the scan, then the rebase); disabling it at the single chokepoint every read goes through
+    # closes the class FOR THIS MODULE'S READS instead of the next
+    # instance. It is not repository-wide: `pr_recipe` and `backend/commit.py` do their own
+    # git reads and still honour `refs/replace/*`, so their scans remain substitutable the
+    # same way. Out of scope here, named so the guarantee is not read as broader than it is. Raised by the GPT review of this branch.
     # ``errors="replace"``: callers run `diff`/`show`, which print file CONTENT, and a repo
     # legitimately holds non-UTF-8 bytes. A strict decode raises inside
     # ``subprocess.communicate``, so the failure cannot be read off ``returncode`` — the
     # direct-push path would abort on any tree containing a PNG. See ``pr_watchers._git``.
     return subprocess.run(
-        ["git", "-C", str(cwd), *_GIT_SAFE_CONFIG, *args],
+        [
+            "git",
+            "-C",
+            str(cwd),
+            *_GIT_SAFE_CONFIG,
+            "-c",
+            "core.useReplaceRefs=false",
+            *config,
+            *args,
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
     )
+
+
+def _fetched_tip_oid(porcelain_stdout: str) -> str:
+    """The object id ``git fetch --porcelain`` reports for the ref it just fetched.
+
+    ``FETCH_HEAD`` is a mutable FILE in the clone, not a value, so keying the rebase or the
+    replay count on that NAME lets anything else operating in the clone substitute what gets
+    replayed -- and because only the replayed commit is scanned, a substituted parent's content
+    rides along to the push through a scanner that believed it had looked. ``--porcelain`` makes
+    the fetch report the id on its OWN stdout, one line per ref as
+    ``<flag> <old-oid> <new-oid> <local-ref>``, so the id never comes from a ref at all. A
+    forty-hex object id cannot be substituted; a ref name can. Raised by the GPT review of this
+    branch, which prescribed exactly this: capture the id from the fetch operation itself.
+
+    Returns ``""`` when no line carries a usable id -- including the all-zero null id, which
+    means the ref was DELETED rather than fetched, and the case where ``--porcelain`` is not
+    understood at all (an older git fails the fetch outright, so the caller never gets here).
+    The caller must treat ``""`` as a refusal: an id it could not obtain is the absence of the
+    check, not a pass.
+    """
+    for line in (porcelain_stdout or "").splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        new_oid = fields[2]
+        if len(new_oid) == 40 and all(c in "0123456789abcdef" for c in new_oid):
+            if new_oid == "0" * 40:
+                continue  # a deletion, not a tip anything can be rebased onto
+            return new_oid
+    return ""
+
+
+def _expected_replay_tree(base: str, src: str, cwd: Path) -> str:
+    """The tree a replay of *src* onto *base* must produce. ``""`` if it cannot be computed.
+
+    A rebase replays a commit onto a new parent, so the replay is a DIFFERENT object id
+    carrying the same change -- an id captured from ambient ``HEAD`` afterwards cannot be
+    checked against the authorized input by equality. What CAN be stated exactly is the
+    RESULT: ``git merge-tree --write-tree`` performs the same three-way merge the rebase does
+    and prints the resulting tree's object id on its own stdout, computed from two immutable
+    inputs and touching no ref. Comparing that against the replay's own tree authorizes the
+    published content itself rather than a property of it.
+
+    A TREE BINDS LOCATION; A PATCH IDENTITY DOES NOT. ``git patch-id`` deliberately ignores
+    hunk line numbers -- that is what lets it recognise a change replayed onto a moved base --
+    so a commit whose added and removed LINES match the authorized change while sitting
+    elsewhere in the file hashes identically to it. A tree names the exact content of every
+    path, so the same lines in a different place is a different tree. Raised by the GPT review
+    of this branch, which asked for exactly this: authorize the replay against an expected
+    tree rather than a patch identity.
+
+    Returns ``""`` on any non-zero exit, which covers a merge that CONFLICTS (the tree printed
+    then records a conflict, it is not an authorization) and a git too old to know
+    ``--write-tree``. The caller treats ``""`` as a refusal: a result it could not compute is
+    the absence of the check, not a pass.
+    """
+    out = _git(["merge-tree", "--write-tree", base, src], cwd)
+    if out.returncode != 0:
+        return ""
+    tree = ((out.stdout or "").splitlines() or [""])[0].strip()
+    if len(tree) != 40 or any(c not in "0123456789abcdef" for c in tree):
+        return ""
+    return tree
+
+
+_ATTRIBUTION_FORMAT = "%an%x00%ae%x00%cn%x00%ce%x00%B"
+
+
+def _commit_attribution(rev: str, cwd: Path) -> str:
+    """*rev*'s author, committer and message as one comparable string, or ``""``.
+
+    DATES ARE DELIBERATELY ABSENT. A replay commits at a new wall-clock time, so including a
+    date would make every honest retry compare unequal; the fields here are the ones a replay
+    is supposed to carry over unchanged. NUL separates them so a name holding the delimiter
+    cannot forge a match by spanning two fields.
+
+    ``%B`` is the raw body, last because it is the only field that may contain newlines.
+    """
+    out = _git(["log", "-1", f"--format={_ATTRIBUTION_FORMAT}", rev], cwd)
+    if out.returncode != 0:
+        return ""
+    return out.stdout or ""
+
+
+def _committer_identity(rev: str, cwd: Path) -> tuple[str, str]:
+    """*rev*'s committer name and email, or ``("", "")``.
+
+    READ OFF AN IMMUTABLE OBJECT, which is the whole point: the identity a replay should carry
+    is the one the authorized commit already holds, recorded when the pipeline created it and
+    therefore before any reviewing agent ran. Configuration cannot be trusted for this at
+    replay time -- the agent's shell can write the repository's own config, and nothing masks a
+    global one either.
+    """
+    out = _git(["log", "-1", "--format=%cn%x00%ce", rev], cwd)
+    if out.returncode != 0:
+        return "", ""
+    parts = (out.stdout or "").rstrip("\n").split("\0")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return "", ""
+    return parts[0], parts[1]
+
+
+def _commit_tree(rev: str, cwd: Path) -> str:
+    """The tree object id *rev* points at, or ``""``.
+
+    ``log -1 --format=%T`` rather than ``rev-parse <rev>^{tree}`` so this question carries its
+    own verb: ``rev-parse`` in this module already answers an unrelated one (does a parent
+    exist), and a caller keyed on argv cannot tell two questions apart under one prefix.
+    """
+    out = _git(["log", "-1", "--format=%T", rev], cwd)
+    tree = (out.stdout or "").strip()
+    if out.returncode != 0 or len(tree) != 40 or any(c not in "0123456789abcdef" for c in tree):
+        return ""
+    return tree
+
+
+def _full_head_id(cwd: Path) -> str:
+    """The FULL object id at ``HEAD``, validated, or ``""``.
+
+    WHAT A FINALIZER HANDS BACK IS A TRUST ANCHOR, so it is a full object id and never an
+    abbreviation. A short sha is an ambiguous NAME: git resolves a revision through ref names
+    before abbreviated object ids, and a prefix stops naming one object as soon as a second
+    object shares it. Anything able to write the repository between a read and the anchor's
+    capture can arrange either reading, which makes the id that gets verified and the id that
+    gets published two different things -- the substitution this whole path exists to refuse.
+    A forty-hex id has no second reading, so the class is absent rather than defended against.
+    Raised by the GPT review of this branch.
+
+    ``HEAD`` is safe to resolve here, and that is the distinction: no ref can shadow ``HEAD``,
+    and this runs immediately after the commit it names, before any gate hands control to an
+    agent. Callers that want a short form derive it from the returned id for DISPLAY and never
+    feed it back into a lookup.
+
+    Fails CLOSED: an unreadable or malformed answer returns ``""``, which every caller treats
+    as "no committed object" and refuses to publish.
+    """
+    out = _git(["rev-parse", "HEAD"], cwd)
+    sha = (out.stdout or "").strip()
+    if out.returncode != 0 or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
+        return ""
+    return sha
 
 
 class Driver:
@@ -283,6 +449,15 @@ class Driver:
         )
         self._stop = False
         self._repository_retired = False
+        #: Set when a provisional rollback FAILED. HEAD then still carries a commit that
+        #: was refused and never published, and the next winner commits ON TOP of it: that
+        #: winner's scan reads only its own revision (`<rev>~1..<rev>`) while its push sends the
+        #: whole ancestry, so the refused content is published by a scanner that never saw it.
+        #: Nothing local can repair that -- the rollback is what was supposed to -- so this
+        #: latches and publishing refuses from here on. This flag covers ONE PROCESS; the clone
+        #: is also QUARANTINED on disk (`_quarantine_unrolled_clone`), because the refused commit
+        #: outlives the run and the clone is reused. Raised by the GPT review of this branch.
+        self._rollback_failed = False
         # Terminal latch for a probe whose sandbox launcher crashed: set (then
         # re-raised) by `_retire_if_unsafe`. Some intermediate layers catch
         # broadly to keep a run alive (per-candidate error containment), so
@@ -850,10 +1025,197 @@ class Driver:
             return False
         return True
 
+    def _revision_scans_clean(self, rev: str) -> tuple[bool, str]:
+        """Credential-scan ONE revision's own object -- metadata and content. ``(clean, note)``.
+
+        BOTH HALVES OF THE OBJECT ARE SCANNED. The tree diff covers what the commit changes;
+        the commit's header lines are separate bytes the push transfers just the same, and the
+        committer identity among them comes from configuration rather than from the replayed
+        commit, so a process able to write the clone's git config chooses it.
+
+        Shared by both publish paths so the scan cannot be attached to one of them and
+        forgotten on the other -- which is exactly what happened: the scan lived inline in
+        :meth:`_direct_push` and covered the first push's object, while the rebase retry in
+        :meth:`_push_with_rebase` published a REPLAYED object that had been build-verified and
+        never credential-scanned. A non-fast-forward retry is not an edge case here; the
+        retry's own docstring records losing 3 of 6 gate survivors to that race. Raised by the
+        GPT review of this branch.
+
+        *rev* must be a FULL OBJECT ID, never ``HEAD``: the point is that the object scanned
+        here and the object pushed are the same one by construction rather than by timing.
+
+        The git call's EXIT STATUS is load-bearing, not just its stdout: ``_git`` does not
+        raise, and a failed read exits non-zero with EMPTY stdout -- which the scanner would
+        read as "nothing to scan". Every failure here therefore refuses. ``--root`` lets one
+        listing cover a root commit, which has no parent to compare against.
+
+        HISTORY WORTH KEEPING, because the shape of the range is what went wrong before: an
+        earlier form diffed ``{dest}..HEAD``, which was silently EMPTY -- ``dest`` is the local
+        branch the commit sits on the tip of, so that diffs a ref against itself, the scanner
+        read "clean", and the fail-closed credential gate was SKIPPED entirely. Measured
+        against a real repo at the time: a commit adding an AWS key produced a 0-byte
+        ``{dest}..HEAD`` diff and a 144-byte single-commit diff carrying the key.
+        """
+        # Imported here, not at module scope, to match `_direct_push`'s existing pattern: the
+        # name is then resolved on `push_policy` at call time, which is also the seam the
+        # tests patch.
+        from .push_policy import describe_scan, scan_content_for_secrets
+
+        # `core.useReplaceRefs=false` is load-bearing, not hygiene. Git substitutes objects
+        # named by `refs/replace/<oid>` transparently in READS -- `diff` and `show` included --
+        # while the push transport sends the ORIGINAL object. So a reviewer that runs
+        # `git replace` (not on that runner's denylist, which covers only `push` and
+        # `remote set-url`) could point a replacement at clean content, have this scan read the
+        # decoy, and still have the credential-bearing object transferred. Reading with replace
+        # refs disabled makes what is scanned and what is sent the same bytes. Raised by the
+        # GPT review of this branch.
+        # Only `diff.external=` here: `_git` already injects `core.useReplaceRefs=false` on
+        # every call it makes, so spelling it again is the same guarantee written twice, and
+        # only the chokepoint spelling is test-pinned. Dropped on the first-principles review.
+        _NO_REPLACE = ("-c", "diff.external=")
+        # SCAN THE COMMIT OBJECT ITSELF, not only the content it carries. A tree diff shows
+        # what the commit CHANGES; the commit's own header lines are separate bytes that the
+        # push transfers just the same, and `--format=` on the root-commit branch suppresses
+        # them outright. `git rebase` takes the COMMITTER identity from configuration rather
+        # than from the commit it replays, so a process able to write the clone's git config
+        # decides those bytes -- the same actor this method already refuses to trust for
+        # `git replace` above, since the runner's denylist covers only `push` and
+        # `remote set-url`. Measured on a real repository: a replayed commit whose config set
+        # a key-shaped `user.email` carries it in the committer line while the diff branch and
+        # the `--format=` branch both print nothing but the tree change. `cat-file commit`
+        # yields the raw object -- tree, parent, author, committer, then the message -- so the
+        # header bytes and the message reach the scanner as the transport sees them, and no
+        # diff-shaping flag applies. Raised by the GPT review of this branch.
+        meta = _git(["cat-file", "commit", rev], self.clone)
+        if meta.returncode != 0:
+            return False, "could not read the pushable commit object"
+        clean, scan_code = scan_content_for_secrets(meta.stdout or "")
+        if not clean:
+            return False, describe_scan(scan_code)
+        # SCAN THE RAW BLOBS THE PUSH TRANSFERS, not a rendered diff. `git diff` is a REPORT
+        # for humans: for a blob it decides is binary it prints "Binary files a and b differ"
+        # and no content at all, so a credential inside such a blob is invisible to a scan that
+        # reads diff output -- and a NUL byte anywhere in a file is enough to trigger that,
+        # which whatever writes the tree chooses freely. Measured on a real repository: a blob
+        # holding NUL, then a key, then NUL renders as that one summary line with zero
+        # occurrences of the key, while `cat-file blob` on the same object yields it. The push
+        # sends objects rather than a diff, so enumerating the revision's own changed blobs and
+        # reading each one is what makes the scanned bytes and the transferred bytes the same
+        # bytes. This also scans a WHOLE blob rather than the changed hunks, which is again what
+        # is published: a hunk is a view of an object, and it is the object that lands on the
+        # remote. Raised by the GPT review of this branch.
+        #
+        # `--root` covers a root commit, which has no parent to diff against, so both cases go
+        # through one listing rather than a branch whose second half was the weaker reading.
+        listing = _git(
+            ["diff-tree", "-r", "--root", "--no-commit-id", rev],
+            self.clone,
+            config=_NO_REPLACE,
+        )
+        if listing.returncode != 0:
+            return False, "could not list the pushable blobs"
+        for line in (listing.stdout or "").splitlines():
+            # ``:<src mode> <dst mode> <src sha> <dst sha> <status>\t<path>``
+            if not line.startswith(":"):
+                continue
+            meta_fields = line[1:].partition("\t")[0].split()
+            if len(meta_fields) < 5:
+                return False, "could not read a pushable blob entry"
+            dst_mode, dst_sha, status = meta_fields[1], meta_fields[3], meta_fields[4]
+            # A DELETION publishes no content, and a gitlink is a commit pointer with no blob
+            # behind it -- `cat-file blob` on either is a failure that would fail this closed
+            # for a revision carrying nothing to read.
+            if status.startswith("D") or dst_mode == "160000" or set(dst_sha) == {"0"}:
+                continue
+            blob = _git(["cat-file", "blob", dst_sha], self.clone)
+            if blob.returncode != 0:
+                return False, "could not read a pushable blob"
+            clean, scan_code = scan_content_for_secrets(blob.stdout or "")
+            if not clean:
+                # `describe_scan` maps a fixed code to a fixed literal, so nothing derived from
+                # the scanned content reaches a log line or a ledger row.
+                return False, describe_scan(scan_code)
+        return True, ""
+
+    def _restore_branch(self, branch: str, *, promote: str = "") -> bool:
+        """Put the clone back on *branch*, moving it to *promote* first when given. ``ok``.
+
+        RETURNS A STATUS because the caller must be able to abort on it. Logging a failed
+        restore and continuing would publish with the clone detached or its durable branch
+        stale -- a ref lock or a checkout failure is exactly the case where the repository is
+        not in the state the push assumes. Raised by the GPT review of this branch.
+
+        The rebase retry DETACHES HEAD in order to replay the authorized object rather than
+        whatever the branch points at, so every exit from that path has to leave the clone
+        attached again. :meth:`_reset_provisional` rolls a provisional commit back with
+        ``git reset --hard``, which on a detached HEAD moves the detachment and leaves the
+        BRANCH still carrying that commit -- a rollback that silently does not roll back.
+
+        PROMOTION IS CONDITIONAL BY CONSTRUCTION. ``git branch -f`` is only correct when the
+        thing it moves onto is the verified, scanned replay, so the caller passes *promote*
+        at exactly one place: after the replay has passed re-verification, the HEAD-identity
+        check and the credential scan. A failed or aborted rebase therefore cannot force the
+        branch onto whatever HEAD happens to be -- it takes the no-argument form, which
+        re-attaches without moving anything. Raised in review of this branch.
+        """
+        was = ""
+        if promote:
+            # TRANSACTIONAL: remember where the branch was, because `git branch -f` lands
+            # BEFORE the checkout can fail. A concurrent index lock that fails the checkout
+            # would otherwise leave the branch promoted to a replay this method then reports as
+            # unrestored -- the push aborts, the caller rolls back the detached HEAD, and the
+            # unpushed commit stays on the durable branch. Raised by the GPT review.
+            was = _git(["rev-parse", branch], self.clone).stdout.strip()
+            if _git(["branch", "-f", branch, promote], self.clone).returncode != 0:
+                self.log.error(
+                    "direct-push: could not move %s onto the replayed commit %s",
+                    branch,
+                    promote[:12],
+                )
+                return False
+        if _git(["checkout", branch], self.clone).returncode != 0:
+            self.log.error("direct-push: could not re-attach the clone to %s", branch)
+            if promote and was:
+                # Undo the promotion so the branch is not left carrying an unpushed commit.
+                if _git(["branch", "-f", branch, was], self.clone).returncode != 0:
+                    self.log.error(
+                        "direct-push: could not put %s back on %s after a failed checkout",
+                        branch,
+                        was[:12],
+                    )
+            return False
+        return True
+
     def _push_with_rebase(
-        self, fetch_url: str, dest: str, target: str
+        self, fetch_url: str, dest: str, target: str, src: str
     ) -> subprocess.CompletedProcess | None:
-        """Push HEAD to ``dest``, rebasing ONCE onto the remote if it moved meanwhile.
+        """Push *src* to ``dest``, rebasing ONCE onto the remote if it moved meanwhile.
+
+        *src* is the revision the FIRST push sends, and it is REQUIRED: an object id cannot be
+        repointed, so once this is called, nothing running in the clone can change which commit
+        gets published. Pushing the symbolic ``HEAD`` left a time-of-check/time-of-use window --
+        the identity check happens, then the credential scan and the push each re-read ``HEAD``
+        -- and a background process left behind by the pre-push reviewer could move it in
+        between. Raised by the GPT review of this branch.
+
+        It began as an optional parameter defaulting to ``HEAD`` "for callers that have nothing
+        more specific". There were none: the sole production caller resolves the committed
+        object first and passes it. That default kept three arms alive that fired only for a
+        symbolic source -- skipping the pre-fetch tamper check, replaying the BRANCH rather than
+        the object, and reading ``HEAD`` after the push for the ledger -- each of them the very
+        check-then-use shape this change exists to remove. Requiring the argument deletes all
+        three. Raised by the first-principles review of this branch, which asked for the
+        subtraction rather than more guards.
+
+        THE RETRY REPUBLISHES BY ID TOO. A rebase REPLAYS the commit as a NEW object, so *src*
+        names the pre-rebase commit -- not what the rebase produced, and non-fast-forward
+        anyway -- but the answer is to resolve the REPLACEMENT to a full id, credential-scan
+        that object, and push it. An earlier revision of this method pushed ``HEAD`` there and
+        justified it with "``_reverify_head`` has just run", which was the same
+        check-then-use mistake this branch fixed twice elsewhere: the build gate is a check,
+        the push is a later use, and ``HEAD`` is re-resolved in between. It also published an
+        object no credential scan had ever covered, because the caller scans the PRE-rebase
+        object. Raised by the GPT review of this branch.
 
         A run takes tens of minutes, so the branch can legitimately advance between the
         clone's fetch and the winner's push — and a bare push then dies
@@ -878,13 +1240,18 @@ class Driver:
           * never ``--force``. If the second push is also rejected, we stop — a losing
             race is a signal, not something to overwrite.
 
-        The caller must read the pushed sha from the clone AFTER this returns, not from
-        its own pre-push snapshot: a rebase rewrites HEAD, so the pre-rebase sha names a
-        commit that does not exist on the remote.
+        The caller must record ``self._pushed_object``, which this sets to whatever it actually
+        sent, and NOT its own pre-push snapshot: a rebase rewrites HEAD, so the pre-rebase sha
+        names a commit that does not exist on the remote. Reading the sha back from the clone is
+        wrong for the same reason -- HEAD can move between the push and the read.
         """
         if self._retire_if_unsafe("direct-push preflight"):
             return None
         require_pinned(self.clone)
+        # Remember WHICH OBJECT was sent, so the caller records that rather than re-reading
+        # `HEAD` after the push: HEAD can move between the push and the read, which would put
+        # an unrelated sha in the ledger for a commit that did land. Raised by the GPT review.
+        self._pushed_object = src
         push = subprocess.run(
             [
                 "git",
@@ -893,7 +1260,7 @@ class Driver:
                 *_GIT_SAFE_CONFIG,
                 "push",
                 fetch_url,
-                f"HEAD:refs/heads/{dest}",
+                f"{src}:refs/heads/{dest}",
             ],
             capture_output=True,
             **UTF8_TEXT,
@@ -905,19 +1272,229 @@ class Driver:
             if "non-fast-forward" not in blob and "fetch first" not in blob:
                 return push  # a different failure — do not mask it with a retry
             self.log.info("direct-push: %s moved under us; rebasing and retrying", dest)
-            if _git(["fetch", fetch_url, dest], self.clone).returncode != 0:
+            # `git rebase` replays whatever the CURRENT BRANCH points at, not *src* -- so if
+            # HEAD has moved since the caller's checks, the retry would replay the moved commit
+            # and then bind its own capture, verify and scan to THAT, consistently passing while
+            # publishing content that never descended from the verified object. Refuse instead:
+            # the rebase input has to be the object this run authorized. Skipped when *src* is
+            # the default symbolic `HEAD`, where there is no retained id to compare against.
+            # Raised by the GPT review of this branch.
+            # A TAMPER DETECTOR, not the guarantee it once was. The rebase below names the
+            # authorized object EXPLICITLY, so what gets replayed does not depend on where
+            # HEAD points and this check is not what makes that safe. It stays because a HEAD
+            # that has moved by now means something wrote the clone after the caller's checks,
+            # and a clone being written by an unknown actor is not one to publish from. On its
+            # own it is defeatable: it sits before the `fetch`, a network operation lasting
+            # seconds, so relied on alone it would only see the branch as it was before that
+            # window. Raised by the GPT review of this branch.
+            src_ok, src_note = self._head_is_the_committed_sha(src)
+            if not src_ok:
+                self.log.error(
+                    "direct-push: HEAD is no longer the authorized source (%s) -- not rebasing",
+                    src_note,
+                )
                 return push
-            reb = _git(["rebase", "FETCH_HEAD"], self.clone)
+            # CAPTURE THE FETCHED TIP AS AN OBJECT ID, FROM THE FETCH ITSELF. `FETCH_HEAD` is a
+            # mutable file in the clone, and the pre-push reviewer's shell can rewrite it between
+            # the fetch and the rebase: the replay then lands on a SUBSTITUTED parent whose
+            # content nothing scanned (the scan covers only the replayed commit), and the push
+            # carries it. Keying both the rebase input and the replayed-commit count on that same
+            # name made them corroborate the substitution rather than catch it. Measured on a
+            # throwaway repo: with `.git/FETCH_HEAD` rewritten to a prepared child,
+            # `rev-list --count FETCH_HEAD..HEAD` still reported 1 while the truth against the
+            # real tip was 2, the scanned range held only our own file, and a bare remote ACCEPTED
+            # the push -- the foreign file landed. With the id taken from `--porcelain` stdout the
+            # same attack replays onto the real tip and the foreign file is gone from the
+            # published range. Raised by the GPT review of this branch.
+            fetched = _git(["fetch", "--porcelain", fetch_url, dest], self.clone)
+            if fetched.returncode != 0:
+                return push
+            base = _fetched_tip_oid(fetched.stdout)
+            if not base:
+                self.log.error(
+                    "direct-push: the fetch did not report the tip's object id -- not rebasing"
+                )
+                return push
+            # PIN THE COMMITTER FROM THE AUTHORIZED OBJECT, not from configuration. A replay
+            # writes a NEW commit object, and git takes its committer identity from config
+            # rather than from the commit being replayed -- while author and message carry
+            # over. The reviewing agent's shell can write the repository's config (its git
+            # denylist covers only `push` and `remote set-url`) and nothing masks a global
+            # one, so a replay left to resolve identity itself publishes attribution that a
+            # distrusted actor chose. `src` already holds the identity the pipeline committed
+            # under, recorded before any agent ran, and it is an immutable object: reading the
+            # answer off it needs no new state and no trust in any config file. Raised by the
+            # GPT review of this branch.
+            pin_name, pin_email = _committer_identity(src, self.clone)
+            if not pin_name or not pin_email:
+                self._restore_branch(dest)
+                self.log.error(
+                    "direct-push: cannot read the authorized commit's own identity -- not"
+                    " rebasing"
+                )
+                return push
+            # REPLAY THE RETAINED OBJECT ONTO THE CAPTURED BASE. `git rebase <base> <rev>` checks
+            # out *rev* detached and replays it, so BOTH ends are immutable object ids and nothing
+            # that rewrites a ref in between can substitute either one. There is no no-argument
+            # form any more: *src* is required, so the branch is never the thing replayed.
+            reb = _git(
+                ["rebase", base, src],
+                self.clone,
+                config=("-c", f"user.name={pin_name}", "-c", f"user.email={pin_email}"),
+            )
             if reb.returncode != 0:
                 _git(["rebase", "--abort"], self.clone)
+                self._restore_branch(dest)
                 self.log.warning("direct-push: rebase onto %s conflicted — not pushing", dest)
                 return push
+            # The rebase REPLAYED the commit, so the object about to be published is a new one
+            # that nothing has scanned: the caller's credential scan covered the PRE-rebase
+            # object. Resolve the replacement to a full id, scan THAT, and push THAT -- so this
+            # path holds the same invariant as the first push instead of trusting `HEAD`, which
+            # is re-resolved by the push itself and can be moved in between by a process the
+            # reviewer left behind. Raised by the GPT review of this branch.
+            #
+            # RESOLVED BEFORE `_reverify_head`, DELIBERATELY. That gate runs the
+            # repository-under-improvement's OWN test suite, i.e. arbitrary code from the tree
+            # being published, so resolving afterwards let a test teardown move HEAD and have
+            # the moved commit captured, scanned and pushed as though the gate had measured it:
+            # credentials still covered, but the build-verification invariant broken with no
+            # recheck. Capturing first and asserting HEAD is still that object afterwards makes
+            # the thing the gate measured and the thing published the same object. Raised by
+            # the GPT review of this branch, which found the earlier ordering.
+            rebased_id = (
+                _git(["rev-list", "-1", "HEAD^{commit}"], self.clone).stdout or ""
+            ).strip()
             verified = self._reverify_head()
             if self._retire_if_unsafe("post-rebase verification"):
                 return None
+            # Every refusal from here re-attaches the clone WITHOUT moving the branch: the
+            # rebase left HEAD detached at the replay, and `_reset_provisional` rolls back with
+            # `git reset --hard`, which on a detached HEAD would move the detachment and leave
+            # the branch still carrying the provisional commit. Leaving the branch where it was
+            # is also the conservative outcome -- it never points at a replay that failed a
+            # check.
             if not verified:
+                self._restore_branch(dest)
                 return push  # rebased tree is unverified — return the original rejection
+            # The emptiness refusal is deliberately HERE rather than at the capture above: the
+            # capture has to precede the gate, but refusing there would preempt the retire and
+            # re-verify checks and swallow the atomic clone retirement (`return None`), which is
+            # a stronger outcome than a failed push. Same shape as `_direct_push`: resolve
+            # early, carry the value forward, refuse in the original order.
+            if not rebased_id:
+                self.log.error("direct-push: cannot resolve the rebased commit -- not pushing")
+                self._restore_branch(dest)
+                return push
+            # THE CAPTURED REPLAY MUST CARRY THE AUTHORIZED CHANGE. Everything below binds to
+            # *rebased_id*, and *rebased_id* comes from ambient `HEAD` -- so a process that
+            # moves HEAD in the window between the rebase returning and that read gets its own
+            # commit measured, scanned, counted and published, with every check agreeing
+            # because they all agree ABOUT THE SUBSTITUTE. The HEAD-equality check below cannot
+            # catch it: it compares HEAD against the same captured id, so a substitution that
+            # happened BEFORE the capture is corroborated rather than refused. Nothing in the
+            # chain reached back to *src*, the object the caller authorized and already
+            # scanned.
+            #
+            # Equality of ids is not available -- a replay is a new object by definition -- so
+            # the binding is the RESULT: the tree a replay of *src* onto *base* must produce,
+            # computed from those two immutable ids by git's own merge, against the tree the
+            # captured commit actually carries. That closes the window by making the published
+            # CONTENT provably the authorized content rather than by trying to make the window
+            # empty; HEAD is the only handle the rebase leaves, so the window cannot be
+            # removed, only made harmless.
+            #
+            # A TREE, NOT A PATCH IDENTITY, because a patch identity ignores hunk positions:
+            # the same added and removed lines placed elsewhere in the file carry the same
+            # identity and a different tree. Raised by the GPT review of this branch.
+            #
+            # FAIL-CLOSED, and the cost is a skipped publish, never a bad one: this cycle's
+            # commit stays on the branch and the next cycle re-pushes it.
+            want_tree = _expected_replay_tree(base, src, self.clone)
+            have_tree = _commit_tree(rebased_id, self.clone)
+            if not want_tree or not have_tree or want_tree != have_tree:
+                self.log.error(
+                    "direct-push: the rebased commit %s does not carry the tree a replay of the"
+                    " authorized %s produces -- not pushing",
+                    rebased_id[:12],
+                    src[:12],
+                )
+                self._restore_branch(dest)
+                return push
+            want_attr = _commit_attribution(src, self.clone)
+            have_attr = _commit_attribution(rebased_id, self.clone)
+            if not want_attr or not have_attr or want_attr != have_attr:
+                # THE PIN IS NOT THE GUARANTEE, this is. A `-c` override loses to the
+                # ``GIT_COMMITTER_*`` environment, and author and message are carried over by
+                # the replay rather than pinned at all, so the published object's attribution
+                # is checked against the authorized one instead of assumed. Comparing objects
+                # to each other keeps configuration out of the answer entirely.
+                self.log.error(
+                    "direct-push: the rebased commit %s does not carry the attribution of the"
+                    " authorized %s -- not pushing",
+                    rebased_id[:12],
+                    src[:12],
+                )
+                self._restore_branch(dest)
+                return push
+            head_ok, head_note = self._head_is_the_committed_sha(rebased_id)
+            if not head_ok:
+                self.log.error(
+                    "direct-push: HEAD moved while the build gate ran (%s) -- not pushing",
+                    head_note,
+                )
+                self._restore_branch(dest)
+                return push
+            scan_ok, scan_note = self._revision_scans_clean(rebased_id)
+            if not scan_ok:
+                self.log.error(
+                    "direct-push: the rebased commit %s did not scan clean (%s) -- not pushing",
+                    rebased_id[:12],
+                    scan_note,
+                )
+                self._restore_branch(dest)
+                return push
+            # THE REBASE MUST HAVE REPLAYED EXACTLY ONE COMMIT. If the remote already carries an
+            # equivalent patch, `git rebase` drops ours as already-applied and leaves HEAD at
+            # the remote tip -- which every check below would then bind to, consistently, and
+            # the ledger would record an unrelated commit as the one this pipeline landed. A
+            # count of 0 is that case; anything above 1 means the replay is not the single
+            # commit this method is documented to handle. Raised by the GPT review.
+            #
+            # BOTH ENDPOINTS ARE CAPTURED IDS. The base is the tip the fetch reported, not
+            # `FETCH_HEAD` -- that name is a mutable file, so a count keyed on it measures the
+            # same substituted state the rebase would have replayed onto, and agrees with it.
+            # The far end is *rebased_id*, not ambient `HEAD`: `HEAD` resolves to whatever the
+            # working tree points at when this line runs, and the build gate above executes the
+            # target repository's OWN test suite, so a teardown can move it in between. The
+            # equality check above proves HEAD was still the replay a moment ago, which is a
+            # check-then-use pair -- naming the id removes the dependency instead of timing it.
+            # It also makes the range counted identical to the range PUBLISHED: the push sends
+            # *rebased_id*, so `base..rebased_id` is exactly what this adds to the remote.
+            # Raised by the GPT review of this branch, one step along from the same defect in
+            # the rebase input.
+            replayed = (
+                _git(["rev-list", "--count", f"{base}..{rebased_id}"], self.clone).stdout or ""
+            ).strip()
+            if replayed != "1":
+                self.log.error(
+                    "direct-push: the rebase replayed %s commits, not 1 -- not pushing",
+                    replayed or "an unreadable number of",
+                )
+                self._restore_branch(dest)
+                return push
+            # THE ONE PLACE THE BRANCH IS PROMOTED, and it is reached only after the replay has
+            # passed re-verification, the HEAD-identity check and the credential scan. Doing it
+            # any earlier would force the branch onto whatever HEAD happened to be if a later
+            # check refused -- silently, with the branch looking healthy. Raised in review.
+            # A FAILED restore ABORTS the push: publishing while the clone is detached or its
+            # durable branch is stale is exactly what the restore exists to prevent, so its
+            # status is checked rather than logged. Raised by the GPT review.
+            if not self._restore_branch(dest, promote=rebased_id):
+                self.log.error("direct-push: branch restore failed -- not pushing %s", dest)
+                return push
             require_pinned(self.clone)
+            self._pushed_object = rebased_id
             push = subprocess.run(
                 [
                     "git",
@@ -926,7 +1503,7 @@ class Driver:
                     *_GIT_SAFE_CONFIG,
                     "push",
                     fetch_url,
-                    f"HEAD:refs/heads/{dest}",
+                    f"{rebased_id}:refs/heads/{dest}",
                 ],
                 capture_output=True,
                 **UTF8_TEXT,
@@ -971,7 +1548,40 @@ class Driver:
             "rh_functional_ok": meas.rh_functional_ok,
         }
 
+    def _publishing_is_halted(self) -> bool:
+        """Whether a failed provisional rollback has made this clone unsafe to publish from.
+
+        A failed rollback leaves HEAD carrying a commit that was refused and never published.
+        Anything that publishes afterwards sends that commit as an ANCESTOR while its own scan
+        looks at one revision, so the refused content lands through a scanner that never saw it.
+        The rollback IS the repair, so a rollback that cannot be trusted to have happened must
+        not be followed by work that assumes it did -- and the answer is to stop, not to retry:
+        a retry would be one more thing whose failure has to be handled.
+
+        Checked at three places so the halt is UNCONDITIONAL rather than narrowed:
+
+        * here, at the top of each winner-applying method, which is BEFORE the PR pipeline's
+          `emit_*` -- that path reaches ``pr_recipe._push_fix_branch``, which pushes ``HEAD``
+          and knows nothing about this latch, and it runs before the direct push does;
+        * at :meth:`_direct_push`, the publish gate itself;
+        * and through ``request_stop``, which the cycle loop reads, so no later cycle starts.
+
+        One cycle can hold SEVERAL bug winners (``for prop, bug_res in bug_winners``), so a
+        latch read only at cycle boundaries would let the next winner in the SAME cycle publish.
+        Raised by the GPT review of this branch; the unconditional form was the conductor's
+        requirement.
+        """
+        if not getattr(self, "_rollback_failed", False):
+            return False
+        self.log.error(
+            "refusing to apply any further winner: a provisional rollback failed, so HEAD"
+            " carries a commit that was refused and never published"
+        )
+        return True
+
     def _apply_verdict(self, cycle, base_sha, verdict, archived, fresh_count, gated_sha) -> int:
+        if self._publishing_is_halted():
+            return 0
         # Archive ALL survivors (the whole population is evolutionary memory). The kept
         # winner's diff_ref is reused as the CR's ``diff-ref`` (06_*.md §3.1/§3.2).
         winner_diff_ref = ""
@@ -1248,8 +1858,11 @@ class Driver:
                 "Look for defects that would matter in review: incorrect logic, unhandled\n"
                 "errors, resource leaks, race conditions, security issues, and behaviour\n"
                 "changes the commit does not mention. Ignore style preferences.\n\n"
-                "Do NOT push. Do NOT open a pull request. Review only — you may fix a trivial\n"
-                "finding in the clone and re-review, but the last line MUST be the verdict.\n\n"
+                "Do NOT push. Do NOT open a pull request. Do NOT commit or amend anything:\n"
+                "this is REPORT-ONLY. A commit here replaces the object the pipeline measured\n"
+                "and reproduced, which the publish gate then refuses -- so a well-meant fix\n"
+                "discards the verified change. Report the finding instead. The last line MUST\n"
+                "be the verdict.\n\n"
                 "End your reply with EXACTLY one line: `REVIEW: clean` if there are no open\n"
                 "findings on the added or changed lines, else `REVIEW: <N> open`. If you could\n"
                 "not actually review the diff, say `REVIEW: unavailable` rather than guessing —\n"
@@ -1258,7 +1871,17 @@ class Driver:
             res = runner.run(
                 prompt,
                 cwd=str(self.clone),
-                allowed_tools=["Bash", "Read", "Edit", "Grep", "Glob"],
+                # NO `Edit`. The prompt above is report-only and gives a reviewer no
+                # sanctioned reason to modify the clone. What actually determines whether a
+                # reviewer CAN modify it is the tool list, not the prose, so withholding the
+                # capability is what matters here. Raised by the first-principles review of
+                # this branch.
+                #
+                # This is least privilege, NOT the enforcement boundary: `Bash` remains (the
+                # review has to run git to read the diff), and a shell can write files and
+                # commit. That is precisely why the identity checks below exist rather than
+                # relying on what the reviewer was told or granted.
+                allowed_tools=["Bash", "Read", "Grep", "Glob"],
                 max_turns=30,
                 timeout_s=420,
             )
@@ -1326,6 +1949,57 @@ class Driver:
             return True, "full suite green"
         return False, f"{len(failing)} failing test(s): {', '.join(failing[:3])}"
 
+    def _head_is_the_committed_sha(self, committed_id: str) -> tuple[bool, str]:
+        """Is the clone's HEAD still the commit this pipeline committed? ``(ok, note)``.
+
+        This gate holds one invariant: do not push what a worker did not commit.
+        *committed_id* is the FULL object id of what :meth:`_finalize_winner_commit` /
+        :meth:`_finalize_bug_winner_commit` produced -- the commit that was measured,
+        reproduced and written to the ledger -- resolved by the caller BEFORE the review gate
+        runs. Nothing holds the verified commit and the published one together, and the window
+        between them is not empty: :meth:`_prepush_review_clean` runs an agent in THIS clone
+        with ``Bash`` for up to 30 turns, and that runner's git denylist covers only ``push``
+        and ``remote set-url``, so ``git commit --amend`` is permitted there. That prompt is
+        report-only and grants no ``Edit``, but neither is an ENFORCEMENT BOUNDARY -- a prompt
+        is an instruction to an agent that may be
+        carrying an injected diff, and a shell can write files whatever the tool list says -- so
+        a moved HEAD stays reachable and this check is what refuses it.
+
+        THE ANCHOR IS A FULL OBJECT ID, which is what makes this comparison mean anything. A
+        short sha is an ambiguous NAME: git reads a revision as a ref name before an
+        abbreviated object id, and a prefix stops naming one object once a second object shares
+        it. Either reading is arrangeable by whatever can write the repository, so a gate that
+        re-resolved an abbreviation would compare two values the distrusted actor chose. The
+        finalizers therefore return a validated forty-hex id and nothing downstream resolves by
+        prefix; a short form is derived for DISPLAY only. Raised by the GPT review of this
+        branch.
+
+        Resolved with ``rev-list -1`` rather than ``rev-parse --verify`` because this method
+        ALREADY asks a different question with ``rev-parse --verify --quiet HEAD~1`` -- "does
+        a parent exist", a boolean that picks the credential scan's range. One verb carrying
+        two unrelated questions is indistinguishable to a reader and to any caller keyed on
+        the argv, and ``test_ai_spine_driver_coverage``'s git double is keyed on exactly that:
+        its own docstring says prefixes are scripted "so a caller can pin
+        ``rev-parse --verify`` separately from ``rev-parse HEAD``". One prefix, one call site.
+
+        FAIL-CLOSED. A revision that does not resolve is the ABSENCE of the check, not a
+        pass: an amended-away commit can be pruned, and "I could not look" must never read
+        as "I looked and it was fine".
+        """
+        if not committed_id:
+            return False, "cannot resolve the committed object -- refusing to publish"
+        have = _git(["rev-list", "-1", "HEAD^{commit}"], self.clone)
+        have_sha = (have.stdout or "").strip()
+        if have.returncode != 0 or not have_sha:
+            return False, "cannot resolve the clone's HEAD -- refusing to publish"
+        if committed_id != have_sha:
+            return False, (
+                f"HEAD moved after the pipeline committed {committed_id[:12]}"
+                f" (HEAD is now {have_sha[:12]}): the commit that would be published is"
+                " not the one this run verified"
+            )
+        return True, f"HEAD is the committed revision {have_sha[:12]}"
+
     def _direct_push(self, *, fp: str, kind: str, target: str, sha: str) -> bool | None:
         """F10: push the just-committed verified change to the operator-authorized branch.
 
@@ -1343,9 +2017,7 @@ class Driver:
         is its gate (F6/F10; fail-closed)."""
         from .push_policy import (
             authorize_direct_push,
-            describe_scan,
             normalize_branch,
-            scan_content_for_secrets,
         )
 
         ok, reason = authorize_direct_push(direct_commit=self.direct_commit, branch=self.branch)
@@ -1361,6 +2033,37 @@ class Driver:
                 )
             )
             return False
+        # A FAILED ROLLBACK IS TERMINAL FOR PUBLISHING. HEAD still carries a commit that was
+        # refused and never published, so this winner's scan (`<rev>~1..<rev>`) reads one
+        # revision while its push sends the whole ancestry -- publishing the refused content
+        # through a scanner that never looked at it. Checked HERE and not only via the run's
+        # stop flag because that flag is read at cycle boundaries, and a cycle can hold SEVERAL
+        # bug winners (`for prop, bug_res in bug_winners`), each reaching this method. Raised by
+        # the GPT review of this branch.
+        if getattr(self, "_rollback_failed", False):
+            reason = "a provisional rollback failed, so HEAD carries an unpublished commit"
+            self.log.error("direct-push refused for %s: %s", target, reason)
+            self.ledger.record(
+                L.LedgerEntry(
+                    fp=fp,
+                    kind=kind,
+                    target=target,
+                    status=L.STATUS_ERROR,
+                    note=f"direct-push refused: {reason}"[:200],
+                )
+            )
+            return False
+        # THE FINALIZER HANDS BACK A FULL OBJECT ID, so nothing is resolved by prefix here. A
+        # short sha is an ambiguous name -- git reads a revision as a ref name before an
+        # abbreviated object id, and a prefix stops naming one object once a second object
+        # shares it -- so a lookup keyed on one lets whatever can write the repository decide
+        # which object this path anchors to. Validating the id the finalizer already produced
+        # leaves no lookup to aim at. An empty or malformed value is carried forward and
+        # refused below rather than raised, so a missing sha keeps its own existing message.
+        # Raised by the GPT review of this branch.
+        committed_id = ""
+        if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha):
+            committed_id = sha
         # PRE-PUSH REVIEW GATE (fail-closed): a direct-pushed commit gets no human review,
         # so the automated reviewer must clear it before it lands on the shared branch.
         clean, note = self._prepush_review_clean(target=target, base_ref=self.branch)
@@ -1399,6 +2102,27 @@ class Driver:
                 )
             )
             return False
+        # Publish only what this pipeline committed. Placed HERE
+        # deliberately -- AFTER the review gate, so a reviewer that edited and amended the
+        # clone is caught, and BEFORE the credential scan and the push, so an unverified
+        # commit is neither scanned as though it were the verified one nor published. NOT
+        # wrapped around the push itself: `_push_with_rebase` rewrites HEAD on purpose and
+        # re-verifies the replayed tree, so a check there would refuse that legitimate path.
+        # Refusing returns False, the same disposition every other gate in this method uses:
+        # the commit stays local and recoverable and the caller rolls the provisional back.
+        head_ok, head_note = self._head_is_the_committed_sha(committed_id)
+        if not head_ok:
+            self.log.error("direct-push REFUSED for %s: %s", target, head_note)
+            self.ledger.record(
+                L.LedgerEntry(
+                    fp=fp,
+                    kind=kind,
+                    target=target,
+                    status=L.STATUS_ERROR,
+                    note=f"direct-push refused: {head_note}"[:200],
+                )
+            )
+            return False
         dest = normalize_branch(self.branch)
         # Resolve the real remote URL the clone FETCHES from (push remote is disabled). We
         # push HEAD (the verified commit we just made on self.branch) to the authorized ref.
@@ -1426,65 +2150,20 @@ class Driver:
         # Scan the CONTENT before it leaves the host. `_redact_commit_message` covers the
         # message; this covers the commit itself, which is equally unwipeable once pushed
         # and is agent-authored. Detect-and-refuse: the commit stays local and the ledger
-        # records why, rather than publishing a silently-rewritten patch.
-        # Scan the RANGE THAT WILL BE PUSHED, which is the verified commit itself: HEAD and
-        # its parent. The earlier `{dest}..HEAD` form was silently EMPTY — `dest` is the
-        # local branch this commit sits on the tip of, so `git diff <branch>..HEAD` diffs a
-        # ref against itself and returns nothing, which `scan_content_for_secrets` reads as
-        # "clean" and the fail-closed credential gate is SKIPPED. Measured against a real
-        # repo: a commit adding an AWS key produced a 0-byte `<branch>..HEAD` diff and a
-        # 144-byte `HEAD~1..HEAD` diff carrying the key. (This regressed when the checkout
-        # was moved to the local branch; before that `dest` was the stale `origin/<branch>`
-        # tracking ref, which happened to differ.) Raised by the GPT review of this branch.
+        # records why, rather than publishing a silently-rewritten patch. The range mechanics
+        # and the history behind them live in `_revision_scans_clean`.
         #
-        # `HEAD~1..HEAD` for a normal commit; `--root` shows a root commit that has no
-        # parent. The git call's EXIT STATUS is load-bearing, not just its stdout: `_git`
-        # does not raise, and a failed diff exits non-zero with EMPTY stdout — which the
-        # scanner would read as "nothing to scan". Both sibling call sites refuse on a
-        # non-zero status; this one must too.
-        has_parent = (
-            _git(["rev-parse", "--verify", "--quiet", "HEAD~1"], self.clone).returncode == 0
-        )
-        proc = (
-            _git(
-                ["-c", "diff.external=", "diff", "--no-ext-diff", "HEAD~1..HEAD"],
-                self.clone,
-            )
-            if has_parent
-            else _git(
-                [
-                    "-c",
-                    "diff.external=",
-                    "show",
-                    "--no-ext-diff",
-                    "--format=",
-                    "--root",
-                    "HEAD",
-                ],
-                self.clone,
-            )
-        )
-        if proc.returncode != 0:
-            self.log.error(
-                "direct-push REFUSED for %s: could not read the pushable diff (git exit %s)",
-                target,
-                proc.returncode,
-            )
-            self.ledger.record(
-                L.LedgerEntry(
-                    fp=fp,
-                    kind=kind,
-                    target=target,
-                    status=L.STATUS_ERROR,
-                    note="direct-push refused: could not read the pushable diff",
-                )
-            )
-            return False
-        clean, scan_code = scan_content_for_secrets(proc.stdout or "")
-        if not clean:
-            # `describe_scan` maps a fixed code to a fixed literal, so nothing derived
-            # from the scanned content reaches this log line or the ledger row below.
-            scan_note = describe_scan(scan_code)
+        # Scan the COMMITTED OBJECT BY ID, never through `HEAD`. Binding this to the symbolic
+        # ref left a hole that no amount of re-checking closes: a background process can point
+        # HEAD at a clean decoy for the duration of the `git diff` and restore it before any
+        # later check, so the scanner reads the decoy, every check passes, and the real commit
+        # is published having never been scanned. An id names one immutable object, so the
+        # thing scanned here and the thing pushed below are the same object by construction
+        # rather than by timing. `_push_with_rebase` calls the SAME helper on the replayed
+        # object if it has to rebase, so neither publish path can go out unscanned.
+        # Raised by the GPT review of this branch.
+        scan_ok, scan_note = self._revision_scans_clean(committed_id)
+        if not scan_ok:
             self.log.error("direct-push REFUSED for %s: %s", target, scan_note)
             self.ledger.record(
                 L.LedgerEntry(
@@ -1497,7 +2176,32 @@ class Driver:
             )
             return False
 
-        push = self._push_with_rebase(fetch_url, dest, target)
+        # A TAMPER DETECTOR, not the thing that binds the scan -- that is the object id used
+        # above and below, and this check is deliberately not load-bearing for it. Relying on
+        # a post-scan re-check to prove the scan had covered the published object would be
+        # wrong: the re-check is itself a check-then-use pair, so a process that swapped HEAD
+        # during the diff and restored it before this line defeats both. What this still
+        # catches is worth keeping: HEAD
+        # differing here means something wrote the clone after the review returned, and a
+        # clone that is being written by an unknown actor is not one to publish from, even
+        # when the object about to be published is provably the verified one.
+        head_ok, head_note = self._head_is_the_committed_sha(committed_id)
+        if not head_ok:
+            self.log.error("direct-push REFUSED for %s after the scan: %s", target, head_note)
+            self.ledger.record(
+                L.LedgerEntry(
+                    fp=fp,
+                    kind=kind,
+                    target=target,
+                    status=L.STATUS_ERROR,
+                    note=f"direct-push refused after the scan: {head_note}"[:200],
+                )
+            )
+            return False
+
+        # Publish the OBJECT ID, not ``HEAD``: an id cannot be repointed, so no process in
+        # the clone can change what lands on the branch between here and the push itself.
+        push = self._push_with_rebase(fetch_url, dest, target, src=committed_id)
         if push is None:
             self.ledger.record(
                 L.LedgerEntry(
@@ -1509,12 +2213,19 @@ class Driver:
                 )
             )
             return None
-        # Read the sha back from the clone: a rebase inside `_push_with_rebase` rewrites
-        # HEAD, so the caller's pre-push snapshot would name a commit that is NOT on the
-        # remote. `self.pushed_sha` is what the ledger records. Fall back to the snapshot
-        # only when rev-parse fails, so a reporting hiccup cannot blank a real sha.
-        head_after = _git(["rev-parse", "HEAD"], self.clone)
-        self.pushed_sha = (head_after.stdout or "").strip() or sha
+        # Record the OBJECT THAT WAS SENT, which `_push_with_rebase` reports -- on the fast path
+        # the retained id, on the retry path the replayed one. Re-reading `HEAD` here was wrong
+        # for the same reason it is wrong everywhere else on this path: HEAD can move between
+        # the push and the read, and the ledger would then name an unrelated commit for a change
+        # that really did land. The HEAD read is GONE rather than kept as a fallback: `src` is
+        # required now, so there is no caller for whom the sent object is unknown, and a fallback
+        # that re-reads HEAD is the defect wearing a smaller hat. There is no fallback to the
+        # caller's own snapshot either, because it is unreachable: the ONLY return in
+        # `_push_with_rebase` that precedes `self._pushed_object = src` is the retire path's
+        # `return None`, and that routes to this method's own `return None` above -- before this
+        # line. Raised by the GPT review, then narrowed twice by the first-principles review.
+        sent = str(getattr(self, "_pushed_object", "") or "")
+        self.pushed_sha = sent
         if push.returncode != 0:
             # Redact BEFORE the bound (here and at every stderr slice below): git
             # echoes the authenticated remote URL on an auth failure, and slicing
@@ -1653,21 +2364,154 @@ class Driver:
             return False
         return True
 
-    def _reset_provisional(self, pre_sha: str) -> None:
-        """Roll the branch back to ``pre_sha`` after a provisional commit that was not
-        filed, so a fluke, duplicate or error never advances HEAD (06_*.md §1.1)."""
+    def _reset_provisional(self, pre_sha: str) -> bool:
+        """Roll the AUTHORIZED branch back to ``pre_sha`` after a provisional commit that was
+        not filed, so a fluke, duplicate or error never advances HEAD (06_*.md section 1.1).
+
+        Returns whether the branch is back where it belongs. A FAILED rollback is not a log
+        line: HEAD keeps the refused commit, the next winner commits on top of it, and that
+        winner's single-revision scan cannot see the parent its own push would publish. So a
+        failure latches ``_rollback_failed`` and stops the run, at this chokepoint rather than
+        at the five call sites, because a caller that forgets to check is the whole defect.
+
+        ONE COMMAND, and that is the whole point. ``git reset --hard`` acts on WHATEVER IS
+        CHECKED OUT, and this runs after the pre-push reviewer has had a shell in the clone --
+        whose denylist covers only ``push`` and ``remote set-url``, so ``git checkout`` is
+        permitted there. Two ways that bites:
+
+        * the reviewer checks out a DIFFERENT branch, and the rollback hard-resets that branch
+          to a sha from an unrelated run, destroying its commits;
+        * HEAD is DETACHED, and the reset moves the detachment while the branch keeps carrying
+          the provisional commit -- a rollback that silently does not roll back.
+
+        An earlier fix read ``rev-parse --abbrev-ref HEAD``, checked the branch out if it
+        differed, then reset -- which was the same check-then-use pair one level up: a
+        backgrounded ``setsid git checkout victim`` landing between the check and the reset put
+        the reset back on the wrong branch. ``git checkout -f -B <branch> <pre_sha>`` is a
+        single invocation that NAMES the branch, moves it to *pre_sha* and checks it out, so
+        there is no window and no ambiguity about which ref moves. ``-f`` keeps the old
+        ``reset --hard`` semantics of discarding the working tree. Fail closed on error: a
+        provisional commit left behind is resolved by the next cycle's stage step, while
+        touching a ref that was never this run's to touch is not recoverable. Raised across
+        three rounds of the GPT review of this branch.
+        """
         if not pre_sha:
-            return
-        head = _git(["rev-parse", "HEAD"], self.clone).stdout.strip()
-        if head == pre_sha:
-            return  # nothing was committed (empty diff)
-        res = _git(["reset", "--hard", pre_sha], self.clone)
+            return True
+        if getattr(self, "_repository_retired", False):
+            # The clone was already renamed out from under us; there is nothing to roll back
+            # and no path to roll it back on.
+            return False
+        branch = normalize_branch(self.branch)
+        res = _git(["checkout", "-f", "-B", branch, pre_sha], self.clone)
         if res.returncode != 0:
             self.log.error(
-                "could not roll back the provisional commit to %s: %s",
+                "could not roll back the provisional commit to %s on %s: %s -- halting: HEAD"
+                " carries a commit that was refused and never published",
                 pre_sha[:10],
+                branch,
                 redact_log_via_context((res.stderr or "").strip())[:160],
             )
+            self._rollback_failed = True
+            self.request_stop()
+            self._quarantine_unrolled_clone(pre_sha)
+            return False
+        return True
+
+    def _quarantine_unrolled_clone(self, pre_sha: str) -> None:
+        """Rename the clone out of its canonical name after a rollback failure.
+
+        THE GUARD HAS TO OUTLIVE THE PROCESS, because the thing it guards does. The in-memory
+        latch stops this run, but the un-rolled-back commit is on DISK and the clone is REUSED:
+        the next run starts with a clear latch on a clone that still carries the refused commit,
+        commits the next winner on top of it, and publishes an ancestor its single-revision scan
+        never looked at. A guard scoped to a process lifetime is checking something shorter-lived
+        than the hazard. Raised by the GPT review of this branch; the conductor asked for
+        quarantine over a persisted latch, because a persisted latch raises the question of when
+        it clears and one that clears on the wrong event is worse than none.
+
+        Retirement is the app's OWN primitive for exactly this, not a new mechanism:
+        ``_retire_unsafe_clone`` renames the root directory aside, and its docstring already
+        says it "prevents a later run from adopting a rejected provisional commit". Reuse in
+        ``_setup_safe_clone`` hinges on the canonical ``<dest>/.git`` being a directory, so a
+        retired clone is not reused -- the next run clones fresh. Nothing about how clones are
+        located or named changes, and the bytes are preserved for diagnosis.
+
+        Unconditional: unlike :meth:`_retire_if_unsafe`, this does not consult the isolation
+        probe first. The trigger is the failed rollback itself, which is already known, so a
+        probe verdict could only talk us out of quarantining a clone we know is poisoned.
+
+        RETIREMENT ITSELF CAN FAIL, and the reason it fails is correlated with the reason the
+        rollback failed rather than independent of it: a Windows process still holding handles
+        inside the tree makes both the force-checkout and the rename fail from that one cause.
+        Logging "MUST NOT be reused" is not a guard -- the next run does not read this log --
+        so a marker is persisted at a masked crew-home leaf (``_mark_clone_quarantined``) and
+        ``_setup_safe_clone`` refuses a marked clone. Reuse there attests git metadata and
+        remotes and never inspects the branch tip, so without the marker the poisoned tree
+        passes every existing check. The marker deliberately does NOT live beside the clone:
+        the scratch tree is one the agent works in, so a marker there could be truncated
+        through a pre-placed hardlink or simply deleted.
+
+        THE MARKER IS WRITTEN FIRST, BEFORE THE RENAME IS ATTEMPTED. Ordering it after made
+        the durable record depend on a path reached only once two things had already failed,
+        and a transient failure of the marker write itself then left the clone reusable with
+        nothing recording that it must not be -- fail-open at the exact moment the guard is
+        needed. Written first, the record exists before anything is disturbed, and a rename
+        that then SUCCEEDS makes it stale rather than wrong: the marker names a directory, so
+        it stops reporting once that directory is gone and is pruned on the way past.
+
+        THREE LEVERS, AND THE CANONICAL NAME MUST NOT SURVIVE ALL THREE. Recording a marker
+        and renaming the tree aside fail from independent causes -- an unwritable marker root
+        against a held file handle -- so either alone can be the one that works. When BOTH
+        fail the clone is still sitting at the name the next run looks up with nothing saying
+        it must not be, so the last lever is to remove the tree outright: a partially removed
+        clone presents no ``.git`` directory, and ``_setup_safe_clone`` refuses a destination
+        that exists and is not a git repository. It can fail too, from the same
+        held handle that defeated the rename, and then the log is all that is left -- but the
+        reuse check has one more independent reason to refuse by then, because a marker root
+        that could not take the write cannot pass ``_quarantine_root``'s writability probe
+        either, and that makes the guard fail closed for every clone. All three halves raised
+        by the GPT review of this branch.
+        """
+        from kiro_crew.platform_compat import rmtree_force
+
+        from ..backend.clone_setup import _mark_clone_quarantined, _retire_unsafe_clone
+
+        marked = _mark_clone_quarantined(
+            self.clone, f"provisional rollback to {pre_sha[:10]} failed"
+        )
+        if marked is None:
+            self.log.error(
+                "could not record a quarantine marker for %s before retiring it; a later run"
+                " has nothing to read, so retirement is now the only durable guard",
+                self.clone,
+            )
+        retained = _retire_unsafe_clone(self.clone)
+        self._repository_retired = True
+        if retained is None:
+            self.log.error(
+                "could not retire the clone after the failed rollback to %s; it is left unsafe"
+                " in place and MUST NOT be reused (quarantine marker: %s)",
+                pre_sha[:10],
+                marked or "could not be written either",
+            )
+            if marked is None and not rmtree_force(self.clone):
+                self.log.error(
+                    "could not remove %s either; every guard against reusing it has failed and"
+                    " it must be deleted by hand before another run starts",
+                    self.clone,
+                )
+        else:
+            self.log.error(
+                "clone retired to %s after the failed rollback to %s, so no later run can adopt"
+                " the commit that was refused",
+                retained,
+                pre_sha[:10],
+            )
+        self._progress(
+            stage="rollback_failed",
+            error="provisional rollback failed; clone quarantined so it is not reused",
+            retained_clone=str(retained or ""),
+        )
 
     def _finalize_winner_commit(
         self, winner: Proposal, *, verify, reproduce=None, cycle: int, diff_ref: str
@@ -1683,7 +2527,7 @@ class Driver:
         always does on a filed perf win) — never silently re-using VERIFY when the real
         numbers are available."""
         if not winner.diff.strip():
-            return _git(["rev-parse", "--short", "HEAD"], self.clone).stdout.strip()
+            return _full_head_id(self.clone)
         if True:
             # Use the INDEPENDENT reproduce measurement (carried back from the pipeline) for
             # the ``reproduce:`` line so the kept-commit message states the real second-A/B
@@ -1704,7 +2548,7 @@ class Driver:
                 ["commit", "-q", "--amend", "-m", self._redact_commit_message(msg)],
                 self.clone,
             )
-        return _git(["rev-parse", "--short", "HEAD"], self.clone).stdout.strip()
+        return _full_head_id(self.clone)
 
     # ── bug-track keep/draft (M4; 05_improvement_loop_bugfix.md §4) ───────────
 
@@ -1716,6 +2560,8 @@ class Driver:
         This is the bug-track analogue of :meth:`_apply_verdict`'s keep path, but the
         CR trigger is the boolean RED/GREEN gate (the doubled-RED flake check is the
         reproduction analogue, §4.1) — there is no second A/B and no noise band."""
+        if self._publishing_is_halted():
+            return
         diff_ref = self.archive.save_candidate(
             cand_id=winner.cand_id,
             diff=winner.diff,
@@ -1964,7 +2810,7 @@ class Driver:
                 ["commit", "-q", "--amend", "-m", self._redact_commit_message(msg)],
                 self.clone,
             )
-        return _git(["rev-parse", "--short", "HEAD"], self.clone).stdout.strip()
+        return _full_head_id(self.clone)
 
     def _preflight_checked(self) -> PreflightResult | None:
         """Run perf preflight, then attest/retire before any later host Git."""

@@ -488,6 +488,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # that cannot apply is refused BEFORE the pipeline drafts.
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
         "::test_a_diff_that_does_not_apply_never_reaches_the_pipeline",
+        # Same basis: literal `git config/add/commit/cat-file/diff` against a tmp_path clone,
+        # proving a credential planted in the COMMITTER IDENTITY is refused. Real git is
+        # required rather than a stub: the point is which bytes git itself puts in the commit
+        # object, which canned output cannot demonstrate. Nothing is agent-influenced -- the
+        # argv is literal and the cwd is the test's own tmp_path.
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "::test_a_credential_in_the_committer_identity_refuses_to_publish",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr ``run`` on
         # base ``asyncio``), used to drive the async ``_approve`` coroutine so a REAL SEL
         # write can be read back off disk. No child process is created.
@@ -547,6 +554,39 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Its inner `_repo` helper: fixed `git init/clone/commit/push` argv against a tmp_path
         # bare repo, building the local-vs-remote base case for the credential-scan self-diff.
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_repo",
+        # The direct-push HEAD-identity tests. `::run` is a stub pre-push reviewer that
+        # amends the test's OWN tmp_path clone to reproduce the race; the test function spawns
+        # `git rev-parse --short HEAD` inline to assert that amend really landed before it
+        # asserts the refusal. Both are fixed `git` argv against a per-test tmp_path repo with
+        # no remote -- nothing in the argv, the cwd or the resolved binary is agent-influenced,
+        # and the enclosing `::git` helper above already covers the repo builder.
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "::test_a_reviewer_amend_between_commit_and_push_refuses_to_publish",
+        # Same basis: the shadow-ref variant additionally spawns `git branch <short-sha> HEAD`
+        # and two `git rev-list -1` reads, all literal argv with cwd and `-C` pinned to the
+        # same per-test tmp_path clone, asserting the injection applied before the refusal.
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "::test_a_ref_named_the_abbreviation_cannot_shadow_the_committed_object",
+        # The time-of-check/time-of-use pair, same basis again: `::_scan_then_amend` stands in
+        # for a background amend landing while the credential scan runs, and the two test
+        # functions read HEAD back with `git rev-list -1` to prove the injection applied and
+        # to pin the published revision to a full object id.
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_scan_then_amend",
+        # `::_gate_then_swap_head` is the same injection one step earlier -- it moves HEAD
+        # right after the pre-scan gate returns, to prove the scan is bound to the object id
+        # rather than to `HEAD`.
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py" "::_gate_then_swap_head",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "::test_the_credential_scan_reads_the_committed_object_not_head",
+        # Same basis: this one additionally spawns `git replace` and a `git show` control, to
+        # prove a replacement ref cannot substitute what the credential scan reads.
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "::test_a_replacement_ref_cannot_substitute_what_the_scan_reads",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "::test_a_move_after_the_scan_cannot_change_what_is_published",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "::test_an_unmoved_head_still_publishes",
         # Same basis: literal `git rev-parse`/`diff`/`reset` against a tmp_path repo, showing a
         # left-behind provisional commit lands in the NEXT bug PR's range.
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"

@@ -206,6 +206,16 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``apps/aws-control/``: a mask covers the leaf, not its ancestors, and an
     # agent-writable ancestor could be renamed out from under it mid-transfer.
     "aws-control-staging",
+    # Quarantine markers for auto-improvement clones whose provisional rollback AND
+    # retirement both failed. Each marker is the only durable record that a clone still
+    # carrying a REFUSED, unscanned commit must never be reused, and the process it has to
+    # outlive is an agent's: masked so a reviewer's shell cannot plant, rewrite or delete
+    # one. Nothing in-sandbox reads it -- the marker is written and consulted host-side by
+    # `auto_improvement.backend.clone_setup` -- so HIDDEN rather than READONLY. A TOP-LEVEL
+    # leaf for the `aws-control-staging` reason: a mask covers the leaf, not its ancestors,
+    # and a marker under `apps/auto-improvement/data/` would sit below a directory an agent
+    # can rename out from under the mount.
+    "quarantined-clones",
     "apps/meetings/data/edits",
     "whatsapp",
     # The refused-inbound spool. Fenced from agent FILE TOOLS by
@@ -622,9 +632,17 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: and the first import then creates it visible to every sandbox already running --
 #: where a same-UID agent can ``rm -rf`` packs the user cannot get back. The store
 #: tolerates finding its root already present and empty.
+#:
+#: ``quarantined-clones`` shares that first-use shape: the root is built when the
+#: first clone is quarantined, so an install that has never had one offers the mask
+#: loop no name, and the marker that must outlive an agent's process would be
+#: created visible to every sandbox already running. Its resolver treats an
+#: existing empty root as usable, and proves the root writable before certifying
+#: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
     "appearance-library",
+    "quarantined-clones",
 )
 
 #: What a materialised ceiling holds — the empty JSON object every reader above
