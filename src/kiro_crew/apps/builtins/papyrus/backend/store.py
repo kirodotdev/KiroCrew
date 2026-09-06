@@ -335,11 +335,20 @@ def _config_path(project: Path) -> Path | None:
     #
     # Same reasoning as the generated-artifact guard in `latex`: for a path the app
     # writes by name, the presence of a link is itself the problem.
+    #
+    # `is_reparse_link`, not `is_symlink()`: a Windows directory JUNCTION is a reparse
+    # point `is_symlink()` does not report, and it is the one link type a user can
+    # create there without elevation, so a symlink-only check makes this refusal
+    # POSIX-only -- which is exactly what that helper's docstring says every guard in
+    # this module must avoid. A junction is directory-only, so it cannot stand in for
+    # the `.papyrus.json -> paper.tex` overwrite above; what it does is slip past the
+    # refusal, take the write no further than an opaque later failure, and lose the
+    # warning that says why.
     candidate = project / PROJECT_CONFIG_FILENAME
     try:
-        if candidate.is_symlink():
+        if is_reparse_link(candidate):
             logger.warning(
-                "papyrus: refused a symlinked project config in %s", project.name
+                "papyrus: refused a linked project config in %s", project.name
             )
             return None
     except OSError:  # pragma: no cover - defensive
