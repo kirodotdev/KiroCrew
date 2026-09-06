@@ -26,7 +26,7 @@ import re
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS, TTL_PATTERN
 from kiro_crew.platform_compat import kill_and_reap
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact
 
 logger = logging.getLogger(__name__)
 
@@ -361,10 +361,13 @@ def _redacted_output_tail(stdout: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     Why stripping is mandatory: unlike stderr, stdout is the one stream that
     *does* carry the minted JWT on success. This tail is only ever built on a
     failure path, but a partially-successful remote (URL printed, then a
-    non-zero exit) could still put a live credential in it — so the token is
-    substituted out FIRST, before the generic credential/exfil redactors run,
-    and the result is truncated to the last *limit* chars (the tail, because the
-    reason is the last thing printed).
+    non-zero exit) could still put a live credential in it. The generic
+    credential/exfil redactors run FIRST: the exfiltration-URL pass keys on the
+    token-bearing URL shape, so scrubbing the token value first would disarm it
+    and let a suspicious destination survive (#9014). The token-specific
+    ``_TOKEN_RE`` / ``_JWT_RE`` substitutions run AFTER as belt-and-suspenders
+    for token shapes the generic passes miss. The result is truncated to the
+    last *limit* chars (the tail, because the reason is the last thing printed).
 
     Why the scan is bounded: the scrubbers cost ~1s per MB of stdout and `re`
     holds the GIL, so scanning an unbounded remote payload stalls the gateway's
@@ -381,9 +384,9 @@ def _redacted_output_tail(stdout: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     window = stdout
     if len(window) > _OUTPUT_SCAN_CHARS:
         window = _CLIPPED_RUN_RE.sub(_CLIPPED_MARKER, window[-_OUTPUT_SCAN_CHARS:], count=1)
-    stripped = _TOKEN_RE.sub(lambda m: m.group(0)[0] + "token=<redacted>", window)
-    stripped = _JWT_RE.sub("<redacted>", stripped)
-    safe = redact_exfiltration_urls(redact_credentials(stripped)[0])[0]
+    safe = redact(window)
+    safe = _TOKEN_RE.sub(lambda m: m.group(0)[0] + "token=<redacted>", safe)
+    safe = _JWT_RE.sub("<redacted>", safe)
     return safe.strip()[-limit:]
 
 
@@ -446,7 +449,7 @@ async def mint_remote_token(
     # stderr is proxy-controlled (WSSH banner etc.); redact credentials/exfil URLs
     # before surfacing it in an exception that may reach logs/status. The token
     # only ever appears on stdout, never stderr.
-    safe_stderr = redact_exfiltration_urls(redact_credentials(stderr)[0])[0] if stderr else ""
+    safe_stderr = redact(stderr) if stderr else ""
 
     if proc.returncode != 0:
         # stderr may carry the "binary not found" diagnostic — safe to log; it
@@ -524,5 +527,5 @@ async def run_remote_kirocrew(
     err = err_b.decode("utf-8", "replace").strip()
     # Proxy-controlled stderr (e.g. a WSSH banner) can carry credential-looking
     # text or exfil URLs; redact before returning since callers surface this tail.
-    safe_err = redact_exfiltration_urls(redact_credentials(err)[0])[0] if err else ""
+    safe_err = redact(err) if err else ""
     return (proc.returncode if proc.returncode is not None else -1), safe_err[:300]
