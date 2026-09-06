@@ -5464,6 +5464,49 @@ class _CommitToken(str):
     __slots__ = ()
 
 
+# Serializes slot SWITCH transactions that share one session, keyed by
+# ``effective_session_key``. The per-slot locks the switch handlers take
+# (``slot._lock``, ``slot._model_pick_lock``) are created per ``_ChatSlot``,
+# so two switches arriving through DIFFERENT alias slots that resolve onto
+# ONE session take disjoint locks and neither waits for the other: both
+# commit, both reset the shared session, and the two slots' committed
+# settings can end up disagreeing with each other and with the live
+# provider. Same shape and same reason as ``_autocompact_txn_locks`` below
+# ("channel-linked aliases resolve distinct slot names onto one file"), keyed
+# by the SESSION the switch handlers probe and reset rather than by the
+# transcript.
+#
+# LOCK ORDER — the one place it is written down. Session lock, then
+# ``slot._lock``, then ``slot._model_pick_lock``. Every switch handler
+# acquires them in that order and nothing acquires them in the opposite one,
+# so two aliases contending on one session cannot cycle. Unrelated slots
+# resolve to DIFFERENT keys and so take different locks: this serializes
+# aliases of one session, never one slot against another session's switch.
+# A WeakValueDictionary so a session's lock is collected once no request
+# holds it.
+#
+# The lock KEY is resolved BEFORE ``slot._lock`` — the only order in which
+# one request can wait for another's whole transaction — while each handler
+# goes on resolving the key it PROBES AND RESETS inside its own lock, so no
+# existing in-lock guarantee moves. If a rebind lands between those two
+# reads this serializes on the previous session; that is the residual
+# ``_autocompact_txn_locks`` documents in the same words ("a rebind
+# mid-request is handled by the expected_history_key pin and the post-persist
+# reauthorization, not by the lock key"), and every handler here already
+# re-checks ``effective_session_key(slot) != session_key`` after its awaits.
+_slot_switch_session_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _slot_switch_session_lock(session_key: str) -> asyncio.Lock:
+    lock = _slot_switch_session_locks.get(session_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _slot_switch_session_locks[session_key] = lock
+    return lock
+
+
 async def api_chat_slot_agent(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/agent — set agent for a chat slot."""
     state: DashboardState = request.app["state"]
@@ -5507,7 +5550,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # slotSwitch failure-recovery relies on, with no rollback machinery to
     # race against concurrent writers (e.g. the project endpoint, which does
     # not take this lock).
-    async with slot._lock:
+    # Serialize against every OTHER alias slot on this same session before
+    # taking the per-slot lock (see _slot_switch_session_lock for the order):
+    # slot._lock alone is disjoint across aliases and would let a second
+    # switch through another alias commit and reset this same session.
+    async with _slot_switch_session_lock(effective_session_key(slot)), slot._lock:
         # The session the switch resets — ``effective_session_key``, never
         # ``_history_key_for`` (see api_chat_slot_model): a channel- or
         # cron-born slot runs its turns under its linked key, and the
@@ -6050,9 +6097,14 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # below has nothing to act on: the session that would receive
         # ``session/set_model`` is on the other machine.
         return await _apply_remote_pick(request, state, slot, "model", {"model": model_name})
-    # Two locks, always in this order (slot._lock outer, _model_pick_lock
-    # inner; the bulk handler nests them the same way and nothing takes them
-    # in the opposite order):
+    # Three locks, always in this order (session lock outer — see
+    # _slot_switch_session_lock — then slot._lock, then _model_pick_lock; the
+    # bulk handler nests them the same way and nothing takes them in the
+    # opposite order):
+    #
+    # the session lock — two switches arriving through DIFFERENT alias slots
+    # resolve onto ONE session but take DISJOINT per-slot locks, so without
+    # it neither waits for the other and both reset this same session.
     #
     # slot._lock — same serialization as the agent, effort and workspace
     # switch handlers: the awaits below yield the event loop, and an
@@ -6075,7 +6127,11 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     # on AcpModelUnavailable, so an unlocked equality read could match that
     # transient value and report "already on X" for a model that is then
     # rolled back.
-    async with slot._lock, slot._model_pick_lock:
+    async with (
+        _slot_switch_session_lock(effective_session_key(slot)),
+        slot._lock,
+        slot._model_pick_lock,
+    ):
         # The session the switch will probe and, on the reset path, tear
         # down. ``effective_session_key``, never ``_history_key_for`` (the
         # reload handler's rule): a channel- or cron-born slot runs its turns
@@ -6705,7 +6761,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
         # user bypasses the ownership check.
         if not is_dashboard_user and slot._app != request_app:
             continue
-        # Same two locks, same order, as the single-slot pick (slot._lock
+        # Same three locks, same order, as the single-slot pick (slot._lock
         # outer, _model_pick_lock inner). ALL classification happens inside
         # them, equality FIRST: a serialized switch commits slot.model before
         # its provider RPC and rolls it back on failure, so an unlocked
@@ -6716,7 +6772,17 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
         # model as skipped_running instead of unchanged. Queuing on the locks
         # is cheap: turns do not hold slot._lock, so a running slot's lock
         # only contends with another switch handler.
-        async with slot._lock, slot._model_pick_lock:
+        #
+        # The session lock goes OUTSIDE both (see _slot_switch_session_lock):
+        # per-slot locks are disjoint across aliases, so without it a single
+        # slot switch through another alias could reset this same session
+        # concurrently. Taken and released per iteration, so two alias slots
+        # in ONE bulk request queue on it in turn rather than re-entering it.
+        async with (
+            _slot_switch_session_lock(effective_session_key(slot)),
+            slot._lock,
+            slot._model_pick_lock,
+        ):
             # The session this slot's turns run on — effective_session_key,
             # never _history_key_for (see api_chat_slot_model), resolved
             # INSIDE the lock so a binding that lands while this iteration
@@ -6896,7 +6962,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     # lock, and the slot is mutated only AFTER the switch actually took
     # effect (live update, deferral, or reset) — a failed request provably
     # changed nothing.
-    async with slot._lock:
+    # Serialize against every OTHER alias slot on this same session first
+    # (see _slot_switch_session_lock): slot._lock is disjoint across aliases.
+    async with _slot_switch_session_lock(effective_session_key(slot)), slot._lock:
         # The session the switch will probe and, on the fallback path, reset —
         # ``effective_session_key``, never ``_history_key_for`` (see
         # api_chat_slot_model): a channel- or cron-born slot runs its turns
@@ -7239,7 +7307,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     # send landing while the reset await is in flight cold-starts a session
     # from the slot's CURRENT bindings, so the new pair must already be
     # visible.
-    async with slot._lock:
+    # Serialize against every OTHER alias slot on this same session first
+    # (see _slot_switch_session_lock): slot._lock is disjoint across aliases.
+    async with _slot_switch_session_lock(effective_session_key(slot)), slot._lock:
         # The session the reset tears down — effective_session_key, never
         # _history_key_for (see api_chat_slot_model), resolved INSIDE the lock
         # so a binding that lands while this request waits on it is what the
