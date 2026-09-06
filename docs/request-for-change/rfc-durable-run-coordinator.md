@@ -1,11 +1,11 @@
 ---
 title: Durable Run Coordinator — typed lifecycle, idempotent commands, and recoverable delivery
-status: draft
+status: in-progress
 revision: v1
 author: Kyle Seaman, with Codex
 created: 2026-08-22
 last-audited: 2026-08-22
-audited-at: c4f253891
+audited-at: c8eda3c6f
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -14,12 +14,13 @@ superseded-by: []
 ---
 # RFC: Durable Run Coordinator — typed lifecycle, idempotent commands, and recoverable delivery
 
-- Status: draft — no implementation in this RFC has shipped. The migration is
-  deliberately additive and keeps the current subagent API and file artifacts
-  compatible until coordinator-first recovery has proven stable.
+- Status: in-progress — PR 2 is prepared on local branch
+  `codex/run-coordinator-types`: the typed port, deterministic in-memory
+  implementation, contract suite, and facade injection exist. Legacy manager
+  fields and run files remain authoritative; PRs 3–7 are unimplemented.
 - Author: Kyle Seaman, with Codex
 - Created: 2026-08-22
-- Audited against: `c4f253891`
+- Audited against: PR 1 commit `c8eda3c6f` plus the PR 2 working tree
 - Related: `docs/system-specs/modules/subagent.md`,
   `docs/system-specs/modules/session.md`, and
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md`

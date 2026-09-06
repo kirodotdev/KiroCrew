@@ -89,6 +89,7 @@ from kiro_crew.providers.base import (
     LLMEvent,
 )
 from kiro_crew.resource_status import cached_admission_check
+from kiro_crew.run_coordinator import MemoryRunCoordinator, RunCoordinator
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -1563,6 +1564,7 @@ class SubagentManager:
         on_orphan_dm: Callable[[str], Awaitable[bool]] | None = None,
         completion_keep: str = "head",
         completion_keep_chars: int = COMPLETION_KEEP_DEFAULT_CHARS,
+        coordinator: RunCoordinator | None = None,
     ):
         self._sessions = sessions
         self._ctx_builder = ctx_builder
@@ -1587,6 +1589,10 @@ class SubagentManager:
         self._shutting_down = False
         self._completion_keep = completion_keep
         self._completion_keep_chars = completion_keep_chars
+        # This seam is deliberately pre-authority: spawn is synchronous while
+        # coordinator mutation is async, so merely storing the adapter preserves
+        # the existing admission and terminal ordering in this phase.
+        self._coordinator = coordinator if coordinator is not None else MemoryRunCoordinator()
         self._running_count = 0
         # Strong refs to in-flight shielded terminal reports (see
         # `_spawn_terminal_report`); drained in `cancel_all`.
