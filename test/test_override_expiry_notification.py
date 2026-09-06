@@ -10,6 +10,7 @@ from kiro_crew.dashboard.server import (
     _dispatch_override_expiry_notification,
     _dispatch_owner_dm,
     _dm_owner,
+    _override_expiry_text,
 )
 
 
@@ -28,7 +29,7 @@ def test_dispatch_skipped_when_disabled() -> None:
     state = _make_state()
     factory = MagicMock()
     with patch("kiro_crew.dashboard.server.KiroCrewConfig.load", return_value=_cfg(False)):
-        scheduled = _dispatch_override_expiry_notification(state, factory)
+        scheduled = _dispatch_override_expiry_notification(state, factory, "slack")
 
     assert scheduled is False
     assert state._background_tasks == set()
@@ -41,14 +42,19 @@ def test_dispatch_schedules_when_enabled() -> None:
     async def _run() -> bool:
         state = _make_state()
 
-        async def _noop() -> None:
-            return None
+        seen: list[str] = []
+
+        async def _noop(source: str) -> None:
+            seen.append(source)
 
         with patch("kiro_crew.dashboard.server.KiroCrewConfig.load", return_value=_cfg(True)):
-            scheduled = _dispatch_override_expiry_notification(state, _noop)
+            scheduled = _dispatch_override_expiry_notification(state, _noop, "policy")
         # A task was registered (tracked to prevent GC); drain it to completion.
         assert len(state._background_tasks) == 1
         await asyncio.gather(*list(state._background_tasks))
+        # The expiry source reaches the factory, which is what lets the DM name
+        # a policy revocation instead of a TTL lapse.
+        assert seen == ["policy"]
         return scheduled
 
     assert asyncio.run(_run()) is True
@@ -59,7 +65,7 @@ def test_dispatch_skipped_without_event_loop() -> None:
     state = _make_state()
     factory = MagicMock()
     with patch("kiro_crew.dashboard.server.KiroCrewConfig.load", return_value=_cfg(True)):
-        scheduled = _dispatch_override_expiry_notification(state, factory)
+        scheduled = _dispatch_override_expiry_notification(state, factory, "slack")
 
     assert scheduled is False
     assert state._background_tasks == set()
@@ -309,3 +315,70 @@ class TestDispatchOwnerDm:
         state = _slack_state()
         _dispatch_owner_dm(state, "warn")
         assert state._background_tasks == set()
+
+
+class TestOverrideExpiryText:
+    """The DM must not send a policy-revoked operator to a re-arm that is refused.
+
+    ``_commit_activation`` fail-closes on an ``approval_modes`` policy that denies
+    yolo, so ``/kirocrew yolo`` cannot succeed after a policy revocation. A DM that
+    still says "reply to re-authorize" therefore describes a step that is guaranteed
+    to fail, and never names policy as the cause.
+    """
+
+    def test_a_ttl_lapse_still_offers_the_re_arm(self) -> None:
+        text = _override_expiry_text("slack")
+        assert "expired" in text
+        assert "/kirocrew yolo" in text
+        assert "re-authorize" in text
+
+    def test_a_policy_revocation_names_policy_and_does_not_offer_a_re_arm(self) -> None:
+        text = _override_expiry_text("policy")
+        assert "policy" in text.lower()
+        assert "re-authorize" not in text
+        # Naming the command is fine — promising it works is not.
+        assert "refused" in text.lower()
+
+    def test_the_two_variants_differ(self) -> None:
+        assert _override_expiry_text("policy") != _override_expiry_text("slack")
+
+    def test_every_non_policy_source_gets_the_ttl_text(self) -> None:
+        """Only the literal ``"policy"`` branches; ``is_active``'s TTL path passes
+        the grant's own activation source, which is any transport name."""
+        ttl = _override_expiry_text("slack")
+        for source in ("dashboard", "config", "discord", ""):
+            assert _override_expiry_text(source) == ttl
+
+
+class TestTheExpiryCallbackForwardsItsOwnSource:
+    """A literal in the wiring would leave the whole suite green and the bug back.
+
+    Every test above hands the dispatcher a source directly, so none of them sees
+    ``_on_override_expired`` itself. Passing ``""`` or the wrong local there would
+    restore the pre-fix DM on every policy revocation with nothing red, so the
+    handler's own source is pinned at the call sites. The handler is nested inside
+    ``start_dashboard``, so the enclosing function is sliced to it -- the same
+    approach ``test_channel_trust_revoke`` uses on this handler.
+    """
+
+    def _expiry_handler_source(self) -> str:
+        import inspect
+        import re
+
+        from kiro_crew.dashboard import server
+
+        setup_src = inspect.getsource(server.start_dashboard)
+        start = setup_src.index("def _on_override_expired(")
+        end = setup_src.index("safety_override().on_expired", start)
+        return re.sub(r"\s+", "", setup_src[start:end])
+
+    def test_the_slack_dm_is_dispatched_with_the_handler_s_source(self) -> None:
+        compact = self._expiry_handler_source()
+        assert (
+            "_dispatch_override_expiry_notification(state,_notify_slack_override_expired,source)"
+            in compact
+        )
+
+    def test_the_unattended_notice_is_dispatched_with_the_handler_s_source(self) -> None:
+        compact = self._expiry_handler_source()
+        assert "_notify_unattended_expiry(state,source)" in compact

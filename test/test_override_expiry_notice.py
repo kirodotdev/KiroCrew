@@ -294,3 +294,31 @@ class TestTheNoticeHasItsOwnChannel:
 
         assert SYSTEM_CHANNELS["system.safety_override"] == SYSTEM_CHANNELS["system.skills"]
         assert SYSTEM_CHANNELS["system.safety_override"] != SYSTEM_CHANNELS["system.approval"]
+
+
+class TestThePolicyRemedyDoesNotContradictTheExpiryDm:
+    """Both notices reach the same owner in the same moment.
+
+    A policy revocation fires this notice AND ``_override_expiry_text``'s DM, which
+    states that ``/kirocrew yolo`` will be refused. Keeping the ordinary
+    "re-enable auto-approve" remedy here would answer that with the opposite
+    instruction, in the one case where the DM is the operator's only signal.
+    """
+
+    def test_a_policy_revocation_drops_the_re_enable_remedy(self) -> None:
+        """Mutation: make the remedy unconditional again -- fails here."""
+        body = _unattended_expiry_text(1, "policy")
+        assert "Re-enable auto-approve" not in body
+        assert "until_shutdown" not in body
+        assert "policy" in body.lower()
+
+    def test_a_ttl_lapse_keeps_the_re_enable_remedy(self) -> None:
+        body = _unattended_expiry_text(1, "slack")
+        assert "Re-enable auto-approve" in body
+        assert "until_shutdown" in body
+
+    def test_the_stall_description_is_shared_by_both_remedies(self) -> None:
+        """Only the remedy is keyed by source; the fact of the stall is not."""
+        for body in (_unattended_expiry_text(2, "policy"), _unattended_expiry_text(2, "slack")):
+            assert "2 monitor loop(s) are still running" in body
+            assert "trust" in body.lower()

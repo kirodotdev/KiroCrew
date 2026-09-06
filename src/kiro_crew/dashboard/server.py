@@ -2131,7 +2131,36 @@ def _armed_unattended_loops() -> "list[Any]":
 _UNATTENDED_EXPIRY_TITLE = "🔒 Auto-approve expired while an unattended run was in progress"
 
 
-def _unattended_expiry_text(loop_count: int) -> str:
+def _override_expiry_text(source: str) -> str:
+    """Owner-DM body for an expired override, keyed by what ended the grant.
+
+    A TTL lapse and a policy revocation leave the operator in different positions,
+    so one string cannot serve both. After a policy revocation ``/kirocrew yolo``
+    is refused by the fail-closed ``approval_modes`` gate in
+    ``SafetyOverride._commit_activation``, so telling the operator to re-authorize
+    sends them into a wall and never names the cause. ``source`` is the literal
+    ``"policy"`` the revocation branch of ``is_active`` passes; an unresolvable
+    governance read tears nothing down, so it reaches no DM at all and needs no
+    variant of its own.
+
+    "Governance policy" rather than "organization policy": ``approval_modes`` is
+    resolved against the host profile as well as any enterprise ceiling, so a
+    deny can be entirely local and naming an organization would send a solo
+    operator to a party that does not exist.
+    """
+    if source == "policy":
+        return (
+            "\U0001f512 Auto-approve is disabled by governance policy "
+            "(`approval_modes`). Tools now require approval, and `/kirocrew yolo` "
+            "will be refused until that policy changes."
+        )
+    return (
+        "\U0001f512 Safety override expired. Tools now require approval. "
+        "Reply `/kirocrew yolo` to re-authorize."
+    )
+
+
+def _unattended_expiry_text(loop_count: int, source: str = "") -> str:
     """Body shared by the dashboard note and the owner DM, so the two cannot drift.
 
     Names the remedy as well as the cause: ``agent.yolo_duration`` accepts
@@ -2143,14 +2172,29 @@ def _unattended_expiry_text(loop_count: int) -> str:
     path to one: a slot carrying its own trust grant is approved by ``slot._trust``
     independently of the grant, so its cycles keep running after this expiry.
     Claiming the run has stopped would send an operator to rescue a healthy one.
+
+    The REMEDY is keyed by ``source`` because a policy revocation invalidates both
+    halves of the ordinary one: re-arming is refused by the same policy, and no
+    duration outlives a deny. This notice is delivered alongside
+    ``_override_expiry_text``, so repeating the ordinary remedy here would hand the
+    operator two contradictory instructions in the same moment.
     """
+    if source == "policy":
+        remedy = (
+            "Governance policy now forbids auto-approve, so it cannot be re-enabled "
+            "until that policy changes."
+        )
+    else:
+        remedy = (
+            "Re-enable auto-approve to resume. For runs meant to go unattended "
+            "overnight, Settings → agent.yolo_duration has an 'until_shutdown' "
+            "option that has no timed expiry."
+        )
     return (
         f"{loop_count} monitor loop(s) are still running, but auto-approval has "
         f"ended, so any cycle that relied on it now waits on a per-tool approval "
         f"that nobody is there to give. (A session granted its own trust is "
-        f"unaffected.) Re-enable auto-approve to resume. For runs meant to go "
-        f"unattended overnight, Settings → agent.yolo_duration has an "
-        f"'until_shutdown' option that has no timed expiry."
+        f"unaffected.) {remedy}"
     )
 
 
@@ -2177,7 +2221,7 @@ def _notify_unattended_expiry(state: "DashboardState", source: str) -> None:
         "every further cycle will wait on per-tool approval",
         len(armed),
     )
-    body = _unattended_expiry_text(len(armed))
+    body = _unattended_expiry_text(len(armed), source)
     try:
         state.notify(
             "safety_override",
@@ -2204,12 +2248,18 @@ def _notify_unattended_expiry(state: "DashboardState", source: str) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
-def _dispatch_override_expiry_notification(state: DashboardState, notify_coro_factory: Any) -> bool:
+def _dispatch_override_expiry_notification(
+    state: DashboardState, notify_coro_factory: Any, source: str
+) -> bool:
     """Schedule the Slack override-expiry DM unless disabled via config.
 
     Gated by ``agent.notify_override_expiry`` (read live so it can be toggled
     without a restart). Returns True if a notification task was scheduled, False
     if skipped — either disabled via config or no running event loop.
+
+    ``source`` is passed to the factory rather than captured by it so the DM can
+    say WHY the grant ended; a policy revocation and a TTL lapse offer the
+    operator different remedies.
     """
     if not KiroCrewConfig.load().agent.notify_override_expiry:
         return False
@@ -2218,7 +2268,7 @@ def _dispatch_override_expiry_notification(state: DashboardState, notify_coro_fa
     except RuntimeError:
         logger.debug("No running event loop — Slack expiry notification skipped")
         return False
-    task = loop.create_task(notify_coro_factory())
+    task = loop.create_task(notify_coro_factory(source))
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     return True
@@ -4049,12 +4099,9 @@ async def start_dashboard(
     await asyncio.to_thread(_apply_startup_yolo, state, cfg)
 
     # Wire safety override expiry notifications
-    async def _notify_slack_override_expired() -> None:
+    async def _notify_slack_override_expired(source: str) -> None:
         """Post override expiry notice to Slack owner DM."""
-        await _dm_owner(
-            state,
-            "\U0001f512 Safety override expired. Tools now require approval. Reply `/kirocrew yolo` to re-authorize.",
-        )
+        await _dm_owner(state, _override_expiry_text(source))
 
     def _on_override_expired(source: str) -> None:
         """Notify all interfaces when safety override expires."""
@@ -4099,7 +4146,7 @@ async def start_dashboard(
         except Exception:
             logger.debug("Could not clear trusted sessions", exc_info=True)
         # Slack notification (prevent GC with background_tasks set)
-        _dispatch_override_expiry_notification(state, _notify_slack_override_expired)
+        _dispatch_override_expiry_notification(state, _notify_slack_override_expired, source)
         # An expiry that lands on an unattended run is the one case that cannot
         # self-report: nobody is present to answer the prompts it produces.
         _notify_unattended_expiry(state, source)
