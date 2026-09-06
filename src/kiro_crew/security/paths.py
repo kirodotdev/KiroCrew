@@ -272,6 +272,25 @@ _CREW_SECRET_LEAVES: list[str] = [
     "aws-control-staging",
     "browser-cookies.txt",
     "playwright-storage-state.json",
+    # The refused-inbound spool (messaging/inbound_spool.py). Not a secret: it is
+    # an OUTBOUND SOURCE. Each entry names a conversation and carries text the
+    # gateway posts on the next start, verbatim, in a restart notice to that
+    # conversation -- so a file an agent could write is a way to send text of the
+    # agent's choosing, as the gateway, into any conversation still authorized
+    # for the principal it names. The egress recheck (may_send_to) narrows that
+    # to authorized routes, which is not a boundary. Read matters too: an entry
+    # holds the verbatim text of a message the operator sent, which is exactly
+    # the private prompt content the rest of this floor exists to keep
+    # unreadable.
+    #
+    # Classified as the whole DIRECTORY, for the reason the ``whatsapp`` and
+    # ``apps/aws-control/data`` entries are: the spool is written by atomic
+    # replace through a sibling temp name in the same directory, so fencing only
+    # the final leaf would leave a writable path to the same bytes -- and the
+    # lock file beside it is what serializes two concurrent refusals. The gateway
+    # opens all of it directly rather than through this gate, so spooling and
+    # the notice pass keep working.
+    "inbound-spool",
     # Per-session work ledgers (session_ledger.py). Not credentials, but each
     # directory is one session's private work state, and the ledger's whole
     # authorization model is "a session reaches only its OWN ledger" (the HTTP

@@ -174,6 +174,13 @@ class WhatsAppTransport(MessagingTransport):
         #: a channel-neutral shape and a WhatsApp stanza id means nothing to the
         #: others, so it rides here rather than widening the shared contract.
         self.pending_message_id: dict[int, str] = {}
+        #: ``(text as the user sent it, media count)`` captured BEFORE ingestion
+        #: rewrites ``msg.text`` with attachment context and temp paths. The
+        #: durable inbound spool (issue #2217) quotes the spooled text back to the
+        #: user in a restart notice, and the ingested form would quote on-disk
+        #: paths to files that no longer exist. Same keying and lifetime as the
+        #: three tables above.
+        self.pending_original: dict[int, tuple[str, int]] = {}
         client.on_message = self.receive
 
     # -- Tier-1 core ---------------------------------------------------
@@ -498,6 +505,8 @@ class WhatsAppTransport(MessagingTransport):
         # the number trigger an authenticated download on the operator's host,
         # which is a remote-triggered fetch with no authorization behind it.
         temp_paths: list[str] = []
+        # The user's own text and media count, before either is rewritten below.
+        self.pending_original[id(msg)] = (msg.text, 1 if desc.has_media else 0)
         if desc.has_media and not self._may_fetch_media(msg, is_group=is_group):
             # Refusing is said out loud: silence reads as the agent ignoring a
             # photo the sender believes it received.
@@ -527,6 +536,7 @@ class WhatsAppTransport(MessagingTransport):
             self.pending_verdicts.pop(id(msg), None)
             self.pending_operator.pop(id(msg), None)
             self.pending_message_id.pop(id(msg), None)
+            self.pending_original.pop(id(msg), None)
 
     def _is_addressed(self, message: Any, chat: str, sender_is_operator: bool) -> bool:
         """Mentioned (@-tag of the linked account) or replying to the agent's

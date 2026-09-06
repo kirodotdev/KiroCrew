@@ -2741,6 +2741,61 @@ class TestDispatcher:
         # Refused is not leaked -- the session-keyed semaphore still comes back.
         assert sess.released == ["telegram:kirocrew:direct:7"]
 
+    def test_a_shutdown_refusal_is_spooled_for_a_persistent_session(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The durable inbound spool (#2217) receives the refused message."""
+        from kiro_crew.messaging import inbound_spool as S
+
+        monkeypatch.setattr(S, "data_home", lambda: tmp_path)
+        d, _cli, sess = _dispatcher({7})
+        sess.closing = True
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="keep me"
+                )
+            )
+
+        asyncio.run(_go())
+
+        spool = tmp_path / "inbound-spool" / "refused.jsonl"
+        assert spool.exists() and "keep me" in spool.read_text(encoding="utf-8")
+
+    def test_a_shutdown_refusal_is_not_spooled_for_a_restricted_session(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """``/incognito`` is a promise that nothing persists, and the spool is a file.
+
+        RED-BEFORE: without the restricted-session gate at the refusal point the
+        private message is written verbatim to ``refused.jsonl``. The same
+        predicate that gates the durable-history write gates this one.
+        """
+        from kiro_crew.messaging import inbound_spool as S
+
+        monkeypatch.setattr(S, "data_home", lambda: tmp_path)
+        d, _cli, sess = _dispatcher({7})
+        sess.closing = True
+
+        async def _restricted(_key: str) -> bool:
+            return True
+
+        monkeypatch.setattr(d, "_session_restricted", _restricted)
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="my secret"
+                )
+            )
+
+        asyncio.run(_go())
+
+        spool = tmp_path / "inbound-spool" / "refused.jsonl"
+        assert not spool.exists(), "an incognito message was persisted to the spool"
+        assert sess.released == ["telegram:kirocrew:direct:7"], "the refusal must still release"
+
     def test_agent_resolves_to_kirocrew_when_unset(self) -> None:
         # agent=None + empty default_agent must fall back to "kirocrew" so the
         # session loads kirocrew-core (spawn_run), not kiro-cli's bare default.

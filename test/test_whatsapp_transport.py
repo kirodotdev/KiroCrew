@@ -525,3 +525,52 @@ class TestOwnOutgoingMessages:
             event(chat=GROUP, sender=OWN_JID, from_me=True, is_group=True, text="what is next?")
         )
         assert len(h.dispatched) == 1
+
+
+@pytest.mark.asyncio
+class TestPreIngestionOriginalIsCapturedForTheSpool:
+    """The durable inbound spool (#2217) quotes the spooled text back to the user.
+
+    ``receive`` rewrites ``msg.text`` with attachment context and temp paths
+    before dispatch, so a route built from ``inbound.text`` at the dispatch site
+    would spool -- and the restart notice would quote -- on-disk paths to files
+    that no longer exist. The original caption and media count are captured
+    BEFORE ingestion in a side table keyed like the others.
+    """
+
+    async def test_the_original_caption_survives_ingestion(self, harness, monkeypatch):
+        import kiro_crew.whatsapp.transport as mod
+        from kiro_crew.messaging.attachments import IngestResult
+
+        async def fake_ingest(*a, **kw):
+            return IngestResult(image_paths=["/tmp/kc-att/img-1.jpg"])
+
+        monkeypatch.setattr(mod, "ingest_media", fake_ingest)
+        seen: list[tuple[str, tuple[str, int] | None]] = []
+
+        async def dispatch(msg):
+            seen.append((msg.text, harness.transport.pending_original.get(id(msg))))
+
+        harness.transport._dispatch = dispatch
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="look at this", image=True)
+        )
+
+        assert len(seen) == 1
+        ingested_text, original = seen[0]
+        assert "/tmp/kc-att/img-1.jpg" in ingested_text, "ingestion did not rewrite the text"
+        assert original == ("look at this", 1), "the pre-ingestion original was not captured"
+        assert harness.transport.pending_original == {}, "the side table leaked past dispatch"
+
+    async def test_a_text_only_message_records_zero_media(self, harness):
+        seen: list[tuple[str, int] | None] = []
+
+        async def dispatch(msg):
+            seen.append(harness.transport.pending_original.get(id(msg)))
+
+        harness.transport._dispatch = dispatch
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="just words")
+        )
+
+        assert seen == [("just words", 0)]

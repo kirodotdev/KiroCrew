@@ -208,6 +208,16 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
     "apps/meetings/data/edits",
     "whatsapp",
+    # The refused-inbound spool. Fenced from agent FILE TOOLS by
+    # ``security._CREW_SECRET_LEAVES``; masked here so a spawned command cannot
+    # reach it either -- an entry an agent could write is posted on the next
+    # start, verbatim, as a gateway-authored notice into the conversation it
+    # names. Whole directory, because the spool is written by atomic replace via
+    # a sibling temp name, and because the lock file beside it is what serializes
+    # concurrent refusals. Nothing inside the sandbox reads or writes it: both
+    # the spool write and the notice pass happen in the GATEWAY process, which
+    # opens the paths directly.
+    "inbound-spool",
     # The Notes state files below are OWNED by the md-notebook backend, which is itself
     # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
     # registry write's final rename gets EPERM and attach/clone always fails (#8762).

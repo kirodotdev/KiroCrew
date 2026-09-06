@@ -206,7 +206,7 @@ from kiro_crew.mcp_gateway.rewriter import (
 )
 from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
 from kiro_crew.memory import MemoryStore
-from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver, registry
+from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver, inbound_spool, registry
 from kiro_crew.messaging.dispatch import build_directive_consumer, build_tool_gate
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
@@ -1814,6 +1814,9 @@ class GatewayOrchestrator:
         # by messaging.registry.start_channels until the config-schema PR
         # retires them; shutdown closes through THIS dict.
         self._channel_handles: dict[str, object] = {}
+        # Detached boot task that replays the durable inbound spool (issue #2217).
+        # Held on the instance so the task is not garbage-collected mid-flight.
+        self._inbound_replay_task: "asyncio.Task[None] | None" = None
         self._model_download_task: "asyncio.Task[bool] | None" = None
         self._auto_migrate_task: "asyncio.Task[None] | None" = None
         # Boot-time update check, started fire-and-forget after the signal
@@ -9505,6 +9508,17 @@ class GatewayOrchestrator:
 
     async def _shutdown(self) -> None:
         """Graceful cleanup of all services."""
+        # Stop the boot-time inbound-spool notice pass before the transports it
+        # sends through are closed. Nothing is lost by cancelling: an entry is
+        # removed from disk only AFTER its notice is confirmed, so an entry cut
+        # off mid-send is noticed again on the next start (at most one duplicate
+        # line). Awaited with a small budget so a slow platform send cannot spend
+        # the GRACEFUL_SHUTDOWN_SECS that saves active chat slots.
+        replay = self._inbound_replay_task
+        if replay is not None and not replay.done():
+            replay.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(replay, timeout=1.0)
         # Stop polling the central policy source, so a fetch in flight cannot
         # install a ceiling into a context the rest of this teardown is dismantling.
         # The join budget is deliberately small: the thread waits on an Event, so
@@ -11747,6 +11761,31 @@ class GatewayOrchestrator:
         # bailed out early.
         await loop.run_in_executor(maintenance_executor(), self._badge_unready_channels, boot)
         self._channel_handles = await registry.start_channels(self, descriptors, permitted)
+        # Tell the sender of whatever the SHUTDOWN GATE refused on the way down
+        # that it was never processed (issue #2217). Ordered AFTER the transports
+        # because the notice is sent through the channel that received the
+        # message, and detached from boot so a slow platform send cannot hold the
+        # gateway's start open.
+        self._inbound_replay_task = asyncio.create_task(self._replay_spooled_inbound())
+
+    async def _replay_spooled_inbound(self) -> None:
+        """Notice inbound messages the shutdown gate refused before this start.
+
+        The spool is written only at the refusal point, so every entry is a turn
+        that provably never opened; the pass sends each sender an accurate
+        restart notice quoting their message and removes the entry only once the
+        send is confirmed — see :mod:`kiro_crew.messaging.inbound_spool`.
+        Entirely best-effort: this runs as a detached boot task, so an exception
+        escaping here would be an unretrieved task exception rather than
+        anything a user could act on.
+        """
+        try:
+            transports = getattr(self.dashboard_state, "channel_transports", None) or {}
+            await inbound_spool.replay_spooled(transports=transports)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("inbound spool: replay pass failed", exc_info=True)
 
     def _badge_unready_channels(self, bootable: "tuple[ChannelDescriptor, ...]") -> None:
         """Give an ENABLED channel that cannot start a reason the dashboard shows.

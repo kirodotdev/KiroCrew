@@ -30,6 +30,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.whatsapp.commands import (
@@ -264,6 +265,28 @@ class WhatsAppDispatcher:
         finally:
             self.sessions.release(session_key)
 
+    def _inbound_route(self, inbound: InboundMessage) -> InboundRoute | None:
+        """The spool route for a DM: the user's own text and media count, or ``None``.
+
+        Read from the transport's ``pending_original`` side table, which
+        ``receive`` fills BEFORE ingestion rewrites ``inbound.text``. Same lifetime
+        as ``pending_verdicts``. Deliberately NO fallback to ``inbound.text`` when
+        the entry is absent: a fallback to the ingested prompt is the disclosure
+        this table exists to prevent, so an envelope that did not come through
+        ``receive`` is simply not spooled.
+        """
+        assert self.transport is not None
+        original = self.transport.pending_original.get(id(inbound))
+        if original is None:
+            return None
+        text, media = original
+        return InboundRoute(
+            conversation_id=inbound.conversation_id,
+            text=text,
+            user_id=inbound.user_id,
+            attachments_dropped=media,
+        )
+
     async def _drive(self, inbound: InboundMessage, verdict: Any) -> None:
         assert self.transport is not None and self.client is not None
         transport = self.transport
@@ -335,6 +358,23 @@ class WhatsAppDispatcher:
                 channel_type="whatsapp",
                 session_key=session_key,
                 conversation_id=f"whatsapp:{scope}",
+                # Durable inbound spool (issue #2217): DMs ONLY. The replay is a
+                # restart notice gated on ``may_send_to``, and this transport's
+                # ``may_send_to`` answers from ``dm_policy`` alone -- it knows
+                # nothing of the group roster, so a group removed or set to ``off``
+                # while the gateway was down would still receive the notice.
+                # Rather than teach the egress gate a roster it was never asked to
+                # hold, group routes are not declared and a refused group message
+                # degrades exactly as before this seam (tracked in #9144).
+                #
+                # The text is the PRE-INGESTION original the transport captured,
+                # not ``inbound.text`` (by now rewritten with attachment context
+                # and temp paths that are dead after a restart) and not
+                # ``user_text`` (which can carry ``build_silence_contract`` --
+                # private operating rules -- prepended to the model prompt). The
+                # notice quotes the spooled text back into the conversation, so
+                # only what the user actually sent may be spooled.
+                inbound_route=(None if group else self._inbound_route(inbound)),
                 agent=agent,
                 user_text=user_text,
                 renderer=renderer,

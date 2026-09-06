@@ -213,6 +213,7 @@ class FakeTransport:
         self.pending_verdicts: dict[int, GroupVerdict] = {}
         self.group_gate = FakeGroupGate()
         self.pending_message_id: dict[int, str] = {}
+        self.pending_original: dict[int, tuple[str, int]] = {}
         #: Phase reactions go through the TRANSPORT, not the client: it owns the
         #: echo tracker, because a reaction is a message and echoes back.
         self.reactions: list[tuple[str, str]] = []
@@ -641,6 +642,51 @@ def _captured_turn(monkeypatch, dispatcher, inbound):
     monkeypatch.setattr(mod, "drive_turn", fake_drive_turn)
     asyncio.run(dispatcher.handle_message(inbound))
     return seen.get("turn")
+
+
+# ── durable inbound spool route (#2217) ──────────────────────────────────────
+
+
+def test_dm_route_spools_the_pre_ingestion_original_not_the_prompt(monkeypatch):
+    """The route text is what the user SENT, read from ``pending_original``.
+
+    By the time the dispatcher runs, ``inbound.text`` has been rewritten by
+    ``receive`` with attachment context and temp paths, and ``user_text`` may
+    carry the group's private rules. The restart notice quotes the spooled text,
+    so only the pre-ingestion original may be spooled.
+    """
+    d, _client, _sessions, transport = _make()
+    inbound = _msg("look at this\n\n/tmp/kc-att/img-1.jpg")
+    inbound.attachments = ["/tmp/kc-att/img-1.jpg"]
+    transport.pending_original[id(inbound)] = ("look at this", 1)
+
+    turn = _captured_turn(monkeypatch, d, inbound)
+
+    assert turn is not None and turn.inbound_route is not None
+    assert turn.inbound_route.text == "look at this", "the ingested prompt was spooled"
+    assert turn.inbound_route.attachments_dropped == 1
+    assert turn.inbound_route.conversation_id == _DM
+
+
+def test_dm_route_is_not_declared_without_a_captured_original(monkeypatch):
+    """No fallback to ``inbound.text``: an envelope that skipped ``receive`` is not spooled."""
+    d, _client, _sessions, _transport = _make()
+
+    turn = _captured_turn(monkeypatch, d, _msg("hi"))
+
+    assert turn is not None and turn.inbound_route is None
+
+
+def test_group_route_is_never_declared(monkeypatch):
+    """``may_send_to`` knows nothing of the group roster, so groups are not spooled (#9144)."""
+    d, _client, _sessions, transport = _make()
+    inbound = _msg("hi group", conv=_GROUP)
+    transport.pending_original[id(inbound)] = ("hi group", 0)
+    transport.pending_verdicts[id(inbound)] = GroupVerdict(respond=True)
+
+    turn = _captured_turn(monkeypatch, d, inbound)
+
+    assert turn is not None and turn.inbound_route is None
 
 
 def test_a_non_operator_turn_never_inherits_auto_approval(monkeypatch):

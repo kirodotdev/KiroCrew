@@ -62,6 +62,7 @@ from kiro_crew.messaging.dispatch import (
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
@@ -1108,6 +1109,37 @@ class TelegramDispatcher:
                 "Telegram: aborting dispatch for %s — gateway is shutting down",
                 session_key,
             )
+            # Durable inbound spool (issue #2217). Written HERE and nowhere else:
+            # this is the one point where the payload is still in memory AND the
+            # turn is provably unopened, so a replay on the next start cannot
+            # double-answer a turn that actually ran. Telegram cannot recover this
+            # from its own offset either — ``_persistable_offset`` bounds duplicate
+            # replay, not loss, because the next long poll server-confirms the
+            # batch it just dispatched.
+            #
+            # NOT for a restricted session. ``/incognito`` and ``/temporary`` are a
+            # promise that this conversation persists nothing, and the spool is a
+            # durable file holding the message verbatim. The same predicate that
+            # gates the durable-history write gates this one; a refused restricted
+            # message degrades to the pre-feature loss, which is what the user asked
+            # for by choosing the mode.
+            if not await self._session_restricted(session_key):
+                await spool_refused_turn(
+                    channel_type="telegram",
+                    route=InboundRoute(
+                        conversation_id=str(chat_id),
+                        # ``msg.text``, NOT the local ``text``: by here the latter
+                        # has attachment context appended, whose inlined temp paths
+                        # are gone after a restart, and may have had a mid-turn
+                        # override prefix stripped. The spool wants what the user
+                        # typed.
+                        text=msg.text,
+                        user_id=str(user_id),
+                        thread_id=str(reply_thread) if reply_thread else "",
+                        message_id=str(getattr(msg, "message_id", "") or ""),
+                        attachments_dropped=len(getattr(msg, "attachments", None) or ()),
+                    ),
+                )
         except Exception as exc:
             logger.exception("Telegram transport_dispatch: error handling message")
             # Permanent, user-actionable failures (e.g. model entitlement)

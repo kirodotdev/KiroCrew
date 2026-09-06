@@ -36,6 +36,7 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, event_is_spawn_run
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import (
     DM_SCOPE_UNIFIED,
     ChannelLink,
@@ -205,6 +206,21 @@ class ChannelTurn:
 
     audit_caller: str = ""
     """SEL audit caller label; defaults to ``<channel_type>:unknown``."""
+
+    inbound_route: Optional[InboundRoute] = None
+    """How to reach this conversation if the SHUTDOWN GATE refuses the turn.
+
+    Supplying it opts the channel into the durable inbound spool: a turn refused
+    by ``_closing`` is written to disk with this route and replayed on the next
+    gateway start (:mod:`kiro_crew.messaging.inbound_spool`), instead of the
+    payload being discarded and the user answered with a generic fault.
+
+    It cannot be derived from :attr:`conversation_id`, which is a session
+    ATTRIBUTION id (``"weixin:{user}"``) rather than a reply target, so a channel
+    has to declare its own address here -- it is the only place holding the
+    normalized envelope. ``None`` (the default) means the channel has not adopted
+    the spool and its refusal path is byte-identical to before.
+    """
 
 
 #: Every spelling a channel accepts for "abort the running turn". The union of
@@ -736,6 +752,21 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             turn.channel_type,
             session_key,
         )
+        # Durability, at the ONE point where the payload is still in memory and
+        # the turn is provably unopened (issue #2217). Every other outcome of this
+        # dispatch — a completed turn, a turn that ran and failed — is already
+        # recorded somewhere, which is why nothing is spooled on those paths and
+        # why a replay cannot double-answer. Best-effort by construction: the
+        # helper never raises, so a full disk degrades to today's loss rather than
+        # becoming the thing that fails shutdown.
+        # ``route.text`` and ONLY ``route.text`` -- never ``turn.user_text``. The
+        # two differ wherever a channel transforms the prompt, and the difference
+        # is not cosmetic: WhatsApp's rules mode prepends the group's private
+        # operating rules to the model prompt, so spooling the turn text would
+        # quote those rules back into the group in the restart notice. A route
+        # whose text is empty is a media-only entry (or nothing), not a cue to
+        # reach for the prompt.
+        await spool_refused_turn(channel_type=turn.channel_type, route=turn.inbound_route)
     except Exception:
         logger.exception("%s transport_dispatch: error handling message", turn.channel_type)
         if _acquired:

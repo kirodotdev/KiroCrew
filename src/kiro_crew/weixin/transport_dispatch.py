@@ -45,6 +45,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.safety_override import safety_override
@@ -182,6 +183,14 @@ class WeixinDispatcher:
         # sender is told to resend once the turn ends, and any accompanying text
         # still reaches the turn via steer.
         attachment_temp_paths: list[str] = []
+        # Captured BEFORE ingestion, which clears ``inbound.attachments`` and
+        # inlines the temp paths into the text. The durable inbound spool needs
+        # both originals (issue #2217): the count is what tells the restart
+        # notice this turn carried media that was not carried over, and the
+        # pre-ingestion text is what the notice quotes -- the ingested form
+        # holds paths to files that no longer exist.
+        original_text = text
+        original_attachments = len(inbound.attachments or ())
         if inbound.attachments:
             ingested, attachment_temp_paths = await self._ingest_or_refuse(inbound, user_id, text)
             if ingested is None:
@@ -190,7 +199,13 @@ class WeixinDispatcher:
             inbound.text = text
 
         try:
-            await self._drive(inbound, user_id, text)
+            await self._drive(
+                inbound,
+                user_id,
+                text,
+                original_text=original_text,
+                original_attachments=original_attachments,
+            )
         finally:
             if attachment_temp_paths:
                 await asyncio.to_thread(cleanup_attachments, attachment_temp_paths)
@@ -245,8 +260,22 @@ class WeixinDispatcher:
         """Tell a mid-turn sender their attachment needs resending."""
         await self._say(user_id, _RESEND_AFTER_TURN)
 
-    async def _drive(self, inbound: InboundMessage, user_id: str, text: str) -> None:
-        """Session acquisition + turn dispatch for one already-ingested message."""
+    async def _drive(
+        self,
+        inbound: InboundMessage,
+        user_id: str,
+        text: str,
+        *,
+        original_text: str = "",
+        original_attachments: int = 0,
+    ) -> None:
+        """Session acquisition + turn dispatch for one already-ingested message.
+
+        ``original_text`` / ``original_attachments`` are the pre-ingestion values,
+        which this frame can no longer recover: ingestion clears
+        ``inbound.attachments`` and rewrites the text with temp paths that are gone
+        after a restart. They exist for the durable inbound spool (issue #2217).
+        """
         assert self.client is not None
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
         # in-flight turn BEFORE any idle/daily rotation (rotating first could
@@ -283,6 +312,18 @@ class WeixinDispatcher:
             ChannelTurn(
                 channel_type="weixin",
                 session_key=session_key,
+                # Durable inbound spool (issue #2217): the peer id IS the reply
+                # target on this DM-only channel, and the reply's context_token
+                # is already persisted off-loop, so the restart notice can land.
+                # ``original_text`` with NO fallback to the ingested ``text``: the
+                # ingested form inlines temp paths, and quoting those in the
+                # notice would disclose the crew's on-disk layout for nothing.
+                inbound_route=InboundRoute(
+                    conversation_id=inbound.conversation_id,
+                    text=original_text,
+                    user_id=user_id,
+                    attachments_dropped=original_attachments,
+                ),
                 # Session-directive consumer: monitor_start / autonudge_stop /
                 # ... return a marker TurnDriver decodes; apply it against THIS
                 # turn's session key (dashboard-only directives stay refused
