@@ -5876,6 +5876,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const repo = currentSlot?.project
     if (!repo) throw new Error(i18nT('pages.chatPage.this_session_has_no_project_directory_to_branch'))
     const originSlot = activeSlot
+    // Inherit the spawning session's sidebar folder, so a worktree started from
+    // a session filed under a project folder lands in that same folder instead
+    // of at the sidebar's top level (#6347). `currentSlot` IS the spawning
+    // session (it already supplies `.project` above), and its `folder_id` is
+    // undefined when that session is itself unfiled — in which case the new
+    // session lands top-level, exactly today's behaviour. No default folder is
+    // invented; unfiled stays unfiled.
+    const originFolderId = currentSlot?.folder_id
     // Capture the card's ts up front so completion clears only THIS card. A
     // newer card can arrive for the same slot while the request is in flight;
     // without the guard the older action's completion would clobber it.
@@ -5894,7 +5902,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // so a turn sent in that window would run in the default directory — agent
       // tools writing to the wrong checkout. It also means a scoping failure can
       // render its error on the still-mounted card instead of unmounting it.
-      const slot = await dispatch(createSlot({ mode, project: path, activate: false })).unwrap()
+      const slot = await dispatch(createSlot({ mode, project: path, folder_id: originFolderId, activate: false })).unwrap()
       slotKey = slot?.key || ''
     } catch {
       // The worktree exists but the session does not. Say so, and name the path:
@@ -5955,7 +5963,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     dispatch(setPendingInput(item.prompt))
     if (originSlot) dispatch(clearFollowupCard({ slot: originSlot, ts: originTs }))
-  }, [currentSlot?.project, followupBranchFor, dispatch, mode, activeSlot])
+  }, [currentSlot?.project, currentSlot?.folder_id, followupBranchFor, dispatch, mode, activeSlot])
 
   // Feed the Web Preview tab from chat, by signal type (previewFeedDecision).
   // Neither path ever navigates the iframe: both hand the URL to the panel as a
