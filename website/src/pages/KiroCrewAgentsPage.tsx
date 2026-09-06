@@ -865,6 +865,30 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const closeSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setSheetHint(''); setConfirmDelete(false) }, [])
 
   /**
+   * The pending answer to a discard question that is on screen, as a promise
+   * plus its resolver; `null` when nothing is being asked.
+   *
+   * `sheetEpoch` below cannot express a question that has not been answered
+   * yet — it only moves once the sheet actually closes. A save still STAGING a
+   * picture upload therefore waits on this: committing through a live question
+   * would persist exactly the edits the question asks to throw away, and
+   * Discard would then close the editor over a record the server had already
+   * been told to keep. Backing out resolves it `false`, so holding the PUT
+   * never kills the save the user asked for.
+   */
+  const discardAnswer = useRef<{ answered: Promise<boolean>; settle: (discarded: boolean) => void } | null>(null)
+
+  /** Answer a pending discard question, if one is still open. First caller
+   *  wins and clears the ref, so a confirm and the sheet-change reset arriving
+   *  together cannot settle the same question twice. */
+  const settleDiscardAnswer = useCallback((discarded: boolean) => {
+    const pending = discardAnswer.current
+    if (!pending) return
+    discardAnswer.current = null
+    pending.settle(discarded)
+  }, [])
+
+  /**
    * Identity of the CURRENT panel opening, bumped on every open and every
    * close.
    *
@@ -999,6 +1023,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         ? { kind: 'image', promote: true, token: stagedToken }
         : { kind: 'image' }
     }
+    // A discard question raised WHILE this save was staging owns the outcome,
+    // so wait for the answer instead of racing it: a PUT fired mid-question
+    // persists exactly the edits the question is about, and the epoch check
+    // below cannot see an answer that has not arrived yet. Once answered there
+    // is nothing left to wait for — Discard closed the sheet and moved the
+    // epoch, so that check carries the same decision.
+    const pendingDiscard = discardAnswer.current
+    if (pendingDiscard && (await pendingDiscard.answered)) return
     if (epoch !== sheetEpoch.current) return
     updateMut.mutate({
       name,
@@ -1094,6 +1126,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const sheetBusy =
     createMut.isPending || updateMut.isPending || deleteMut.isPending || avatarUploading
 
+  /**
+   * The subset of `sheetBusy` that has already COMMITTED something — a write
+   * the server holds and that no answer in the editor can recall.
+   *
+   * `avatarUploading` is deliberately excluded. That leg of saveEdit only
+   * STAGES a picture, and its own epoch check abandons the PUT when the sheet
+   * closes underneath it, so while it stages nothing is committed and every
+   * edit is still genuinely discardable. `requestClose` reads this rather than
+   * `sheetBusy` for that reason: skipping the discard question during staging
+   * would let a dismissal drop the whole save silently.
+   */
+  const committing = updateMut.isPending || deleteMut.isPending
+
   /** Which rail pane the editor body is showing. Reset whenever the editor is
    *  pointed somewhere else, so a crew never opens on the pane the previous one
    *  happened to be left on. */
@@ -1130,20 +1175,85 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const collapseProceed = useRef<(() => void) | null>(null)
   useEffect(() => { setPane('overview'); setSchedDraft(false); setSchedSaving(false); setDiscardAsk(null) }, [sheet])
 
+  /** Which panes hold an edit not yet saved. Compared against the SAVED crew,
+   *  so a value the user typed and then typed back is not reported as pending.
+   *  Computed ahead of the guards below because they key on it: what the
+   *  dismissal question protects IS this set. */
+  const dirtyPanes = useMemo(() => {
+    const out = new Set<CrewPaneKey>()
+    if (!editingAgent) return out
+    if (kiroAgent !== (editingAgent.kiro_agent || '')) out.add('template')
+    if (workspace !== (editingAgent.workspace || '') || memoryStore !== (editingAgent.memory_store || '')) {
+      out.add('place')
+    }
+    if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
+    if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
+    if (triggers !== (editingAgent.triggers || '')) out.add('routing')
+    if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
+    // Both tiers in one comparison: ghost traits normalize through
+    // ghostTraitsFrom (flat record, stable key order) and an image override
+    // through imageAvatarFrom — so a picture pick, replace, or removal is
+    // dirty exactly like a trait edit. pendingData is part of the draft's
+    // identity on purpose: a newly chosen picture IS an unsaved change.
+    const savedNorm = ghostTraitsFrom(editingAgent.avatar) ?? imageAvatarFrom(editingAgent.avatar)
+    const draftNorm =
+      editAvatar?.kind === 'ghost'
+        ? (editAvatar.traits ?? null)
+        : editAvatar?.kind === 'image'
+          ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
+          : null
+    if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
+    // An open inline schedule-create form is pending work too: it gets the
+    // rail's unsaved dot and the note, so closing the editor cannot silently
+    // eat a half-typed schedule the way an untracked surface would.
+    if (schedDraft) out.add('schedules')
+    return out
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar])
+
   /** Rail-driven pane changes route through here: leaving the schedules pane
    *  while a schedule draft is open asks before destroying the typed work
-   *  (the form's state is component-local and unmounts with the pane). */
+   *  (the form's state is component-local and unmounts with the pane). The
+   *  other panes' edits live in this component's state and survive a pane
+   *  switch, so only the draft is at stake here. */
   const requestPane = useCallback((key: CrewPaneKey) => {
     if (schedDraft && key !== pane) { setDiscardAsk(key); return }
     setPane(key)
   }, [schedDraft, pane])
 
-  /** Editor dismissal (footer Cancel, Escape, overlay click) routes through
-   *  here: same draft, same guard, same reason as the pane switch above. */
+  /**
+   * Editor dismissal (footer Cancel, Escape, overlay click) routes through
+   * here: it asks before throwing away ANY unsaved pane edit, not just a typed
+   * schedule.
+   *
+   * An open schedule draft is tested FIRST. `dirtyPanes` contains 'schedules'
+   * while the draft is open, so that order is what decides which question the
+   * user gets, and the draft's leg is not interchangeable with the generic one:
+   * it locks its destructive button while the draft's create POST is in flight
+   * (discarding cannot cancel the request) and unlocks it after a grace period,
+   * neither of which the generic question needs. It does have to WIDEN what it
+   * claims when other panes are dirty too — see `discardTakesSheet`.
+   *
+   * A COMMITTING write is dismissed with no question at all: the values on
+   * screen are the ones the user just submitted, so nothing there is unsaved,
+   * and the request is not cancellable — offering to discard would promise a
+   * rollback the backend will not honor and the edits would land anyway.
+   * Dismissing mid-write stays allowed; sheetEpoch/settleFor is what makes the
+   * abandoned write land harmlessly on the UI. The create form is not tracked
+   * by `dirtyPanes` (same `!creating` scoping as the footer's unsaved note), so
+   * it closes immediately too.
+   */
   const requestClose = useCallback(() => {
     if (schedDraft) { setDiscardAsk('close'); return }
-    closeSheet()
-  }, [schedDraft, closeSheet])
+    if (committing || dirtyPanes.size === 0) { closeSheet(); return }
+    // Published BEFORE the question goes up so a save still staging an upload
+    // sees it and holds its PUT until the answer arrives. Only this leg arms
+    // it: the schedule draft disables Save, so no staging save can be in
+    // flight behind the draft's own question.
+    let settle: (discarded: boolean) => void = () => {}
+    const answered = new Promise<boolean>(resolve => { settle = resolve })
+    discardAnswer.current = { answered, settle }
+    setDiscardAsk('close')
+  }, [schedDraft, committing, dirtyPanes, closeSheet])
 
   /** The header's "Chat with this crew" routes through here: it creates a
    *  chat slot, closes the sheet and navigates -- three steps that would
@@ -1164,6 +1274,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const confirmDiscard = useCallback(() => {
     const target = discardAsk
     setDiscardAsk(null)
+    // Tell a save that is waiting on this question that its edits are being
+    // thrown away, so it returns instead of committing them.
+    settleDiscardAnswer(true)
     // The form unmounts with the pane or the sheet; its unmount cleanup is
     // what clears `schedDraft`, so nothing here resets the flag by hand. The
     // chat path only destroys on SUCCESS: a failed slot-create keeps the
@@ -1172,7 +1285,35 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     else if (target === 'chat') void chatWith(editing)
     else if (target === 'collapse') { collapseProceed.current?.(); collapseProceed.current = null }
     else if (target) setPane(target)
-  }, [discardAsk, closeSheet, editing]) // eslint-disable-line react-hooks/exhaustive-deps -- same chatWith identity note as requestChat
+  }, [discardAsk, closeSheet, editing, settleDiscardAnswer]) // eslint-disable-line react-hooks/exhaustive-deps -- same chatWith identity note as requestChat
+
+  /** Every exit from the question that is NOT a confirm answers it "keep": the
+   *  Keep-editing button, an Escape on the confirm, and the sheet-change reset
+   *  all land here. A save holding its PUT is released rather than killed —
+   *  the user asked for that save and then chose to stay. */
+  useEffect(() => {
+    if (discardAsk === null) settleDiscardAnswer(false)
+  }, [discardAsk, settleDiscardAnswer])
+
+  /**
+   * Whether the pending question destroys the WHOLE editor while panes OTHER
+   * than the schedule draft are dirty — the case where the draft's narrow
+   * question has to name them.
+   *
+   * 'close' and 'chat' both end in closeSheet, so answering "Discard schedule"
+   * over a dialog that mentioned only the typed schedule is how an
+   * untouched-looking Model or Triggers edit disappears without ever being
+   * asked about. A pane switch and a form collapse keep the sheet, so the
+   * narrow question is the true one there and neither escalates.
+   */
+  const discardTakesSheet =
+    (discardAsk === 'close' || discardAsk === 'chat')
+    && [...dirtyPanes].some(k => k !== 'schedules')
+
+  /** The question stays the NARROW schedule one only while a draft is the
+   *  single thing at stake: with other panes going too it must name them, and
+   *  with no draft open it was never about a schedule. */
+  const askSchedOnly = schedDraft && !discardTakesSheet
 
   /** Pane changes driven from INSIDE a pane (an overview diagram node) rather
    *  than from the rail. The clicked node unmounts with its pane, which would
@@ -1229,39 +1370,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   /** Keywords the orchestrator can match, counted the way the field is authored:
    *  comma-separated, blanks ignored, so a trailing comma is not a keyword. */
   const routingWords = triggers.split(',').map(s => s.trim()).filter(Boolean).length
-
-  /** Which panes hold an edit not yet saved. Compared against the SAVED crew,
-   *  so a value the user typed and then typed back is not reported as pending. */
-  const dirtyPanes = useMemo(() => {
-    const out = new Set<CrewPaneKey>()
-    if (!editingAgent) return out
-    if (kiroAgent !== (editingAgent.kiro_agent || '')) out.add('template')
-    if (workspace !== (editingAgent.workspace || '') || memoryStore !== (editingAgent.memory_store || '')) {
-      out.add('place')
-    }
-    if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
-    if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
-    if (triggers !== (editingAgent.triggers || '')) out.add('routing')
-    if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
-    // Both tiers in one comparison: ghost traits normalize through
-    // ghostTraitsFrom (flat record, stable key order) and an image override
-    // through imageAvatarFrom — so a picture pick, replace, or removal is
-    // dirty exactly like a trait edit. pendingData is part of the draft's
-    // identity on purpose: a newly chosen picture IS an unsaved change.
-    const savedNorm = ghostTraitsFrom(editingAgent.avatar) ?? imageAvatarFrom(editingAgent.avatar)
-    const draftNorm =
-      editAvatar?.kind === 'ghost'
-        ? (editAvatar.traits ?? null)
-        : editAvatar?.kind === 'image'
-          ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
-          : null
-    if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
-    // An open inline schedule-create form is pending work too: it gets the
-    // rail's unsaved dot and the note, so closing the editor cannot silently
-    // eat a half-typed schedule the way an untracked surface would.
-    if (schedDraft) out.add('schedules')
-    return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar])
 
   const sections = useCrewEditorSections({
     templateLabel: provider.labels.agentTemplateField,
@@ -1833,20 +1941,47 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             onClose={() => setWsModalOpen(false)}
           />
 
-          {/* The schedule-draft discard confirm. Same nesting rule and same
+          {/* The editor's discard confirm. Same nesting rule and same
               always-mounted rule as WorkspaceModal above — conditional
               rendering skips Radix's layer deregistration and leaves the
-              editor believing it is no longer the top layer. The confirm
-              button restates the action; the dismiss restates the
-              alternative, because a bare "Cancel" beside the editor's own
-              footer Cancel is the ambiguity this PR removes elsewhere. */}
+              editor believing it is no longer the top layer. Nested INSIDE the
+              editor's DialogContent is also what keeps Escape addressed to this
+              layer alone, so the editor never treats the confirm's own
+              dismissal as a dismissal of itself. The confirm button restates
+              the action; the dismiss restates the alternative, because a bare
+              "Cancel" beside the editor's own footer Cancel would be ambiguous.
+              The `crew-sched-*` test ids predate the generalization and stay
+              stable: one dialog now asks about a typed schedule, about unsaved
+              pane edits, or about both. */}
           <Dialog open={discardAsk !== null} onOpenChange={next => { if (!next) setDiscardAsk(null) }}>
-            <DialogContent maxWidth={440} className="z-[110]" aria-label={i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')}>
+            <DialogContent
+              maxWidth={440}
+              className="z-[110]"
+              aria-label={askSchedOnly
+                ? i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')
+                : i18nT('pages.kiroCrewAgentsPage.discard_unsaved_changes')}
+            >
               <DialogHeader>
-                <DialogTitle>{i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')}</DialogTitle>
+                <DialogTitle>
+                  {askSchedOnly
+                    ? i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')
+                    : i18nT('pages.kiroCrewAgentsPage.discard_unsaved_changes')}
+                </DialogTitle>
               </DialogHeader>
               <DialogBody>
-                <p className="m-0 text-sm text-text">{i18nT('pages.kiroCrewAgentsPage.discard_new_schedule_body')}</p>
+                <p className="m-0 text-sm text-text">
+                  {schedDraft
+                    ? i18nT('pages.kiroCrewAgentsPage.discard_new_schedule_body')
+                    : i18nT('pages.kiroCrewAgentsPage.discard_unsaved_body')}
+                </p>
+                {/* Full contrast, same as the line above: this is the half of
+                    the consequence the narrow question left out, so it must not
+                    read as a footnote to it. */}
+                {schedDraft && discardTakesSheet && (
+                  <p className="mb-0 mt-2 text-sm text-text" data-testid="crew-sched-discard-also-crew">
+                    {i18nT('pages.kiroCrewAgentsPage.discard_also_crew_edits')}
+                  </p>
+                )}
                 {/* The reason Discard is locked, as VISIBLE text: the button's
                     `title` never reaches keyboard or touch users, and browsers
                     often suppress titles on disabled controls entirely. */}
@@ -1875,7 +2010,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   title={schedSaving ? i18nT('components.jobForm.saving') : undefined}
                   data-testid="crew-sched-discard-confirm"
                 >
-                  {i18nT('pages.kiroCrewAgentsPage.discard_schedule_confirm')}
+                  {askSchedOnly
+                    ? i18nT('pages.kiroCrewAgentsPage.discard_schedule_confirm')
+                    : i18nT('pages.kiroCrewAgentsPage.discard_confirm')}
                 </Btn>
               </DialogFooter>
             </DialogContent>

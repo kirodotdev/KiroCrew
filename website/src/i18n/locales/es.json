@@ -10553,6 +10553,10 @@
       "session_color_hint": "Las sesiones que inicia este agente usan este color a menos que la sesión tenga su propio color. Editarlo vuelve a colorear esas sesiones. Déjalo vacío para no tener color de agente.",
       "session_color_hex": "Valor hexadecimal del color de sesión",
       "session_color_clear": "Borrar",
+      "discard_unsaved_changes": "¿Descartar los cambios sin guardar?",
+      "discard_unsaved_body": "Este equipo tiene ediciones que nunca se guardaron. Cerrar ahora las descartará.",
+      "discard_confirm": "Descartar cambios",
+      "discard_also_crew_edits": "Las demás ediciones sin guardar de este equipo se descartarán junto con ella.",
       "editor_options_load_failed": "No se pudieron cargar las opciones de espacio de trabajo, plantilla y almacén de memoria del editor de crew."
     },
     "knowledge": {
