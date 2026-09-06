@@ -17,6 +17,17 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.design_critique import register_routes
 from kiro_crew.apps.builtins.design_critique.backend import routes
 
+if platform_compat.IS_WINDOWS:
+    import _winapi
+
+    # Resolved at runtime, not as a typed attribute: typeshed guards CreateJunction
+    # behind sys.platform == "win32", so a direct reference is an attr-defined error
+    # when mypy checks this in-package test file on Linux. Same shape as
+    # platform_compat's own `getattr(os.path, "isjunction", None)`.
+    _create_junction = getattr(_winapi, "CreateJunction", None)
+else:  # pragma: no cover - junctions exist on Windows only
+    _create_junction = None
+
 
 def test_register_routes_mounts_the_three_endpoints() -> None:
     app = web.Application()
@@ -1191,10 +1202,14 @@ def _make_dir_link(link: Path, target: Path) -> None:
     # 1314 unelevated), which is why the test above can only skip there. A junction
     # needs no privilege and is the reparse point a real build tree would carry, so
     # the Windows half of this contract stays exercised instead of being skipped.
+    #
+    # A junction, never "a junction OR a symlink": os.symlink SUCCEEDS on a runner
+    # with Developer Mode on, and a symlink is the shape os.path.islink already
+    # refused. Degrading to it would turn the Windows red-before green for the
+    # wrong reason.
     if platform_compat.IS_WINDOWS:
-        import _winapi
-
-        _winapi.CreateJunction(str(target), str(link))
+        assert _create_junction is not None, "_winapi.CreateJunction missing on Windows"
+        _create_junction(str(target), str(link))
         return
     link.symlink_to(target, target_is_directory=True)
 
