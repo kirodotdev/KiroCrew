@@ -994,11 +994,16 @@ class TestBatchCascadeAttribution:
             await _run_chat(state, slot, "hello")
 
         # Nobody answered: the first tool was declined by the host, the second
-        # by the cascade — and the cascade corrected the attribution in-band.
+        # by the cascade — and each decline corrected its own attribution
+        # in-band. Two notices, two distinct facts: the expired prompt covers
+        # tool_a (#8219), the cascade notice covers the remainder (#8818).
         client.reject_tool.assert_any_call("req-1")
         client.reject_tool.assert_any_call("req-2")
-        client.steer.assert_called_once()
-        notice = client.steer.call_args[0][0]
+        assert client.steer.call_count == 2
+        timeout_notice = client.steer.call_args_list[0][0][0]
+        assert "approval prompt expired" in timeout_notice
+        assert "every remaining call in its batch" not in timeout_notice
+        notice = client.steer.call_args_list[1][0][0]
         assert "every remaining call in its batch" in notice
         assert "unanswered" in notice
         assert "User denied tool execution" in notice
@@ -1076,7 +1081,15 @@ class TestBatchCascadeAttribution:
             await _run_chat(state, slot, "hello")
 
         assert client.reject_tool.call_count == 3
-        client.steer.assert_called_once()
+        # One notice for the expired prompt on tool_1, then exactly ONE for the
+        # cascaded remainder — never one per cascaded member.
+        assert client.steer.call_count == 2
+        cascade_notices = [
+            c[0][0]
+            for c in client.steer.call_args_list
+            if "every remaining call in its batch" in c[0][0]
+        ]
+        assert len(cascade_notices) == 1
 
     @pytest.mark.asyncio
     async def test_provenance_dies_with_the_group_it_belongs_to(self, tmp_path):
@@ -1108,9 +1121,11 @@ class TestBatchCascadeAttribution:
         await _drain(approver)
 
         # The revised call was prompted and approved — never cascaded, so the
-        # cascade notice was never sent.
+        # cascade notice was never sent. The expired prompt on tool_a still
+        # steers its own notice (#8219); what must be absent is the cascade one.
         client.approve_tool.assert_any_call("req-2")
-        client.steer.assert_not_called()
+        assert client.steer.call_count == 1
+        assert "every remaining call in its batch" not in client.steer.call_args[0][0]
         assert slot._batch_rejected_cause == ""
 
 

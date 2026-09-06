@@ -2889,6 +2889,7 @@ DENY_CAUSE_POLICY = "policy"
 DENY_CAUSE_INVALID_NAME = "invalid_name"
 DENY_CAUSE_HOOK_ERROR = "hook_error"
 DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
+DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
 
 #: cause → (clause completing "The tool call you just made …", what to do next).
 _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
@@ -2917,6 +2918,15 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "whole. Address what declined that earlier tool (the reason above), then "
         "re-issue the calls you still need; if you genuinely cannot proceed "
         "without them, say so and stop with the reason.",
+    ),
+    DENY_CAUSE_APPROVAL_TIMEOUT: (
+        "was auto-declined because its approval prompt expired unanswered",
+        "nobody answered within the window, so the action itself was never judged — "
+        "do not abandon it or route around it on this evidence. State the "
+        "permission you need and why, then continue with what you can do without "
+        "it. Do not immediately reissue the same call: the person who did not "
+        "answer is still away, and re-prompting re-arms the same wait for the "
+        "same silence.",
     ),
 }
 
@@ -2949,10 +2959,10 @@ def build_refusal_steer_notice(
     *cause* selects the wording. The distinction is not cosmetic: a policy block
     is a verdict the model must route around, an invalid tool name is the model's
     own malformed output and is the one case it can simply fix, a hook fault
-    judged nothing at all, and a batch cascade cut the group short without
-    judging its members. Telling the model "safety policy" for any non-policy
-    cause would send it looking for an allowed alternative to an action nobody
-    refused.
+    judged nothing at all, a batch cascade cut the group short without judging
+    its members, and an expired approval prompt means nobody answered. Telling
+    the model "safety policy" for any non-policy cause would send it looking for
+    an allowed alternative to an action nobody refused.
     An unknown cause degrades to the policy wording rather than raising: a wrong
     noun is recoverable, and losing the notice would hand the model back
     kiro-cli's "user denied" with nothing to correct it.
@@ -2966,10 +2976,10 @@ def build_refusal_steer_notice(
     what = f"{title}: {reason}" if reason else title
     # Class-specific remediation, for the policy cause only. The non-policy
     # causes judged nothing about the action — an invalid tool name is the
-    # model's own malformed output, a hook fault is a host fault, and a cascaded
-    # batch member was never reached — so naming a sanctioned alternative there
-    # would answer a question nobody asked and imply the action itself had been
-    # refused.
+    # model's own malformed output, a hook fault is a host fault, a cascaded
+    # batch member was never reached, and an expired approval prompt was simply
+    # never answered — so naming a sanctioned alternative there would answer a
+    # question nobody asked and imply the action itself had been refused.
     remediation = (
         remediation_for(reason, title, credential_tool_hint=credential_tool_hint)
         if cause == DENY_CAUSE_POLICY

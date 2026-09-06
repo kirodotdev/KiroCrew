@@ -213,6 +213,19 @@ kiro-cli's wrong attribution and no correction, while queueing wrongly costs one
 turn the model is told twice — which is what this path cost before in-band
 delivery existed.
 
+**An approval prompt that expires unanswered takes the same in-band path**, with
+its own cause (`approval_timeout`): before the auto-decline is answered on the
+wire, the agent is told the prompt expired and that the user did NOT deny the
+call — for attended and unattended slots alike, since both are handed the same
+generic denial string. It deliberately joins no fallback recovery, and its
+notice is tracked outside the turn's refusal ledger so it cannot skew
+`should_queue_refusal_recovery`'s count-based decision: the timed-out decline
+answers the permission as an ordinary rejection (the recovery continuation
+stays reserved for system-side blocks), so on a harness without steer the
+unattended transcript line remains the only agent-facing explanation. The
+timeout card stays the sole user-visible surface — this steer paints no
+tool-blocked row.
+
 The recovery classification for the last two is **structural**: the queue entry
 carries `kind == "synthetic_recovery"` (`SYNTHETIC_RECOVERY_KIND`), set at insert
 time. Metadata survives every queue transformation (merge, prefixing, truncation)
