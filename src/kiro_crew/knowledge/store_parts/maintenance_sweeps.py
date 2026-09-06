@@ -80,10 +80,14 @@ def reclaim_orphans(self: KnowledgeStore) -> None:
     # artifact aggregate sources are containers of the same kind: each is
     # created empty ('active', no items, no state rows) the moment its
     # feature first needs it and filled by a later write, so an empty one
-    # is a feature waiting for its first document, not garbage.
+    # is a feature waiting for its first document, not garbage. bedrock_kb
+    # is excluded for a stronger reason: a live-retrieval source never has
+    # items (queried at search time; add_item and add_source_location_in_txn
+    # refuse one that names it), so without the exemption every gateway
+    # restart would silently delete it.
     orphan_pred = (
         "id NOT IN (SELECT DISTINCT source_id FROM items WHERE source_id IS NOT NULL) "
-        "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip', 'agent', 'artifact') "
+        "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip', 'agent', 'artifact', 'bedrock_kb') "
         "AND id NOT IN (SELECT source_id FROM ingestion_jobs WHERE status IN ('pending', 'processing')) "
         # Only a source whose ingest has run to an end state is reclaimable.
         # Every other status is a claim on the row: 'pending' (the column

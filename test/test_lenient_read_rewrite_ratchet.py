@@ -95,6 +95,10 @@ _KNOWN: dict[str, str] = {
     "kiro_crew/autonudge_selfarm.py::record_self_arm": _UNAUDITED,
     "kiro_crew/aws_consent.py::record_grant": _PRESERVES,
     "kiro_crew/aws_consent.py::revoke": _PRESERVES,
+    "kiro_crew/aws_consent.py::revoke_if_matches": (
+        "an unreadable store reads as {}, so the compare finds no grant and nothing is written"
+    ),
+    "kiro_crew/aws_consent.py::record_source_attestation": _PRESERVES,
     "kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard_record.py::"
     "record_built": _UNAUDITED,
     "kiro_crew/connections/mint.py::_forget_mint_spec": _UNAUDITED,

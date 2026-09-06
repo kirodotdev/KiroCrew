@@ -141,6 +141,8 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "search_items_fts": ("function", "b580228dc456", "fulltext_index"),
     "source_count": ("function", "fa6cfecd5574", "content_stats"),
     "sources_holding_item": ("function", "38e1d5ac5668", "item_ownership"),
+    "_refuse_live_source": ("function", "abf534c1cf14", "item_ownership"),
+    "_reassignment_candidates": ("function", "ca98b671cebb", "item_ownership"),
     "surviving_group_in_txn": ("function", "90373a793d37", "item_ownership"),
     "update_item": ("function", "f074042316f2", "item_rows"),
     "update_source": ("function", "dfb808fc1ab1", "source_rows"),
@@ -549,6 +551,7 @@ def test_an_owner_that_logs_uses_the_store_logger(owner: str) -> None:
 #: keys on their module path.
 _CLASS_MODULES = {
     "KnowledgeBundleError": _FACADE,
+    "LiveSourceHoldsNoItems": _FACADE,
     "SimpleDiGraph": f"{_PACKAGE}.entity_graph",
     "_NodeView": f"{_PACKAGE}.entity_graph",
     "_EdgeView": f"{_PACKAGE}.entity_graph",
