@@ -8192,7 +8192,8 @@
       "where_it_comes_from": "Da dove arriva",
       "yes_delete_it": "Sì, elimina",
       "retry": "Riprova",
-      "delete_unavailable_references_failed": "Non è stato possibile caricare l'elenco della crew o l'impostazione del modello di riserva, quindi l'eliminazione di questo modello non è disponibile finché non vengono caricati."
+      "delete_unavailable_references_failed": "Non è stato possibile caricare l'elenco della crew o l'impostazione del modello di riserva, quindi l'eliminazione di questo modello non è disponibile finché non vengono caricati.",
+      "failed_to_load_agents": "Caricamento degli agenti non riuscito"
     },
     "aidlc": {
       "dagView": {
@@ -8324,7 +8325,8 @@
     "appPage": {
       "loading_app": "Caricamento dell'app…",
       "retry": "Riprova",
-      "back_to_apps": "Torna alle app"
+      "back_to_apps": "Torna alle app",
+      "failed_to_load_app": "Caricamento dell'app non riuscito"
     },
     "appsPage": {
       "action_failed": "Operazione «{{action}}» non riuscita su {{name}}",

@@ -7978,7 +7978,8 @@
       "where_it_comes_from": "提供元",
       "yes_delete_it": "はい、削除します",
       "retry": "再試行",
-      "delete_unavailable_references_failed": "クルー名簿またはフォールバックテンプレート設定を読み込めなかったため、読み込まれるまでこのテンプレートは削除できません。"
+      "delete_unavailable_references_failed": "クルー名簿またはフォールバックテンプレート設定を読み込めなかったため、読み込まれるまでこのテンプレートは削除できません。",
+      "failed_to_load_agents": "エージェントの読み込みに失敗しました"
     },
     "aidlc": {
       "dagView": {
@@ -8108,7 +8109,8 @@
     "appPage": {
       "loading_app": "アプリを読み込み中…",
       "retry": "再試行",
-      "back_to_apps": "アプリに戻る"
+      "back_to_apps": "アプリに戻る",
+      "failed_to_load_app": "アプリの読み込みに失敗"
     },
     "appsPage": {
       "action_failed": "{{name}} の{{action}}に失敗しました",

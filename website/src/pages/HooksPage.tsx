@@ -1,5 +1,5 @@
 import { compareText } from '../i18n/format'
-import { Fragment, useState, useMemo, useRef } from 'react'
+import { Fragment, useCallback, useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { AlertTriangle, Anchor, ChevronDown, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
 import { api } from '../api/client'
@@ -225,7 +225,10 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
   // is handed over directly.
   const { armedId: confirmDeleteId, arm: armDelete, confirm: confirmDelete, isDeleting } = useArmedDelete(deleteMut.mutateAsync)
 
-  const mutError = createMut.error?.message || updateMut.error?.message || deleteMut.error?.message || toggleMut.error?.message || testMut.error?.message || null
+  // `testMut` is deliberately absent: a failed hook test is owned by the
+  // titled `hook-test-error` notice beside the row, and a second, bare copy
+  // at the top of the page reads as a page-wide outage.
+  const mutError = createMut.error?.message || updateMut.error?.message || deleteMut.error?.message || toggleMut.error?.message || null
   const handleCreate = (data: Partial<Hook>) => createMut.mutate(data)
   const handleUpdate = (id: string, data: Partial<Hook>) => updateMut.mutate({ id, data })
   const handleToggle = (id: string) => toggleMut.mutate(id)
@@ -258,6 +261,26 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
   // the table overflows whenever its container is narrower than the declared
   // column widths, which a resizable nav rail can cause at any viewport size.
   const [attachHooksScroller, hooksTableEdges, , attachHooksTable] = useScrollEdges<HTMLDivElement>()
+  // The scroller's visible width, for the expanded last_error row: the table
+  // can be wider than its scroller (sticky Actions column, #4296), and a row
+  // that simply spanned the columns would paint its far end under that column
+  // and scroll out of view. The row's notice is instead a sticky-left block
+  // exactly as wide as the viewport onto the table, so it reads in full at
+  // any scroll position.
+  const [hooksScrollerWidth, setHooksScrollerWidth] = useState(0)
+  const hooksScrollerRo = useRef<ResizeObserver | null>(null)
+  const attachHooksScrollerMeasured = useCallback((node: HTMLDivElement | null) => {
+    attachHooksScroller(node)
+    hooksScrollerRo.current?.disconnect()
+    hooksScrollerRo.current = null
+    if (!node) return
+    setHooksScrollerWidth(node.clientWidth)
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => setHooksScrollerWidth(node.clientWidth))
+      ro.observe(node)
+      hooksScrollerRo.current = ro
+    }
+  }, [attachHooksScroller])
 
   if (loading) return <div className="p-6 text-muted">{i18nT('pages.hooksPage.loading')}</div>
 
@@ -313,7 +336,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           {hooks.length === 0 ? (
             <EmptyState icon={<Anchor className="lucide-inline" />} title={i18nT('pages.hooksPage.no_hooks_yet')} subtitle={i18nT('pages.hooksPage.create_a_hook_to_run_scripts_on_chat_events')} />
           ) : (
-            <div ref={attachHooksScroller} className="overflow-x-auto">
+            <div ref={attachHooksScrollerMeasured} className="overflow-x-auto">
               {/* This table is AUTO layout (`w-full border-collapse`, no
                   table-fixed), so column edges depend on content and a
                   wrapper-anchored cue cannot know where the pinned column
@@ -384,15 +407,15 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                             <span className="inline-flex items-center gap-1">
                               <Badge variant={h.last_status === 'error' ? 'err' : 'warn'}>{h.last_status === 'error' ? i18nT('pages.hooksPage.error') : h.last_status}</Badge>
                               {h.last_error && (
-                                <button
+                                <Btn
                                   type="button"
-                                  className="inline-flex items-center bg-transparent border-none p-0 cursor-pointer text-muted hover:text-text"
+                                  className="px-1 py-0 border-transparent text-muted hover:text-text"
                                   aria-expanded={openErrorId === h.id}
                                   aria-label={i18nT('pages.hooksPage.show_last_error', { name: h.name })}
                                   onClick={() => setOpenErrorId(openErrorId === h.id ? null : h.id)}
                                 >
                                   <ChevronDown size={13} className={`transition-transform ${openErrorId === h.id ? 'rotate-180' : ''}`} aria-hidden="true" />
-                                </button>
+                                </Btn>
                               )}
                             </span>
                           )}
@@ -462,11 +485,14 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                     </tr>
                     {openErrorId === h.id && h.last_error && (
                       <tr>
-                        <td colSpan={9} className="px-2.5 py-2 border-b border-border">
-                          {/* No hand-off while a HookForm is open (`creating` /
-                              `editing`) — its fields are unsaved. Otherwise the
-                              last_error is persisted server-side; nothing to lose. */}
-                          <ErrorNotice message={h.last_error} askAgent={handoffSafe} />
+                        <td colSpan={9} className="p-0 border-b border-border">
+                          {/* Sticky-left, scroller-wide: see hooksScrollerWidth. */}
+                          <div className="sticky left-0 px-2.5 py-2" style={hooksScrollerWidth ? { width: hooksScrollerWidth } : undefined}>
+                            {/* No hand-off while a HookForm is open (`creating` /
+                                `editing`) — its fields are unsaved. Otherwise the
+                                last_error is persisted server-side; nothing to lose. */}
+                            <ErrorNotice message={h.last_error} askAgent={handoffSafe} />
+                          </div>
                         </td>
                       </tr>
                     )}

@@ -437,14 +437,20 @@ describe('ChannelPage — agents sidebar', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
   })
 
-  it('keeps the optimistic listen mode when the patch fails', async () => {
+  it('puts the listen mode back and reports it when the patch fails', async () => {
+    // The row and the notice must agree: an optimistic "all" left standing
+    // under "Failed to update agent" would claim the change took.
     vi.mocked(api).channelUpdateAgent = vi.fn().mockRejectedValue(new Error('nope'))
     await renderPage()
     await openAgentsPanel()
     await userEvent.click(screen.getByText('mention'))
     const menu = await screen.findByRole('menu')
     await userEvent.click(within(menu).getByText('all'))
-    await waitFor(() => expect(screen.getByText('all')).toBeInTheDocument())
+    const notice = await screen.findByTestId('channel-error')
+    expect(notice).toHaveTextContent('Failed to update agent')
+    expect(notice).toHaveTextContent('nope')
+    await waitFor(() => expect(screen.getByText('mention')).toBeInTheDocument())
+    expect(screen.queryByText('all')).not.toBeInTheDocument()
   })
 
   it('closes the listen menu on Escape', async () => {
@@ -758,12 +764,18 @@ describe('ChannelPage — close channel', () => {
     await waitFor(() => expect(screen.getByText('Create a channel to get started')).toBeInTheDocument())
   })
 
-  it('removes the channel locally even when the close request fails', async () => {
+  it('keeps the channel and reports it when the close request fails', async () => {
+    // Removing the channel under a "Failed to close channel" notice would show
+    // the action as done; a refused close leaves the list as it was.
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     vi.mocked(api).channelClose = vi.fn().mockRejectedValue(new Error('already gone'))
     await renderPage()
     await userEvent.click(screen.getByTitle('Close channel'))
-    await waitFor(() => expect(screen.getByText('No channels yet')).toBeInTheDocument())
+    const notice = await screen.findByTestId('channel-error')
+    expect(notice).toHaveTextContent('Failed to close channel')
+    expect(notice).toHaveTextContent('already gone')
+    expect(screen.getByRole('heading', { name: 'Gamma rollout' })).toBeInTheDocument()
+    expect(screen.queryByText('No channels yet')).not.toBeInTheDocument()
   })
 
   it('does nothing when the confirm is cancelled', async () => {
@@ -850,10 +862,16 @@ describe('ChannelPage — socket events', () => {
 })
 
 describe('ChannelPage — load failures', () => {
-  it('renders the empty state when the channel list request fails', async () => {
+  it('names a failed channel-list read instead of rendering the empty state', async () => {
+    // "No channels yet" under a refused read would claim zero channels; the
+    // list is unknown, and the notice says so.
     vi.mocked(api).channelsList = vi.fn().mockRejectedValue(new Error('gateway down'))
     await renderPage()
-    expect(screen.getByText('No channels yet')).toBeInTheDocument()
+    const notice = await screen.findByTestId('channel-error')
+    expect(notice).toHaveTextContent('Failed to load channels')
+    expect(notice).toHaveTextContent('gateway down')
+    expect(screen.queryByText('No channels yet')).not.toBeInTheDocument()
+    expect(screen.queryByText('Create a channel to get started')).not.toBeInTheDocument()
   })
 
   it('keeps the summary row when the per-channel fetch fails', async () => {

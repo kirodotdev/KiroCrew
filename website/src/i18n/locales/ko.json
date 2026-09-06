@@ -7978,7 +7978,8 @@
       "where_it_comes_from": "출처",
       "yes_delete_it": "예, 삭제합니다",
       "retry": "다시 시도",
-      "delete_unavailable_references_failed": "크루 명단이나 대체 템플릿 설정을 불러오지 못해, 불러올 때까지 이 템플릿을 삭제할 수 없습니다."
+      "delete_unavailable_references_failed": "크루 명단이나 대체 템플릿 설정을 불러오지 못해, 불러올 때까지 이 템플릿을 삭제할 수 없습니다.",
+      "failed_to_load_agents": "에이전트를 불러오지 못했습니다"
     },
     "aidlc": {
       "dagView": {
@@ -8108,7 +8109,8 @@
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
       "retry": "다시 시도",
-      "back_to_apps": "앱으로 돌아가기"
+      "back_to_apps": "앱으로 돌아가기",
+      "failed_to_load_app": "앱을 불러오지 못했습니다"
     },
     "appsPage": {
       "action_failed": "{{name}} {{action}}에 실패했습니다",

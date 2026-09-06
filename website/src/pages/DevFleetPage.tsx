@@ -1716,7 +1716,9 @@ export default function DevFleetPage() {
   const needsSetup = !fleetError && !!fleet?.needs_setup
   // Either way the fleet is UNKNOWN, so the same chrome is wrong: counts would
   // assert numbers nobody measured, and the row actions have nothing to act on.
-  const noFleet = needsSetup || isDiscoveryError
+  // A rejected fleet read is the same unknown: "Worktrees (0)" beside a
+  // "Backend unavailable" notice would claim a measurement that never happened.
+  const noFleet = needsSetup || isDiscoveryError || !!fleetError
   const ql = q.trim().toLowerCase()
   const matchesRow = (w: Worktree) => !ql || (w.name + ' ' + (w.branch || '')).toLowerCase().includes(ql)
   const statusRank = (w: Worktree) => (w.is_main ? 0 : w.running ? 1 : (!w.has_dist ? 3 : 2))
@@ -2428,11 +2430,11 @@ export default function DevFleetPage() {
               <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={noFleet ? '—' : running} accent={!noFleet} />
               <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={noFleet ? '—' : wts.length} />
               <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={noFleet ? '—' : needsProv} />
-              <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={noFleet ? '—' : diskGb} />
+              <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={noFleet || diskFailed ? '—' : diskGb} />
             </div>
-            {/* The disk readout above stays "…" forever when /disk fails; name
-                the failure instead of leaving the card looking like it is still
-                measuring. Read failure, nothing typed — hand-off on. */}
+            {/* A failed /disk read shows "—" in the card (not the "…" that reads
+                as still measuring) and is named here. Read failure, nothing
+                typed — hand-off on. */}
             {!noFleet && diskFailed && (
               <ErrorNotice
                 title={i18nT('pages.devFleetPage.disk_usage_unavailable')}

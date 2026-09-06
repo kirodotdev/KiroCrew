@@ -8085,7 +8085,8 @@
       "where_it_comes_from": "এটি কোথা থেকে এসেছে",
       "yes_delete_it": "হ্যাঁ, মুছে ফেলুন",
       "retry": "আবার চেষ্টা করুন",
-      "delete_unavailable_references_failed": "ক্রু রোস্টার বা ফলব্যাক-টেমপ্লেট সেটিং লোড করা যায়নি, তাই সেগুলি লোড না হওয়া পর্যন্ত এই টেমপ্লেট মোছা যাবে না।"
+      "delete_unavailable_references_failed": "ক্রু রোস্টার বা ফলব্যাক-টেমপ্লেট সেটিং লোড করা যায়নি, তাই সেগুলি লোড না হওয়া পর্যন্ত এই টেমপ্লেট মোছা যাবে না।",
+      "failed_to_load_agents": "এজেন্ট লোড করা যায়নি"
     },
     "aidlc": {
       "dagView": {
@@ -8216,7 +8217,8 @@
     "appPage": {
       "loading_app": "অ্যাপ লোড হচ্ছে…",
       "retry": "আবার চেষ্টা করুন",
-      "back_to_apps": "অ্যাপে ফিরে যান"
+      "back_to_apps": "অ্যাপে ফিরে যান",
+      "failed_to_load_app": "অ্যাপ লোড করা যায়নি"
     },
     "appsPage": {
       "action_failed": "{{name}}-কে {{action}} করা যায়নি",

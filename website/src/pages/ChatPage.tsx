@@ -7670,11 +7670,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setPinLoadError(null)
     clearChatPinsError()
   }, [clearChatPinsError])
+  // Only the answer times out. A failure stays until the user dismisses it or
+  // hands it to the agent — an error that vanishes after eight seconds is the
+  // toast shape this sweep is removing.
   useEffect(() => {
-    if (!pinStatus && !pinError) return
-    const timeout = window.setTimeout(dismissPinStatus, 8000)
+    if (!pinStatus) return
+    const timeout = window.setTimeout(() => {
+      setPinNotice(null)
+      if (chatPinsError === 'pin_limit') clearChatPinsError()
+    }, 8000)
     return () => window.clearTimeout(timeout)
-  }, [pinStatus, pinError, dismissPinStatus])
+  }, [pinStatus, chatPinsError, clearChatPinsError])
 
   // Track the timestamp of the previous search-nav step so we can tell "user is
   // holding Enter through many matches" apart from "user landed on one match".
@@ -8941,7 +8947,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         {uploadHint && (
           <div role="status" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
             <span className="text-sm text-text flex-1">{uploadHint}</span>
-            <button onClick={() => setUploadHint('')} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text text-lg leading-none">&times;</button>
+            <Btn onClick={() => setUploadHint('')} aria-label={i18nT('app.dismiss')} className="shrink-0 px-1.5 py-0.5 text-muted hover:text-text"><X className="w-3.5 h-3.5" /></Btn>
           </div>
         )}
         <ErrorNotice

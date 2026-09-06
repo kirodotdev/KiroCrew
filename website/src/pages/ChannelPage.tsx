@@ -545,6 +545,8 @@ export default function ChannelPage() {
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
   const [showAddAgent, setShowAddAgent] = useState(false)
   const [loading, setLoading] = useState(true)
+  /** The last channel-list read was refused, so an empty list is unknown, not empty. */
+  const [listFailed, setListFailed] = useState(false)
   const [error, setError] = useState<ChannelPageError | null>(null)
   // A rejected channelPost, kept apart from `error`: its notice sits next to
   // the composer that still holds the unsent text (keyed by thread so it shows
@@ -552,9 +554,12 @@ export default function ChannelPage() {
   const [postError, setPostError] = useState<{ message: string; threadId: string | null } | null>(null)
   // Every failed request on this page lands in the one in-page ErrorNotice;
   // `title` names the action, the body is the backend's message.
-  const fail = useCallback((titleKey: string, err: unknown) => {
+  const fail = useCallback((titleKey: string, err: unknown, opts?: { keepExisting?: boolean }) => {
     const title = i18nT(titleKey)
-    setError({ title, message: apiError(err, title) })
+    const next = { title, message: apiError(err, title) }
+    // `keepExisting`: a secondary read (the team presets) must not paper over
+    // the primary one (the channel list) when both fail on the same load.
+    setError(prev => (opts?.keepExisting && prev ? prev : next))
   }, [])
   const [threadId, setThreadId] = useState<string | null>(null)
   // Which thread the unsent reply belongs to, so it is neither discarded on
@@ -573,8 +578,9 @@ export default function ChannelPage() {
       const res = await api.channelsList()
       const mapped = (res.channels || []).map(mapChannel)
       setChannels(mapped)
+      setListFailed(false)
       if (!activeId && mapped.length > 0) setActiveId(mapped[0].id)
-    } catch (e) { fail('pages.channelPage.failed_to_load_channels', e) }
+    } catch (e) { setListFailed(true); fail('pages.channelPage.failed_to_load_channels', e) }
     setLoading(false)
   }, [activeId, fail])
 
@@ -582,7 +588,7 @@ export default function ChannelPage() {
     reload()
     api.channelPresets()
       .then(r => setPresets(r.presets || FALLBACK_PRESETS))
-      .catch(e => fail('pages.channelPage.failed_to_load_presets', e))
+      .catch(e => fail('pages.channelPage.failed_to_load_presets', e, { keepExisting: true }))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // A thread id and the agents panel both belong to one channel: `threadId` names a
@@ -676,16 +682,38 @@ export default function ChannelPage() {
     if (await sendMessage(input)) setInput('')
   }
 
+  // After a refused optimistic change, re-read the channel from the server and
+  // let ITS answer replace the row. A hand-rolled rollback cannot tell the
+  // optimistic value from one a socket event (`channel_agent_left`) or a
+  // newer request wrote in the meantime, so it could resurrect a genuinely
+  // removed agent or overwrite a later, successful change. If the re-read
+  // fails too, the row is left as is; the notice already names the failure.
+  const reconcileChannel = useCallback(async (channelId: string) => {
+    try {
+      const res = await api.channelGet(channelId)
+      setChannels(prev => prev.map(c => c.id === channelId ? mapChannel(res) : c))
+    } catch { /* the failure notice is already showing; nothing better to say */ }
+  }, [])
+
+  // Optimistic, but a refusal reconciles the row from the server: a notice that
+  // says "Failed to dismiss agent" beside a row that shows it dismissed would
+  // contradict itself until the next reload.
   const handleDismiss = async (agentId: string) => {
     if (!channel) return
     setChannels(prev => prev.map(c => c.id !== channel.id ? c : { ...c, agents: c.agents.map(a => a.id === agentId ? { ...a, state: 'done' as const } : a) }))
-    try { await api.channelDismissAgent(channel.id, agentId) } catch (e) { fail('pages.channelPage.failed_to_dismiss_agent', e) }
+    try { await api.channelDismissAgent(channel.id, agentId) } catch (e) {
+      await reconcileChannel(channel.id)
+      fail('pages.channelPage.failed_to_dismiss_agent', e)
+    }
   }
 
   const handleListenChange = async (agentId: string, mode: ChannelAgent['listenMode']) => {
     if (!channel) return
     setChannels(prev => prev.map(c => c.id !== channel.id ? c : { ...c, agents: c.agents.map(a => a.id === agentId ? { ...a, listenMode: mode } : a) }))
-    try { await api.channelUpdateAgent(channel.id, agentId, { listen: mode }) } catch (e) { fail('pages.channelPage.failed_to_update_agent', e) }
+    try { await api.channelUpdateAgent(channel.id, agentId, { listen: mode }) } catch (e) {
+      await reconcileChannel(channel.id)
+      fail('pages.channelPage.failed_to_update_agent', e)
+    }
   }
 
   if (loading) return <div className="flex items-center justify-center h-full text-muted">{i18nT('pages.channelPage.loading_channels')}</div>
@@ -737,7 +765,9 @@ export default function ChannelPage() {
           <Btn onClick={() => setShowNew(true)} primary title={i18nT('pages.channelPage.new_channel_2')}>{i18nT('pages.channelPage.new')}</Btn>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {channels.length === 0 && <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.channelPage.no_channels_yet')} subtitle={i18nT('pages.channelPage.click_new_to_create_one')} />}
+          {/* An empty list is only "no channels yet" when the read succeeded:
+              under a load failure the onboarding copy would claim zero channels. */}
+          {channels.length === 0 && !listFailed && <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.channelPage.no_channels_yet')} subtitle={i18nT('pages.channelPage.click_new_to_create_one')} />}
           {channels.map(ch => (
             <ChannelListItem key={ch.id} ch={ch} active={ch.id === activeId} onClick={() => { setActiveId(ch.id); openDetail() }} />
           ))}
@@ -771,7 +801,9 @@ export default function ChannelPage() {
               </Btn>
               <Btn onClick={async () => {
                 if (!confirm(i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'))) return
-                try { await api.channelClose(channel.id) } catch (e) { fail('pages.channelPage.failed_to_close_channel', e) }
+                // A refused close keeps the channel in the list: removing it
+                // would show the action as done under a notice saying it failed.
+                try { await api.channelClose(channel.id) } catch (e) { fail('pages.channelPage.failed_to_close_channel', e); return }
                 setChannels(prev => prev.filter(c => c.id !== channel.id))
                 setActiveId(null)
                 // Without this the narrow layout keeps the transcript pane while no
@@ -897,7 +929,7 @@ export default function ChannelPage() {
         </div>
       ) : (
         <div className="flex-1 flex items-center justify-center">
-          <EmptyState icon={<Users className="lucide-inline" />} title={i18nT('pages.channelPage.create_a_channel_to_get_started')} />
+          {!listFailed && <EmptyState icon={<Users className="lucide-inline" />} title={i18nT('pages.channelPage.create_a_channel_to_get_started')} />}
         </div>
       )}
     </div>

@@ -660,6 +660,11 @@ export default function AppDetailPage() {
   const load = useCallback(async () => {
     if (!name) return
     setLoading(true)
+    // Drop the previous record before resolving the new name: a genuine miss
+    // sets nothing below, and without this an in-session navigation from a
+    // loaded app to a non-existent one would keep rendering the old app under
+    // the new URL instead of the not-found page.
+    setApp(null)
     clearError()
     try {
       // Try installed app first. Only a 404 means "not installed"; any other

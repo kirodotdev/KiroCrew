@@ -2857,7 +2857,8 @@
       "default": "Default",
       "delete_subagent": "Delete subagent {{id}}",
       "retry": "Retry",
-      "delete_unavailable_references_failed": "Couldn't load the crew roster or the fallback-template setting, so deleting this template is unavailable until they load."
+      "delete_unavailable_references_failed": "Couldn't load the crew roster or the fallback-template setting, so deleting this template is unavailable until they load.",
+      "failed_to_load_agents": "Failed to load agents"
     },
     "aidlc": {
       "taskDetailPanel": {
@@ -5573,7 +5574,8 @@
     },
     "appPage": {
       "retry": "Retry",
-      "back_to_apps": "Back to Apps"
+      "back_to_apps": "Back to Apps",
+      "failed_to_load_app": "Failed to load app"
     }
   },
   "privacyDisclosure": {

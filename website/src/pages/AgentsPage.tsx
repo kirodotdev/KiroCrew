@@ -189,15 +189,18 @@ function GlanceChip({ label, count, tone, onClick }: { label: string; count: num
 }
 
 /** Live context-window utilisation per active session. */
-function ContextUsageCard({ ctx, installed, error }: { ctx: CtxSession[]; installed: InstalledAgent[]; error?: string | null }) {
+function ContextUsageCard({ ctx, installed, error, quiet }: { ctx: CtxSession[]; installed: InstalledAgent[]; error?: string | null; quiet?: boolean }) {
   const provider = useProvider()
   return (
     <Card>
       <CardTitle className="gap-1.5">{i18nT('pages.agentsPage.context_window_usage')} <InfoTip text={i18nT('pages.agentsPage.context_window_usage_tip', { label: provider.labels.sessionProcess })} /></CardTitle>
       {/* A failed poll must not read as "no active sessions": the list below is
           empty in both cases. Read-only card, so the hand-off loses nothing. */}
-      <ErrorNotice message={error} askAgent className="mb-3" />
-      {ctx.length === 0 ? <p className="text-muted italic text-sm">{i18nT('pages.agentsPage.no_active_sessions')}</p> : (
+      {/* `quiet`: the same failure is already named by the page-level notice
+          above, so the sentence is not repeated — but an empty list under a
+          failed read is still unknown, never "no active sessions". */}
+      {!quiet && <ErrorNotice message={error} askAgent className="mb-3" />}
+      {ctx.length === 0 ? (error ? null : <p className="text-muted italic text-sm">{i18nT('pages.agentsPage.no_active_sessions')}</p>) : (
         <div className="space-y-4">
           {ctx.map(s => {
             // Prefer the real served window the backend reports (the one
@@ -409,16 +412,18 @@ function ProviderUsageCard({ usage }: { usage: SessionsUsage }) {
 }
 
 /** Spawned subagent runs and their state. */
-function SubagentsCard({ agents, error, onDismissError, onClear, onDelete }: { agents: SubagentInfo[]; error?: string | null; onDismissError?: () => void; onClear: () => void; onDelete: (id: string) => void }) {
+function SubagentsCard({ agents, error, quiet, onDismissError, onClear, onDelete }: { agents: SubagentInfo[]; error?: string | null; quiet?: boolean; onDismissError?: () => void; onClear: () => void; onDelete: (id: string) => void }) {
   return (
     <Card>
       <CardTitle>{i18nT('pages.agentsPage.subagents')} {agents.some(a => a.done) && <Btn danger type="button" className="px-2 py-0.5" onClick={onClear}>{i18nT('pages.agentsPage.clear_completed')}</Btn>}</CardTitle>
       {/* Status panel with nothing unsaved, so the hand-off is safe. A failed
           list fetch would otherwise render as an empty table, and a failed
           clear/delete would leave the row in place with no explanation. */}
-      <ErrorNotice message={error} askAgent onDismiss={onDismissError} className="mb-3" />
+      {/* `quiet`: see ContextUsageCard — the page-level notice already names
+          this failure; the empty state below still stays off while it stands. */}
+      {!quiet && <ErrorNotice message={error} askAgent onDismiss={onDismissError} className="mb-3" />}
       <table className="w-full border-collapse table-striped"><thead><tr>{[i18nT('pages.agentsPage.id'), i18nT('pages.agentsPage.task'), i18nT('pages.agentsPage.status'), ''].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>)}</tr></thead>
-        <tbody>{agents.length === 0 ? <tr><td colSpan={4}><EmptyState icon={<Bot className="lucide-inline" />} title={i18nT('pages.agentsPage.no_subagents')} subtitle={i18nT('pages.agentsPage.spawn_tasks_from_chat_or_cli')} /></td></tr> : agents.map(a => (
+        <tbody>{agents.length === 0 ? (error ? null : <tr><td colSpan={4}><EmptyState icon={<Bot className="lucide-inline" />} title={i18nT('pages.agentsPage.no_subagents')} subtitle={i18nT('pages.agentsPage.spawn_tasks_from_chat_or_cli')} /></td></tr>) : agents.map(a => (
           <Fragment key={a.id}>
             <tr className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm"><code>{a.id}</code></td><td className="px-2.5 py-2 border-b border-border text-sm">{a.task}</td>
               <td className="px-2.5 py-2 border-b border-border text-sm">{a.done ? (a.error ? <Badge variant="err">{i18nT('pages.agentsPage.failed')}</Badge> : <Badge variant="ok">{i18nT('pages.agentsPage.done')}</Badge>) : <Badge variant="warn">{i18nT('pages.agentsPage.running')}</Badge>}</td>
@@ -563,6 +568,13 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   // One surface for the card: the list fetch, or whichever action last failed.
   const spawnActionError = failText(spawnClearMut.error) ?? failText(spawnDeleteMut.error)
   const spawnError = failText(spawnListError) ?? spawnActionError
+  // One transport failure takes every read on this page down at once. The
+  // roster notice (with its Retry) is the page-level report of that; a card
+  // whose own failure reads identically is then left to its content, so the
+  // same sentence is not stacked four times. A card failing for a DIFFERENT
+  // reason still names it.
+  const rosterFailure = failText(installedError)
+  const isRosterFailure = (msg: string | null) => !!msg && msg === rosterFailure
 
   const setDefaultMut = useMutation({
     mutationFn: (next: string) => api.setDefaultAgent(next),
@@ -769,7 +781,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
           /* Before the empty state: a failed roster fetch leaves `installed`
              at its [] default and would otherwise read as "no templates yet". */
           <div className="card-glow border border-border bg-card rounded-lg mb-4 shadow-sm p-4 flex flex-col items-start gap-3">
-            <ErrorNotice message={failText(installedError)} askAgent className="w-full" />
+            <ErrorNotice title={i18nT('pages.agentsPage.failed_to_load_agents')} message={failText(installedError)} askAgent className="w-full" />
             <Btn onClick={() => { void refetchInstalled() }}>{i18nT('pages.agentsPage.retry')}</Btn>
           </div>
         ) : installed.length === 0 ? (
@@ -1095,13 +1107,14 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
           </div>
         )}
 
-        <ContextUsageCard ctx={ctx} installed={installed} error={failText(ctxError)} />
+        <ContextUsageCard ctx={ctx} installed={installed} error={failText(ctxError)} quiet={isRosterFailure(failText(ctxError))} />
         {/* Read-only usage card: a failed read is stated rather than shown as "no plan". */}
-        <ErrorNotice message={failText(usageError)} askAgent className="mb-4" />
+        <ErrorNotice message={isRosterFailure(failText(usageError)) ? null : failText(usageError)} askAgent className="mb-4" />
         {usage && <ProviderUsageCard usage={usage} />}
         <SubagentsCard
           agents={agents}
           error={spawnError}
+          quiet={isRosterFailure(spawnError)}
           onDismissError={spawnActionError ? () => { spawnClearMut.reset(); spawnDeleteMut.reset() } : undefined}
           onClear={() => spawnClearMut.mutate()}
           onDelete={id => spawnDeleteMut.mutate(id)}

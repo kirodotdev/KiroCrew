@@ -8192,7 +8192,8 @@
       "where_it_comes_from": "De onde ele vem",
       "yes_delete_it": "Sim, excluir",
       "retry": "Tentar novamente",
-      "delete_unavailable_references_failed": "Não foi possível carregar a lista da equipe nem a configuração do modelo de fallback, então excluir este modelo fica indisponível até que carreguem."
+      "delete_unavailable_references_failed": "Não foi possível carregar a lista da equipe nem a configuração do modelo de fallback, então excluir este modelo fica indisponível até que carreguem.",
+      "failed_to_load_agents": "Falha ao carregar os agentes"
     },
     "aidlc": {
       "dagView": {
@@ -8324,7 +8325,8 @@
     "appPage": {
       "loading_app": "Carregando app…",
       "retry": "Tentar novamente",
-      "back_to_apps": "Voltar para Apps"
+      "back_to_apps": "Voltar para Apps",
+      "failed_to_load_app": "Falha ao carregar o app"
     },
     "appsPage": {
       "action_failed": "Falha ao {{action}} {{name}}",

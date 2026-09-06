@@ -8085,7 +8085,8 @@
       "where_it_comes_from": "यह कहाँ से आया",
       "yes_delete_it": "हाँ, हटा दो",
       "retry": "फिर कोशिश करें",
-      "delete_unavailable_references_failed": "क्रू रोस्टर या फ़ॉलबैक-टेम्पलेट सेटिंग लोड नहीं हो सकी, इसलिए वे लोड होने तक यह टेम्पलेट हटाना उपलब्ध नहीं है।"
+      "delete_unavailable_references_failed": "क्रू रोस्टर या फ़ॉलबैक-टेम्पलेट सेटिंग लोड नहीं हो सकी, इसलिए वे लोड होने तक यह टेम्पलेट हटाना उपलब्ध नहीं है।",
+      "failed_to_load_agents": "एजेंट लोड करने में विफल"
     },
     "aidlc": {
       "dagView": {
@@ -8216,7 +8217,8 @@
     "appPage": {
       "loading_app": "ऐप लोड हो रहा है…",
       "retry": "फिर कोशिश करें",
-      "back_to_apps": "ऐप्स पर वापस"
+      "back_to_apps": "ऐप्स पर वापस",
+      "failed_to_load_app": "ऐप लोड नहीं हो सका"
     },
     "appsPage": {
       "action_failed": "{{name}} को {{action}} करने में विफल",

@@ -8192,7 +8192,8 @@
       "where_it_comes_from": "De dónde viene",
       "yes_delete_it": "Sí, eliminarlo",
       "retry": "Reintentar",
-      "delete_unavailable_references_failed": "No se pudo cargar la lista del equipo ni el ajuste de plantilla de respaldo, así que no se puede eliminar esta plantilla hasta que se carguen."
+      "delete_unavailable_references_failed": "No se pudo cargar la lista del equipo ni el ajuste de plantilla de respaldo, así que no se puede eliminar esta plantilla hasta que se carguen.",
+      "failed_to_load_agents": "No se pudieron cargar los agentes"
     },
     "aidlc": {
       "dagView": {
@@ -8324,7 +8325,8 @@
     "appPage": {
       "loading_app": "Cargando la app…",
       "retry": "Reintentar",
-      "back_to_apps": "Volver a Apps"
+      "back_to_apps": "Volver a Apps",
+      "failed_to_load_app": "No se pudo cargar la app"
     },
     "appsPage": {
       "action_failed": "No se pudo {{action}} {{name}}",

@@ -8192,7 +8192,8 @@
       "where_it_comes_from": "D’où il vient",
       "yes_delete_it": "Oui, supprimer",
       "retry": "Réessayer",
-      "delete_unavailable_references_failed": "Impossible de charger la liste de l'équipe ou le réglage du modèle de secours ; la suppression de ce modèle est indisponible jusqu'à leur chargement."
+      "delete_unavailable_references_failed": "Impossible de charger la liste de l'équipe ou le réglage du modèle de secours ; la suppression de ce modèle est indisponible jusqu'à leur chargement.",
+      "failed_to_load_agents": "Échec du chargement des agents"
     },
     "aidlc": {
       "dagView": {
@@ -8324,7 +8325,8 @@
     "appPage": {
       "loading_app": "Chargement de l'application…",
       "retry": "Réessayer",
-      "back_to_apps": "Retour aux applications"
+      "back_to_apps": "Retour aux applications",
+      "failed_to_load_app": "Échec du chargement de l’application"
     },
     "appsPage": {
       "action_failed": "Échec de l’action « {{action}} » sur {{name}}",

@@ -25,7 +25,7 @@ let failed = 0
 
 for (const theme of THEMES) {
   const ctx = await browser.newContext({
-    viewport: { width: 920, height: 1400 },
+    viewport: { width: 1060, height: 2800 },
     deviceScaleFactor: 2,
     colorScheme: theme,
   })
@@ -44,6 +44,17 @@ for (const theme of THEMES) {
     await page.getByText('Failed to fetch: gateway unreachable').first().waitFor({ timeout: 15000 })
     // Give the remaining queries a moment to settle too (they reject synchronously).
     await page.waitForTimeout(500)
+    if (MODE === 'after') {
+      // HooksPage: open the failed hook's persisted last_error row (a tooltip on
+      // the base branch), then run Test against the rejecting endpoint so the
+      // hook-test failure notice renders too.
+      await page.getByRole('button', { name: /show last error for fmt/i }).click()
+      await page.getByRole('button', { name: /^test$/i }).first().click()
+      await page.getByTestId('hook-test-error').waitFor({ timeout: 10000 })
+      // The clicks scroll the hooks table sideways to reveal the sticky Actions
+      // column; put it back so the frame shows the row from its left edge.
+      await page.evaluate(() => { for (const el of document.querySelectorAll('.overflow-x-auto')) el.scrollLeft = 0 })
+    }
     const handoffs = await page.getByRole('button', { name: 'Ask the agent' }).count()
     const scenes = await page.locator('[data-scene]').count()
     if (MODE === 'after') {

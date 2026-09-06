@@ -91,10 +91,10 @@ describe('Hooks page — inline test-failure state', () => {
       expect(within(alert).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
     })
 
-    // The global error path is preserved: mutError still reports the same message.
-    expect(screen.getByTestId('hooks-error')).toHaveTextContent('hook test endpoint unreachable')
-    const banners = screen.getAllByText('hook test endpoint unreachable')
-    expect(banners.length).toBeGreaterThanOrEqual(2)
+    // The failed test is reported ONCE, by the titled notice beside the row: a
+    // second bare copy at the top of the page read as a page-wide outage.
+    expect(screen.queryByTestId('hooks-error')).toBeNull()
+    expect(screen.getAllByText('hook test endpoint unreachable')).toHaveLength(1)
   })
 
   it('clears a prior failure panel when a new test starts', async () => {

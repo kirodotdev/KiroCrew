@@ -6036,7 +6036,7 @@ function ChatSidebar({
                     // rather than being the error surface itself.
                     <span className="inline-flex items-center gap-2 flex-wrap">
                       <ErrorNotice message={i18nT('pages.chatSidebar.failed_to_load_preview')} variant="inline" askAgent testId="cleanup-preview-error" />
-                      <button className="text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => queryClient.invalidateQueries({ queryKey: ['cleanup-preview'] })}>{i18nT('pages.chatSidebar.retry')}</button>
+                      <Btn className="text-[12px] px-2 py-0.5" onClick={() => queryClient.invalidateQueries({ queryKey: ['cleanup-preview'] })}>{i18nT('pages.chatSidebar.retry')}</Btn>
                     </span>
                   )
                   : noStale
@@ -6616,13 +6616,13 @@ function ChatSidebar({
             testId="lane-seed-error"
           />
           <div>
-            <button
+            <Btn
               type="button"
-              className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer p-0"
+              className="text-[12px] px-2 py-0.5"
               onClick={() => { setSeedError(''); seedStateLanesMutation.mutate() }}
             >
               {i18nT('pages.chatSidebar.lane_seed_retry')}
-            </button>
+            </Btn>
           </div>
         </div>
       )}
@@ -6639,9 +6639,9 @@ function ChatSidebar({
             testId="chat-folders-error"
           />
           <div>
-            <button type="button" className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer p-0" onClick={() => void refetchFolders()}>
+            <Btn type="button" className="text-[12px] px-2 py-0.5" onClick={() => void refetchFolders()}>
               {i18nT('pages.chatSidebar.retry')}
-            </button>
+            </Btn>
           </div>
         </div>
       )}
@@ -6654,9 +6654,9 @@ function ChatSidebar({
             testId="tag-columns-error"
           />
           <div>
-            <button type="button" className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer p-0" onClick={() => void refetchColumns()}>
+            <Btn type="button" className="text-[12px] px-2 py-0.5" onClick={() => void refetchColumns()}>
               {i18nT('pages.chatSidebar.retry')}
-            </button>
+            </Btn>
           </div>
         </div>
       )}

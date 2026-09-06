@@ -8085,7 +8085,8 @@
       "where_it_comes_from": "Woher sie kommt",
       "yes_delete_it": "Ja, löschen",
       "retry": "Wiederholen",
-      "delete_unavailable_references_failed": "Die Crew-Liste oder die Einstellung für die Fallback-Vorlage konnte nicht geladen werden, daher kann diese Vorlage erst gelöscht werden, wenn sie geladen sind."
+      "delete_unavailable_references_failed": "Die Crew-Liste oder die Einstellung für die Fallback-Vorlage konnte nicht geladen werden, daher kann diese Vorlage erst gelöscht werden, wenn sie geladen sind.",
+      "failed_to_load_agents": "Agenten konnten nicht geladen werden"
     },
     "aidlc": {
       "dagView": {
@@ -8216,7 +8217,8 @@
     "appPage": {
       "loading_app": "App wird geladen…",
       "retry": "Wiederholen",
-      "back_to_apps": "Zurück zu Apps"
+      "back_to_apps": "Zurück zu Apps",
+      "failed_to_load_app": "App konnte nicht geladen werden"
     },
     "appsPage": {
       "action_failed": "{{action}} für {{name}} fehlgeschlagen",

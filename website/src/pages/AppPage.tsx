@@ -68,7 +68,7 @@ export default function AppPage() {
     // and a way back sit beside it so the failure is not a dead end.
     return (
       <div className="flex-1 p-4 flex flex-col gap-3">
-        <ErrorNotice message={error} askAgent />
+        <ErrorNotice title={i18nT('pages.appPage.failed_to_load_app')} message={error} askAgent />
         <div className="flex items-center gap-2">
           <Btn onClick={() => setAttempt(a => a + 1)}>{i18nT('pages.appPage.retry')}</Btn>
           <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('pages.appPage.back_to_apps')}</Btn>

@@ -7978,7 +7978,8 @@
       "where_it_comes_from": "它来自哪里",
       "yes_delete_it": "是的，删除它",
       "retry": "重试",
-      "delete_unavailable_references_failed": "无法加载团队名册或回退模板设置，在它们加载完成前无法删除此模板。"
+      "delete_unavailable_references_failed": "无法加载团队名册或回退模板设置，在它们加载完成前无法删除此模板。",
+      "failed_to_load_agents": "加载代理失败"
     },
     "aidlc": {
       "dagView": {
@@ -8108,7 +8109,8 @@
     "appPage": {
       "loading_app": "加载应用…",
       "retry": "重试",
-      "back_to_apps": "返回应用"
+      "back_to_apps": "返回应用",
+      "failed_to_load_app": "加载应用失败"
     },
     "appsPage": {
       "action_failed": "{{action}} {{name}} 失败",
