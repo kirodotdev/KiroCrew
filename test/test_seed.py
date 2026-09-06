@@ -15,7 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
+from kiro_crew import pinned_fs
 from kiro_crew import seed as seed_mod
 
 # A test here spawns a real `python -m kiro_crew gateway --help` child interpreter;
@@ -913,6 +914,95 @@ def test_seed_regular_file_target_rejected(
     # Original file must NOT be touched (no rmtree, no copy).
     assert target_file.is_file()
     assert target_file.read_text(encoding="utf-8") == "some stale log the user left behind"
+
+
+def test_seed_refuses_a_junctioned_nonempty_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same guardrail as the symlink test above, on the platform it is reachable.
+
+    Every existing guardrail test here is `@requires_symlinks`, so on Windows —
+    where a *directory* symlink needs SeCreateSymbolicLinkPrivilege — none of
+    them run. A JUNCTION needs no privilege, so `mklink /J` is how a Windows
+    user actually puts `$KIROCREW_HOME` on another drive, and `is_symlink()` is
+    False for one.
+
+    Without the fix that user gets the exact two-step dead end this branch was
+    hoisted to prevent: `GUARDRAIL_NON_EMPTY` says "pass --seed-replace", and
+    doing so reaches `shutil.rmtree`, which refuses a junction just as it
+    refuses a symlink — an `OSError` surfacing as EXIT_IO_ERROR rather than the
+    actionable "point it at a real directory".
+    """
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    (real_dir / "existing.txt").write_text("already here", encoding="utf-8")
+    link = tmp_path / "link"
+    make_dir_link(link, real_dir)
+    # Guard the guard, via an oracle outside the module under test.
+    assert pinned_fs.is_reparse_point(link)
+    assert link.exists() and any(link.iterdir())
+    monkeypatch.setenv("KIROCREW_HOME", str(link))
+
+    with pytest.raises(seed_mod.SeedError) as excinfo:
+        seed_mod.seed("empty")  # NO replace=True
+
+    assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
+    assert excinfo.value.guardrail == seed_mod.SeedError.GUARDRAIL_SYMLINK_REPLACE
+    assert (real_dir / "existing.txt").read_text(encoding="utf-8") == "already here"
+
+
+def test_seed_replace_refuses_a_junctioned_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--seed-replace` must refuse, not reach `rmtree`, on a junctioned home."""
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    (real_dir / "precious.txt").write_text("must survive", encoding="utf-8")
+    link = tmp_path / "link"
+    make_dir_link(link, real_dir)
+    assert pinned_fs.is_reparse_point(link)
+    monkeypatch.setenv("KIROCREW_HOME", str(link))
+
+    with pytest.raises(seed_mod.SeedError) as excinfo:
+        seed_mod.seed("empty", replace=True)
+
+    assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
+    assert "symlinked" in str(excinfo.value)
+    assert (real_dir / "precious.txt").read_text(encoding="utf-8") == "must survive"
+
+
+def test_seed_refuses_an_EMPTY_junctioned_home_instead_of_detaching_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The empty branch is the one that fails SILENTLY, and destructively.
+
+    For an empty *symlink* the code raises `GUARDRAIL_SYMLINK_EMPTY`. For an
+    empty *junction* both link checks are False, so control reaches
+    `elif dst.exists(): dst.rmdir()` — and `os.rmdir` on a junction DETACHES
+    THE JUNCTION (that is exactly how `unlink_link_or_junction` removes one).
+    The fixture is then seeded into a fresh real directory at that path, and the
+    user's redirection to another drive is gone without a word.
+
+    So this is not only a worse error message than the symlink case: it is the
+    opposite outcome. The refusal must fire for both shapes.
+    """
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()  # empty
+    link = tmp_path / "link"
+    make_dir_link(link, real_dir)
+    assert pinned_fs.is_reparse_point(link)
+    assert not any(link.iterdir())
+    monkeypatch.setenv("KIROCREW_HOME", str(link))
+
+    with pytest.raises(seed_mod.SeedError) as excinfo:
+        seed_mod.seed("empty")
+
+    assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
+    assert excinfo.value.guardrail == seed_mod.SeedError.GUARDRAIL_SYMLINK_EMPTY
+    # The link is still a link, still pointing where the user put it...
+    assert pinned_fs.is_reparse_point(link)
+    # ...and nothing was seeded through it.
+    assert list(real_dir.iterdir()) == []
 
 
 @requires_symlinks

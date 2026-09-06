@@ -518,10 +518,10 @@ def seed(fixture_name: str, *, replace: bool = False) -> None:
         # populated-symlink case is the "rmtree would follow the link"
         # risk the name calls out; ``GUARDRAIL_SYMLINK_EMPTY`` distinguishes
         # the empty-symlink branch below.
-        if dst.is_symlink():
+        if pinned_fs.is_reparse_point(dst):
             raise SeedError(
-                f"refusing to seed into a symlinked $KIROCREW_HOME: {dst}. "
-                "Point it at a real directory.",
+                f"refusing to seed into a symlinked or junctioned "
+                f"$KIROCREW_HOME: {dst}. Point it at a real directory.",
                 guardrail=SeedError.GUARDRAIL_SYMLINK_REPLACE,
             )
         if not replace:
@@ -531,7 +531,7 @@ def seed(fixture_name: str, *, replace: bool = False) -> None:
                 guardrail=SeedError.GUARDRAIL_NON_EMPTY,
             )
         shutil.rmtree(dst)
-    elif dst.exists() and dst.is_symlink():
+    elif dst.exists() and pinned_fs.is_reparse_point(dst):
         # Empty-but-existing symlink: ``shutil.copytree(src, dst)`` would
         # raise ``FileExistsError`` with a raw message because the symlink
         # itself exists as a path. Previously this fell through to the
@@ -541,8 +541,8 @@ def seed(fixture_name: str, *, replace: bool = False) -> None:
         # a symlink-empty guardrail so the same symlink-is-dangerous message
         # pattern applies whether the link target is empty or populated.
         raise SeedError(
-            f"refusing to seed into a symlinked $KIROCREW_HOME: {dst}. "
-            "Point it at a real directory.",
+            f"refusing to seed into a symlinked or junctioned "
+            f"$KIROCREW_HOME: {dst}. Point it at a real directory.",
             guardrail=SeedError.GUARDRAIL_SYMLINK_EMPTY,
         )
     elif dst.exists():
