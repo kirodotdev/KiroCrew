@@ -9201,7 +9201,14 @@
       },
       "errorCard": {
         "continue": "Fortsetzen",
-        "continue_hint": "Ab der Unterbrechung fortsetzen. Bereits auf die Festplatte geschriebene Arbeit bleibt unberührt."
+        "continue_hint": "Ab der Unterbrechung fortsetzen. Bereits auf die Festplatte geschriebene Arbeit bleibt unberührt.",
+        "default_model": "Standardmodell ändern",
+        "default_model_hint": "Einstellungen → Chat → Standardmodell öffnen. Neue Sitzungen starten mit diesem Wert.",
+        "pick_model": "Modell für diese Sitzung wählen",
+        "pick_model_hint": "Die Modellauswahl öffnen, eines der Modelle wählen, die dein Konto nutzen kann, und dann die Nachricht erneut senden.",
+        "both_hint": "Beides tun: „{{pick}}“ behebt diese Sitzung, „{{default}}“ verhindert, dass neue Sitzungen mit demselben Modell starten, falls es als Standard gesetzt ist. Danach die Nachricht erneut senden.",
+        "elsewhere_hint": "Die Modellauswahl und Einstellungen → Chat sind im Haupt-Chatfenster. Dort ein Modell wählen und das Standardmodell ändern.",
+        "elsewhere_settings_hint": "Einstellungen → Chat ist im Haupt-Chatfenster. Dort das Standardmodell ändern."
       },
       "folderPanel": {
         "clear_search": "Suche löschen",

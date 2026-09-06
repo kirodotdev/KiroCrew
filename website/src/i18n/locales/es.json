@@ -9331,7 +9331,14 @@
       },
       "errorCard": {
         "continue": "Continuar",
-        "continue_hint": "Reanudar donde se detuvo. El trabajo ya escrito en disco no se altera."
+        "continue_hint": "Reanudar donde se detuvo. El trabajo ya escrito en disco no se altera.",
+        "default_model": "Cambiar el modelo predeterminado",
+        "default_model_hint": "Abre Configuración → Chat → Modelo predeterminado. Las sesiones nuevas empiezan con este valor.",
+        "pick_model": "Elegir un modelo para esta sesión",
+        "pick_model_hint": "Abre el selector de modelos, elige uno de los que tu cuenta puede usar y vuelve a enviar tu mensaje.",
+        "both_hint": "Haz ambas cosas: “{{pick}}” arregla esta sesión, “{{default}}” evita que las sesiones nuevas empiecen con el mismo modelo si está configurado como predeterminado. Después vuelve a enviar tu mensaje.",
+        "elsewhere_hint": "El selector de modelos y Configuración → Chat están en la ventana de chat principal. Ábrela para elegir un modelo y cambiar el predeterminado.",
+        "elsewhere_settings_hint": "Configuración → Chat está en la ventana de chat principal. Ábrela para cambiar el modelo predeterminado."
       },
       "folderPanel": {
         "clear_search": "Borrar búsqueda",

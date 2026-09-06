@@ -309,6 +309,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     EMPTY_RUNG_CONTINUE,
     EMPTY_RUNG_GIVE_UP,
     EMPTY_RUNG_REPLAY,
+    MODEL_UNENTITLED_KIND,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
     TRANSIENT_RETRY_KIND,
@@ -3839,6 +3840,32 @@ def _detach_appended_context(original: str, expanded: str) -> tuple[str, str]:
         return original, expanded[len(original) :]
     logger.warning("generated request context stopped honoring append-only contract")
     return original, expanded
+
+
+def _model_unentitled_meta(exc: BaseException) -> dict[str, object] | None:
+    """Row ``meta`` for a terminal error caused by a model the account cannot use.
+
+    ``_raise_acp_error`` tags a prompt-time model rejection with the rejected id
+    and the session's advertised list. The rejection is an ENTITLEMENT failure
+    (rather than a transient capacity blip on an advertised model) exactly when
+    the id is missing from that list — the same test ``_model_is_unentitled``
+    applies when it words the message, so the tag and the prose cannot disagree.
+    Returns None for every other error, so callers can pass the result straight
+    to ``slot.append(meta=...)``.
+
+    Only the ``kind`` is persisted — the same shape every ``TRANSIENT_RETRY_KIND``
+    append uses. The frontend reads nothing else: the rejected id and the served
+    list are already in the row's prose, and the picker shows the live list.
+    """
+    rejected = getattr(exc, "rejected_model", None)
+    if not isinstance(rejected, str) or not rejected.strip():
+        return None
+    # ONE shared predicate (see its docstring): an empty/None advertised list is
+    # "unknowable" and answers False, which is the None this path wants — the
+    # formatter treats that case as transient wording too, so no fix affordance.
+    if not model_is_unusable(rejected, getattr(exc, "advertised", None)):
+        return None
+    return {"kind": MODEL_UNENTITLED_KIND}
 
 
 def _should_suppress_requeue(slot) -> bool:
@@ -12326,10 +12353,18 @@ async def _run_chat(
                     _fb_story, _ = redact_exfiltration_urls(_fb_story)
                     _fb_story, _ = redact_credentials(_fb_story)
                     _err_text = _fb_story + _err_text
+                # Structural tag for a model-entitlement rejection, so the
+                # frontend can render the fix (model picker / Settings -> Chat)
+                # instead of a Continue that re-runs the rejection. Decided from
+                # the same evidence the formatter used — the rejected id is
+                # absent from the session's advertised list — never from the
+                # prose, which is what a copy edit or translation would move.
+                _unentitled_meta = _model_unentitled_meta(exc)
                 slot.append(
                     "error",
                     f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
                     "msg msg-err",
+                    meta=_unentitled_meta,
                 )
                 # This branch ENDS the retry cycle: the error is terminal and
                 # nothing is re-queued. Refresh the transient-5xx budget now so the

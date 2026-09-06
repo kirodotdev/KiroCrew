@@ -37,7 +37,7 @@ import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
-import { ErrorCard } from './ErrorCard'
+import { ErrorCard, isModelUnentitled } from './ErrorCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -119,6 +119,14 @@ export interface TranscriptRendererOptions {
   interrupted?: boolean
   continuing?: boolean
   onContinue?: () => void
+  /** Fix affordances for a model-entitlement error row (`model_unentitled`
+   *  kind): open this surface's model picker, and deep-link to the Default
+   *  Model setting. Omitted → the row renders as plain prose, which is correct
+   *  for a surface with no picker of its own (a pane). Offered on EVERY such
+   *  row, not only the newest: an entitlement error is settled state the user
+   *  still has to act on, whereas Continue resumes a turn and so is unique. */
+  onPickModel?: () => void
+  onOpenDefaultModel?: () => void
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -326,18 +334,26 @@ export function createTranscriptRenderers(
       // affordance on the LAST error when a turn was interrupted.
       id: 'error',
       roles: ['error'],
-      render: (m, ctx) =>
-        ctx.row(
+      render: (m, ctx) => {
+        const unentitled = isModelUnentitled(m)
+        return ctx.row(
           <ErrorCard
             content={m.content}
+            // A rejection the backend says no retry can fix never offers Continue,
+            // even when this row is the newest and the turn was interrupted:
+            // resuming would replay the identical rejection.
             onContinue={
-              o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
+              !unentitled && o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
                 ? o.onContinue
                 : undefined
             }
             continuing={o.continuing}
+            onPickModel={unentitled ? o.onPickModel : undefined}
+            onOpenDefaultModel={unentitled ? o.onOpenDefaultModel : undefined}
+            unentitledElsewhere={unentitled}
           />,
-        ),
+        )
+      },
     },
   ]
 }

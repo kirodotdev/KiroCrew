@@ -1993,7 +1993,12 @@ def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> s
     through this single helper so the user-facing wording and the retry verdict
     cannot drift apart -- see the drift warning above.
     """
-    match = _RE_MODEL_UNAVAILABLE.search(data)
+    # Two wordings name the rejected id: kiro-cli's "The model 'X' is not
+    # available" and the MPS validation frame "Invalid model ID: X" (the shape
+    # the background path's ``_rejected_model_from_error`` already accepts).
+    # Both are judged against the same served list so the entitlement wording
+    # and the retry verdict cannot depend on which frame the backend emitted.
+    match = _RE_MODEL_UNAVAILABLE.search(data) or _RE_INVALID_MODEL_ID.search(data)
     if not match:
         return None
     if not available_models:
@@ -2272,6 +2277,25 @@ def pick_served_default(current: str, advertised: Sequence[str] | None) -> str:
     return "auto" if not model_is_unusable("auto", ids) else ids[0]
 
 
+def _auto_remedy(available_models: Sequence[str] | None) -> str:
+    """The "set agent.model to 'auto'" remediation step, or nothing when the
+    partition does not serve ``auto``.
+
+    The capacity-blip messages list three remedies, and the second is the
+    ``auto`` sentinel. On a partition whose advertised list lacks ``auto`` that
+    advice re-opens the circle the unentitled-``auto`` branch closes: the user
+    follows it and the next turn dies on "no access to model 'auto'". So the
+    step is emitted only when ``auto`` is served, or when the served list is
+    unknown (nothing to check against, keep the historical advice). The
+    numbering of the remaining step shifts so the list still reads (1)(2)(3)
+    or (1)(2).
+    """
+    usable = [m.strip().lower() for m in (available_models or []) if m and m.strip()]
+    if usable and DEFAULT_MODEL not in usable:
+        return "or (2) "
+    return f"(2) set agent.model to '{DEFAULT_MODEL}' in ~/.kiro/crew/config.json, or (3) "
+
+
 def _format_acp_error(error: object, available_models: Sequence[str] | None = None) -> str:
     """Format a JSON-RPC error from the ACP backend into actionable user text.
 
@@ -2313,13 +2337,54 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             # message, and the picker shows the full set anyway.
             shown = ", ".join(usable[:8])
             more = f" (+{len(usable) - 8} more)" if len(usable) > 8 else ""
-            formatted = (
-                f"Your account does not have access to model '{unentitled}'. "
-                f"Available to you: {shown}{more}. Pick one in the model picker, "
-                f"or set agent.model to 'auto' to let the backend choose a model "
-                f"your plan includes. Retrying will not help."
-                f"{req_id_suffix}"
-            )
+            if unentitled.strip().lower() == DEFAULT_MODEL:
+                # The rejected id IS the "let the backend choose" sentinel: some
+                # partitions do not serve it, so the usual "set agent.model to
+                # 'auto'" advice would send the user in a circle. Every layer
+                # that can name a model (session picker, per-agent pin, the
+                # global default under Settings -> Chat) has to move off it.
+                # The CAUSE is not named: the served list looks the same for a
+                # regional partition and a plan/tier exclusion, so the message
+                # states only what the evidence supports — not on this account.
+                # The same row reaches the CLI, subagents and messaging
+                # channels, where there is no picker and no Settings page, so
+                # the config.json spelling of the default is named too.
+                formatted = (
+                    f"Your account does not have access to model '{unentitled}' — "
+                    f"the automatic model choice is not available on your account. "
+                    f"Available to you: {shown}{more}. Pick one of these in the "
+                    f"model picker for this session, and change the default model "
+                    f"under Settings → Chat (agent.model in ~/.kiro/crew/config.json) "
+                    f"so new sessions do not start on 'auto' again. Retrying will "
+                    f"not help."
+                    f"{req_id_suffix}"
+                )
+            elif DEFAULT_MODEL in {m.lower() for m in usable}:
+                # Same two-step shape as the branches around it (the error card
+                # says "do both" under every entitlement row): the picker fixes
+                # this session, the default stops the next one -- and here
+                # 'auto' is served, so it is the natural value for the default.
+                formatted = (
+                    f"Your account does not have access to model '{unentitled}'. "
+                    f"Available to you: {shown}{more}. Pick one of these in the "
+                    f"model picker for this session, and change the default model "
+                    f"under Settings → Chat if it is set to '{unentitled}' — set "
+                    f"agent.model to 'auto' in ~/.kiro/crew/config.json to let the "
+                    f"backend choose a model your plan includes. Retrying will not help."
+                    f"{req_id_suffix}"
+                )
+            else:
+                # A pinned model rejected on a partition that does not serve
+                # ``auto`` either: recommending ``auto`` here would re-open the
+                # circle the branch above closes, so only the picker is offered.
+                formatted = (
+                    f"Your account does not have access to model '{unentitled}'. "
+                    f"Available to you: {shown}{more}. Pick one in the model picker "
+                    f"for this session, and change the default model under "
+                    f"Settings → Chat (agent.model in ~/.kiro/crew/config.json) if "
+                    f"it is set to '{unentitled}'. Retrying will not help."
+                    f"{req_id_suffix}"
+                )
         # Bedrock model alias resolved to a version that is currently
         # unavailable (capacity throttle, region rollout in progress,
         # deprecated, etc.).
@@ -2344,9 +2409,8 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             formatted = (
                 f"Model '{model}' is unavailable on the backend right now "
                 f"(capacity throttle or region rollout). Try: (1) pick a "
-                f"different model in the model picker, (2) set agent.model to "
-                f"'auto' in ~/.kiro/crew/config.json, or (3) wait a minute and "
-                f"retry."
+                f"different model in the model picker, {_auto_remedy(available_models)}"
+                f"wait a minute and retry."
                 f"{req_id_suffix}"
             )
         elif _RE_MODEL_TEMP_UNAVAILABLE.search(data):
@@ -2357,11 +2421,10 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             # and the "is unavailable on the backend" prose keeps the
             # _TRANSIENT_MARKERS string fallback recognising it for free.
             formatted = (
-                "The selected model is unavailable on the backend right now "
-                "(capacity throttle or region rollout). Try: (1) pick a "
-                "different model in the model picker, (2) set agent.model to "
-                "'auto' in ~/.kiro/crew/config.json, or (3) wait a minute and "
-                "retry."
+                f"The selected model is unavailable on the backend right now "
+                f"(capacity throttle or region rollout). Try: (1) pick a "
+                f"different model in the model picker, {_auto_remedy(available_models)}"
+                f"wait a minute and retry."
                 f"{req_id_suffix}"
             )
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):

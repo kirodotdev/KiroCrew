@@ -9331,7 +9331,14 @@
       },
       "errorCard": {
         "continue": "Continua",
-        "continue_hint": "Riprendi da dove si è fermato. Il lavoro già scritto su disco resta intatto."
+        "continue_hint": "Riprendi da dove si è fermato. Il lavoro già scritto su disco resta intatto.",
+        "default_model": "Cambia il modello predefinito",
+        "default_model_hint": "Apri Impostazioni → Chat → Modello predefinito. Le nuove sessioni partono da questo valore.",
+        "pick_model": "Scegli un modello per questa sessione",
+        "pick_model_hint": "Apri il selettore dei modelli, scegli uno dei modelli che il tuo account può usare e invia di nuovo il messaggio.",
+        "both_hint": "Fai entrambe le cose: “{{pick}}” sistema questa sessione, “{{default}}” evita che le nuove sessioni partano con lo stesso modello se è impostato come predefinito. Poi invia di nuovo il messaggio.",
+        "elsewhere_hint": "Il selettore dei modelli e Impostazioni → Chat sono nella finestra principale della chat. Aprila per scegliere un modello e cambiare quello predefinito.",
+        "elsewhere_settings_hint": "Impostazioni → Chat è nella finestra principale della chat. Aprila per cambiare il modello predefinito."
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",

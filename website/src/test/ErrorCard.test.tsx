@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { ErrorCard } from '../pages/chat/ErrorCard'
+import { ErrorCard, isModelUnentitled } from '../pages/chat/ErrorCard'
 
 /**
  * The error row used to be an actionless div whose own copy told the reader to
@@ -42,5 +42,72 @@ describe('ErrorCard', () => {
   it('keeps the error prose visible in the resumable shape', () => {
     render(<ErrorCard content="⟳ Session busy — please retry." onContinue={() => {}} />)
     expect(screen.getByTestId('error-card')).toHaveTextContent('⟳ Session busy — please retry.')
+  })
+})
+
+/**
+ * A model-entitlement rejection is the one error whose fix is not a retry. Its
+ * row swaps Continue for the two actions that end it: pick a served model, and
+ * change the default the next session would start on.
+ */
+describe('ErrorCard — model entitlement rejection', () => {
+  it('offers pick-model and default-model actions and NO Continue, even when resumable', () => {
+    const onContinue = vi.fn()
+    const onPickModel = vi.fn()
+    const onOpenDefaultModel = vi.fn()
+    render(
+      <ErrorCard
+        content="❌ Your account does not have access to model 'auto'."
+        onContinue={onContinue}
+        onPickModel={onPickModel}
+        onOpenDefaultModel={onOpenDefaultModel}
+      />,
+    )
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    // Both actions present -> the "do both" dependency is stated on the card,
+    // and the hint names each button by its own label so the pair does not
+    // read as the same action twice (no positional "the first / the second").
+    const bothHint = screen.getByTestId('error-card-both-hint')
+    expect(bothHint).toHaveTextContent('Choose a model for this session')
+    expect(bothHint).toHaveTextContent('Change default model')
+    expect(bothHint).not.toHaveTextContent(/the first/i)
+    expect(bothHint).not.toHaveTextContent(/{{/)
+    fireEvent.click(screen.getByTestId('error-card-pick-model'))
+    fireEvent.click(screen.getByTestId('error-card-default-model'))
+    expect(onPickModel).toHaveBeenCalledTimes(1)
+    expect(onOpenDefaultModel).toHaveBeenCalledTimes(1)
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('keeps the prose visible alongside the actions', () => {
+    render(<ErrorCard content="no access" onPickModel={() => {}} unentitledElsewhere />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('no access')
+    expect(screen.queryByTestId('error-card-default-model')).toBeNull()
+    // One action only (embed/popout): no "do both" line to point at a missing button,
+    // but the reader is told where the missing affordance lives.
+    expect(screen.queryByTestId('error-card-both-hint')).toBeNull()
+    // Scoped to the affordance this surface lacks: the settings route, not the picker.
+    expect(screen.getByTestId('error-card-elsewhere-hint')).toHaveTextContent(/default model/i)
+    expect(screen.getByTestId('error-card-elsewhere-hint')).not.toHaveTextContent(/picker/i)
+  })
+
+  it('tells a prose-only surface where the picker and settings live, and stays quiet when both actions render', () => {
+    render(<ErrorCard content="no access" unentitledElsewhere />)
+    expect(screen.getByTestId('error-card-elsewhere-hint')).toBeTruthy()
+    expect(screen.queryByRole('button')).toBeNull()
+    cleanup()
+    render(<ErrorCard content="no access" onPickModel={() => {}} onOpenDefaultModel={() => {}} unentitledElsewhere />)
+    expect(screen.queryByTestId('error-card-elsewhere-hint')).toBeNull()
+    cleanup()
+    // An ordinary (non-entitlement) settled error never gets the line.
+    render(<ErrorCard content="⟳ Connection lost — please retry." />)
+    expect(screen.queryByTestId('error-card-elsewhere-hint')).toBeNull()
+  })
+
+  it('isModelUnentitled reads both the live kind and the rebuilt meta.kind carrier', () => {
+    expect(isModelUnentitled({ kind: 'model_unentitled' })).toBe(true)
+    expect(isModelUnentitled({ meta: { kind: 'model_unentitled' } })).toBe(true)
+    expect(isModelUnentitled({ kind: 'transient_retry' })).toBe(false)
+    expect(isModelUnentitled({})).toBe(false)
   })
 })

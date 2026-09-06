@@ -9331,7 +9331,14 @@
       },
       "errorCard": {
         "continue": "Reprendre",
-        "continue_hint": "Reprendre là où ça s’est arrêté. Le travail déjà écrit sur le disque reste intact."
+        "continue_hint": "Reprendre là où ça s’est arrêté. Le travail déjà écrit sur le disque reste intact.",
+        "default_model": "Changer le modèle par défaut",
+        "default_model_hint": "Ouvrir Paramètres → Chat → Modèle par défaut. Les nouvelles sessions démarrent avec cette valeur.",
+        "pick_model": "Choisir un modèle pour cette session",
+        "pick_model_hint": "Ouvrez le sélecteur de modèle, choisissez l’un des modèles accessibles à votre compte, puis renvoyez votre message.",
+        "both_hint": "Faites les deux : « {{pick}} » corrige cette session, « {{default}} » empêche les nouvelles sessions de démarrer avec le même modèle s'il est défini par défaut. Puis renvoyez votre message.",
+        "elsewhere_hint": "Le sélecteur de modèle et Paramètres → Chat sont dans la fenêtre de chat principale. Ouvrez-la pour choisir un modèle et changer le modèle par défaut.",
+        "elsewhere_settings_hint": "Paramètres → Chat est dans la fenêtre de chat principale. Ouvrez-la pour changer le modèle par défaut."
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",

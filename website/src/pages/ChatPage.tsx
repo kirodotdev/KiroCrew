@@ -4315,6 +4315,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const t = setTimeout(() => { setContinuing(false) }, 30_000)
     return () => clearTimeout(t)
   }, [continuing])
+  // Fix affordances on a model-entitlement error row. The picker is the same
+  // portal the composer's model chip opens, anchored to that chip so it lands
+  // where the user already knows to look; when the chip is not on screen (a
+  // collapsed composer) the picker still opens, anchored to the composer edge.
+  const openModelPickerFromError = useCallback(() => {
+    const chip = document.querySelector<HTMLElement>('[data-testid="composer-model-chip"]')
+    const rect = chip?.getBoundingClientRect()
+      ?? new DOMRect(16, Math.max(0, window.innerHeight - 96), 160, 28)
+    setModelBtnRect(rect)
+    setModelDropdown(true)
+  }, [setModelDropdown])
+  // The Default Model setting lives only on the full dashboard's Settings →
+  // Chat tab. /embed/settings is a different page (Display), and a popout has
+  // no settings route at all, so on both surfaces the affordance is omitted
+  // rather than pointed at a page that does not carry the setting.
+  const openDefaultModelSetting = useCallback(() => {
+    navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))
+  }, [navigate])
+
   const handleContinue = useCallback(() => {
     if (!activeSlot || continuing || !continuable) return
     setContinuing(true)
@@ -5806,6 +5825,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       interrupted,
       continuing,
       onContinue: handleContinue,
+      onPickModel: openModelPickerFromError,
+      onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
       onSessionOpen: selectSessionTab,
       sessions: connected ? sessionTitles : undefined,
       activeSession: activeSlot || undefined,
@@ -5843,7 +5864,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

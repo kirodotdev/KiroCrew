@@ -2555,6 +2555,14 @@ SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
 TRANSIENT_RETRY_KIND = "transient_retry"
 
+#: Row-level kind for the terminal `error` row a prompt-time MODEL ENTITLEMENT
+#: rejection produces ("Your account does not have access to model 'X'"), so
+#: the frontend can offer the fix (open the model picker / change the default
+#: under Settings -> Chat) instead of a Continue button that re-runs the same
+#: rejection. No recovery is queued for this kind: a retry cannot earn an
+#: entitlement.
+MODEL_UNENTITLED_KIND = "model_unentitled"
+
 #: Structural queue-entry kinds for system injections.  Classification by kind
 #: tag — set at enqueue time — is unforgeable: a user typing the same prefix
 #: text will not have the kind tag and will correctly classify as plain input.

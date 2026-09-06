@@ -9331,7 +9331,14 @@
       },
       "errorCard": {
         "continue": "Continuar",
-        "continue_hint": "Retomar de onde parou. O trabalho já gravado no disco permanece intacto."
+        "continue_hint": "Retomar de onde parou. O trabalho já gravado no disco permanece intacto.",
+        "default_model": "Alterar o modelo padrão",
+        "default_model_hint": "Abra Configurações → Chat → Modelo padrão. Novas sessões começam com este valor.",
+        "pick_model": "Escolher um modelo para esta sessão",
+        "pick_model_hint": "Abra o seletor de modelos, escolha um dos modelos que a sua conta pode usar e envie sua mensagem de novo.",
+        "both_hint": "Faça os dois: “{{pick}}” corrige esta sessão, “{{default}}” impede que novas sessões comecem com o mesmo modelo se ele for o padrão. Depois envie sua mensagem de novo.",
+        "elsewhere_hint": "O seletor de modelos e Configurações → Chat ficam na janela principal do chat. Abra-a para escolher um modelo e alterar o padrão.",
+        "elsewhere_settings_hint": "Configurações → Chat fica na janela principal do chat. Abra-a para alterar o modelo padrão."
       },
       "folderPanel": {
         "clear_search": "Limpar pesquisa",

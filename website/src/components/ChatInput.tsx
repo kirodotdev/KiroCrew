@@ -4794,6 +4794,7 @@ function ChatInput({
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
               onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
+              data-testid="composer-model-chip"
               // Inherited default: mirror the agent chip -- ` · default` marker on
               // the label, and the explanation on hover (title) AND keyboard
               // focus / screen readers (aria-label), because a bare served id
