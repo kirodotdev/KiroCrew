@@ -37,10 +37,13 @@ from kiro_crew.acp import _dispatch
 from kiro_crew.acp._dispatch import (
     ELIDED_MARKER_VALUE,
     UNSERIALISABLE_SIBLING_VALUE,
+    _build_tool_call_event,
+    _build_tool_refinement_event,
     _build_tool_result_event,
     _elide_marker_value,
     _mcp_content_text,
     _repair_escaped_marker,
+    build_permission_event,
     parse_session_update,
 )
 from kiro_crew.acp.client import AcpClient
@@ -975,3 +978,103 @@ class TestPathologicallyNestedEnvelopeDegrades:
             cache_scope="scope",
         )
         assert [e for e in events if e.kind == EVENT_TOOL_RESULT], "the result event still arrives"
+
+
+class TestDispatchEncodeRefusalDegrades:
+    """Every dispatch-path encode degrades its one frame, never the turn.
+
+    The class above guards the marker-bearing branch (#8954). These are the
+    remaining ``json.dumps`` sites on the dispatch path -- the permission
+    event's cache-miss input fallback, the initial ``tool_call`` input, the two
+    non-marker result branches, and the refinement input -- whose payload shape
+    the backend chooses, so each can be handed a structure the encoder refuses.
+    ``RecursionError`` is a ``RuntimeError``: the ``(TypeError, ValueError)``
+    arm at the refinement site did not catch it and the other four sites had no
+    guard at all, so the raise escaped frame rendering and aborted the whole
+    agent turn (#8970).
+
+    The ``indent=2`` sites encode on json's pure-Python path (the C encoder is
+    used only with ``indent=None``), which recurses per Python frame -- so real
+    nesting past ``sys.recursionlimit`` reds them deterministically on every
+    platform. The ``default=str`` sites take the C encoder, whose ceiling is
+    the process stack (a platform property), so those two inject the refusal
+    directly via :func:`_encoder_refusing_past`, same as the class above, while
+    still carrying a genuinely deep payload.
+    """
+
+    def test_permission_event_fallback_degrades_deep_input(self):
+        msg = JsonRpcMessage(
+            id="req-1",
+            params={
+                "toolCall": {
+                    "toolCallId": "tc-perm",
+                    "title": "deep tool",
+                    "input": _nest(sys.getrecursionlimit() * 3, 1),
+                }
+            },
+        )
+        event, _recorded = build_permission_event(msg)
+        assert event.tool_input == UNSERIALISABLE_SIBLING_VALUE, "the frame degrades visibly"
+
+    def test_tool_call_event_degrades_deep_raw_input(self):
+        event = _build_tool_call_event(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc-call",
+                "title": "deep tool",
+                "rawInput": _nest(sys.getrecursionlimit() * 3, 1),
+            },
+            None,
+        )
+        assert event.tool_input == UNSERIALISABLE_SIBLING_VALUE, "the frame degrades visibly"
+
+    def test_result_event_degrades_deep_unrecognised_json_item(self, monkeypatch):
+        # The non-marker ``Json`` envelope branch: no directive anywhere, so
+        # the whole item is dumped -- and the dump must not kill the turn.
+        monkeypatch.setattr(_dispatch, "json", _encoder_refusing_past(4))
+        event = _build_tool_result_event(
+            _update(rawOutput={"items": [{"Json": {"out": _nest(sys.getrecursionlimit() * 3, 1)}}]})
+        )
+        assert event is not None, "the result event still arrives"
+        assert UNSERIALISABLE_SIBLING_VALUE in (event.tool_output or ""), "degraded, not dropped"
+
+    def test_result_event_degrades_deep_raw_output_passthrough(self, monkeypatch):
+        # The no-``items`` passthrough: ``rawOutput`` is unstructured, so an
+        # object Crew does not recognise is serialised rather than dropped --
+        # and that serialisation must not kill the turn either.
+        monkeypatch.setattr(_dispatch, "json", _encoder_refusing_past(4))
+        event = _build_tool_result_event(
+            _update(rawOutput={"out": _nest(sys.getrecursionlimit() * 3, 1)})
+        )
+        assert event is not None, "the result event still arrives"
+        assert UNSERIALISABLE_SIBLING_VALUE in (event.tool_output or ""), "degraded, not dropped"
+
+    def test_refinement_event_widens_the_incomplete_arm(self):
+        # This site already HAD a try: its except list named (TypeError,
+        # ValueError) only. First pin the pre-existing degrade byte-identically
+        # (green before and after the fix) ...
+        unencodable = {"x": {1, 2}}  # a set: json refuses with TypeError
+        event = _build_tool_refinement_event(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-refine-t",
+                "title": "deep tool",
+                "rawInput": unencodable,
+            },
+            None,
+        )
+        assert event is not None
+        assert event.tool_input == str(unencodable), "the (TypeError, ValueError) arm is preserved"
+        # ... then the arm the old except list missed: RecursionError is a
+        # RuntimeError and fell straight through, aborting the turn.
+        event = _build_tool_refinement_event(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-refine-r",
+                "title": "deep tool",
+                "rawInput": _nest(sys.getrecursionlimit() * 3, 1),
+            },
+            None,
+        )
+        assert event is not None
+        assert event.tool_input == UNSERIALISABLE_SIBLING_VALUE, "the frame degrades visibly"

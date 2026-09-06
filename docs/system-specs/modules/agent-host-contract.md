@@ -270,6 +270,16 @@ not symmetric: a dropped directive silently unarms a loop the model was told was
 armed, while dropped sibling detail costs transcript content the user can see is
 missing. The directive is emitted even when no sibling copy survives at all.
 
+**The refusal posture covers every encode on the dispatch path, not just the
+marker branch.** The permission event's cache-miss input fallback, the initial
+`tool_call` input, the two non-marker tool-result branches and the refinement
+input all serialise backend-shaped payloads through a refusal-guarded encode
+(`_dumps_degraded`): an encoder refusal degrades that one frame to readable
+text — `str(payload)` for a `(TypeError, ValueError)` refusal, the
+`UNSERIALISABLE_SIBLING_VALUE` placeholder for a `RecursionError` — instead of
+propagating and aborting the turn. A payload that encodes today keeps its exact
+rendering; only the frames that previously killed the turn change.
+
 **A provider must declare:** whether its tool-result text arrives verbatim or
 pre-serialised, and — if any builder it adds can emit an `EVENT_TOOL_RESULT` —
 that the builder runs the repair. This is the one bucket in this document with a

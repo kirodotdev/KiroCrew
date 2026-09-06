@@ -889,7 +889,7 @@ def build_permission_event(
         raw_input = tool_call.get("input") or tool_call.get("params")
         if raw_input:
             tool_input = (
-                json.dumps(raw_input, indent=2)
+                _dumps_degraded(raw_input, indent=2)
                 if isinstance(raw_input, (dict, list))
                 else str(raw_input)
             )
@@ -1055,7 +1055,7 @@ def _build_tool_call_event(
     input_str = ""
     if tool_call_id and raw_input:
         input_str = (
-            json.dumps(raw_input, indent=2)
+            _dumps_degraded(raw_input, indent=2)
             if isinstance(raw_input, (dict, list))
             else str(raw_input)
         )
@@ -1222,10 +1222,44 @@ def _marker_bearing_text(payload: dict[str, Any], _max_nodes: int = 512) -> str 
 ELIDED_MARKER_VALUE = "[[directive marker emitted on its own line above]]"
 
 #: Stands in for one top-level sibling whose value the JSON encoder refuses (see
-#: :func:`_dumps_elided_siblings`). Visible in the transcript on purpose: the
-#: user can see that detail is missing, which is the whole difference between
-#: this and dropping the field.
+#: :func:`_dumps_elided_siblings`), and for a whole payload the encoder refuses
+#: at any dispatch-path encode (see :func:`_dumps_degraded`). Visible in the
+#: transcript on purpose: the user can see that detail is missing, which is the
+#: whole difference between this and dropping the field.
 UNSERIALISABLE_SIBLING_VALUE = "[[value omitted: nested too deeply to serialise]]"
+
+
+def _dumps_degraded(payload: Any, **kwargs: Any) -> str:
+    """``json.dumps`` that degrades to readable text instead of raising.
+
+    Every encode on the dispatch path serialises a payload whose shape the agent
+    backend chooses, so the encoder can always be pushed past its ceiling:
+    ``json.dumps`` raises ``RecursionError`` on a sufficiently nested structure
+    -- a ``RuntimeError``, which the ``(TypeError, ValueError)`` arm that guards
+    one of these sites does not catch and the others do not guard at all, so the
+    raise escapes frame rendering and aborts the whole agent turn. The intended
+    cost of an unrenderable frame is that ONE frame, degraded visibly, never the
+    turn. The marker-bearing branch got this treatment in
+    :func:`_dumps_elided_siblings`; this is the same refusal posture for the
+    remaining encodes, which carry no directive and so need no per-field walk.
+
+    A ``TypeError``/``ValueError`` refusal degrades to ``str(payload)`` -- the
+    payload still has a repr, and this preserves byte-identically the arm that
+    :func:`_build_tool_refinement_event` already carried. A ``RecursionError``
+    refusal cannot count on that (``repr`` recurses too, just with a different
+    ceiling than the encoder's), so it degrades to the
+    :data:`UNSERIALISABLE_SIBLING_VALUE` placeholder, and the ``str`` fallback
+    keeps its own arm for the payload that is both deep and unencodable.
+    """
+    try:
+        return json.dumps(payload, **kwargs)
+    except (TypeError, ValueError):
+        try:
+            return str(payload)
+        except RecursionError:
+            return UNSERIALISABLE_SIBLING_VALUE
+    except RecursionError:
+        return UNSERIALISABLE_SIBLING_VALUE
 
 
 def _elide_marker_value(payload: Any, marker: str) -> Any:
@@ -1766,7 +1800,7 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
                                         output_parts.append(_siblings)
                                 output_parts.append(_mcp_text)
                             else:
-                                output_parts.append(json.dumps(j, default=str))
+                                output_parts.append(_dumps_degraded(j, default=str))
             # Path 3: an object that is not that envelope at all. ``rawOutput``
             # is unstructured passthrough, so ``items[]`` is ONE producer's
             # private wrapper rather than a contract, and an object Crew does
@@ -1786,7 +1820,7 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
             # only when Path 1 found nothing, which is what keeps a content block
             # winning over the raw envelope.
             if raw_output and "items" not in raw_output:
-                output_parts.append(json.dumps(raw_output, default=str))
+                output_parts.append(_dumps_degraded(raw_output, default=str))
     if not output_parts:
         log_unrenderable_content(logger, tool_use_id, content)
         return None
@@ -1984,10 +2018,10 @@ def _build_tool_refinement_event(
         return None
     input_str = ""
     if isinstance(raw_input, (dict, list)) and raw_input:
-        try:
-            input_str = json.dumps(raw_input, indent=2)
-        except (TypeError, ValueError):
-            input_str = str(raw_input)
+        # _dumps_degraded keeps this site's pre-existing (TypeError, ValueError)
+        # -> str(raw_input) degrade and adds the RecursionError arm that the
+        # old except list here missed (RecursionError is a RuntimeError).
+        input_str = _dumps_degraded(raw_input, indent=2)
     elif isinstance(raw_input, str):
         input_str = raw_input
     content_blocks = update.get("content", [])
