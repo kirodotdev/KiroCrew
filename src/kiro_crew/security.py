@@ -3957,7 +3957,48 @@ _SCRIPT_EXECUTES_RE = re.compile(
 )
 
 
-def _data_consumer_exempt(index: int, token: str, programs: "list[str]", tokens: "list[str]") -> bool:
+def _data_consumer_command_disqualified(tokens: "list[str]") -> bool:
+    """True where NO token in *tokens* can claim the data-consumer exemption.
+
+    The three guards collected here read ONLY *tokens*, so their answer is a
+    property of the whole command and is the same for every token in it.  They
+    live in one function so a caller holding a fixed argv can charge them ONCE
+    instead of once per candidate token: :func:`_data_consumer_exempt` is called
+    per payload inside a loop over a fixed argv, and the ``_SCRIPT_EXECUTES_RE``
+    sweep below is itself O(len(tokens)), so re-asking made the enclosing walk
+    quadratic in payload count (#8595 -- 18k payloads, ~293s).
+
+    Splitting them out cannot change any verdict: each is a pure function of
+    *tokens* and each REFUSES the exemption, so hoisting alters only how often
+    the same answer is computed, never what it is.
+    """
+    if _pipes_into_evaluator(tokens):
+        return True
+    # ``$(printf <name>) <verb>`` puts the consumer INSIDE a substitution that occupies
+    # program position, so its OUTPUT is what runs -- the words are not inert data.
+    if tokens and tokens[0].lstrip("\"'").startswith("$(") or (
+        tokens and tokens[0].lstrip("\"'").startswith("`")
+    ):
+        return True
+    # A "data consumer" that can EXECUTE is not one for this command.  ``awk`` has
+    # ``system()`` and pipe-to-command; GNU ``sed`` has the ``e`` flag.  The exemption is
+    # withdrawn per-command when the script text carries such a construct, rather than
+    # dropping ``awk`` from the list entirely -- that would also refuse ordinary
+    # ``awk '{print $1}' <file>``, and the list is deliberately a denylist of consumers so
+    # that a mistake here costs a false positive, never a bypass.
+    if any(_SCRIPT_EXECUTES_RE.search(tok) for tok in tokens):
+        return True
+    return False
+
+
+def _data_consumer_exempt(
+    index: int,
+    token: str,
+    programs: "list[str]",
+    tokens: "list[str]",
+    *,
+    command_disqualified: "bool | None" = None,
+) -> bool:
     """True if *token* is an ARGUMENT of a command that treats arguments as data.
 
     ``echo <name> <verb>`` prints two words -- a mention, not an invocation.
@@ -3978,21 +4019,13 @@ def _data_consumer_exempt(index: int, token: str, programs: "list[str]", tokens:
         return False
     if _CONTROL_OPERATOR_RE.search(token):
         return False
-    if _pipes_into_evaluator(tokens):
-        return False
-    # ``$(printf <name>) <verb>`` puts the consumer INSIDE a substitution that occupies
-    # program position, so its OUTPUT is what runs -- the words are not inert data.
-    if tokens and tokens[0].lstrip("\"'").startswith("$(") or (
-        tokens and tokens[0].lstrip("\"'").startswith("`")
-    ):
-        return False
-    # A "data consumer" that can EXECUTE is not one for this command.  ``awk`` has
-    # ``system()`` and pipe-to-command; GNU ``sed`` has the ``e`` flag.  The exemption is
-    # withdrawn per-command when the script text carries such a construct, rather than
-    # dropping ``awk`` from the list entirely -- that would also refuse ordinary
-    # ``awk '{print $1}' <file>``, and the list is deliberately a denylist of consumers so
-    # that a mistake here costs a false positive, never a bypass.
-    if any(_SCRIPT_EXECUTES_RE.search(tok) for tok in tokens):
+    # Command-level guards, hoisted into ``_data_consumer_command_disqualified``.
+    # *command_disqualified* lets a caller iterating one fixed argv charge them
+    # once; ``None`` means "compute them here", which is what every caller that
+    # asks about a single token does, so their behaviour is unchanged.
+    if command_disqualified is None:
+        command_disqualified = _data_consumer_command_disqualified(tokens)
+    if command_disqualified:
         return False
     return programs[index] in _DATA_CONSUMER_PROGRAMS
 
@@ -18707,6 +18740,23 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 tokens, allow_join=allow_join, joined_out=joined_here
             )
             programs = _argv_programs(tokens) if payloads else []
+            # Both values below read ONLY ``tokens``, which is fixed for this
+            # whole walk, so they are charged ONCE here instead of once per
+            # payload.  Asking per payload is what made this loop quadratic in
+            # payload count (#8595 -- 18k payloads, ~293s): the exemption's
+            # command-level guards sweep the whole argv, and recovering a
+            # payload's positions with ``enumerate`` sweeps it again, so N
+            # payloads cost N x len(tokens).  Neither hoist can change a verdict:
+            # same inputs, same answers, computed once rather than N times.  Both
+            # are skipped when there are no payloads so an ordinary command --
+            # the common case -- pays nothing new.
+            command_disqualified = (
+                _data_consumer_command_disqualified(tokens) if payloads else False
+            )
+            token_positions: dict[str, list[int]] = {}
+            if payloads:
+                for _pos, _tok in enumerate(tokens):
+                    token_positions.setdefault(_tok, []).append(_pos)
             for payload in payloads:
                 if len(payload) >= parent_len:
                     continue
@@ -18742,9 +18792,16 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 # payload can also be a coincidental substring of an unrelated
                 # token, and one wrong position could wrongly exempt a payload that
                 # really executes.
-                occurrences = [i for i, tok in enumerate(tokens) if tok == payload]
+                occurrences = token_positions.get(payload, [])
                 if occurrences and all(
-                    _data_consumer_exempt(i, payload, programs, tokens) for i in occurrences
+                    _data_consumer_exempt(
+                        i,
+                        payload,
+                        programs,
+                        tokens,
+                        command_disqualified=command_disqualified,
+                    )
+                    for i in occurrences
                 ):
                     continue
                 # A payload is a command LINE, so it gets the same PRE-LEX treatment

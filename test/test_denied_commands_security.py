@@ -6364,3 +6364,194 @@ class TestPolynomialBacktrackingStaysBounded:
         matcher.match(subject)
         elapsed = time.perf_counter() - start
         assert elapsed < 1.0, f"deny evaluation took {elapsed:.1f}s — gate would stall"
+
+
+class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
+    """#8595 -- the deny walk was quadratic in nested payload COUNT.
+
+    ``_data_consumer_exempt`` is called once per extracted payload, and three of
+    its guards read only ``tokens`` -- a value the caller binds once, outside the
+    payload loop.  One of those guards sweeps the whole argv with
+    ``_SCRIPT_EXECUTES_RE``, so re-asking per payload cost N x len(tokens):
+    18,000 payloads took ~209s measured, against ~2.5s once the answer is
+    charged once.
+
+    These assertions are STRUCTURAL on purpose.  A wall-clock bound would claim
+    a performance budget for every other pass in the gate and would flake on a
+    slower runner, so what is pinned is the bounded QUANTITY -- how many times
+    the command-level answer is computed -- which is the property the fix
+    actually establishes.
+    """
+
+    @staticmethod
+    def _spaced(n: int) -> str:
+        """The issue's repro shape: ``bash -c a0pay -c a1pay ...``."""
+        return "bash" + "".join(f" -c a{i}pay" for i in range(n))
+
+    @staticmethod
+    def _count_guard_calls(monkeypatch, cmd: str) -> int:
+        calls = {"n": 0}
+        real = security._data_consumer_command_disqualified
+
+        def counting(tokens):
+            calls["n"] += 1
+            return real(tokens)
+
+        monkeypatch.setattr(security, "_data_consumer_command_disqualified", counting)
+        security.is_denied(cmd)
+        return calls["n"]
+
+    @staticmethod
+    def _count_argv_sweeps(monkeypatch, cmd: str) -> int:
+        calls = {"n": 0}
+        real = security._SCRIPT_EXECUTES_RE
+
+        class Counting:
+            def search(self, s):
+                calls["n"] += 1
+                return real.search(s)
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        monkeypatch.setattr(security, "_SCRIPT_EXECUTES_RE", Counting())
+        security.is_denied(cmd)
+        return calls["n"]
+
+    def test_guard_is_charged_once_however_many_payloads(self, monkeypatch):
+        # The count must not scale with the payload count.  Measured: 1 at every
+        # size here; before the fix the guard's work was re-done per payload.
+        counts = {n: self._count_guard_calls(monkeypatch, self._spaced(n)) for n in (30, 60, 120)}
+        assert counts[30] == counts[60] == counts[120], (
+            f"command-level guard is charged per payload, not per command: {counts}"
+        )
+        # Belt as well as braces: a future change making it 2*N would still keep
+        # the three counts EQUAL to each other only by accident, so bound it
+        # against the payload count directly.
+        assert counts[120] < 30, f"guard charged {counts[120]} times for 120 payloads"
+
+    @pytest.mark.parametrize("n", [30, 60, 120])
+    def test_argv_sweep_is_linear_in_the_argv_not_quadratic_in_payloads(self, monkeypatch, n):
+        # ``_SCRIPT_EXECUTES_RE`` sweeps every token.  Charged once per command
+        # that is O(len(tokens)); charged once per payload it was
+        # O(len(tokens) x payloads).  Measured before the fix: 1830 / 7260 /
+        # 28920 sweeps at n = 30 / 60 / 120 (ratio ~3.98, quadratic).  After:
+        # 61 / 121 / 241 (ratio ~1.99, linear).  The bound below is ~3x the argv
+        # length, which the linear form clears with room and the quadratic form
+        # misses by a factor of forty at n=120.
+        cmd = self._spaced(n)
+        argv_len = len(security.normalize_shell_command(cmd))
+        sweeps = self._count_argv_sweeps(monkeypatch, cmd)
+        assert sweeps <= 3 * argv_len, (
+            f"argv sweep is quadratic in payload count: {sweeps} sweeps for an "
+            f"argv of {argv_len} tokens ({n} payloads)"
+        )
+
+    @staticmethod
+    def _count_argv_elements(monkeypatch, cmd: str) -> "tuple[int, int]":
+        """(argv elements consumed, argv length) for one ``is_denied`` call.
+
+        The argv is handed out as a list subclass whose iterator counts the
+        elements taken from it, which is what separates ONE hoisted pass over
+        the argv from one pass PER PAYLOAD.
+        """
+        counted = {"n": 0}
+
+        class CountingList(list):
+            def __iter__(self):
+                for item in list.__iter__(self):
+                    counted["n"] += 1
+                    yield item
+
+        real = security._shell_tokens
+
+        def wrapped(*args, **kwargs):
+            return CountingList(real(*args, **kwargs))
+
+        monkeypatch.setattr(security, "_shell_tokens", wrapped)
+        security.is_denied(cmd)
+        return counted["n"], len(real(cmd))
+
+    @pytest.mark.parametrize("n", [30, 60, 120, 240])
+    def test_argv_is_walked_per_command_not_per_payload(self, monkeypatch, n):
+        # The second half of #8595: recovering a payload's token positions with
+        # ``[i for i, tok in enumerate(tokens) if tok == payload]`` walks the
+        # whole argv once per payload.  Hoisting the guard alone leaves the walk
+        # quadratic -- measured 1.37s / 4.30s / 15.56s at 4k / 8k / 16k payloads,
+        # ratios 3.15 and 3.62 -- so this half is load-bearing, not tidying.
+        #
+        # Measured argv elements consumed, 30 / 60 / 120 / 240 payloads:
+        #   both hoists      1154 /  2294 /  4574 /   9134   (ratio ~2.00, linear)
+        #   position reverted 2984 /  9554 / 33494 / 124574   (ratio ~3.72, quadratic)
+        # The bound below sits at 40x the argv length: the linear form uses ~19x
+        # and the quadratic form ~259x at n=240.
+        cmd = self._spaced(n)
+        elements, argv_len = self._count_argv_elements(monkeypatch, cmd)
+        assert elements <= 40 * argv_len, (
+            f"argv walked per payload: {elements} elements consumed for an argv of "
+            f"{argv_len} tokens ({n} payloads) -- expected O(argv), not O(argv x payloads)"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # pipes into an evaluator -- the printed text IS the command
+            f"echo {_NAME} {_TOK} | sh",
+            f"echo '{_PK} -f {_NAME}' | bash",
+            # substitution occupies program position -- its OUTPUT runs
+            f"$(printf echo) {_NAME} {_TOK}",
+            f"`printf echo` {_PK} -f {_NAME}",
+            # the script text can EXECUTE rather than print
+            f'awk \'system("{_PK} -f {_NAME}")\'',
+            f"awk 'BEGIN{{print | \"{_PK} -f {_NAME}\"}}'",
+            # a control operator inside the token starts a command that runs
+            f"echo foo;{_PK} -f {_NAME}",
+        ],
+    )
+    def test_every_way_the_exemption_is_refused_still_refuses(self, cmd):
+        # Hoisting must not widen the exemption.  A faster deny gate that misses
+        # one case is strictly worse than a slow one, so each documented refusal
+        # route is pinned here alongside the cost assertions above.
+        assert _denied_by(cmd) is not None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"echo {_NAME} {_TOK}",
+            f"printf '{_NAME} {_TOK}'",
+            "awk '{print $1}' file",
+            "sed 's/a/b/' file",
+        ],
+    )
+    def test_the_ordinary_data_consumer_is_still_exempt(self, cmd):
+        # The other direction: hoisting must not NARROW the exemption either, or
+        # the change trades a latency fix for a false positive.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"echo {_NAME} {_TOK}",
+            f"echo {_NAME} {_TOK} | sh",
+            f'awk \'system("{_PK} -f {_NAME}")\'',
+            "awk '{print $1}' file",
+            f"$(printf echo) {_NAME} {_TOK}",
+        ],
+    )
+    def test_precomputed_and_self_computed_guards_agree(self, cmd):
+        # The three call sites this change does not touch pass no precomputed
+        # value, so they take the ``None`` branch.  That branch must give the
+        # same answer as the hoisted one, or those callers silently change
+        # behaviour.
+        tokens = security.normalize_shell_command(cmd)
+        programs = security._argv_programs(tokens)
+        hoisted = security._data_consumer_command_disqualified(tokens)
+        for i, token in enumerate(tokens):
+            self_computed = security._data_consumer_exempt(i, token, programs, tokens)
+            passed_in = security._data_consumer_exempt(
+                i, token, programs, tokens, command_disqualified=hoisted
+            )
+            assert self_computed == passed_in, (
+                f"token {i} ({token!r}) disagrees: self-computed={self_computed} "
+                f"passed-in={passed_in}"
+            )
