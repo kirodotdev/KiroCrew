@@ -1455,19 +1455,23 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     # Bind after the None guard so mypy's narrowing carries into the closure.
     log = state.conversation_log
 
-    # list_sessions() globs, stats, and reads the first line of EVERY session file
-    # in the history dir — O(all sessions). Offload to keep the event loop responsive.
-    all_sessions = await asyncio.to_thread(log.list_sessions)
+    # ONE selector, shared with the count endpoint ask 4 of #8872 needs, so the
+    # number a confirmation displays is the set this loop takes rather than a
+    # second opinion about it. It takes no age cutoff because this path accepts
+    # none: a filtered count would report a subset of what this loop then
+    # permanently unlinks.
+    # It globs and stats every session file, so it stays off the event loop.
+    clearable, skipped = await asyncio.to_thread(_clearable_history_keys, state, log)
 
     count = 0
-    skipped = 0
     failed = 0
     cleanup_tasks = []
-    for s in all_sessions:
-        key = s["key"]
-
-        # Re-check per iteration: a resume publishing a slot during the
-        # list_sessions scan OR during an earlier delete-await now appears here.
+    for key in clearable:
+        # Re-check per iteration: a resume publishing a slot during the selector's
+        # scan OR during an earlier delete-await now appears here. The selector
+        # returns a snapshot; this is the guard that keeps a tab opened mid-loop
+        # from being deleted out from under the user, so it must stay in the loop
+        # rather than move into the selector.
         if key in _open_slot_transcript_keys(state):
             skipped += 1
             continue
@@ -1497,6 +1501,98 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     return web.json_response(
         {"ok": failed == 0, "cleared": count, "skipped": skipped, "failed": failed}
     )
+
+
+def _clearable_history_keys(
+    state: DashboardState,
+    log: Any,
+) -> tuple[list[str], int]:
+    """The history sessions a bulk clear would remove.
+
+    ONE implementation, shared by ``api_sessions_clear`` and the count endpoint
+    that ask 4 of #8872 needs, so the number a confirmation displays cannot drift
+    from the set the delete takes. Two implementations would let the dialog
+    promise a number the delete does not honour, which is the whole reason a
+    count exists.
+
+    Takes NO age cutoff, deliberately. ``DELETE /api/sessions`` accepts none and
+    removes every clearable session, so a count filtered by age would report a
+    SUBSET of what the delete then permanently unlinks — a confirmation showing a
+    smaller number than the delete honours. There is no cutoff to offer until the
+    delete itself grows one, and then both sides grow it together through this
+    function.
+
+    Returns ``(clearable, skipped)``. A session is skipped when it is reachable as
+    an open tab, when its metadata says ``pinned``, or when that metadata could not
+    be read — the same exclusions ``delete_session(..., skip_pinned=True)``
+    applies, so the two agree. Note that metadata which is present but unparseable
+    is NOT an exclusion: ``get_metadata_status`` reports it as readable-with-no-
+    metadata (``({}, True)``), so such a session reads as unpinned and is cleared.
+    The delete resolves it identically, which is what matters here.
+
+    Reads the filesystem (``list_sessions`` globs and stats every session file),
+    so callers offload it off the event loop.
+    """
+    open_keys = _open_slot_transcript_keys(state)
+
+    clearable: list[str] = []
+    skipped = 0
+    for row in log.list_sessions():
+        key = row.get("key", "")
+        if not key:
+            continue
+        if key in open_keys:
+            skipped += 1
+            continue
+        # Mirror delete_session(skip_pinned=True): pinned and unreadable metadata
+        # both mean "leave it alone". This read is unlocked, so what comes back is
+        # a SNAPSHOT the delete may narrow: it re-checks pinned under its lock and
+        # re-checks open tabs per iteration, so a session pinned or reopened after
+        # this pass is skipped there. The count can therefore over-report a
+        # concurrent change, but nothing here can make the delete take a session
+        # its own locked check refuses.
+        try:
+            meta, readable = log.get_metadata_status(key)
+        except Exception:
+            # Not reachable through get_metadata_status's documented returns; a
+            # genuinely unexpected failure must not read as permission to delete.
+            skipped += 1
+            continue
+        if not readable or not isinstance(meta, dict) or meta.get("pinned"):
+            skipped += 1
+            continue
+        clearable.append(key)
+    return clearable, skipped
+
+
+async def api_sessions_clearable_count(request: web.Request) -> web.Response:
+    """GET /api/sessions/clearable/count — how many sessions a bulk clear removes.
+
+    Ask 4 of #8872: the confirmation for a bulk delete has to state how many
+    sessions it will remove, and today ``DELETE /api/sessions`` offers no way to
+    learn that before committing. This answers the question and nothing else — it
+    is a GET, so no code path here can delete anything.
+
+    A GET rather than a ``dry_run`` flag on the DELETE, deliberately departing
+    from ``POST /api/system/session-storage/cleanup``'s pattern: a flag on the
+    destructive verb means a caller that drops the flag deletes instead of
+    counting, while a GET cannot delete however it is called.
+
+    Takes no parameters. The count is of exactly the set ``DELETE /api/sessions``
+    removes, because that delete accepts no cutoff — see
+    :func:`_clearable_history_keys` for why offering one here would report a
+    subset of what the delete actually takes.
+    """
+    state: DashboardState = request.app["state"]
+    if not state.conversation_log:
+        return web.json_response(
+            {"error": "no conversation log", "code": "count_unavailable"}, status=400
+        )
+
+    clearable, _skipped = await asyncio.to_thread(
+        _clearable_history_keys, state, state.conversation_log
+    )
+    return web.json_response({"sessions": len(clearable)})
 
 
 # ── Approvals ──

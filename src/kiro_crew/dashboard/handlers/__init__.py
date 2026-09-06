@@ -384,6 +384,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_session_tool_policy,
     api_sessions,
     api_sessions_clear,
+    api_sessions_clearable_count,
     api_sessions_context,
     api_sessions_health,
     api_sessions_memory,
