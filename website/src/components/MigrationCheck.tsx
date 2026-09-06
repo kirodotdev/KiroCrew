@@ -38,6 +38,13 @@ export default function MigrationCheck() {
   const location = useLocation()
   const isAppRoute = ![...NON_APP_PREFIXES, ...EXTRA_NON_APP_PREFIXES].some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
 
+  // Deliberately no error surface here (recorded for the errors-use-error-notice
+  // sweep): this is a best-effort probe that decides whether to show a
+  // migration banner, mounted on EVERY app route. A failed ['apps'] read is
+  // reported where that data is the page's subject (AppsPage / AppDetailPage
+  // render it through ErrorNotice); repeating it above every app page would put
+  // the same failure on screen twice, and the only cost of the miss is a banner
+  // not shown.
   const { data: migratedApps = [] } = useQuery<AppEntry[], Error, AppEntry[]>({
     queryKey: ['apps'],
     queryFn: () => api.listApps(),

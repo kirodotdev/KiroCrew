@@ -6017,7 +6017,8 @@
       "searching_ctrl_enter_held": "Ricerca in corso… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
       "searching_enter_held": "Ricerca in corso… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
       "type_2_chars_to_search_files_ctrl_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
-      "type_2_chars_to_search_files_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio"
+      "type_2_chars_to_search_files_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
+      "search_failed": "Impossibile cercare i file. Riprova."
     },
     "fileRenderers": {
       "download": "Scarica",
@@ -6171,7 +6172,8 @@
       "pin_crew": "Fissa {{name}} nell’intestazione",
       "unpin_crew": "Rimuovi {{name}} dall’intestazione",
       "pinned_no_room": "fissato, nessuno spazio nell’intestazione",
-      "keep_tab_order_fixed": "Mantieni l’ordine delle schede"
+      "keep_tab_order_fixed": "Mantieni l’ordine delle schede",
+      "instances_load_failed": "Impossibile caricare le crew remote."
     },
     "instancesViewport": {
       "connecting": "Connessione in corso…",
@@ -6345,7 +6347,8 @@
       "loopback_open_again": "Riapri la pagina di accesso",
       "loopback_use_code": "Usa invece un codice",
       "loopback_slow_hint": "Ci vuole molto? Se la pagina di accesso non riesce a raggiungere questo computer, passa a un codice: funziona da qualsiasi dispositivo.",
-      "loopback_fell_back": "L'accesso non è riuscito a tornare direttamente su questo computer, quindi ecco un codice."
+      "loopback_fell_back": "L'accesso non è riuscito a tornare direttamente su questo computer, quindi ecco un codice.",
+      "cancel_unsettled": "Impossibile annullare l’accesso. È ancora in corso: premi di nuovo la stessa opzione per riprovare."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Specifiche degli agenti mancanti",
@@ -6431,7 +6434,8 @@
       "waiting": "In attesa",
       "we_could_not_check_kiro_cli": "Non è stato possibile controllare Kiro CLI.",
       "your_crew_is_almost_ready": "La tua crew è quasi pronta.",
-      "your_kiro_cli_is_out_of_date": "Il tuo Kiro CLI è obsoleto"
+      "your_kiro_cli_is_out_of_date": "Il tuo Kiro CLI è obsoleto",
+      "attempt_failed_remedy": "Risolvi la causa indicata sopra (spesso un problema di permessi o di installazione), poi premi «{{action}}» per riprovare. Se continua a fallire, reinstalla Kiro CLI."
     },
     "linkPreview": {
       "copied": "Copiato",
@@ -6445,14 +6449,16 @@
       "disconnect_from": "Disconnetti da {{label}}",
       "held_elsewhere": "{{label}} è in uso da un'altra sessione.",
       "unavailable": "Questa destinazione non è disponibile.",
-      "unknown_error": "errore sconosciuto"
+      "unknown_error": "errore sconosciuto",
+      "targets_load_failed": "Impossibile caricare i canali a cui questa sessione può connettersi."
     },
     "logEntry": {
       "cancelled": "Annullato",
       "error": "Errore",
       "loading_trace": "Caricamento della traccia…",
       "ok": "OK",
-      "timeout": "Timeout"
+      "timeout": "Timeout",
+      "trace_load_failed": "Impossibile caricare la traccia di questa esecuzione."
     },
     "markdownPanel": {
       "add_to_artifact_library": "Aggiungi alla libreria degli artefatti",
@@ -6528,7 +6534,10 @@
       "toggle_word_wrap": "Attiva/disattiva il ritorno a capo automatico",
       "tracking_description": "Monitoraggio di {{path}}",
       "unsaved_changes": "Modifiche non salvate",
-      "word_wrap": "Ritorno a capo automatico"
+      "word_wrap": "Ritorno a capo automatico",
+      "knowledge_status_failed": "Impossibile controllare la libreria della conoscenza.",
+      "artifact_status_failed": "Impossibile verificare se questo file è un artefatto.",
+      "diff_status_failed": "Impossibile controllare le modifiche git di questo file."
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_open_in_file_explorer": "Clicca per esplorare / Maiusc+clic per mostrare in Esplora file",
@@ -6551,7 +6560,8 @@
       "zoom_in": "Ingrandisci (+)",
       "zoom_out": "Riduci (-)",
       "click_to_browse_shift_click_to_copy_path": "Clicca per esplorare / Maiusc+clic per copiare il percorso",
-      "click_to_open_shift_click_to_copy_path": "Clicca per aprire / Maiusc+clic per copiare il percorso"
+      "click_to_open_shift_click_to_copy_path": "Clicca per aprire / Maiusc+clic per copiare il percorso",
+      "mermaid_render_failed": "Impossibile visualizzare questo diagramma. Viene mostrato il codice sorgente."
     },
     "markdownToc": {
       "contents": "Contenuto",
@@ -6589,7 +6599,9 @@
       "set_these_in_the_server_config_before_enabling_i": "Impostali nella configurazione del server prima di attivarlo.",
       "source": "Origine",
       "v": "v",
-      "waiting_for_the_install_plan_to_load": "In attesa del caricamento del piano di installazione"
+      "waiting_for_the_install_plan_to_load": "In attesa del caricamento del piano di installazione",
+      "detail_load_failed": "Impossibile caricare i dettagli di questo server.",
+      "search_failed": "Impossibile cercare nel registro. Riprova."
     },
     "mcpCustomServerModal": {
       "add_custom_server": "Aggiungi server personalizzato",
@@ -7783,7 +7795,9 @@
       "no_project": "Nessuna cartella di progetto impostata per questa sessione.",
       "refresh": "Aggiorna",
       "title": "Git",
-      "uncommitted": "{{count}} non committati"
+      "uncommitted": "{{count}} non committati",
+      "status_failed": "Impossibile leggere lo stato del repository.",
+      "log_failed": "Impossibile leggere la cronologia dei commit."
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -7940,6 +7954,10 @@
       "path_copied": "Percorso copiato",
       "reveal_blocked": "Questo percorso è protetto e non può essere aperto.",
       "reveal_failed": "Impossibile aprire questo percorso sul computer che esegue {{productName}}."
+    },
+    "pendingQuestionCard": {
+      "answer_failed": "Impossibile inviare la tua risposta. L’agente è ancora in attesa, quindi riprova.",
+      "dismiss_failed": "Impossibile ignorare questa domanda. Riprova."
     },
     "sketchDialog": {
       "title": "Blocco schizzi",

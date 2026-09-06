@@ -54,7 +54,7 @@ import { sseSlotTitle, triggerRefresh, updateSlot } from '../store/dashboardSlic
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
-import { revealOrOpen } from '../components/FilePathMenu'
+import { revealOrOpen, useRevealFailure } from '../components/FilePathMenu'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
@@ -905,6 +905,9 @@ function tokenPresent(text: string, token: string): boolean {
  *  Without a handler (export used outside ChatPage) it degrades to an inert
  *  span with the path in the tooltip. */
 function DirChip({ label, fullPath, onOpen }: { label: string; fullPath: string; onOpen?: (path: string) => void }) {
+  // A failed Shift+click reveal renders beside the chip (askAgent on: a sent
+  // message's chip holds no draft; the composer draft is persisted per slot).
+  const reveal = useRevealFailure(fullPath)
   const body = (
     <>
       <Folder size={11} aria-hidden="true" className="shrink-0 lucide-inline" />@{label}
@@ -918,6 +921,7 @@ function DirChip({ label, fullPath, onOpen }: { label: string; fullPath: string;
     )
   }
   return (
+    <>
     <Clickable
       className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors"
       title={fullPath}
@@ -928,12 +932,16 @@ function DirChip({ label, fullPath, onOpen }: { label: string; fullPath: string;
         // side-effect-free, so the helper is what writes the clipboard (and,
         // locally, drives the file manager). A bare call would silently copy
         // nothing and break the chip's hover promise.
-        if (e && 'shiftKey' in e && e.shiftKey) { void revealOrOpen(fullPath); return }
+        if (e && 'shiftKey' in e && e.shiftKey) { void revealOrOpen(fullPath, 'reveal', reveal); return }
         onOpen(fullPath)
       }}
     >
       {body}
     </Clickable>
+    {reveal.error && (
+      <ErrorNotice variant="inline" className="ml-1 align-baseline" message={reveal.error} askAgent onDismiss={reveal.clear} testId="dir-chip-reveal-error" />
+    )}
+    </>
   )
 }
 

@@ -1361,7 +1361,8 @@
       "searching_enter_held": "Searching… — Enter won’t send yet; press Esc, then Enter sends the message",
       "searching_ctrl_enter_held": "Searching… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "no_matches_ctrl_enter_sends": "No matching files — Ctrl+Enter sends the message",
-      "no_matches_enter_sends": "No matching files — Enter sends the message"
+      "no_matches_enter_sends": "No matching files — Enter sends the message",
+      "search_failed": "Couldn’t search files. Try again."
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
@@ -1827,7 +1828,8 @@
       "pin_crew": "Pin {{name}} to the header",
       "unpin_crew": "Unpin {{name}} from the header",
       "pinned_no_room": "pinned, no room in the header",
-      "keep_tab_order_fixed": "Keep tab order fixed"
+      "keep_tab_order_fixed": "Keep tab order fixed",
+      "instances_load_failed": "Couldn’t load the remote crews."
     },
     "issuePanel": {
       "add_to_chat": "Add to chat",
@@ -1942,7 +1944,8 @@
       "loopback_open_again": "Open the sign-in page again",
       "loopback_use_code": "Use a code instead",
       "loopback_slow_hint": "Taking a while? If the sign-in page can't reach this computer, switch to a code — it works from any device.",
-      "loopback_fell_back": "The sign-in couldn't come back to this computer directly, so here's a code instead."
+      "loopback_fell_back": "The sign-in couldn't come back to this computer directly, so here's a code instead.",
+      "cancel_unsettled": "Couldn’t cancel the sign-in. It is still active — press the same option again to retry."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Agent specs missing",
@@ -2004,7 +2007,8 @@
       "update_kiro_cli": "Update Kiro CLI",
       "updating_kiro_cli": "Updating Kiro CLI…",
       "waiting": "Waiting",
-      "your_kiro_cli_is_out_of_date": "Your Kiro CLI is out of date"
+      "your_kiro_cli_is_out_of_date": "Your Kiro CLI is out of date",
+      "attempt_failed_remedy": "Fix the cause named above (often a permissions or install problem), then press {{action}} to try again. If it keeps failing, reinstall Kiro CLI."
     },
     "linkedSurfacesSection": {
       "connect_failed": "Could not connect to {{label}}: {{reason}}",
@@ -2013,7 +2017,8 @@
       "disconnect_from": "Disconnect from {{label}}",
       "held_elsewhere": "{{label}} is in use by another session.",
       "unavailable": "This destination is unavailable.",
-      "unknown_error": "unknown error"
+      "unknown_error": "unknown error",
+      "targets_load_failed": "Couldn’t load the channels this session can connect to."
     },
     "linkPreview": {
       "copied": "Copied",
@@ -2053,7 +2058,10 @@
       "snapshotting": "Snapshotting…",
       "split_view": "Split view",
       "toggle_file_browser": "Toggle file browser",
-      "tracking_description": "Tracking {{path}}"
+      "tracking_description": "Tracking {{path}}",
+      "knowledge_status_failed": "Couldn’t check the knowledge library.",
+      "artifact_status_failed": "Couldn’t check whether this file is an artifact.",
+      "diff_status_failed": "Couldn’t check this file’s git changes."
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_open_in_file_explorer": "Click to browse / Shift+click to open in File Explorer",
@@ -2066,7 +2074,8 @@
       "zoom_in": "Zoom in (+)",
       "zoom_out": "Zoom out (-)",
       "click_to_open_shift_click_to_copy_path": "Click to open / Shift+click to copy path",
-      "click_to_browse_shift_click_to_copy_path": "Click to browse / Shift+click to copy path"
+      "click_to_browse_shift_click_to_copy_path": "Click to browse / Shift+click to copy path",
+      "mermaid_render_failed": "Couldn’t render this diagram. Showing the source instead."
     },
     "mcpAppFrame": {
       "collapse": "Collapse",
@@ -2080,7 +2089,9 @@
     },
     "mcpBrowserModal": {
       "a_server_named_already_exists": "A server named “{{name}}” already exists with a different configuration.\n          Manage it from the installed servers table.",
-      "waiting_for_the_install_plan_to_load": "Waiting for the install plan to load"
+      "waiting_for_the_install_plan_to_load": "Waiting for the install plan to load",
+      "detail_load_failed": "Couldn’t load this server’s details.",
+      "search_failed": "Couldn’t search the registry. Try again."
     },
     "mcpCustomServerModal": {
       "add_custom_server": "Add Custom Server",
@@ -2682,6 +2693,13 @@
       "webhook": "Webhook",
       "webhooks_that_wake_this_crew": "Webhooks that wake this agent"
     },
+    "gitPanel": {
+      "status_failed": "Couldn’t read the repository status.",
+      "log_failed": "Couldn’t read the commit log."
+    },
+    "logEntry": {
+      "trace_load_failed": "Couldn’t load this run’s trace."
+    },
     "shortcutsModal": {
       "panel_toggles": "Panel toggles",
       "unset": "Not set"
@@ -2722,6 +2740,10 @@
       "copy_failed_select_the_link_and_copy_it_manually": "Copy failed — select the link and copy it manually.",
       "could_not_create_a_link_try_again": "Could not create a link — try again.",
       "phone_connection_is_disabled_by_policy_on_this_dep": "Phone connection is disabled by policy on this deployment."
+    },
+    "pendingQuestionCard": {
+      "answer_failed": "Couldn’t send your answer. The agent is still waiting, so try again.",
+      "dismiss_failed": "Couldn’t dismiss this question. Try again."
     }
   },
   "hooks": {

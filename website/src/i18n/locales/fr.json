@@ -6017,7 +6017,8 @@
       "searching_ctrl_enter_held": "Recherche… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
       "searching_enter_held": "Recherche… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
       "type_2_chars_to_search_files_ctrl_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
-      "type_2_chars_to_search_files_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message"
+      "type_2_chars_to_search_files_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
+      "search_failed": "Impossible de rechercher les fichiers. Réessayez."
     },
     "fileRenderers": {
       "download": "Télécharger",
@@ -6171,7 +6172,8 @@
       "pin_crew": "Épingler {{name}} dans l’en-tête",
       "unpin_crew": "Désépingler {{name}}",
       "pinned_no_room": "épinglé, pas de place dans l’en-tête",
-      "keep_tab_order_fixed": "Conserver l’ordre des onglets"
+      "keep_tab_order_fixed": "Conserver l’ordre des onglets",
+      "instances_load_failed": "Impossible de charger les équipes distantes."
     },
     "instancesViewport": {
       "connecting": "Connexion…",
@@ -6345,7 +6347,8 @@
       "loopback_open_again": "Rouvrir la page de connexion",
       "loopback_use_code": "Utiliser un code à la place",
       "loopback_slow_hint": "C'est long ? Si la page de connexion n'arrive pas à joindre cet ordinateur, passe à un code : ça marche depuis n'importe quel appareil.",
-      "loopback_fell_back": "La connexion n'a pas pu revenir directement sur cet ordinateur, voici donc un code à la place."
+      "loopback_fell_back": "La connexion n'a pas pu revenir directement sur cet ordinateur, voici donc un code à la place.",
+      "cancel_unsettled": "Impossible d’annuler la connexion. Elle est toujours en cours : appuyez de nouveau sur la même option pour réessayer."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Spécifications d'agent manquantes",
@@ -6431,7 +6434,8 @@
       "waiting": "En attente",
       "we_could_not_check_kiro_cli": "Nous n'avons pas pu vérifier Kiro CLI.",
       "your_crew_is_almost_ready": "Votre équipe est presque prête.",
-      "your_kiro_cli_is_out_of_date": "Votre Kiro CLI est obsolète"
+      "your_kiro_cli_is_out_of_date": "Votre Kiro CLI est obsolète",
+      "attempt_failed_remedy": "Corrigez la cause indiquée ci-dessus (souvent un problème de permissions ou d’installation), puis appuyez sur « {{action}} » pour réessayer. Si l’échec persiste, réinstallez Kiro CLI."
     },
     "linkPreview": {
       "copied": "Copié",
@@ -6445,14 +6449,16 @@
       "disconnect_from": "Se déconnecter de {{label}}",
       "held_elsewhere": "{{label}} est utilisé par une autre session.",
       "unavailable": "Cette destination est indisponible.",
-      "unknown_error": "erreur inconnue"
+      "unknown_error": "erreur inconnue",
+      "targets_load_failed": "Impossible de charger les canaux auxquels cette session peut se connecter."
     },
     "logEntry": {
       "cancelled": "Annulé",
       "error": "Erreur",
       "loading_trace": "Chargement de la trace…",
       "ok": "OK",
-      "timeout": "Délai dépassé"
+      "timeout": "Délai dépassé",
+      "trace_load_failed": "Impossible de charger la trace de cette exécution."
     },
     "markdownPanel": {
       "add_to_artifact_library": "Ajouter à la bibliothèque d'artefacts",
@@ -6528,7 +6534,10 @@
       "toggle_word_wrap": "Activer/désactiver le retour à la ligne",
       "tracking_description": "Suivi de {{path}}",
       "unsaved_changes": "Modifications non enregistrées",
-      "word_wrap": "Retour à la ligne"
+      "word_wrap": "Retour à la ligne",
+      "knowledge_status_failed": "Impossible de vérifier la bibliothèque de connaissances.",
+      "artifact_status_failed": "Impossible de vérifier si ce fichier est un artefact.",
+      "diff_status_failed": "Impossible de vérifier les modifications git de ce fichier."
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_open_in_file_explorer": "Cliquer pour parcourir / Shift+clic pour afficher dans l'Explorateur de fichiers",
@@ -6551,7 +6560,8 @@
       "zoom_in": "Zoom avant (+)",
       "zoom_out": "Zoom arrière (-)",
       "click_to_browse_shift_click_to_copy_path": "Cliquer pour parcourir / Shift+clic pour copier le chemin",
-      "click_to_open_shift_click_to_copy_path": "Cliquer pour ouvrir / Shift+clic pour copier le chemin"
+      "click_to_open_shift_click_to_copy_path": "Cliquer pour ouvrir / Shift+clic pour copier le chemin",
+      "mermaid_render_failed": "Impossible d’afficher ce diagramme. La source est affichée à la place."
     },
     "markdownToc": {
       "contents": "Sommaire",
@@ -6589,7 +6599,9 @@
       "set_these_in_the_server_config_before_enabling_i": "Définissez-les dans la configuration du serveur avant de l'activer.",
       "source": "Source",
       "v": "v",
-      "waiting_for_the_install_plan_to_load": "En attente du chargement du plan d’installation"
+      "waiting_for_the_install_plan_to_load": "En attente du chargement du plan d’installation",
+      "detail_load_failed": "Impossible de charger les détails de ce serveur.",
+      "search_failed": "Impossible de rechercher dans le registre. Réessayez."
     },
     "mcpCustomServerModal": {
       "add_custom_server": "Ajouter un serveur personnalisé",
@@ -7783,7 +7795,9 @@
       "no_project": "Aucun dossier de projet défini pour cette session.",
       "refresh": "Actualiser",
       "title": "Git",
-      "uncommitted": "{{count}} non validé(s)"
+      "uncommitted": "{{count}} non validé(s)",
+      "status_failed": "Impossible de lire l’état du dépôt.",
+      "log_failed": "Impossible de lire l’historique des commits."
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -7940,6 +7954,10 @@
       "path_copied": "Chemin copié",
       "reveal_blocked": "Ce chemin est protégé et ne peut pas être ouvert.",
       "reveal_failed": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}."
+    },
+    "pendingQuestionCard": {
+      "answer_failed": "Impossible d’envoyer votre réponse. L’agent attend toujours, réessayez.",
+      "dismiss_failed": "Impossible d’ignorer cette question. Réessayez."
     },
     "sketchDialog": {
       "title": "Bloc de croquis",

@@ -265,8 +265,13 @@ describe('findCoords', () => {
 // OverflowMenu — the Download hand-off
 // ════════════════════════════════════════════════════════════════════════════
 
+/** Where a standalone OverflowMenu reports a failed row action (the panel
+ *  renders it through ErrorNotice in production). */
+const overflowError = vi.fn()
+
 function openOverflow(filePath = '/tmp/notes.md', content = '# hi\n') {
-  render(<OverflowMenu filePath={filePath} content={content} />, { wrapper })
+  overflowError.mockReset()
+  render(<OverflowMenu filePath={filePath} content={content} onError={overflowError} />, { wrapper })
   fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
 }
 
@@ -277,21 +282,24 @@ describe('OverflowMenu Download', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
       '/api/file-download?path=%2Ftmp%2Fnotes.md',
     ))
+    expect(overflowError).not.toHaveBeenCalled()
     expect(window.alert).not.toHaveBeenCalled()
   })
 
-  it('alerts instead of writing a zero-byte file when the endpoint refuses', async () => {
+  it('reports instead of writing a zero-byte file when the endpoint refuses', async () => {
     fetchOpts.downloadOk = false
     openOverflow()
     fireEvent.click(screen.getByText('Download'))
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('Download failed'))
+    await waitFor(() => expect(overflowError).toHaveBeenCalledWith('Download failed'))
+    expect(window.alert).not.toHaveBeenCalled()
   })
 
-  it('alerts when the download request throws outright', async () => {
+  it('reports when the download request throws outright', async () => {
     fetchOpts.downloadThrows = true
     openOverflow()
     fireEvent.click(screen.getByText('Download'))
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('Download failed'))
+    await waitFor(() => expect(overflowError).toHaveBeenCalledWith('Download failed'))
+    expect(window.alert).not.toHaveBeenCalled()
   })
 })
 
@@ -967,7 +975,11 @@ describe('MarkdownPanel — artifact promotion', () => {
     fetchOpts.fileReadTruncated = true
     mountPanel()
     fireEvent.click(await screen.findByLabelText('Add to artifact library'))
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('File is too large to add'))
+    // Rendered in the panel through the shared ErrorNotice, not a blocking alert.
+    const notice = await screen.findByTestId('markdown-panel-action-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent('File is too large to add')
+    expect(window.alert).not.toHaveBeenCalled()
     expect(api.createArtifact).not.toHaveBeenCalled()
   })
 
@@ -975,7 +987,8 @@ describe('MarkdownPanel — artifact promotion', () => {
     fetchOpts.fileReadOk = false
     mountPanel()
     fireEvent.click(await screen.findByLabelText('Add to artifact library'))
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('Cannot read file'))
+    expect(await screen.findByTestId('markdown-panel-action-error')).toHaveTextContent('Cannot read file')
+    expect(window.alert).not.toHaveBeenCalled()
   })
 
   it('classifies the artifact kind from the extension', async () => {
@@ -1036,7 +1049,8 @@ describe('MarkdownPanel — knowledge library toggle', () => {
     fetchOpts.knowledgePostStatus = 500
     mountPanel()
     fireEvent.click(await screen.findByLabelText('Add to Knowledge Library'))
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('library refused'))
+    expect(await screen.findByTestId('markdown-panel-action-error')).toHaveTextContent('library refused')
+    expect(window.alert).not.toHaveBeenCalled()
   })
 
   it('renders an inert badge for a file already in the library', async () => {

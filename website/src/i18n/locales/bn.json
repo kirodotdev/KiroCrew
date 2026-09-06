@@ -5922,7 +5922,8 @@
       "searching_ctrl_enter_held": "খোঁজা হচ্ছে… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
       "searching_enter_held": "খোঁজা হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
       "type_2_chars_to_search_files_ctrl_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
-      "type_2_chars_to_search_files_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে"
+      "type_2_chars_to_search_files_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
+      "search_failed": "ফাইল খোঁজা যায়নি। আবার চেষ্টা করুন।"
     },
     "fileRenderers": {
       "download": "ডাউনলোড",
@@ -6073,7 +6074,8 @@
       "pin_crew": "{{name}} হেডারে পিন করুন",
       "unpin_crew": "{{name}} অানপিন করুন",
       "pinned_no_room": "পিন করা, হেডারে জায়গা নেই",
-      "keep_tab_order_fixed": "ট্যাবের ক্রম স্থির রাখুন"
+      "keep_tab_order_fixed": "ট্যাবের ক্রম স্থির রাখুন",
+      "instances_load_failed": "রিমোট ক্রু লোড করা যায়নি।"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",
@@ -6247,7 +6249,8 @@
       "loopback_open_again": "সাইন-ইন পেজ আবার খুলুন",
       "loopback_use_code": "এর বদলে কোড ব্যবহার করুন",
       "loopback_slow_hint": "সময় লাগছে? সাইন-ইন পেজ এই কম্পিউটারে পৌঁছাতে না পারলে কোডে যান — এটি যেকোনো ডিভাইস থেকে কাজ করে।",
-      "loopback_fell_back": "সাইন-ইন সরাসরি এই কম্পিউটারে ফিরতে পারেনি, তাই এখানে একটি কোড দেওয়া হলো।"
+      "loopback_fell_back": "সাইন-ইন সরাসরি এই কম্পিউটারে ফিরতে পারেনি, তাই এখানে একটি কোড দেওয়া হলো।",
+      "cancel_unsettled": "সাইন-ইন বাতিল করা যায়নি। এটি এখনও সক্রিয় — আবার চেষ্টা করতে একই অপশনটি আবার চাপুন।"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "এজেন্ট স্পেক অনুপস্থিত",
@@ -6333,7 +6336,8 @@
       "waiting": "অপেক্ষমাণ",
       "we_could_not_check_kiro_cli": "আমরা Kiro CLI পরীক্ষা করতে পারিনি।",
       "your_crew_is_almost_ready": "আপনার ক্রু প্রায় প্রস্তুত।",
-      "your_kiro_cli_is_out_of_date": "আপনার Kiro CLI পুরনো হয়ে গেছে"
+      "your_kiro_cli_is_out_of_date": "আপনার Kiro CLI পুরনো হয়ে গেছে",
+      "attempt_failed_remedy": "উপরে উল্লেখিত কারণটি ঠিক করুন (সাধারণত অনুমতি বা ইনস্টলের সমস্যা), তারপর “{{action}}” চাপুন আবার চেষ্টা করতে। তবুও ব্যর্থ হলে Kiro CLI পুনরায় ইনস্টল করুন।"
     },
     "linkPreview": {
       "copied": "কপি করা হয়েছে",
@@ -6347,14 +6351,16 @@
       "disconnect_from": "{{label}} থেকে সংযোগ বিচ্ছিন্ন করুন",
       "held_elsewhere": "{{label}} অন্য একটি সেশন ব্যবহার করছে।",
       "unavailable": "এই গন্তব্যটি উপলভ্য নয়।",
-      "unknown_error": "অজানা ত্রুটি"
+      "unknown_error": "অজানা ত্রুটি",
+      "targets_load_failed": "এই সেশন যে চ্যানেলগুলিতে যুক্ত হতে পারে তা লোড করা যায়নি।"
     },
     "logEntry": {
       "cancelled": "বাতিল করা হয়েছে",
       "error": "ত্রুটি",
       "loading_trace": "ট্রেস লোড হচ্ছে…",
       "ok": "OK",
-      "timeout": "টাইমআউট"
+      "timeout": "টাইমআউট",
+      "trace_load_failed": "এই রানের ট্রেস লোড করা যায়নি।"
     },
     "markdownPanel": {
       "add_to_artifact_library": "আর্টিফ্যাক্ট লাইব্রেরিতে যোগ করুন",
@@ -6430,7 +6436,10 @@
       "toggle_word_wrap": "ওয়ার্ড র‍্যাপ চালু/বন্ধ করুন",
       "tracking_description": "{{path}} ট্র্যাক করা হচ্ছে",
       "unsaved_changes": "অসংরক্ষিত পরিবর্তন",
-      "word_wrap": "ওয়ার্ড র‍্যাপ"
+      "word_wrap": "ওয়ার্ড র‍্যাপ",
+      "knowledge_status_failed": "নলেজ লাইব্রেরি পরীক্ষা করা যায়নি।",
+      "artifact_status_failed": "এই ফাইলটি আর্টিফ্যাক্ট কি না তা পরীক্ষা করা যায়নি।",
+      "diff_status_failed": "এই ফাইলের git পরিবর্তন পরীক্ষা করা যায়নি।"
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_open_in_file_explorer": "ব্রাউজ করতে ক্লিক করুন / File Explorer-এ দেখাতে Shift+ক্লিক করুন",
@@ -6453,7 +6462,8 @@
       "zoom_in": "জুম ইন (+)",
       "zoom_out": "জুম আউট (-)",
       "click_to_browse_shift_click_to_copy_path": "ব্রাউজ করতে ক্লিক করুন / পাথ কপি করতে Shift+ক্লিক করুন",
-      "click_to_open_shift_click_to_copy_path": "খুলতে ক্লিক করুন / পাথ কপি করতে Shift+ক্লিক করুন"
+      "click_to_open_shift_click_to_copy_path": "খুলতে ক্লিক করুন / পাথ কপি করতে Shift+ক্লিক করুন",
+      "mermaid_render_failed": "এই ডায়াগ্রামটি রেন্ডার করা যায়নি। এর পরিবর্তে সোর্স দেখানো হচ্ছে।"
     },
     "markdownToc": {
       "contents": "বিষয়সূচি",
@@ -6491,7 +6501,9 @@
       "set_these_in_the_server_config_before_enabling_i": "চালু করার আগে সার্ভার কনফিগে এগুলো সেট করুন।",
       "source": "সোর্স",
       "v": "v",
-      "waiting_for_the_install_plan_to_load": "ইনস্টল প্ল্যান লোড হওয়ার অপেক্ষায়"
+      "waiting_for_the_install_plan_to_load": "ইনস্টল প্ল্যান লোড হওয়ার অপেক্ষায়",
+      "detail_load_failed": "এই সার্ভারের বিবরণ লোড করা যায়নি।",
+      "search_failed": "রেজিস্ট্রিতে খোঁজা যায়নি। আবার চেষ্টা করুন।"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "কাস্টম সার্ভার যোগ করো",
@@ -7678,7 +7690,9 @@
       "no_project": "এই সেশনের জন্য কোনো প্রজেক্ট ফোল্ডার সেট করা নেই।",
       "refresh": "রিফ্রেশ",
       "title": "Git",
-      "uncommitted": "{{count}}টি আনকমিটেড"
+      "uncommitted": "{{count}}টি আনকমিটেড",
+      "status_failed": "রিপোজিটরির অবস্থা পড়া যায়নি।",
+      "log_failed": "কমিট লগ পড়া যায়নি।"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -7834,6 +7848,10 @@
       "path_copied": "পাথ কপি করা হয়েছে",
       "reveal_blocked": "এই পাথটি সুরক্ষিত এবং খোলা যাবে না।",
       "reveal_failed": "{{productName}} চালানো মেশিনে এই পাথটি খোলা যায়নি।"
+    },
+    "pendingQuestionCard": {
+      "answer_failed": "আপনার উত্তর পাঠানো যায়নি। এজেন্ট এখনও অপেক্ষা করছে, তাই আবার চেষ্টা করুন।",
+      "dismiss_failed": "এই প্রশ্নটি বাতিল করা যায়নি। আবার চেষ্টা করুন।"
     },
     "sketchDialog": {
       "title": "স্কেচ প্যাড",

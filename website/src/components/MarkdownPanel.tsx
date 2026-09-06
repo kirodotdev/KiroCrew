@@ -6,6 +6,8 @@ import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, MessageSquare, MessageSquarePlus, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Component, FileText, FileDiff, Folders, TriangleAlert, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import DetailPanel from './DetailPanel'
+import ErrorNotice from './ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 import { useConfirm } from './ConfirmDialog'
 import Clickable from './Clickable'
 import { CommentPopover, CommentList, formatCommentsMessage, type InlineComment } from './CommentOverlay'
@@ -274,11 +276,15 @@ function CommentHint({ onDismiss }: { onDismiss: () => void }) {
 
 const HINT_KEY = 'kirocrew:comment-hint-dismissed'
 
-async function downloadFile(filePath: string) {
+/** Report a failure to the panel, which renders it through the shared
+ *  ErrorNotice (replacing the blocking `alert()` these paths used to raise). */
+type ReportError = (message: string) => void
+
+async function downloadFile(filePath: string, onError: ReportError) {
   try {
     const res = await fetch(fileDownloadUrl(filePath))
     // eslint-disable-next-line no-console -- surface download failures for diagnostics
-    if (!res.ok) { console.error('downloadFile failed', res.status, res.statusText); alert(i18nT('components.markdownPanel.download_failed')); return }
+    if (!res.ok) { console.error('downloadFile failed', res.status, res.statusText); onError(i18nT('components.markdownPanel.download_failed')); return }
     const blob = await res.blob()
     const a = document.createElement('a')
     const url = URL.createObjectURL(blob)
@@ -289,7 +295,7 @@ async function downloadFile(filePath: string) {
     document.body.removeChild(a)
     setTimeout(() => URL.revokeObjectURL(url), 2_000)
     // eslint-disable-next-line no-console -- surface download failures for diagnostics
-  } catch (err) { console.error('downloadFile failed', err); alert(i18nT('components.markdownPanel.download_failed')) }
+  } catch (err) { console.error('downloadFile failed', err); onError(i18nT('components.markdownPanel.download_failed')) }
 }
 
 /**
@@ -399,8 +405,13 @@ function KnowledgeToggleIconButton({ state }: { state: ReturnType<typeof useFile
  */
 const menuRowCls = 'flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left whitespace-nowrap hover:bg-bg-hover focus-visible:bg-bg-hover focus:outline-none'
 
-export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit }: {
+export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit }: {
   filePath: string; content: string
+  /** Where a failed row action (add to knowledge, promote, snapshot, save,
+   *  download, open/reveal) is reported: the panel renders it through the
+   *  shared ErrorNotice. The menu itself closes on select, so it cannot host
+   *  the notice. */
+  onError: ReportError
   /** View actions folded in from the old header row (side-panel revamp): the
    *  ⋯ menu is the single home for everything that isn't a mode toggle. */
   onRefresh?: () => void; refreshDisabled?: boolean; refreshTitle?: string
@@ -456,8 +467,8 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
   // Platform-aware reveal label from the shared owner (FilePathMenu) so this
   // overflow and FileViewer's overflow name the identical action identically.
   const revealLabel = useRevealLabel()
-  const knowledge = useFileKnowledgeState(filePath)
-  const artifact = useFileArtifactState(filePath, content)
+  const knowledge = useFileKnowledgeState(filePath, onError)
+  const artifact = useFileArtifactState(filePath, content, onError)
   const delayedClose = () => { closeTimerRef.current = setTimeout(() => setOpen(false), 800) }
   useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current) }, [])
   // Reset the per-mutation success flags whenever the menu closes so the
@@ -572,12 +583,12 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
               drive Finder on the gateway, so it sees the fallbacks only. Same
               gates the shared FilePathMenu applies. */}
           {canOpen && (
-            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'open'); setOpen(false) }}>
+            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'open', { onError }); setOpen(false) }}>
               {i18nT('components.markdownPanel.open_with_default_app')}
             </button>
           )}
           {directLocal && (
-            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal'); setOpen(false) }}>
+            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal', { onError }); setOpen(false) }}>
               {revealLabel}
             </button>
           )}
@@ -587,7 +598,7 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(content); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_content')}
           </button>
-          <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { downloadFile(filePath); setOpen(false) }}>
+          <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void downloadFile(filePath, onError); setOpen(false) }}>
             {i18nT('components.markdownPanel.download')}
           </button>
         </div>
@@ -602,13 +613,15 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
  * inline row-2 buttons and the overflow ⋮ entry share a single fetch via
  * React Query's cache.
  */
-function useFileKnowledgeState(filePath: string) {
+function useFileKnowledgeState(filePath: string, onError: ReportError) {
   const queryClient = useQueryClient()
-  const { data } = useQuery({
+  const { data, error: queryError } = useQuery({
     queryKey: ['knowledge-config', filePath],
     queryFn: async () => {
       const r = await fetch('/api/knowledge/config')
-      if (!r.ok) return null
+      // A failed read used to resolve to `null`, which rendered as "not added"
+      // — a failure dressed as a state. Reject instead so the panel can say so.
+      if (!r.ok) throw new Error(i18nT('components.markdownPanel.knowledge_status_failed'))
       const cfg = await r.json()
       const sr = await fetch(`/api/knowledge/sources?uri=${encodeURIComponent(filePath)}`)
       const sources = sr.ok ? await sr.json() : []
@@ -635,9 +648,9 @@ function useFileKnowledgeState(filePath: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['knowledge-config', filePath] })
     },
-    onError: (err) => alert((err as Error).message),
+    onError: (err) => onError((err as Error).message),
   })
-  return { formats, alreadyAdded, add, adding, added, addResult, reset }
+  return { formats, alreadyAdded, add, adding, added, addResult, reset, queryError }
 }
 
 /**
@@ -645,9 +658,9 @@ function useFileKnowledgeState(filePath: string) {
  * adding/snapshotting mutations. `live_dirty` flows through so
  * the inline Snapshot button can gate visibility/enable correctly.
  */
-function useFileArtifactState(filePath: string, content: string) {
+function useFileArtifactState(filePath: string, content: string, onError: ReportError) {
   const queryClient = useQueryClient()
-  const { data } = useQuery({
+  const { data, error: queryError } = useQuery({
     queryKey: ['artifact-by-source-path', filePath],
     queryFn: async () => {
       const res = await api.artifacts({ source_path: filePath })
@@ -704,7 +717,7 @@ function useFileArtifactState(filePath: string, content: string) {
       queryClient.invalidateQueries({ queryKey: ['artifact-by-source-path', filePath] })
       queryClient.invalidateQueries({ queryKey: ['artifacts'] })
     },
-    onError: (err) => alert((err as Error).message),
+    onError: (err) => onError((err as Error).message),
   })
   const { mutate: snapshot, isPending: snapshotting, isSuccess: snapshotted } = useMutation({
     mutationFn: async () => {
@@ -717,7 +730,7 @@ function useFileArtifactState(filePath: string, content: string) {
       queryClient.invalidateQueries({ queryKey: ['artifact-versions', existing?.slug] })
       queryClient.invalidateQueries({ queryKey: ['artifact-events', existing?.slug] })
     },
-    onError: (err) => alert((err as Error).message),
+    onError: (err) => onError((err as Error).message),
   })
   const { mutate: toggleSave, isPending: toggling } = useMutation({
     mutationFn: async () => {
@@ -752,10 +765,10 @@ function useFileArtifactState(filePath: string, content: string) {
       queryClient.invalidateQueries({ queryKey: ['artifact-by-source-path', filePath] })
       queryClient.invalidateQueries({ queryKey: ['artifacts'] })
     },
-    onError: (err) => alert((err as Error).message),
+    onError: (err) => onError((err as Error).message),
   })
   const saved = !!existing?.pinned
-  return { existing, add, adding, added, resetAdd, snapshot, snapshotting, snapshotted, toggleSave, toggling, saved }
+  return { existing, add, adding, added, resetAdd, snapshot, snapshotting, snapshotted, toggleSave, toggling, saved, queryError }
 }
 
 /** Working-tree diff view (current buffer vs HEAD), Pierre-rendered.
@@ -906,6 +919,15 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     if (savedBaseline != null) setDirty(content !== savedBaseline)
   }, [content, savedBaseline])
   const [saveError, setSaveError] = useState<string | null>(null)
+  // The outcome of the last row action (add to knowledge, promote, snapshot,
+  // save-as-artifact, download, open/reveal) that FAILED. These used to raise a
+  // blocking `alert()` from inside the mutation hooks; they now land here and
+  // render beside the save error through the shared ErrorNotice.
+  const [actionError, setActionError] = useState<string | null>(null)
+  // Scoped to the file it was raised for: a late rejection from the previous
+  // file's action must not render under the file now open.
+  useEffect(() => { setActionError(null) }, [filePath])
+  const reportActionError = useCallback<ReportError>((message) => setActionError(message), [])
   // Editor view preferences — persisted so they survive tab switches/reloads.
   const [lineNums, setLineNums] = usePersistedBool('mc-file-linenums', true)
   const [wordWrap, setWordWrap] = usePersistedBool('mc-file-wordwrap', true)
@@ -985,8 +1007,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // Artifact + knowledge state power the header star/knowledge toggles and
   // the ⋯ menu's Snapshot entry (same query cache as the OverflowMenu's own
   // hooks, so states stay coherent).
-  const knowledge = useFileKnowledgeState(filePath)
-  const artifactState = useFileArtifactState(filePath, content)
+  const knowledge = useFileKnowledgeState(filePath, reportActionError)
+  const artifactState = useFileArtifactState(filePath, content, reportActionError)
   const previewRef = useRef<HTMLDivElement>(null)
   const sidePanelScrollRef = useRef<HTMLDivElement>(null)
   // Cross-remount scroll memory for the embedded (side-panel) scroll box —
@@ -1196,13 +1218,45 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
 
   // Detect if file has uncommitted changes and pre-fetch HEAD content
-  const { data: diffData, isFetching: diffChecking } = useQuery({
+  const { data: diffData, isFetching: diffChecking, error: diffQueryError } = useQuery({
     queryKey: ['file-diff', filePath],
     queryFn: () => api.fileDiff(filePath),
     enabled: !!filePath && !isRichType,
     staleTime: 10_000,
   })
   const originalContent = diffData?.original ?? ''
+  // Every failure the panel owns, rendered in ONE place (both layouts mount it
+  // under the header). The three background reads used to fail silently: a
+  // rejected knowledge / artifact / diff query rendered as "not added" / no
+  // artifact / no diff.
+  //
+  // askAgent decision: OFF while the editor buffer is dirty — the hand-off
+  // navigates away and would discard unsaved edits — ON otherwise (nothing to
+  // lose, and a failed gateway read or write is what the agent can diagnose).
+  // The save failure itself is always OFF: by definition the buffer holds the
+  // edits that were NOT persisted.
+  const panelNotices = (saveError || actionError || knowledge.queryError || artifactState.queryError || diffQueryError) ? (
+    <div className="flex flex-col gap-1.5">
+      {/* No hand-off: the editor buffer holds the unsaved edits this save failed to write. */}
+      <ErrorNotice message={saveError} onDismiss={() => setSaveError(null)} testId="markdown-panel-save-error" />
+      <ErrorNotice message={actionError} askAgent={!dirty} onDismiss={() => setActionError(null)} testId="markdown-panel-action-error" />
+      <ErrorNotice
+        message={knowledge.queryError ? (errMessage(knowledge.queryError) || i18nT('components.markdownPanel.knowledge_status_failed')) : null}
+        askAgent={!dirty}
+        testId="markdown-panel-knowledge-error"
+      />
+      <ErrorNotice
+        message={artifactState.queryError ? (errMessage(artifactState.queryError) || i18nT('components.markdownPanel.artifact_status_failed')) : null}
+        askAgent={!dirty}
+        testId="markdown-panel-artifact-error"
+      />
+      <ErrorNotice
+        message={diffQueryError ? (errMessage(diffQueryError) || i18nT('components.markdownPanel.diff_status_failed')) : null}
+        askAgent={!dirty}
+        testId="markdown-panel-diff-error"
+      />
+    </div>
+  ) : null
   // The backend reports WHY there is nothing to diff against. `not_git` means
   // the file is outside any git work tree, so there is no baseline at all —
   // rendering the diff would present the whole file as added against a
@@ -1773,7 +1827,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                 aria-pressed={!!railOpen}
               ><Folders size={14} /></button>
             )}
-            <OverflowMenu filePath={filePath} content={content}
+            <OverflowMenu filePath={filePath} content={content} onError={reportActionError}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
               onFullscreen={() => setFullscreen(f => !f)} fullscreen={fullscreen}
               onSnapshot={artifactState.existing ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
@@ -1786,7 +1840,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         </div>
       }
     >
-      {saveError && <div className="text-[11px] text-danger">{saveError}</div>}
+      {panelNotices}
       {/* Comment hint for markdown files */}
       {isMarkdown && !editing && onSubmitComments && !hintDismissed && (
         <CommentHint onDismiss={dismissHint} />
@@ -1885,11 +1939,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               return <KnowledgeToggleIconButton state={knowledge} />
             })()}
             {editorToolbarButtons}
-            <OverflowMenu filePath={filePath} content={content} />
+            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} />
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => setFullscreen(false)} title={i18nT('components.markdownPanel.exit_full_screen_esc')} aria-label={i18nT('components.markdownPanel.exit_full_screen')}><Minimize2 size={14} /></button>
           </div>
         </div>
-        {saveError && <div className="px-16 text-[11px] text-danger">{saveError}</div>}
+        {panelNotices && <div className="px-16">{panelNotices}</div>}
         {isMarkdown && !editing && onSubmitComments && !hintDismissed && <div className="px-16"><CommentHint onDismiss={dismissHint} /></div>}
         {/* Body */}
         <div data-mc-mdpanel className="relative flex-1 overflow-hidden min-h-0">

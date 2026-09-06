@@ -170,7 +170,10 @@ describe('McpRowSignIn', () => {
       fireEvent.change(input, { target: { value: 'not-a-url' } })
       fireEvent.click(screen.getByRole('button', { name: /Complete connection/ }))
       await flush()
-      expect(screen.getByRole('alert')).toBeInTheDocument()
+      // A validation hint about the input, not a request failure: plain text,
+      // never the error surface.
+      expect(screen.getByTestId('oauth-relay-hint')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
       expect(mockApi.mcpOAuthRelay).not.toHaveBeenCalled()
     })
 

@@ -221,6 +221,8 @@ describe('PendingQuestionCard — round 6 findings', () => {
     // …and the control is usable again for a retry.
     const dismiss = screen.getByLabelText('Dismiss question without answering') as HTMLButtonElement
     await waitFor(() => expect(dismiss.disabled).toBe(false))
+    // …and the card SAYS why it is still here, or the retry never happens.
+    expect(screen.getByTestId('pending-question-error')).toHaveAttribute('role', 'alert')
   })
 
   it('drops a legacy card when the server says there is no such record (404)', async () => {
@@ -407,8 +409,9 @@ describe('PendingQuestionCard — ask_id round-trip', () => {
     submit()
 
     // The agent is still blocked, so the card must survive and no second turn
-    // may start.
-    await waitFor(() => expect(onFallbackSend).not.toHaveBeenCalled())
+    // may start — and the failure is named in place so the user knows to retry.
+    expect(await screen.findByTestId('pending-question-error')).toHaveAttribute('role', 'alert')
+    expect(onFallbackSend).not.toHaveBeenCalled()
     expect(pendingOf(store)).toBeDefined()
   })
 

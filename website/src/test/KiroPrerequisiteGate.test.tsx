@@ -755,8 +755,13 @@ describe('KiroPrerequisiteGate', () => {
       <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
     )
 
+    // The gateway's message is the ErrorNotice (terminated as a sentence, since
+    // it is read as one), and the retry hint is its own line beneath it.
+    const alert = await screen.findByTestId('kiro-gate-status-error')
+    expect(alert).toHaveAttribute('role', 'alert')
+    expect(alert).toHaveTextContent('Token required.')
     expect(
-      await screen.findByText('Token required. Retry the gateway check before starting a session.'),
+      screen.getByText('Retry the gateway check before starting a session.'),
     ).toBeInTheDocument()
   })
 

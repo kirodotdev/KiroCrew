@@ -27,6 +27,7 @@ import {
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { copyToClipboard } from '../utils/clipboard'
 import { Badge, Btn, Card, SendBtn } from './ui'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 const QUERY_KEY = ['kiro-prerequisite'] as const
@@ -242,8 +243,17 @@ function SetupStatusError({
         <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
           {i18nT('components.kiroPrerequisiteGate.we_could_not_check_kiro_cli')}
         </h1>
+        {/* No hand-off: this gate stands between the user and the chat the
+            hand-off would navigate to, and the failure is that kiro-cli — the
+            agent runtime — could not even be checked, so there is no agent to
+            hand it to. Try again is the remedy. */}
+        <ErrorNotice
+          className="mt-3 max-w-lg text-left"
+          message={asSentence(message)}
+          testId="kiro-gate-status-error"
+        />
         <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          {asSentence(message)} {i18nT('components.kiroPrerequisiteGate.retry_the_gateway_check_before_starting_a_sessio')}
+          {i18nT('components.kiroPrerequisiteGate.retry_the_gateway_check_before_starting_a_sessio')}
         </p>
         <div className="mt-6">
           <SendBtn type="button" disabled={retrying} onClick={onRetry}>
@@ -581,17 +591,22 @@ function CliOutdated({
           </CopyCommand>
         </div>
         {/* Verbatim and untranslated: it names why the self-update did not
-            complete. role="alert" because it appears in place after the button
-            press with no route change. */}
+            complete (ErrorNotice's body is whitespace-pre-wrap, so the CLI
+            output keeps its shape). It appears in place after the button press
+            with no route change, which is what role="alert" is for. */}
+        {/* No hand-off: kiro-cli — the agent runtime — is the thing that is
+            outdated here, and this gate hides the chat the hand-off would open. */}
+        <ErrorNotice
+          className="mt-4 w-full max-w-lg text-left text-xs"
+          messageClassName="font-mono"
+          title={i18nT('components.kiroPrerequisiteGate.the_update_attempt_failed')}
+          message={updateError || null}
+          testId="kiro-gate-update-error"
+        />
         {updateError ? (
-          <div className="mt-4 w-full max-w-lg text-left" role="alert">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-danger">
-              {i18nT('components.kiroPrerequisiteGate.the_update_attempt_failed')}
-            </p>
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-danger/10 p-3 text-xs text-danger">
-              {updateError}
-            </pre>
-          </div>
+          <p className="mt-2 max-w-lg text-left text-[13px] leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.attempt_failed_remedy', { action: i18nT('components.kiroPrerequisiteGate.update_kiro_cli') })}
+          </p>
         ) : null}
       </>
     </SetupShell>
@@ -640,15 +655,21 @@ function AgentSpecsMissing({
             also informative — it means no repair has been attempted yet.
             `role="alert"` because it appears in place after the button press with
             no route change, so a screen reader would otherwise get nothing. */}
+        {/* No hand-off: the agent specs kiro-cli refused are what the agent runs
+            on, and this gate hides the chat the hand-off would open. */}
+        <ErrorNotice
+          className="mt-4 w-full max-w-lg text-left text-xs"
+          messageClassName="font-mono"
+          title={i18nT('components.kiroPrerequisiteGate.the_repair_attempt_failed')}
+          message={repairError || null}
+          testId="kiro-gate-repair-error"
+        />
+        {/* Plain-language next step: the verbatim output above is for a bug
+            report, not something a user can act on by itself. */}
         {repairError ? (
-          <div className="mt-4 w-full max-w-lg text-left" role="alert">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-danger">
-              {i18nT('components.kiroPrerequisiteGate.the_repair_attempt_failed')}
-            </p>
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-danger/10 p-3 text-xs text-danger">
-              {repairError}
-            </pre>
-          </div>
+          <p className="mt-2 max-w-lg text-left text-[13px] leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.attempt_failed_remedy', { action: i18nT('components.kiroPrerequisiteGate.check_again') })}
+          </p>
         ) : null}
         {/* The self-diagnosis dead end: `kiro-cli diagnostic` is the first command
             anyone reaches for, and it refuses with "Kiro CLI app is not running"
@@ -719,15 +740,21 @@ function AgentSpecsRejected({
             </pre>
           </div>
         ) : null}
+        {/* No hand-off: the agent specs kiro-cli refused are what the agent runs
+            on, and this gate hides the chat the hand-off would open. */}
+        <ErrorNotice
+          className="mt-4 w-full max-w-lg text-left text-xs"
+          messageClassName="font-mono"
+          title={i18nT('components.kiroPrerequisiteGate.the_repair_attempt_failed')}
+          message={repairError || null}
+          testId="kiro-gate-repair-error"
+        />
+        {/* Plain-language next step: the verbatim output above is for a bug
+            report, not something a user can act on by itself. */}
         {repairError ? (
-          <div className="mt-4 w-full max-w-lg text-left" role="alert">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-danger">
-              {i18nT('components.kiroPrerequisiteGate.the_repair_attempt_failed')}
-            </p>
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-danger/10 p-3 text-xs text-danger">
-              {repairError}
-            </pre>
-          </div>
+          <p className="mt-2 max-w-lg text-left text-[13px] leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.attempt_failed_remedy', { action: i18nT('components.kiroPrerequisiteGate.check_again') })}
+          </p>
         ) : null}
         {/* Deliberately does not promise a rewrite. The button re-asks kiro-cli
             rather than regenerating the spec: the file is already on disk, and a

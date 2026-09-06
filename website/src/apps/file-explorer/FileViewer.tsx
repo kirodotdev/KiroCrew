@@ -9,7 +9,7 @@ import {
 import { IMAGE_EXTS, LANG_BY_EXT } from './constants'
 import { extOf, basename, formatBytes, formatTime, isSensitivePath } from './utils'
 import { copyToClipboard } from '../../utils/clipboard'
-import { revealOrOpen, useRevealLabel, useCanOpenFile } from '../../components/FilePathMenu'
+import { revealOrOpen, useRevealFailure, useRevealLabel, useCanOpenFile } from '../../components/FilePathMenu'
 import { useBranding } from '../../hooks/useBranding'
 import type { FileMeta } from './types'
 
@@ -53,6 +53,9 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
   // files, so no kind is passed. Reveal keeps the laxer directLocal-only gate.
   const canOpen = useCanOpenFile()
   const revealLabel = useRevealLabel()
+  // A failed open/reveal from the ⋯ menu renders under the viewer bar;
+  // askAgent on — the viewer is read-only.
+  const reveal = useRevealFailure(filePath ?? undefined)
   if (!filePath) {
     return <EmptyState icon={<FileText size={28} />} title={i18nT('apps.fileExplorer.fileViewer.select_a_file_to_view')} subtitle={isMobile ? undefined : i18nT('apps.fileExplorer.fileViewer.tip_ctrl_cmd_f_to_search')} />
   }
@@ -101,13 +104,13 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
                   host it is not looking at. Failures funnel through the shared
                   i18n path. */}
               {canOpen && (
-                <DropdownMenuItem onSelect={() => { void revealOrOpen(filePath, 'open') }}>
+                <DropdownMenuItem onSelect={() => { void revealOrOpen(filePath, 'open', reveal) }}>
                   <ExternalLink size={13} className="shrink-0 text-muted" />
                   <span>{i18nT('components.markdownPanel.open_with_default_app')}</span>
                 </DropdownMenuItem>
               )}
               {directLocal && (
-                <DropdownMenuItem onSelect={() => { void revealOrOpen(filePath, 'reveal') }}>
+                <DropdownMenuItem onSelect={() => { void revealOrOpen(filePath, 'reveal', reveal) }}>
                   <FolderOpen size={13} className="shrink-0 text-muted" />
                   <span>{revealLabel}</span>
                 </DropdownMenuItem>
@@ -120,6 +123,11 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
           </DropdownMenu>
         </div>
       </div>
+      {reveal.error && (
+        <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--border)' }}>
+          <ErrorNotice variant="inline" className="whitespace-normal" message={reveal.error} askAgent onDismiss={reveal.clear} testId="file-viewer-reveal-error" />
+        </div>
+      )}
       {isSensitivePath(filePath) && (
         <div style={{ padding: '6px 12px', background: 'color-mix(in srgb, var(--warn) 12%, transparent)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--warn)' }}>
           <ShieldAlert size={13} /> {i18nT('apps.fileExplorer.fileViewer.sensitive_file_avoid_sharing_your_screen_while_v')}

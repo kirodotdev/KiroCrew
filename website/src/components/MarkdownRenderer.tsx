@@ -50,9 +50,10 @@ import JiraLogo from './icons/JiraLogo'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import DiffBlock from './DiffBlock'
+import ErrorNotice from './ErrorNotice'
 import FoldableDiffBlock from './FoldableDiffBlock'
 import EditableCodeBlock from './EditableCodeBlock'
-import FilePathMenu, { revealOrOpen } from './FilePathMenu'
+import FilePathMenu, { revealOrOpen, useRevealFailure } from './FilePathMenu'
 import { SmoothResize } from './SmoothResize'
 import type { ContentBlock } from '../types'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -525,10 +526,14 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   // for (and targets) the diagram currently on screen.
   const [svg, setSvg] = useState('')
   const [enlarged, setEnlarged] = useState(false)
+  // A render that threw: the raw source stays visible below (it is the only
+  // evidence of what failed), and this drives the notice above it.
+  const [failed, setFailed] = useState(false)
 
   useEffect(() => {
     if (!ref.current || renderedRef.current === code) return
     renderedRef.current = code
+    setFailed(false)
     loadMermaid().then(mermaid => {
       // Re-initialized per render so a theme switch between two diagrams is
       // picked up; initialize() is cheap and idempotent.
@@ -543,18 +548,33 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
       setSvg(svg)
     }).catch(() => {
       if (!ref.current) return
+      // The source is evidence, not the error surface, so it is no longer
+      // painted red — the ErrorNotice above it carries the failure.
       const pre = document.createElement('pre')
-      pre.className = 'text-danger text-[13px]'
+      pre.className = 'text-muted text-[13px]'
       pre.textContent = code
       ref.current.textContent = ''
       ref.current.appendChild(pre)
       setSvg('')
       setEnlarged(false)
+      setFailed(true)
     })
   }, [code, id])
 
   return (
     <div className="relative group my-3">
+      {/* No hand-off: this renderer is embedded in hosts that hold unsaved
+          drafts and cannot tell which — the file panel's editor buffer and the
+          composer's markdown preview among them — so the navigation could
+          discard what the user typed. */}
+      {failed && (
+        <ErrorNotice
+          variant="inline"
+          className="mb-2"
+          message={i18nT('components.markdownRenderer.mermaid_render_failed')}
+          testId="mermaid-render-error"
+        />
+      )}
       {/* Pointer convenience: clicking the rendered diagram opens the viewer.
           Keyboard and AT users reach the same viewer through the real button
           below — the same pairing the image lightbox uses (clickable <img>,
@@ -697,6 +717,9 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       && !artifactSlugFromHref(localHref)
       && !!(actions.onFileOpen || actions.onFolderOpen),
   )
+  // askAgent on: a transcript link holds no draft (the host composer's draft is
+  // persisted per slot), and a blocked or failed reveal is gateway-side.
+  const reveal = useRevealFailure(localHref ?? undefined)
   const onPathClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     const plainPrimaryClick = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey
     if (pathResolution.probePending && plainPrimaryClick) {
@@ -712,6 +735,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       pathResolution.kind,
       e.shiftKey,
       actions,
+      reveal.onError,
       pathResolution.line,
       pathResolution.endLine,
     )
@@ -774,6 +798,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   // A confirmed session link is in-app navigation, so it keeps in-place semantics.
   if (sessionLink) ext = true
   return (
+    <>
     <a
       {...sp(node)}
       href={sessionHref ?? href}
@@ -787,6 +812,10 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     >
       <InsideLinkCtx.Provider value={true}>{children}</InsideLinkCtx.Provider>
     </a>
+    {reveal.error && (
+      <ErrorNotice variant="inline" className="ml-1.5 align-baseline" message={reveal.error} askAgent onDismiss={reveal.clear} testId="md-link-reveal-error" />
+    )}
+    </>
   )
 }
 
@@ -912,21 +941,31 @@ function usePathResolution(raw: string, probeEnabled: boolean): PathResolution {
  * `revealPath` selects a file in Finder/Explorer, which has no notion of a line,
  * and a directory does not have one either.
  */
-function activatePath(path: string, kind: PathKind, reveal: boolean, actions: PathActions, line?: number, endLine?: number): void {
+function activatePath(
+  path: string,
+  kind: PathKind,
+  reveal: boolean,
+  actions: PathActions,
+  onRevealError: (message: string) => void,
+  line?: number,
+  endLine?: number,
+): void {
   // Route through the shared helper, not bare `api.revealPath`: the helper owns
   // the clipboard write and the failure message. `api.revealPath` is side-effect-
   // free, so a bare call on a remote/headless session would answer {ok, copy} and
   // nobody would write the clipboard — the chip's "Shift+click to copy path"
-  // promise would silently do nothing.
-  if (reveal) { void revealOrOpen(path); return }
+  // promise would silently do nothing. A failed reveal is reported to the chip
+  // that was clicked (see useRevealFailure), never to a blocking dialog.
+  const opts = { onError: onRevealError }
+  if (reveal) { void revealOrOpen(path, 'reveal', opts); return }
   if (kind === 'dir') {
     // No folder handler wired: fall back to the OS file manager rather than
     // silently doing nothing.
     if (actions.onFolderOpen) actions.onFolderOpen(path)
-    else void revealOrOpen(path)
+    else void revealOrOpen(path, 'reveal', opts)
     return
   }
-  if (!actions.onFileOpen) { void revealOrOpen(path); return }
+  if (!actions.onFileOpen) { void revealOrOpen(path, 'reveal', opts); return }
   // Called with ONE argument when there is no line, not with an explicit
   // `undefined`: the handler is also the app's general-purpose file opener, and
   // an omitted argument keeps a chip click indistinguishable from every other
@@ -1140,6 +1179,9 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const { directLocal } = useBranding()
   const raw = codeStr.trim()
   const pathResolution = usePathResolution(raw, probeEnabled)
+  // Failure state for the chip's reveal (Shift+click / no handler wired); rendered
+  // beside the chip. Declared before the early returns below (rules of hooks).
+  const reveal = useRevealFailure(raw)
 
   // `data-path*` / `data-session-key` describe a chip THIS component rendered, so
   // only it may set them. rehypeSanitize allowlists every `data-*` attribute
@@ -1203,7 +1245,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
     e.stopPropagation()
     // Ctrl/Cmd+Click copies the path text rather than opening/revealing.
     if (e.ctrlKey || e.metaKey) { copyToClipboard(raw); return }
-    activatePath(path, kind, e.shiftKey, actions, targetLine, targetEndLine)
+    activatePath(path, kind, e.shiftKey, actions, reveal.onError, targetLine, targetEndLine)
   }
   // Right-click opens the shared file-path menu (Open in default app / reveal /
   // copy path), additive to the existing click/shift-click activation. The menu
@@ -1212,6 +1254,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   // app" — the reveal endpoint 400s an `open` on a directory, which would land
   // the user on an error for a click they cannot fix.
   return (
+    <>
     <FilePathMenu filePath={path} kind={kind}>
       <code
         className={`${CHIP_BASE} cursor-pointer hover:underline`}
@@ -1247,6 +1290,12 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
           : children}
       </code>
     </FilePathMenu>
+    {/* askAgent on: a transcript chip holds no draft; the host composer's
+        draft is persisted per slot. */}
+    {reveal.error && (
+      <ErrorNotice variant="inline" className="ml-1.5 align-baseline" message={reveal.error} askAgent onDismiss={reveal.clear} testId="md-chip-reveal-error" />
+    )}
+    </>
   )
 }
 

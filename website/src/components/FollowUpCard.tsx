@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { GitBranch, Lightbulb, Plus, X } from 'lucide-react'
 import type { FollowupItem } from '../store/chatSlice'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -149,11 +150,18 @@ function FollowUpCard({
                 <X size={13} aria-hidden="true" /> {i18nT('components.followUpCard.skip')}
               </button>
             </div>
-            {error && (
-              <div role="alert" className="text-[12px] text-danger mt-2">
-                {error}
-              </div>
-            )}
+            {/* askAgent on: the card holds no draft of its own and the host
+                composer's draft is persisted per slot (ChatPage saveDrafts), so
+                the hand-off — which opens a fresh slot — destroys nothing. A
+                worktree that could not be created (branch exists, not a repo,
+                git missing) is exactly the failure the agent can diagnose. */}
+            <ErrorNotice
+              variant="inline"
+              className="mt-2 whitespace-normal"
+              message={error}
+              askAgent
+              testId={`follow-up-error-${index}`}
+            />
           </div>
         )
       })}

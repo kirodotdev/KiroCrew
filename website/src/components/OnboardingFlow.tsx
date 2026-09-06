@@ -6,6 +6,7 @@ import { ArrowRight, Check, Monitor, Sun, Moon } from 'lucide-react'
 import { useTheme, type ModePreference, type ColorTheme } from '../hooks/useTheme'
 import { GhostWithArm } from '../assets/onboarding/GhostIcons'
 import { Btn, SendBtn } from './ui'
+import ErrorNotice from './ErrorNotice'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
 import { api } from '../api/client'
 import { capRoleOther, clampRoleOther } from '../lib/userProfile'
@@ -683,10 +684,15 @@ export default function OnboardingFlow({
           ))}
         </div>
 
+        {/* No hand-off: the onboarding answers (techLevel and the other
+            chapter picks) are unsaved wizard state — this notice exists
+            because the save of exactly those answers failed. */}
         {profileSaveError && (
-          <p role="alert" className="text-[12.5px] mt-3 mb-0" style={{ color: 'var(--danger)' }}>
-            {i18nT('components.onboardingFlow.couldn_t_save_your_answers_press_next_to_retry_o')}
-          </p>
+          <ErrorNotice
+            className="mt-3 text-[12.5px]"
+            message={i18nT('components.onboardingFlow.couldn_t_save_your_answers_press_next_to_retry_o')}
+            testId="onboarding-profile-save-error"
+          />
         )}
       </OnboardingChapterShell>
     )

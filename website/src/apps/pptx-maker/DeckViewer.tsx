@@ -13,7 +13,8 @@ import { ExternalLink, FolderOpen, Presentation } from 'lucide-react'
 import { EmptyState } from '../../components/ui'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
-import { revealOrOpen } from '../../components/FilePathMenu'
+import { revealOrOpen, useRevealFailure } from '../../components/FilePathMenu'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useBranding } from '../../hooks/useBranding'
 import { i18nT } from '../../i18n/t'
 import {
@@ -123,6 +124,9 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
   // clipboard copy (and this button already swallowed every failure silently), so
   // hide it there to match every other gated file-location surface.
   const isLocal = useBranding().directLocal
+  // A failed reveal renders under the header row; askAgent on — the viewer
+  // holds no draft.
+  const reveal = useRevealFailure(deckId)
 
   const detailQuery = useQuery({
     queryKey: ['pptx-maker', 'deck', deckId],
@@ -189,7 +193,7 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
         {isLocal && detail.dirPath && (
           <button
             type="button"
-            onClick={() => { void revealOrOpen(detail.dirPath, 'reveal') }}
+            onClick={() => { void revealOrOpen(detail.dirPath, 'reveal', reveal) }}
             className="inline-flex items-center gap-1 text-[12px] text-muted px-2 py-1 rounded hover:bg-bg-elevated hover:text-text transition-colors bg-transparent border-none cursor-pointer"
           >
             <FolderOpen className="lucide-inline" />
@@ -207,6 +211,11 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
           </a>
         )}
       </div>
+      {reveal.error && (
+        <div className="px-3 py-2 border-b border-border shrink-0">
+          <ErrorNotice variant="inline" className="whitespace-normal" message={reveal.error} askAgent onDismiss={reveal.clear} testId="deck-viewer-reveal-error" />
+        </div>
+      )}
       <div className="flex-1 min-w-0 overflow-y-auto p-5">
         {activeTab === 'slides' && (
           <SlidesTab detail={detail} defs={defsQuery.data ?? null} />

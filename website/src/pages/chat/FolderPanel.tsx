@@ -3,7 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
-import { revealOrOpen, useRevealLabel } from '../../components/FilePathMenu'
+import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useBranding } from '../../hooks/useBranding'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
@@ -255,6 +256,9 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // a directory as well as a file — this button reveals `cwd` itself. Shared with
   // every other file-location surface via useRevealLabel.
   const revealLabel = useRevealLabel()
+  // A failed reveal renders above the search box; askAgent on — the only
+  // editable field is a transient search string, not a durable draft.
+  const reveal = useRevealFailure(cwd)
   // `/api/reveal` shells out on the gateway, so revealing `cwd` only makes sense
   // when the browser is on that same machine. A remote/tunneled session would
   // otherwise get a mis-worded "Path copied" alert; hide the button there, the
@@ -282,7 +286,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
           </button>
           {directLocal && (
             <button
-              onClick={() => { void revealOrOpen(cwd, 'reveal') }}
+              onClick={() => { void revealOrOpen(cwd, 'reveal', reveal) }}
               className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
               title={revealLabel}
               aria-label={revealLabel}
@@ -293,6 +297,11 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
         </div>
       }
     >
+      {reveal.error && (
+        <div className="mx-2 mt-1.5">
+          <ErrorNotice variant="inline" className="whitespace-normal" message={reveal.error} askAgent onDismiss={reveal.clear} testId="folder-panel-reveal-error" />
+        </div>
+      )}
       <div className="flex items-center gap-1.5 mx-2 mt-1.5 px-2 h-[28px] shrink-0 rounded-md bg-bg border border-border focus-within:border-accent">
         <Search size={12} className="shrink-0 text-muted" />
         <input

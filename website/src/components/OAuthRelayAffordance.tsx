@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
+import ErrorNotice from './ErrorNotice'
 import { queryClient } from '../api/queryClient'
 import type { McpServer } from '../types'
 import { parseErrorCode } from '../utils/errorReport'
@@ -105,6 +106,10 @@ export default function OAuthRelayAffordance({
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
+  // Client-side validation of the pasted address — a hint about the input, not
+  // the outcome of a request — kept apart from `error` so it never dresses as
+  // one (the errors-use-error-notice rule's inverse violation).
+  const [hint, setHint] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   // Latest onDeadEnd without retriggering the delivery-timeout effect when the
   // host passes a fresh closure each render.
@@ -175,10 +180,11 @@ export default function OAuthRelayAffordance({
     const value = normalizeLoopbackReturnAddress(returnAddress)
     if (!value || busy) return
     if (!isValidLoopbackReturnAddress(value)) {
-      setError(i18nT('pages.connectionsPage.invalid_return_address'))
+      setHint(i18nT('pages.connectionsPage.invalid_return_address'))
       return
     }
     setBusy(true)
+    setHint('')
     setError('')
     try {
       await api.mcpOAuthRelay(serverName, value)
@@ -257,11 +263,19 @@ export default function OAuthRelayAffordance({
               {busy ? strings.relaying : strings.completeConnection}
             </button>
           </div>
-          {error && (
-            <p className="text-[12px] leading-4 text-danger" role="alert">
-              {error}
+          {/* Validation hint: plain text, not an error surface. */}
+          {hint && (
+            <p className="text-[12px] leading-4 text-muted m-0" data-testid="oauth-relay-hint">
+              {hint}
             </p>
           )}
+          {/* No hand-off: the pasted return-address input above is unsaved. */}
+          <ErrorNotice
+            variant="inline"
+            className="text-[12px] whitespace-normal"
+            message={error}
+            testId="oauth-relay-error"
+          />
         </>
       )}
     </div>

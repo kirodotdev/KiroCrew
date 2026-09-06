@@ -28,6 +28,7 @@ import MarkdownRenderer from './MarkdownRenderer'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import { SOURCE_DETAIL_GC_MS, SOURCE_REMOUNT_REVALIDATE_MS } from './PullRequestPanel'
 import { Btn } from './ui'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 
@@ -421,31 +422,35 @@ export default function IssuePanel({
           (see the pull-request panel for the reasoning). */}
       {query.error && !source && errorCode !== 'jira_no_credentials' && (
         <div className="flex-1 flex items-center justify-center px-6">
-          <div role="alert" className="max-w-md flex flex-col items-center">
-            <AlertCircle
-              className={`lucide-inline mb-2 ${queryError.loginCommand ? 'text-warn' : 'text-danger'}`}
-              aria-hidden="true"
-            />
-            <div className="text-[13px] font-medium text-text">
-              {queryError.loginCommand
-                ? i18nT('components.issuePanel.cli_login_required', {
-                    provider: queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab',
-                  })
-                : i18nT('components.issuePanel.could_not_load_this_issue')}
-            </div>
+          <div className="max-w-md w-full flex flex-col items-center">
+            {/* askAgent on: the panel is read-only (no draft), and a provider
+                CLI that is missing, logged out or answering 404 is exactly the
+                kind of failure the agent can diagnose. The login-required
+                branch keeps the command as the remedy text beneath. */}
             {queryError.loginCommand ? (
               <>
-                <div className="text-[12px] text-muted mt-1 text-center">
-                  {i18nT('components.issuePanel.kiro_crew_uses_your_local_provider_cli_to_load_i')}
-                </div>
+                <ErrorNotice
+                  className="w-full"
+                  title={i18nT('components.issuePanel.cli_login_required', {
+                    provider: queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab',
+                  })}
+                  message={i18nT('components.issuePanel.kiro_crew_uses_your_local_provider_cli_to_load_i')}
+                  askAgent
+                  testId="issue-panel-load-error"
+                />
                 <code className="inline-block mt-2 px-2 py-1 rounded bg-bg-hover text-[12px] text-text">
                   {queryError.loginCommand}
                 </code>
               </>
             ) : (
-              <div className="mt-2 w-full max-h-64 overflow-y-auto rounded-md bg-bg-hover/50 border border-border px-3 py-2 text-left text-[12px] text-muted whitespace-pre-wrap break-words font-mono leading-relaxed">
-                {queryError.message}
-              </div>
+              <ErrorNotice
+                className="w-full max-h-64 overflow-y-auto leading-relaxed"
+                messageClassName="font-mono"
+                title={i18nT('components.issuePanel.could_not_load_this_issue')}
+                message={queryError.message}
+                askAgent
+                testId="issue-panel-load-error"
+              />
             )}
             <Btn
               type="button"
@@ -460,12 +465,17 @@ export default function IssuePanel({
 
       {selected?.provider === 'jira' && !query.isLoading && !source && errorCode === 'jira_no_credentials' && (
         <div className="flex-1 flex items-center justify-center px-6">
-          <div className="max-w-md flex flex-col items-center text-center">
-            <ExternalLink className="lucide-inline mb-2 text-muted" aria-hidden="true" />
+          <div className="max-w-md w-full flex flex-col items-center text-center">
             <div className="text-[13px] font-medium text-text">{selected.repo}-{selected.number}</div>
-            <div className="text-[12px] text-muted mt-1">
-              {i18nT('components.issuePanel.jira_no_credentials')}
-            </div>
+            {/* The value is a query error (backend code jira_no_credentials), so
+                it renders as one; the Open-in-Jira link stays as the remedy.
+                askAgent on: configuring Jira credentials is agent-fixable. */}
+            <ErrorNotice
+              className="mt-2 w-full text-left"
+              message={i18nT('components.issuePanel.jira_no_credentials')}
+              askAgent
+              testId="issue-panel-jira-credentials-error"
+            />
             <a
               href={selected.url}
               target="_blank"
@@ -480,9 +490,16 @@ export default function IssuePanel({
       )}
 
       {source && query.error && errorCode !== 'jira_no_credentials' && (
-        <div role="status" className="shrink-0 flex items-center gap-2 px-4 py-1.5 border-b border-border bg-bg-hover/40 text-[11px] text-muted">
-          <AlertCircle className="lucide-inline shrink-0 text-warn" aria-hidden="true" />
-          <span className="min-w-0 truncate">{i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')}</span>
+        <div className="shrink-0 flex items-center gap-2 px-4 py-1.5 border-b border-border bg-bg-hover/40 text-[11px]">
+          {/* A failed background revalidation over a loaded issue: compact,
+              but still the shared notice (askAgent on — read failure). */}
+          <ErrorNotice
+            variant="inline"
+            className="min-w-0 truncate text-[11px]"
+            message={i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')}
+            askAgent
+            testId="issue-panel-refresh-error"
+          />
           {/* The login command is the one actionable fix, so it must survive a narrow
               panel: it sits outside the truncating span and never clips. */}
           {queryError.loginCommand && <code className="shrink-0 text-text" title={queryError.loginCommand}>{queryError.loginCommand}</code>}

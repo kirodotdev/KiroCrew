@@ -5827,7 +5827,8 @@
       "searching_ctrl_enter_held": "검색 중… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "searching_enter_held": "검색 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
       "type_2_chars_to_search_files_ctrl_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
-      "type_2_chars_to_search_files_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다"
+      "type_2_chars_to_search_files_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
+      "search_failed": "파일을 검색할 수 없습니다. 다시 시도하세요."
     },
     "fileRenderers": {
       "download": "다운로드",
@@ -5975,7 +5976,8 @@
       "pin_crew": "{{name}}을(를) 헤더에 고정",
       "unpin_crew": "{{name}} 고정 해제",
       "pinned_no_room": "고정됨, 헤더에 공간 없음",
-      "keep_tab_order_fixed": "탭 순서 고정"
+      "keep_tab_order_fixed": "탭 순서 고정",
+      "instances_load_failed": "원격 크루를 불러올 수 없습니다."
     },
     "instancesViewport": {
       "connecting": "연결 중…",
@@ -6149,7 +6151,8 @@
       "loopback_open_again": "로그인 페이지 다시 열기",
       "loopback_use_code": "대신 코드 사용",
       "loopback_slow_hint": "오래 걸리나요? 로그인 페이지가 이 컴퓨터에 연결되지 않으면 코드로 전환하세요. 어떤 기기에서도 사용할 수 있습니다.",
-      "loopback_fell_back": "로그인 결과가 이 컴퓨터로 직접 돌아오지 못해 대신 코드를 표시합니다."
+      "loopback_fell_back": "로그인 결과가 이 컴퓨터로 직접 돌아오지 못해 대신 코드를 표시합니다.",
+      "cancel_unsettled": "로그인을 취소할 수 없습니다. 로그인이 아직 진행 중이니 같은 항목을 다시 눌러 재시도하세요."
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "에이전트 사양 없음",
@@ -6235,7 +6238,8 @@
       "waiting": "대기 중",
       "we_could_not_check_kiro_cli": "Kiro CLI를 확인할 수 없었습니다.",
       "your_crew_is_almost_ready": "크루가 거의 준비되었습니다.",
-      "your_kiro_cli_is_out_of_date": "Kiro CLI가 오래되었습니다"
+      "your_kiro_cli_is_out_of_date": "Kiro CLI가 오래되었습니다",
+      "attempt_failed_remedy": "위에 표시된 원인(대개 권한 또는 설치 문제)을 해결한 뒤 ‘{{action}}’을(를) 눌러 다시 시도하세요. 계속 실패하면 Kiro CLI를 다시 설치하세요."
     },
     "linkPreview": {
       "copied": "복사됨",
@@ -6249,14 +6253,16 @@
       "disconnect_from": "{{label}} 연결 해제",
       "held_elsewhere": "{{label}}은(는) 다른 세션에서 사용 중입니다.",
       "unavailable": "이 대상은 사용할 수 없습니다.",
-      "unknown_error": "알 수 없는 오류"
+      "unknown_error": "알 수 없는 오류",
+      "targets_load_failed": "이 세션이 연결할 수 있는 채널을 불러올 수 없습니다."
     },
     "logEntry": {
       "cancelled": "취소됨",
       "error": "오류",
       "loading_trace": "트레이스를 불러오는 중…",
       "ok": "정상",
-      "timeout": "시간 초과"
+      "timeout": "시간 초과",
+      "trace_load_failed": "이 실행의 추적 기록을 불러올 수 없습니다."
     },
     "markdownPanel": {
       "add_to_artifact_library": "아티팩트 라이브러리에 추가",
@@ -6332,7 +6338,10 @@
       "toggle_word_wrap": "자동 줄 바꿈 전환",
       "tracking_description": "{{path}} 추적 중",
       "unsaved_changes": "저장하지 않은 변경 사항",
-      "word_wrap": "자동 줄 바꿈"
+      "word_wrap": "자동 줄 바꿈",
+      "knowledge_status_failed": "지식 라이브러리를 확인할 수 없습니다.",
+      "artifact_status_failed": "이 파일이 아티팩트인지 확인할 수 없습니다.",
+      "diff_status_failed": "이 파일의 git 변경 사항을 확인할 수 없습니다."
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_open_in_file_explorer": "클릭하여 찾아보기 / Shift+클릭하여 파일 탐색기에 표시",
@@ -6355,7 +6364,8 @@
       "zoom_in": "확대 (+)",
       "zoom_out": "축소 (-)",
       "click_to_browse_shift_click_to_copy_path": "클릭하여 찾아보기 / Shift+클릭하여 경로 복사",
-      "click_to_open_shift_click_to_copy_path": "클릭하여 열기 / Shift+클릭하여 경로 복사"
+      "click_to_open_shift_click_to_copy_path": "클릭하여 열기 / Shift+클릭하여 경로 복사",
+      "mermaid_render_failed": "이 다이어그램을 렌더링할 수 없습니다. 대신 소스를 표시합니다."
     },
     "markdownToc": {
       "contents": "목차",
@@ -6393,7 +6403,9 @@
       "set_these_in_the_server_config_before_enabling_i": "활성화하기 전에 서버 설정에서 이 값을 지정하세요.",
       "source": "소스",
       "v": "v",
-      "waiting_for_the_install_plan_to_load": "설치 계획이 로드되기를 기다리는 중"
+      "waiting_for_the_install_plan_to_load": "설치 계획이 로드되기를 기다리는 중",
+      "detail_load_failed": "이 서버의 세부 정보를 불러올 수 없습니다.",
+      "search_failed": "레지스트리를 검색할 수 없습니다. 다시 시도하세요."
     },
     "mcpCustomServerModal": {
       "add_custom_server": "사용자 지정 서버 추가",
@@ -7573,7 +7585,9 @@
       "no_project": "이 세션에 설정된 프로젝트 폴더가 없습니다.",
       "refresh": "새로 고침",
       "title": "Git",
-      "uncommitted": "커밋되지 않음 {{count}}개"
+      "uncommitted": "커밋되지 않음 {{count}}개",
+      "status_failed": "리포지토리 상태를 읽을 수 없습니다.",
+      "log_failed": "커밋 로그를 읽을 수 없습니다."
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -7728,6 +7742,10 @@
       "path_copied": "경로 복사됨",
       "reveal_blocked": "이 경로는 보호되어 있어 열 수 없습니다.",
       "reveal_failed": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없습니다."
+    },
+    "pendingQuestionCard": {
+      "answer_failed": "답변을 보낼 수 없습니다. 에이전트가 아직 대기 중이므로 다시 시도하세요.",
+      "dismiss_failed": "이 질문을 닫을 수 없습니다. 다시 시도하세요."
     },
     "sketchDialog": {
       "title": "스케치 패드",

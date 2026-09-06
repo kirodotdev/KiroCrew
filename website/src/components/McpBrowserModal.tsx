@@ -11,9 +11,11 @@
  */
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download, Check, ExternalLink, Loader2, RefreshCw, AlertTriangle, ArrowLeft, KeyRound, Terminal } from 'lucide-react'
+import { Download, Check, ExternalLink, Loader2, RefreshCw, ArrowLeft, KeyRound, Terminal } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
+import ErrorNotice from './ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
 import { DiscoverySearchBar, DiscoveryStates } from './DiscoverySearchBar'
@@ -97,7 +99,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
     inputRef.current?.focus()
   }, [])
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, error: discoverError } = useQuery({
     queryKey: ['mcp-discover', debouncedQuery],
     queryFn: () => api.mcpDiscover(debouncedQuery),
     enabled: open && debouncedQuery.length >= 2,
@@ -224,7 +226,19 @@ export default function McpBrowserModal({ open, onClose }: Props) {
           inputProps={ime.bindComposition()}
         />
 
-        <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="servers" />
+        {/* A failed search used to fall through to "No servers found" — a
+            search that did not run dressed as one that found nothing. */}
+        {discoverError ? (
+          <div className="py-6 px-4">
+            <ErrorNotice
+              message={errMessage(discoverError) || i18nT('components.mcpBrowserModal.search_failed')}
+              askAgent
+              testId="mcp-browser-search-error"
+            />
+          </div>
+        ) : (
+          <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="servers" />
+        )}
 
         {/* Two-pane on md+: results list (left) + detail preview (right).
             Single-pane below md: the list fills the modal; clicking a row
@@ -280,8 +294,15 @@ export default function McpBrowserModal({ open, onClose }: Props) {
                             <span className="truncate">{server.description}</span>
                           )}
                         </div>
+                        {/* askAgent on: the modal holds only a search string. */}
                         {phase?.step === 'error' && (
-                          <p className="mt-1 text-xs text-red-400">{phase.message}</p>
+                          <ErrorNotice
+                            variant="inline"
+                            className="mt-1 whitespace-normal"
+                            message={phase.message}
+                            askAgent
+                            testId={`mcp-browser-row-error-${server.id}`}
+                          />
                         )}
                       </div>
                       <div className="shrink-0 mt-0.5">
@@ -380,11 +401,18 @@ function InstallStatus({
   }
   if (phase?.step === 'conflict') {
     // 409: a different server already uses this name. There is no overwrite
-    // path here — the existing entry is managed from the installed table.
+    // path here — the existing entry is managed from the installed table — so
+    // this is a REJECTED request the user cannot act on in this modal (unlike
+    // SkillBrowserModal's conflict, which offers Overwrite), and it renders as
+    // one. askAgent on: nothing to lose here.
     return (
-      <span className="flex items-center gap-1 text-xs text-amber-400" role="status">
-        <AlertTriangle size={iconSize} aria-hidden="true" /> {i18nT('components.mcpBrowserModal.name_in_use')}
-      </span>
+      <ErrorNotice
+        variant="inline"
+        className="text-xs"
+        message={i18nT('components.mcpBrowserModal.name_in_use')}
+        askAgent
+        testId="mcp-browser-conflict"
+      />
     )
   }
   if (installed) {
@@ -427,7 +455,7 @@ function ServerDetailPanel({
   phase: InstallPhase | undefined
   onInstall: (server: DiscoveredMcpServer) => void
 }) {
-  const { data: detail, isLoading: detailLoading } = useQuery({
+  const { data: detail, isLoading: detailLoading, error: detailError } = useQuery({
     queryKey: ['mcp-discover-detail', server.provider, server.id],
     queryFn: () => api.mcpDiscoverDetail(server.provider, server.id),
     staleTime: 60_000,
@@ -484,15 +512,27 @@ function ServerDetailPanel({
           {phase.requiredEnv.length > 0 ? ', set its environment variables,' : ''} {i18nT('components.mcpBrowserModal.and_enable_it_there_to_start_using_it')}
         </div>
       )}
+      {/* askAgent on for all three: the modal holds only a search string. */}
       {phase?.step === 'error' && (
-        <div className="mb-3 p-2 rounded bg-danger-subtle border border-danger/30 text-xs text-danger">
-          {phase.message}
-        </div>
+        <ErrorNotice className="mb-3 text-xs" message={phase.message} askAgent testId="mcp-browser-detail-error" />
       )}
       {phase?.step === 'conflict' && (
-        <div className="mb-3 p-2 rounded bg-warn-subtle border border-warn/30 text-xs text-[var(--warn)]">
-          {i18nT('components.mcpBrowserModal.a_server_named_already_exists', { name: server.name })}
-        </div>
+        <ErrorNotice
+          className="mb-3 text-xs"
+          message={i18nT('components.mcpBrowserModal.a_server_named_already_exists', { name: server.name })}
+          askAgent
+          testId="mcp-browser-detail-conflict"
+        />
+      )}
+      {/* A failed detail read used to leave Install disabled forever with no
+          message; a disabled button and a broken read looked identical. */}
+      {detailError && (
+        <ErrorNotice
+          className="mb-3 text-xs"
+          message={errMessage(detailError) || i18nT('components.mcpBrowserModal.detail_load_failed')}
+          askAgent
+          testId="mcp-browser-detail-load-error"
+        />
       )}
 
       {detailLoading ? (

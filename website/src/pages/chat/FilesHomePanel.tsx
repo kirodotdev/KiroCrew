@@ -2,7 +2,8 @@ import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { FileText, RotateCw, ExternalLink } from 'lucide-react'
 import { useBranding } from '../../hooks/useBranding'
-import { revealOrOpen, useRevealLabel } from '../../components/FilePathMenu'
+import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import ErrorNotice from '../../components/ErrorNotice'
 import FileBrowserRail, { useTreeState } from './FileBrowserRail'
 
 /** Last path segment, trailing slashes ignored. */
@@ -38,6 +39,9 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
   // Finder" / "Open in File Explorer" / "Show in file manager"), read from the
   // gateway host that `/api/reveal` shells out on — not a static "file manager".
   const revealLabel = useRevealLabel()
+  // A failed reveal (policy-blocked path, no file manager) renders under the
+  // header; askAgent on — the Files panel holds no draft.
+  const reveal = useRevealFailure(projectDir ?? undefined)
   const treeState = useTreeState(projectDir)
   const treeAvailable = treeState === 'ready'
   const refresh = () => {
@@ -64,13 +68,18 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
               </button>
             )}
             {isLocal && (
-              <button onClick={() => { void revealOrOpen(projectDir, 'reveal') }} className={iconBtn} title={revealLabel} aria-label={revealLabel}>
+              <button onClick={() => { void revealOrOpen(projectDir, 'reveal', reveal) }} className={iconBtn} title={revealLabel} aria-label={revealLabel}>
                 <ExternalLink size={14} />
               </button>
             )}
           </>
         )}
       </div>
+      {reveal.error && (
+        <div className="px-3 py-2 border-b border-border">
+          <ErrorNotice variant="inline" className="whitespace-normal" message={reveal.error} askAgent onDismiss={reveal.clear} testId="files-home-reveal-error" />
+        </div>
+      )}
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-2 text-muted px-6 text-center">
           <FileText size={22} className="opacity-40" />

@@ -5,6 +5,7 @@ import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
+import ErrorNotice from './ErrorNotice'
 import { useCanOpenFile, useCopyAck } from './FilePathMenu'
 import { fileDownloadUrl, fileStreamUrl, fileOfficePreviewUrl } from '../utils/fileReadUrl'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -172,7 +173,18 @@ export const JsonViewer = memo(function JsonViewer({ content }: { content: strin
     const preview = content.slice(0, 2000)
     return (
       <div className="h-full overflow-auto p-3 bg-bg-elevated border border-border rounded-md text-sm">
-        <div className="text-danger font-semibold font-mono mb-2">{i18nT('components.fileRenderers.invalid_json')} {parsed.error}</div>
+        {/* askAgent on: the viewer is read-only (no draft), and a file the
+            agent wrote that does not parse is exactly what it can repair. The
+            parser message is the `message` so the raw preview below stays the
+            evidence, not the notice body. */}
+        <ErrorNotice
+          className="mb-2"
+          messageClassName="font-mono"
+          title={i18nT('components.fileRenderers.invalid_json')}
+          message={parsed.error}
+          askAgent
+          testId="json-viewer-error"
+        />
         <div className="text-[11px] text-muted mb-1 font-mono">{content.length > preview.length ? i18nT('components.fileRenderers.showing_raw_content_truncated_count', { count: content.length, shown: preview.length }) : i18nT('components.fileRenderers.showing_raw_content_count', { count: content.length })}</div>
         <pre className="text-[13px] font-mono whitespace-pre-wrap break-all text-text">{preview}{content.length > preview.length ? '\n…' : ''}</pre>
       </div>
@@ -349,7 +361,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string;
   // `open` to a clipboard copy. Shared with the file-path menu (see useCopyAck)
   // so the primary button acknowledges that degrade with the same inline swap
   // instead of reading as a dead click.
-  const { copyStatus, revealOrOpenWithAck } = useCopyAck(filePath)
+  const { copyStatus, revealOrOpenWithAck, revealError, clearRevealError } = useCopyAck(filePath)
   const openLabel = copyStatus === 'copied'
     ? i18nT('components.filePathMenu.path_copied')
     : copyStatus === 'failed'
@@ -365,6 +377,16 @@ function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string;
         >{ext}</span>
       </div>
       <div className="text-sm text-text break-all">{filename}</div>
+      {/* A failed Open (policy-blocked path, backend error) renders here instead
+          of the legacy blocking alert(). askAgent on: the card is read-only. */}
+      <ErrorNotice
+        variant="inline"
+        className="text-left whitespace-normal"
+        message={revealError}
+        askAgent
+        onDismiss={clearRevealError}
+        testId="office-card-open-error"
+      />
       {showBigDownload && !hideHint && (
         <div className="text-xs text-muted">
           {/* The hint is the card's only instruction, so it must name the action

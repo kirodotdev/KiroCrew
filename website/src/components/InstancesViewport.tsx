@@ -43,7 +43,8 @@ import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
-import AskAgentButton from './AskAgentButton'
+import ErrorNotice from './ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 import { reportInstanceFailure } from '../utils/instanceFailureReport'
 import type { ErrorReport } from '../utils/errorReport'
 import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
@@ -770,7 +771,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const panelConnecting =
     (connectMutation.isPending && connectMutation.variables === activeId) ||
     panelState === 'connecting'
-  const panelError = activeInst?.status?.error || activeInst?.status?.diagnosis?.reason || ''
+  // The Retry's own rejection used to reach only `paneLog`: the panel kept
+  // showing the LIST's last status.error (or nothing) while the connect that
+  // just failed said something newer. The mutation's error for THIS crew wins
+  // while it is the latest thing that happened.
+  const connectFailure = connectMutation.isError && connectMutation.variables === activeId
+    ? (errMessage(connectMutation.error) || i18nT('components.instancesViewport.connection_error'))
+    : ''
+  const panelError = connectFailure || activeInst?.status?.error || activeInst?.status?.diagnosis?.reason || ''
 
   return (
     <div
@@ -915,14 +923,31 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                       : i18nT('components.instancesViewport.disconnected')}
               </div>
               {!panelConnecting && activeTimedOut && !panelError && (
-                <div className="text-xs text-muted">
-                  {i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
-                </div>
+                // The watchdog case has no backend error string: the tunnel
+                // claims connected while the pane never loaded. Still a
+                // failure, so it carries the same hand-off as the one below.
+                <ErrorNotice
+                  className="w-full text-left text-xs"
+                  message={i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
+                  report={panelReport ?? undefined}
+                  askAgent={!!panelReport}
+                  onHandoff={() => dispatch(setActiveId(null))}
+                  testId="instances-viewport-timeout-error"
+                />
               )}
               {!panelConnecting && panelError && (
-                <div className="w-full max-h-32 overflow-auto rounded-md border border-border bg-bg-hover px-3 py-2 text-left text-xs text-muted whitespace-pre-wrap break-words">
-                  {panelError}
-                </div>
+                // askAgent on: the panel holds no input (see the hand-off note
+                // below). `report` binds the prompt to THIS crew's journal entry;
+                // `onHandoff` returns to Local because this overlay sits over the
+                // chat the hand-off navigates to.
+                <ErrorNotice
+                  className="w-full max-h-32 overflow-auto text-left text-xs"
+                  message={panelError}
+                  report={panelReport ?? undefined}
+                  askAgent={!!panelReport}
+                  onHandoff={() => dispatch(setActiveId(null))}
+                  testId="instances-viewport-panel-error"
+                />
               )}
               <button
                 type="button"
@@ -932,13 +957,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               >
                 <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> {i18nT('components.instancesViewport.retry')}
               </button>
-              {/* Retry stays primary — a momentary drop is worth one press. This is
-                  the other half: a first connect fails on SSH config, a remote
-                  gateway that is not running, a wrong port or an SSM instance
-                  profile, and none of those change between two presses. Nothing to
-                  stash: the panel holds no input.
+              {/* Retry stays primary — a momentary drop is worth one press. The
+                  agent hand-off (inside the ErrorNotice above) is the other half:
+                  a first connect fails on SSH config, a remote gateway that is
+                  not running, a wrong port or an SSM instance profile, and none
+                  of those change between two presses. Nothing to stash: the
+                  panel holds no input, so askAgent is on.
 
-                  `onHandoff` returns to Local, and without it the hand-off is
+                  Its `onHandoff` returns to Local, and without it the hand-off is
                   INVISIBLE: this panel renders inside the viewport's root overlay
                   (`absolute inset-0 bg-bg`, opaque, over the local pane whenever a
                   remote tab is active), and the hand-off only soft-navigates the
@@ -949,12 +975,6 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                   embedded pane's own switcher, and that iframe is exactly what
                   failed here. Timed AFTER on purpose: leaving the panel on a
                   FAILED staging would clear the error with no chat to show for it. */}
-              {!panelConnecting && panelReport && (
-                <AskAgentButton
-                  report={panelReport}
-                  onHandoff={() => dispatch(setActiveId(null))}
-                />
-              )}
               {/* Same overlay rule as the hand-off above: the link soft-navigates
                   the LOCAL SPA, which is underneath this panel while a remote tab
                   is active, so a click that is going to navigate returns to Local

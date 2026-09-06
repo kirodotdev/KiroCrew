@@ -47,6 +47,9 @@ describe('MermaidBlock click-to-enlarge', () => {
     await waitFor(() => {
       expect(document.querySelector('pre')?.textContent).toContain('graph TD')
     })
+    // The failure is named by the shared notice above the source, not by
+    // painting the source red.
+    expect(screen.getByTestId('mermaid-render-error')).toHaveAttribute('role', 'alert')
     expect(screen.queryByRole('button', { name: /enlarge diagram/i })).toBeNull()
   })
 

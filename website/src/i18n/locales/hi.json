@@ -5922,7 +5922,8 @@
       "searching_ctrl_enter_held": "खोज रहे हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
       "searching_enter_held": "खोज रहे हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
       "type_2_chars_to_search_files_ctrl_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
-      "type_2_chars_to_search_files_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा"
+      "type_2_chars_to_search_files_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
+      "search_failed": "फ़ाइलें खोजी नहीं जा सकीं। कृपया पुनः प्रयास करें।"
     },
     "fileRenderers": {
       "download": "डाउनलोड करें",
@@ -6073,7 +6074,8 @@
       "pin_crew": "{{name}} को हेडर में पिन करें",
       "unpin_crew": "{{name}} को अनपिन करें",
       "pinned_no_room": "पिन किया गया, हेडर में जगह नहीं",
-      "keep_tab_order_fixed": "टैब क्रम स्थिर रखें"
+      "keep_tab_order_fixed": "टैब क्रम स्थिर रखें",
+      "instances_load_failed": "रिमोट क्रू लोड नहीं किए जा सके।"
     },
     "instancesViewport": {
       "connecting": "कनेक्ट हो रहा है…",
@@ -6247,7 +6249,8 @@
       "loopback_open_again": "साइन-इन पेज दोबारा खोलो",
       "loopback_use_code": "इसके बजाय कोड इस्तेमाल करो",
       "loopback_slow_hint": "देर हो रही है? अगर साइन-इन पेज इस कंप्यूटर तक नहीं पहुँच पा रहा, तो कोड पर स्विच करो — यह किसी भी डिवाइस से काम करता है।",
-      "loopback_fell_back": "साइन-इन सीधे इस कंप्यूटर पर वापस नहीं आ सका, इसलिए यहाँ एक कोड है।"
+      "loopback_fell_back": "साइन-इन सीधे इस कंप्यूटर पर वापस नहीं आ सका, इसलिए यहाँ एक कोड है।",
+      "cancel_unsettled": "साइन-इन रद्द नहीं किया जा सका। यह अभी भी चल रहा है — फिर से कोशिश करने के लिए वही विकल्प दोबारा दबाओ।"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "एजेंट स्पेक मौजूद नहीं",
@@ -6333,7 +6336,8 @@
       "waiting": "प्रतीक्षा में",
       "we_could_not_check_kiro_cli": "हम Kiro CLI की जाँच नहीं कर सके।",
       "your_crew_is_almost_ready": "आपका क्रू लगभग तैयार है।",
-      "your_kiro_cli_is_out_of_date": "तुम्हारा Kiro CLI पुराना हो चुका है"
+      "your_kiro_cli_is_out_of_date": "तुम्हारा Kiro CLI पुराना हो चुका है",
+      "attempt_failed_remedy": "ऊपर बताए गए कारण को ठीक करो (अक्सर अनुमति या इंस्टॉल की समस्या), फिर “{{action}}” दबाकर फिर से कोशिश करो। अगर फिर भी विफल हो, तो Kiro CLI दोबारा इंस्टॉल करो।"
     },
     "linkPreview": {
       "copied": "कॉपी हो गया",
@@ -6347,14 +6351,16 @@
       "disconnect_from": "{{label}} से डिस्कनेक्ट करें",
       "held_elsewhere": "{{label}} किसी अन्य सेशन द्वारा उपयोग में है।",
       "unavailable": "यह गंतव्य उपलब्ध नहीं है।",
-      "unknown_error": "अज्ञात त्रुटि"
+      "unknown_error": "अज्ञात त्रुटि",
+      "targets_load_failed": "वे चैनल लोड नहीं किए जा सके जिनसे यह सत्र जुड़ सकता है।"
     },
     "logEntry": {
       "cancelled": "रद्द किया गया",
       "error": "त्रुटि",
       "loading_trace": "ट्रेस लोड हो रहा है…",
       "ok": "OK",
-      "timeout": "समय समाप्त"
+      "timeout": "समय समाप्त",
+      "trace_load_failed": "इस रन का ट्रेस लोड नहीं किया जा सका।"
     },
     "markdownPanel": {
       "add_to_artifact_library": "आर्टिफ़ैक्ट लाइब्रेरी में जोड़ें",
@@ -6430,7 +6436,10 @@
       "toggle_word_wrap": "वर्ड रैप टॉगल करें",
       "tracking_description": "{{path}} को ट्रैक किया जा रहा है",
       "unsaved_changes": "बिना सहेजे बदलाव",
-      "word_wrap": "वर्ड रैप"
+      "word_wrap": "वर्ड रैप",
+      "knowledge_status_failed": "ज्ञान लाइब्रेरी की जाँच नहीं की जा सकी।",
+      "artifact_status_failed": "यह जाँच नहीं की जा सकी कि यह फ़ाइल आर्टिफ़ैक्ट है या नहीं।",
+      "diff_status_failed": "इस फ़ाइल के git परिवर्तनों की जाँच नहीं की जा सकी।"
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_open_in_file_explorer": "ब्राउज़ करने के लिए क्लिक करें / File Explorer में दिखाने के लिए Shift+क्लिक करें",
@@ -6453,7 +6462,8 @@
       "zoom_in": "ज़ूम इन (+)",
       "zoom_out": "ज़ूम आउट (-)",
       "click_to_browse_shift_click_to_copy_path": "ब्राउज़ करने के लिए क्लिक करें / पथ कॉपी करने के लिए Shift+क्लिक करें",
-      "click_to_open_shift_click_to_copy_path": "खोलने के लिए क्लिक करें / पथ कॉपी करने के लिए Shift+क्लिक करें"
+      "click_to_open_shift_click_to_copy_path": "खोलने के लिए क्लिक करें / पथ कॉपी करने के लिए Shift+क्लिक करें",
+      "mermaid_render_failed": "यह आरेख रेंडर नहीं किया जा सका। इसके बजाय स्रोत दिखाया जा रहा है।"
     },
     "markdownToc": {
       "contents": "विषय-सूची",
@@ -6491,7 +6501,9 @@
       "set_these_in_the_server_config_before_enabling_i": "इसे सक्षम करने से पहले इन्हें सर्वर कॉन्फ़िग में सेट करें।",
       "source": "स्रोत",
       "v": "v",
-      "waiting_for_the_install_plan_to_load": "इंस्टॉल प्लान लोड होने की प्रतीक्षा"
+      "waiting_for_the_install_plan_to_load": "इंस्टॉल प्लान लोड होने की प्रतीक्षा",
+      "detail_load_failed": "इस सर्वर का विवरण लोड नहीं किया जा सका।",
+      "search_failed": "रजिस्ट्री में खोज नहीं की जा सकी। कृपया पुनः प्रयास करें।"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "कस्टम सर्वर जोड़ें",
@@ -7678,7 +7690,9 @@
       "no_project": "इस सत्र के लिए कोई प्रोजेक्ट फ़ोल्डर सेट नहीं है।",
       "refresh": "रिफ़्रेश करें",
       "title": "Git",
-      "uncommitted": "{{count}} अनकमिटेड"
+      "uncommitted": "{{count}} अनकमिटेड",
+      "status_failed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी।",
+      "log_failed": "कमिट लॉग पढ़ा नहीं जा सका।"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -7834,6 +7848,10 @@
       "path_copied": "पथ कॉपी किया गया",
       "reveal_blocked": "यह पथ सुरक्षित है और इसे खोला नहीं जा सकता।",
       "reveal_failed": "{{productName}} चलाने वाली मशीन पर यह पथ नहीं खोला जा सका।"
+    },
+    "pendingQuestionCard": {
+      "answer_failed": "तुम्हारा उत्तर भेजा नहीं जा सका। एजेंट अभी भी प्रतीक्षा कर रहा है, इसलिए फिर से कोशिश करो।",
+      "dismiss_failed": "यह प्रश्न खारिज नहीं किया जा सका। कृपया पुनः प्रयास करें।"
     },
     "sketchDialog": {
       "title": "स्केच पैड",

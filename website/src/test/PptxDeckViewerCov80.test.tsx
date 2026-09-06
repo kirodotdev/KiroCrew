@@ -211,12 +211,18 @@ describe('DeckViewer — header actions', () => {
     expect(revealPath).toHaveBeenCalledWith('/zzq/decks/one', 'reveal')
   })
 
-  it('swallows a failed reveal rather than throwing into the render', async () => {
+  it('reports a failed reveal in place rather than throwing into the render', async () => {
     revealPath.mockRejectedValue(new Error('zzq-no-file-manager'))
     deck.mockResolvedValue(detail({ dirPath: '/zzq/decks/one' }))
     renderViewer()
     await userEvent.click(await screen.findByText('Reveal folder'))
     await waitFor(() => expect(revealPath).toHaveBeenCalled())
+    // The failure is named by the shared ErrorNotice under the header row (the
+    // shared helper's neutral wording, never the raw server string); the
+    // button stays for a retry.
+    const notice = await screen.findByTestId('deck-viewer-reveal-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).not.toHaveTextContent('zzq-no-file-manager')
     expect(screen.getByText('Reveal folder')).toBeInTheDocument()
   })
 
