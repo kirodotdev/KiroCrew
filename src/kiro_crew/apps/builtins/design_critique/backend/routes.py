@@ -330,6 +330,16 @@ def _served_signature(build_dir: Path) -> _ServedToken | None:
     symlinked directory nor a symlinked file as one, and skips dot-entries, so none
     of those is ever reachable over the preview server — and none is signed here.
 
+    Matching that test needs ``is_link_or_junction``, not ``os.path.islink``. Node's
+    Dirent reports a Windows junction as a symbolic link and therefore serves nothing
+    behind it, while ``os.path.islink`` calls the same junction a plain directory —
+    so the bare check descended into it and signed bytes the server will not serve.
+    Nothing outside ``build_dir`` is disclosed by that (the token is a digest, and it
+    is never served), but it is exactly the "false mismatches and needless
+    re-captures" this paragraph rules out, it lets an unserved tree raise
+    ``newest_mtime_ns`` for the mid-capture check, and its files count against
+    ``_SIGNATURE_MAX_FILES``.
+
     Returns ``None`` whenever the served set cannot be read in full: missing,
     unreadable, or larger than ``_SIGNATURE_MAX_FILES``. A caller MUST treat ``None``
     as "unknown" rather than "unchanged" and refuse reuse — a token over part of a
@@ -353,7 +363,8 @@ def _served_signature(build_dir: Path) -> _ServedToken | None:
             dirs[:] = sorted(
                 d
                 for d in dirs
-                if not d.startswith(".") and not os.path.islink(os.path.join(root, d))
+                if not d.startswith(".")
+                and not platform_compat.is_link_or_junction(os.path.join(root, d))
             )
             # Each directory's own mtime feeds ``newest_mtime_ns`` but NOT the digest.
             # It has to feed the former because a DELETION leaves no file behind to
@@ -366,7 +377,7 @@ def _served_signature(build_dir: Path) -> _ServedToken | None:
             rel_root = os.path.relpath(root, build_dir)
             for name in sorted(files):
                 path = os.path.join(root, name)
-                if name.startswith(".") or os.path.islink(path):
+                if name.startswith(".") or platform_compat.is_link_or_junction(path):
                     continue
                 seen += 1
                 if seen > _SIGNATURE_MAX_FILES:
