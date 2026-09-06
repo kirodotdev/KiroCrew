@@ -6491,6 +6491,9 @@
       "zoom_out": "জুম আউট (-)",
       "click_to_browse_shift_click_to_copy_path": "ব্রাউজ করতে ক্লিক করুন / পাথ কপি করতে Shift+ক্লিক করুন",
       "click_to_open_shift_click_to_copy_path": "খুলতে ক্লিক করুন / পাথ কপি করতে Shift+ক্লিক করুন",
+      "copy_diagram_source": "ডায়াগ্রামের সোর্স কপি করুন",
+      "diagram_source": "ডায়াগ্রামের সোর্স",
+      "copy_failed": "কপি ব্যর্থ",
       "mermaid_render_failed": "এই ডায়াগ্রামটি রেন্ডার করা যায়নি। এর পরিবর্তে সোর্স দেখানো হচ্ছে।"
     },
     "markdownToc": {

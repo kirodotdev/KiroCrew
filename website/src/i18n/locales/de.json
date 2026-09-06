@@ -6491,6 +6491,9 @@
       "zoom_out": "Verkleinern (-)",
       "click_to_browse_shift_click_to_copy_path": "Klicken zum Durchsuchen / Shift+Klick zum Kopieren des Pfads",
       "click_to_open_shift_click_to_copy_path": "Klicken zum Öffnen / Shift+Klick zum Kopieren des Pfads",
+      "copy_diagram_source": "Diagrammquelltext kopieren",
+      "diagram_source": "Diagrammquelltext",
+      "copy_failed": "Kopieren fehlgeschlagen",
       "mermaid_render_failed": "Dieses Diagramm konnte nicht gerendert werden. Stattdessen wird der Quelltext angezeigt."
     },
     "markdownToc": {

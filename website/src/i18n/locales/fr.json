@@ -6590,6 +6590,9 @@
       "zoom_out": "Zoom arrière (-)",
       "click_to_browse_shift_click_to_copy_path": "Cliquer pour parcourir / Shift+clic pour copier le chemin",
       "click_to_open_shift_click_to_copy_path": "Cliquer pour ouvrir / Shift+clic pour copier le chemin",
+      "copy_diagram_source": "Copier la source du diagramme",
+      "diagram_source": "Source du diagramme",
+      "copy_failed": "Échec de la copie",
       "mermaid_render_failed": "Impossible d’afficher ce diagramme. La source est affichée à la place."
     },
     "markdownToc": {

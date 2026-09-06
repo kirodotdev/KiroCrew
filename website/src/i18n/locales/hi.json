@@ -6491,6 +6491,9 @@
       "zoom_out": "ज़ूम आउट (-)",
       "click_to_browse_shift_click_to_copy_path": "ब्राउज़ करने के लिए क्लिक करें / पथ कॉपी करने के लिए Shift+क्लिक करें",
       "click_to_open_shift_click_to_copy_path": "खोलने के लिए क्लिक करें / पथ कॉपी करने के लिए Shift+क्लिक करें",
+      "copy_diagram_source": "आरेख स्रोत कॉपी करें",
+      "diagram_source": "आरेख स्रोत",
+      "copy_failed": "कॉपी विफल",
       "mermaid_render_failed": "यह आरेख रेंडर नहीं किया जा सका। इसके बजाय स्रोत दिखाया जा रहा है।"
     },
     "markdownToc": {

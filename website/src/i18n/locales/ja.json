@@ -6392,6 +6392,9 @@
       "zoom_out": "ズームアウト (-)",
       "click_to_browse_shift_click_to_copy_path": "クリックして参照 / Shift+クリックでパスをコピー",
       "click_to_open_shift_click_to_copy_path": "クリックして開く / Shift+クリックでパスをコピー",
+      "copy_diagram_source": "図のソースをコピー",
+      "diagram_source": "図のソース",
+      "copy_failed": "コピーできませんでした",
       "mermaid_render_failed": "この図を描画できませんでした。代わりにソースを表示します。"
     },
     "markdownToc": {

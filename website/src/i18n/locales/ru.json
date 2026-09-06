@@ -6689,6 +6689,9 @@
       "zoom_out": "Уменьшить (-)",
       "click_to_browse_shift_click_to_copy_path": "Щелчок — просмотреть / Shift+щелчок — скопировать путь",
       "click_to_open_shift_click_to_copy_path": "Щелчок — открыть / Shift+щелчок — скопировать путь",
+      "copy_diagram_source": "Копировать исходный код диаграммы",
+      "diagram_source": "Исходный код диаграммы",
+      "copy_failed": "Не удалось скопировать",
       "mermaid_render_failed": "Не удалось отобразить эту диаграмму. Вместо неё показан исходный код."
     },
     "markdownToc": {

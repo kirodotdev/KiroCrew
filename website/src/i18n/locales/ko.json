@@ -6392,6 +6392,9 @@
       "zoom_out": "축소 (-)",
       "click_to_browse_shift_click_to_copy_path": "클릭하여 찾아보기 / Shift+클릭하여 경로 복사",
       "click_to_open_shift_click_to_copy_path": "클릭하여 열기 / Shift+클릭하여 경로 복사",
+      "copy_diagram_source": "다이어그램 소스 복사",
+      "diagram_source": "다이어그램 소스",
+      "copy_failed": "복사 실패",
       "mermaid_render_failed": "이 다이어그램을 렌더링할 수 없습니다. 대신 소스를 표시합니다."
     },
     "markdownToc": {

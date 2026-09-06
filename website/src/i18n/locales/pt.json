@@ -6590,6 +6590,9 @@
       "zoom_out": "Reduzir (-)",
       "click_to_browse_shift_click_to_copy_path": "Clique para navegar / Shift+clique para copiar o caminho",
       "click_to_open_shift_click_to_copy_path": "Clique para abrir / Shift+clique para copiar o caminho",
+      "copy_diagram_source": "Copiar o código-fonte do diagrama",
+      "diagram_source": "Código-fonte do diagrama",
+      "copy_failed": "Falha ao copiar",
       "mermaid_render_failed": "Não foi possível renderizar este diagrama. Exibindo o código-fonte."
     },
     "markdownToc": {

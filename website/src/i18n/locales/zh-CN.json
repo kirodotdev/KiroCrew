@@ -6392,6 +6392,9 @@
       "zoom_out": "缩小（-）",
       "click_to_browse_shift_click_to_copy_path": "点击浏览 / Shift+点击复制路径",
       "click_to_open_shift_click_to_copy_path": "点击打开 / Shift+点击复制路径",
+      "copy_diagram_source": "复制图表源代码",
+      "diagram_source": "图表源代码",
+      "copy_failed": "复制失败",
       "mermaid_render_failed": "无法渲染此图表。改为显示源代码。"
     },
     "markdownToc": {

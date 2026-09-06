@@ -2095,6 +2095,9 @@
       "zoom_out": "Zoom out (-)",
       "click_to_open_shift_click_to_copy_path": "Click to open / Shift+click to copy path",
       "click_to_browse_shift_click_to_copy_path": "Click to browse / Shift+click to copy path",
+      "copy_diagram_source": "Copy diagram source",
+      "diagram_source": "Diagram source",
+      "copy_failed": "Copy failed",
       "mermaid_render_failed": "Couldn’t render this diagram. Showing the source instead."
     },
     "mcpAppFrame": {

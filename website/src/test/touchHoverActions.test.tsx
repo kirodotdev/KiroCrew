@@ -124,34 +124,37 @@ describe('DiffBlock header actions on touch devices', () => {
   })
 })
 
-describe('MarkdownRenderer diagram enlarge button on touch devices', () => {
-  // This surface is a SINGLE absolutely-positioned button, not a row:
-  // `[&_button]` cannot match it (the element IS the button, not an ancestor)
-  // and `flex-wrap` is meaningless, so the padding must land on the button
-  // itself. The svg sizing still matches, since the icon is a descendant.
-  const renderEnlarge = async () => {
+describe('MarkdownRenderer diagram action row on touch devices', () => {
+  // This surface WAS a single absolutely-positioned button and is now a ROW of
+  // them, so the touch escape hatch moved from the single-button shape to the
+  // row shape. `touchActions.ts` documents that split: only the row form grows a
+  // CLUSTER's targets (`[&_button]:p-3`) and lets it wrap, and the single-button
+  // form cannot match descendants at all. The contract is unchanged -- actions
+  // visible without hover, targets at the 40px floor -- and is now enforced one
+  // element further out.
+  const renderRow = async () => {
     render(<MarkdownRenderer content={'```mermaid\ngraph TD;A-->B\n```'} />)
-    return await waitFor(() =>
+    const btn = await waitFor(() =>
       screen.getByRole('button', { name: /enlarge diagram/i }),
     )
+    return btn.parentElement as HTMLElement
   }
 
-  it('reveals and enlarges the button where the pointer cannot hover', async () => {
-    const btn = await renderEnlarge()
-    const cls = btn.className
+  it('reveals the cluster and grows its targets where the pointer cannot hover', async () => {
+    const cls = (await renderRow()).className
     expect(cls).toContain('[@media(hover:none)]:opacity-100')
-    // Padding applies to the button DIRECTLY — the descendant form would
-    // silently match nothing and leave the target below the 40px floor.
-    expect(cls).toContain('[@media(hover:none)]:p-2.5')
-    expect(cls).not.toContain('[@media(hover:none)]:[&_button]:p-2.5')
-    expect(cls).toContain('[@media(hover:none)]:[&_svg]:h-5')
-    expect(cls).toContain('[@media(hover:none)]:[&_svg]:w-5')
-    expect(cls).not.toContain('flex-wrap')
+    // Padding applies to the row's DESCENDANT buttons — the direct form would
+    // land on the row itself and leave every target below the 40px floor.
+    expect(cls).toContain('[@media(hover:none)]:[&_button]:p-3')
+    expect(cls).not.toContain('[@media(hover:none)]:p-2.5')
+    expect(cls).toContain('[@media(hover:none)]:[&_svg]:h-4')
+    expect(cls).toContain('[@media(hover:none)]:[&_svg]:w-4')
+    // A grown row can exceed a phone's width, so it must wrap rather than clip.
+    expect(cls).toContain('[@media(hover:none)]:flex-wrap')
   })
 
-  it('keeps the button hover-revealed for hover-capable pointers', async () => {
-    const btn = await renderEnlarge()
-    const cls = btn.className
+  it('keeps the cluster hover-revealed for hover-capable pointers', async () => {
+    const cls = (await renderRow()).className
     expect(cls).toContain('opacity-0')
     expect(cls).toContain('group-hover:opacity-100')
     expect(cls).toContain('group-focus-within:opacity-100')
