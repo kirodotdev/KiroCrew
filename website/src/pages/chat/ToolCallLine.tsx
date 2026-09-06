@@ -81,6 +81,21 @@ export function resetOpenedDiffCards(): void {
 const SLIDE_DURATION = 0.22
 const SLIDE_EASE = [0.4, 0, 0.2, 1] as const
 
+// ── Shell elapsed line threshold ──
+// The "Running · Ns" line under a shell pill exists so a reader can tell that a
+// LONG command is still going. Most shell calls (a grep, a git show) return well
+// under a second, and a line under every one of them is noise: the elapsed clock
+// only ticks once a second, so a call that finishes before its first tick reads
+// a meaningless "0s". The line therefore waits until the command has run this
+// many seconds before it appears, and is removed the moment the command ends.
+//
+// This is also what keeps the transcript steady above a bottom-pinned reader: a
+// status line that appears and then collapses moves everything above it by its
+// own height, once per tool boundary. Short calls now add no line and remove
+// none, so that step only ever happens at the end of a command that genuinely
+// ran long — not at every tool boundary of a working turn.
+const SHELL_ACTIVITY_MIN_SECS = 10
+
 // ── Collapsed label clamp ──
 // A tool title is whatever the transport hands us, and for a shell call that is
 // the WHOLE command — an inline heredoc or a chained one-liner is routinely
@@ -290,20 +305,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // Shell commands do not expose a reliable total, so their live indicator is
   // deliberately indeterminate. The existing tool output remains the source
   // of truth; this status only makes an in-flight command visible while its
-  // details panel is collapsed after approval.
-  //
-  // STICKY within the turn: the row APPEARS when the tool starts but does
-  // not collapse when it finishes -- it freezes into the elapsed total and
-  // is reclaimed with the whole turn's collapse. Collapsing per-completion
-  // pulsed ~26px above a bottom-pinned reader at every tool boundary of a
-  // working turn (the tool-rhythm 'bounces in place while I just watch'
-  // report: text streaming was stable, tool execution bounced), because
-  // the closing height ease moves the pinned viewport down and back up
-  // once per tool. Within-turn transcript height is now monotonic here.
-  const shellActivityShownRef = useRef(false)
+  // details panel is collapsed after approval. Whether the line is actually
+  // SHOWN is decided below, once the elapsed clock is known — see
+  // SHELL_ACTIVITY_MIN_SECS.
   const liveShellActivity = isShell && turnRunning && !hasPendingPerm
-  if (liveShellActivity) shellActivityShownRef.current = true
-  const showShellActivity = liveShellActivity || (isShell && shellActivityShownRef.current)
 
   // ── `wait` countdown ──
   // Matched to this pill by tool NAME, not by id: the wait_id is minted inside
@@ -440,6 +445,13 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     [[Math.floor(elapsedSeconds / 60), 'minute'], [elapsedSeconds % 60, 'second']],
     { dropZero: true },
   )
+  // Live only, and only once the command has run long enough to be worth a
+  // line. The clock is anchored to the tool's own start (execution_started_at,
+  // then the log ts), so a row that mounts mid-command — the virtualizer
+  // re-mounting a scrolled-back row, a reload — shows the line at once when
+  // the command is already past the threshold rather than waiting another
+  // ten ticks.
+  const showShellActivity = liveShellActivity && elapsedSeconds >= SHELL_ACTIVITY_MIN_SECS
 
   // Remaining time on the sleeping wait. Ceil so the label reads "1s" for the
   // final fractional second instead of flashing "0s" while the tool is still
@@ -975,7 +987,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         <div className="ml-5 mt-1 text-[12px] leading-5 text-muted" data-testid="shell-activity">
           <span className="sr-only" aria-live="polite">{i18nT('pages.chat.activityViewer.running')}</span>
           <span aria-hidden="true" className="tabular-nums font-mono">
-            {liveShellActivity ? `${i18nT('pages.chat.activityViewer.running')} · ${elapsedLabel}` : elapsedLabel}
+            {i18nT('pages.chat.activityViewer.running')} · {elapsedLabel}
           </span>
         </div>
       </StatusRow>

@@ -26,71 +26,19 @@ import { chromium } from 'playwright'
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveDist } from './lib/serve-dist.mjs'
-import { json, makeFixedApi, handleBootRoute } from './lib/boot-api.mjs'
+import { TOOL_ROW_VIEW as VIEW, makeToolRowScene, openToolRowScene } from './lib/tool-row-scene.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/tool-row-slide'
 const LABEL = process.argv[3] || 'after'
 const SLOT = 'chat-tool-row-slide'
-const PROJECT = '/home/user/workspace/demo-app'
-const VIEW = { width: 1180, height: 720 }
 
 mkdirSync(OUT, { recursive: true })
 
-const now = Math.floor(Date.now() / 1000)
-
-const slots = [{
-  key: SLOT,
-  title: 'Reinstall the toolchain in the container',
-  running: true,
-  last_message: 'The shared node_modules is largely root-owned.',
-  messages: 5,
-  agent: 'kirocrew',
-  memory_mode: 'persistent',
-  project: PROJECT,
-  modified: now,
-  source_links: [],
-  source_links_total: 0,
-}]
-
-/** A tool bubble as the backend persists one: 🔧 + label, id on the meta. */
-const tool = (id, label, purpose, ts) => ({
-  role: 'tool',
-  ts,
-  content: `🔧 ${label}`,
-  meta: { tool_call_id: id, purpose, output: 'done' },
-})
-
 // Scene: a turn already several steps in, with enough scrollback ABOVE it to
-// overflow the viewport. The overflow is essential, not decorative — the defect
-// only exists because the transcript is pinned to its bottom, so a shorter
-// transcript grows downward into empty space and nothing moves at all.
-const filler = [
-  ['Set up the container toolchain for this worktree.', 'Host Node is 16 and the package floor is 22, so every install and test run goes through the container. I will keep the host untouched.'],
-  ['Where do the dependencies come from?', 'The lockfile is identical to a sibling worktree, so the fastest path is reusing its install rather than downloading the tree again.'],
-  ['Try that first then.', 'Attempting a hardlinked copy: same inodes, no extra disk, and it lands in seconds instead of minutes.'],
-].flatMap(([q, a], i) => [
-  { role: 'user', ts: now - 400 + i * 40, content: q },
-  { role: 'assistant', ts: now - 390 + i * 40, content: a },
-])
-
-const detail = {
-  running: true,
-  has_more: false,
-  total: filler.length + 4,
-  queue: [],
-  project: PROJECT,
-  messages: [
-    ...filler,
-    { role: 'user', ts: now - 90, content: 'The worktree needs its own toolchain — set it up and keep me posted.' },
-    tool('tc-a', 'Inspect the sibling worktree', 'Give the worktree a writable hardlinked node_modules', now - 70),
-    {
-      role: 'assistant',
-      ts: now - 55,
-      content: 'The shared `node_modules` in a sibling worktree is largely root-owned, so hardlinking into it is refused. Falling back to a clean install in the container.',
-    },
-    tool('tc-b', 'Reset the install directory', 'Start a clean npm ci in the Node 22 container', now - 30),
-  ],
-}
+// overflow the viewport (lib/tool-row-scene.mjs). The overflow is essential,
+// not decorative — the defect only exists because the transcript is pinned to
+// its bottom, so a shorter transcript grows downward into empty space and
+// nothing moves at all.
 
 async function main() {
   const { srv, base } = await serveDist()
@@ -101,37 +49,7 @@ async function main() {
     recordVideo: { dir: OUT, size: VIEW },
   })
   const page = await context.newPage()
-
-  let wsServer = null
-  await page.routeWebSocket(/\/api\/ws/, ws => { wsServer = ws })
-
-  const fixedApi = makeFixedApi(PROJECT)
-  await page.route('**/api/**', async route => {
-    const path = new URL(route.request().url()).pathname
-    if (path === '/api/chat/slots') return json(route, slots)
-    if (path.startsWith('/api/chat/slots/')) return json(route, detail)
-    return handleBootRoute(route, path, { project: PROJECT, theme: 'light', fixedApi })
-  })
-
-  page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
-  page.on('console', msg => {
-    if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300))
-  })
-
-  await page.addInitScript(([s]) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', 'light')
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot-chat', s)
-  }, [SLOT])
-  await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
-  // The pill's visible text is the agent's PURPOSE, not the raw tool label:
-  // `simplifiedToolNames` defaults on, so waiting on the label would time out.
-  await page.waitForSelector('text=Start a clean npm ci in the Node 22 container', { timeout: 20000 })
-  await page.waitForTimeout(1500)
-  if (!wsServer) throw new Error('websocket route never bound')
-
-  const send = (type, data) => wsServer.send(JSON.stringify({ type, data: { slot: SLOT, ...data } }))
+  const send = await openToolRowScene(page, { base, slotKey: SLOT, scene: makeToolRowScene(SLOT) })
   const shot = async name => {
     await page.screenshot({ path: `${OUT}/${LABEL}-${name}.png` })
     console.log('wrote', `${OUT}/${LABEL}-${name}.png`)
