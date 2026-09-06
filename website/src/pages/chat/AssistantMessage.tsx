@@ -421,7 +421,30 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           {steerAcks.map((a, i) => <SteerAckChip key={i} summary={a} entrance={isStreaming} />)}
         </div>
       )}
-      {!isStreaming && selectionActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
+      {/* Deliberately NOT gated on `isStreaming` (#7819): a reply can take minutes
+          and the wait was dead time. The toolbar is inert until the reader selects
+          something, and what an action receives cannot be invalidated by a
+          mid-stream re-render, because `SelectionToolbar` snapshots it at
+          selection time -- `selectedTextRef`/`selectionRectRef` are written in
+          `checkSelection`, and `handleAction` reads those refs, never a live
+          `window.getSelection()` range.
+          Measured under real token arrival rather than assumed. Settled prose
+          keeps its text in ONE large node, so a selection there holds: the
+          toolbar appears and stays, and Quote returns byte-identical text after
+          seconds of streaming. The still-growing tail is rendered by the glow as
+          one text node PER CHARACTER, recreated per token, so a selection there
+          has no stable anchor -- which is why this reads as "select the prose
+          above the tail", and it is a property of the glow that already ships
+          rather than of this gate. When the browser does drop such a range, the
+          reader loses the highlight and NOT the text or the toolbar: on desktop
+          `selectionchange` is gated to touch (see `SelectionToolbar`), so nothing
+          re-checks the selection and the snapshot stays clickable. On touch that
+          path is live, so a collapse there would dismiss the toolbar after its
+          debounce -- untested here, and worth knowing before relying on it.
+          The three sibling gates below (file chips, turn stats, footer) stay
+          `!isStreaming` -- those are end-of-turn summaries, with no partial form
+          to show. */}
+      {selectionActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
     </div>
     {fileChanges && fileChanges.length > 0 && !isStreaming && (
       /* Pass `onFileOpen` by IDENTITY — a `(p) => onFileOpen(p)` wrapper here is
