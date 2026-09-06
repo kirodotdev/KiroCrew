@@ -13,6 +13,7 @@ import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pas
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import InfoTip from '../../components/InfoTip'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
 // The chat transcript is virtualized, so a row can remount when scrolled away and
 // back; without this guard the entrance would replay every time. Module-level set
@@ -34,9 +35,16 @@ interface UserMessageProps {
   mode?: string
   pinned?: boolean
   onTogglePin?: () => void
+  /** Whether the slot currently has a running turn. Gates the pending-steer
+   *  indicator: the backend settle is best-effort, so a row can be stranded in
+   *  `written` forever, and a perpetual "Steering…" pulse on an idle slot
+   *  (including one re-read from history days later) would assert in-flight
+   *  work that ended (#9037 UX review). Fail-closed: no claim without a
+   *  running turn. */
+  slotRunning?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin, slotRunning }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -88,6 +96,18 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     && steerState !== 'written'
     && steerState !== 'requeued'
     && !(steerOptimistic && !steerState)
+  // The two honest intermediate states get their own MUTED treatment (#8069),
+  // so a steer never looks identical to an ordinary send while unconfirmed.
+  // `pendingSteer` is a steer the backend has not confirmed yet: bytes accepted
+  // (`written`), or the client's own optimistic bubble before any server answer.
+  // `requeuedSteer` is the redirect that failed -- the turn ended without taking
+  // it and the message runs as its own turn. Both are mutually exclusive with
+  // `isSteer` by construction: every state that makes one of these true is
+  // excluded from `isSteer` above, so the accent badge's confirmed-only gating
+  // (#7997) is untouched.
+  const steerMeta = !!(meta && (meta as { steer?: boolean }).steer)
+  const pendingSteer = steerMeta && !!slotRunning && (steerState === 'written' || (steerOptimistic && !steerState))
+  const requeuedSteer = steerMeta && steerState === 'requeued'
   // Fired from an EFFECT rather than a `useState` initializer, because the state
   // this depends on arrives AFTER mount. The optimistic bubble mounts with
   // `{ steer: true, optimistic: true }` and no `steerState`, so `isSteer` is
@@ -283,7 +303,42 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             )}
           </motion.div>
         </>
-      ) : bubble}
+      ) : (
+        <>
+          {/* Honest intermediate states (#8069). Both lines sit where the accent
+              badge would, at a deliberately lower visual weight: muted color, no
+              entrance animation, no accent -- the celebratory treatment stays
+              exclusive to backend-confirmed injection (#7997). Rendering in the
+              badge's slot keeps the pending -> consumed / requeued hand-off a
+              content change in one place rather than a layout jump. */}
+          {pendingSteer && (
+            /* animate-pulse (a simple loading indicator, per the animation
+               conventions) marks it as in-flight; it must NOT touch
+               animatedSteers -- the consumed transition still owns the one-shot
+               entrance. The InfoTip explains the steer vocabulary for
+               first-time users (UX review on #9037): a bare title attribute is
+               hover-only and unreachable on touch or keyboard, so the
+               explainer rides the focusable click-to-open pattern (#3626). */
+            <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-medium text-muted mb-1 pr-1">
+              <span className="inline-flex items-center gap-1 animate-pulse">
+                <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steering')}
+              </span>
+              <InfoTip text={i18nT('pages.chat.userMessage.redirecting_the_running_turn_not_yet_confirmed')} />
+            </div>
+          )}
+          {requeuedSteer && (
+            /* The redirect failed: the turn ended before the steer applied and
+               the message ran as its own turn -- exactly the Queue semantics the
+               user declined, so say it instead of staying silent. Same Target
+               icon as the pending/consumed treatments so all three lifecycle
+               states read as one indicator family (UX review on #9037). */
+            <div className="inline-flex items-center gap-1 text-[12px] leading-5 text-muted mb-1 pr-1">
+              <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.turn_ended_before_this_applied_runs_as_its_own_message')}
+            </div>
+          )}
+          {bubble}
+        </>
+      )}
       {/* Where the pointer cannot hover the footer is always visible and its
           descendant overrides grow every action to a 40px touch target (20px
           icon + 10px padding); hover-capable pointers keep the reveal-on-hover

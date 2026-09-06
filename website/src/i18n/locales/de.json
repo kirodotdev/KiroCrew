@@ -9306,7 +9306,10 @@
         "pin_message": "Nachricht anheften",
         "unpin_message": "Nachricht loslösen",
         "copied": "Kopiert",
-        "copy_failed": "Kopieren fehlgeschlagen"
+        "copy_failed": "Kopieren fehlgeschlagen",
+        "steering": "Wird eingesteuert…",
+        "redirecting_the_running_turn_not_yet_confirmed": "Der laufende Zug wird umgeleitet — noch nicht bestätigt.",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Der Zug endete, bevor dies angewendet wurde — wird als eigene Nachricht ausgeführt."
       },
       "workflowCompletionCard": {
         "hide_result": "Ergebnis ausblenden",

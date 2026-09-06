@@ -9572,7 +9572,10 @@
         "pin_message": "Закрепить сообщение",
         "unpin_message": "Открепить сообщение",
         "copied": "Скопировано",
-        "copy_failed": "Не удалось скопировать"
+        "copy_failed": "Не удалось скопировать",
+        "steering": "Направляется…",
+        "redirecting_the_running_turn_not_yet_confirmed": "Перенаправление выполняющегося хода — ещё не подтверждено.",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Ход завершился до того, как это применилось, — сообщение выполняется отдельно."
       },
       "workflowCompletionCard": {
         "hide_result": "Скрыть результат",

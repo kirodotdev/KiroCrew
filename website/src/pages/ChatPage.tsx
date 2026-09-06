@@ -7926,6 +7926,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               timestampTitle={msgTimeFull}
               renderContent={renderUserContentCb}
               canEdit={!slotRunning && !regenerating && !!activeSlot}
+              slotRunning={slotRunning}
               messageIndex={i}
               messageTs={m.ts || ''}
               onEditResend={handleEditResend}

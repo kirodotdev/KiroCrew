@@ -9306,7 +9306,10 @@
         "pin_message": "বার্তা পিন করুন",
         "unpin_message": "বার্তা আনপিন করুন",
         "copied": "কপি হয়েছে",
-        "copy_failed": "কপি করা যায়নি"
+        "copy_failed": "কপি করা যায়নি",
+        "steering": "স্টিয়ার করা হচ্ছে…",
+        "redirecting_the_running_turn_not_yet_confirmed": "চলমান টার্ন পুনর্নির্দেশ করা হচ্ছে — এখনও নিশ্চিত হয়নি।",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "এটি প্রযোজ্য হওয়ার আগেই টার্ন শেষ হয়ে গেছে — এটি একটি আলাদা বার্তা হিসেবে চলে।"
       },
       "workflowCompletionCard": {
         "hide_result": "ফলাফল লুকাও",

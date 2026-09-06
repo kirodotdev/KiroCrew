@@ -9306,7 +9306,10 @@
         "pin_message": "संदेश पिन करें",
         "unpin_message": "संदेश अनपिन करें",
         "copied": "कॉपी हो गया",
-        "copy_failed": "कॉपी नहीं हो सका"
+        "copy_failed": "कॉपी नहीं हो सका",
+        "steering": "निर्देशित किया जा रहा है…",
+        "redirecting_the_running_turn_not_yet_confirmed": "चल रहे टर्न को पुनर्निर्देशित किया जा रहा है — अभी पुष्टि नहीं हुई है।",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "यह लागू होने से पहले टर्न समाप्त हो गया — यह एक अलग संदेश के रूप में चलता है।"
       },
       "workflowCompletionCard": {
         "hide_result": "परिणाम छिपाएँ",

@@ -9173,7 +9173,10 @@
         "pin_message": "置顶消息",
         "unpin_message": "取消置顶",
         "copied": "已复制",
-        "copy_failed": "复制失败"
+        "copy_failed": "复制失败",
+        "steering": "正在引导…",
+        "redirecting_the_running_turn_not_yet_confirmed": "正在重定向正在运行的这一轮——尚未确认。",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "这一轮在此生效前已结束，此消息作为独立消息运行。"
       },
       "workflowCompletionCard": {
         "hide_result": "隐藏结果",

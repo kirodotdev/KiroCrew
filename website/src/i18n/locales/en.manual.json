@@ -3541,7 +3541,10 @@
       },
       "userMessage": {
         "copied": "Copied",
-        "copy_failed": "Copy failed"
+        "copy_failed": "Copy failed",
+        "redirecting_the_running_turn_not_yet_confirmed": "Redirecting the running turn — not yet confirmed.",
+        "steering": "Steering…",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Turn ended before this applied — runs as its own message."
       },
       "earlierMessagesBar": {
         "load_failed": "Couldn't load earlier messages",

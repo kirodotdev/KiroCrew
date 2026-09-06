@@ -9439,7 +9439,10 @@
         "pin_message": "Fissa messaggio",
         "unpin_message": "Rimuovi fissaggio",
         "copied": "Copiato",
-        "copy_failed": "Copia non riuscita"
+        "copy_failed": "Copia non riuscita",
+        "steering": "Indirizzamento in corso…",
+        "redirecting_the_running_turn_not_yet_confirmed": "Reindirizzamento del turno in corso — non ancora confermato.",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Il turno è terminato prima che questo venisse applicato — viene eseguito come messaggio separato."
       },
       "workflowCompletionCard": {
         "hide_result": "Nascondi il risultato",

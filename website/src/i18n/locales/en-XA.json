@@ -9132,7 +9132,10 @@
         "pin_message": "[Þìñ ɱèşşàğè ··········]",
         "unpin_message": "[Ùñþìñ ɱèşşàğè ············]",
         "copied": "[Çøþìèð ·········]",
-        "copy_failed": "[Çøþý ƒàìĺèð ··········]"
+        "copy_failed": "[Çøþý ƒàìĺèð ··········]",
+        "redirecting_the_running_turn_not_yet_confirmed": "[Ŕèðìŕèçţìñğ ţĥè ŕùññìñğ ţùŕñ — ñøţ ýèţ çøñƒìŕɱèð. ·························]",
+        "steering": "[Şţèèŕìñğ… ··············]",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "[Ţùŕñ èñðèð ƀèƒøŕè ţĥìş àþþĺìèð — ŕùñş àş ìţş øẁñ ɱèşşàğè. ····················]"
       },
       "workflowCompletionCard": {
         "open_in_the_workflows_panel": "[Øþèñ ìñ ţĥè Ẁøŕķƒĺøẁş þàñèĺ ···················]",

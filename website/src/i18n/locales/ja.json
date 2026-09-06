@@ -9173,7 +9173,10 @@
         "pin_message": "メッセージをピン留め",
         "unpin_message": "メッセージのピン留めを解除",
         "copied": "コピーしました",
-        "copy_failed": "コピーできませんでした"
+        "copy_failed": "コピーできませんでした",
+        "steering": "追加しています…",
+        "redirecting_the_running_turn_not_yet_confirmed": "実行中のターンをリダイレクトしています — まだ確認されていません。",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "適用される前にターンが終了したため、別のメッセージとして実行されます。"
       },
       "workflowCompletionCard": {
         "hide_result": "結果を非表示",

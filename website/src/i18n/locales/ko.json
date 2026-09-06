@@ -9173,7 +9173,10 @@
         "pin_message": "Pin message",
         "unpin_message": "Unpin message",
         "copied": "복사되었습니다",
-        "copy_failed": "복사하지 못했습니다"
+        "copy_failed": "복사하지 못했습니다",
+        "steering": "추가하는 중…",
+        "redirecting_the_running_turn_not_yet_confirmed": "실행 중인 턴을 리디렉션하는 중 — 아직 확인되지 않았습니다.",
+        "turn_ended_before_this_applied_runs_as_its_own_message": "적용되기 전에 턴이 종료되어 별도의 메시지로 실행됩니다."
       },
       "workflowCompletionCard": {
         "hide_result": "결과 숨기기",
