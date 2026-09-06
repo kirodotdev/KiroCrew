@@ -175,8 +175,8 @@ const DEV_ONLY_VIEWS = new Set<ViewKind | 'terminal'>(['logs', 'context'])
  *  Terminal is hidden when the feature is disabled server-side, the
  *  diagnostics views (Logs, Context breakdown) are hidden unless Developer
  *  Mode is on, and **Summary is hidden while session summaries are disabled**.
- *  The auto-managed pinned views (Changes / Files / Artifacts) are never listed;
- *  they appear on their own when they have content.
+ *  The permanently pinned views (Changes / Files / Artifacts) are never listed;
+ *  they are always present in the strip.
  *
  *  Summary is gated because the feature is opt-in and its settings toggle ships
  *  separately: advertising the entry while `session_summary.enabled` is false
@@ -416,9 +416,8 @@ export default function SidePanel({
   const summaryEnabled = summaryMeta?.enabled !== false
   // The + menu / empty-state launcher hide Terminal when the feature is
   // disabled server-side and Context breakdown unless Developer Mode is on, and
-  // never list the auto-managed pinned views (Changes / Files / Artifacts) —
-  // those appear on their own when they have content (see the syncPinned
-  // reconcile below).
+  // never list the permanently pinned views (Changes / Files / Artifacts) —
+  // those are always present in the strip (see the syncPinned reconcile below).
   const menuSections = newMenuSections({ devMode, terminalEnabled, summaryEnabled })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu

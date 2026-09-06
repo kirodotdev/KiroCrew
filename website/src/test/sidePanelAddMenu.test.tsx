@@ -82,7 +82,8 @@ describe('side panel + menu (shadcn dropdown)', () => {
     for (const label of ['Pins', 'Issues', 'Subagents', 'Workflows', 'Side Chat', 'Browser']) {
       expect(screen.getByRole('menuitem', { name: label })).toBeTruthy()
     }
-    // Pinned views are auto-managed and must never be offered here.
+    // The permanently pinned views are always in the strip already, so they must
+    // never be offered here.
     expect(screen.queryByRole('menuitem', { name: 'Files' })).toBeNull()
     // Diagnostics are behind Developer Mode, which this harness has off.
     expect(screen.queryByRole('menuitem', { name: 'Logs' })).toBeNull()
