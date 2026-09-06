@@ -543,11 +543,31 @@ def _locate_binary(tree: Path) -> Path | None:
     top-level directory does not need a code change to keep working.
     """
     wanted = binary_name()
+    root = tree.resolve()
+
+    def contained(candidate: Path) -> bool:
+        """True only when *candidate* is a file the extraction itself produced.
+
+        The walk below already refuses a candidate that IS a link, so refusing a
+        link-mediated escape is this function's own intent. But ``rglob``
+        DESCENDS through a directory link, and the executable on the far side is
+        an ordinary file -- ``is_file()`` true, ``is_symlink()`` false -- so it
+        passes that filter while resolving outside the tree. On Windows the link
+        is typically a junction, which ``is_symlink`` does not report at all.
+
+        Resolving is what makes the check hold for both: it follows every
+        reparse point on the way down and answers where the bytes actually live.
+        """
+        try:
+            return candidate.resolve().is_relative_to(root)
+        except OSError:
+            return False
+
     direct = tree / wanted
-    if direct.is_file():
+    if direct.is_file() and contained(direct):
         return direct
     for candidate in sorted(tree.rglob(wanted)):
-        if candidate.is_file() and not candidate.is_symlink():
+        if candidate.is_file() and not candidate.is_symlink() and contained(candidate):
             return candidate
     return None
 

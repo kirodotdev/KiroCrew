@@ -40,6 +40,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew.apps.builtins.papyrus.backend import latex, store, tectonic
 
 
@@ -1063,3 +1064,92 @@ class TestErrorMessagesNeverCarryMirrorCredentials:
         assert audited and all("sup3rsecret" not in a for a in audited), (
             f"credential leaked into the audit record: {audited}"
         )
+
+
+# ── the located binary must come from inside the unpacked tree ──────────────
+
+
+class TestLocateBinaryStaysInsideTheUnpackedTree:
+    """`_locate_binary` may only return a path the extraction itself produced.
+
+    The walk already refuses a candidate that IS a link, so refusing a link-mediated
+    escape is the site's own stated intent. That guard is blind to the escape that
+    costs the most: `rglob` DESCENDS through a directory link, and the executable it
+    finds on the far side is an ordinary file — `is_file()` true, `is_symlink()`
+    false — so it passes the filter unchanged while resolving outside the tree.
+
+    What follows the return is not a read. `_provision_once` hands the path to
+    `_install_binary`, which `shutil.move`s it (so the file leaves its original
+    location), applies `_BINARY_MODE`, and `os.replace`s it onto `binary_path()` —
+    the compiler papyrus then executes. So an escape here promotes an arbitrary
+    local file to an executed binary path.
+
+    Threat model, stated plainly and not inflated: the asset is pinned and fetched
+    over TLS, and neither tar nor zip can create a Windows junction, so the archive
+    cannot plant this. It needs a local writer racing the per-process
+    `.provision.<pid>` unpack directory. This is the containment layer that walk was
+    already reaching for, not a remote-archive escape.
+
+    On Windows the link is a junction (`make_dir_link`), because a *directory*
+    symlink needs a privilege an unelevated shell does not have — so the platform
+    the blind spot lives on is exercised rather than skipped.
+    """
+
+    def test_an_executable_reached_through_a_directory_link_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        tree = tmp_path / "unpacked"
+        tree.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        planted = outside / tectonic.binary_name()
+        planted.write_bytes(_payload())
+        make_dir_link(tree / "vendor", outside)
+
+        # Guard the guard, through an oracle OUTSIDE the module under test: if
+        # `rglob` did not descend, or the descendant were itself a link, this test
+        # would pass for a reason that has nothing to do with the fix.
+        reached = sorted(tree.rglob(tectonic.binary_name()))
+        assert reached, "rglob never descended the link, so nothing was under test"
+        assert reached[0].is_file()
+        assert not reached[0].is_symlink()
+        assert not reached[0].resolve().is_relative_to(tree.resolve())
+
+        assert tectonic._locate_binary(tree) is None
+
+    def test_a_direct_hit_that_resolves_outside_the_tree_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The fast path takes `tree / wanted` on `is_file()` alone — which follows a
+        link — so it never had even the walk's own `is_symlink` filter."""
+        tree = tmp_path / "unpacked"
+        tree.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        planted = outside / tectonic.binary_name()
+        planted.write_bytes(_payload())
+        make_dir_link(tree / tectonic.binary_name(), outside)
+
+        direct = tree / tectonic.binary_name()
+        assert direct.is_file() or direct.is_dir()
+        assert tectonic._locate_binary(tree) is None
+
+    def test_a_real_binary_at_the_top_of_the_tree_is_still_found(
+        self, tmp_path: Path
+    ) -> None:
+        """Positive control: the flat pinned layout must keep resolving."""
+        tree = tmp_path / "unpacked"
+        tree.mkdir()
+        real = tree / tectonic.binary_name()
+        real.write_bytes(_payload())
+        assert tectonic._locate_binary(tree) == real
+
+    def test_a_real_binary_in_a_subdirectory_is_still_found(self, tmp_path: Path) -> None:
+        """Positive control for the walk: a future release adding a top-level
+        directory must keep working, which is the reason the walk exists."""
+        tree = tmp_path / "unpacked"
+        nested = tree / "tectonic-0.1" / "bin"
+        nested.mkdir(parents=True)
+        real = nested / tectonic.binary_name()
+        real.write_bytes(_payload())
+        assert tectonic._locate_binary(tree) == real
