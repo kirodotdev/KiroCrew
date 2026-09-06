@@ -156,6 +156,11 @@ def create_export_zip() -> tuple[bytes, dict]:
                 contents_summary[db_name] = db_buf.tell()
 
         # Directory trees: workspace, plan_memory, skills
+        #
+        # ``mc`` is resolved once so the containment test below compares real
+        # paths: ``$KIROCREW_HOME`` may itself legitimately be a link, and the
+        # test must not reject the whole export because of it.
+        mc_real = mc.resolve()
         dir_counts: dict[str, int] = {}
         for dirname in ("workspace", "plan_memory", "skills"):
             src_dir = mc / dirname
@@ -163,6 +168,20 @@ def create_export_zip() -> tuple[bytes, dict]:
             if src_dir.is_dir():
                 for fpath in src_dir.rglob("*"):
                     if fpath.is_symlink():
+                        continue
+                    # ``rglob`` DESCENDS a directory link, and the file on the far
+                    # side is an ordinary one -- ``is_symlink()`` false -- so the
+                    # skip above never fires for it. The two filters below cannot
+                    # catch it either: both read the LEXICAL path, which runs
+                    # through the link's own name and so looks ordinary. Only the
+                    # RESOLVED path says where the bytes live, and it is what
+                    # decides whether they belong in an archive the user hands on.
+                    # On Windows the link is typically a junction, which
+                    # ``is_symlink`` does not report at all.
+                    try:
+                        if not fpath.resolve().is_relative_to(mc_real):
+                            continue
+                    except OSError:
                         continue
                     rel = fpath.relative_to(mc)
                     if _is_excluded(PurePosixPath(str(rel))):

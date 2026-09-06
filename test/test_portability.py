@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from conftest import requires_o_nofollow
+from conftest import make_dir_link, requires_o_nofollow
 from kiro_crew.jsonl_util import UnreadableRecord
 from kiro_crew.portability import (
     EXPORT_EXCLUDE,
@@ -252,6 +252,60 @@ class TestExport:
         names = zf.namelist()
         assert not any("evil_link" in n for n in names)
         zf.close()
+
+    def test_export_does_not_package_files_reached_through_a_directory_link(
+        self, patched_config_dir, tmp_path
+    ):
+        """`rglob` DESCENDS a directory link, and the file on the far side is real.
+
+        `test_export_skips_symlinks` above covers a link that IS the entry. It does
+        not cover a link crossed on the way DOWN: the executable/document found
+        beyond it answers False to `is_symlink()`, so the skip never fires, and
+        `zf.write` packages bytes from outside the exported tree into an archive
+        the user hands to someone else.
+
+        The two filters below the skip do not catch it either — `_is_excluded` and
+        `is_sensitive_path` both read the LEXICAL path, which runs through the
+        link's own name and therefore looks ordinary.
+
+        Built with `conftest.make_dir_link`, so this is a junction on Windows,
+        where a directory symlink needs SeCreateSymbolicLinkPrivilege — that
+        symlink test skips there, which is exactly why this one must not.
+        """
+        outside = tmp_path / "outside-the-crew-dir"
+        outside.mkdir()
+        (outside / "not-ours.md").write_text("private notes", encoding="utf-8")
+        link = patched_config_dir / "workspace" / "memory" / "linked"
+        make_dir_link(link, outside)
+
+        # Guard the guard, through oracles OUTSIDE the module under test: the walk
+        # must actually reach the far side, and what it reaches must be a real
+        # file rather than a link, or the existing skip would have handled it.
+        reached = [p for p in link.rglob("*") if p.name == "not-ours.md"]
+        assert reached, "rglob never descended the link, so nothing was under test"
+        assert reached[0].is_file() and not reached[0].is_symlink()
+
+        zip_bytes, _ = create_export_zip()
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        names = zf.namelist()
+        zf.close()
+        assert not any("not-ours" in n for n in names), (
+            f"content from outside the crew dir was packaged: {names}"
+        )
+
+    def test_export_still_packages_a_real_nested_workspace_file(
+        self, patched_config_dir
+    ):
+        """Negative control: ordinary nested content must still be exported."""
+        nested = patched_config_dir / "workspace" / "memory" / "deep" / "keep.md"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.write_text("ours", encoding="utf-8")
+
+        zip_bytes, _ = create_export_zip()
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        names = zf.namelist()
+        zf.close()
+        assert any(n.endswith("workspace/memory/deep/keep.md") for n in names), names
 
     def test_export_empty_kirocrew_dir(self, tmp_path):
         mc = tmp_path / "empty_mc"
