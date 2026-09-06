@@ -40,6 +40,7 @@ from kiro_crew.apps.job_sdk import (
     STARTING,
     TERMINAL_STATES,
     CleanupResult,
+    JobCancelled,
     JobError,
     JobHandle,
     JobRun,
@@ -212,6 +213,13 @@ class TestHappyRun:
             # field wearing a new name.
             "interrupted_from",
             "interrupt_cause",
+            # An SDK-minted boolean recording whether the runner reached a
+            # ``handle.checkpoint`` -- an OBSERVED fact, not the runner's return
+            # value. Set by the SDK from the handle at the terminal write, never
+            # supplied by the runner, so like the two above it is a lifecycle fact
+            # and not the result payload this guard blocks. Its arrival is the
+            # deliberate design decision #7804 asked for.
+            "work_observed",
         }
 
 
@@ -294,6 +302,119 @@ class TestCancellation:
         _wait_terminal(sdk, run_id)
         # Popped from _live once terminal, so cancel returns False.
         assert sdk.cancel(run_id) is False
+
+
+# ---------------------------------------------------------------------------
+# 5a. checkpoint - the progress OBSERVATION and the observed-stop cancel (#7804/#7814)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpoint:
+    """The checkpoint channel: one call reports progress AND observes cancel.
+
+    #7804 asked the record to STATE observed progress rather than infer it from
+    the return value; #7814 asked ``cancelled`` to name an observed stop rather
+    than a set flag. Both are answered by ``handle.checkpoint``, and the pairing
+    is the point: a checkpoint that reports progress necessarily observes the
+    cancel signal at the same call, so a progress channel that could not carry
+    cancellation is not representable.
+    """
+
+    def test_checkpoint_records_work_observed_on_done(self, sdk: JobSDK) -> None:
+        """A runner that checkpoints and returns leaves ``work_observed`` True."""
+
+        def runner(h, **kw):
+            h.checkpoint()
+            return {}
+
+        sdk.register("obs", runner)
+        run_id = sdk.start("obs")
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == DONE
+        assert run.work_observed is True
+
+    def test_no_checkpoint_leaves_work_observed_false_but_still_done(self, sdk: JobSDK) -> None:
+        """Absence of a checkpoint is NOT penalised: the run is still ``done``,
+        and the classifier stays the backstop. ``work_observed`` reads False so a
+        consumer can tell "did work, observed" from "may have done work"."""
+
+        sdk.register("silent", lambda h, **kw: {})
+        run_id = sdk.start("silent")
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == DONE
+        assert run.work_observed is False
+
+    def test_checkpoint_raises_and_records_cancelled_as_observed_stop(self, sdk: JobSDK) -> None:
+        """A cancel pending at a checkpoint raises ``JobCancelled``; the run is
+        recorded ``cancelled`` because the stack unwound at the checkpoint -- an
+        observed stop, not the flag alone. Work done BEFORE the cancel is still
+        observed."""
+        started = threading.Event()
+        ran_on = []
+
+        def runner(h, **kw):
+            h.checkpoint()  # progress observed before any cancel
+            started.set()
+            for _ in range(500):
+                # Reaches a checkpoint each iteration; raises once cancel lands.
+                h.checkpoint()
+                ran_on.append(1)
+                time.sleep(0.01)
+
+        sdk.register("stoppable", runner, cancellable=True)
+        run_id = sdk.start("stoppable")
+        assert started.wait(5.0)
+        assert sdk.cancel(run_id) is True
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == CANCELLED
+        # The stop was observed at a checkpoint, so work_observed is True and no
+        # error was recorded (a cancel is an outcome, not a fault).
+        assert run.work_observed is True
+        assert run.error == ""
+
+    def test_checkpoint_after_cancel_does_not_reach_a_false_done(self, sdk: JobSDK) -> None:
+        """The concrete #7814 hazard for in-thread work: a runner that would
+        run on to a ``done`` after a cancel cannot, because the next checkpoint
+        raises before the return."""
+        started = threading.Event()
+        reached_end = threading.Event()
+
+        def runner(h, **kw):
+            started.set()
+            while not h.cancelled.is_set():
+                time.sleep(0.01)
+            # A cancel is now pending. The runner tries to finish anyway; the
+            # checkpoint refuses to let it record success.
+            h.checkpoint()
+            reached_end.set()
+            return {}
+
+        sdk.register("racer", runner, cancellable=True)
+        run_id = sdk.start("racer")
+        assert started.wait(5.0)
+        assert sdk.cancel(run_id) is True
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == CANCELLED
+        assert not reached_end.is_set()
+
+    def test_checkpoint_cancel_check_precedes_progress(self) -> None:
+        """A checkpoint reached in an already-cancelled run credits no progress:
+        the cancel check comes first, so the raise happens before the flag is
+        set. Tested on a bare handle to isolate the ordering."""
+        run = JobRun(run_id="a" * 32, app="x", kind="k", cancellable=True)
+        handle = JobHandle(run)
+        handle.cancelled.set()
+        with pytest.raises(JobCancelled):
+            handle.checkpoint()
+        assert handle.work_observed is False
+
+    def test_jobcancelled_is_not_a_joberror(self) -> None:
+        """A cancel is the runner's cooperative exit, not an SDK refusal, so it
+        must not be caught by handlers that catch ``JobError``; and it is an
+        ``Exception`` not a ``BaseException`` so a runner's own ``except
+        Exception`` cleanup guard still runs."""
+        assert not issubclass(JobCancelled, JobError)
+        assert issubclass(JobCancelled, Exception)
 
 
 # ---------------------------------------------------------------------------
@@ -2052,6 +2173,12 @@ class TestSanitizeInvariant:
             # can reach either, so the one-line backstop still has one input.
             "interrupted_from",
             "interrupt_cause",
+            # A boolean the SDK sets from the handle at the terminal write: the
+            # runner CALLS ``checkpoint`` (a method), it does not SUPPLY this
+            # value. A runner cannot write True here without having reached a
+            # checkpoint, and cannot write a payload through it -- so it stays a
+            # lifecycle fact the one-line backstop need not sanitize.
+            "work_observed",
         }
         fields = set(JobRun.__dataclass_fields__)
         assert fields - sdk_minted == {"error"}

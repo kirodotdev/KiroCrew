@@ -304,6 +304,35 @@ async def test_the_interruption_fields_reach_the_client(
 
 
 @pytest.mark.asyncio
+async def test_work_observed_reaches_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``work_observed`` is served: a client deciding whether a run actually did
+    its work reads the observed fact rather than re-deriving it. An SDK-minted
+    boolean, so it carries none of the sanitizing cost the P2 result channel does.
+    """
+    from kiro_crew.apps.job_sdk import DONE, JobRun
+
+    _setup_guards(tmp_path, monkeypatch)
+    run_id = "7d" * 16
+    sdk.store.write(
+        JobRun(
+            run_id=run_id,
+            app=sdk.app_name,
+            kind="observed",
+            status=DONE,
+            work_observed=True,
+        )
+    )
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"{_base()}/{run_id}")
+        assert resp.status == 200
+        run = (await resp.json())["run"]
+    assert run["work_observed"] is True
+
+
+@pytest.mark.asyncio
 async def test_unknown_kind_error_is_scrubbed_before_it_is_reflected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
 ) -> None:

@@ -9,16 +9,19 @@ kept going, and the UI then reported the task as stopped. See
 
 Five design points are load-bearing rather than incidental.
 
-**P1 records that a run EXISTS and how it ended — nothing it produced.** There
-is no ``params`` a caller passes in, and no ``progress`` or ``result`` a runner
-reports out. A run's record holds its identity, its lifecycle and, if it failed,
-one error string. That is deliberate and is the whole of what the originating
-problem needs: the UI's question is "is my task still running", not "how far
-along is it". The payload channels are structured data that must be sanitized
-before it can be written or served, and P1 has NO consumer that reads them, so
-they were carrying that cost for capability nobody calls. They return in P2,
-designed against a real consumer, as types that are sanitized by construction
-rather than by a rule each writer has to remember.
+**P1 records that a run EXISTS, how it ended, and whether work was OBSERVED --
+nothing it produced.** There is no ``params`` a caller passes in, and no
+``result`` payload a runner reports out. A run's record holds its identity, its
+lifecycle, whether the runner reached a checkpoint, and, if it failed, one error
+string. The checkpoint is a progress OBSERVATION, not a progress PAYLOAD: it
+records the boolean fact "this runner reached a point of work" (see
+``JobHandle.checkpoint``), which is SDK-minted and needs no sanitizing, and it is
+what lets a ``done`` record state something watched rather than inferred. The
+free-form ``result`` and a rich per-checkpoint payload are structured data that
+must be sanitized before it can be written or served, and P1 has NO consumer that
+reads them, so they stay out until P2, designed against a real consumer as types
+that are sanitized by construction rather than by a rule each writer has to
+remember.
 
 **A runner is REGISTERED, not passed per call.** ``register(kind, fn)`` binds a
 kind to the callable that services it, once, at app init. ``start(kind, ...)``
@@ -31,7 +34,13 @@ out whether it ever checks, so cancellability is the app's assertion at
 ``register(..., cancellable=True)`` and defaults to False. A run recorded
 ``cancellable: false`` answers ``cancel()`` with ``False`` rather than
 pretending, and the UI hides the control instead of offering a button that does
-nothing.
+nothing. A runner cooperates in one of two ways: it may poll ``handle.cancelled``
+directly, or it may call ``handle.checkpoint``, which RAISES at a pending cancel
+so the runner unwinds AT that point. The second is the stronger form -- the
+``cancelled`` record then names an observed stop rather than a set flag -- but
+neither can stop work the runner spawned onto a thread the SDK does not own; that
+remaining gap is #7814's execution-ownership half, out of scope here and disclosed
+on the unsettled-future reason string.
 
 **One writer per run file.** There is no lock helper beside ``atomic_write`` and
 concurrent read-modify-write of one document is last-writer-wins, so each run is
@@ -224,6 +233,30 @@ class JobError(RuntimeError):
 
 class UnknownJobKind(JobError):
     """Raised when starting a kind that has no registered runner."""
+
+
+class JobCancelled(Exception):
+    """Raised inside a runner by :meth:`JobHandle.checkpoint` when a cancel was
+    requested, so the runner unwinds AT the checkpoint rather than running on.
+
+    This is the fact that makes ``CANCELLED`` an observed outcome rather than an
+    inference. The old ``CANCELLED`` verdict was chosen from the cancel flag being
+    SET (see the terminal write in ``_execute``): that proves a cancel was
+    REQUESTED, not that the work stopped, so a runner that polled the flag, saw it,
+    and finished anyway was still recorded ``cancelled``. When a runner instead
+    calls ``checkpoint`` and lets this propagate, its stack has unwound to the
+    checkpoint before ``_execute`` records the run -- the record then states a stop
+    the SDK watched happen at a named point in the runner's own body.
+
+    A plain ``Exception`` and NOT a ``JobError``: it is not a refusal by the SDK
+    but the runner's own cooperative exit, and ``_execute`` catches it BEFORE its
+    generic ``except Exception`` so an acknowledged cancel is never miscounted as a
+    failure. It is deliberately NOT a ``BaseException`` subclass like
+    ``asyncio.CancelledError``: a runner is a plain function on a worker thread, so
+    there is no cancellation machinery to cooperate with, and a ``BaseException``
+    would sail through the ``except Exception`` guards a runner's own body may hold
+    around its cleanup.
+    """
 
 
 def _now() -> str:
@@ -529,6 +562,18 @@ class JobRun:
     #: deciding "offer a retry" reads this one and a consumer deciding "warn about
     #: partial work" reads the other.
     interrupt_cause: str = ""
+    #: Whether the runner reached at least one ``handle.checkpoint`` -- an OBSERVED
+    #: fact, not the return-value classifier's inference. This is the record
+    #: STATING that work happened rather than the SDK guessing it from what came
+    #: back: a ``done`` run with this True was watched reaching a point of progress
+    #: in the runner's own body. SDK-minted, never runner-supplied: the runner
+    #: calls ``checkpoint`` (a method) and the SDK sets this bool from the handle
+    #: at the terminal write, so it is not a payload channel the sanitize rule has
+    #: to cover -- the same reason ``interrupted_from`` and ``interrupt_cause`` are
+    #: on the record. Absence does NOT mean no work: a runner may do real work
+    #: without checkpointing, so a False here with ``done`` means "not observed",
+    #: which is why the classifier stays a backstop rather than being deleted.
+    work_observed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -587,15 +632,30 @@ class JobRun:
 
 
 class JobHandle:
-    """What a runner is handed: the cancel signal it must poll.
+    """What a runner is handed: the cancel signal, and the checkpoint call that
+    reports progress and observes that signal in one act.
 
-    ``cancelled`` is a ``threading.Event`` and checking it is the runner's own
-    responsibility — the SDK has no way to interrupt a thread that never looks.
+    ``cancelled`` is a ``threading.Event`` the runner MAY still poll directly --
+    that door stays open for a loop that wants to test-and-continue rather than
+    unwind. The SDK cannot interrupt a thread that never looks, so cancellation
+    remains cooperative either way.
 
-    There is deliberately no ``progress()`` in P1. With no progress channel the
-    worker writes its record exactly ONCE, terminally, so the record has a
-    single writer over its whole life instead of a stream of mid-run mutations
-    each needing the discard check to be right.
+    ``checkpoint`` is the P1 progress channel, and it is deliberately the SAME
+    call that carries cancellation -- the pairing #7804 and #7814 asked to be
+    designed together. A runner that reports it reached a checkpoint necessarily
+    observes the cancel signal AT that checkpoint, because ``checkpoint`` raises
+    ``JobCancelled`` before it returns when a cancel is pending. There is no way
+    to spell "report progress but ignore cancellation": the channel that answers
+    "did work happen" is the channel that answers "should it stop", so a progress
+    report that left cancellation unobservable -- the half-capability the issues
+    warned about -- is not a state this API can represent.
+
+    It writes NOTHING to disk. The observed fact lives on the handle and is read
+    ONCE by ``_execute`` at the terminal write, so the record keeps its single
+    writer over its whole life -- P1's reason for having no mid-run mutation
+    stream, preserved. What changes is that the terminal ``done`` is now backed by
+    an observation (a checkpoint was reached) with the return-value classifier
+    kept as a backstop, rather than resting on the classifier alone.
     """
 
     def __init__(self, run: JobRun) -> None:
@@ -608,6 +668,15 @@ class JobHandle:
         #: unconditionally and cannot tell a first write from a resurrection.
         self.discarded = threading.Event()
         self._run = run
+        #: Whether the runner reached a checkpoint. A plain bool, not a guarded
+        #: field: the ONLY writer is the runner thread (in ``checkpoint``) and the
+        #: ONLY reader is ``_execute`` on that SAME thread after the runner
+        #: returns, so there is no cross-thread read to make consistent and no
+        #: lock to justify. A count and a note rode here in an earlier revision
+        #: "for a future progress surface"; they had no reader, so by P1's own
+        #: doctrine -- a payload stays out until the consumer that reads it exists
+        #: -- they are gone and return in P2 with that consumer.
+        self._reached_checkpoint = False
 
     @property
     def run_id(self) -> str:
@@ -620,6 +689,54 @@ class JobHandle:
     @property
     def status(self) -> str:
         return self._run.status
+
+    def checkpoint(self) -> None:
+        """Report that the runner reached a point of real progress, and stop here
+        if a cancel is pending.
+
+        Call this at each unit of work a runner completes. Two things happen, and
+        they are one act on purpose -- the pairing #7804 and #7814 asked to be
+        designed together:
+
+        * The handle records that a checkpoint was reached -- an OBSERVED fact the
+          terminal write reads, so ``done`` rests on "this runner did work" rather
+          than on the return-value classifier's inference about what it handed
+          back.
+
+        * If a cancel has been requested, this RAISES :class:`JobCancelled`,
+          unwinding the runner at the checkpoint. ``_execute`` catches it and
+          records ``cancelled`` -- an outcome it WATCHED, because the stack is
+          already unwound to this call before the record is written. A runner that
+          reaches its next checkpoint after a cancel therefore cannot run to a
+          false ``done``; the stop is where the runner acknowledged it.
+
+        The cancel check comes FIRST: a checkpoint reached in an already-cancelled
+        run is not progress the record should credit, and testing progress before
+        the signal would let one more unit be counted after the stop was asked
+        for.
+
+        It takes no argument. A progress NOTE (a stage name, a count) is a payload
+        with no P1 consumer -- nothing reads it -- and the same module's doctrine
+        keeps a rich per-checkpoint payload out until P2, where the surface that
+        serves it is designed against a real reader. So P1 reports the one fact it
+        can serve: that a checkpoint happened.
+        """
+        if self.cancelled.is_set():
+            raise JobCancelled(
+                f"job {self._run.kind!r} run {self._run.run_id} was cancelled at a checkpoint"
+            )
+        self._reached_checkpoint = True
+
+    @property
+    def work_observed(self) -> bool:
+        """Whether any checkpoint was reached -- the fact the terminal write reads.
+
+        Absence is NOT evidence of no work: a runner that does real work without
+        calling ``checkpoint`` is legitimate, which is why the return-value
+        classifier stays as a backstop rather than being replaced, and why the
+        served value means "not observed", never "did no work".
+        """
+        return self._reached_checkpoint
 
 
 #: A runner receives its handle and nothing else. P1 has no parameter channel:
@@ -828,9 +945,10 @@ class JobSDK:
         """Write a run's record. The ONLY path that writes one.
 
         Three callers used to write directly -- start, the worker's terminal
-        write, and reconcile (a fourth, progress, is gone with the progress
-        channel) -- and each had to remember the same three rules. Two review
-        rounds found a different one missed each time, so the rules live here
+        write, and reconcile (a fourth, a persisting progress write, never
+        existed; ``handle.checkpoint`` reports progress WITHOUT touching disk, so
+        it adds no writer) -- and each had to remember the same three rules. Two
+        review rounds found a different one missed each time, so the rules live here
         instead:
 
         * the discard check and the write happen under ONE lock acquisition, the
@@ -889,9 +1007,11 @@ class JobSDK:
         """Bind ``kind`` to the callable that services it.
 
         Call from the app's ``on_startup`` hook. ``cancellable=True`` is the
-        app's assertion that ``fn`` polls ``handle.cancelled`` at checkpoints;
-        the SDK cannot verify it, so the consumer's migration checklist has to
-        name those checkpoints.
+        app's assertion that ``fn`` observes cancellation at checkpoints -- by
+        calling ``handle.checkpoint`` (which raises at a pending cancel, the
+        stronger form that makes the ``cancelled`` record an observed stop) or by
+        polling ``handle.cancelled`` directly. The SDK cannot verify it, so the
+        consumer's migration checklist has to name those checkpoints.
 
         A CALLABLE WHOSE INVOCATION DOES NOT RUN ITS BODY IS REFUSED HERE, at
         registration, rather than failing at run time. ``_execute`` calls
@@ -1178,7 +1298,30 @@ class JobSDK:
                         undriven,
                     )
                 else:
+                    # CANCELLED two ways, and both are true here. A runner that
+                    # called ``checkpoint`` after a cancel has already unwound
+                    # through the ``JobCancelled`` handler below, so this branch is
+                    # reached only when the runner RETURNED normally: either it
+                    # never saw a cancel, or it polled ``cancelled`` directly and
+                    # chose to finish its cleanup and return. The flag being set
+                    # here still means a cancel was honoured cooperatively, so
+                    # ``cancelled`` remains the honest label -- the checkpoint path
+                    # is the STRONGER form (an observed stop), not the only one.
                     run.status = CANCELLED if handle.cancelled.is_set() else DONE
+        except JobCancelled:
+            # An OBSERVED stop: the runner called ``checkpoint``, it raised, and
+            # the stack unwound to here -- so the SDK watched the work stop at a
+            # named point in the runner's own body, rather than inferring it from
+            # the flag alone. Caught BEFORE the generic handler so an acknowledged
+            # cancel is never miscounted as a failure. No ``error`` is set: a
+            # cancel is an outcome, not a fault.
+            run.status = CANCELLED
+            logger.info(
+                "App %s job %s (%s) stopped at a checkpoint after a cancel request",
+                self._app_name,
+                run.run_id,
+                run.kind,
+            )
         except Exception as exc:  # noqa: BLE001 - a runner's failure is data, not a crash
             run.status = FAILED
             run.error = _redact(str(exc))[:2000]
@@ -1191,6 +1334,13 @@ class JobSDK:
             )
         finally:
             run.finished_at = _now()
+            # Record the OBSERVED fact, whatever the verdict: a done/failed/
+            # cancelled run all state whether a checkpoint was reached, so a
+            # consumer can tell a run that demonstrably did work from one that may
+            # have done none. Read once, here, from the handle -- the record stays
+            # a single-writer document. Set before ``_write_terminal`` so the one
+            # terminal write carries it.
+            run.work_observed = handle.work_observed
             # The guarded writer owns the discard check, so a cleanup landing
             # mid-write cannot have this record recreated, and a failure comes
             # back as False rather than as an exception that would skip the
