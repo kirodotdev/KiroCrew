@@ -136,6 +136,7 @@ import { getTopBarWidgets } from './apps/topBarWidgets'
 import { getCapsuleSegments } from './apps/capsuleSegments'
 import { FEATURE_REQUEST_PROMPT_FALLBACK } from './prompts/featureRequest'
 import { useKeyboardShortcuts, IS_MAC } from './hooks/useKeyboardShortcuts'
+import { useNavShortcutHint } from './hooks/useNavShortcutHint'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
 import { useAutoConnectInstances } from './hooks/useAutoConnectInstances'
 import { useCommandPalette } from './hooks/useCommandPalette'
@@ -632,6 +633,11 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
   const isMobileRow = useIsMobile()
   const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip } = useNavTip<HTMLDivElement>(collapsed)
+  // Derived from the shortcut registry by route, so a row with a bound panel
+  // chord advertises it and a row without one is untouched. Null when the user
+  // has turned shortcuts off. See useNavShortcutHint for why this resolves per
+  // render rather than being written next to each row.
+  const shortcut = useNavShortcutHint(path)
   const mayLeave = useMayLeaveForNavigation()
   const isCurrentUrl = useIsCurrentUrl()
   const activate = () => {
@@ -672,6 +678,12 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       onBlur={hideTip}
       aria-label={collapsed ? label : undefined}
       aria-pressed={pressed}
+      // The chord declared to assistive tech, in the ARIA grammar rather than the
+      // display glyphs — the same split MoveUndoBar's Undo button already ships.
+      // This is what makes the hint reachable without a pointer: the visible
+      // badge below is hover/focus-revealed decoration and is aria-hidden, so the
+      // attribute is the non-visual route rather than a duplicate of one.
+      aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
     >
       {badge}
       {iconEl}
@@ -691,6 +703,30 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
           {label}
         </span>
       )}
+      {/* Expanded rail: the chord rides the row's existing `group/nav` seam, so it
+          appears on hover AND on keyboard focus-visible rather than on hover alone
+          — the row is already `tabIndex={0}`, and a hover-only hint would be
+          unreachable to a keyboard or touch user, which is the defect class #4120
+          was fixed for and #3626 is still open on. `aria-hidden` because the
+          accessible name must stay the label: the chord is declared exactly once,
+          on `aria-keyshortcuts` above, rather than read out as glyphs. */}
+      {!collapsed && shortcut && (
+        <span
+          aria-hidden="true"
+          // Keycap DATA, not prose. `[data-i18n-opaque]` is the render-time i18n
+          // gate's own marker for exactly this (render-scan.mjs OPAQUE_SELECTOR,
+          // whose comment names "a keycap container span"). It costs nothing
+          // visually and is not currently load-bearing -- the badge is opacity-0
+          // until hover, so the scan does not see it -- but without it the class is
+          // declared nowhere, and whoever makes this visible by default would get a
+          // pseudolocale failure with no clue why.
+          data-i18n-opaque=""
+          data-testid={navId ? `nav-shortcut-${navId}` : undefined}
+          className="shrink-0 text-[11px] leading-none text-muted opacity-0 transition-opacity duration-150 group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100"
+        >
+          {shortcut.chord}
+        </span>
+      )}
       {collapsed && tip && createPortal(
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
@@ -698,6 +734,15 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
         >
           <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 ${active ? 'text-accent is-lit' : ''}`}>{icon}</span>
           {label}
+          {/* Collapsed rail: the row carries no text label, so this flyout IS its
+              hover affordance — and it already opens on focus as well as hover
+              (see onFocus/onBlur above), which is what carries the hint to a
+              keyboard user on this width. */}
+          {shortcut && (
+            <span aria-hidden="true" data-i18n-opaque="" className="shrink-0 text-[11px] leading-none text-muted">
+              {shortcut.chord}
+            </span>
+          )}
         </div>,
         document.body
       )}
@@ -839,6 +884,10 @@ const NC_CLOSE_BACKSTOP_MS = 1000
  */
 function NotificationsBellButton() {
   const navigate = useNavigate()
+  // The Notifications surface is `hiddenFromNav`, so this bell — not a rail row —
+  // is the control Alt+N operates. Resolved through the same route-keyed helper
+  // the rail uses, so the chord has exactly one derivation in the dashboard.
+  const shortcut = useNavShortcutHint('/notifications')
   // Both jumps out of this popover run inside the gate: the bell is reachable
   // from every page, including one holding an unsaved draft, and each handler
   // also CLOSES the popover — so asking around the `navigate` alone would leave
@@ -1025,8 +1074,19 @@ function NotificationsBellButton() {
         ref={bellRef}
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
         onClick={() => { if (phaseRef.current === 'closed') openPanel(); else closePanel() }}
+        // Chord declared to assistive tech ONLY, deliberately not in the tooltip.
+        // The render-time i18n gate scans `TEXT_ATTRS` (render-scan.mjs:293 --
+        // title, aria-label, placeholder, alt, aria-placeholder) for Latin runs
+        // under the en-XA pseudolocale, and its attribute branch (:499) has no
+        // opaque escape: the `[data-i18n-opaque]` / `kbd` exemption applies to
+        // ELEMENTS, so a keycap can be exempted in text but never inside an
+        // attribute value. A chord appended here read as 220 untranslated-attribute
+        // findings. `aria-keyshortcuts` is not in that list and is the standards
+        // declaration anyway, so the non-visual route survives; the VISIBLE hint
+        // stays a rail affordance, where it can be marked opaque.
         title={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}
         aria-label={i18nT('app.notifications')}
+        aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
         aria-haspopup="dialog"
         aria-expanded={open}
       >

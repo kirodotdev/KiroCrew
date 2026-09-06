@@ -750,7 +750,17 @@ export default [
               // Key CAP names and modifier glyphs. These name physical keys, which the
               // catalog's own translator context says are left as printed on the keyboard
               // (see `components.shortcutsModal.k`, `components.commandPalette.tab`).
-              '[⌘⇧⌥⌃]+[A-Za-z0-9]?$', '(?:Ctrl|Cmd|Alt|Win|Opt|Shift|Esc|Tab|Enter|Del)$',
+              //
+              // `Meta` and `Control` are the WAI-ARIA modifier vocabulary, which is what
+              // an `aria-keyshortcuts` value is spelled in — the same kind of machine
+              // grammar as the OS accelerator entry directly above, just parsed by
+              // assistive tech instead of by the OS. They are needed BARE, unlike the
+              // accelerator pattern, because that one requires a `+<key>` suffix and the
+              // ARIA value is assembled a modifier at a time (see
+              // `hooks/useNavShortcutHint.ts`). Anchored to the whole value like every
+              // sibling here, so a sentence merely containing the word "Control" is still
+              // reported — only the bare token is exempt.
+              '[⌘⇧⌥⌃]+[A-Za-z0-9]?$', '(?:Ctrl|Cmd|Alt|Win|Opt|Shift|Esc|Tab|Enter|Del|Meta|Control)$',
               // A TEMPLATE LITERAL is validated one QUASI at a time (the rule reports
               // the whole template if ANY quasi fails), so the fragments BETWEEN
               // interpolations need shapes of their own. `data:${mime};base64,${b64}`
