@@ -12,14 +12,14 @@ Autopilot is not a separate app or page. It is enabled when
 `_ChatSlot.mode == "orchestrator"` and toggled via `PATCH
 /api/chat/slots/{slot}/mode`. The `orchestrated` builtin app no longer exists:
 `apps/manager.py` deletes stale installs of it on startup
-(`_escalated = ["knowledge", "orchestrated", "board"]`, `manager.py:1621`), and
+(the `_escalated` list in `apps/manager.py`'s startup reconcile), and
 the frontend keeps `/orchestrated/:slug?` only as a redirect to `/chat`
-(`website/src/App.tsx:560`, `:2337`).
+(`OrchestratedRedirect` in `website/src/App.tsx`).
 
 **Terminology.** "Autopilot" is the user-facing name (nav, WelcomeView, session
 menu). The slot `mode` value, the config section, and the system-prompt filename
 keep the internal name `orchestrator`, because the mode value is persisted in
-session history metadata (`dashboard/chat_persistence.py:1398`) and renaming it
+session history metadata (`_save_slot_to_history` writes it; `_rehydrate_slot_from_history` reads it back) and renaming it
 would break restored sessions. The prompt states the binding explicitly ("This
 is Autopilot") so the model recognizes user references to *autopilot* /
 *autopilot plan* / *autopilot this*; that line is pinned by
@@ -34,14 +34,33 @@ is Autopilot") so the model recognizes user references to *autopilot* /
 | `dashboard/chat_runner.py` | `_run_chat` (one LLM turn) plus the end-of-turn plan detector that arms the gate |
 | `dashboard/chat_title.py` | `_reset_auto_run_for_new_plan`, `_extract_and_redact_plan_metadata`, `_rephrase_plan_lite` |
 | `dashboard/chat_handlers.py` | `api_chat` typed-`go` / typed-stop detection, post-escalation guidance reset |
-| `dashboard/chat_folders.py` | `api_chat_slot_mode` (`_VALID_MODES = ("", "orchestrator")`) |
+| `dashboard/chat_folders.py` | `api_chat_slot_mode`, whose `_VALID_MODES` also admits `"crew"` — see Slot modes below |
 | `dashboard/state.py` | `_ChatSlot` plan state and the `mode` / `surface` wire fields |
 | `config/prompt-orchestrator.md` | System prompt: plan format, stage execution, delegation, escalation |
 | `slack/gateway.py` | `_subagent_done` orchestration guard: per-task failures, per-stage rounds, escalation text |
 | `session_workspace.py` | `~/.kiro/crew/sessions/<id>/` layout for sub-agent result files |
 | `conductor_skill.py` | Always-on delegation skill (`agent.conductor_skill`, default `false`); independent of Autopilot |
-| `website/src/pages/chat/AssistantMessage.tsx` | `parseOptions` turns `[OPTION: …]` into buttons and sets `isPlan` |
+| `website/src/app-sdk/protocol/options.ts` | `parseOptions` — turns `[OPTION: …]` into buttons and sets `isPlan`. `website/src/pages/chat/AssistantMessage.tsx` is its consumer |
 | `website/src/pages/ChatPage.tsx` | Routes a plan-option click to `api.planAction()` |
+
+## Slot modes
+
+`api_chat_slot_mode`'s `_VALID_MODES` admits three values, and Autopilot owns
+exactly one of them:
+
+| `mode` | Meaning |
+|---|---|
+| `""` | Ordinary chat. No plan machinery. |
+| `"orchestrator"` | Autopilot — everything in this spec. |
+| `"crew"` | Crew Mode, a separate control plane in `crew_chat.py` (durable ingress queue, single-flight decision agent, continuable per-topic sub-sessions). It is not Autopilot and shares none of the plan state below. |
+
+`"crew"` carries a capability gate the other two do not: the switch is refused
+with `crew_unsupported_slot` unless `crew_chat.is_crew_capable_slot_key(slot.key)`
+holds, because the slot name is folded into a directory and some names cannot be
+one (dots-only, a trailing dot, a Win32 reserved device basename). The design of
+record for that mode is
+[`../../request-for-change/rfc-orchestrator-chat-sessions.md`](../../request-for-change/rfc-orchestrator-chat-sessions.md);
+it has no module spec of its own yet.
 
 ## Slot State
 
@@ -91,17 +110,17 @@ nothing has been approved yet.
 
 Plan detection runs only on a **planning turn**:
 `mode == "orchestrator"` AND `not _in_stage_execution`
-(`chat_runner.py:2411`). A stage-execution turn whose output happens to look
+(the `_in_stage_execution` guard in `dashboard/chat_runner.py`). A stage-execution turn whose output happens to look
 plan-shaped must never re-arm or re-count the plan, since that corrupts the
 stage total and produces "Stage N of M" overruns.
 
-On a planning turn, at end of turn (`chat_runner.py:4834` onward):
+On a planning turn, at end of turn (the plan-detector block in `dashboard/chat_runner.py`):
 
 1. `validate_plan_format(text)` checks three things: the `📋 Plan for:` header,
    `Stage N:` lines with strictly sequential numbering, and the `[OPTION: Go |
-   … | Cancel]` footer (`context_management.py:255`).
+   … | Cancel]` footer (`context_management.validate_plan_format`).
 2. No header but `looks_like_plan(text)` matches (at least two
-   `Phase|Step|Stage|Part N:` style lines, `context_management.py:238`):
+   `Phase|Step|Stage|Part N:` style lines, `context_management.looks_like_plan`):
    `_rephrase_plan_lite(..., might_not_be_plan=True)` asks the model to either
    reformat it or answer `NOT_A_PLAN`, in which case nothing is armed.
 3. Header present but invalid: `_rephrase_plan_lite` retries the format once.
@@ -113,7 +132,7 @@ On a planning turn, at end of turn (`chat_runner.py:4834` onward):
    `_extract_and_redact_plan_metadata` fills `_stage_titles` / `_plan_goal` /
    `_stage_descriptions` (credential- and exfiltration-URL-redacted).
 
-`_rephrase_plan_lite` (`chat_title.py:546`) runs on the shared cheap background
+`_rephrase_plan_lite` (`dashboard/chat_title.py`) runs on the shared cheap background
 session rather than the slot's own, releases it in a `finally`, and calls
 `sessions.recycle_background()`: repeated rephrases would otherwise bloat that
 child until a mid-stream recycle killed an in-flight call and blocked every
@@ -123,12 +142,13 @@ chat queued behind it.
 plan emitted before further tool calls is gone by the final segment. A separate
 whole-turn buffer `_orch_plan_buf` is never reset, and if the final-segment path
 did not arm (`_armed_final` false) the gate is armed from that buffer instead
-(`chat_runner.py:4981`). Without it, a model that plans and then keeps working
+(the `_orch_plan_buf` fallback arm in `dashboard/chat_runner.py`). Without it, a model that plans and then keeps working
 appears to skip the gate entirely.
 
 ### Frontend rendering
 
-`parseOptions` (`website/src/pages/chat/AssistantMessage.tsx:49`) takes the
+`parseOptions` (`website/src/app-sdk/protocol/options.ts`, called from
+`AssistantMessage.tsx`) takes the
 **last** `[OPTION(S): …]` marker for the button list, strips **every** marker
 from the displayed text so a stray earlier marker cannot leak as raw syntax, and
 sets `isPlan` when both a plan header and a stage marker are present. Every
@@ -144,7 +164,7 @@ gate is what makes the stop control actually stop the plan.
 ## Stage Gates
 
 `POST /api/chat/slots/{slot}/plan-action` (`api_chat_plan_action`,
-`chat_orchestrator.py:534`) accepts `go`, `go all`, or `cancel`, and requires
+`dashboard/chat_orchestrator.api_chat_plan_action`) accepts `go`, `go all`, or `cancel`, and requires
 `mode == "orchestrator"` (otherwise `400`). Every action is SEL-audited.
 
 - **Go** appends the `Go` label to the transcript and starts
@@ -158,19 +178,19 @@ gate is what makes the stop control actually stop the plan.
   (`{"ok": true, "queued": true}`).
 
 Typing `go` / `go all` in the chat box reaches the same loop through `api_chat`
-(`chat_handlers.py:433`).
+(`dashboard/chat_handlers.api_chat`).
 
 **Widget-origin refusal.** `go`/`go all` is the only privilege escalation
 reachable from chat *text* (it flips the slot into unattended per-stage
 auto-approval), and a `<mcwidget>` iframe can pre-fill the input and socially
 engineer a human keypress. So a turn whose `user_meta["origin"] == "widget"` has
 its `go`/`go all` refused, logged as `auto_run_denied`, and falls through to a
-normal fully-gated turn (`chat_handlers.py:409`). Mode changes and tool
+normal fully-gated turn (the widget-origin refusal in `dashboard/chat_handlers.api_chat`, audited as `go_typed_widget_origin`). Mode changes and tool
 approvals live on separate endpoints an iframe cannot reach.
 
 ## Execution: the stage loop
 
-`_stage_loop` (`chat_orchestrator.py:140`) owns stage boundaries in Python, not
+`_stage_loop` (`dashboard/chat_orchestrator.py`) owns stage boundaries in Python, not
 in the prompt. It creates the tracker if absent (timeout from
 `orchestrator.stage_timeout_seconds`), resumes at `tracker.current_stage` when
 rounds already exist, and for each stage index:
@@ -233,7 +253,7 @@ the rest with its file tools. A result file whose path is sensitive
 
 ## Failure Handling and Escalation
 
-`OrchestrationTracker` (`context_management.py:65`) enforces limits the prompt
+`OrchestrationTracker` (`context_management.py`) enforces limits the prompt
 cannot talk its way past.
 
 | Limit | Value | Scope | Effect |
@@ -243,7 +263,7 @@ cannot talk its way past.
 | `MAX_STAGE_ESCALATIONS` | 2 | per stage | `is_force_failed()` becomes true: must stop and report, no retry |
 
 Sub-agent outcomes feed the tracker from `slack/gateway.py`'s `_subagent_done`
-(`gateway.py:3586`), which resolves the tracker from the parent's **dashboard
+(`_subagent_done` in `slack/gateway.py`), which resolves the tracker from the parent's **dashboard
 slot** rather than the session key, because stage limits belong to the tab the
 run lives in and not to where the conversation started:
 
@@ -261,7 +281,7 @@ run lives in and not to where the conversation started:
 weighs in, increments that stage's escalation count, and resets the stage clock,
 so the budget cannot be refreshed indefinitely. `api_chat` calls it whenever a
 non-stop message arrives while `has_escalated` is true
-(`chat_handlers.py:506`).
+(`tracker.reset_after_guidance()` in `dashboard/chat_handlers.api_chat`).
 
 Escalation is therefore two-tier by construction: tier 1 is prompt text the
 model may ignore, tier 2 is `is_force_failed()` in Python.
@@ -316,12 +336,12 @@ the subagent module: see `subagent.md`.
 
 ## Prompt Selection
 
-`agent._prompt_path(mode="orchestrator")` (`agent.py:567`) resolves the
+`agent._prompt_path(mode="orchestrator")` resolves the
 orchestrator prompt in order: `~/.kiro/crew/prompt-orchestrator.md`, then
 `<project>/agents/prompt-orchestrator.md`, then the bundled
 `src/kiro_crew/config/prompt-orchestrator.md`; it falls back to the normal
 prompt if none exists. `ContextBuilder` passes the slot's mode through on the
-first message of a session (`context.py:1890`, `chat_runner.py:3047`), so
+first message of a session, so
 switching mode takes effect on the next fresh session, and
 `{{MAX_SUBAGENTS}}` in the prompt is substituted with the live resolved
 concurrency cap.
@@ -362,7 +382,7 @@ however long the plan runs.
 - **Plan progress is not persisted.** `_orch_tracker`, `_stage_titles`,
   `_plan_goal`, `_stage_descriptions`, and `_auto_run` are in-memory `_ChatSlot`
   attributes and are absent from both `to_dict()` and the persisted history meta
-  line (only `mode` is written, `chat_persistence.py:1398`), so a gateway
+  line (only `mode` is written, by `_save_slot_to_history`), so a gateway
   restart or crash loses stage position and the plan must be re-approved. The
   `stage_*_result.md` files on disk survive, but nothing reloads them.
 - Mode cannot be switched while the slot is running: `api_chat_slot_mode`

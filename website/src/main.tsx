@@ -99,7 +99,7 @@ if (import.meta.env.DEV) {
   // The finding is not noise — it is the only recurring reminder that suppressing page
   // zoom is an accessibility trade nobody has yet accepted in writing, and "nobody can
   // action it" was wrong: it is a decision, and a decision stays owed.
-  // See the page-zoom section of website/docs/page-layout.md for the policy.
+  // See the page-zoom row in website/docs/page-layout.md for the policy.
   import('react-dom').then(ReactDOM => import('@axe-core/react').then(axe => axe.default(React, ReactDOM, 1000)))
 }
 

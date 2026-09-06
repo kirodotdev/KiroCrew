@@ -6,7 +6,7 @@ scripts — data fixtures, not collected as tests because their filenames carry 
 are added by dropping a file in that directory — this test picks it up
 automatically (the flywheel).
 
-See ``docs/system-specs/modules/workflow-gates.md`` (B9).
+See ``docs/system-specs/modules/workflows.md`` (B9).
 """
 
 from __future__ import annotations

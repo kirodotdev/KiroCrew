@@ -48,17 +48,22 @@ ffmpeg is available — converts it to mp4 and a palette-optimized GIF.
 ```
 python3 <skill-dir>/scripts/record_browser.py \
   --url http://127.0.0.1:5173/settings \
-  --scenario /tmp/demo-scenario.mjs \
+  --scenario $KIROCREW_SCRATCH/demo-scenario.mjs \
   --project /path/to/frontend \
-  --size 1280x800 --name settings-flow --out /tmp/rec
+  --size 1280x800 --name settings-flow --out $KIROCREW_SCRATCH/rec
 ```
+
+Two optional timing flags: `--settle-ms` (default 600) waits after page load
+before the scenario runs, and `--tail-ms` (default 400) waits after the scenario
+before the context closes. Raise `--tail-ms` when the last transition in your
+flow gets cut off at the end of the video.
 
 Last lines of stdout are machine-readable:
 
 ```
-WEBM /tmp/rec/settings-flow.webm
-MP4 /tmp/rec/settings-flow.mp4
-GIF /tmp/rec/settings-flow.gif
+WEBM $KIROCREW_SCRATCH/rec/settings-flow.webm
+MP4 $KIROCREW_SCRATCH/rec/settings-flow.mp4
+GIF $KIROCREW_SCRATCH/rec/settings-flow.gif
 ```
 
 ## Workflow
@@ -99,8 +104,10 @@ GIF /tmp/rec/settings-flow.gif
    and re-record; do not crop or blur the encoded artifact, which leaves the
    data recoverable underneath.
 5. **Deliver**: embed the GIF in chat with `![what it shows](/abs/path.gif)`.
-   If a GIF is too large to embed, trim the scenario or lower the frame rate
-   and re-record rather than shipping a blob no one can open.
+   If a GIF is too large to embed, trim the scenario or record a smaller
+   viewport (`--size`) and re-record rather than shipping a blob no one can
+   open — the GIF encode is fixed at fps=12 and max 800px wide, so there is no
+   frame-rate knob to turn.
    For a PR, follow the repository's own screenshot/media convention when it
    has one — many repos commit PR media on the feature branch under a known
    path so their review lanes and cleanup workflows can see it. Only when a

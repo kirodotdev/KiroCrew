@@ -10,10 +10,23 @@ triggers: update yourself, check for updates, new version, out of date, latest v
 
 Check for available KiroCrew updates, apply them, and optionally set up automatic update checking via cron.
 
-KiroCrew self-updates with `kirocrew update`, which does a `git pull` + rebuild
-+ `pip install` + restart. There is no separate "check" subcommand; a
-non-destructive check means reporting the currently-installed version and
-comparing it against the public repo.
+`kirocrew update` behaves differently on three install layouts, and which one the
+user is on decides everything below:
+
+- **git checkout** — fetch, then `reset --hard` to the upstream tip. Only a
+  fast-forwardable checkout is updated; a DIVERGED checkout (local commits both
+  ahead and behind) is refused, because the reset would discard them.
+- **wheel / cli.sh** — fetch the release feed, compare versions, re-run the
+  installer.
+- **externally managed (desktop app, Docker)** — prints guidance and returns
+  without updating. The desktop app updates itself over its own OTA channel.
+
+There is no separate "check" subcommand.
+
+A policy-defined update provider, when one is configured, owns updating this host:
+it runs before any layout dispatch, the built-in mechanism never runs, and there is
+no fallback — `kirocrew update` exits 1 on provider failure. Report the provider's
+failure; do not try to route around it.
 
 ## Core Concepts
 
@@ -25,10 +38,9 @@ Non-destructive — safe to run anytime. Report the installed version:
 kirocrew --version
 ```
 
-`kirocrew update` itself has no `--check` flag; it applies the update directly
-(see "Applying Updates"). To tell the user whether they are current, compare
-`kirocrew --version` against the latest tag/commit on the public KiroCrew
-repository.
+Then compare it against **that layout's own source of truth**: upstream for a git
+checkout, the release feed for a wheel install, the app's own updater for desktop.
+Comparing against the public repository's tags is right only for a git install.
 
 ### Applying Updates
 
@@ -38,8 +50,18 @@ To apply an available update:
 kirocrew update
 ```
 
-This pulls the latest code, rebuilds, reinstalls, and the gateway must be
-restarted afterward for the new version to take effect.
+The gateway must be restarted afterward for the new version to take effect.
+
+Two more verbs:
+
+```bash
+kirocrew update approve   # approve a pending in-app update armed from the dashboard
+kirocrew update --force   # git installs only
+```
+
+`--force` is the destructive one: on a diverged git checkout it lets the hard reset
+**discard local commits**, recoverable only from `git reflog`. Never run it without
+saying that first.
 
 ### Automatic Update Checking
 
@@ -82,7 +104,11 @@ A notify-only cron must NOT run `kirocrew update` (that applies the update). Use
 compare it against the public repo and tell the user if an update is available.
 Present the schedule to the user for confirmation, always including the timezone: "I'll check for updates on Wednesdays around 2:37pm Pacific (America/Los_Angeles). Sound good?"
 
-For fully automatic updates (apply + restart), use an LLM-mode cron so it can follow the gateway-restart skill for safe restart:
+For fully automatic updates (apply + restart), first check the layout: only a git
+or wheel install has a self-update path to automate. On a desktop install point the
+user at the app's own OTA updater instead of a cron, and on Docker there is no
+self-update at all. Where a cron does fit, use an LLM-mode one so it can follow the
+gateway-restart skill for a safe restart:
 
 ```python
 cron_add(
@@ -93,9 +119,14 @@ cron_add(
 )
 ```
 
+An explicit `kirocrew update` is the supported way a source install updates; a
+boot-time automatic apply is not part of the update architecture, so do not
+reintroduce one by cron on a layout that has no self-update engine.
+
 ### Limitations
 
-- BOTH `kirocrew restart` AND `kirocrew update` are blocked by kiro-cli's security filter when run directly from an agent session (deny patterns match the command string).
+- BOTH `kirocrew restart` AND `kirocrew update` are blocked when run directly from an agent session, by the `self-protection-restart` and `self-protection-update` deny rules.
+- A policy-defined update provider, where configured, owns updating the host and there is no fallback: `kirocrew update` exits 1 if it fails. Report that failure rather than working around it.
 - Because the agent shell cannot run them, an update must be applied either by the user manually, or scheduled server-side (a cron job runs outside the shell-tool filter). After an update, restart via the gateway-restart skill.
 - After an update + restart, the resuming session runs the new code.
 
@@ -104,7 +135,7 @@ cron_add(
 ### User asks "am I up to date?" or "check for updates"
 
 1. Run `kirocrew --version` to show the current version
-2. Compare it against the latest version on the public KiroCrew repository
+2. Compare it against that layout's own source of truth (upstream for a git checkout, the release feed for a wheel install, the app's updater for desktop)
 3. Report findings
 4. If an update is available, offer to apply it and offer to set up automatic updates
 

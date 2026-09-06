@@ -6,7 +6,7 @@ import type { TargetAndTransition } from 'framer-motion'
  * An MCP App tab hosts a null-origin iframe (`sandbox="allow-scripts
  * allow-forms"`, no `allow-same-origin`) with no storage. Unmounting it reloads
  * the app and destroys whatever the user has drawn — there is nothing to restore
- * from. See `src/kiro_crew/docs/dashboard-iframe-hosts.md`.
+ * from. See `docs/architecture/dashboard-iframe-hosts.md`.
  *
  * The panel is normally render-gated on `activityOpen`, so closing it unmounts
  * the whole subtree. While an app tab is live we keep the subtree mounted and

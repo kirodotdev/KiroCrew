@@ -17,7 +17,7 @@
  *  pinch, where zooming a page is a convention this has no business taking away.
  *
  *  For the policy and the accessibility trade behind it, see the page-zoom section of
- *  `website/docs/page-layout.md` — the authoritative copy.
+ *  `website/docs/narrow-viewport.md` — the authoritative copy.
  */
 
 /** Safari's non-standard gesture event. `scale` is the pinch factor since the

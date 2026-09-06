@@ -147,10 +147,9 @@ def test_baseline_ships_every_known_backend():
 
     ``NOT_SHIPPED_SELECTABLE`` is where that reason goes. It is an explicit list
     rather than a relaxed assertion so a plain ``baseline != known`` still fails:
-    an id may sit outside the baseline only by being named there. Codex is the
-    only member — its spawn path is complete, but ``backend_install.py`` has no
-    probe for the adapter, so the switch would render with nothing to say about a
-    session that failed to start.
+    an id may sit outside the baseline only by being named there. It is empty
+    today — every known id is offered, so a switch that renders always has an
+    install probe behind it to explain a session that failed to start.
     """
     baseline: List[str] = sorted(acp_backends.BASELINE_SELECTABLE_BACKENDS)
     assert baseline == sorted(

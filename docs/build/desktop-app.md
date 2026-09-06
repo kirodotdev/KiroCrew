@@ -337,14 +337,14 @@ same way). Key details:
   recognizer and executes the exact packaged decoder before publishing — and
   distinguishes a decoder that fails to AUTHENTICATE, which fails the build, from
   one that authenticates but will not run on the build host, which warns and
-  ships (see [stt-streaming](../system-specs/features/stt-streaming.md)). Model
+  ships (see [stt-streaming](../system-specs/modules/stt-streaming.md)). Model
   weights are deliberately excluded from the installer: the user selects a
   model and clicks **Download now**, with no package manager or separate
   dependency step. Intel macOS is the unsupported recognizer exception.
   Every bundled executable ships **uncompressed** — the Apple notary service
   decompresses archive members and rejects an unsigned executable found inside
   one, which fails the whole macOS release (see
-  [stt-streaming](../system-specs/features/stt-streaming.md) for how the runtime
+  [stt-streaming](../system-specs/modules/stt-streaming.md) for how the runtime
   then authenticates a decoder whose bytes signing rewrote).
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.

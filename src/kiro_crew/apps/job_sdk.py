@@ -5,7 +5,7 @@ watching NOW. The gap it closes is that the product had no server-side
 representation of "a task of mine is running": the fact lived only in the React
 component that started it, so navigating away destroyed the fact while the work
 kept going, and the UI then reported the task as stopped. See
-``docs/system-specs/features/app-sdk-durable-jobs-and-view-state.md``.
+``docs/request-for-change/rfc-app-sdk-durable-jobs-and-view-state.md``.
 
 Five design points are load-bearing rather than incidental.
 

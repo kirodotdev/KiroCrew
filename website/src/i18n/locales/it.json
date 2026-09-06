@@ -9601,7 +9601,6 @@
       "could_not_switch_variant": "Impossibile cambiare versione",
       "could_not_start_a_new_session": "Impossibile avviare una nuova sessione",
       "could_not_start_session_message_restored": "Non è stato possibile avviare una nuova sessione: {{error}}. Il tuo messaggio è stato ripristinato — invialo di nuovo per riprovare.",
-      "dismiss_upload_error": "Ignora l'errore di caricamento",
       "enter_split_view": "Attiva la vista divisa",
       "esc_to_dismiss": "Esc per chiudere",
       "expand_knowledge_context": "Espandi il contesto delle conoscenze",

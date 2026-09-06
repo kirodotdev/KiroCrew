@@ -27,8 +27,8 @@ superseded-by: []
 ## Summary
 
 `agent.provider` is fixed to `acp`, so the agent model always arrives through
-kiro-cli. `AGENTS.md` reinforces this under *Never re-add*: "Kiro Crew is
-KiroACP-only".
+kiro-cli. [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md) reinforces
+this under *Never re-add*: "Kiro Crew is KiroACP-only".
 
 **This RFC recommends lifting that invariant.** Not because it was wrong when
 written — it fell out of de-Amazoning a single-backend internal package, and was

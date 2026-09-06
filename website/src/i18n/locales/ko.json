@@ -9333,7 +9333,6 @@
       "could_not_switch_variant": "버전을 전환할 수 없습니다",
       "could_not_start_a_new_session": "새 세션을 시작할 수 없습니다",
       "could_not_start_session_message_restored": "새 세션을 시작할 수 없습니다: {{error}}. 메시지는 복원되었습니다 — 다시 보내서 재시도하세요.",
-      "dismiss_upload_error": "업로드 오류 닫기",
       "enter_split_view": "분할 보기로 전환",
       "esc_to_dismiss": "Esc로 닫기",
       "expand_knowledge_context": "지식 컨텍스트 펼치기",

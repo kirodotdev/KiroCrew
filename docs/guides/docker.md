@@ -189,13 +189,39 @@ sandbox and writes one of three postures:
 | No backend ❌ | `KIROCREW_ALLOW_UNSANDBOXED=1` | `sandbox_allow_unsandboxed_exec=true` | Allowed — container is the only boundary |
 | No backend ❌ | _(not set)_ | `sandbox=auto` (default) | **Disabled** (fail-closed) |
 
-The startup log always states which posture was chosen:
+The entrypoint states which posture it seeded on the **first** run — the one where
+`config.json` does not yet exist. Each is emitted as one long line; wrapped here to
+read:
 
 ```
-[entrypoint] sandbox probe: namespace backend available → sandbox=auto
-[entrypoint] sandbox probe: no backend (EPERM) → allow_unsandboxed_exec=true (KIROCREW_ALLOW_UNSANDBOXED consent)
-[entrypoint] sandbox probe: no backend (EPERM) → agent exec DISABLED (set KIROCREW_ALLOW_UNSANDBOXED=1 to enable)
+[entrypoint] First run: inner sandbox backend available — seeded
+/home/kirocrew/.kiro/crew/config.json with agent.sandbox=auto so agent
+subprocesses run namespace-isolated from gateway credentials.
 ```
+
+```
+[entrypoint] First run: NO inner sandbox backend under this runtime's seccomp
+policy; KIROCREW_ALLOW_UNSANDBOXED=1 given — seeded
+/home/kirocrew/.kiro/crew/config.json with sandbox=auto +
+sandbox_allow_unsandboxed_exec=true. Agent subprocesses share the container user
+and can read files owned by the gateway.
+```
+
+```
+[entrypoint] First run: NO inner sandbox backend under this runtime's seccomp
+policy. Seeded /home/kirocrew/.kiro/crew/config.json with sandbox=auto: agent
+command execution is DISABLED (fail-closed) until you choose one of: (a) permit
+user namespaces (--security-opt seccomp=<profile permitting unshare/clone>) and
+restart to get the inner sandbox, or (b) restart with -e
+KIROCREW_ALLOW_UNSANDBOXED=1 to explicitly accept unsandboxed agent execution
+(the container is then the only isolation boundary).
+```
+
+A later run does not repeat the seeding line — the config already carries the
+posture. It prints the standing reminder instead, whenever
+`agent.sandbox_allow_unsandboxed_exec` is absent from `config.json`, naming the two
+ways to let agent commands through. See
+[Check the startup log](docker-troubleshooting.md#check-the-startup-log).
 
 ### Option A — Kiro Crew seccomp profile (recommended)
 

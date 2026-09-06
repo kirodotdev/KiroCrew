@@ -14,7 +14,7 @@ scripts so the first-try RATE is a real measurement, not a tautology. A live
 promptfarm/eval that feeds real agent output through this same harness is the
 production form (see VALIDATION.md §4); this test is the deterministic floor.
 
-See ``docs/system-specs/modules/workflow-gates.md`` (G1, G2).
+See ``docs/system-specs/modules/workflows.md`` (G1, G2).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ _EXAMPLES_DIR = (
 )
 
 # First-try valid-script rate target (gate G1 in
-# docs/system-specs/modules/workflow-gates.md). The shipped examples are all
+# docs/system-specs/modules/workflows.md). The shipped examples are all
 # valid; we keep the bar honest at >= 0.80.
 G1_TARGET = 0.80
 

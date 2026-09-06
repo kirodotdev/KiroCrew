@@ -30,7 +30,8 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 # ---------------------------------------------------------------------------
-# Constants — no hardcoded strings/values in business logic (AGENTS.md)
+# Constants — no hardcoded strings/values in business logic
+# (docs/system-specs/common/code-style.md)
 # ---------------------------------------------------------------------------
 
 SEVERITY_CRITICAL = "critical"

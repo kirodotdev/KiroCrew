@@ -1,10 +1,10 @@
 ---
 title: AgentCore Identity and Gateway — Crew agent identity and token vending
-status: draft
+status: in-progress
 author: kyle
 created: 2026-08-27
-last-audited: 2026-08-27
-audited-at: 152c00e99
+last-audited: 2026-09-05
+audited-at: 424efa423
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -40,7 +40,7 @@ This is the **identity and credential** plane. It is not the sandbox /
 execution plane in the sibling AgentCore sandboxes design.
 
 **Implementation plan:**
-[`../superpowers/plans/2026-08-27-agentcore-identity-gateway.md`](../superpowers/plans/2026-08-27-agentcore-identity-gateway.md)
+[`plans/2026-08-27-agentcore-identity-gateway.md`](plans/2026-08-27-agentcore-identity-gateway.md)
 
 ## Motivation
 

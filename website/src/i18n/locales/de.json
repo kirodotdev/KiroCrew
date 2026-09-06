@@ -9467,7 +9467,6 @@
       "could_not_switch_variant": "Versionswechsel fehlgeschlagen",
       "could_not_start_a_new_session": "Neue Sitzung konnte nicht gestartet werden",
       "could_not_start_session_message_restored": "Eine neue Sitzung konnte nicht gestartet werden: {{error}}. Deine Nachricht wurde wiederhergestellt — sende sie erneut, um es noch einmal zu versuchen.",
-      "dismiss_upload_error": "Upload-Fehler schließen",
       "enter_split_view": "Geteilte Ansicht öffnen",
       "esc_to_dismiss": "Esc zum Schließen",
       "expand_knowledge_context": "Wissenskontext ausklappen",

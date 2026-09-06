@@ -129,7 +129,7 @@ render. Anything that is not an answer is treated as an ordinary mid-turn
 message, so you can redirect the agent instead of answering. An unanswered prompt
 is **denied** after five minutes.
 
-## Security model
+## Access control
 
 - **Deny-by-default** — an empty `allowed_emails` list rejects everyone.
   Anyone in an org can message a Webex bot, so add only your own email(s).
@@ -163,7 +163,7 @@ is **denied** after five minutes.
   ceiling and the deny-list all run ahead of auto-approval, so a hard deny still
   wins.
 
-## Configuration reference
+## Settings reference
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -195,6 +195,7 @@ delivered it); a reply refusal with nothing in the log but a
 
 ## Related docs
 
+- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
 - [Slack Integration](slack-integration.md)
 - [Telegram Integration](telegram-integration.md)
 - [WeCom Integration](wecom-integration.md)

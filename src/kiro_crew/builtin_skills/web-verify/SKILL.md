@@ -19,6 +19,10 @@ here is about context cost, not permission.
 
 ## Three ways to capture, and name the one you used
 
+Not a backend here: the **`browser` MCP tool**. It opens public `http(s)` URLs
+only and refuses loopback, which is every URL in this skill — so
+`playwright-cli` is the local-verification path by design, not by preference.
+
 | backend | how | notes |
 |---|---|---|
 | **`playwright-cli`** | `playwright-cli open <url>` then `playwright-cli screenshot`. It prints the path it wrote; read that. The positional argument is an element **ref**, not a path, and `--filename` resolves against the CWD (so it can clobber a repo file and is not auto-approved) -- take the printed path instead of naming the file. | The panel-integrated path: the session is what the dashboard's **Browser** panel shows, so the user watches the verification instead of waiting for a summary. Prefer it when `playwright-cli` is on PATH. |

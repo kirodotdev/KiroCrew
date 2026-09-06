@@ -9601,7 +9601,6 @@
       "could_not_switch_variant": "Impossible de changer de version",
       "could_not_start_a_new_session": "Impossible de démarrer une nouvelle session",
       "could_not_start_session_message_restored": "Impossible de démarrer une nouvelle session : {{error}}. Ton message a été restauré — envoie-le à nouveau pour réessayer.",
-      "dismiss_upload_error": "Ignorer l'erreur d'envoi",
       "enter_split_view": "Passer en vue divisée",
       "esc_to_dismiss": "Esc pour ignorer",
       "expand_knowledge_context": "Développer le contexte de connaissances",

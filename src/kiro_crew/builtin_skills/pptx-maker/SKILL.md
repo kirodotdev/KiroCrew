@@ -58,3 +58,13 @@ hand**: `uv` ships with KiroCrew as a Python dependency, and the engine is
 downloaded over HTTPS at a sha256-pinned version (no `git` required).
 `soffice` (LibreOffice) and `pdftoppm` (poppler) are optional and only improve
 preview fidelity — `.pptx` generation works without them.
+
+The app declares `macos` and `linux` only — it does not install on Windows. The
+deck root is a setting in the app, so ask before assuming where `output.pptx`
+lands.
+
+The agents can also import an existing `.pptx` back to editable JSON
+(`@sdpm/pptx_to_json`), pull in an attachment (`@sdpm/import_attachment`),
+analyse a template (`@sdpm/analyze_template`) and search the asset sources
+(`@sdpm/search_assets`) — so restyling or extending a deck the user already has
+is in scope, not just building a new one.

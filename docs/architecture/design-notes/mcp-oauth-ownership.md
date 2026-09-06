@@ -1,4 +1,4 @@
-# The OAuth ownership problem with kiro-cli as the backend
+# The kiro-cli credential boundary for OAuth MCP servers
 
 ## Use cases
 
@@ -35,58 +35,10 @@ So in practice we live on Path A. The cost: **kiro-cli owns the entire OAuth cha
 
 The ACP-level workarounds we've built (the OAuth banner, dedup, completion patching, role-aware redaction, `chat_message_update`) are all symptoms of the same thing: **we're rendering UI for a flow we don't own.**
 
-## How it would work with the Agent SDK
+## The boundary in one sentence
 
-The Agent SDK takes `mcpServers` as an in-memory dict on every `query()` call:
-
-```python
-options = ClaudeAgentOptions(mcp_servers={
-    "github": {
-        "type": "http",
-        "url": "https://api.githubcopilot.com/mcp/",
-        "headers": {"Authorization": f"Bearer {token}"},
-    }
-})
-```
-
-The SDK doesn't run OAuth, doesn't handle callbacks, doesn't store anything. Whatever bearer we hand it is what it uses.
-
-That inverts the ownership model: **Kiro Crew owns the OAuth chain end-to-end.**
-
-- The dashboard runs the consent flow (open browser, receive callback, exchange code for token).
-- Kiro Crew stores tokens in its own credential store — keychain on macOS, sealed SQLite on Linux, whatever fits the deployment's security posture.
-- Token scoping is up to us: per-user × per-agent × per-server. Two agents in one workspace can hold tokens for two different GitHub accounts.
-- Refresh is a Kiro Crew concern: a background task watches expiry, refreshes, hands the new bearer to the next `query()`.
-- Sign-out is a single dashboard click — delete the row from our store and revoke upstream.
-- Tokens never sit in `agent.json`. The file holds only the **shape** of the MCP server (URL, server-id, scope hints); the bearer is injected at runtime.
-- The dashboard can show "GitHub: connected as octocat, expires in 47 min" because the data lives in Kiro Crew.
-
-## The core problem in one sentence
-
-**With kiro-cli, the entire chain — config → OAuth → token storage → header injection — lives inside the CLI process, and Kiro Crew can only observe it through opaque ACP notifications. With the Agent SDK, that chain is Kiro Crew's code, and we can shape it into whatever the product needs.**
-
----
-
-## Things to tighten before presenting
-
-1. **"An agent could grep and leak the token" understates it.** The instinct is right, but the real risk isn't malicious agents. It's a benign one. A GitHub MCP server with an OAuth token in `agent.json` plus a perfectly reasonable user prompt — "summarize what's in my home directory" — can leak the credential into chat output without anyone misbehaving. Lead with the **prompt-injection / accidental-leak** angle; it's more persuasive because it's harder to mitigate.
-
-2. **The "different accounts per MCP" point isn't in the original write-up but is one of the strongest.** kiro-cli's grant store is process-global — the paired-file cache under `~/.aws/sso/cache/` holds one identity per server per machine, so one GitHub identity per machine. With Kiro Crew owning identity, a workspace running two agents (e.g. `personal-tasks` and `team-tasks`) can hold two different GitHub tokens against the same MCP server. That's a concrete product capability we can't deliver today.
-
-3. **Use a comparison table instead of prose; reviewers process it faster:**
-
-   | Concern | kiro-cli (today) | Agent SDK (proposed) |
-   |---|---|---|
-   | Where does the OAuth token live? | paired `~/.aws/sso/cache/<sha256>.token.json` + `.registration.json` files (values opaque; presence stat-able) | Kiro Crew's credential store |
-   | Who runs the callback server? | kiro-cli, on a port it picks | Kiro Crew, on a port we control |
-   | Can we list authenticated MCP servers? | No | Yes |
-   | Can we refresh proactively? | No | Yes |
-   | Per-agent identities? | No | Yes |
-   | Sign-out per server? | No | Yes |
-   | Plaintext token in `agent.json`? | Yes (Path B fallback) | Never |
-
-4. **Acknowledge the cost.** The pitch is more credible if it admits the trade: we'd be writing ~500 LOC of OAuth (DCR + PKCE + callback + storage + refresh) that today comes for free from kiro-cli. But that cost is **already being paid** — in `_kiro.dev/mcp/*` parsing, banner state machines, redaction carve-outs — and what we get for paying it doesn't include the capabilities owning OAuth would deliver. Net it's a wash on lines, a clear win on capabilities.
-
-5. **"We can't access it" is the thesis — don't bury it.** Open with that sentence: *"We're rendering UI for a flow whose config-reading, browser-driving, callback-handling, token-storage, and refresh logic all live inside another process, and our only API to it is read-only JSON-RPC notifications."* Then use cases, then today's flow, then the SDK alternative.
-
-For an engineering-leadership / CR-description version, the structure I'd use is: **Problem (1 paragraph) → Use cases (concrete) → Today's flow + why it falls short → Proposed flow → Trade-offs table → Migration cost estimate.**
+kiro-cli owns the OAuth chain end to end and Kiro Crew never holds the credential:
+Kiro Crew can observe that a grant exists, by `stat` on the paired token and
+registration artifacts, and nothing more. A design that would move custody into Kiro
+Crew is a proposal, not current behaviour, and is argued in
+[`../../request-for-change/rfc-crew-agent-sdk-boundary.md`](../../request-for-change/rfc-crew-agent-sdk-boundary.md).

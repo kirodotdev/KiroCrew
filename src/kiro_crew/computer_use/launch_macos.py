@@ -477,7 +477,8 @@ def spawn_detached(bundle_path: str) -> None:
     The new process group means a Ctrl-C in a dev terminal does not take the operator's
     application down with the gateway.
 
-    The isolation arguments use the shim form AGENTS.md's cross-platform table
+    The isolation arguments use the shim form
+    docs/system-specs/common/platform-compat.md
     requires — ``start_new_session=IS_POSIX`` plus ``creationflags`` — rather than a
     bare ``start_new_session=True``. This module only runs on macOS, so the two are
     equivalent here; the form is what the table asks for, and writing it the same way

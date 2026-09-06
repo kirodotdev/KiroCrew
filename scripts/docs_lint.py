@@ -3,8 +3,9 @@
 
 Stdlib only, no third-party deps, cross-platform. Run from the repo root::
 
-    python3 scripts/docs_lint.py            # lint
+    python3 scripts/docs_lint.py             # lint
     python3 scripts/docs_lint.py --test      # self-test the checks themselves
+    python3 scripts/docs_lint.py --update-baseline   # prune the fact-check baseline
 
 Exit 0 = clean, exit 1 = findings, exit 2 = usage/environment error.
 
@@ -41,6 +42,50 @@ The sixth check guards the other direction: some documentation filenames are an
 API. ``src/kiro_crew/docs/*.md`` is packaged and read at runtime, and specific
 filenames are hardcoded in Python and TypeScript. Renaming one of those without
 updating its consumers breaks a shipped feature rather than a link.
+
+The fact checks, and why they need a baseline
+--------------------------------------------
+The checks above hold at zero, so they fail outright. A second family asks a
+harder question -- is this sentence still TRUE of the code? -- and the honest
+answer on a repository this size is "mostly, with a recorded backlog":
+
+* ``path-exists`` -- a backticked repo-anchored source path (``src/**.py``,
+  ``scripts/*.py|.sh``, ``website/src/**.ts|.tsx``, ``.github/workflows/*.yml``,
+  ``docs/**/*.md``) must name a file. Unlike the suffix-matched citation check
+  this one is anchored: the path is written from the repo root, so it either
+  resolves or it is wrong.
+* ``line-ref`` -- ``file.py:NNN`` anywhere in prose. The beyond-EOF check catches
+  the citation that has already rotted; this one catches the citation that is
+  ABOUT to, because every line number rots on the next refactor. Cite a symbol.
+* ``fenced-path`` -- the same path question inside fenced blocks, for the two
+  token shapes a reader COPIES rather than reads: a ``docs/task-specs/...md``
+  path and the argument of ``kirocrew run``.
+* ``table-row-merge`` -- two index rows glued onto one physical line. Both links
+  are present, so every link-graph check stays green while the table renders one
+  row short and one file loses its entry entirely.
+* ``code-coupled-completeness`` -- the inverse of ``CODE_COUPLED_DOCS``: a
+  packaged doc named in a string literal under ``website/src`` and absent from
+  that table is an unrecorded coupling, so the pair can be broken silently.
+* ``dead-identifier`` -- a backticked identifier that appears nowhere in the code
+  trees. Report-only unless ``--strict-identifiers``, because the class is
+  genuinely noisy: a doc may name a wire field, a vendor symbol or a deliberately
+  wrong example.
+
+Every fact-check finding is a ``(check-id, path, token)`` triple, and the triples
+already present when the family shipped live in ``.github/docs-lint-baseline.txt``.
+A baselined triple passes; a new one fails. Two operations touch that file and they
+are deliberately different verbs: ``--update-baseline`` intersects and can therefore
+only DELETE lines, and ``--accept-new`` is the one path that adds, which prints every
+triple it records so the exemption lands in a diff a reviewer reads. A MISSING
+baseline is an error, not an empty set -- read as empty, one ``rm`` plus one refresh
+would accept every current violation forever. Same rule, and the same reason, as
+``scripts/check_black_formatting.py``.
+
+A triple that no longer fires is reported but does not fail. That is a concession to
+this repository's doc trees being consolidated by several changes at once, so an
+entry graduates in a file the current change never touched -- not a claim that a
+triple is fragile, since ``FactFinding.key`` omits the line number so a reflow keeps
+the same identity.
 """
 
 from __future__ import annotations
@@ -75,7 +120,9 @@ ENTRY_POINT_DOCS: tuple[str, ...] = (
     "README.md",
     "CONTRIBUTING.md",
     "AGENTS.md",
+    "CLAUDE.md",
     "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
     "SECURITY.md",
     "GOVERNANCE.md",
     "MAINTAINERS.md",
@@ -175,12 +222,15 @@ _EXTERNAL_REPO_MARKERS: tuple[str, ...] = (
 # coupling is a one-line change here and is impossible to forget silently.
 CODE_COUPLED_DOCS: dict[str, tuple[str, ...]] = {
     "src/kiro_crew/docs/discord-integration.md": ("website/src/pages/settings/DiscordPanel.tsx",),
+    "src/kiro_crew/docs/feishu-integration.md": ("website/src/pages/settings/FeishuPanel.tsx",),
+    "src/kiro_crew/docs/imessage-integration.md": ("website/src/pages/settings/IMessagePanel.tsx",),
     "src/kiro_crew/docs/slack-integration.md": ("website/src/pages/settings/SlackPanel.tsx",),
     "src/kiro_crew/docs/teams-integration.md": ("website/src/pages/settings/TeamsPanel.tsx",),
     "src/kiro_crew/docs/telegram-integration.md": ("website/src/pages/settings/TelegramPanel.tsx",),
     "src/kiro_crew/docs/webex-integration.md": ("website/src/pages/settings/WebexPanel.tsx",),
     "src/kiro_crew/docs/wecom-integration.md": ("website/src/pages/settings/WeComPanel.tsx",),
     "src/kiro_crew/docs/weixin-integration.md": ("website/src/pages/settings/WeixinPanel.tsx",),
+    "src/kiro_crew/docs/whatsapp-integration.md": ("website/src/pages/settings/WhatsAppPanel.tsx",),
     "docs/architecture/security-deep-dive.md": ("website/src/pages/settings/SecurityPanel.tsx",),
     "website/docs/theming-contract.md": ("website/scripts/check-theme-colors.mjs",),
 }
@@ -353,6 +403,9 @@ _CODE_REF_IGNORE_PATH_PARTS: tuple[str, ...] = (
     # This linter documents the paths it couples to and plants deliberately
     # missing ones in its self-test; scanning itself would report both as real.
     "scripts/docs_lint.py",
+    # Its unit tests plant the same missing paths as fixture data, for the same
+    # reason: a check cannot be proven to fire without a defect to fire on.
+    "test/test_docs_lint_fact_checks.py",
 )
 
 # A doc path is a CITATION when it appears in a comment or docstring, and DATA when
@@ -379,6 +432,226 @@ _CHANGELOG_LINE_RE = re.compile(
 # How far into a doc a changelog preamble can hide before the first section.
 _PREAMBLE_SCAN_LINES = 40
 
+# How many items one report section prints before it says "and N more". A gate
+# whose output is longer than the screen is a gate nobody reads to the end.
+_MAX_REPORTED_FINDINGS = 40
+# Lower for the two report-only sections: they are a nudge, not the verdict.
+_MAX_REPORTED_ADVISORIES = 40
+_MAX_REPORTED_STALE = 20
+
+
+# ── Fact checks: identifiers, shapes and scope ─────────────────────────────────
+
+# The baseline of fact-check triples that were already present when the family
+# shipped. Relative to the repo root so a worktree carries its own copy.
+DEFAULT_BASELINE = ".github/docs-lint-baseline.txt"
+
+CHECK_PATH_EXISTS = "path-exists"
+CHECK_LINE_REF = "line-ref"
+CHECK_FENCED_PATH = "fenced-path"
+CHECK_TABLE_ROW_MERGE = "table-row-merge"
+CHECK_COUPLING_COMPLETENESS = "code-coupled-completeness"
+CHECK_DEAD_IDENTIFIER = "dead-identifier"
+
+# Doc genres that name files and symbols BECAUSE they do not exist yet. Same
+# judgement as ``_PATH_CITE_DOC_PREFIXES``, applied to the fact checks whose
+# subject is existence: a proposal saying "this adds
+# ``src/kiro_crew/run_coordinator/sqlite.py``" is correct writing, and 13 of the 20
+# path findings measured on the shipping tree were exactly that.
+_FORWARD_LOOKING_DOC_PREFIXES: tuple[str, ...] = (
+    "docs/request-for-change/",
+    "docs/task-specs/",
+)
+
+# A source path written from the REPO ROOT, so it resolves or it is wrong. Both
+# boundaries are load-bearing. The lookBEHIND keeps the ``docs/`` and ``src/`` arms
+# from matching the tail of a longer path: without it
+# ``src/kiro_crew/docs/tips.md`` would also be read as a repo-root
+# ``docs/tips.md``. The lookAHEAD keeps the extension from being a PREFIX of the
+# real one: without it ``scripts/vendor_manifest.sha256`` reads as
+# ``scripts/vendor_manifest.sh``, ``types.pyi`` as ``types.py``, ``page.mdx`` as
+# ``page.md`` and ``a.tsx.snap`` as ``a.tsx`` -- four correct citations reported as
+# rot. ``:`` stays admissible so ``src/x.py:12`` is still seen by the line check.
+_REPO_PATH_CITE_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(?:"
+    r"src/[A-Za-z0-9_][A-Za-z0-9_./-]*\.py"
+    r"|scripts/[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:py|sh)"
+    r"|website/src/[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:tsx|ts)"
+    r"|\.github/workflows/[A-Za-z0-9_][A-Za-z0-9_.-]*\.ya?ml"
+    r"|docs/[A-Za-z0-9_][A-Za-z0-9_./-]*\.md"
+    r")(?![A-Za-z0-9_.-])"
+)
+# A path followed by ``::`` is a COORDINATE -- ``src/board.py::is_repetition`` is the
+# address format the auto-improvement spine hands an EXTERNAL target repository, so
+# the path names a module in that repo. The syntax alone cannot say which repo is
+# meant: this one uses it for its own code too
+# (``src/kiro_crew/mcp_tools/workflows.py::workflow_run``), and skipping on syntax
+# would let a rename leave every such local citation stale with the gate green.
+# What separates them is the DOCUMENT, the same discriminator
+# ``_PATH_CITE_DOC_PREFIXES`` already runs on: these docs describe a run against
+# another repository, so a coordinate in them is not a claim about this tree.
+_COORDINATE_SUFFIX = "::"
+_EXTERNAL_TARGET_COORDINATE_DOCS: frozenset[str] = frozenset(
+    {
+        "docs/system-specs/modules/auto-improvement.md",
+    }
+)
+# Inline code with its content captured; ``_INLINE_CODE_RE`` above blanks spans
+# and deliberately captures nothing.
+_INLINE_CODE_SPAN_RE = re.compile(r"`+([^`\n]*)`+")
+
+# The two fenced-block tokens a reader COPIES instead of reading: an archived task
+# spec's path, and whatever ``kirocrew run`` is handed.
+_FENCED_TASK_SPEC_RE = re.compile(r"(?<![A-Za-z0-9_./-])docs/task-specs/[A-Za-z0-9_./-]*\.md")
+_KIROCREW_RUN_RE = re.compile(r"kirocrew\s+run\s+(?:-[^\s]*\s+)*([A-Za-z0-9_][A-Za-z0-9_./-]*)")
+
+# A markdown table's delimiter row, which is what fixes the table's width. Only
+# the three characters a delimiter row is made of: admitting ``.`` would let a
+# ``| ... | ... |`` continuation row silently redefine the width the glued-row
+# check compares against.
+_TABLE_DELIMITER_RE = re.compile(r"^\s*\|[\s|:-]+\|?\s*$")
+# A cell whose content opens with a link.
+_TABLE_LINK_CELL_RE = re.compile(r"\|\s*\[")
+
+# ``CODE_COUPLED_DOCS`` records couplings by hand; this is the scan that finds the
+# ones nobody recorded. A packaged doc's filename inside a STRING LITERAL is a
+# consumer (a setup-guide URL, a fetch path); the same name in a comment is a
+# citation, which ``check_code_citations`` already covers.
+_PACKAGED_DOCS_DIR = "src/kiro_crew/docs"
+_COUPLING_SCAN_ROOT = "website/src"
+_COUPLING_SUFFIXES: frozenset[str] = frozenset({".ts", ".tsx"})
+_STRING_LITERAL_RE = re.compile(r"""(['"`])((?:(?!\1).)*)\1""")
+_TS_COMMENT_LINE_RE = re.compile(r"^\s*(?://|/\*|\*)")
+_MD_NAME_RE = re.compile(r"(?<![A-Za-z0-9._-])([A-Za-z0-9][A-Za-z0-9._-]*\.md)")
+# A filename every directory has, so a match cannot be attributed to the packaged
+# copy: the hits are a user's project README in the file explorer, not this doc.
+_COUPLING_AMBIGUOUS_NAMES: frozenset[str] = frozenset({"README.md"})
+
+# Backticked identifiers, and the trees that decide whether one is alive. Every
+# first-party tree is searched, so "dead" means dead repo-wide: restricting the
+# corpus to src/, website/src and scripts/ marks `test_all_exports_exact` dead
+# (it lives in test/) and `KiroCrewClient` dead (it lives in packages/). The tail
+# of the list mirrors `_SOURCE_CITE_TREES`, because a symbol defined only in a
+# workflow or in `website/scripts/` is alive and would otherwise read as dead.
+_IDENT_SNAKE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+_IDENT_CAMEL_RE = re.compile(r"\b[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+\b")
+_IDENT_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+# Shorter than this and the token is a word, not a symbol.
+_IDENT_MIN_LEN = 8
+_IDENT_CODE_TREES: tuple[str, ...] = (
+    "src",
+    "website/src",
+    "website/scripts",
+    "scripts",
+    "test",
+    "packages",
+    "packaging",
+    "site",
+    ".github",
+)
+# Markdown and plain text are deliberately ABSENT. Documentation is what this
+# check is auditing, so counting a doc as a definition lets one stale page keep a
+# renamed symbol "alive" for every other page -- exactly the rot being hunted.
+_IDENT_CODE_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".sh",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".cfg",
+        ".css",
+        ".scss",
+        ".html",
+        ".sql",
+    }
+)
+# Names a doc writes to mean "your thing here"; absence is the intent.
+_IDENT_PLACEHOLDER_PREFIXES: tuple[str, ...] = (
+    "My",
+    "Foo",
+    "Bar",
+    "Baz",
+    "Your",
+    "Example",
+    "Sample",
+    "Some",
+    "Acme",
+    "Todo",
+    "Xyz",
+)
+# Generic English and product names that happen to match an identifier shape.
+_IDENT_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "anthropic",
+        "boolean",
+        "changelog",
+        "claude",
+        "darwin",
+        "default",
+        "defaults",
+        "docker",
+        "example",
+        "examples",
+        "github",
+        "gitlab",
+        "https",
+        "integer",
+        "javascript",
+        "kirocrew",
+        "license",
+        "linux",
+        "localhost",
+        "macos",
+        "markdown",
+        "none",
+        "null",
+        "number",
+        "openai",
+        "optional",
+        "postgres",
+        "python3",
+        "readme",
+        "required",
+        "sqlite",
+        "string",
+        "typescript",
+        "undefined",
+        "windows",
+    }
+)
+
+
+@dataclass(frozen=True, order=True)
+class FactFinding:
+    """One fact-check finding, in the shape the baseline records.
+
+    ``check``/``path``/``token`` are the identity -- what the baseline stores and
+    matches on -- and ``detail`` is the human sentence, which may be reworded
+    without invalidating a recorded triple. The line number stays out of the
+    identity deliberately: a citation that merely moved down the page is the same
+    unfixed finding, and putting the line in would make every reflow look new.
+    """
+
+    check: str
+    path: str
+    token: str
+    detail: str = ""
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.check, self.path, self.token)
+
+    def render(self) -> str:
+        return f"{self.path} -> {self.token}" + (f"  ({self.detail})" if self.detail else "")
+
 
 @dataclass
 class Findings:
@@ -393,6 +666,10 @@ class Findings:
     missing_index: list[str] = field(default_factory=list)
     changelog_preamble: list[str] = field(default_factory=list)
     conflict_markers: list[str] = field(default_factory=list)
+    # Fact checks, behind the baseline. ``facts`` fails the run; ``advisories``
+    # is the report-only half (dead identifiers, unless --strict-identifiers).
+    facts: list[FactFinding] = field(default_factory=list)
+    advisories: list[FactFinding] = field(default_factory=list)
 
     def total(self) -> int:
         return (
@@ -405,7 +682,11 @@ class Findings:
             + len(self.missing_index)
             + len(self.changelog_preamble)
             + len(self.conflict_markers)
+            + len(self.facts)
         )
+
+    def facts_for(self, check: str) -> list[FactFinding]:
+        return [f for f in self.facts if f.check == check]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -422,15 +703,34 @@ def _prune(root: Path, dirpath: str, dirnames: list[str]) -> None:
     Names are matched anywhere; artifact trees are matched by repo-relative path so
     a real documentation directory that shares a name with one (``docs/build/``) is
     still walked.
+
+    A directory LINK is dropped too, for the reason ``_is_regular_file`` drops a file
+    link: it is a path into a tree the fork PR does not own. ``os.walk`` already
+    stays out of a directory symlink, but a Windows junction is a reparse point it
+    descends without asking, so the junction test has to be explicit.
     """
     keep = []
     for d in sorted(dirnames):
         if d in SKIP_DIR_NAMES:
             continue
-        if _rel(Path(dirpath) / d, root) in SKIP_DIR_PATHS:
+        full = Path(dirpath) / d
+        if _rel(full, root) in SKIP_DIR_PATHS:
+            continue
+        if _is_dir_link(full):
             continue
         keep.append(d)
     dirnames[:] = keep
+
+
+def _is_dir_link(path: Path) -> bool:
+    """A directory symlink or a Windows junction, answering ``False`` on error."""
+    try:
+        if path.is_symlink():
+            return True
+        isjunction = getattr(os.path, "isjunction", None)
+        return bool(isjunction and isjunction(path))
+    except OSError:
+        return False
 
 
 def _is_regular_file(path: Path) -> bool:
@@ -576,6 +876,71 @@ def _index_for_dir(directory: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _is_forward_looking(rel: str) -> bool:
+    """True for a doc whose genre names things that do not exist yet."""
+    return rel.startswith(_FORWARD_LOOKING_DOC_PREFIXES)
+
+
+def _iter_code_spans(text: str):
+    """Yield ``(line_number, inline-code content)`` for prose, fenced blocks aside.
+
+    Backticks are what turn a path or a name into a citation: a bare word in a
+    sentence is usually prose about a directory, and a fenced block is a sample.
+    """
+    for lineno, line in enumerate(_strip_fences(text).splitlines(), start=1):
+        for match in _INLINE_CODE_SPAN_RE.finditer(line):
+            yield lineno, match.group(1)
+
+
+def _iter_fenced_lines(text: str):
+    """Yield ``(line_number, line)`` for lines INSIDE fenced blocks.
+
+    The complement of ``_strip_fences``, so a token is examined by exactly one of
+    the two path checks and never reported twice.
+    """
+    in_fence = False
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            yield lineno, line
+
+
+def _identifier_index(root: Path) -> frozenset[str]:
+    """Every identifier-shaped token in the first-party code trees, built ONCE.
+
+    Cached on the function because the dead-identifier check asks "does this name
+    appear anywhere" a few hundred times, and re-reading ~7,000 files per question
+    would make this gate the slowest thing in CI. Filenames count as tokens: a doc
+    naming a module by its file name is citing something real.
+    """
+    cached = getattr(_identifier_index, "_cache", None)
+    if cached is not None and cached[0] == root:
+        return cached[1]
+    tokens: set[str] = set()
+    for tree in _IDENT_CODE_TREES:
+        base = root / tree
+        if not base.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            _prune(root, dirpath, dirnames)
+            for name in sorted(filenames):
+                tokens.update(_IDENT_TOKEN_RE.findall(name))
+                if Path(name).suffix not in _IDENT_CODE_SUFFIXES:
+                    continue
+                path = Path(dirpath) / name
+                if not _is_regular_file(path):
+                    continue
+                try:
+                    tokens.update(_IDENT_TOKEN_RE.findall(_read(path)))
+                except OSError:
+                    continue
+    frozen = frozenset(tokens)
+    _identifier_index._cache = (root, frozen)  # type: ignore[attr-defined]
+    return frozen
 
 
 # ── Checks ─────────────────────────────────────────────────────────────────────
@@ -932,6 +1297,368 @@ def check_code_coupled_docs(root: Path, findings: Findings) -> None:
                 )
 
 
+# ── Fact checks ────────────────────────────────────────────────────────────────
+
+
+def check_cited_paths(root: Path, docs: list[Path], findings: Findings) -> None:
+    """A backticked repo-anchored path must name a file (``path-exists``).
+
+    ``check_source_citations`` matches a citation as a path SUFFIX, because a doc
+    cites relative to whatever root its reader stands in. This one takes the
+    opposite case: a path written from the repo root is unambiguous, so it
+    resolves or the doc is wrong, and no genre exemption can rescue it.
+
+    The suffix index is still consulted as a fallback. A skill's own
+    ``scripts/reaper.sh`` reads as repo-anchored and is not: it exists, one root
+    down. Honouring that dropped 33 of 53 raw findings on the shipping tree, all
+    of them correct writing, and the ones left are rot.
+    """
+    for doc in docs:
+        rel_doc = _rel(doc, root)
+        if _is_forward_looking(rel_doc):
+            continue
+        try:
+            text = _read(doc)
+        except OSError:
+            continue
+        external_coordinates = rel_doc in _EXTERNAL_TARGET_COORDINATE_DOCS
+        for _lineno, code in _iter_code_spans(text):
+            for match in _REPO_PATH_CITE_RE.finditer(code):
+                ref = match.group(0)
+                if (root / ref).exists() or _resolve_source_cite(root, ref):
+                    continue
+                if (
+                    external_coordinates
+                    and code[match.end() : match.end() + 2] == _COORDINATE_SUFFIX
+                ):
+                    # A coordinate in a doc about a run against ANOTHER repository
+                    # addresses a module there. Elsewhere the same syntax names local
+                    # code, so the path stays checked and a rename still reddens.
+                    continue
+                findings.facts.append(FactFinding(CHECK_PATH_EXISTS, rel_doc, ref))
+
+
+def check_fenced_paths(root: Path, docs: list[Path], findings: Findings) -> None:
+    """Two fenced-block tokens a reader copies must resolve (``fenced-path``).
+
+    A fenced block is a sample and is exempt everywhere else, which is right for a
+    listing a reader only reads. It is wrong for the two shapes a reader PASTES: a
+    ``docs/task-specs/...`` path and the argument of ``kirocrew run``. Both go
+    straight into a command, so a dead one fails in the reader's terminal.
+
+    Three exemptions, each because the path names a file that is not this
+    repository's to have. A bare filename is the reader's own
+    (``kirocrew run TASK.md``), so only a path WITH a directory component is a
+    checkable claim. A forward-looking genre names its own planned output, the same
+    judgement ``check_cited_paths`` runs on. And the PACKAGED user docs teach a
+    reader to write their OWN task spec, so ``docs/task-specs/my-task/spec.md``
+    there is a template for their project rather than a file in this checkout --
+    "correct the path" is not even an available fix for it.
+    """
+    for doc in docs:
+        rel_doc = _rel(doc, root)
+        if _is_forward_looking(rel_doc) or rel_doc.startswith(f"{_PACKAGED_DOCS_DIR}/"):
+            continue
+        try:
+            text = _read(doc)
+        except OSError:
+            continue
+        for _lineno, line in _iter_fenced_lines(text):
+            tokens = [m.group(0) for m in _FENCED_TASK_SPEC_RE.finditer(line)]
+            tokens += [m.group(1) for m in _KIROCREW_RUN_RE.finditer(line)]
+            # Both patterns match a `kirocrew run docs/task-specs/...` line, and one
+            # pasted command is one finding.
+            for token in dict.fromkeys(tokens):
+                if "/" not in token or (root / token).exists():
+                    continue
+                findings.facts.append(FactFinding(CHECK_FENCED_PATH, rel_doc, token))
+
+
+def check_line_refs(root: Path, docs: list[Path], findings: Findings) -> None:
+    """A ``file.py:NNN`` citation in prose is a finding (``line-ref``).
+
+    ``check_source_citations`` reports the citation that has ALREADY rotted -- the
+    line is past the end of the file. This one reports the shape itself, because
+    the other half rots on the next refactor and nothing goes red when it does: the
+    number still lands inside the file, just on a different statement. A symbol
+    name survives that move, which is why the fix is to cite one.
+    """
+    for doc in docs:
+        rel_doc = _rel(doc, root)
+        try:
+            text = _read(doc)
+        except OSError:
+            continue
+        for _lineno, line in enumerate(_strip_fences(text).splitlines(), start=1):
+            for match in _SOURCE_CITE_RE.finditer(line):
+                if not match.group(2):
+                    continue
+                token = f"{match.group(1)}:{match.group(2)}"
+                findings.facts.append(FactFinding(CHECK_LINE_REF, rel_doc, token))
+
+
+def check_table_rows(root: Path, docs: list[Path], findings: Findings) -> None:
+    """Two index rows glued onto one line (``table-row-merge``).
+
+    Both links survive the accident, so every link-graph check here stays green
+    while the table renders one row short and one file loses its entry entirely --
+    which is how a 20-file directory shipped a 19-row index.
+
+    Two signals together, because either alone is noisy: a second cell opening with
+    a link, AND more cells than the delimiter row declares. A row legitimately
+    carrying two link cells (a stable and a nightly download) has the first signal
+    and not the second; measured on the shipping tree the pair reports one row, the
+    real one, and nothing else.
+    """
+    for doc in docs:
+        rel_doc = _rel(doc, root)
+        try:
+            text = _read(doc)
+        except OSError:
+            continue
+        width: int | None = None
+        for lineno, line in enumerate(_strip_fences(text).splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                width = None
+                continue
+            # Escaped pipes and pipes inside code spans are content, not borders.
+            countable = _INLINE_CODE_RE.sub(
+                lambda m: " " * len(m.group(0)), stripped.replace(r"\|", "  ")
+            )
+            cells = len(countable.strip().strip("|").split("|"))
+            if _TABLE_DELIMITER_RE.match(stripped):
+                width = cells
+                continue
+            if width is None or cells <= width:
+                continue
+            if len(_TABLE_LINK_CELL_RE.findall(countable)) < 2:
+                continue
+            # The SECOND link is the row that got glued on, so its target names the
+            # entry that lost its own row -- a stable identity for the baseline,
+            # where a cell count alone would collapse two distinct accidents.
+            targets = [m.group(1).strip() for m in _LINK_RE.finditer(countable)]
+            token = targets[1] if len(targets) > 1 else f"row:{cells}-cells"
+            findings.facts.append(
+                FactFinding(
+                    CHECK_TABLE_ROW_MERGE,
+                    rel_doc,
+                    token,
+                    f"line {lineno} has {cells} cells, the table declares {width}",
+                )
+            )
+
+
+def check_coupling_completeness(root: Path, findings: Findings) -> None:
+    """A packaged doc a consumer names must be recorded (``code-coupled-completeness``).
+
+    ``CODE_COUPLED_DOCS`` is hand-maintained, so it is only as good as whoever
+    remembered to add a row. This is the scan that finds the rows nobody added: a
+    packaged doc's filename inside a STRING LITERAL under ``website/src`` is a live
+    consumer -- a setup-guide URL, a fetch path -- and an unrecorded one can be
+    renamed out from under it with every check here still green.
+
+    A comment is not a consumer (``check_code_citations`` owns that direction), and
+    a test is not either: its ``.md`` strings are fixture data.
+    """
+    packaged_dir = root / _PACKAGED_DOCS_DIR
+    if not packaged_dir.is_dir():
+        return
+    packaged = {p.name for p in packaged_dir.glob("*.md") if _is_regular_file(p)}
+    recorded = {
+        Path(doc).name for doc in CODE_COUPLED_DOCS if doc.startswith(f"{_PACKAGED_DOCS_DIR}/")
+    }
+    base = root / _COUPLING_SCAN_ROOT
+    if not base.is_dir():
+        return
+    consumers: dict[str, set[str]] = {}
+    for dirpath, dirnames, filenames in os.walk(base):
+        _prune(root, dirpath, dirnames)
+        dirnames[:] = [d for d in dirnames if d != "test"]
+        for name in sorted(filenames):
+            if Path(name).suffix not in _COUPLING_SUFFIXES or ".test." in name:
+                continue
+            path = Path(dirpath) / name
+            if not _is_regular_file(path):
+                continue
+            try:
+                text = _read(path)
+            except OSError:
+                continue
+            for line in text.splitlines():
+                if _TS_COMMENT_LINE_RE.match(line):
+                    continue
+                for literal in _STRING_LITERAL_RE.finditer(line):
+                    for match in _MD_NAME_RE.finditer(literal.group(2)):
+                        doc_name = match.group(1)
+                        if doc_name in _COUPLING_AMBIGUOUS_NAMES:
+                            continue
+                        if doc_name not in packaged or doc_name in recorded:
+                            continue
+                        consumers.setdefault(doc_name, set()).add(_rel(path, root))
+    for doc_name, users in sorted(consumers.items()):
+        findings.facts.append(
+            FactFinding(
+                CHECK_COUPLING_COMPLETENESS,
+                f"{_PACKAGED_DOCS_DIR}/{doc_name}",
+                doc_name,
+                f"named in {', '.join(sorted(users))}",
+            )
+        )
+
+
+def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> None:
+    """A backticked identifier that appears in no code tree (``dead-identifier``).
+
+    Report-only unless ``--strict-identifiers``, and that is a measured decision
+    rather than timidity: 416 tokens fire on the shipping tree and the class mixes
+    real rot (a renamed handler) with names the repo cannot adjudicate -- a wire
+    field, a vendor symbol, an identifier a doc names precisely because it is
+    WRONG (``MockClient`` in the flake8 N806 row). A report a maintainer reads is
+    worth more here than a gate they learn to skip.
+
+    Forward-looking genres are skipped for the same reason as the path check, and
+    documentation placeholders (``MyPage``) are meant to be absent.
+    """
+    live = _identifier_index(root)
+    for doc in docs:
+        rel_doc = _rel(doc, root)
+        if _is_forward_looking(rel_doc):
+            continue
+        try:
+            text = _read(doc)
+        except OSError:
+            continue
+        for _lineno, code in _iter_code_spans(text):
+            for pattern in (_IDENT_SNAKE_RE, _IDENT_CAMEL_RE):
+                for token in pattern.findall(code):
+                    if len(token) < _IDENT_MIN_LEN:
+                        continue
+                    if token.lower() in _IDENT_STOPWORDS:
+                        continue
+                    if token.startswith(_IDENT_PLACEHOLDER_PREFIXES):
+                        continue
+                    if token in live:
+                        continue
+                    findings.advisories.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token))
+
+
+# ── Baseline ───────────────────────────────────────────────────────────────────
+
+_BASELINE_HEADER = """\
+# docs-lint fact-check baseline: the (check-id, path, token) triples that were
+# already present when each fact check shipped. A triple listed here passes; a
+# triple that is NOT listed fails the gate.
+#
+# Do NOT hand-edit a line in to make a red gate green. A new triple means the doc
+# needs the fix the check names -- cite a symbol instead of a line, correct the
+# path, split the glued row, record the coupling.
+#
+# Refresh (after fixing something listed here). Prune-only: it intersects, so it
+# cannot record a triple, and it refuses to run if this file is missing.
+#   python3 scripts/docs_lint.py --update-baseline
+#
+# Adding is a separate, louder verb. It prints every triple it accepts, because
+# each one is an exemption a reviewer has to agree with:
+#   python3 scripts/docs_lint.py --accept-new
+#
+# Format: <check-id>\\t<path>\\t<token>
+"""
+
+
+def _read_baseline(path: Path) -> set[tuple[str, str, str]]:
+    """The recorded triples. A MISSING file is an error, never an empty set.
+
+    An absent baseline read as "nothing is exempt" sounds strict and is the
+    opposite: the refresh would then have nothing to intersect against, so one
+    ``rm`` plus one refresh would record every current violation as permanently
+    accepted. Failing here is what makes the file's own "do NOT add a line"
+    a rule rather than prose, and it is the posture
+    ``scripts/check_black_formatting.py`` takes for the same reason.
+
+    A SYMLINKED baseline is refused for the same reason ``_is_regular_file``
+    refuses one anywhere else in this gate: the tree being linted is a tree a fork
+    PR controls, so a committed symlink here aims both the read and the documented
+    refresh at a file of the fork's choosing.
+    """
+    if not _is_regular_file(path):
+        raise SystemExit(
+            f"docs-lint: baseline {path} is missing or is not a regular file; restore "
+            "it from git rather than regenerating it. A regenerated baseline would "
+            "silently accept every violation added since it was recorded, and a "
+            "symlink here would aim the refresh at whatever it points to."
+        )
+    recorded: set[tuple[str, str, str]] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) != 3:
+            continue
+        recorded.add((parts[0], parts[1], parts[2]))
+    return recorded
+
+
+def _write_baseline(path: Path, triples: set[tuple[str, str, str]]) -> None:
+    """Publish the baseline, refusing a symlinked destination.
+
+    ``Path.write_text`` FOLLOWS a symlink, so a committed link at the baseline path
+    turns the documented ``--update-baseline`` into an overwrite of whatever it
+    points at, run by a maintainer on their own machine. Two guards, because the
+    first alone is a check-then-write race: the ``lstat`` refusal gives the
+    actionable message, and ``O_NOFOLLOW`` on the staged temp plus a rename is what
+    the kernel enforces. Staging and renaming also means an interrupted refresh
+    leaves the recorded backlog intact rather than truncated.
+
+    ``kiro_crew.atomic_write`` is the repo's helper for this shape and is not used
+    here on purpose: this gate is stdlib-only so it runs before the package is
+    installed, which is how CI invokes it.
+    """
+    if path.is_symlink():
+        raise SystemExit(
+            f"docs-lint: refusing to write the baseline through the symlink {path}; "
+            "the write would land at the link's target. Replace it with a real file."
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join("\t".join(triple) + "\n" for triple in sorted(triples))
+    data = (_BASELINE_HEADER + body).encode("utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags, 0o644)
+    try:
+        # A buffered writer loops until every byte is down and raises on a short
+        # write, so the rename below never publishes a truncated baseline.
+        with os.fdopen(fd, "wb") as staged:
+            staged.write(data)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, path)
+
+
+def apply_baseline(
+    findings: Findings, recorded: set[tuple[str, str, str]]
+) -> list[tuple[str, str, str]]:
+    """Drop baselined triples from ``findings``; return the ones that no longer fire.
+
+    Mutates in place so the caller keeps one ``Findings``. The return value is the
+    prune list, and it is REPORTED rather than fatal for one reason only: this
+    repository's doc trees are being consolidated by several changes at once, so a
+    triple graduates in a file the current change never touched. It is not because
+    a triple is fragile -- ``FactFinding.key`` excludes the line number precisely so
+    a reflow keeps the same identity.
+
+    That leaves one window worth naming: a triple fixed without pruning its entry
+    can be reintroduced silently. ``--update-baseline`` closes it, and the file
+    cannot grow without ``--accept-new``, so the window narrows every time anyone
+    refreshes.
+    """
+    seen = {f.key for f in findings.facts} | {f.key for f in findings.advisories}
+    findings.facts = [f for f in findings.facts if f.key not in recorded]
+    findings.advisories = [f for f in findings.advisories if f.key not in recorded]
+    return sorted(recorded - seen)
+
+
 # ── Reporting ──────────────────────────────────────────────────────────────────
 
 
@@ -939,14 +1666,14 @@ def _emit(title: str, items: list[str], hint: str) -> None:
     if not items:
         return
     print(f"\nFAIL: {title} ({len(items)})")
-    for item in items[:40]:
+    for item in items[:_MAX_REPORTED_FINDINGS]:
         print(f"  - {item}")
-    if len(items) > 40:
-        print(f"  ... and {len(items) - 40} more")
+    if len(items) > _MAX_REPORTED_FINDINGS:
+        print(f"  ... and {len(items) - _MAX_REPORTED_FINDINGS} more")
     print(f"  -> {hint}")
 
 
-def run(root: Path) -> Findings:
+def run(root: Path, *, strict_identifiers: bool = False) -> Findings:
     """Run every check against ``root`` and return the accumulated findings."""
     docs: list[Path] = []
     for doc_root in DOC_ROOTS:
@@ -965,10 +1692,26 @@ def run(root: Path) -> Findings:
     check_code_citations(root, findings)
     check_source_citations(root, docs, findings)
     check_code_coupled_docs(root, findings)
+    # The fact checks cover the entry points as well: README.md and AGENTS.md cite
+    # more paths than most specs do, and a reader trusts them more.
+    everything = docs + entry_points
+    check_cited_paths(root, everything, findings)
+    check_fenced_paths(root, everything, findings)
+    check_line_refs(root, everything, findings)
+    check_table_rows(root, everything, findings)
+    check_coupling_completeness(root, findings)
+    check_dead_identifiers(root, everything, findings)
+    if strict_identifiers:
+        findings.facts.extend(findings.advisories)
+        findings.advisories = []
     return findings
 
 
-def _report(findings: Findings, doc_count: int) -> int:
+def _emit_facts(findings: Findings, check: str, title: str, hint: str) -> None:
+    _emit(title, [f.render() for f in findings.facts_for(check)], hint)
+
+
+def _report(findings: Findings, doc_count: int, stale_baseline: list[tuple[str, str, str]]) -> int:
     print(f"docs-lint: scanned {doc_count} markdown files under {', '.join(DOC_ROOTS)}")
     _emit(
         "git conflict markers left in docs",
@@ -1015,6 +1758,56 @@ def _report(findings: Findings, doc_count: int) -> int:
         findings.coupling,
         "restore the file, or update its consumer in the same commit",
     )
+    _emit_facts(
+        findings,
+        CHECK_PATH_EXISTS,
+        "backticked repo paths that name no file",
+        "correct the path, or say plainly that the code was deleted",
+    )
+    _emit_facts(
+        findings,
+        CHECK_FENCED_PATH,
+        "pasteable paths in fenced blocks that name no file",
+        "correct the path: a reader copies this line into a command",
+    )
+    _emit_facts(
+        findings,
+        CHECK_LINE_REF,
+        "line citations in prose",
+        "cite a symbol name instead: a name survives the refactor that moves the line",
+    )
+    _emit_facts(
+        findings,
+        CHECK_TABLE_ROW_MERGE,
+        "table rows glued onto one line",
+        "split the row: the table renders one row short and a file loses its entry",
+    )
+    _emit_facts(
+        findings,
+        CHECK_COUPLING_COMPLETENESS,
+        "packaged docs with an unrecorded consumer",
+        f"add the doc and its consumer to CODE_COUPLED_DOCS in {Path(__file__).name}",
+    )
+    _emit_facts(
+        findings,
+        CHECK_DEAD_IDENTIFIER,
+        "backticked identifiers that appear in no code tree",
+        "rename to the live symbol, or drop the claim",
+    )
+    if findings.advisories:
+        print(f"\nreport-only: {len(findings.advisories)} dead identifier(s) outside the baseline")
+        for item in findings.advisories[:_MAX_REPORTED_ADVISORIES]:
+            print(f"  - {item.render()}")
+        if len(findings.advisories) > _MAX_REPORTED_ADVISORIES:
+            print(f"  ... and {len(findings.advisories) - _MAX_REPORTED_ADVISORIES} more")
+        print("  -> rename to the live symbol, or run with --strict-identifiers to fail on these")
+    if stale_baseline:
+        print(f"\nreport-only: {len(stale_baseline)} baseline entr(y/ies) no longer fire")
+        for check, path, token in stale_baseline[:_MAX_REPORTED_STALE]:
+            print(f"  - {check}\t{path}\t{token}")
+        if len(stale_baseline) > _MAX_REPORTED_STALE:
+            print(f"  ... and {len(stale_baseline) - _MAX_REPORTED_STALE} more")
+        print("  -> prune them: python3 scripts/docs_lint.py --update-baseline")
     if findings.total() == 0:
         print("\nAll documentation checks passed")
         return 0
@@ -1343,6 +2136,211 @@ def _self_test() -> int:
         )
         return "stale_line_cites"
 
+    def fact_probe(label: str, check: str, build) -> None:
+        """Assert a fact check fires, and that its triple names the right token."""
+        nonlocal failures
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir(parents=True)
+            (root / "docs" / "README.md").write_text("# Docs\n\n- [Ok](ok.md)\n", encoding="utf-8")
+            (root / "docs" / "ok.md").write_text("# Ok\n\nBody.\n", encoding="utf-8")
+            expected_token = build(root)
+            got = run(root).facts_for(check) + [f for f in run(root).advisories if f.check == check]
+            tokens = {f.token for f in got}
+            if expected_token in tokens:
+                print(f"  ok  {label} detected")
+            else:
+                print(f"  FAIL {label} NOT detected (got {sorted(tokens)})")
+                failures += 1
+
+    def fact_immunity_probe(label: str, check: str, build) -> None:
+        """Assert a legitimate shape produces NO triple for ``check``."""
+        nonlocal failures
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir(parents=True)
+            (root / "docs" / "README.md").write_text("# Docs\n\n- [Ok](ok.md)\n", encoding="utf-8")
+            (root / "docs" / "ok.md").write_text("# Ok\n\nBody.\n", encoding="utf-8")
+            build(root)
+            findings = run(root)
+            hits = findings.facts_for(check) + [f for f in findings.advisories if f.check == check]
+            if hits:
+                print(f"  FAIL {label} was flagged ({sorted(f.token for f in hits)})")
+                failures += 1
+            else:
+                print(f"  ok  {label} ignored")
+
+    def plant_missing_repo_path(root: Path) -> str:
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nThe entry point is `src/kiro_crew/ghost.py`.\n", encoding="utf-8"
+        )
+        return "src/kiro_crew/ghost.py"
+
+    def allow_repo_path_that_exists(root: Path) -> None:
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "real.py").write_text("a = 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nThe entry point is `src/kiro_crew/real.py`.\n", encoding="utf-8"
+        )
+
+    def allow_repo_path_resolvable_one_root_down(root: Path) -> None:
+        # A skill's own `scripts/reaper.sh` reads as repo-anchored and is not; the
+        # suffix index is what tells the two apart, and dropping this exemption
+        # re-reports 33 correct citations (measured).
+        skill = root / "src" / "kiro_crew" / "builtin_skills" / "demo" / "scripts"
+        skill.mkdir(parents=True)
+        (skill / "reaper.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nRun `scripts/reaper.sh` from the skill.\n", encoding="utf-8"
+        )
+
+    def allow_repo_path_in_a_proposal(root: Path) -> None:
+        # An RFC names files BECAUSE they do not exist; that is the genre's job.
+        rfc = root / "docs" / "request-for-change"
+        rfc.mkdir()
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Rfc](request-for-change/rfc-x.md)\n", encoding="utf-8"
+        )
+        (rfc / "rfc-x.md").write_text(
+            "# Rfc\n\nThis adds `src/kiro_crew/planned.py`.\n", encoding="utf-8"
+        )
+
+    def plant_line_ref_inside_the_file(root: Path) -> str:
+        # Inside the file, so the beyond-EOF check stays silent and only the shape
+        # check fires -- which is the citation that is about to rot unnoticed.
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text("# Ok\n\nSee `small.py:2`.\n", encoding="utf-8")
+        return "small.py:2"
+
+    def allow_symbol_cite_without_a_line(root: Path) -> None:
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nSee `resolve_usable_model` in `small.py`.\n", encoding="utf-8"
+        )
+
+    def plant_dead_fenced_task_spec(root: Path) -> str:
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n```bash\nkirocrew run docs/task-specs/2026/01/gone/spec.md\n```\n",
+            encoding="utf-8",
+        )
+        return "docs/task-specs/2026/01/gone/spec.md"
+
+    def allow_bare_filename_after_kirocrew_run(root: Path) -> None:
+        # `TASK.md` is a file the READER creates; only a path with a directory
+        # component is a claim about this tree.
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n```bash\nkirocrew run TASK.md\n```\n", encoding="utf-8"
+        )
+
+    def plant_glued_table_row(root: Path) -> str:
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n| Doc | What |\n|---|---|\n"
+            "| [a.md](a.md) | First. || [b.md](b.md) | Second. |\n",
+            encoding="utf-8",
+        )
+        return "b.md"
+
+    def allow_two_link_cells_in_one_row(root: Path) -> None:
+        # A stable and a nightly download in one row: two link cells, correct width.
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n| Kind | Stable | Nightly |\n|---|---|---|\n"
+            "| deb | [Stable](https://x/a.deb) | [Nightly](https://x/b.deb) |\n",
+            encoding="utf-8",
+        )
+
+    def plant_unrecorded_coupling(root: Path) -> str:
+        packaged = root / "src" / "kiro_crew" / "docs"
+        packaged.mkdir(parents=True)
+        (packaged / "ghost-integration.md").write_text("# Ghost\n", encoding="utf-8")
+        panel = root / "website" / "src" / "pages" / "settings"
+        panel.mkdir(parents=True)
+        (panel / "GhostPanel.tsx").write_text(
+            "const SETUP_GUIDE = 'https://example.invalid/"
+            "src/kiro_crew/docs/ghost-integration.md'\n",
+            encoding="utf-8",
+        )
+        return "ghost-integration.md"
+
+    def allow_coupling_named_only_in_a_comment(root: Path) -> None:
+        # A comment is a CITATION, which check_code_citations already owns.
+        packaged = root / "src" / "kiro_crew" / "docs"
+        packaged.mkdir(parents=True)
+        (packaged / "iframe-hosts.md").write_text("# Hosts\n", encoding="utf-8")
+        page = root / "website" / "src" / "pages"
+        page.mkdir(parents=True)
+        (page / "ChatPage.tsx").write_text(
+            "// See `src/kiro_crew/docs/iframe-hosts.md` for the host list.\n"
+            "export const x = 1\n",
+            encoding="utf-8",
+        )
+
+    def allow_coupling_named_only_in_a_test(root: Path) -> None:
+        packaged = root / "src" / "kiro_crew" / "docs"
+        packaged.mkdir(parents=True)
+        (packaged / "fixture-doc.md").write_text("# Fixture\n", encoding="utf-8")
+        tests = root / "website" / "src" / "test"
+        tests.mkdir(parents=True)
+        (tests / "Panel.test.tsx").write_text("const f = 'fixture-doc.md'\n", encoding="utf-8")
+
+    def plant_dead_identifier(root: Path) -> str:
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "real.py").write_text("def live_handler():\n    return 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nRouted through `vanished_handler`.\n", encoding="utf-8"
+        )
+        return "vanished_handler"
+
+    def allow_live_identifier(root: Path) -> None:
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "real.py").write_text("def live_handler_name():\n    return 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nRouted through `live_handler_name`.\n", encoding="utf-8"
+        )
+
+    def allow_placeholder_identifier(root: Path) -> None:
+        (root / "src" / "kiro_crew").mkdir(parents=True)
+        (root / "src" / "kiro_crew" / "real.py").write_text("a = 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nName it `MyOwnWidget` in your app.\n", encoding="utf-8"
+        )
+
+    def baseline_probe() -> None:
+        """A recorded triple passes; the same triple unrecorded fails."""
+        nonlocal failures
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir(parents=True)
+            (root / "docs" / "README.md").write_text("# Docs\n\n- [Ok](ok.md)\n", encoding="utf-8")
+            (root / "docs" / "ok.md").write_text(
+                "# Ok\n\nThe entry point is `src/kiro_crew/ghost.py`.\n", encoding="utf-8"
+            )
+            unfiltered = run(root)
+            if not unfiltered.facts_for(CHECK_PATH_EXISTS):
+                print("  FAIL baseline probe could not produce a finding")
+                failures += 1
+                return
+            triple = unfiltered.facts_for(CHECK_PATH_EXISTS)[0].key
+            filtered = run(root)
+            stale = apply_baseline(filtered, {triple})
+            if filtered.facts_for(CHECK_PATH_EXISTS) or stale:
+                print("  FAIL a baselined triple still failed the run")
+                failures += 1
+                return
+            other = run(root)
+            stale = apply_baseline(other, {(CHECK_PATH_EXISTS, "docs/ok.md", "src/other.py")})
+            if not other.facts_for(CHECK_PATH_EXISTS) or not stale:
+                print("  FAIL an unrecorded triple was absorbed, or a stale entry went unreported")
+                failures += 1
+                return
+            print("  ok  baseline admits recorded triples and reports stale ones")
+
     print("Running docs-lint self-test...")
     clean_probe()
     probe("broken link", plant_broken_link)
@@ -1386,6 +2384,56 @@ def _self_test() -> int:
         "conflict_markers",
     )
 
+    # Fact checks: each one fires on a planted defect, and each documented
+    # exemption is pinned so widening the rule fails here instead of in review.
+    fact_probe("missing repo-anchored path", CHECK_PATH_EXISTS, plant_missing_repo_path)
+    fact_immunity_probe("repo path that exists", CHECK_PATH_EXISTS, allow_repo_path_that_exists)
+    fact_immunity_probe(
+        "repo path resolvable one root down",
+        CHECK_PATH_EXISTS,
+        allow_repo_path_resolvable_one_root_down,
+    )
+    fact_immunity_probe(
+        "repo path inside a proposal", CHECK_PATH_EXISTS, allow_repo_path_in_a_proposal
+    )
+    fact_probe("line citation inside the file", CHECK_LINE_REF, plant_line_ref_inside_the_file)
+    fact_immunity_probe(
+        "symbol citation without a line", CHECK_LINE_REF, allow_symbol_cite_without_a_line
+    )
+    fact_probe("dead pasteable path in a fence", CHECK_FENCED_PATH, plant_dead_fenced_task_spec)
+    fact_immunity_probe(
+        "bare filename after `kirocrew run`",
+        CHECK_FENCED_PATH,
+        allow_bare_filename_after_kirocrew_run,
+    )
+    fact_probe("glued table row", CHECK_TABLE_ROW_MERGE, plant_glued_table_row)
+    fact_immunity_probe(
+        "two link cells in one row", CHECK_TABLE_ROW_MERGE, allow_two_link_cells_in_one_row
+    )
+    fact_probe(
+        "unrecorded packaged-doc coupling",
+        CHECK_COUPLING_COMPLETENESS,
+        plant_unrecorded_coupling,
+    )
+    fact_immunity_probe(
+        "packaged doc named only in a comment",
+        CHECK_COUPLING_COMPLETENESS,
+        allow_coupling_named_only_in_a_comment,
+    )
+    fact_immunity_probe(
+        "packaged doc named only in a test",
+        CHECK_COUPLING_COMPLETENESS,
+        allow_coupling_named_only_in_a_test,
+    )
+    fact_probe("dead identifier", CHECK_DEAD_IDENTIFIER, plant_dead_identifier)
+    fact_immunity_probe("live identifier", CHECK_DEAD_IDENTIFIER, allow_live_identifier)
+    fact_immunity_probe(
+        "documentation placeholder identifier",
+        CHECK_DEAD_IDENTIFIER,
+        allow_placeholder_identifier,
+    )
+    baseline_probe()
+
     if failures:
         print(f"\nSELF-TEST FAILED: {failures} check(s) do not fire")
         return 1
@@ -1407,6 +2455,26 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="repo root to lint (default: the parent of this script's directory)",
     )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        help=f"fact-check baseline file (default: {DEFAULT_BASELINE} under the root)",
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="prune triples that no longer fire; it can never add one",
+    )
+    parser.add_argument(
+        "--accept-new",
+        action="store_true",
+        help="ADD the triples firing now to the baseline, printing each one (needs a reason)",
+    )
+    parser.add_argument(
+        "--strict-identifiers",
+        action="store_true",
+        help="fail on dead identifiers instead of reporting them",
+    )
     args = parser.parse_args(argv)
 
     if args.test:
@@ -1416,10 +2484,48 @@ def main(argv: list[str] | None = None) -> int:
     if not (root / "docs").is_dir():
         print(f"docs-lint: no docs/ directory under {root}", file=sys.stderr)
         return 2
+    baseline_path = Path(args.baseline) if args.baseline else root / DEFAULT_BASELINE
+    if args.update_baseline and args.accept_new:
+        print(
+            "docs-lint: --update-baseline and --accept-new are opposites; run one at a time",
+            file=sys.stderr,
+        )
+        return 2
 
-    findings = run(root)
+    findings = run(root, strict_identifiers=args.strict_identifiers)
+    current = {f.key for f in findings.facts} | {f.key for f in findings.advisories}
+
+    if args.update_baseline:
+        # Prune-only, unconditionally: the intersection can only shrink the file,
+        # and `_read_baseline` refuses an absent one, so there is no path here that
+        # records a triple. Adding is `--accept-new`, which announces itself.
+        recorded = _read_baseline(baseline_path)
+        survivors = recorded & current
+        _write_baseline(baseline_path, survivors)
+        print(f"pruned {len(recorded) - len(survivors)} triple(s); {len(survivors)} remain")
+        return 0
+
+    if args.accept_new:
+        # The one operation that grows the file, kept separate and LOUD. A triple
+        # accepted here is a decision someone has to defend in review, so it is
+        # printed rather than silently folded in, and the count is reported.
+        recorded = _read_baseline(baseline_path)
+        added = sorted(current - recorded)
+        if not added:
+            print(f"nothing new to accept; {len(recorded)} triple(s) remain")
+            return 0
+        for check, path, token in added:
+            print(f"accepting {check}\t{path}\t{token}")
+        _write_baseline(baseline_path, recorded | current)
+        print(
+            f"accepted {len(added)} NEW triple(s) into {baseline_path}; "
+            "each one is an exemption a reviewer must agree with"
+        )
+        return 0
+
+    stale = apply_baseline(findings, _read_baseline(baseline_path))
     doc_count = sum(len(_walk_markdown(root, r)) for r in DOC_ROOTS)
-    return _report(findings, doc_count)
+    return _report(findings, doc_count, stale)
 
 
 if __name__ == "__main__":

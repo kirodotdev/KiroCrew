@@ -9467,7 +9467,6 @@
       "could_not_switch_variant": "সংস্করণ পরিবর্তন করা যায়নি",
       "could_not_start_a_new_session": "নতুন সেশন শুরু করা যায়নি",
       "could_not_start_session_message_restored": "নতুন সেশন শুরু করা গেল না: {{error}}। তোমার বার্তা ফিরিয়ে আনা হয়েছে — আবার চেষ্টা করতে সেটি ফের পাঠাও।",
-      "dismiss_upload_error": "আপলোড ত্রুটি বাদ দিন",
       "enter_split_view": "স্প্লিট ভিউতে যান",
       "esc_to_dismiss": "বাদ দিতে Esc চাপুন",
       "expand_knowledge_context": "নলেজ কনটেক্সট প্রসারিত করো",

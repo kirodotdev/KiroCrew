@@ -288,8 +288,10 @@ _BACKGROUND_CC_MODEL = "claude-sonnet-4.6"
 def _background_agent_model() -> str:
     """Kiro-spec model for background worker agents (lite / heartbeat).
 
-    Resolves ``agent.role_models['background']`` -> ``agent.model`` -> ``"auto"``
-    (see :meth:`AgentConfig.resolve_model`). Defaults to ``"auto"`` — which the
+    Resolves ``agent.role_models['background']`` -> ``"auto"``, deliberately NOT
+    inheriting ``agent.model`` (see :meth:`AgentConfig.resolve_model`), so a user's
+    chat model never silently becomes the price of every background task.
+    Defaults to ``"auto"`` — which the
     provider resolves server-side against the account's entitlement — so a
     background agent stays usable on every subscription tier unless an operator
     deliberately pins a (cheaper) model. Never raises: a config hiccup falls
@@ -4496,7 +4498,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # home for agent-only configuration, so dropping an entry destroys whatever
     # lives only there and stamping ``disabled`` makes ``list_servers`` delete the
     # server's own row. See the follow-up issue linked from
-    # docs/system-specs/features/mcp-probe-quarantine.md.
+    # docs/system-specs/modules/mcp-probe-quarantine.md.
     for name, spec in itertools.chain(
         extra_shared_mcp.items(), shared_mcp.items(), kirocrew_mcp.items()
     ):
@@ -5571,9 +5573,10 @@ report on. You have no dedicated file-writing tool (the shell tool stays
 mounted but gated behind operator approval), and a work item never goes to
 `spawn_run`, `spawn_sub_agents`, `workflow_run` or `task_run`. `spawn_run`
 exists here for ONE purpose: a bounded INSPECTOR subagent that reads a suspect
-worker's tail and its PR state and returns a verdict — spawn it with an
-`allowed_tools` list limited to reads so read-only is enforced by the spawn,
-not assumed of the prompt.
+worker's tail and its PR state and returns a verdict. `spawn_run` accepts no
+`allowed_tools` parameter, so bound the inspector in the task text and by
+pinning a read-only `agent=` spec — read-only is stated and verified, never
+enforced by the spawn.
 
 **Scripts are the deterministic half of your loop.** Shell access exists to
 run the scripts the `pipeline-conductor` skill carries:

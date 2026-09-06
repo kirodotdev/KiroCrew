@@ -9601,7 +9601,6 @@
       "could_not_switch_variant": "No se pudo cambiar de versión",
       "could_not_start_a_new_session": "No se pudo iniciar una sesión nueva",
       "could_not_start_session_message_restored": "No se pudo iniciar una sesión nueva: {{error}}. Se restauró tu mensaje — vuelve a enviarlo para reintentar.",
-      "dismiss_upload_error": "Descartar el error de subida",
       "enter_split_view": "Entrar en vista dividida",
       "esc_to_dismiss": "Esc para descartar",
       "expand_knowledge_context": "Expandir el contexto de conocimiento",

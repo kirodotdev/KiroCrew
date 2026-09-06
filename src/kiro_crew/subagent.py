@@ -1311,7 +1311,8 @@ class SubagentInfo:
     # model-pinned review's actual model is auditable (issue #3582).
     resolved_model: str = ""
     # The EFFECTIVE requested model — the per-spawn pin (``model``) OR, when that
-    # is empty, the ``agent.role_models['subagent']`` config pin (AGENTS.md names
+    # is empty, the ``agent.role_models['subagent']`` config pin
+    # (docs/system-specs/common/model-selection.md names
     # the config pin as *the* way to pin a subagent model). This is the side the
     # downgrade comparison must use: a config-pinned run served a different model
     # is exactly the "unverifiable pin" this feature exists to catch, and keying

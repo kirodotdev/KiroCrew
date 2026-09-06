@@ -312,9 +312,9 @@ describe('a panel with a gesture is bound LIVE to its offset', () => {  // The d
 
   it('documents the override, so a page author can find it', () => {
     // A cross-component DOM contract that lives only in code comments is one a
-    // new page never learns about. page-layout.md is where the sibling mobile
+    // new page never learns about. narrow-viewport.md is where the sibling mobile
     // and gesture rules already live.
-    const doc = readFileSync(resolve(__dirname, '../../docs/page-layout.md'), 'utf8')
+    const doc = readFileSync(resolve(__dirname, '../../docs/narrow-viewport.md'), 'utf8')
     expect(doc).toContain('data-owns-swipe')
     // The two halves that are silent when wrong: which element carries it, and
     // that a panel gaining a gesture must stop serializing its offset.

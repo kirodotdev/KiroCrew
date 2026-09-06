@@ -37,18 +37,18 @@ tell you in a paragraph.
 
 - macOS, Linux, or Windows — Windows builds and runs natively from source, with
   the documented feature limits in the [Windows guide](docs/guides/windows-install.md)
-- Python ≥ 3.10
+- Python ≥ 3.12
 - Node.js ≥ 22 (24 LTS recommended) and npm (for the frontend)
 - The `kiro-cli` agent on your `PATH`, logged in (`kiro-cli login`) — it is the
   only LLM backend (`agent.provider = acp`)
-- [Ollama](https://ollama.com) for memory and knowledge-library embeddings
+- Nothing extra for embeddings — memory and the knowledge library embed in-process, so no daemon to install
 
 ## First-Time Setup
 
 ```bash
 # 1. Fork the repo on GitHub, then clone your fork
 git clone https://github.com/kirodotdev/KiroCrew.git
-cd kirocrew
+cd KiroCrew
 
 # 2. Build the frontend and bundle it into the package
 cd website
@@ -192,19 +192,18 @@ are cut as a **release branch** off `main` on 0.1 increments (`0.1.0` → `0.2.0
 
 Once a branch is cut, **bug fixes for that release go on the release branch, not
 on `main`.** Each one produces a new release candidate — `0.2.0-rc.1`,
-`-rc.2`, … — published to the insider channel. **Stable is the last RC we judge
-stable enough, promoted by tagging that RC's commit — never rebuilt.** The RC
-run records one immutable promotion bundle (wheel/sdist, AppImage, notarized
-zip/DMG, and OCI manifest digest). A bare `v0.2.0` tag on that exact commit
-resolves the newest successful `0.2.0-*` run, verifies the GitHub artifact's
-API-recorded digest plus every file digest in its manifest, and only then moves
-stable pointers/tags to those bytes.
+`-rc.2`, … — published to the insider channel. **Stable is BUILT FRESH from the commit the last RC cleared, under the bare
+`X.Y.Z`.** A stable release must never ship a version carrying a prerelease
+suffix, and the RC's bytes are stamped from its prerelease tag, so nothing
+downstream can re-stamp them without invalidating the recorded digests and the
+macOS signatures.
 
-Because changing an embedded version changes and invalidates the tested bytes,
-the promoted binaries retain the selected RC's embedded version; the bare git
-tag, GitHub Release, and stable channel are the final release identity. If the
-record is missing or its 90-day artifact retention elapsed, promotion fails
-closed: cut and validate a fresh RC rather than rebuilding stable.
+Byte-for-byte reuse of the candidate's artifacts survives as an opt-in escape
+hatch for when stable must run the identical binary insiders validated: set
+`vars.STABLE_PROMOTE_BYTES` to that exact base version. Its cost is precisely
+the RC-stamped embedded version those bytes carry. The full model, including
+what the promotion record must prove, is in
+[docs/build/release.md](docs/build/release.md).
 
 Hot patches bump the patch digit (`0.2.0` → `0.2.1`) from the release branch and
 must also have a successful prerelease candidate before the bare stable tag.
@@ -215,18 +214,11 @@ nightlies sort above what just shipped, and **merge the branch's fixes back into
 
 ### Channels
 
-| Channel | Built from | Who it's for |
-|---------|-----------|--------------|
-| nightly | `main` | us and contributors |
-| insider | release branch, RC tags | power users testing ahead |
-| stable | the promoted insider | everyone (client default) |
-
-Nightly installs **side by side** as its own app. Insider and stable are two
-update lanes of **one** production app, switchable in Settings.
-
-The user-facing version of this table — same audiences, more detail on
-switching — is [Release channels](README.md#release-channels) in the README.
-Keep the two in step.
+The channel table lives in [Release channels](README.md#release-channels); the
+trigger-and-version-shape facts behind it are in
+[docs/build/release.md](docs/build/release.md). What a contributor needs on top
+of those: nightly installs **side by side** as its own app, while insider and
+stable are two update lanes of **one** production app, switchable in Settings.
 
 ### Cutting a release
 
@@ -252,7 +244,7 @@ git push origin v0.2.0
 ```
 
 Update `CHANGELOG.md` with a `## [X.Y.Z] - YYYY-MM-DD` section as part of the
-release (see AGENTS.md → "Release Changelog" for the format), and land the
+release (see [docs/build/changelog.md](docs/build/changelog.md) for the format), and land the
 changelog and any version bump through a normal PR — never push to `main` or a
 release branch directly.
 
@@ -260,8 +252,9 @@ release branch directly.
 
 **Nightly** runs on a schedule every night and can be kicked off on demand at any
 time. **Insider and stable are triggered by pushing a version tag** — an RC tag
-builds and publishes to insider, while a plain version tag promotes the exact
-recorded RC artifacts to stable without rebuilding.
+builds and publishes to insider, and a plain version tag builds stable from the
+cleared commit (or republishes the candidate's bytes when
+`vars.STABLE_PROMOTE_BYTES` names that base).
 
 The release branch, the RC numbering, the promote decision, and the back-merge
 are all **human process**. The pipeline reacts to the tag, but the stable path
@@ -269,8 +262,10 @@ also requires the successful same-commit prerelease record and fails closed if
 it cannot prove that record's immutable digest.
 
 A nightly or prerelease build produces a signed and notarized macOS app, a Linux
-AppImage, a pip wheel, and a Docker image. Stable republishes/retags those exact
-candidate bytes. A channel's update feed is repointed **last**, after its
+AppImage, a pip wheel, and a Docker image. Stable rebuilds them from the cleared
+commit unless `vars.STABLE_PROMOTE_BYTES` names that base, in which case the
+candidate's exact bytes are republished. A channel's update feed is repointed
+**last**, after its
 artifacts are verified downloadable, and clients only install with the user's
 consent. Windows builds but is not yet signed or published.
 
@@ -300,7 +295,7 @@ setuptools normalize to `X.Y.ZrcN`. Do not use the canonical PEP 440 spelling
 (`0.4.0rc4`) in `__init__.py` — `packaging/build-desktop.sh` greps `__version__`
 straight into electron-builder's `extraMetadata.version`, which rejects
 non-SemVer and kills a local `make desktop`. The tag still overrides all three
-at build time (see `docs/build/release.md` → "Version numbering policy").
+at build time (see `docs/build/release.md` → "Version stamping").
 
 ### One trap worth knowing
 
@@ -320,7 +315,7 @@ Key entry points:
 |------|---------|
 | `src/kiro_crew/cli.py` | CLI entrypoint (argparse) |
 | `src/kiro_crew/session.py` | Conversation session management |
-| `src/kiro_crew/providers/` | LLM provider layer (claude_code, acp, bedrock) |
+| `src/kiro_crew/providers/` | LLM provider layer. ACP only — `agent.provider` is fixed to `acp` |
 | `src/kiro_crew/acp/client.py` | ACP JSON-RPC client (stdio) |
 | `src/kiro_crew/slack/gateway.py` | Slack Socket Mode gateway |
 | `src/kiro_crew/slack/handler.py` | Message handling, tool approval |
@@ -343,7 +338,7 @@ Key entry points:
 | Rule | Standard |
 |------|----------|
 | Line length | 100 chars (black) |
-| Python | ≥ 3.10, `from __future__ import annotations` |
+| Python | ≥ 3.12, `from __future__ import annotations` |
 | Logging | `import logging` + `logger = logging.getLogger(__name__)` |
 | Async | `asyncio` throughout, `async def` for all I/O |
 | Data | `@dataclass` for containers |
@@ -360,26 +355,10 @@ Full reference: [AGENTS.md](AGENTS.md)
 commit.** A PR that changes behavior and leaves its doc stale will be sent back:
 a doc nobody updated is worse than no doc, because readers still trust it.
 
-1. **Find the one owning doc.** Every subsystem has exactly one, usually under
-   `docs/system-specs/modules/`. [AGENTS.md](AGENTS.md)'s routing table maps
-   subsystem to doc.
-2. **Edit that doc; don't add a second one.** Two docs on one subject diverge,
-   and then nobody can tell which is true.
-3. **Update the indexes** when you add, move, rename, or delete a doc: the
-   directory's own `README.md`, [docs/README.md](docs/README.md), and anything
-   linking to it.
-4. **No changelogs inside docs.** No `Last Updated:` line, no
-   "previously/used to/we now", no PR numbers or SHAs. Git holds history; the doc
-   states current behavior in present tense.
-5. **Run the gate:** `./scripts/docs-lint.sh` (also a blocking CI job). It catches
-   broken internal links, docs no index reaches, directories missing an index, code
-   comments citing a doc that does not exist, and a renamed doc whose filename is
-   hardcoded in code.
-
-Note that `src/kiro_crew/docs/` is **packaged and read at runtime**: its filenames
-are an API (see [its README](src/kiro_crew/docs/README.md)), so renaming a file
-there is a code change, and an internal engineering note placed there ships to every
-user.
+The five steps — find the one owning doc, edit rather than add, update every
+index, no changelog narration, run `./scripts/docs-lint.sh` — plus the
+`src/kiro_crew/docs/` filenames-are-an-API caveat are in
+[The rule for changing docs](docs/README.md#the-rule-for-changing-docs).
 
 ## Extending Kiro Crew
 
@@ -494,35 +473,24 @@ line your change falls on, open an issue and ask.
 
 ### CI checks on your PR (forks vs. direct branches)
 
-GitHub deliberately withholds repository secrets and OIDC credentials from
-workflows triggered by **pull requests opened from a fork**. Three of our
-checks need those credentials to reach Amazon Bedrock, so their behaviour
-depends on *where your branch lives*:
+A fork PR gets the AI reviews, but its workflow runs need one maintainer action
+first. The repository requires approval for external contributors, so your runs
+land in `action_required` and nothing starts — not Fast Gate, not the reviewers —
+until a maintainer (or the fork auto-approval job, for a diff that provably cannot
+touch CI) presses **Approve and run**.
 
-| Check | Fork PR | Branch pushed to `kirodotdev/KiroCrew` |
-| --- | --- | --- |
-| **Opus 4.8 Review** | Skipped (neutral — not a failure) | Runs |
-| **GPT 5.6 Review** | Skipped | Runs |
-| **Design Review** | Skipped | Runs |
-| Tests, lint, typecheck, CodeQL, coverage, build | Run normally | Run normally |
+After that approval there is no further maintainer step. GitHub withholds
+repository secrets from a workflow a fork triggered, so the five review lanes run
+**privileged from the default branch** once `Fast Gate` completes for your head
+commit, publishing their check-runs under the same names as on a direct branch —
+so a fork PR reaches `readiness: passed` on its own.
 
-- **Opening from a fork (the default for most contributors):** the three AI
-  reviews are **skipped, not failed** — and this is identical for *everyone*,
-  regardless of permission level. A maintainer who opens a PR from their own
-  personal fork gets exactly the same skip; write access does not change it.
-  A skipped review does **not** block your PR and there is nothing for you to
-  fix: just make sure the credential-free checks (tests, lint, typecheck,
-  CodeQL, coverage, build) are green. A maintainer runs the AI review on their
-  side (or re-pushes your branch to the upstream repo) and reviews manually.
-- **Getting the AI reviews to run** depends only on *where the branch lives*,
-  never on who you are: the branch has to be on `kirodotdev/KiroCrew` itself,
-  not on a fork. Pushing a branch directly to the upstream repo requires write
-  access — so if you have it, push there and open the PR from that branch to
-  get the full suite. Without write access, the fork path above is the correct
-  and only route, by design.
+CodeQL is the one lane a fork cannot run. Everything else — tests, lint,
+typecheck, coverage, build — runs normally from either place. An unapproved run
+keeps readiness at `action required`; that is the state only a maintainer clears.
 
-If your only red checks are the AI reviews on a fork PR, there is nothing for
-you to fix — flag it to a maintainer.
+Details, including which workflow each lane keys on:
+[docs/ci/ci-and-reviews.md#fork-prs](docs/ci/ci-and-reviews.md#fork-prs).
 
 ### Ratchet and baseline gates (why a check can fail for something you did not touch)
 
@@ -599,9 +567,11 @@ required check pass, so it is not a substitute for any of the above.)
 <body — what and why, not how>
 ```
 
-Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+Types the PR-title gate accepts: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`,
+`test`, `chore`, `ci`, `build`, `revert`.
 
-Rules: imperative mood, lowercase summary, no trailing period, wrap body at 72 chars.
+Rules: imperative mood, lowercase summary of at most 72 chars, no trailing period,
+wrap the body at 72 chars, and one logical change per commit.
 
 ## Recognizing Contributions
 

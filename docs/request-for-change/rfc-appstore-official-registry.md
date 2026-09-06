@@ -13,6 +13,12 @@ superseded-by: []
 ---
 # RFC: Official App Registry + Editorial Feed
 
+> **Current behaviour: see [`../system-specs/modules/app-kit-platform.md`](../system-specs/modules/app-kit-platform.md)**
+> for the official-catalog and editorial surface that ships. Signature
+> verification and tombstone resolution are deliberately absent and fail
+> closed. §4 carries its own revision note naming the four category decisions
+> reversed in the sibling `KiroCrewApps` repo.
+
 **Author:** KiroCrew contributors
 **Date:** 2026-07-29
 **Status:** partial, **and diverged** — this document's failure mode is the first one the [directory README](README.md) names: *the plan was overtaken.* Rollout step R1 shipped **in the sibling `kirodotdev/KiroCrewApps` repo**, but §4 was reversed on four decisions while it did, so §4 is now a record of what was decided rather than a description of the contract. **Read the note at the head of §4 before trusting anything below about categories.** The schema files in that repository are the current source of truth.

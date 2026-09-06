@@ -1,6 +1,6 @@
 """Session work ledger — core primitive, nudge injection, routes, cleanup.
 
-Covers the contracts docs/system-specs/features/session-work-ledger.md pins:
+Covers the contracts docs/system-specs/modules/session-work-ledger.md pins:
 exact-key identity (lossless fold, no channel-key collisions), directory
 guarding, the crash-atomic phase-requires-event discipline, partial updates
 preserving stored state, bounds (tried/events/artifacts/state-file size), the

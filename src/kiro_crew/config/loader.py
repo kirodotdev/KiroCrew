@@ -35,7 +35,8 @@ from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
 from kiro_crew.atomic_write import atomic_write, on_event_loop
 
 # Computer-use defaults/ceilings come from the feature's constants module rather
-# than being re-spelled here (AGENTS.md: no hardcoded values in business logic).
+# than being re-spelled here (docs/system-specs/common/code-style.md: no
+# hardcoded values in business logic).
 # ``computer_use.types`` is deliberately dependency-free — it imports nothing from
 # ``kiro_crew`` — so this cannot create an import cycle with the loader, and the
 # ``computer_use`` package's ``__init__`` pulls in only ``platform_compat`` /

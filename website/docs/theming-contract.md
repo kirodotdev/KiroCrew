@@ -30,7 +30,7 @@ with the theme CSS custom properties or Tailwind classes mapped to them,
 <div className="bg-[var(--card)] text-[var(--card-fg)]" />
 ```
 
-The 54 CSS variables are the single source of truth for color. They are the
+The 56 CSS variables are the single source of truth for color. They are the
 customization surface a theme (built-in, custom, or installed) can set.
 
 **Fills are flat.** The brand system is flat: a new decorative gradient fill
@@ -101,7 +101,7 @@ otherwise always win and silently ignore the active theme.
 
 | Tier | Surface |
 |---|---|
-| **L0 Color** | the 54 CSS vars (dark + light) |
+| **L0 Color** | the 56 CSS vars (dark + light) |
 | **L1 Brand** | logo, favicon, wordmark, botName, fonts, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 

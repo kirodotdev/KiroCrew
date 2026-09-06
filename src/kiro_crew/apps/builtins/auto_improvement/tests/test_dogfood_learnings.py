@@ -630,7 +630,7 @@ class TestNestedTargetJoinsItsEvidence:
 
 
 class TestRetargetClearsRepoScopedConfig:
-    """Found by executing docs/system-specs/modules/auto-improvement-test-plan.md against a SECOND repository.
+    """Found by executing docs/system-specs/modules/auto-improvement.md against a SECOND repository.
 
     ``setup-clone`` rewrote ``clone``/``target_url``/``target_display`` but left
     ``branch`` untouched, so after retargeting from Kiro Crew to chess_test the config
@@ -668,7 +668,7 @@ class TestRetargetClearsRepoScopedConfig:
 
 
 class TestReproTestDirIsRepoAware:
-    """Found by executing docs/system-specs/modules/auto-improvement-test-plan.md against a SECOND repo (Zedmor/chess_test).
+    """Found by executing docs/system-specs/modules/auto-improvement.md against a SECOND repo (Zedmor/chess_test).
 
     The authoring prompt and the candidate's declared repro path both hard-coded
     ``test/test_bug_*.py``. chess_test keeps its suite in ``tests/`` (plural), so the

@@ -282,7 +282,7 @@ graph TB
 - **Idle timeout** reclaims a session after `session.timeout_secs`, default
   **3600s**.
 - **Turn ceiling**: `agent.chat_turn_timeout_secs` defaults to **7200s** (2h),
-  clamped to 300s..7200s and never disable-able. It is a runaway backstop, so a
+  clamped to 300s..86400s (`CHAT_TURN_TIMEOUT_MAX`, deliberately decoupled from the 7200s default) and never disable-able. It is a runaway backstop, so a
   turn that hits it ends with a card naming the limit rather than failing
   silently. The ACP transport carries its own prompt timeout of the same
   magnitude and bounds the turn first.
@@ -330,7 +330,7 @@ order, and the order is load-bearing:
    session, so they would otherwise outlive the gateway).
 6. Concurrently: cancel subagents, close all sessions, close WebSocket
    connections and then the dashboard runner, close each channel client, and
-   cancel background tasks (model download, home migration, update check).
+   cancel background tasks (model download, memory-store auto-migration, update check).
 
 ## Memory lifecycle
 
@@ -495,14 +495,14 @@ surface up there cannot be built as an app, the missing seam is the bug to file.
 
 **That boundary is enforced against the agent, not against app code.** Every
 control in the table gates the agent's tool-call surface. An app's Python runs in
-the gateway process: `src/kiro_crew/apps/module_loader.py:34-39` states that the
+the gateway process: `apps.module_loader._warn_third_party_execution` states that the
 permission system "does NOT restrict `import`, filesystem, network, or access to
 in-memory credentials. Installing an app is therefore equivalent to granting it
 full gateway-process privileges." So the table says what no app may be *asked* to
 supply, and the mechanism that would stop one supplying it anyway does not exist
 yet — the keystone path list is a mutable module-level list
-(`src/kiro_crew/security.py:4436`), and app admission admits when no policy file
-is present (`src/kiro_crew/apps/admission.py:25-30`). Read the table as the
+(`security._SENSITIVE_HOME_DIRS`), and app admission admits when no policy file
+is present (`apps.admission`). Read the table as the
 intended boundary and
 [`../request-for-change/rfc-app-sandbox-isolation.md`](../request-for-change/rfc-app-sandbox-isolation.md)
 as the work that makes it real.
@@ -528,10 +528,10 @@ open against that standard today:
   `on_shutdown`) and `setup.onEnable` / `onDisable` are the in-gateway entry
   points, and none of them lets an app take a position in a flow the core owns.
   `HookManager` is built only from `config.json`'s `hooks` section
-  (`src/kiro_crew/hooks.py:931`) and exposes no registration path.
+  (`hooks.HookManager.__init__`) and exposes no registration path.
 - The platform states no version for its own app-facing surface.
   `minKiroCrewVersion` is a floor an app declares about the gateway, checked at
-  install and update only (`src/kiro_crew/apps/manager.py:281`), so changing or
+  install and update only (`apps.manager._check_min_version`), so changing or
   withdrawing a seam carries no compatibility promise in the other direction.
 - Manifest fields that nothing reads. `ui.sidebar.section` and `ui.sidebar.order`
   are documented and parsed, and the dashboard does not place apps by them, so
@@ -625,8 +625,9 @@ there is no optional embedding service to stand up.
 
 Persistent state lives under `~/.kiro/crew/` (override with `KIROCREW_HOME`).
 The root nests under kiro-cli's own `~/.kiro/` so every Kiro-family app shares
-one directory a user can secure; a legacy `~/.kirocrew` is migrated
-automatically. Selected entries:
+one directory a user can secure. A legacy `~/.kirocrew` is fully deprecated and
+does not auto-migrate; it survives only in sensitive-path deny lists. Selected
+entries:
 
 ```
 ~/.kiro/crew/
@@ -705,10 +706,13 @@ detail; this table is only an index.
 | Task state machine | `src/kiro_crew/task.py` | [task.md](../system-specs/modules/task.md) |
 | TaskRunner (spec to plan to execution) | `src/kiro_crew/taskrunner.py` | [taskrunner.md](../system-specs/modules/taskrunner.md) |
 | Themes | `src/kiro_crew/dashboard/handlers/themes.py` | [themes.md](../system-specs/modules/themes.md) |
+| Third-party account connections | `src/kiro_crew/connections/` | [connections.md](../system-specs/modules/connections.md) |
 
-Smaller, feature-scoped specs live in
-[`../system-specs/features/`](../system-specs/features/), and cross-cutting
-patterns in [`../system-specs/common/`](../system-specs/common/).
+This table indexes the principal subsystems, not every spec.
+[`../system-specs/modules/README.md`](../system-specs/modules/README.md) is the
+complete spec index — one index, so a spec cannot be reachable from one and missing
+from the other — and cross-cutting patterns are in
+[`../system-specs/common/`](../system-specs/common/).
 
 ## How it fits together
 

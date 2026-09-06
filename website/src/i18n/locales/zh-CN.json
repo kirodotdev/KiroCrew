@@ -9333,7 +9333,6 @@
       "could_not_switch_variant": "无法切换版本",
       "could_not_start_a_new_session": "无法启动新会话",
       "could_not_start_session_message_restored": "无法启动新会话：{{error}}。消息已恢复 — 再次发送即可重试。",
-      "dismiss_upload_error": "忽略上传错误",
       "enter_split_view": "进入分屏视图",
       "esc_to_dismiss": "按 Esc 关闭",
       "expand_knowledge_context": "展开知识上下文",

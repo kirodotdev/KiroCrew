@@ -13,6 +13,12 @@ superseded-by: []
 ---
 # RFC: Config System, Named Memory Stores & Plugin Architecture
 
+> **Current behaviour: see [`../system-specs/modules/config.md`](../system-specs/modules/config.md)**
+> and [`../system-specs/modules/memory-skills-hooks.md`](../system-specs/modules/memory-skills-hooks.md),
+> which own Phases 1–2. **Phase 3's vector-store isolation was reversed on
+> purpose** and this document was not revised afterwards, so read that phase as
+> a rejected option rather than a plan.
+
 **Author:** KiroCrew contributors  
 **Date:** 2026-03-25 (rev 2: 2026-03-25)  
 **Status:** partial — Phases 1 and 2 are verifiably on main (schema registry + `/api/config/schema`; `WorkspaceConfig`, `MemoryStoreConfig`, `resolve_agent_bindings` with seven real callers, auto-migration). Phase 3 is half-built: the markdown/lesson layer is store-scoped, but **per-store `memory.db`/`memory.faiss` isolation was affirmatively reversed** by commit `7d1ff74e`, which shares one `VectorMemoryStore` across all stores — this doc's Phase 3 text is stale on that point. Phase 4 (`MemoryBackend` / `EmbeddingBackend` plugin entry points) is unstarted. Two deviations: the merge shipped as `resolve_memory_store_config`, not `resolve_effective_config`, and per-workspace `agent` overrides were never built.

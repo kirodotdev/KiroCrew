@@ -2462,7 +2462,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    field written with an arbitrary value, an `!important` modifier or an inline style.
    Do not re-add one — `noPageZoom.test.ts` fails if a blanket element rule reappears.
    Full reasoning, and what a correct fix would need instead, live in the page-zoom
-   section of website/docs/page-layout.md and in issue #6001. */
+   section of website/docs/narrow-viewport.md. */
 
 /* ── The shell is not a zoomable document ──
    `pan-x pan-y` allows exactly the two behaviours the app needs from the browser

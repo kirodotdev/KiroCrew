@@ -267,7 +267,7 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
 
   // ── screenshot magnification (issue #6162) ────────────────────────────────
   // This lightbox is the third full-viewport magnify overlay, bound by the same
-  // own-your-zoom rule as the image viewer and DiagramLightbox (page-layout.md):
+  // own-your-zoom rule as the image viewer and DiagramLightbox (narrow-viewport.md):
   // page zoom is off on touch shell-wide, so a phone user has no other way to
   // inspect a fit-scaled screenshot. Unlike those two, the surface also owns
   // prev/next navigation and click-to-dismiss, so the shared hook supplies only

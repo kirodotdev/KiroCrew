@@ -2,7 +2,7 @@
 
 Middle rung of the Connections launch ladder (L0 = the account-free metadata
 probe, L2 = the manual UI gate); the full contract -- verdict table, runbook,
-known gap -- lives in ``docs/architecture/design-notes/connections-l1-smoke.md``.
+known gap -- lives in ``docs/system-specs/modules/connections.md``.
 Invariants: **Kiro Crew holds no token** (kiro-cli injects the bearer in its own
 process, so a managed provider's healthy reply is an OAuth challenge -- graded
 ``GRANT_HELD``, never ``NEEDS_RECONSENT``, reserved for attributable
@@ -664,7 +664,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _echo(
             f"VACUOUS: {report['exercised_count']} of {report['provider_count']} providers "
             f"exercised, {report['min_exercised']} required -- one-time consent click per "
-            "provider; see docs/architecture/design-notes/connections-l1-smoke.md."
+            "provider; see docs/system-specs/modules/connections.md."
         )
     return 0 if report["ok"] else 1
 

@@ -1,7 +1,8 @@
 """Data types and constants for computer use.
 
 Single home for EVERY constant and frozen dataclass the computer-use package
-uses (AGENTS.md: no hardcoded strings/values in business logic). Deliberately
+uses (docs/system-specs/common/code-style.md: no hardcoded strings/values in
+business logic). Deliberately
 platform-free and dependency-free — this module imports nothing from
 ``kiro_crew`` and never touches ctypes, so it loads identically on macOS,
 Linux, Windows and in CI.

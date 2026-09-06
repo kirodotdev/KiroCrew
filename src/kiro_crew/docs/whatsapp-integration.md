@@ -109,7 +109,7 @@ Echo discipline: the agent tracks the IDs of messages it sends, so its own
 replies (which arrive on the same account) are never mistaken for your
 commands, and anything **you** type is never mistaken for an echo.
 
-## Access policy
+## Access control
 
 `whatsapp.dm_policy` controls who may command the agent in direct chats:
 
@@ -188,7 +188,7 @@ only the command list. Everything that acts on the session is **operator only**:
 from anyone else those words are treated as plain text. Matching is whole-message
 and exact, so `/stop the presses` reaches the agent as a sentence.
 
-## Behaviour notes
+## Limits
 
 - **The reply streams**: it appears as soon as there is something to read and
   is then edited in place as the agent continues, because the WhatsApp Web
@@ -231,7 +231,7 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
 - **Read receipts / typing**: the agent shows "typing…" while working on a
   reply, and never marks your own self-chat as read on your behalf.
 
-## Configuration reference
+## Settings reference
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -275,6 +275,12 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
   account owner and numbers in `whatsapp.allowed_wa_ids`. Group membership admits
   someone to the conversation, not to your machine, so add the number to the
   allowlist if you want their photos and documents read.
+
+## Related docs
+
+- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Getting Started](getting-started.md): install, first run, connecting a channel
+- [Configuration](configuration.md): the config file and environment variables
 
 ## Attribution
 

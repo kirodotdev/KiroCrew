@@ -146,7 +146,7 @@ be verified through a real notarization.
 `packaging/signing/Entitlements.entitlements` is the release-lane entitlements
 file. `website/electron/build/entitlements.mac.plist` is the electron-builder-lane
 twin. **The two signing paths read their OWN file**, so a key present in only one
-of them means that lane ships a broken bundle. `website/electron/packaging.test.js`
+of them means that lane ships a broken bundle. `website/electron/test/packaging.test.js`
 pins both.
 
 Under the hardened runtime an entitlement, not the `Info.plist` usage string, is

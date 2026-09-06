@@ -7,8 +7,28 @@ triggers: meeting, meeting notes, action items, meeting tasks, transcript, stand
 # Meetings app
 
 The Meetings app transcribes a live meeting and fans each line out to a small
-crew of background agents. Each agent owns exactly ONE output file and rewrites
-it in full after every batch.
+crew of background agents. A **file-backed** agent (`widget_type` `markdown` or
+`html`) owns exactly ONE output file and rewrites it in full after every batch.
+An agent whose `widget_type` is `chat` has no output file — its output IS its
+chat replies, it gets no `OUTPUT_FILE` line, and none of the file rules below
+apply to it.
+
+Only a markdown agent's output is user-editable in the app (the editable
+minutes), so a markdown agent re-reads its output file before every rewrite —
+the user may have edited it since the last write. An `html` output is not
+user-editable.
+
+Only one meeting may be active at a time; starting a second answers 409. The
+server enforces the lifecycle transition table, not just the UI: `active` and
+`paused` may only reach `ended` through `reviewing` (the action-item review
+gate), `ended` may be reopened to `active`, and a same-status POST is an
+idempotent no-op.
+
+A live translation panel translates each transcript line as it lands, using one
+tool-less `kirocrew-lite` call per line in an ephemeral session — deliberately
+NOT the agent batch path, because latency is the point. It is sequential per
+meeting and drops the oldest pending line when it falls behind, so gaps in
+`translations.json` are expected, not a bug.
 
 ## Where the data lives
 
@@ -24,6 +44,8 @@ All paths are under `~/.kiro/crew/apps/meetings/data/`:
 | `meetings/<id>/tasks.json` | that meeting's extracted action items |
 | `meetings/<id>/<agent-id>.md` | a markdown agent's output (e.g. `note-taker.md`) |
 | `meetings/<id>/<agent-id>.html` | an HTML agent's output (e.g. `sketch-artist.html`) |
+| `meetings/<id>/transcript.jsonl` | the raw transcript, one finalized speech segment per line — read this instead of asking the user to re-summarize |
+| `meetings/<id>/translations.json` | per-line translations for the live translation panel |
 
 `<id>` is the meeting id with `:` replaced by `_`. Only `[A-Za-z0-9._-]` is
 legal in it — the backend rejects anything else, so do not construct a path from
@@ -45,9 +67,10 @@ a raw calendar UID.
 | `meetings-sketch-artist` | `sketch-artist.html` | one self-contained HTML/Mermaid diagram, revised in place |
 | `meetings-task-extractor` | `tasks.json` | always runs; the app's core output |
 
-Each agent's first message carries an `OUTPUT_FILE:` line. Write to that exact
-path, character for character, and rewrite the FULL file after every batch —
-never accumulate content in memory, because a context limit would lose it.
+A file-backed agent's first message carries an `OUTPUT_FILE:` line. Write to that
+exact path, character for character, and rewrite the FULL file after every batch —
+never accumulate content in memory, because a context limit would lose it. A
+`chat` agent gets no such line and writes no file.
 
 Lines prefixed `[chat]` are typed by the user, not transcribed: treat them as
 corrections or added context and act on them immediately.

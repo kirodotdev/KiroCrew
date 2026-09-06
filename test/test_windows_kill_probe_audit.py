@@ -22,7 +22,8 @@ calls in general. The tree carries many raw POSIX call sites (``fcntl``,
 ``resource``, ``os.killpg``, ``pty``, ``termios``, …) and the overwhelming
 majority are legitimately POSIX-gated implementation detail; auditing them all
 here would bury this signal in noise. General portability is governed by the
-``platform_compat`` shim table in ``AGENTS.md``, the ``cross-platform.yml``
+``platform_compat`` shim table in
+``docs/system-specs/common/platform-compat.md``, the ``cross-platform.yml``
 added-line gate, and review. What makes signal-0 special is that getting it
 wrong is *destructive* rather than merely unavailable — and the CI gate only
 inspects lines a PR adds, so a probe that arrives by a file move or a rebase is

@@ -13,16 +13,24 @@ How you talk to the Gateway depends on where your code runs:
   [getting-started.md](getting-started.md) and the [App SDK Hooks](#app-sdk-hooks)
   section below.
 - **Python apps / external CLI tools / services** — use the standalone
-  `kirocrew-client` package (`pip install kirocrew-client`). It is async
-  (`aiohttp`) and has no dependency on the KiroCrew main package. See the
-  [Python Client](#python-client) section.
+  `kirocrew-client` package, carried in this repository under
+  `packages/kirocrew-client-py/`. It is async (`aiohttp`) and has no dependency on
+  the Kiro Crew main package, but it is not published to PyPI — use it from a source
+  checkout. See the [Python Client](#python-client) section.
 - **Node.js / Electron apps** — call the Gateway REST/WS endpoints directly via
   `fetch()` / a WebSocket. The full endpoint list is in
   [Gateway REST API Endpoints](#gateway-rest-api-endpoints).
 
-There is no published TypeScript gateway-client npm package. The `kirocrew-client`
-method names below describe the canonical Gateway API surface — the same
-endpoints any client (including raw `fetch`) talks to.
+There is no published TypeScript gateway-client npm package, and none is planned
+here — the camelCase names used throughout the sections below are **labels for
+Gateway endpoints**, not callable methods. Read them as endpoint identifiers.
+The `@kirocrew/app-sdk` hooks are real and callable — see the next section; they
+resolve from the host import map. The `kirocrew-client` Python package is **not
+published**: it lives in this repository under `packages/kirocrew-client-py/`, is
+outside the installed distribution, and has no release on PyPI, so `pip install
+kirocrew-client` does not work. Use it from a source checkout, or call the
+endpoints directly with `fetch` or `aiohttp`. Its method list is in
+[Python Client](#python-client).
 
 ## App SDK Hooks (dashboard UI)
 
@@ -262,11 +270,16 @@ that genuinely needs live app state is supplied by the host as an entry.
 
 ## Gateway API Surface
 
-The sections below document the canonical Gateway API surface as exposed by the
-`kirocrew-client` Python package (see the [Python Client](#python-client)
-section for the constructor and full method list). Method names are also a
-convenient way to refer to each endpoint — the same endpoints any client
-(including raw `fetch`) talks to.
+The sections below name the Gateway API surface. A name here is an **endpoint
+label**, not a guarantee that a client method exists for it: the source-only
+`kirocrew-client` Python package covers part of this surface, and
+[Python Client](#python-client) marks which part. For anything it does not
+implement, call the endpoint directly — the paths are in
+[Gateway REST API Endpoints](#gateway-rest-api-endpoints).
+
+The `Returns` column describes the response shape. It is not a TypeScript type:
+no TypeScript client ships, so `SlotInfo`, `GatewayStatus`, `SystemInfo` and
+their siblings are response-shape names rather than importable types.
 
 When `app_name` is set and no explicit auth is provided, the client auto-reads
 the app secret from `~/.kiro/crew/apps/{name}/.app_secret` and exchanges it
@@ -276,26 +289,26 @@ for a short-lived token via `POST /api/apps/{name}/token`.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `authenticate()` | `Promise<boolean>` | Exchange app secret for token (auto-called if appName set) |
+| `authenticate()` | `boolean` | Exchange app secret for token (auto-called if appName set) |
 | `setToken(token)` | `void` | Manually set auth token on both HTTP and WS clients |
 
 ### Connection
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `ping()` | `Promise<boolean>` | Check if Gateway is reachable |
-| `getStatus()` | `Promise<GatewayStatus>` | Gateway health (version, uptime, slots, provider) |
-| `getSystemInfo()` | `Promise<SystemInfo>` | CPU, memory, disk metrics |
+| `ping()` | `boolean` | Check if Gateway is reachable |
+| `getStatus()` | `GatewayStatus` | Gateway health (version, uptime, slots, provider) |
+| `getSystemInfo()` | `SystemInfo` | CPU, memory, disk metrics |
 
 ### Chat Slots
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `createSlot(name, agent?)` | `Promise<SlotInfo>` | Create a new chat session |
-| `listSlots()` | `Promise<SlotInfo[]>` | List all active sessions |
-| `deleteSlot(slotId)` | `Promise<void>` | Remove a session |
-| `getSlotHistory(slotId, limit?)` | `Promise<{messages, total}>` | Get slot message history |
-| `sendMessage(slotId, message)` | `Promise<void>` | Send a message (validates length, auto-flushes pending context) |
+| `createSlot(name, agent?)` | `SlotInfo` | Create a new chat session |
+| `listSlots()` | `SlotInfo[]` | List all active sessions |
+| `deleteSlot(slotId)` | `—` (no body) | Remove a session |
+| `getSlotHistory(slotId, limit?)` | `{messages, total}` | Get slot message history |
+| `sendMessage(slotId, message)` | `—` (no body) | Send a message (validates length, auto-flushes pending context) |
 
 ### WebSocket Events
 
@@ -323,21 +336,21 @@ WebSocket event types: `chat_chunk`, `chat_done`, `chat_message`, `chat_error`,
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `spawn(task, agent?)` | `Promise<string>` | Spawn a background subagent |
-| `spawnMany(tasks, agents?)` | `Promise<string[]>` | Spawn multiple subagents in parallel |
-| `listSubagents()` | `Promise<SubagentInfo[]>` | List all subagents |
-| `getSubagentStatus(id)` | `Promise<SubagentResult>` | Get subagent output |
+| `spawn(task, agent?)` | `string` | Spawn a background subagent |
+| `spawnMany(tasks, agents?)` | `string[]` | Spawn multiple subagents in parallel |
+| `listSubagents()` | `SubagentInfo[]` | List all subagents |
+| `getSubagentStatus(id)` | `SubagentResult` | Get subagent output |
 
 ### Cron Jobs
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `addCron(name, options)` | `Promise<CronJob>` | Create a scheduled job |
-| `listCrons()` | `Promise<CronJob[]>` | List all cron jobs |
-| `updateCron(id, options)` | `Promise<CronJob>` | Update a cron job |
-| `removeCron(id)` | `Promise<void>` | Delete a cron job |
-| `pauseCron(id)` | `Promise<void>` | Pause without deleting |
-| `resumeCron(id)` | `Promise<void>` | Resume a paused job |
+| `addCron(name, options)` | `CronJob` | Create a scheduled job |
+| `listCrons()` | `CronJob[]` | List all cron jobs |
+| `updateCron(id, options)` | `CronJob` | Update a cron job |
+| `removeCron(id)` | `—` (no body) | Delete a cron job |
+| `pauseCron(id)` | `—` (no body) | Pause without deleting |
+| `resumeCron(id)` | `—` (no body) | Resume a paused job |
 
 #### Watching something without paying for a model call (`kiro_crew.irq`)
 
@@ -357,7 +370,7 @@ Schedule a **script** cron instead and build it on `kiro_crew.irq`, the
 interrupt controller. The script runs in a subprocess with no model call at
 all; a quiet tick is free. Only an unexpected observation raises a wake, and the
 wake is delivered into the session that armed the cron as a real agent turn.
-Full design: `docs/system-specs/features/agent-interrupt-controller.md`.
+Full design: `docs/system-specs/modules/agent-interrupt-controller.md`.
 
 You write the two things that are your domain knowledge — what to poll, and
 what counts as an anomaly — and the module owns masking (so one condition wakes
@@ -437,44 +450,44 @@ Rules:
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `addLesson(rule, category, scope?)` | `Promise<void>` | Save a learned rule |
-| `listLessons()` | `Promise<Lesson[]>` | List all lessons |
-| `removeLesson(query)` | `Promise<void>` | Remove matching lessons |
+| `addLesson(rule, category, scope?)` | `—` (no body) | Save a learned rule |
+| `listLessons()` | `Lesson[]` | List all lessons |
+| `removeLesson(query)` | `—` (no body) | Remove matching lessons |
 
 ### Notifications
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `sendNotification(text, options?)` | `Promise<void>` | Send via Slack or dashboard |
-| `listNotifications()` | `Promise<{notifications}>` | List notifications |
-| `ackNotifications()` | `Promise<void>` | Acknowledge all notifications |
+| `sendNotification(text, options?)` | `—` (no body) | Send via Slack or dashboard |
+| `listNotifications()` | `{notifications}` | List notifications |
+| `ackNotifications()` | `—` (no body) | Acknowledge all notifications |
 
 ### Approvals
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `approveAction(slotId, taskId)` | `Promise<void>` | Approve a pending tool action |
-| `rejectAction(slotId, taskId)` | `Promise<void>` | Reject a pending tool action |
-| `resolveApproval(approvalId, approved)` | `Promise<void>` | Resolve an approval by ID |
-| `getApprovalMode()` | `Promise<'auto'\|'interactive'>` | Get current approval mode |
-| `setApprovalMode(mode)` | `Promise<void>` | Set approval mode |
+| `approveAction(slotId, taskId)` | `—` (no body) | Approve a pending tool action |
+| `rejectAction(slotId, taskId)` | `—` (no body) | Reject a pending tool action |
+| `resolveApproval(approvalId, approved)` | `—` (no body) | Resolve an approval by ID |
+| `getApprovalMode()` | `'auto'` \| `'interactive'` | Get current approval mode |
+| `setApprovalMode(mode)` | `—` (no body) | Set approval mode |
 
 ### Models
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `listModels()` | `Promise<ModelInfo[]>` | List available LLM models |
-| `setSlotModel(slotId, model)` | `Promise<void>` | Set model for a slot |
+| `listModels()` | `ModelInfo[]` | List available LLM models |
+| `setSlotModel(slotId, model)` | `—` (no body) | Set model for a slot |
 
 ### MCP Servers
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `listMcpServers()` | `Promise<McpServerInfo[]>` | List registered MCP servers |
-| `registerMcpServer(def)` | `Promise<void>` | Register an MCP server (requires name + command) |
-| `removeMcpServer(name)` | `Promise<void>` | Remove an MCP server |
-| `registerAppMcp(name, entry)` | `Promise<void>` | Write MCP entry to `~/.kiro/crew/mcp.json` (Node.js only) |
-| `unregisterAppMcp(name)` | `Promise<void>` | Remove MCP entry from `~/.kiro/crew/mcp.json` (Node.js only) |
+| `listMcpServers()` | `McpServerInfo[]` | List registered MCP servers |
+| `registerMcpServer(def)` | `—` (no body) | Register an MCP server (requires name + command) |
+| `removeMcpServer(name)` | `—` (no body) | Remove an MCP server |
+| `registerAppMcp(name, entry)` | `—` (no body) | Write MCP entry to `~/.kiro/crew/mcp.json` (Node.js only) |
+| `unregisterAppMcp(name)` | `—` (no body) | Remove MCP entry from `~/.kiro/crew/mcp.json` (Node.js only) |
 
 ### Agent & Skill Installation (Node.js only)
 
@@ -489,30 +502,30 @@ Rules:
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `dispatchAgent(agent, prompt)` | `Promise<TaskResult>` | Run agent synchronously |
-| `dispatchAgentAsync(agent, prompt)` | `Promise<string>` | Run agent in background |
-| `getTaskResult(taskId)` | `Promise<TaskResult>` | Poll task status |
+| `dispatchAgent(agent, prompt)` | `TaskResult` | Run agent synchronously |
+| `dispatchAgentAsync(agent, prompt)` | `string` | Run agent in background |
+| `getTaskResult(taskId)` | `TaskResult` | Poll task status |
 
 ### Gateway Config
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `getGatewayConfig(key)` | `Promise<Record<string, unknown>>` | Read gateway config section |
-| `setGatewayConfig(key, value)` | `Promise<void>` | Write gateway config section |
+| `getGatewayConfig(key)` | a JSON object | Read gateway config section |
+| `setGatewayConfig(key, value)` | `—` (no body) | Write gateway config section |
 
 ### App Storage
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `getAppDataDir()` | `string` | App-scoped data directory path |
-| `getAppConfig()` | `Promise<Record<string, unknown>>` | Read app config via REST |
-| `setAppConfig(config)` | `Promise<void>` | Write app config via REST |
+| `getAppConfig()` | a JSON object | Read app config via REST |
+| `setAppConfig(config)` | `—` (no body) | Write app config via REST |
 
 ### Memory
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `memorySearch(query, topK?)` | `Promise<MemoryResult[]>` | Semantic memory search |
+| `memorySearch(query, topK?)` | `MemoryResult[]` | Semantic memory search |
 
 ### Context Injection
 
@@ -520,8 +533,8 @@ Silent background context for LLM — content appears in the next user-initiated
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `injectContext(slotId, content, options?)` | `Promise<void>` | Inject context (null slotId = buffer locally) |
-| `flushPendingContext(slotId)` | `Promise<void>` | Flush buffered entries to a slot |
+| `injectContext(slotId, content, options?)` | `—` (no body) | Inject context (null slotId = buffer locally) |
+| `flushPendingContext(slotId)` | `—` (no body) | Flush buffered entries to a slot |
 | `setDefaultSlot(slotId)` | `void` | Auto-flush pending context on sendMessage |
 | `pendingContextCount` | `number` | Number of buffered context entries |
 
@@ -553,7 +566,6 @@ Verify that an incoming request was signed by the KiroCrew gateway reverse proxy
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `verifyProxyRequest(req, appName, opts?)` | `boolean` | Verify HMAC signature on any Node.js request object |
 
 Options: `{ secret?: string, maxAgeSecs?: number }`
 
@@ -561,8 +573,10 @@ Options: `{ secret?: string, maxAgeSecs?: number }`
 
 ## Python Client
 
-Standalone async client using `aiohttp` — `pip install kirocrew-client`. Covers
-the full Gateway API surface documented above.
+Standalone async client using `aiohttp`, carried in this repository under
+`packages/kirocrew-client-py/`. It is not published to PyPI, so use it from a
+source checkout rather than by installing it. It covers part of the Gateway API
+surface documented above.
 
 ```python
 from kirocrew_client import KiroCrewClient
@@ -589,8 +603,16 @@ KiroCrewClient(
 
 ### Method Reference
 
-Method names use `snake_case` per Python convention. The left column is the
-canonical API-surface name used in the sections above:
+The left column is the endpoint label used in the sections above; the right
+column is the shipped Python method, in `snake_case` per Python convention.
+
+Rows marked *not implemented* are Gateway endpoints the shipped Python client
+does not wrap yet. Call those endpoints directly with `aiohttp` (or any HTTP
+client) using the paths in
+[Gateway REST API Endpoints](#gateway-rest-api-endpoints). The client also ships
+no WebSocket surface, so the `connect` / `disconnect` / `on*` handlers in
+[WebSocket Events](#websocket-events) are endpoint documentation for a raw
+WebSocket connection rather than client methods.
 
 | API surface | Python |
 |-----------|--------|
@@ -600,7 +622,7 @@ canonical API-surface name used in the sections above:
 | `createSlot(name, agent?)` | `create_slot(name, agent="")` |
 | `listSlots()` | `list_slots()` |
 | `deleteSlot(id)` | `delete_slot(id)` |
-| `getSlotHistory(id, limit?)` | `get_slot_history(id, limit=50)` |
+| `getSlotHistory(id, limit?)` | *not implemented — call the endpoint* |
 | `sendMessage(id, msg)` | `send_message(id, msg)` |
 | `spawn(task, agent?)` | `spawn(task, agent="")` |
 | `spawnMany(tasks, agents?)` | `spawn_many(tasks, agents=None)` |
@@ -616,26 +638,26 @@ canonical API-surface name used in the sections above:
 | `listLessons()` | `list_lessons()` |
 | `removeLesson(query)` | `remove_lesson(query)` |
 | `sendNotification(text, opts?)` | `send_notification(text, **opts)` |
-| `listNotifications()` | `list_notifications()` |
-| `ackNotifications()` | `ack_notifications()` |
-| `approveAction(slot, task)` | `approve_action(slot, task)` |
-| `rejectAction(slot, task)` | `reject_action(slot, task)` |
-| `resolveApproval(id, ok)` | `resolve_approval(id, ok)` |
-| `getApprovalMode()` | `get_approval_mode()` |
-| `setApprovalMode(mode)` | `set_approval_mode(mode)` |
-| `listModels()` | `list_models()` |
-| `setSlotModel(slot, model)` | `set_slot_model(slot, model)` |
-| `getGatewayConfig(key)` | `get_gateway_config(key)` |
-| `setGatewayConfig(key, val)` | `set_gateway_config(key, val)` |
+| `listNotifications()` | *not implemented — call the endpoint* |
+| `ackNotifications()` | *not implemented — call the endpoint* |
+| `approveAction(slot, task)` | *not implemented — call the endpoint* |
+| `rejectAction(slot, task)` | *not implemented — call the endpoint* |
+| `resolveApproval(id, ok)` | *not implemented — call the endpoint* |
+| `getApprovalMode()` | *not implemented — call the endpoint* |
+| `setApprovalMode(mode)` | *not implemented — call the endpoint* |
+| `listModels()` | *not implemented — call the endpoint* |
+| `setSlotModel(slot, model)` | *not implemented — call the endpoint* |
+| `getGatewayConfig(key)` | *not implemented — call the endpoint* |
+| `setGatewayConfig(key, val)` | *not implemented — call the endpoint* |
 | `listMcpServers()` | `list_mcp_servers()` |
 | `registerMcpServer(def)` | `register_mcp_server(name, cmd, args?, env?)` |
 | `removeMcpServer(name)` | `remove_mcp_server(name)` |
-| `registerAppMcp(name, entry)` | `register_app_mcp(name, *, url?, cmd?, ...)` |
-| `unregisterAppMcp(name)` | `unregister_app_mcp(name)` |
-| `installAgentConfig(name, cfg)` | `install_agent_config(name, cfg)` |
-| `removeAgentConfig(name)` | `remove_agent_config(name)` |
-| `installSkill(name, dir)` | `install_skill(name, dir)` |
-| `removeSkill(name)` | `remove_skill(name)` |
+| `registerAppMcp(name, entry)` | *not implemented — call the endpoint* |
+| `unregisterAppMcp(name)` | *not implemented — call the endpoint* |
+| `installAgentConfig(name, cfg)` | *not implemented — call the endpoint* |
+| `removeAgentConfig(name)` | *not implemented — call the endpoint* |
+| `installSkill(name, dir)` | *not implemented — call the endpoint* |
+| `removeSkill(name)` | *not implemented — call the endpoint* |
 | `dispatchAgent(agent, prompt)` | `dispatch_agent(agent, prompt)` |
 | `dispatchAgentAsync(agent, prompt)` | `dispatch_agent_async(agent, prompt)` |
 | `getTaskResult(id)` | `get_task_result(id)` |
@@ -651,8 +673,6 @@ canonical API-surface name used in the sections above:
 
 | API surface | Python |
 |-----------|--------|
-| `verifyProxyRequest(req, appName, opts?)` | `verify_proxy_request(request, app_name, *, secret?, max_age_secs?)` |
-| — | `verify_proxy_request_raw(header, method, path, app_name, ...)` |
 
 ---
 
@@ -762,22 +782,38 @@ app secret as the key, where `sha256(body)` is the hex SHA-256 digest of the raw
 tampered body invalidates the signature. Backends verify with a constant-time comparison and
 reject requests whose timestamp is not within ±60s of now.
 
-Python app backends verify this with `kirocrew-client`:
+A Python app backend whose environment can import `kiro_crew` (the built-in app backends run as child processes and still import it) verifies this with the gateway's own helper:
 
 ```python
-from kirocrew_client import verify_proxy_request
-if not verify_proxy_request(request, 'my-app'): return Response(status=401)
+from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
+
+body = await request.read()
+if not verify_proxy_request(
+    request.headers.get('X-KiroCrew-Proxy', ''),
+    method=request.method,
+    target=raw_request_target(request),
+    body=body,
+):
+    return Response(status=401)
 ```
+
+Every argument after the header value is keyword-only. Pass the target through
+`raw_request_target`: the gateway signs the request-target exactly as it went on
+the wire, and rebuilding it from a decoded path diverges from the signed bytes as
+soon as a query parameter carries a space or a non-ASCII character.
+
+A backend that cannot import `kiro_crew` (a different language, or a Python
+environment without the package) computes the HMAC itself, exactly as the Node.js
+paragraph below describes.
 
 Node.js app backends can verify the signature directly: compute
 `HMAC-SHA256(timestamp:method:/api/path[?query]:sha256(body), app_secret)` and compare against
 the value in the `X-KiroCrew-Proxy` header (constant-time), rejecting stale timestamps.
 
-> **Breaking change (body-bound signature):** `verify_proxy_request` /
-> `verify_proxy_request_raw` in the `kirocrew-client` package MUST be regenerated in lockstep
-> to bind `sha256(body)` while keeping the constant-time compare and ±60s freshness. A gateway
-> that signs body-bound HMACs will fail verification against any deployed old verifier, so the
-> client release must ship together with this change.
+> **Body-bound signature:** every verifier must bind `sha256(body)` while keeping the
+> constant-time compare and the ±60s freshness window. A gateway that signs body-bound
+> HMACs fails verification against any verifier that omits the body hash, so a
+> backend that implements the HMAC itself has to be updated in lockstep with the gateway.
 
 ## App Dev Mode (live reload)
 

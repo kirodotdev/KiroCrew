@@ -6059,7 +6059,8 @@ class TestCloneFailureDiagnostics:
         assert err["ok"] is False
         # Bare honest failure with NO credential-posture hint (the clone kept the
         # ambient identity, so the hint would be wrong). The body still carries
-        # the machine-readable `code` (AGENTS.md non-2xx invariant) — a bare slug
+        # the machine-readable `code` (the non-2xx invariant in
+        # docs/system-specs/common/code-style.md) — a bare slug
         # `git_clone_failed`, distinct from the credential-posture
         # `git_clone_failed_no_credentials`; the `error` sentence stays bare.
         assert err["error"] == "git clone failed"
@@ -8195,8 +8196,9 @@ class TestIndexOriginatedCloneFailureHintIsGated:
         # non-2xx-body-carries-code: the bare fallback is the only failure shape
         # on this path that once returned no `code`; a machine keys on `code`
         # while the frontend renders `error` verbatim, so the slug must be
-        # present even when no failure class is recognized (AGENTS.md non-2xx
-        # invariant). Regression pin: this assertion fails at the pre-fix tree.
+        # present even when no failure class is recognized (the non-2xx invariant
+        # in docs/system-specs/common/code-style.md). Regression pin: this
+        # assertion fails at the pre-fix tree.
         assert result["code"] == "git_clone_failed"
 
     @pytest.mark.asyncio

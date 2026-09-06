@@ -16,7 +16,7 @@ import { i18nT } from '../i18n/t'
  *  `/notifications?note=<ts>`. External pushers (e.g. an ntfy bridge relaying
  *  the WS notification stream) hard-code this name in their Click URLs, so it
  *  is part of the page's public contract — documented in
- *  docs/system-specs/features/app-notifications.md. */
+ *  docs/system-specs/modules/app-notifications.md. */
 export const NOTE_DEEP_LINK_PARAM = 'note'
 
 /**

@@ -760,7 +760,7 @@ Two safeguards, both deliberate:
   own `gh search` shares. `_PROBE_COALESCE_SEC` (15s) shares one reading per (repo, kind)
   across every open tab, so a 30s interval costs at most 2 probes/min/kind however many
   tabs are open. Halve the floor and that stops holding. Nothing enforces the
-  relationship across the language boundary, so `issueRadarPolling.test.ts` asserts
+  relationship across the language boundary, so `issueRadarPolling.test.tsx` asserts
   `min(choices) == 2 × 15s`: if the backend constant moves, that test is what says this
   floor must move with it.
 - **`/pulls/search` opts out of BOTH new knobs.** Prefetch does not reach it, and
@@ -797,7 +797,7 @@ space: `gcTime = CACHE_RETENTION_MS` (**30 min**). Four properties:
 
 That is sufficient on its own because the surfaces gate their loading copy on `isLoading`,
 which is false whenever data is present: a remount inside the retention window paints the
-retained rows immediately and any refetch runs behind them. `issueRadarPolling.test.ts`
+retained rows immediately and any refetch runs behind them. `issueRadarPolling.test.tsx`
 pins the retention, its scoping, and the not-pending property.
 
 The lists additionally keep their previous rows on screen while a new key loads, so
@@ -814,7 +814,7 @@ a same-slug repo on another host is correctly a different repo) and returns `und
 across a switch, which renders the honest loading state. The ticked selection is already
 cleared on `scopeKey`, but that effect runs *after* the paint — it closes the window one
 render late rather than never opening it, which is why the placeholder itself is scoped.
-`issueRadarPolling.test.ts` pins both halves.
+`issueRadarPolling.test.tsx` pins both halves.
 
 `add_pr_comment` is a separate function from `add_issue_comment` even though the two
 coincide on GitHub (one number sequence per repo): GitLab numbers issues and merge
@@ -972,7 +972,7 @@ does not read as the whole repo. Net cost: exactly one extra single-page request
 cold repo-open. `list_open_issues_first_page` is on the `ProviderClient` protocol, so
 GitLab and Azure DevOps each implement the symmetric single-page variant (Azure's is
 one WIQL+hydrate pair capped at `_PAGE_SIZE`, in the same changed-date order as the
-full list) and `test_provider_parity` holds.
+full list) and `apps/builtins/issue_radar/tests/test_gitlab.py::TestClientParity::test_every_module_implements_the_whole_surface` holds.
 
 `GET /pulls?first_page=1` (open state only) is the PR twin, handled by
 `_handle_pulls_first_page` with one added rule: the first page is returned
@@ -991,7 +991,7 @@ skeleton until the full list lands; the footer shows a `pullsPartial` "loading t
 hint. `list_open_pulls_first_page` is on the `ProviderClient` protocol (GitLab's variant
 is card-complete already, since it inlines `head_pipeline`; Azure's is un-enriched like
 GitHub's, because its check state is a per-PR policy-evaluation call), and
-`test_provider_parity` holds.
+`apps/builtins/issue_radar/tests/test_gitlab.py::TestClientParity::test_every_module_implements_the_whole_surface` holds.
 
 `enrich_pulls` runs its two INDEPENDENT GraphQL families — card summaries and merge
 readiness — **concurrently** on a two-worker `ThreadPoolExecutor` rather than

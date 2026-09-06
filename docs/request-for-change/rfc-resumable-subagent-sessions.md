@@ -13,6 +13,12 @@ superseded-by: []
 ---
 # RFC: Resumable Subagent Sessions
 
+> **Current behaviour: see [`../system-specs/modules/subagent.md`](../system-specs/modules/subagent.md).**
+> Continuable conversations shipped instead of the record-store ladder below —
+> `spawn_continue`, `keep=`, the follow-up watcher and context-group
+> inheritance on continuation are all specified there. This document is the
+> record of a probe that changed a design.
+
 - Status: partial, and **what shipped diverges from this plan** — Phase 0 ran and its verdict is recorded in PR #1023's description (a shared-arm sid is *not* loadable after `session/terminate`). That negative verdict redirected the work: instead of the record store → record view → promotion ladder below, PRs #1023 and #1246 shipped **continuable conversations** — `spawn_continue` / `spawn_steer` / `spawn_release` MCP tools, `keep_transcript` on the session handle, and a conversation TTL registry that survives gateway restart. Still unbuilt: Phase 1's record store (no `SubagentRecord`, no records file), Phase 2's `subagent_record_retention_enabled` / `_days` config keys (retention is conversation-TTL based instead), Phase 3's record view (`GET /api/spawn/{id}/record` does not exist), and Phase 4's guaranteed deliverable — promoting a run into an **ordinary chat session labelled a replay**. Note "promotion" in the shipped code means promoting a *conversation's retention*, not seeding a dashboard chat session. This document was never revised after Phase 0; read it as the original plan, not as a description of main.
 - Author: zezhexu
 - Created: 2026-07-28

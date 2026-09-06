@@ -312,7 +312,7 @@ class TestReviewContractExports:
         that drops or renames a
         stamp would silently orphan the parsers -- the freshness gate would see
         no stamps and stop gating. This drift is exactly what the marker-
-        grammar spec (docs/ci/prepare-pr-portability.md §5.9) exists to stop."""
+        grammar spec (docs/request-for-change/rfc-prepare-pr-portability.md §5.9) exists to stop."""
         workflows = {
             ".github/workflows/codex-review.yml": (
                 "[GPT-REVIEWED]",
@@ -339,7 +339,7 @@ class TestReviewContractExports:
                 assert marker in text, (
                     f"{rel} no longer emits {marker}; update _review_contract.py "
                     "and §5.9 of "
-                    "docs/ci/prepare-pr-portability.md together"
+                    "docs/request-for-change/rfc-prepare-pr-portability.md together"
                 )
 
 

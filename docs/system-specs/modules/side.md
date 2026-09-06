@@ -391,13 +391,13 @@ Busy-send invariants live in `test/test_side_steer_queue.py`:
 | Unproven delivery is recovered | `test_an_unconsumed_steer_becomes_a_queue_card_instead_of_vanishing` |
 | A proven delivery is not duplicated | `test_a_consumed_steer_is_settled_and_not_requeued` |
 | A failed drain keeps the text | `test_a_failed_drain_puts_the_entry_back_instead_of_dropping_it` |
+| Close wins over a late drain | `test_close_drops_the_queue_and_a_late_drain_cannot_resurrect_it`, `test_a_stale_task_cannot_drain_a_newer_sides_queue` |
 
 The settlement rules themselves are in `test/test_steer_settle.py` (equality not
 containment, count-awareness, settle-all on an unusable echo), and
 `test/test_llm_helpers_steer_echo.py` covers the REAL `stream_and_collect`
 dispatch — every steering caller fakes that helper, so without it the hook could
 be dead at runtime while all of them stayed green.
-| Close wins over a late drain | `test_close_drops_the_queue_and_a_late_drain_cannot_resurrect_it`, `test_a_stale_task_cannot_drain_a_newer_sides_queue` |
 
 Frontend invariants are covered in KiroCrewWebsite under `src/test/`:
 `SideChat.close.test.tsx`, `SideChat.multiturn.test.tsx`,
@@ -406,14 +406,12 @@ Frontend invariants are covered in KiroCrewWebsite under `src/test/`:
 `SideSlashCommand.steer.test.tsx` (command interception wins over mid-turn
 steer routing), and the `sseSideResult` block in `chatSlice.test.ts`.
 
-Structural greps enforce compile-time invariants:
-
-- `main_path_baseline.sh` — context.py + chat.py SHA-equal to baseline
-- `no_main_context_pollution.sh` — no side symbols in main path files
-- `no_memory_writes_from_side.sh` — no learn/save/memory calls from side
-- `no_new_slot_in_side_path.sh` — side handlers never call get_or_create_slot
-- `exactly_five_activity_tabs.sh` — tab count matches spec
-- `side_tab_registered.sh` — "Side" tab present in ActivityViewer
+Nothing enforces invariant 2 (main path byte-frozen) mechanically. It is a
+review-time rule, held by the backend and frontend suites above plus the
+`_side` sidecar's own isolation from `context.build_message`: a side symbol
+reaching the main path shows up as a `test/test_side.py` failure, not as a
+structural check. Making the freeze a real invariant needs a test; until one
+exists this file does not claim one.
 
 ## Design
 

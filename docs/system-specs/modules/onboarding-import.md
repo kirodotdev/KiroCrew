@@ -82,7 +82,7 @@ Durable tiers only:
 | `lessons.jsonl` (`LessonStore`) | 22.6% — highest of any tier | Append-only; pruned oldest-first at `_MAX_LESSONS_TOTAL` (200) |
 | Semantic memory (`VectorMemoryStore`) | 7.7% | Durable; key-addressed, confidence-gated |
 | Episodic memory (`VectorMemoryStore`) | 7.7% | Durable; append-only |
-| `.kiro/steering/*.md` | 10% | Durable, but **workspace-scoped** |
+| `.kiro/steering/*.md` | 10% | Durable, but **workspace-scoped** — a tier the system has, never an import destination (rule 4) |
 
 ### Mapping rules
 
@@ -151,13 +151,16 @@ Durable tiers only:
    `json.loads` result is a real newline and does. See security invariant 3a for
    the two layers that enforce this. It applies to the plain semantic path too,
    not just directives — a `lesson.*` key reaches the same always-injected tier.
-4. **Workspace-scoped rules → `.kiro/steering/`, opt-in only.** A per-project
-   instruction file (a workspace's own `CLAUDE.md`/`AGENTS.md`) may be written
-   to `<workspace>/.kiro/steering/imported-<source>.md` **only** when the user
-   supplies an explicit workspace target. Import MUST NOT default the target to
-   the current directory, the data home, or the user's home. Absent an explicit
-   target the item is reported `skipped` with reason
-   `workspace_target_required` — a missing target is never implicit consent.
+4. **Instruction files land in the lesson tier, not in a steering file.**
+   `_add_instruction_files` turns a `CLAUDE.md`/`AGENTS.md` (and a persona
+   document's DIRECTIVE body) into `instructions` items of `kind: lesson`, and
+   `_write_instruction` writes them through `LessonStore` / `VectorMemoryStore`.
+   Import writes no `.kiro/steering/` file anywhere and takes no workspace-target
+   argument. `preferences.md` / `projects.md` are not valid destinations either:
+   the memory consolidator replaces both wholesale, so an import there is
+   destroyed on the next consolidation run. Where a workspace itself gets
+   registered is the separate `workspaces` category, which is not a
+   steering-write destination.
 
 Every imported memory item passes the existing content gates before it is
 written: `_sanitize_text` (truncate + credential redaction; a *redacted* file is
@@ -374,9 +377,8 @@ This vocabulary is the frontend contract — the UI MUST NOT invent a fifth stat
 | `conflict` | `rejected` | Destination holds a different item; resolvable via strategy |
 | `rejected` | `rejected` | Refused by a safety or validity gate; not resolvable via strategy |
 
-Apply also returns `skipped` entries (source unavailable, scan diagnostics,
-`workspace_target_required`) which are **not** item outcomes — they describe
-things never attempted.
+Apply also returns `skipped` entries (source unavailable, scan diagnostics)
+which are **not** item outcomes — they describe things never attempted.
 
 ## Per-source assumptions
 
@@ -551,32 +553,22 @@ reported independently. `embedding_backfill_pending` is **backend-only** — it
 tells the handler to schedule the embedding sweep and MUST NOT cross into the
 browser (the HTTP `summary` does not carry it).
 
-## Session-import removal
+## No session import
 
-Session/transcript import is removed. The removal deletes the categories'
-scanners, writers, and their supporting machinery:
+**Session and transcript import does not exist, and must not be added back.**
+`sessions` is not a member of `CATEGORY_IDS`; there is no session scanner, no
+session writer, no session provenance classifier, no per-session read inside
+`_scan_hermes_db` or `_scan_lineage_memory_db`, no transcript-hash branch in
+`_deduplicate_items`, and no `conversation_log` plumbing through `apply_import`
+or the handler. A reader looking for the deleted symbol names will find them in
+git history, not here.
 
-- `sessions` from `CATEGORY_IDS`; `_write_session`, `_session_destination_key`
-- `_jsonl_session_items`, `_message_from_record`, `_extract_visible_content`,
-  `_claude_record_is_excluded`, `_without_runtime_sessions`,
-  `_add_sessions_and_workspaces`, `_record_workspaces`
-- the OpenClaw session-provenance set: `_OPENCLAW_RUNTIME_NAMESPACES`,
-  `_OPENCLAW_SESSION_OWNERSHIP_FIELDS`, `_OPENCLAW_CHECKPOINT_RE`,
-  `_OPENCLAW_CREATED_VIA`, `_openclaw_session_provenance_is_user_owned`,
-  `_openclaw_session_paths`, `_openclaw_session_artifact`,
-  `_openclaw_entry_matches_file`, `_openclaw_registry_map`
-- session reads in `_scan_hermes_db` / `_scan_lineage_memory_db`, and
-  `_HERMES_RUNTIME_SESSION_SOURCES`
-- the `sessions` branch of `_deduplicate_items` (transcript-hash canonicalization)
-- session-only limits: `_MAX_JSONL_LINES`, `_MAX_MESSAGES_PER_SESSION`,
-  `_MAX_LINE_BYTES`, `_VISIBLE_ROLES`, `_VISIBLE_TEXT_TYPES`, `_NON_TEXT_TYPES`
-- `conversation_log` plumbing through `apply_import` and the handler
-
-**Consequence for workspace discovery.** Workspaces were partly discovered by
-reading workspace paths out of session records. After removal, workspace
-discovery comes only from explicit configuration (`_collect_project_paths` and
-each source's config-declared workspace values). This narrows coverage; it does
-not break it. Do not reintroduce a session read to widen it.
+**Consequence for workspace discovery.** Workspace discovery comes only from
+explicit configuration — `_collect_project_paths` plus each source's
+config-declared workspace values. Reading workspace paths out of session records
+would widen coverage, which is exactly why it is not done: importing another
+agent's transcripts is not something a user consented to by importing its
+config. The narrower coverage is the deliberate trade.
 
 **Ledger compatibility.** Existing ledgers may contain `category_id:
 "sessions"` records. They are inert: no scanner produces a `sessions` item, so

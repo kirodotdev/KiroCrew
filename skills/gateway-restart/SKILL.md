@@ -67,6 +67,7 @@ cron_add(
 
 - **Fast (60s):** Fires once the gateway has restarted and initialized (~15s restart + buffer). Its message includes an instruction to delete the slow backup job.
 - **Slow (5 min):** Backup in case startup takes longer than expected.
+- **Why `cron_add` and not `monitor_start`:** a monitor loop is bound to THIS session, which the restart terminates. The resume has to be scheduled outside it.
 - **Thread targeting:** Both MUST include `channel` and `thread_ts` so the resume appears in the original conversation.
 - **Verify, then report:** The resumed session's FIRST job is the "Verify the outcome" step below. Only after the status file reads `0` may it say "Back online." — a resume cron firing proves nothing about the restart (the gateway it woke up in may be the same process that was supposed to die). If there's pending work, continue it after verifying. If not, acknowledge and end the session promptly to avoid stale "Cron: restart-resume-*" sessions in the dashboard.
 
@@ -144,6 +145,12 @@ The script's 10-second delay gives the current session time to finish responding
 - Config change made that requires restart (`config.json`, `mcp.json`, agent files)
 - After applying a KiroCrew update (see self-update skill)
 - After changing the gateway model (`kirocrew config set model <X>`)
+
+If the user is at the dashboard and no pending work needs resuming, point them at
+**Settings → About → Restart Gateway** (confirm-gated, backed by
+`POST /api/restart`, which coalesces duplicate presses) instead of running this
+procedure — it is the cheapest correct answer. Use the scheduled-restart flow below
+when the conversation must survive the restart, or when no human is present.
 
 ## Consent and Offering Restarts
 

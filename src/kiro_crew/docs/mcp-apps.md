@@ -297,4 +297,5 @@ app HTML is **server-controlled code running in your dashboard**.
 
 For **which** iframe host a new dashboard feature should use, and why an iframe
 can never be moved in the DOM without reloading it, see
-[Dashboard iframe hosts](dashboard-iframe-hosts.md).
+[Dashboard iframe hosts](https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/dashboard-iframe-hosts.md)
+in the contributor documentation.

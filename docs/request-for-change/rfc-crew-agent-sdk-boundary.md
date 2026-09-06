@@ -1,11 +1,11 @@
 ---
 title: Crew Agent SDK Boundary — isolate the codebase from ACP, and name the host contract
-status: draft
+status: partial
 revision: v3
 author: zejiangg, with Kiro
 created: 2026-08-28
-last-audited: 2026-08-28
-audited-at: dc88f142b
+last-audited: 2026-09-05
+audited-at: 424efa423
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -23,9 +23,9 @@ superseded-by: []
 - Author: zejiangg, with Kiro
 - Created: 2026-08-28
 - Audited against: `dc88f142b`
-- Related: `../system-specs/features/agent-host-contract.md` (the host contract
+- Related: `../system-specs/modules/agent-host-contract.md` (the host contract
   this document's §6 summarises),
-  `../system-specs/features/claude-code-provider.md`,
+  `../system-specs/modules/claude-code-provider.md`,
   `../system-specs/modules/acp-client.md`,
   `../system-specs/modules/providers.md`,
   `../system-specs/modules/session.md`,
@@ -63,7 +63,7 @@ layout, a session replay store, an identity store, a sandbox posture, an MCP
 delivery channel, a billing surface, a permission engine, and the auxiliary
 runtimes a host cannot discover for itself. Those are provider-scoped, and §6
 summarises them against the full contract in
-[`../system-specs/features/agent-host-contract.md`](../system-specs/features/agent-host-contract.md).
+[`../system-specs/modules/agent-host-contract.md`](../system-specs/modules/agent-host-contract.md).
 
 The evidence for that contract is not hypothetical. Claude Code is a real,
 previously-exercised foreign host: the public core carries its protocol layer and
@@ -270,7 +270,7 @@ extension point, which is what PR 3 lands.
    scope — with two exceptions promoted into PR 3 because the CC review showed
    the boundary cannot be drawn without them (§7, PR 3).
 3. **Not** adding a provider, and **not** re-adding a provider selector.
-   `docs/system-specs/features/claude-code-provider.md` carries a standing rule —
+   `docs/system-specs/modules/claude-code-provider.md` carries a standing rule —
    *"Do not re-add the registration glue or a provider selector"* — and `AGENTS.md`
    lists other providers under *Never re-add*. This RFC honours both: Claude Code
    appears here **only as evidence** of what a foreign host requires. Whether
@@ -581,7 +581,7 @@ cannot find for itself.
 
 The full contract, with all three backends side by side and every "must declare"
 line, is
-[`../system-specs/features/agent-host-contract.md`](../system-specs/features/agent-host-contract.md).
+[`../system-specs/modules/agent-host-contract.md`](../system-specs/modules/agent-host-contract.md).
 This section states only its shape and the two conclusions that bind this RFC.
 
 ### 6.1 Eight buckets, and who proves each one is provider-scoped
@@ -641,7 +641,7 @@ Add `scripts/check_agent_sdk_boundary.py` and
 `.github/agent-sdk-boundary-baseline.txt`, wire the gate into `ci.yml` beside the
 sibling baselined gates, and add the architecture test. No code moves. The
 host-contract spec already exists
-(`docs/system-specs/features/agent-host-contract.md`), so PR 1 only keeps it
+(`docs/system-specs/modules/agent-host-contract.md`), so PR 1 only keeps it
 reachable and in sync.
 
 **The gate watches two roots, not one.** `kiro_crew.acp` is the obvious one;
@@ -675,7 +675,7 @@ than a figure that rots.
   the scan visited a non-trivial number of consumer files so a broken walk cannot
   read as a clean tree.
 - Exit: `./scripts/docs-lint.sh` passes and the host-contract spec is reachable
-  from `docs/system-specs/features/README.md`.
+  from `docs/system-specs/modules/README.md`.
 - Blocked on: nothing.
 
 ### PR 2 — the SDK owns the types
@@ -1268,6 +1268,45 @@ inference that silently captures every harness added later", and in the same
 breath records that the set is a **superset** of `ACP_BACKENDS_SESSION_SHARING`.
 That is both halves of this rejection written by the code it describes: the
 inference is the hazard, and one boolean cannot carry two nested facts.
+
+## OAuth custody under the Agent SDK
+
+Current behaviour — kiro-cli owning the chain, and Kiro Crew observing grant presence
+by `stat` — is specified in
+[`../architecture/design-notes/mcp-oauth-ownership.md`](../architecture/design-notes/mcp-oauth-ownership.md).
+What follows is what this proposal would change.
+
+### If the Agent SDK owned the MCP servers
+
+The Agent SDK takes `mcpServers` as an in-memory dict on every `query()` call:
+
+```python
+options = ClaudeAgentOptions(mcp_servers={
+    "github": {
+        "type": "http",
+        "url": "https://api.githubcopilot.com/mcp/",
+        "headers": {"Authorization": f"Bearer {token}"},
+    }
+})
+```
+
+The SDK doesn't run OAuth, doesn't handle callbacks, doesn't store anything. Whatever bearer we hand it is what it uses.
+
+That inverts the ownership model: **Kiro Crew owns the OAuth chain end-to-end.**
+
+- The dashboard runs the consent flow (open browser, receive callback, exchange code for token).
+- Kiro Crew stores tokens in its own credential store — keychain on macOS, sealed SQLite on Linux, whatever fits the deployment's security posture.
+- Token scoping is up to us: per-user × per-agent × per-server. Two agents in one workspace can hold tokens for two different GitHub accounts.
+- Refresh is a Kiro Crew concern: a background task watches expiry, refreshes, hands the new bearer to the next `query()`.
+- Sign-out is a single dashboard click — delete the row from our store and revoke upstream.
+- Tokens never sit in `agent.json`. The file holds only the **shape** of the MCP server (URL, server-id, scope hints); the bearer is injected at runtime.
+- The dashboard can show "GitHub: connected as octocat, expires in 47 min" because the data lives in Kiro Crew.
+
+### The custody problem in one sentence
+
+**With kiro-cli, the entire chain — config → OAuth → token storage → header injection — lives inside the CLI process, and Kiro Crew can only observe it through opaque ACP notifications. With the Agent SDK, that chain is Kiro Crew's code, and we can shape it into whatever the product needs.**
+
+---
 
 ## 12. Open questions
 

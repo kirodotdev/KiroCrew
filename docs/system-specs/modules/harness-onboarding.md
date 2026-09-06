@@ -51,11 +51,12 @@ without crossing it.
 
 ## Stage 2 — an explicit decision for every capability set
 
-There are eight sets. **"Inherited the default" is not a decision** — a
+There are fourteen sets. **"Inherited the default" is not a decision** — a
 capability is granted by opt-in membership, never by negation (H6), so a set you
 do not think about is a set you have silently opted out of. That is usually
 right, and it must still be deliberate, because the review lane and the tests
-both read the membership as a claim.
+both read the membership as a claim. `ACP_BACKENDS_KNOWN` is not one of them: it
+is the membership floor, not a capability.
 
 | Set | Grants |
 |---|---|
@@ -67,8 +68,14 @@ both read the membership as a claim.
 | `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` | Model switching lands as a config option rather than a protocol call. |
 | `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` | Reasoning-effort push, same channel shape. |
 | `ACP_BACKENDS_KIRO_SLASH_COMMANDS` | Receives `_kiro.dev/commands/execute`, **and** gets the workspace `cli.json` overlay written for it. Membership decides both, so a non-member must not collect an overlay it never reads and the membership-gated clear can never remove. |
+| `ACP_BACKENDS_SESSION_MCP_ARRAY` | The harness reads its MCP surface from the `session/new` array rather than from Crew's agent spec. A non-member that is added here gets an empty array and works with every Crew tool silently absent. |
+| `ACP_BACKENDS_MEMBER_DISPATCH` | Crew's member-dispatch tools are mounted into a channel-member session, with the auto-approve grant that goes with them. A harness with no per-session mount to ride is excluded, which withholds only the extra grant. |
+| `ACP_BACKENDS_COMPACT` | The manual `/compact` entry points are offered. A non-member refuses the manual command up front rather than stranding the status waiter on a harness that emits no compaction status of its own. |
+| `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` | The advertised-model cache is fed on capture and the stored id is folded onto the served spelling, at spawn and on a warm-pool `set_model`. For harnesses whose wire ids are already exact this is a no-op they must not take on. |
+| `ACP_BACKENDS_SEED_LOCAL_SETTINGS` | A local settings file is seeded at spawn **and re-seeded on `set_model`**, so a warm-pool claim does not leave a stale model or allowlist behind. A harness with no such file is not a member. |
+| `ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD` | The dashboard's MCP sync leaves running sessions alone after a config write, because the harness reconciles the agent file itself. Membership is version-gated per process by `mcp_hot_reload_supported`, not granted by the harness name alone. |
 
-The last three are one channel each rather than one "tuning" set, because a
+The tuning channels are one set each rather than one "tuning" set, because a
 harness can implement one and not another. If your harness needs a tuning
 channel none of them describes, add a set — do not widen an existing one.
 
@@ -171,7 +178,8 @@ Beyond the ordinary suite:
   *adds*, not the whole tree. Six rules, self-tested.
 - **`scripts/check_agent_sdk_boundary.py`** is shrink-only. A new import of
   `kiro_crew.acp` or `kiro_crew.providers` from a consumer fails even though the
-  baseline lists 106 existing ones. This is why Stage 1 puts the vocabulary in a
+  existing baseline (`.github/agent-sdk-boundary-baseline.txt`) grandfathers a
+  list of them. This is why Stage 1 puts the vocabulary in a
   leaf: a consumer naming your constant must not have to cross the boundary to
   do it.
 - **`test_harness_parity.py`** pins the structural invariants (Groups A and C),
@@ -194,7 +202,7 @@ The Codex onboarding is a clean instance of stopping at Stage 6:
 | Stage | State |
 |---|---|
 | 1 vocabulary | Done — `ACP_BACKEND_CODEX`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_CODEX`, policy name mapped. |
-| 2 capability sets | Decided for all eight: in the model and effort channels, out of the other six. All three channel sets were *created* by this work, which is why the count went from five to eight. |
+| 2 capability sets | Decided for every set: in the model and effort channels, out of the rest. All three channel sets were *created* by this work, which is why the tuning channels are three sets rather than one. |
 | 3 spawn path | Done — adapter, npm package, dep marker, env override, project-local resolution. |
 | 4 handshake | Done — `PROTOCOL_VERSION_CODEX`, its own literal at the same number as Claude's. |
 | 5 install probe | Done — `_probe_codex` names `codex-acp` and the command that installs it. One component, not two: the adapter ships its own Codex binary. Credentials are deliberately NOT probed: a `missing` verdict disables the switch, and the checkable paths are not the only ones that authenticate a Codex, so the two-branch remedy (its own sign-in, or a `model_provider` in `~/.codex/config.toml`) is stated in the panel as a standing caveat instead. |

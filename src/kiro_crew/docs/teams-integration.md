@@ -232,7 +232,7 @@ None of this disables the security gate: the sensitive-path keystone, the
 enterprise governance ceiling, and the destructive-command deny-list all run ahead
 of auto-approval, so anything denied by policy stays denied.
 
-## Security notes
+## Access control
 
 - The webhook is **exempt from the dashboard cookie gate and from the CSRF origin
   check, for `POST` only**, because it performs its own Bot Framework JWT
@@ -269,7 +269,7 @@ of auto-approval, so anything denied by policy stays denied.
   that resolves into a private, loopback or link-local range is refused — so an
   activity cannot turn the gateway into a proxy for your internal network.
 
-## Limitations (this release)
+## Limits
 
 - 1:1 personal chat only — no team channels, group chats, or @mention handling.
   A reply in a channel would expose tool output to people who are not on your
@@ -303,3 +303,9 @@ of auto-approval, so anything denied by policy stays denied.
   with a channel or user target — its addressing, allow-list and threading are Slack
   concepts — so a Teams-only install should rely on the mirror rather than on that
   tool's own delivery.
+
+## Related docs
+
+- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Getting Started](getting-started.md): install, first run, connecting a channel
+- [Configuration](configuration.md): the config file and environment variables

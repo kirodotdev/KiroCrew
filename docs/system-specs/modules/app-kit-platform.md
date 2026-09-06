@@ -998,7 +998,7 @@ resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
 (`_granted_list`, `RESERVED_APP_PATH_SEGMENTS`); consumers: `website/src/app-sdk/index.ts` (mirrors the tables
 for developer-facing diagnostics, drift-guarded by
 `website/src/test/appSdkEventScope.test.ts`). Runtime-facing summary for app
-authors: [../../../src/kiro_crew/docs/app-platform-trust-model.md](../../../src/kiro_crew/docs/app-platform-trust-model.md).
+authors: [../../architecture/app-platform-trust-model.md](../../architecture/app-platform-trust-model.md).
 
 ## 14. The published catalog is the store's inventory
 
@@ -1791,3 +1791,33 @@ Writers: `apps/backend.py` (`_health_check_loop`, `_watch_backend_health`,
 `_demote`, `_promote`, `_supervise_backend_health`, `_start_health_supervisor`,
 `_start_adopted_health_watch`, `AppProcess.is_running`), `apps/routes.py`
 (`handle_list_apps`).
+
+## 18. An app UI is a dynamically imported ESM module, not an iframe
+
+A gateway-managed app's dashboard UI is a real ESM module loaded into the
+dashboard's own React tree, so it shares one React instance and the host theme
+instead of living behind an iframe boundary. `AppHost` reads `ui.entry` from the
+manifest and dynamic-`import()`s `/apps/<app>/ui/<entry>`, served from the app's
+static UI directory. An app whose manifest declares no `ui.entry` renders the
+no-UI placeholder: the entry is optional, never defaulted.
+
+Cache-busting applies to the entry module alone. Busting the whole graph would
+re-fetch every chunk the entry statically imports, so a reload is driven by the
+`mc:app-reload` event instead: a module specifier already resolved in the page
+cannot be re-evaluated, so the host reloads the window when the named app
+announces new bytes.
+
+Shared host capability reaches an app through `@kirocrew/app-sdk`, which the host
+provides rather than publishing to npm — the SDK lives in the dashboard bundle, so
+an app externalizes it at build time instead of vendoring a second copy and a
+second React. Apps receive host events as `CustomEvent`s on `window`
+(`mc:app:<event>`) and raise host notifications through `mc:notify`.
+
+This is a different mechanism from the MCP App (SEP-1865) `srcdoc` iframes, which
+load their own ESM runtime from a CDN through an import map and are confined by
+the response CSP. §13 covers their token scoping;
+`src/kiro_crew/docs/mcp-apps.md` covers the iframe contract itself.
+
+Writers: `website/src/components/AppHost.tsx`, `apps/manifest.py` (the manifest
+`entry` field), `apps/routes.py` (static UI serving),
+`dashboard/server.py` (the CSP allowances the CDN import map needs).

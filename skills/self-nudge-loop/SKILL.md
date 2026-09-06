@@ -49,18 +49,35 @@ When disabled, the REST API returns 503 and the UI popover surfaces the error.
 - `max_cycles` reached — loop deactivates (not removed, so you can resume).
 - `DELETE /api/autonudge/{loop_id}` or `autonudge_svc.remove(id)`.
 
-**Warning:** a STOP sentinel file is ONLY checked if the loop was created with a non-empty `stop_sentinel_path`. If the path is empty, the sentinel file is ignored and nudges keep firing. Prefer the `autonudge_stop` MCP tool for in-loop halting.
+**Warning:** a STOP sentinel file is ONLY checked if the loop was created with a non-empty `stop_sentinel_path`. If the path is empty, the sentinel file is ignored and nudges keep firing. A path pointing at a sensitive location is refused at arm time, and a persisted path is re-homed onto the current data home on reload — silently dropped if it cannot be repaired. Prefer the `autonudge_stop` MCP tool for in-loop halting.
+
+**Overlap with `babysit`:** the bundled **babysit** skill is the `monitor_*`-native
+guide for same-session loops and is the one to reach for when the job is watching a
+PR, a CI run, a ticket, or a deployment. This skill covers the scaffolded
+goal/roadmap/tasks pattern and the raw service surface underneath it. Use one
+vocabulary: `interval_secs` and `max_cycles` as the MCP tools name them.
 
 **Restart survival** — on `AutoNudgeService.start()`, loops marked `active:true` in `~/.kiro/crew/autonudge.json` are reloaded and their idle timers re-armed. No catch-up fire — timer starts fresh from zero after restart.
 
 ## How to start a loop
 
-**From the UI (preferred):**
+**From an agent session (preferred):** call the MCP tools. `monitor_start(message,
+interval_secs?, max_cycles?)` arms a loop on the calling session,
+`monitor_update(message?, interval_secs?, max_cycles?)` revises it in place without
+losing its cycle count, and `autonudge_stop()` halts it. No token handling is
+involved. The tool's `interval_secs` (default 300) is stored as the loop's
+`idle_secs`; the raw REST/dataclass field defaults to 60.
+
+`max_cycles` defaults to 24 through `monitor_start` and to 0 (unlimited) on the raw
+REST surface. Reaching the cap is a runaway backstop, not a successful finish: check
+the exit condition every cycle and call `autonudge_stop` deliberately.
+
+**From the UI:**
 1. Click the `🎯 Set a goal` (bullseye) icon in the chat composer toolbar (lit green when active, dim when off).
 2. In the popover: paste your nudge message, set idle seconds (min 15, default 60), set max cycles (0 = unlimited), click **Start loop**.
 3. Close the popover. Loop runs in the background. Icon stays lit across tab closes / logins.
 
-**From code (MCP / REST):**
+**From an external script or when debugging (REST):**
 
 `/api/autonudge` is a **user-scoped** endpoint — it requires a Bearer-style token, not the `X-Internal-Secret` header that loopback MCP tools use. Two-step bootstrap:
 
@@ -117,7 +134,7 @@ Good nudges tell the agent to:
 
 **Forgetting the feature flag** — service loads but does nothing. Check `kirocrew logs | grep AutoNudge` for the "disabled" message.
 
-**idle_secs too short** — sub-30s nudges thrash context. 60s is the sweet spot.
+**`interval_secs` too short** — sub-30s nudges thrash context. 300s is the value to use for external polling (CI, review bots); reserve 60s for tight local iteration.
 
 **No kill switch in the nudge text** — user ends up hunting the loop id. Always instruct the agent to check a STOP sentinel.
 
@@ -236,5 +253,5 @@ Before clicking 🎯 "Set a goal" → Start loop:
 6. Test execution lives in a sandbox — never in the local workspace for ops that touch live systems.
 7. One cycle, one step. Compound cycles build features.
 8. Human approval required for Done. Loop only moves cards to Review.
-9. `max_cycles: 30` cap every arming. Re-arm manually for more.
+9. `max_cycles: 30` cap every arming — this recipe's own recommendation, not a code default (`monitor_start` defaults to 24, the raw surface to 0 = unlimited). Re-arm manually for more.
 10. `stop_sentinel_path` never blank at loop start.

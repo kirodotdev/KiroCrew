@@ -63,136 +63,19 @@ hand to another person.
 | `backup` (default) | Restoring onto a host you control | Everything selected rides; the LOCAL archive is unredacted — that is the point |
 | `share` | Leaving your control | **Refused for every component** |
 
-## What leaves the host, and what redaction is for
+`--purpose share` refuses whatever you select, and that is deliberate rather than
+unfinished. Whether a component is safe to share is a question about its **content**, not
+its shape: a workspace file, a skill, a cron's `env` map, a notification body or a lesson
+you pasted a token into can each carry a credential, and staging cannot tell. Nothing
+claims share-safety until the redaction work behind it exists. The purpose, the
+per-component declaration and the refusal are all live, so the first certified component
+only has to change its own declaration. A component added without a policy declaration is
+refused at staging rather than defaulting to permissive, so a new component cannot inherit
+a permissive value by omission.
 
-The local archive and the off-host copy are the same bytes unless you ask otherwise.
-
-What protects the uploaded bundle is the destination, not a rewrite: the bucket is created
-private and every upload re-asserts the whole set before sending a byte — all four
-public-access blocks, default encryption, ACLs disabled via `BucketOwnerEnforced`,
-versioning, no bucket policy at all, and the object write pinned to the expected owner
-account. Any of those missing or unreadable refuses the upload. The audience for the
-uploaded copy is therefore the same as the audience for your local disk: you.
-
-On top of that you can opt IN to rewriting the copy that leaves, by writing
-`{"redact_uploads": true}` to `redaction.json` inside your backup directory. Then both
-mandatory outbound redactors run over the throwaway copy, and `config.json`'s token plus
-anything credential-shaped in a note or a memory row is replaced with an inert tag.
-
-It is off by default because it is not free. Replacing a credential is a variable-length
-edit, so any file whose structure depends on byte offsets — an archive, a PDF, most binary
-container formats — comes out the other side invalid. Paying that to re-protect a copy only
-you can read is the wrong default. Turn it on when the bucket's audience is genuinely wider
-than you believe, or when you want the off-host copy to be inert on principle.
-
-One pass runs only here. The shared redactors also run over live model output and tool
-results, where rewriting something that merely resembles a key corrupts what you are
-reading, so they recognise specific vendor formats and specific field names. That leaves
-real shapes uncovered — a bot token whose format they have no pattern for, or your own
-`api_key = "…"` with an opaque value. This copy is a throwaway on its way off the host and
-your complete archive stays local, so the egress pass can afford to be broader: it also
-replaces any long quoted value assigned to a credential-ish field name, and any bearer
-token shaped as three dot-separated segments. That is the same trade the over-reach note
-below describes, made deliberately in the one place where the cost is one note's text
-rather than a corrupted answer.
-
-Two consequences worth knowing before you turn it on:
-
-- **Restoring a redacted off-host copy gives you working memory and inert credentials.** The
-  shape is complete and the databases are valid; the fields that authenticate are not.
-  Re-enter them after restoring. The restore prints what was redacted, so you are told
-  rather than left to discover it.
-- **Redaction is pattern-based, so it can over-reach.** A note holding something that
-  merely looks like a key can lose that text in the off-host copy. The local archive is
-  unaffected, and the per-path replacement counts are printed at upload and again at
-  restore so you can judge whether a count looks wrong.
-
-Databases are redacted value by value through SQL rather than over their bytes. That is
-not a stylistic choice: the redactors substitute a tag, so they change length, and
-rewriting a SQLite file's bytes produces a file SQLite cannot open — which the restore
-path would then correctly refuse as corrupt.
-
-Search indexes and files whose only purpose is to be secret are left out of the
-outbound copy entirely rather than blanked, because an inert key present in the bundle
-is indistinguishable from a rotated one. Restore already reports an absent index and
-what to rebuild. Those files are matched by their **exact position** in the bundle, not
-by name: your workspace may hold a `telemetry_salt` or a `memory_index.db` of your own,
-and leaving out a file that merely shares a name with one of the product's would be
-losing your data, not protecting it.
-
-Values are redacted on what they hold rather than on the column's declared type, so a
-credential stored as binary is rewritten too. Bytes make the round trip through a
-byte-preserving codec and are only written back when something actually matched, so
-embeddings and other genuine blobs come out identical.
-
-A database's **schema** is checked as well as its rows. A key can be written into a column
-default, a view's body or a trigger, and none of those are values any row scan reaches.
-Schema text also cannot be rewritten the way a value can — changing it means rebuilding the
-object — so a database in that state is one this pass cannot clean, and the upload is
-refused either way. Nothing is deleted to make an upload possible: `memory.db` and the
-Knowledge Library are what the backup exists to carry, so sending the bundle without one
-of them would report success and restore nothing.
-
-Rows are scanned to a **fixpoint**, not once. An update fires the database's own triggers,
-and a trigger can copy the pre-update value into a table the scan has already cleaned, so a
-single pass can leave a credential behind in a place it already visited. Each pass reports
-its own replacements and the scan stops when a pass changes nothing. A database that keeps
-moving is one that cannot be shown clean, so the upload is refused and the database is
-named rather than removed.
-
-The **manifest** is redacted too, after it is stamped — it is the one file guaranteed to be
-in the upload, and the stamp itself writes paths and error text into it. It is checked to
-still parse afterwards, because a manifest that does not is a bundle that cannot be
-restored.
-
-Whether a file is text is decided by **decoding** it, not by its name — a workspace holds
-whatever you put there, and a suffix list would classify your `.py`, `.csv` or
-extension-less notes as opaque. A file that genuinely does not decode (an image, an
-archive) cannot be shown free of credentials, so the **upload is refused** and those
-files are named. They are not removed: a restore that reports success while quietly
-lacking your own files is worse than an upload that stops and tells you. Narrow the
-selection with `--components`, or turn redaction off for that run. A `.db` that is not
-a database the product ships is treated the same way, and so is a database the product
-DOES ship: whichever it is, the file is kept and the upload refuses, naming it and why.
-Your local snapshot is complete and unaffected in every one of these cases.
-
-Turning it on is a file, not a setting in `config.json`, and that placement is the point.
-`config.json` is readable and writable by the agent, so a switch living there could be
-flipped by the agent itself. The fence matters in BOTH directions now: an agent that could
-turn this on could corrupt your off-host copy, and one that could turn it off could publish
-a credential into the bucket. The backup directory is already fenced for the same reason its
-destination record is — neither the agent's file tools nor any shell form can read or write
-it. Only you can.
-
-Four cases, and none of them is a silent guess:
-
-- **No file** — off. The default, and it needs no file.
-- **`{"redact_uploads": true}`** — on.
-- **`{"redact_uploads": false}`** — off, written down explicitly, which is allowed.
-- **Anything else** — a file that parses to neither, an unreadable one, or `"true"` as a
-  string. The upload refuses and names the file. You wrote it on purpose, so guessing off
-  would ignore a request to scrub and guessing on would rewrite files you may not have
-  meant to touch. Your local snapshot is already written and is unaffected.
-
-If redaction is on and cannot be completed, the upload is refused; it never falls back to
-sending the unredacted bundle.
-
-`--purpose share` currently refuses whatever you select, and that is deliberate rather
-than unfinished. Whether a component is safe to share is a question about its
-**content**, not its shape: a workspace file, a skill, a cron's `env` map, a
-notification body or a lesson you pasted a token into can each carry a credential, and
-staging cannot tell. Marking components share-safe one at a time was tried during
-review and guessed wrong twice, so nothing claims it until the redaction work behind
-it exists. The purpose, the per-component declaration and the refusal are all live, so
-the first certified component only has to change its own declaration.
-
-For now, use `--purpose backup` — restoring onto a host you control is what this
-feature is for. The bundle's manifest records the purpose and each component's
-declaration, so a reader of a bundle can tell which they are holding.
-
-A component added without a policy declaration is refused at staging rather than
-defaulting to permissive, so a new component cannot inherit a permissive value by
-omission.
+Use `--purpose backup` — restoring onto a host you control is what this feature is for.
+The bundle's manifest records the purpose and each component's declaration, so a reader of
+a bundle can tell which they are holding.
 
 ## Off-host copies
 
@@ -244,6 +127,21 @@ When it is on:
 The agent cannot reach this file. It is fenced at the same level as the command deny list
 and the computer-use enable, for reading as well as writing -- flipping it off is the
 attack, and reading it tells an attacker whether the store is currently being scrubbed.
+
+Two consequences worth knowing before you turn it on:
+
+- **Restoring a redacted off-host copy gives you working memory and inert credentials.**
+  The shape is complete and the databases are valid; the fields that authenticate are not.
+  Re-enter them after restoring. The restore prints what was redacted, so you are told
+  rather than left to discover it.
+- **Redaction is pattern-based, so it can over-reach.** A note holding something that
+  merely looks like a key can lose that text in the off-host copy. The local archive is
+  unaffected, and the per-path replacement counts are printed at upload and again at
+  restore so you can judge whether a count looks wrong.
+
+Search indexes and files whose only purpose is to be secret are left out of the outbound
+copy entirely rather than blanked, because an inert key present in the bundle is
+indistinguishable from a rotated one. Restore reports an absent index and what to rebuild.
 
 ### Restoring a bundle that came from off-host
 

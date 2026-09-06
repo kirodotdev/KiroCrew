@@ -6,10 +6,18 @@ triggers: artifact, save widget, save this, iterate, iterate on, update the widg
 
 # Artifacts (`@kirocrew-core/artifact_*`)
 
-A widget rendered inline in chat (`<mcwidget>`) is **transient** — it scrolls
-away with the conversation. An **artifact** is a widget (or other content)
-that's been given a stable identity, a version history, and a URL the user
-can open from `/artifacts/<slug>` in the dashboard.
+A widget rendered inline in chat (`<mcwidget>`) is auto-registered as an
+**unpinned** artifact when its response segment finalizes — a record, not a
+library entry: unpinned auto-registered widgets are pruned oldest-first, and
+widgets from an incognito or temporary session are never registered at all.
+
+Saving and pinning are two different things. `artifact_save` creates a **named,
+durable** artifact: it is never swept, because the sweep only ever considers
+auto-registered records. **Pinning** is the separate star (`pinned`, false by
+default) the user flips in chat or the library; it is what takes an
+auto-registered widget out of the sweep, and it is not something a save does for
+you. Either way the artifact has a stable identity, a version history, and a URL
+the user can open from `/artifacts/<slug>` in the dashboard.
 
 Artifacts exist so the user can build a library of durable, named work — useful
 UIs (CR queue, pipeline health, ticket triage, dashboards) and substantial
@@ -23,7 +31,7 @@ every file or a copy of the chat.
 | Concept | Means |
 |---|---|
 | **Slug** | URL-safe identifier like `cr-queue` (auto-derived from name). Stable across versions. The user references artifacts by slug. |
-| **Version** | Monotonic integer. Every content change bumps it. The 50 most-recent versions are retained; older ones get pruned (configurable via `MAX_VERSIONS`). |
+| **Version** | Monotonic integer. Every content change bumps it. The 50 most-recent versions are retained; older ones are pruned. The cap is a fixed constant with no config or env override. |
 | **Save** | Persist the artifact for the first time. Picks a slug, returns it. |
 | **Update / Iterate** | Modify content of an existing artifact. Bumps version, preserves history. |
 | **List / Find** | Discover what's saved. Filter by tag, kind, name substring. |
@@ -35,9 +43,22 @@ every file or a copy of the chat.
 | `artifact_save` | Create a new artifact, returns slug |
 | `artifact_get` | Load content + metadata (optional version) |
 | `artifact_update` | Modify content/metadata; bumps version on content change |
+| `artifact_revert` | Restore a prior version as the new live state, snapshotting the rollback |
 | `artifact_list` | Filter by `tag`, `kind`, `q` (name substring) |
 | `artifact_versions` | List version numbers for a slug |
 | `artifact_delete` | Permanently remove |
+| `artifact_move` | File an existing artifact into a folder, or unfile it |
+| `artifact_folder_list` | Read the folder tree — ids, paths, item counts |
+| `artifact_folder_create` | Create a folder; missing path segments are auto-created |
+| `artifact_folder_rename` | Rename a folder |
+| `artifact_folder_move` | Reparent a folder (cycle-guarded) |
+| `artifact_folder_delete` | Remove a folder; safe by default, destructive with `delete_contents=true` |
+| `artifact_get_comments` | Read every comment thread on an artifact |
+| `artifact_post_comment` | Open a thread, optionally anchored to a quoted span |
+| `artifact_reply_comment` | Reply in an existing thread |
+| `artifact_mark_review` | Advance a thread to REVIEW — addressed, awaiting human check |
+| `artifact_delete_comment` | Delete a thread you demonstrably applied; requires a reason |
+| `deploy_artifact` | Preview-only deploy of a static artifact (`widget`/`html`/`markdown`) or a local built directory; a `kind=webapp` slug is rejected |
 
 All under the `@kirocrew-core` MCP server.
 
@@ -46,13 +67,17 @@ All under the `@kirocrew-core` MCP server.
 When you produce work worth keeping — something the user would plausibly want
 later — save it:
 
-- A **widget** with its own identity (CR queue, pipeline dashboard, ticket
-  card): save it without asking, and note it in one line — *"Saved as artifact
-  `cr-queue`."*
-- A substantial **document** (plan, design, analysis, report, reference): if you
-  wrote it to a workspace file, save it file-backed (`artifact_save` with
-  `source_path`, and `kind="markdown"` for markdown); if it lives only inline in
-  chat, offer to save it.
+- A **widget** you just emitted: do NOT call `artifact_save` on it. Its
+  auto-registration already happened, so a save creates a second record and the
+  tool answers with a duplicate warning. Emitting it is enough; the user's star
+  pins it. Reach for `artifact_save` on widget content only when it was never
+  emitted in a message.
+- A substantial **document** (plan, design, analysis, report, reference): save
+  it with `artifact_save(..., kind="markdown")`. `artifact_save` has no
+  `source_path` parameter — `source` is a provenance marker only
+  (`chat` | `cron` | `subagent` | `manual` | `import`), and a file-backed
+  artifact is created by the dashboard's file and knowledge paths, not by this
+  tool. If the document lives only inline in chat, offer to save it.
 
 Don't save throwaway output: one-shot answers, quick demo widgets, scratch
 notes, or project/package code that belongs in a CR.
@@ -258,13 +283,33 @@ name, kind, version, updated_at. Group by tag if that aids comprehension.
 `artifact_list` accepts `tag`, `kind`, and `q` (name substring) filters.
 Use them to narrow when the user gives constraints.
 
+### Folders
+
+The library is a tree. `artifact_save` and `artifact_move` both take `folder`
+as a folder id OR a `/`-separated human path (`Reports/Q3`), and missing
+segments are created for you — so file an artifact at save time whenever it
+belongs with others instead of leaving it at the top level. `''` or `root`
+unfiles one. `artifact_folder_list` gives ids, paths and item counts, which is
+what you read before moving anything; `artifact_folder_create` /
+`artifact_folder_rename` / `artifact_folder_move` reshape the tree, and a move
+cannot make a folder its own descendant.
+
+`artifact_folder_delete` defaults to SAFE: it re-parents the folder's children
+up to its parent and removes only the folder. `delete_contents=true`
+permanently deletes the whole subtree INCLUDING every descendant artifact —
+echo the affected count to the user and get agreement before calling it that
+way.
+
 ## Versioning rules
 
 - `artifact_update(slug, content=X)` ALWAYS bumps the version when content changes.
 - Metadata-only updates (rename, retag, edit description) do NOT bump.
-- Old versions are preserved up to `MAX_VERSIONS = 50`; older ones get pruned.
+- Old versions are preserved up to the 50-version cap; older ones get pruned.
 - The user can browse versions in the dashboard at `/artifacts/<slug>` (dropdown).
-- To roll back: `artifact_get(slug, version=N)` to read, then `artifact_update(slug, content=that_html)` to make it the new current.
+- To roll back, call `artifact_revert(slug, target_version=N)`. It reads version
+  N and writes it as the new live state, creating a fresh snapshot tagged
+  `reverted` so the activity timeline shows the rollback. Do not hand-roll a
+  rollback with `artifact_get` + `artifact_update`.
 
 ## Tags and kinds
 
@@ -273,9 +318,19 @@ Tags are free-form, ≤ 16 per artifact. Useful tag conventions:
 - Data source: `slack`, `web`, `upload`
 - State: `wip`, `archived`
 
-Kind is one of `widget` (default), `html`, `markdown`, `svg`, `json`, `text`.
-Use `widget` for `<mcwidget>` bodies; the others for raw content the
-dashboard renders differently.
+Kind on the agent tools is one of `widget` (default), `html`, `markdown`, `svg`,
+`json`, `text`, or `webapp` — that is the enum `artifact_save` and
+`artifact_list` accept. Use `widget` for `<mcwidget>` bodies; the others for raw
+content the dashboard renders differently. `svg` stores vector source, versioned
+and revertible like any other kind. `webapp` is a deployed web application,
+rendered as an infra control card and carrying `webapp_metadata`.
+
+There is an eighth store-level kind, `image`, and you cannot create it with
+these tools: raster artifacts are registered by the backend when your finalized
+message embeds `![alt](/absolute/path.png)`. So to keep a generated diagram,
+chart or screenshot, embed it that way rather than passing `kind="image"` —
+which the tool does not offer and which would store your text under an image
+label.
 
 ## Theme safety (widget / html kinds)
 

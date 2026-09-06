@@ -545,7 +545,7 @@ class TestEveryToolResultBuilderRepairsTheMarker:
     builders can emit an ``EVENT_TOOL_RESULT`` and the fix has to hold at each.
     The requirement is enforced here rather than left in a comment because the
     author who adds the next builder is a new provider's, and
-    docs/system-specs/features/agent-host-contract.md §9 is the declaration they
+    docs/system-specs/modules/agent-host-contract.md §9 is the declaration they
     are meant to answer."""
 
     REQUIRED = "_repair_escaped_marker"
@@ -588,7 +588,7 @@ class TestEveryToolResultBuilderRepairsTheMarker:
             f"these EVENT_TOOL_RESULT builders never call {self.REQUIRED} over "
             "their joined output, so a JSON-escaped session-directive marker "
             f"reaching them is dropped silently: {offenders}. See "
-            "docs/system-specs/features/agent-host-contract.md §9."
+            "docs/system-specs/modules/agent-host-contract.md §9."
         )
 
     def test_the_gate_sees_the_builders_it_is_meant_to_cover(self):

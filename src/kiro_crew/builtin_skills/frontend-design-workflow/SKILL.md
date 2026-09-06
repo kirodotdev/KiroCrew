@@ -64,11 +64,18 @@ evidence where the change is reviewed: in the pull-request description
 (following the repository's convention) when a PR workflow exists,
 otherwise directly in the conversation.
 
+Capture the evidence with the shipped skills rather than improvising:
+`web-verify` for screenshots of a surface you changed on a local dev server, and
+`browser-recording` for a video or GIF of motion or a multi-step flow. A narrated
+demo needs `feature-demo-recording`, which ships with the Dev Fleet app rather
+than as a built-in skill, so it is only available where that app is installed.
+
 ## Phase 4 — New-user usability review
 
 Before declaring the change ready, run a dedicated review from a
-**brand-new, non-technical user's perspective** — as a separate sub-agent
-when available, so the reviewer has no builder's context. The reviewer
+**brand-new, non-technical user's perspective** — as a separate sub-agent via
+`spawn_run`, with `include_project=true` so it can open the UI but
+`include_memory=false` so the reviewer has no builder's context. The reviewer
 answers:
 
 - **Discoverability**: can a first-time user find this feature without

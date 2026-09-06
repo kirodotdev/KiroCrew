@@ -174,8 +174,8 @@ Set via `kirocrew config set agent.acp_backend kas`.
   },
   "stt": {
     "enabled": true,
-    "provider": "whisper",
-    "streaming": false,
+    "provider": "local",
+    "streaming": true,
     "transcribe_region": "us-east-1",
     "language_code": "en-US"
   },
@@ -270,8 +270,9 @@ Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
 Multi-user access and open channels are refused regardless of what these lists
 contain, so treat them as bookkeeping rather than an access grant.
 
-Other channels (Discord, Telegram, Teams, Webex, WeCom, WeChat) are configured
-from the dashboard — see each channel's doc for keys and credentials.
+Every other messaging channel is configured from the dashboard — the roster is in
+[the documentation index](index.md#chat-channels), and each channel's own doc
+lists its keys and credentials.
 
 ### Speech-to-text
 

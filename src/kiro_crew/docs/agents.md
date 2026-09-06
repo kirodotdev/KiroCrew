@@ -58,7 +58,7 @@ Custom agents are JSON files in `~/.kiro/agents/`. They define their own system 
 
 ## Managing Agents
 
-The dashboard Agents page shows installed agents with their source, tools, and MCP servers. Drop a new JSON file into `~/.kiro/agents/` and it appears automatically; the page also provides edit and delete controls.
+**Agent Capabilities → Agent Templates** shows installed agents with their source, tools, and MCP servers. Drop a new JSON file into `~/.kiro/agents/` and it appears automatically; the tab also provides edit and delete controls. `/agents` redirects to Agent Capabilities.
 
 ## Mapping Skills to an Agent
 

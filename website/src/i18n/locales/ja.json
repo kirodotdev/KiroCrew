@@ -9333,7 +9333,6 @@
       "could_not_switch_variant": "バージョンを切り替えられませんでした",
       "could_not_start_a_new_session": "新しいセッションを開始できませんでした",
       "could_not_start_session_message_restored": "新しいセッションを開始できませんでした：{{error}}。メッセージは復元されました — もう一度送信して再試行してください。",
-      "dismiss_upload_error": "アップロードエラーを閉じる",
       "enter_split_view": "分割表示にする",
       "esc_to_dismiss": "Esc で閉じる",
       "expand_knowledge_context": "ナレッジコンテキストを展開",

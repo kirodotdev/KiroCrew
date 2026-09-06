@@ -9,7 +9,7 @@ The `prepare-pr` skill
 side of this: it drives a working tree to review-ready by working with these
 gates. Its phase flow, exit-code contract and PR-description contract live in
 that skill, not here. Its portability design is
-[prepare-pr-portability.md](prepare-pr-portability.md). The human release process
+[../request-for-change/rfc-prepare-pr-portability.md](../request-for-change/rfc-prepare-pr-portability.md). The human release process
 is [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Shape
@@ -165,6 +165,17 @@ Out-of-band lanes that never gate a PR:
   `test/test_workflow_pr_create_handoff.py` holds them in step and fails a new
   `gh pr create` step that skips the guard.
 
+### Code ownership
+
+`.github/CODEOWNERS` assigns every repository path to `@kirodotdev/kirocrew-team`
+through a single wildcard rule. GitHub reads that file to request reviews; the file
+itself establishes no approval count and enforces no branch protection, so a tier, a
+required number of reviewers, or a designated-maintainer requirement cannot be
+inferred from it. The wildcard rule carries the ownership declaration, and GitHub
+branch protection stays the enforcement point for any required approval policy.
+`fork-workflow-guard.yml` is what keeps a fork PR from editing the file (see
+[Fork PRs](#fork-prs)).
+
 ## `fast-gate.yml`: the cheap blocking gates
 
 Every job here is blocking, and nothing here is behind a path filter — the
@@ -198,11 +209,48 @@ Widening that is a separate decision from moving the gates.
 | `loop-bound-locks` | `scripts/check_loop_bound_locks.py`, self-test first. Fails on any module-global `asyncio.Lock()`/`Event()`/`Queue()` declaration — those bind to the import-time (or first-use) event loop and raise `RuntimeError` when acquired from another loop (Python 3.10+). #4800 converted the tree to `kiro_crew.loop_lock.LoopBoundLock`; whole-tree, since the backlog is zero |
 | `testpaths-coverage` | `scripts/check_testpaths_coverage.py`, self-test first. Fails on a `test_*.py` file outside the roots `setup.cfg` pins in `testpaths` — such a file is never collected, so it is green by omission and rots against the code it claims to cover (#6577 found twelve). Whole-tree, since the backlog is zero |
 | `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
-| `docs-lint` | `scripts/docs_lint.py --test` then `scripts/docs-lint.sh`. Every internal link resolves, every doc is reachable from its directory index, every directory holding docs has one, no code comment cites a doc that does not exist, no doc cites a source LINE past the end of the file it names, no module spec names a source file that exists nowhere, and no doc whose filename is hardcoded in code has been renamed out from under its consumer |
+| `docs-lint` | `scripts/docs_lint.py --test` then `scripts/docs-lint.sh`. Every internal link resolves, every doc is reachable from its directory index, every directory holding docs has one, no code comment cites a doc that does not exist, no doc cites a source LINE past the end of the file it names, no module spec names a source file that exists nowhere, and no doc whose filename is hardcoded in code has been renamed out from under its consumer. Plus the fact checks below, behind a shrink-only baseline |
 
 Each of these runs its own self-test in the same step, ahead of the real check. A
 gate that has silently stopped matching reads as a green signal, which is worse than
 no gate, so every rule is exercised against a planted probe first.
+
+### `docs-lint`'s fact checks sit behind a shrink-only baseline
+
+The structural docs checks hold at zero and fail outright. A second family inside
+the same gate asks whether a sentence is still TRUE of the code, and that question
+has a backlog, so its findings are `(check-id, path, token)` triples matched
+against [`.github/docs-lint-baseline.txt`](../../.github/docs-lint-baseline.txt).
+A listed triple passes; an unlisted one fails.
+
+| Check | What fails |
+|---|---|
+| `path-exists` | A backticked repo-anchored source path (`src/**.py`, `scripts/*.py\|.sh`, `website/src/**.ts\|.tsx`, `.github/workflows/*.yml`, `docs/**/*.md`) that names no file. Written from the repo root, so it resolves or the doc is wrong — the suffix index is still a fallback, because a skill's own `scripts/` is one root down. A `path::Symbol` coordinate stays checked, since this repo addresses its own code that way too; only the docs describing a run against another repository are exempt |
+| `line-ref` | A `file.py:NNN` citation anywhere in prose. The beyond-EOF check catches the citation that already rotted; this catches the one that rots on the next refactor with nothing going red. Cite a symbol name instead |
+| `fenced-path` | A `docs/task-specs/**/*.md` path or a `kirocrew run` argument inside a fenced block that names no file. A fence is a sample everywhere else, but a reader PASTES these two |
+| `table-row-merge` | Two index rows glued onto one physical line. Both links resolve, so every link-graph check stays green while the table renders one row short and a file loses its entry |
+| `code-coupled-completeness` | A packaged doc named in a string literal under `website/src` and absent from `CODE_COUPLED_DOCS`. An unrecorded coupling can be renamed apart silently |
+| `dead-identifier` | A backticked identifier absent from every first-party code tree. **Report-only** unless `--strict-identifiers`, because the class mixes real rot with names the repo cannot adjudicate |
+
+Three checks skip a doc whose genre names things that do not exist yet
+(`docs/request-for-change/`, which carries the plans, and `docs/task-specs/`):
+`path-exists`, `fenced-path` and `dead-identifier`. A proposal
+names a file or a symbol precisely BECAUSE it is not there yet. `fenced-path` also
+skips the packaged user docs under `src/kiro_crew/docs/`, where a task-spec path is
+a template for the reader's own project rather than a file in this checkout.
+
+`python3 scripts/docs_lint.py --update-baseline` prunes the list, and it is
+prune-only by construction: it intersects the recorded triples with the ones firing
+now, so it cannot record one, and it refuses to run when the file is missing —
+read as an empty set, one `rm` plus one refresh would accept every current
+violation forever. Adding is the separate `--accept-new`, which prints every triple
+it records so each exemption lands in a diff a reviewer reads. That is the same
+posture `check_black_formatting.py` takes.
+
+A triple that no longer fires is **reported, not fatal**. That is a concession to
+several changes consolidating the doc trees at once, so an entry graduates in a file
+the current change never touched; it is not a claim that a triple is fragile, since
+the recorded identity omits the line number and a reflow keeps it.
 
 ## `ci.yml`: correctness
 
@@ -211,9 +259,10 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 
 | Job | What it enforces |
 |---|---|
+| `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one that completes non-success. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One extra ~1-minute job buys the whole matrix the right to not start |
-| `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.10 and 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
-| `backend-test` | 2 Python versions x 4 duration-balanced pytest-split shards (8 jobs), `-n auto` within each. Coverage only on 3.12 (3.10 passes `--no-cov` for a trace-free run) |
+| `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
+| `backend-test` | 4 duration-balanced pytest-split shards on Python 3.12, `-n auto` within each |
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
@@ -221,7 +270,11 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `frontend-lint` | `tsc -b`, `eslint` under a hard-zero warning ceiling, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
 | `frontend-test` | `vitest run --coverage` |
+| `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report |
 | `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint` |
+| `linux-packaging` | "Linux Packaging (build + smoke-install)". Builds all three Linux desktop formats from one backend tree through `packaging/build-desktop.sh`, then installs them in their target distros with `scripts/smoke-linux-packages.sh`. Path-filtered on the packaging surface |
+| `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
+| `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and enforces per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there. Skipped on a backend-only diff, which cannot change the bundle |
 | `e2e` | The i18n render-time gate, then `python setup.py test_e2e` |
 
 Details worth knowing:
@@ -343,8 +396,7 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   (`bool("false")` is truthy, which would silently disable every protection).
   Advisory warnings, which never fail: unsanitized `dangerouslySetInnerHTML`,
   hardcoded Tailwind colors, new CSS `@keyframes`, sub-10px text.
-- **`inclusive-language`** runs a SHA-pinned `woke` over added lines only and fails
-  on `(error)` severity. Legacy violations are burned down separately; this stops
+- **`inclusive-language`** runs a SHA-pinned `woke` (`WOKE_VERSION`, fetched through `get-woke`) over added lines only, failing on `(error)` severity findings; grepping the terms in `.woke.yml` is NOT equivalent to the gate, and an intentional term is exempted with `# wokeignore:rule=<term>` **on the offending line itself** — `woke` matches per line, so a marker on its own line exempts nothing and leaves the gate red (see the markers beside `master_fd` in `dashboard/handlers/terminal.py`). <!-- wokeignore:rule=master --> Legacy violations are burned down separately; this stops
   new ones.
 - **`sast`** runs Semgrep in a pinned container: first `semgrep --test` over the
   custom rules in `semgrep/` against the annotated fixtures in `semgrep-tests/`
@@ -806,6 +858,11 @@ no override marker, so that re-run is a fresh review roll rather than a forced
 pass. A rerun failure after the judgment has recorded is reported as a warning
 annotation plus a PR notice naming the lane to re-run manually — never as a failed
 run, which would make a recorded judgment look rejected.
+`test/test_ai_review_workflows.py` pins the contract from both ends:
+`test_handler_requires_write_permission_fresh_sha_and_reason` for the authorization and
+freshness checks, and `test_fable_consumes_only_a_bot_authored_sha_scoped_record` plus
+`test_gpt_has_clear_verdict_banner_and_human_override` for the consumer side, so an
+untrusted PR comment or a decision for an earlier push cannot turn a gate green.
 
 ## `pr-readiness.yml`: the aggregator
 
@@ -1021,6 +1078,244 @@ cannot disable it, and a fork's own `pull_request` runs have no `checks: write` 
 forge its verdict. A maintainer who has reviewed a legitimate workflow change applies
 the `allow-fork-workflow-change` label and the guard re-evaluates green; the label is
 stripped on a new revision, so the override cannot carry over.
+
+## `dependency-vulnerability.yml`: the production npm gate
+
+Every publication runs one blocking production-dependency control in
+`.github/workflows/dependency-vulnerability.yml`. It deliberately does NOT run per pull request: the
+audit reaches the npm registry, whose slow hours made it the one red X on otherwise-green PRs
+(re-run by hand until it passed) — and a gate people learn to re-run until green is not a gate. It
+runs where a vulnerable dependency would actually ship, so nothing vulnerable is published, and a PR
+that adds or bumps a dependency is checked by the release or nightly that would carry it.
+
+The two callers hang it off different layers on purpose:
+
+- **`release.yml`** — the release wheel and desktop builds depend directly on the gate, so all
+  publish, sign, and GitHub Release jobs are transitively unreachable when it fails.
+- **`nightly.yml`** — every job that ships bytes to a nightly-channel user (`publish-cli`, the six
+  `publish-linux-*` callers, `publish-windows-x64`, `publish-docker`, `sign-and-notarize`) depends on
+  the gate; no build job does. main has no dependency gate of its own, so without this a
+  high/critical production vulnerability landing on main shipped to nightly users unaudited until
+  the next tagged release. Gating the builds instead is what once failed the nightly for hours at a
+  stretch — hanging it off publication means a slow registry delays publishing an already-built
+  nightly, and a re-run publishes the same artifacts once the audit answers.
+  `test_dependency_vulnerability_gate.py` pins both halves: every publish job gated, no build job
+  gated.
+
+The gate audits all lockfile-backed Node applications independently:
+
+- `website/package-lock.json`
+- `website/electron/package-lock.json`
+- `site/package-lock.json`
+
+CI pins Node `24.19.0`, then invokes the exact npm package `npm@10.8.2` through `npx` with
+`audit --omit=dev --package-lock-only --ignore-scripts --audit-level=high --json`. It neither
+installs project packages nor runs project lifecycle scripts. High and critical production
+findings block; information, low, moderate, and development-only findings do not.
+
+**Transient-failure contract.** The audit is an idempotent read, so a stall or connection fault is
+retried rather than failed on the first try. The pinned npm is resolved once up front
+(`npx --yes npm@10.8.2 --version`, verified to print exactly the pinned version) so the download a
+cold runner pays is never charged against an audit's own timeout. Each attempt is bounded by
+`AUDIT_TIMEOUT_SECONDS` (180s); an attempt that times out, raises a subprocess error, or exits with
+a status other than npm's documented audit results 0/1 **and** carries one of npm's connection-level
+markers on stderr (`ETIMEDOUT`, `ECONNRESET`, `EAI_AGAIN`, `E503`, ... — `TRANSIENT_STDERR_MARKERS`)
+is retried up to `AUDIT_ATTEMPTS` (3) times with a short backoff. Every attempt of every audit in a
+run draws on one shared wall-clock budget (`AUDIT_TOTAL_BUDGET_SECONDS`, 720s, under the job's 15-minute ceiling): no attempt gets
+more than the time left, and no retry starts unless the budget still holds its backoff plus a full
+attempt's ceiling, so retries cannot outgrow the job's own `timeout-minutes`. Exit 0/1 are never treated as transient
+whatever stderr says (1 is the audit answering "vulnerable"), and every other failure below is
+definitive and never retried. Exhausting the attempts or the budget fails closed, naming the attempt
+count so a persistent registry outage reads as one rather than as a flaky gate.
+
+**Fail-closed contract.** A missing `npx`, missing manifest or lockfile, a warm-up that does not
+yield the pinned npm, a transient failure that outlives the retries or the budget, a non-transient
+subprocess error, an exit status other than npm's documented audit-result statuses 0/1, empty or
+malformed JSON, npm
+`error` response, unsupported audit report version, inconsistent counts/status, broken advisory
+reference, or high/critical record without a stable advisory identity fails the job. Exit 1 is
+accepted only with a structurally valid report that contains high/critical findings. String `via`
+references are recursively resolved to leaf advisories, cycles and missing references are errors,
+and findings are deduplicated by lockfile, affected package, and advisory. npm registry/advisory
+availability is consequently an explicit release dependency: an outage blocks rather than skips
+the control.
+
+**Exception contract.** `.vulnerability-exceptions.json` is validated before any audit against the
+contract represented by `.vulnerability-exceptions.schema.json` and the stricter date checks in
+the gate. The root has exactly `version: 1` and `exceptions`; each exception has exactly:
+
+| Field | Contract |
+|-------|----------|
+| `package` | Exact npm package name; wildcards are forbidden. |
+| `advisory` | Exact canonical `GHSA-xxxx-xxxx-xxxx` or fallback `npm:<numeric source>` identity. |
+| `paths` | One or more exact audited lockfile paths from the list above; no duplicates. |
+| `reason` | Trimmed 20–500 character risk justification and mitigation. |
+| `owner` | Accountable GitHub `@user` or `@org/team`. |
+| `expires` | Real ISO `YYYY-MM-DD` date, no more than 30 days ahead at validation time. |
+
+An exception matches only the package + advisory + lockfile tuple; it cannot suppress another
+package, advisory, or project. Duplicate scopes, unknown fields, unsupported paths, malformed
+identifiers, or an expiry more than 30 days ahead invalidate the complete file. An expiry date is
+valid through that UTC date; beginning the next UTC day, the stale entry fails the entire gate even
+if its advisory is no longer reported. Renewal requires a reviewed edit that moves the date back
+within the 30-day window and confirms the owner, reason, and mitigation remain current. Remove an
+entry as soon as the dependency is fixed; Git history is the approval record.
+
+Run the same control from the repository root with:
+
+```bash
+python scripts/check_npm_audit.py
+```
+
+The command contacts npm's registry/advisory service. Unit tests mock the subprocess boundary and
+cover malformed output, operational failures, report resolution, schema constraints, expiry, and
+exact-match exception behavior without network access.
+
+## AI-review human overrides: the authorization rules
+
+The command grammar and the marker contract are in [Human override](#human-override); this section states the authorization and freshness rules the handler enforces.
+
+Human judgment is the final authority over the Fable 5 and GPT 5.6
+AI-review results. A repository member with `write`, `maintain`, or `admin`
+permission can record a false-positive, not-applicable, or accepted-risk
+decision with:
+
+```text
+/ai-review override <fable|gpt|all> <current-sha>: <reason>
+```
+
+The decision is intentionally explicit and commit-scoped. The handler resolves
+the current PR head and accepts a 7–40-character SHA prefix only when it matches
+that head; the trusted record stores the full SHA. Any subsequent push therefore
+invalidates the decision and causes normal AI review on the new commit.
+
+**Trust boundary** — `.github/workflows/ai-review-human-override.yml` runs on
+`issue_comment`, so GitHub loads it from the default branch. It never checks out
+or executes PR-controlled code. Before changing a result it requires:
+
+1. The exact command shape above and a non-empty, at-most-500-character reason.
+2. A current-head SHA match.
+3. The commenter to have `write`, `maintain`, or `admin` collaborator
+   permission. PR authors receive no exemption.
+
+After validation it posts a `github-actions[bot]` comment whose hidden marker
+binds `{target, full head SHA, actor, source comment id}`. Reviewer workflows
+trust only this bot-authored marker; a raw author or third-party comment cannot
+turn a gate green. The handler has only review-control permissions
+(`actions:write`, `checks:write`, `pull-requests:write`, and
+`contents:read`), and receives no `id-token` or `contents:write`.
+`pull-requests:write` is required for the handler to create the trusted record
+on a pull request; `issues:write` alone does not make that write reliable for a
+GitHub Actions installation token.
+
+For Fable 5 and GPT 5.6, the handler re-runs the existing PR workflow. The
+re-run resolves the trusted marker before acquiring AWS credentials, skips the
+model invocation, updates the existing summary with a human-override banner,
+and exits its original gate successfully. Either event ordering — an override
+recorded before a reviewer starts, or one arriving during model execution —
+leaves the SHA-scoped human decision authoritative.
+
+The marker-keyed comments expose the override command to repository
+writers. GPT 5.6 also normalizes each current-commit result into a
+top verdict plus one sentence: `✅ no blocking findings`,
+`🔴 changes requested (blocking)`, an incomplete state, or a human-override
+state, so a green verdict from the previous commit is never left looking
+current.
+
+When no current-SHA override is active, GPT 5.6 injects a bounded
+ADJUDICATION LEDGER into the review prompt: the bot-authored override
+records, plus the marker and finding-title lines of review-disposition
+comments whose authors' current collaborator permission is `write`,
+`maintain`, or `admin` (verified per login against the collaborators
+permission API — the same check the override handler applies to its actor).
+Prior review bodies are never injected. The ledger is nonce-delimited,
+capped at 6,000 bytes, and explicitly untrusted data: it can downgrade the
+repetition of an adjudicated finding class to advisory, and it can never
+waive a new defect or authorize a green verdict.
+
+GPT makes exactly two model calls. Pass 1 discovers candidates across the
+full diff; pass 2 attempts to falsify each candidate and emits the only
+verdict exposed to the comment and gate. Pass 2 also drops or downgrades a
+candidate whose proposed fix violates the FIX BAR, a BLOCKING candidate that
+cannot be anchored to an AUTOSDE rule or residual defect class, and a
+relocated variant of a ledger-adjudicated class; an adjudication goes stale
+for lines the current head materially changed. A prior disposition never
+hides a currently provable new defect. Any failed call makes the review
+incomplete and leaves no current-SHA reviewed marker, so the gate fails
+closed.
+
+## Readiness: what the aggregate does and does not mask
+
+The job's inputs and outputs are in [`pr-readiness.yml`: the aggregator](#pr-readinessyml-the-aggregator); this section states the masking guarantees.
+
+`.github/workflows/pr-readiness.yml` publishes one current-revision answer for
+the repository's fan-out of CI and AI reviews. The commit status context is
+`PR Readiness`; the PR carries exactly one matching managed label:
+`readiness: checking`, `readiness: action required`, or `readiness: passed`.
+The workflow creates missing labels idempotently, replaces the prior readiness
+label, and removes readiness labels when the PR closes. A passed label means
+the automated lanes passed for that SHA; it does not represent human approval.
+Making `PR Readiness` a required status remains an explicit branch-protection
+or ruleset setting outside the workflow.
+
+The aggregate covers the latest PR run for CI, Build,
+Code Review, Opus 4.8 Review, GPT 5.6 Review (the reconciled result of its three
+calls), and Design Review, plus the managed dynamic CodeQL workflow conclusion.
+Grading the CodeQL
+workflow conclusion, rather than its neutral summary check, preserves failures
+from any managed Analyze job. Fork PRs cannot receive repository secrets or
+OIDC credentials, and this repository's managed default-setup CodeQL workflow
+is not scheduled for fork heads. The secret-backed AI reviews therefore run for
+forks from the trusted base branch via the `fork-*` pipeline and are graded from
+the head SHA's check-runs, leaving CodeQL as the only lane explicitly ineligible
+for a fork. Missing or running eligible lanes
+produce `checking`; blocking workflow/check failures produce
+`action required`; drafts remain `checking`.
+Design Review completion is required, but its verdict and
+infrastructure conclusion are advisory. It emits one `PASS | CONCERNS | BLOCK`
+verdict and no separate blast-radius rating, and it owns the long-term
+reversibility (one-way-door) lens. Mergeability, behind-base state,
+and human review decisions are not part of this event-driven aggregate because
+they can change without an aggregate refresh event; branch protection and the
+live `prepare-pr` status check own them.
+
+Every event resolves the PR's current head through the GitHub API. An event
+carrying an older expected SHA is ignored, so a late
+run cannot relabel the new revision. A code-free `pull_request_target` handler
+updates same-repository and fork PRs from the trusted base workflow. Actions
+that start or restart validation for the same SHA, including a PR description
+edit that re-runs Code Review, force the aggregate to `checking` before run
+lookup so an older successful same-SHA run cannot keep readiness green. Trusted
+base-repository `workflow_run` events refresh it as eligible lanes finish,
+including the `fork-*` reviewer completions that carry a fork's verdicts.
+Readiness-label events cannot recursively rerun or cancel a review: ignored label
+events use a per-run concurrency key, so they cannot cancel an
+active review or replace a pending authoritative reviewer event.
+
+The bundled `prepare-pr` skill front-loads the same review contract before the
+first push. Description/diff reconciliation and every allowed commit mutation
+happen before review. After local gates, it dispatches two independent,
+read-only subagents over the finished base-to-head diff: one owns correctness,
+security, and platform compatibility; the other owns contracts, tests, error
+paths, and the user workflow. Both use the canonical severity and output rules
+from `.github/workflows/codex-review.yml`. Legitimate Critical/High findings are
+fixed before publication; Medium/Low findings remain advisory unless a human
+escalates them. If a blocker fix changes code, one focused verifier
+checks that fix. The skill records the verifier-cleared SHA and fails closed if
+HEAD changes before push; it does not start an unbounded local review loop.
+During a post-submit round, it records one concise, marker-keyed GPT disposition
+comment before re-pushing whenever findings were fixed or rebutted. That record
+names the prior reviewed SHA, finding identity, outcome, and evidence so the
+next reconciliation call can distinguish a real delta from a repeated argument;
+the record remains untrusted evidence and does not carry an override forward.
+
+`prepare-pr/scripts/pr_status.py` treats the aggregate status as authoritative
+when present, including over stale failed or pending duplicate checks in
+GitHub's rollup. Older PRs without the aggregate retain the fail-closed legacy
+rollup behavior. Only the commit-status `context` named `PR Readiness` is
+trusted as the aggregate; a same-named CheckRun cannot mask another failure.
+Unresolved review threads are reported for visibility but are advisory rather
+than an automatic readiness failure.
 
 ## Over-engineering resistance
 

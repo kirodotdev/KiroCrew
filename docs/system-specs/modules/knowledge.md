@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Knowledge Library is KiroCrew's personal knowledge graph: a local, SQLite-backed corpus that ingests documents (folders, uploads, artifacts, fetched URLs), chunks and entity-extracts them via a bounded LLM worker pool, and serves hybrid retrieval (FTS5 keyword + graph traversal + optional vector) to the LLM through the `local_knowledge_search` MCP tool. All ingestion and search stay on-host; the only external calls are the extraction/URL-fetch worker's ACP LLM turns and the local Ollama embedding endpoint.
+The Knowledge Library is Kiro Crew's personal knowledge graph: a local, SQLite-backed corpus that ingests documents (folders, uploads, artifacts, fetched URLs), chunks and entity-extracts them via a bounded LLM worker pool, and serves hybrid retrieval (FTS5 keyword + graph traversal + optional vector) to the LLM through the `local_knowledge_search` MCP tool. All ingestion and search stay on-host; the only external calls are the extraction/URL-fetch worker's ACP LLM turns. Embedding runs in-process against a vendored runtime, so there is no embedding endpoint at all.
 
 ```
 files / uploads / artifacts / URLs
@@ -103,7 +103,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/extractor.py` | `EntityExtractor` — LLM entity/relation extraction over the pool |
 | `knowledge/agent_fetch.py` | `fetch_url_content()` — agent-assisted URL fetch over the pool (tools opt-in via `KIROCREW_KNOWLEDGE_FETCH_TOOLS`) |
 | `knowledge/chunker.py` | `HeadingAwareChunker` — text/markdown/code/slide chunking |
-| `knowledge/embedder.py` | `OllamaEmbedder` — local embedding via Ollama |
+| `knowledge/embedder.py` | `InProcessEmbedder` — embedding in-process via the vendored llama-cpp runtime, no server and no HTTP hop |
 | `knowledge/store.py` | `KnowledgeStore` — SQLite schema, items/entities/graph, FTS5 sync |
 | `knowledge/retrieval.py` | `HybridRetriever` — FTS5 + graph + vector search fused with RRF |
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration |
@@ -129,7 +129,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `CHUNK_TOKEN_SIZE` | `800` | `chunker.py` | Target chunk size (words) |
 | `CHUNK_OVERLAP` | `200` | `chunker.py` | Chunk overlap |
 | `VECTOR_RRF_WEIGHT` | `2.0` | `retrieval.py` | Weight of the vector leg in RRF fusion |
-| `DEFAULT_MODEL` | `"qwen3-embedding:0.6b"` | `embedder.py` | Ollama embedding model |
+| `DEFAULT_MODEL` | `"qwen3-embedding:0.6b"` | `embedder.py` | Embedding model the in-process runtime loads |
 | `TIMEOUT` | `10` | `embedder.py` | Per-request embed timeout (s). Overridable via `knowledge.embed_timeout_secs` (positive-only; 0/unset/negative → this default) |
 | `_EMBED_CONTENT_BUDGET` | `(CHUNK_TOKEN_SIZE + CHUNK_OVERLAP) * 10` | `embedder.py` | Chunk-content fold budget (chars). Overridable via `knowledge.embed_content_budget` (positive-only; folded into the embed signature so a change re-embeds) |
 
@@ -190,7 +190,7 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 - Per-file state lives in the `folder_file_state` table with `status` ∈ `{done, scanning, skipped, failed, deduped}`. `scanning` is written **before** ingest so a crash mid-file is recoverable; `skipped`/`failed`/`deduped` files are not auto-retried (user must retry).
 - **TOCTOU defense**: `_ingest_file` re-resolves symlinks and re-checks `is_sensitive_path` at ingest time; a block writes `status='failed'` and emits an SEL `knowledge.source.file.ingest_denied` (`outcome="denied"`, `reason=sensitive_path_toctou`) audit event.
 - After a successful scan, each newly ingested/changed file gets a **targeted** cross-source dedup (`dedup_document(..., apply=True)`) — O(k·n) over the k changed files rather than a full O(n²) corpus sweep — so a folder copy collapses any matching one-shot upload.
-- **The dedup unit is always the DOCUMENT, never the source.** For a folder source a document is a `folder_file_state` row; for everything else it is one `content_hash` group of `items` (`enumerate_docs` groups by `(source_id, content_hash)`), so an aggregate source holding many documents (`artifact`, `agent`) dedups per document like any other. `_delete_doc` drops that document's items and marks its owning state row `deduped` so nothing re-ingests it; it removes the source row only once the source is provably empty (no items, no state rows, and not a folder/vault), which is what keeps a collapsed one-shot upload from lingering as an empty row. There is no source-level unit, so the former `_AGGREGATE_SOURCE_TYPES` carve-out — whose cost was that aggregate documents were never deduped at all — is gone.
+- **The dedup unit is always the DOCUMENT, never the source.** For a folder source a document is a `folder_file_state` row; for everything else it is one `content_hash` group of `items` (`enumerate_docs` groups by `(source_id, content_hash)`), so an aggregate source holding many documents (`artifact`, `agent`) dedups per document like any other. `_collapse_doc` drops the loser document's items and marks its owning state row `deduped` so nothing re-ingests it; it removes the source row only once the source is provably empty (`_source_is_now_empty`: no items, no state rows, and not a folder/vault), which is what keeps a collapsed one-shot upload from lingering as an empty row. There is no source-level unit and no carve-out for aggregate source types: a carve-out at that level would mean aggregate documents were never deduped at all.
 - **Scheduled sweeps.** `KnowledgeWatcher._maybe_dedup_sweep` runs a full `dedup_sweep` every `knowledge.dedup_every_n_sweeps` sweeps (default 12, ~hourly at the 300s interval; 0 disables). The targeted per-ingest call and the pre-ingest exact-hash gate cannot catch a near-duplicate or a pre-existing one, so the periodic pass is required for duplicates to actually be collapsed.
 - **One document, several locations.** A document held by two sources is ONE stored copy with a `source_locations` row per source, not two copies where one is destroyed. A collapse attaches the loser's source as a location of the winner's items, deletes the loser's redundant copy, and records `merged_into_source_id` on the loser's state row. Three consequences follow, and each closes a way the previous design lost data: `delete_source_cascade` re-points `items.source_id` to a surviving holder instead of deleting a document another source holds (`reassign_item_source` is the only path that moves ownership, since `_ITEM_COLUMNS` deliberately excludes the column); deleting the winner clears the marker so the document is ingested again rather than stranded; and "empty source" now means holding nothing by location either, in both the dedup check and the boot-time orphan sweep, because reaping a source would delete the very rows recording co-ownership. The marker names a SOURCE and never the winner's item ids: `item_ids` means "the items this row owns", and dedup derives a document's hash and embedding from whatever it points at, so a row naming the winner's items would be enumerated as a second document over one physical item set — and collapsing that pair deletes the surviving copy. `_match_reason` refuses any pair whose `item_ids` overlap for the same reason. Per-source counts report what a source HOLDS, while the Library total counts documents, so a shared document is visible under both sources without inflating the total.
 
@@ -203,19 +203,16 @@ One path adds documents without the user registering a source by hand, and it is
 agent's: the `knowledge_add_document` MCP tool, gated off by default on
 `knowledge.auto_add_documents`. **Nothing registers a file or folder on its own.**
 
-There were two folder-registration paths before — a workspace drop folder
-(`autosource.py`) and each worked-in project's documents (`project_docs.py`, filtered by
-`doc_filter.py`) — and both are **removed**, along with their config keys
-(`knowledge.auto_discover_folder`, `knowledge.auto_discover_dirname`,
-`knowledge.auto_register_project_docs`, `knowledge.auto_ingest_chunk_budget`,
-`knowledge.max_sources`). Both were opt-in and off by default, but once enabled they
-registered directories the user had never named and spent LLM extraction on them with no
-confirmation step, which is the property that was removed rather than the default. A
-folder enters the Library one way now: the user adds it, and confirms it.
+**No auto-registration of any kind.** There is no workspace drop folder, no
+per-project document discovery, and no config key that turns either on. Such a path
+would register directories the user never named and spend LLM extraction on them with
+no confirmation step, which is the property ruled out here — an opt-in default does not
+make it acceptable. A folder enters the Library exactly one way: the user adds it and
+confirms it. See `docs/system-specs/post-launch-removals.md`.
 
-What survives from those paths is generic and still reachable from a hand-added source:
-the `confine_to_root` property (a file whose resolved path lands outside the registered
-root is skipped — `os.walk` does not descend a directory symlink, but a file symlink IS
+The per-folder safety properties are generic and reachable from any hand-added source:
+`confine_to_root` (a file whose resolved path lands outside the registered root is
+skipped — `os.walk` does not descend a directory symlink, but a file symlink IS
 followed on open), the `max_files` cap, and `folder_chunk_budget` pacing.
 
 **Agent-added documents (`agent_source.py`).** The `knowledge_add_document` MCP tool
@@ -366,7 +363,7 @@ The knowledge store's two narrowings exist for one reason and are both temporary
 
 The LLM reaches retrieval through the `kirocrew-core` MCP tool `local_knowledge_search`:
 - DB path: `config_dir()/workspace/knowledge/knowledge.db`; a missing DB returns "Knowledge Library is not configured…" (SEL `not_configured`).
-- `_get_knowledge_search` caches the `(KnowledgeStore, embedder)` pair across calls and rebuilds only when the knowledge DB (or its `-wal`) or `config.json` changes — avoiding the per-call schema DDL / migrate / graph-load and the Ollama availability probe.
+- `_get_knowledge_search` caches the `(KnowledgeStore, embedder)` pair across calls and rebuilds only when the knowledge DB (or its `-wal`) or `config.json` changes — avoiding the per-call schema DDL / migrate / graph-load.
 - Default `limit` is 3; results below `min_score = 0.012` are dropped. Output is run through `redact_exfiltration_urls()` + `redact_credentials()` before returning, and every call emits an SEL audit event (`success` / `no_results` / `not_configured` / `unknown_source`). Input is validated against `LOCAL_KNOWLEDGE_SEARCH_SCHEMA` (`validation.py`).
 - Optional `source_id` scopes the SEED legs only (FTS5 keyword + vector similarity, via parameterized WHERE clauses in `HybridRetriever`); the graph leg stays unfiltered so cross-source entity connections still contribute traversal context. Scope membership is ownership OR location — `items.source_id` or a `source_locations` row, so an item surviving a cross-source dedup collapse still belongs to the losing source's scope (the same rule as `/api/knowledge/graph`'s filter). Omitting it keeps the unscoped behavior. A nonexistent id returns a guidance message naming `knowledge_list_sources` (SEL `unknown_source`), not an exception.
 - The companion tool `knowledge_list_sources` (no arguments; `KNOWLEDGE_LIST_SOURCES_SCHEMA`) returns one `name — id (N item(s))` line per source, counting **active** items only (superseded/deduped copies would overstate a source's coverage) — so agents discover valid `source_id` values instead of guessing.
@@ -432,3 +429,84 @@ Returns the item count per source **under the active filters**:
 - **The search branch's candidate load runs off the event loop** — a scoped search escalates its candidate pool, so `_load_items_by_id` (batch `SELECT` plus per-row serialization) and the `source_counts` aggregate both run via `asyncio.to_thread`. `store.db` is a per-thread connection, so each worker thread uses its own. Run inline, either can stall the loop past the watchdog threshold on a large KB.
 - **Frontend selection is bounded to on-screen items** — in source-first mode item data lives in per-`SourceGroup` caches, so bulk actions read the items each expanded group reports as rendered, and selected IDs are pruned when a group collapses or pages away. Reading the react-query cache directly would let a bulk Delete reach a retained cache for a source the user can no longer see.
 - **Per-source caches are keyed under the `knowledge-items` prefix** — `['knowledge-items', 'source-items', ...]` and `['knowledge-items', 'source-counts', ...]` so every existing `invalidateQueries(['knowledge-items'])` call site reaches them. Consequently any `setQueriesData` on that prefix must guard on the payload shape, since the counts entry has no `items` array.
+
+## Graph internals
+
+How the entity graph behind knowledge search is built and stored. The
+user-facing behaviour — what gets ingested, what search returns, and the
+citation format — is
+[`src/kiro_crew/docs/knowledge-library-how-it-works.md`](../../../src/kiro_crew/docs/knowledge-library-how-it-works.md).
+
+### Graph Construction
+
+#### Entities → Nodes
+
+Each extracted entity becomes a node in the graph:
+- Deduplication: exact name matching + case-insensitive alias lookup
+- If "DynamoDB" appears in chunk 1 and chunk 5, both map to the same node
+- Stored in SQLite `entities` table + in-memory `SimpleDiGraph`
+
+#### Relations → Edges
+
+Each extracted relation becomes a directed edge:
+- Only created between entities extracted from the **same chunk**
+- Edge types: `owns | uses | works_on | part_of | calls | depends_on`
+- Stored in SQLite `entity_relations` table + in-memory graph
+
+#### Cross-Chunk Connections
+
+There is NO cross-chunk relation extraction (too expensive). Connections across chunks happen through **shared entity names**:
+
+```
+Chunk 1: AuthService ──uses──► DynamoDB
+Chunk 5: BackupService ──depends_on──► DynamoDB
+
+Graph result:
+  AuthService ──uses──► DynamoDB ◄──depends_on── BackupService
+```
+
+The shared "DynamoDB" node creates an implicit connection between AuthService and BackupService — they're 2 hops apart in the graph.
+
+#### Mentions
+
+Every entity-in-chunk creates a `mention` record linking the item (chunk) to the entity. This enables: "show me all chunks that mention DynamoDB."
+
+### Data Model
+
+```
+┌──────────────┐         ┌──────────────┐
+│   sources    │         │   entities   │ ← Graph Nodes
+│ (files/URLs) │         │ (name, type) │
+└──────┬───────┘         └──────┬───────┘
+       │ source_id               │ entity_id
+       ▼                         ▼
+┌──────────────┐         ┌──────────────┐
+│    items     │◄────────│   mentions   │
+│  (chunks)    │ item_id │(item↔entity) │
+└──────────────┘         └──────────────┘
+
+                         ┌──────────────────┐
+                         │ entity_relations  │ ← Graph Edges
+                         │(src→tgt, type)   │
+                         └──────────────────┘
+```
+
+
+### Storage and search implementation
+
+- Embeddings are generated **after** extraction, in the same ingestion pipeline
+- Stored as packed float32 binary in the `items.embedding` BLOB column
+- Vector search uses brute-force cosine similarity
+- Existing items with a stale embedding signature are transparently re-embedded by the signature-gated rebuild
+
+Known gaps in the construction above, stated as current behaviour rather than as
+a plan: entities connect only through shared names, so `auth layer` and
+`AuthService` produce two nodes; `merge_entities` exists but no ingestion path
+calls it; and nothing computes entity communities, so a cluster of related
+entities has no representation a query can select on.
+
+Writers: `knowledge/store.py` (the `entities`, `entity_relations` and `mentions`
+tables, `items.embedding`, the signature-gated re-embed), `knowledge/extractor.py`
+(per-chunk entity and relation extraction), `knowledge/ingestion.py` (chunking,
+dedup, the embedding pass), `knowledge/retrieval.py` (`SimpleDiGraph`, the three
+search legs and their RRF fusion).

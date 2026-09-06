@@ -625,7 +625,7 @@ class TestDescribeSecrets(unittest.TestCase):
 
 
 class TestCrossPlatform(unittest.TestCase):
-    """AGENTS.md requires macOS + Linux + Windows for every change.
+    """docs/system-specs/common/platform-compat.md requires macOS + Linux + Windows.
 
     This app spawns two external binaries (`git` for ledger sync, `gh` for the rotation
     login) and does timezone math, which is where the Windows differences actually bite.

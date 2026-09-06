@@ -272,7 +272,8 @@ class TestAutocompactEndpoint:
     async def test_error_bodies_carry_machine_readable_codes(
         self, payload: str, expected_code: str
     ) -> None:
-        # AGENTS.md: new non-2xx JSON bodies MUST carry a stable ``code`` so
+        # docs/system-specs/common/code-style.md: new non-2xx JSON bodies MUST
+        # carry a stable ``code`` so
         # clients can branch without parsing the human-readable message.
         slot = _ChatSlot("test")
         state = _mock_state(slot)

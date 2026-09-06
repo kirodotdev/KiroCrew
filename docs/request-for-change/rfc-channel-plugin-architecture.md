@@ -13,6 +13,12 @@ superseded-by: []
 ---
 # RFC: Channel Plugin Architecture — shared runtime, channels as app extension points
 
+> **Current behaviour: see [`../system-specs/modules/messaging.md`](../system-specs/modules/messaging.md),**
+> which owns the shared turn pipeline's runtime contract. The §9 address rule
+> is split with [`rfc-session-address-model.md`](rfc-session-address-model.md);
+> that document owns the rule, and this one keeps only the reasoning that
+> produced it.
+
 - Status: partial — PRs ① and ② are shipped and load-bearing: the shared turn pipeline lives at `messaging/dispatch.py` and **4 of 7 channels** drive turns through it (weixin, wecom, webex, teams). PRs ③ (registry + `ChannelDescriptor`/`ChannelHooks`, the 9→1 seam collapse), ④ (telegram + discord adoption) and ⑤ (Feishu) are unstarted, and all nine hand-edited seams are still hand-edited. Slack is out of scope by §2 principle 4. The §9 amendment is only partly honored: rule 5 (address-agnostic pipeline) is pinned in code, but rule 1 (`session_key` as the control-plane address) and rule 4 (one builder/parser) are unstarted. Measured effect: dispatcher lines went 3,796 → 3,455, not the predicted ~1,300, because the reduction depended on PR ④ — discord actually grew ~355 lines.
 - Author: zezhexu
 - Created: 2026-07-28

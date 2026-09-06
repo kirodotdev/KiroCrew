@@ -138,26 +138,21 @@ file count first.
 
 ## Playwright: how it actually runs
 
-The config is `playwright.config.ts`, and several of its choices surprise people:
+The config is `playwright.config.ts`. The full table of its choices — including
+`locale: 'en-US'`, which is a real dependency (most specs assert English prose,
+the harness storage state carries no `mc-lang`, so a `zh-*` runner renders the
+zh-CN catalog and fails them) — is in
+[../../docs/ci/e2e-gate.md](../../docs/ci/e2e-gate.md#the-gateway-must-already-be-running-webserver-is-not-configured).
 
-- `testDir` is `./playwright`, and specs are `*.spec.ts` there.
-- `baseURL` defaults to `http://localhost:5476`, overridable with
-  `PLAYWRIGHT_BASE_URL`.
-- **`webServer` is `undefined`.** Playwright starts nothing. A gateway must already
-  be listening, or every spec fails on connection refused.
-- Authentication is a setup project: it exchanges `PLAYWRIGHT_TOKEN` for a session
-  cookie and saves it to `playwright/.auth/state.json`, which the other projects
-  reuse as `storageState`.
-- Specs that need a live model are tagged and **excluded by default** via
-  `grepInvert`; set `PLAYWRIGHT_RUN_AGENT_SPECS=1` to include them. This keeps the
-  default run credential-free and deterministic.
-- CI pins `workers: 1`; local runs parallelize.
+The one thing to know locally: **Playwright starts nothing.** `webServer` is
+`undefined`, so a gateway must already be listening on `baseURL`
+(`http://localhost:5476` unless `PLAYWRIGHT_BASE_URL` overrides it), or every spec
+fails on connection refused.
 
 **In CI these specs run through the backend gate, not through npm.**
 `python setup.py test_e2e` boots a real gateway wired to a packaged fake ACP
 backend and shells this suite against it, entirely offline. That is the harness to
-match when you are debugging a CI-only failure: see
-[../../docs/ci/e2e-gate.md](../../docs/ci/e2e-gate.md).
+match when you are debugging a CI-only failure.
 
 ## CI gates
 

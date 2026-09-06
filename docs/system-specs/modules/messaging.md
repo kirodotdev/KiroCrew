@@ -1681,7 +1681,7 @@ answer is not permission: a raised evaluation and a `Decision` without
   acting on another is how a guard becomes ornamental. The refusal names neither the
   path nor the reason, since distinguishing "sensitive" from "missing" is an oracle
   for probing which roots exist on the host. This matches what the dashboard's
-  `/api/taskrunner/start` already did; the channel keyword was the surface missing
+  `POST /api/taskrunner` (`api_taskrunner_start`) already did; the channel keyword was the surface missing
   it.
 - **A session-scoped gate is keyed by SESSION KEY, and its predicate never tests a
   namespace**: `privacy_mode.is_restricted` is a dict lookup, so a Slack, Telegram
@@ -4246,3 +4246,48 @@ transport is the operator's own account and can tell the operator from a peer,
 whereas Feishu has a bot identity and authorises against `allowed_open_ids`,
 where every admitted DM sender is an equally-trusted peer with their own
 `open_id`-keyed bucket.
+
+## Adding a channel
+
+### What a new channel inherits for free
+
+Implement only Layer 1 (`Transport`) + Layer 2b (`Renderer`) and register it.
+You automatically get: LLM-output redaction, the SEL-audited approval ladder,
+namespaced session identity + per-conversation state, capability-driven
+graceful degradation, and long-message chunking.
+
+### Step by step
+
+1. **Declare capabilities.** Build a `TransportCapabilities` describing the
+   channel's limits (char cap, buttons, streaming/edit/reactions, proactive
+   send). The neutral layers read these instead of branching on channel type.
+
+2. **Implement `MessagingTransport`** (`<channel>/transport.py`):
+   - `channel_type = "<name>"`, `capabilities = <caps>`
+   - `send_message` / `resolve_conversation` / `fetch_history` against the
+     channel API
+   - `authorize(msg)` — **deny-by-default**; allow only known/owner users
+   - `receive(raw)` — parse the channel's inbound payload → build an
+     `InboundMessage` → `authorize()` → hand off to dispatch (drop bot echoes)
+   - optionally `connect`/`maintain`/`disconnect` for webhook/poll lifecycle
+
+3. **Implement `Renderer`** (`<channel>/renderer.py`): map each `on_*`
+   callback onto the channel API. Use `chunk_text()` for `max_message_chars`;
+   render `on_prompt_choice` with the channel's interactive controls (or, if
+   `capabilities` lacks buttons, degrade to a numbered text prompt). Name the
+   tool from that callback's `tool_title`/`tool_purpose`, which describe the tool
+   THIS request asks about: never from a remembered earlier `on_tool_call`, which
+   names the previous tool whenever a permission arrives without one of its own.
+   The `options` are the ANSWERS, so an option label is not a tool name either.
+
+4. **Wire dispatch** (`<channel>/transport_dispatch.py`): mirror
+   `slack/transport_dispatch.py` — acquire the session (namespaced
+   `session_key`), build context, construct the `Renderer` + `TurnDriver`, and
+   `await driver.run(message)`. Reuse the neutral `TurnDriver` unchanged.
+
+5. **Register + gate.** Add one `ChannelDescriptor` to `builtin_channel_descriptors()` in `kiro_crew/channels.py` — the single place that knows every channel — carrying `channel_type`, the `maybe_start_<channel>` boot factory, and the credential keys / `required_config` its readiness answer needs. `messaging/registry.py` owns the descriptor type and the boot/shutdown loops; it must not import a channel package (the `<channel> -> messaging` direction is pinned in `messaging/dispatch.py`), which is why the roster lives above both. `channel_type` is the ONE identity everywhere: governance member id, `MessagingTransport.channel_type`, session-key segment, config section name, dashboard badge prefix. Slack's descriptor carries `start=None` because its socket-client lifecycle is host-managed. Then route the channel's inbound events to your dispatch, and keep the channel's own `enabled` gate off until validated.
+
+6. **Lock behavior with a transcript-style test**: drive a scripted provider
+   event stream through the real turn (see `test/test_slack_renderer.py`) and
+   assert the ordered channel-API call sequence, so future refactors can't
+   silently change UX.

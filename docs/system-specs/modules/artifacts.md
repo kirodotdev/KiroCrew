@@ -102,6 +102,7 @@ doc stored as `widget` renders as raw inner HTML).
 | `artifact_update` | Modify content/name/description/tags; bumps version on content change |
 | `artifact_list` | List artifacts (filter by `tag`, `kind`, name `q`) |
 | `artifact_versions` | List version numbers for a slug |
+| `artifact_revert` | Revert the live state to a prior version; writes that version's content as a fresh snapshot tagged `reverted`, so the activity timeline shows the rollback |
 | `artifact_delete` | Permanent delete (artifact + all versions) |
 | `artifact_folder_list` | List the folder tree (id, name, parent_id, path, item_count) |
 | `artifact_folder_create` | Create a folder; `parent` = id or path (mkdir -p) |
@@ -112,6 +113,7 @@ doc stored as `widget` renders as raw inner HTML).
 | `artifact_get_comments` | Read all comments on an artifact (local + provider-synced) |
 | `artifact_post_comment` | Post a comment; agent comments carry the structured `is_agent` flag (no emoji stamped into the body — dashboard renders a lucide `Bot` icon, CLI prefixes a plain-text `[agent]` marker) + SEL-audited; `scope='shared'` syncs to the provider |
 | `artifact_mark_review` | Advance a comment thread to REVIEW status (agent can mark_review but NEVER resolve) |
+| `artifact_reply_comment` | Reply to an existing comment thread; a reply to a provider-origin parent posts back to the provider |
 | `artifact_delete_comment` | Delete a fully-applied comment thread (root cascades to replies); provider-synced comments refused; SEL-audited with a `reason` |
 
 Schemas live in `validation.py` (`ARTIFACT_*_SCHEMA`) and are registered in

@@ -9467,7 +9467,6 @@
       "could_not_switch_variant": "संस्करण नहीं बदल सके",
       "could_not_start_a_new_session": "नया सेशन शुरू नहीं हो सका",
       "could_not_start_session_message_restored": "नया सत्र शुरू नहीं हो सका: {{error}}। तुम्हारा संदेश वापस ले आया गया — दोबारा कोशिश करने के लिए उसे फिर से भेजें।",
-      "dismiss_upload_error": "अपलोड त्रुटि खारिज करें",
       "enter_split_view": "स्प्लिट व्यू में जाएँ",
       "esc_to_dismiss": "खारिज करने के लिए Esc",
       "expand_knowledge_context": "ज्ञान संदर्भ विस्तृत करें",

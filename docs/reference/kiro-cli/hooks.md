@@ -1,6 +1,10 @@
 # Hooks
 
-Source: https://kiro.dev/docs/cli/hooks/
+Source: https://kiro.dev/docs/hooks/ (the former `/docs/cli/hooks/` now
+redirects there — CLI and IDE hooks are documented as one page).
+
+> **Carries local additions.** Kiro Crew's fail-closed `PreToolUse` exit contract
+> has no upstream counterpart. A re-fetch must preserve it.
 
 Execute custom commands at specific points during agent lifecycle and tool execution.
 

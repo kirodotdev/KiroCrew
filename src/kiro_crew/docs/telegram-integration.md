@@ -43,7 +43,7 @@ Send your bot a message and it answers. If it stays quiet, check that your ID is
 in `allowed_user_ids` and look for `Telegram channel started` in the gateway
 log.
 
-## Who can reach it
+## Access control
 
 > **Kiro Crew runs on your machine, with your files and credentials.** So it only
 > talks to people you name — and only in private chats.
@@ -195,7 +195,7 @@ including on the turn where the context warning finally matters.
 Scheduled jobs report back **here**. A cron you create from Telegram delivers its
 result to this conversation, not only to the dashboard bell.
 
-## Settings & reference
+## Settings reference
 
 Everything lives in the `telegram` section of `config.json`:
 
@@ -230,6 +230,7 @@ Transport capabilities: streaming, edits, reactions, inbound and outbound files,
 
 ## Related docs
 
+- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
 - [Slack Integration](slack-integration.md)
 - [WeCom Integration](wecom-integration.md)
 - [Getting Started](getting-started.md)

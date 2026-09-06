@@ -92,11 +92,19 @@ cd ..
 **All gates must be green.** Never weaken or skip tests to go green.
 
 **Run pytest in parallel — and keep `--dist loadgroup`.** The full backend
-suite is large (16k+ tests); serial runs can exceed 45 minutes and time out in
+suite is large (tens of thousands of items — read the count `setup.cfg` states
+rather than trusting a number here); serial runs can exceed 45 minutes and time out in
 agent sessions. The default `setup.cfg` addopts already includes `-n auto
 --dist loadgroup` — `loadgroup` is required so `@pytest.mark.xdist_group`
 serialization is honored; dropping it races those tests and produces flaky
-failures. If you need to override addopts (e.g. to skip coverage during
+failures. `-n auto` is not one worker per core: a
+`pytest_xdist_auto_num_workers` hook in the rootdir `conftest.py` bounds the
+count by free memory and by what other concurrent runs on the host already hold,
+because a worker costs ~1.5 GiB almost entirely during collection. So a run can
+legitimately pick far fewer workers than the core count, and an explicit `-n <N>`
+bypasses that budget — which is how a parallel run OOMs. The knobs are in
+`docs/system-specs/common/testing-conventions.md` § Running on a machine with
+little RAM. If you need to override addopts (e.g. to skip coverage during
 iteration), use exactly this form, which preserves the xdist flags:
 
 ```bash
@@ -189,12 +197,14 @@ tiers with different jobs:
   your own prose or scope selection: `test/test_local_gate.py` pins the script's
   rules to `ci.yml`, and a hand-maintained copy silently drifts out of that
   ratchet.
-- **Gate model (full floor).** The full blocking floor — `pytest` + `isort` +
-  `flake8` + `mypy` + `tsc -b` + `vitest`, all green — **still runs once before
-  you push**, exactly as specified above. It is never skipped, never replaced,
-  and never satisfied by a fast-tier run. The fast tier is a strict *subset* of
-  the floor chosen for iteration speed only; it earns you quick rounds, it does
-  not earn you the push.
+- **Gate model (full floor).** The real blocking floor is the `gates[]` list in
+  `prepare-pr/profiles/kirocrew.json` (dozens of entries, pinned to `ci.yml` and
+  `fast-gate.yml` by `test/test_prepare_pr_profiles.py`), not the six commands
+  above — those six are the minimum you would run by hand. Run the complete
+  resolved `gates[]` list, all green, **once before you push**. It is never
+  skipped, never replaced, and never satisfied by a fast-tier run:
+  `scripts/local-gate.py` is the ITERATION gate and says so itself, so its
+  diff-scoped subset earns you quick rounds and never earns you the push.
 
 This is what mitigates the documented full-suite timeout *during iteration*
 without loosening anything: the pre-push full floor plus the `ci.yml` ratchet
@@ -259,9 +269,21 @@ where a pod cannot run.
    ```
    Best for QA agents and end-to-end tests, but the default for a human
    iterating on a worktree too — it needs no cleanup discipline of its own.
-   `kirocrew pod --help` for all verbs (`ls`, `status`, `logs`, `provision`,
-   …). The worktree must be built first (venv + dist); `kirocrew pod up
-   --provision` does the full on-ramp.
+   `kirocrew pod --help` remains authoritative; the verbs are `up`, `down`, `ls`,
+   `status`, `logs`, `provision`, `prune` (reap pods for worktrees that are
+   gone), `token` (re-mint a dashboard token, default TTL 2h), `url` (print the
+   pod's base URL without re-minting), `scenarios` (list the shipped `--seed`
+   names, so you do not have to trigger a refusal to learn them), `exec` (run a
+   command inside the pod's own environment), `api` (the pod's HTTP-probe
+   envelope) and `install`. The worktree must be
+   built first (venv + dist); `kirocrew pod up
+   --provision` does the full on-ramp. `--approval reads|yolo|interactive` sets
+   the approval mode the pod's gateway boots with, persisted per pod so it
+   survives a service-manager restart; omit it to inherit `agent.approval_mode`.
+   `--crons` runs the pod's cron scheduler — pods boot `--no-crons`, so a
+   scheduled job you are testing never fires without it. `--ttl` (default `2h`)
+   bounds the dashboard token. All three apply at boot, so re-up a stopped pod to
+   change them.
 
    For behavior that needs existing data, seed a shipped fixture instead of
    clicking state in by hand:
@@ -300,8 +322,9 @@ recipes use the feature map to select the owning endpoint, assert seeded backend
 state, run the packaged pod-e2e Playwright harness and preserve screenshot
 evidence, or diagnose and reclaim a failed pod.
 
-The recipes distinguish pod commands already on `main` from `pod api`, which
-arrives with PR #8218. They also record the current session-control compatibility
+The recipes note which pod commands exist today; treat anything they mark as
+forthcoming as absent until `kirocrew pod --help` lists it. They also record the
+current session-control compatibility
 gap rather than presenting an HTTP 403 as an agent-driving proof.
 
 ### Agent specs + MCP servers are a SEPARATE isolation axis from the data home
@@ -313,8 +336,10 @@ That directory is machine-wide, and a gateway rewrites its specs on every start.
 A worktree gateway is therefore **prevented from clobbering them**: you will see
 
 ```
-Refusing to rewrite the shared agent home /home/<you>/.kiro/agents from the
-git worktree at /workplace/<you>/kirocrew-wt-<name>: ...
+Refusing to rewrite the shared agent home <path> from an ephemeral instance
+(checkout <repo>, data home <home>): it would repoint the real install's MCP
+servers at this instance's venv and data home, and break them outright when it
+is torn down. This instance will use the existing specs instead.
 ```
 
 That warning is the guard working, not a failure. Consequence to know about: the

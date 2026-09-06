@@ -13,6 +13,12 @@ superseded-by: []
 ---
 # RFC: Notification Bridge (bus egress fanout to chat transports)
 
+> **Nothing here is built, and its dependency claim is overstated.** The bus
+> RFC's phases did not all ship: the phases this bridge actually needs are on
+> main, but Phase 2 has no producer and Phase 5 shipped two of three items.
+> `docs/system-specs/modules/app-notifications.md` is the record of what the
+> bus does today.
+
 - Status: accepted — the document is merged (PR #670) with an open tracking issue, but **zero implementation code exists**. `notifications/bridge.py` and `BridgeDispatcher` do not exist; `ChannelSettings` carries only `muted` + `priority`, with no `deliver_to` / `deliver_min_priority`; egress is still the single hardcoded dashboard sink at `dashboard/state.py:1758`. No open PR and no live branch is building B1–B4.
 - Correction to the Summary below: it says the bus RFC's "Phases 1–5, all shipped". Phases 1/3/4 are complete, but Phase 2 has no producer app and Phase 5's kind-routing cleanup is still present in `NotificationDetailPanel.tsx`. Every dependency **this** RFC actually needs is real; the blanket claim is not.
 - Author: zezhexu

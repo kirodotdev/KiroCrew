@@ -1310,7 +1310,7 @@ existing session, on either side. Consequences worth stating:
 | `title` | yes | Prefixed `⇄ ` and suffixed `(from <origin>)` on arrival, so a transferred tab is never mistaken for a locally-born one. The prefix is stripped before re-bundling so a session bounced back and forth does not accumulate one prefix per hop. |
 | `agent` | hint only | Applied only if the target has an agent by that name, else dropped. An agent template is a local object; carrying the name blindly would leave the slot pointing at nothing. |
 | **`project`** | **no** | The headline decision. The source's checkout path almost never exists on the target (a Mac worktree path on a Linux dev desk), and a slot pointing at a missing directory scopes file search and steering to nothing. The session arrives **unscoped** and the user re-picks a project. |
-| `model` | no | Accounts differ in entitlement, so an id the source is served can fail at runtime on the target. The target resolves its own default (AGENTS.md § Model selection). |
+| `model` | no | Accounts differ in entitlement, so an id the source is served can fail at runtime on the target. The target resolves its own default ([model-selection](../common/model-selection.md)). |
 | `workspace` | no | Workspaces are per-instance memory scopes; a matching name still means a different memory. |
 | `folder_id`, `tags`, `pinned`, `artifact`, `app`, `linked_session_key`, `forked_from` | no | Local-graph references that would dangle. |
 

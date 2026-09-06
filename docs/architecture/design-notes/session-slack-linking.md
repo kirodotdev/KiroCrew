@@ -154,7 +154,8 @@ capability-gated on `supports_proactive_send` and governance-gated fail-closed.
 
 A tool-approval prompt on a linked session is mirrored into the thread with
 Approve / Reject buttons (`post_linked_approval`), because a Slack-only user
-would otherwise never see it and the turn would park on the 2h timeout holding
+would otherwise never see it and the turn would park for the whole
+`agent.tool_approval_timeout_secs` window (600s by default) holding
 the slot lock. The click resolves the dashboard slot's approval future, so there
 is still exactly one caller of `approve_tool` / `reject_tool`.
 

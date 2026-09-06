@@ -50,7 +50,11 @@ Anything the spec does not set has the default shown above. Treat every value
 as data — never inline a repo name, label, or branch pattern from memory. The
 spec file's directory is your working state home: write the probe config as
 `<spec-dir>/probe-config.json` and let the probe own
-`<spec-dir>/probe-config.json.state.json` (the handled-set).
+`<spec-dir>/probe-config.json.state.json` (the handled-set). Set
+`fleet_worktrees` to the absolute worktree roots this fleet owns: it is optional
+in the config and it is what makes `cwd=fleet` reachable, so leaving it out
+classifies every banned line as `foreign` or `unknown` and the enforcing row of
+the banned-ops table never fires.
 
 ## Startup (once per run)
 
@@ -67,7 +71,12 @@ spec file's directory is your working state home: write the probe config as
 3. Open your own status file beside the spec — `conductor-status/v1`, schema
    below. The ledger tracks the items; the status file tracks YOU.
 4. Arm the patrol: `monitor_start` (interval ~90s) with the standing
-   instruction below. **Patrol with `monitor_start`, never `wait`.** Call
+   instruction below. **Patrol with `monitor_start`, never `wait`.** Pass
+   `max_cycles` explicitly — the default is 24, so a 90-second patrol expires in
+   well under an hour, long before a fleet drains, and the loop simply stops
+   with no symptom. Size it to the run, raise it mid-run with `monitor_update`,
+   or pass `max_runtime_secs` when a wall-clock bound fits better than a cycle
+   count. Call
    `autonudge_stop` yourself when the exit condition fires — coasting into the
    cycle cap is a failure, not a finish.
 
@@ -304,7 +313,10 @@ precedence list:
    treating it as coverage closes live work and treating it as a claim starves an
    item whose fix was only partial.
 2. `open_prs` — any open PR referencing it, **fork PRs included** → **SKIP**
-   `open-pr`.
+   `open-pr`. A fork PR from someone with no standing still SKIPs, but the line
+   carries `risk=high` and an `untrusted-fork` marker — treat that as a triage
+   signal to review rather than an item that simply left the queue, because
+   opening a fork PR needs no permission and is therefore a suppression channel.
 3. `prose_claim` — a closure request in the body or the last comment ("this is
    resolved", "please close") **from the item's own reporter or a repository
    insider** → **REVIEW** `reporter-asked-close` at `risk=high`. **Prose never
@@ -329,6 +341,12 @@ precedence list:
    pipeline would ever report that it had been suppressed. Downgrading keeps the
    collision protection where the claim is credible without handing an arbitrary
    commenter a mute button.
+
+   A claim is retired by a later withdrawal from the same author ("dropping
+   this"), including one written in the issue BODY — otherwise a claim nobody is
+   honouring suppresses the item forever. Bot comments never claim and never
+   close. Ownership is read from the newest STANDING claim, not from the last
+   comment, so a passer-by's "any update?" does not clear a claim.
 5. `symbol_on_base` — a symbol the item names is absent from
    `{default_branch}`. **Absence alone is not a SKIP.** Corroborated as
    bug-class, it is **SKIP** `symbol-absent`: the target code lives only on an
@@ -369,8 +387,11 @@ reading, and it comes back as `REVIEW` for you to confirm.
   edit files.
 - Validate with ONE canary dispatch before a batch. A wrong agent or a broken
   brief costs one session that way, and the whole batch otherwise.
-- Respect the session-create rate limit: dispatch in small batches with other
-  work interleaved, never the whole queue at once.
+- Respect the session-create rate limit: 20 `session_create` calls per 5-minute
+  window per caller (folders: 10). `max_in_flight` defaults to 32, so a
+  full-width dispatch round CANNOT complete inside one window — plan two rounds,
+  and remember that a create refused by the limiter is a post-claim failure, so
+  unclaim per the rule above.
 - Worker sessions must be granted **trust mode before seeding** — an unattended
   session stuck on an approval prompt runs zero turns; if you cannot grant it,
   tell the operator instead of seeding sessions that will hang.
@@ -465,6 +486,15 @@ carry **metadata only** — the probe never emits transcript text:
 BANNED pid=<pid> rule=<regex> cwd=fleet|unknown
 OK <n> watched, <m> fired | load/cpu <x> (ok|hot) | mem <n>G | banned <n> | foreign <n> | deliver init-timeout <a>, watchdog <b>
 ```
+
+A tail with no protocol tag reads as `-` and never fires on its own, and a
+protocol word inside a tool card is quoted text rather than a report — so a worker
+whose only "status" is in a tool call is silent as far as the probe is concerned,
+and ages into `IDLE`.
+
+The handled set keeps the last dispositioned PAYLOAD report as `settled`, so a
+later `IDLE` or `NOPROGRESS` mark on the same session cannot resurrect a ruling
+you already delivered. You do not maintain this — it is written on every mark.
 
 When a ruling needs content, read that one session through the
 workspace-authorized session tools. Act, then `--mark-handled KEY TAG DIGEST`
@@ -574,11 +604,13 @@ Signals: `IDLE` twice in a row; same tag across ~5 cycles with rising turn
 count; credit burn with no ledger transition; ERR recurring after resume.
 
 1. **Nudge** (`session_send`): restate the next step + protocol requirement.
-2. **Inspect** — `spawn_run` ONE bounded inspector with an ENFORCED read-only
-   toolset: pass `allowed_tools` limited to reads (`fs_read`, `web_fetch`,
-   `@kirocrew-dashboard/session_read_message`) so "read-only" is a property of
-   the spawn, not a hope in the prompt — never grant it `execute_bash` or any
-   write tool. Task: *"Read the tail of session {key}
+2. **Inspect** — `spawn_run` ONE bounded inspector and bound it in the TASK
+   TEXT. `spawn_run` takes no `allowed_tools` parameter, and the underlying
+   field is ignored for ACP-backed agents, so read-only cannot be a property of
+   the spawn. Pin a read-only AGENT instead (`agent=` a spec with no write
+   tool), say "read only; modify nothing" explicitly, and treat any write the
+   inspector reports as an escaped constraint to raise with the operator. Task:
+   *"Read the tail of session {key}
    (session_read_message) and the state of PR #{n} on {repo} (web_fetch the PR
    page). Return one verdict — healthy-slow | looping | blocked-misclassified
    | premise-wrong — plus two sentences of evidence. Do not modify anything."*
@@ -785,8 +817,11 @@ Roughly every 5 cycles, for items with open sessions:
     history.
 - `unmetered` → treat spend as UNKNOWN, not zero — say so in the ledger and
   lean on the time-based signals instead.
-- `truncated` (only if you passed `--max-shards`) → re-run without the bound;
-  an under-budget answer from a partial scan is not a verdict.
+- `truncated` → the under-budget answer is incomplete: older shards were skipped
+  (`--max-shards`), a shard was unreadable, or a matched row was corrupt. Re-run
+  without the bound; if it persists without one, the usage data itself is
+  damaged — treat spend as UNKNOWN like `unmetered`, and do not read it as within
+  budget.
 
 ## Live steering
 
@@ -850,9 +885,13 @@ terminal — see "How the ledger behaves".
 
 ## Known limits (state them, don't hide them)
 
-- `session_send` / `session_stop` / `spawn_run` (the inspector) are mounted but
-  not auto-approved: unattended operation requires the operator to arm THIS
-  session in trust mode (same "trust before seed" rule as the workers).
+- `execute_bash` (which is EVERY script call — preflight, probe, credit rollup),
+  `session_send`, `session_stop`, `session_close` and `spawn_run` (the inspector)
+  are mounted but never auto-approved: `allowedTools` cannot match arguments, so
+  trusting the bundled scripts would mean trusting arbitrary shell. Unattended
+  operation therefore requires the operator to arm THIS session in trust mode
+  (same "trust before seed" rule as the workers) — without it the patrol stalls
+  on its first probe, not on its first intervention.
 - Credit metering covers dashboard-session turns; `spawn_run` inspector turns
   and non-chat sessions burn invisibly (`unmetered` verdict exists for a
   reason).

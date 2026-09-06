@@ -7,7 +7,7 @@ for that state instead: a mutable **state record** (goal, phase, next intent,
 tried approaches, artifact pointers) carrying a bounded **event tail**. The
 context window becomes a cache; the ledger is the authority.
 
-Layout (see docs/system-specs/features/session-work-ledger.md):
+Layout (see docs/system-specs/modules/session-work-ledger.md):
 
     <data_home>/ledger/<store-name>/
         slot_key        # breadcrumb: the exact ledger key this dir belongs to

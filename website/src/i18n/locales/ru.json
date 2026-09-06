@@ -9735,7 +9735,6 @@
       "could_not_switch_variant": "Не удалось переключить версию",
       "could_not_start_a_new_session": "Не удалось начать новую сессию",
       "could_not_start_session_message_restored": "Не удалось начать новую сессию: {{error}}. Сообщение восстановлено — отправь его снова, чтобы повторить.",
-      "dismiss_upload_error": "Закрыть ошибку загрузки",
       "enter_split_view": "Перейти в разделённый вид",
       "esc_to_dismiss": "Esc — закрыть",
       "expand_knowledge_context": "Развернуть контекст знаний",

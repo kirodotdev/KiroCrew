@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 #: again) rather than silently authorizing the wrong service.
 SERVICE_POLLY = "polly"
 SERVICE_TRANSCRIBE = "transcribe"
-#: AWS Control's paid services (spec: docs/system-specs/features/aws-control.md).
+#: AWS Control's paid services (spec: docs/system-specs/modules/aws-control.md).
 #: Declared ahead of the first billable call — S3 backs the cloud drive (P1),
 #: Cost Explorer backs the bill page (~$0.01 per query) — so the consent cards
 #: can be confirmed per account before either capability ships.

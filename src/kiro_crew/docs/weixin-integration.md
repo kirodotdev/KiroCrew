@@ -31,7 +31,7 @@ The bot credential is written server-side (into the credential store, never
 returned to the browser); only the non-secret account id and connection status
 are exposed to the dashboard.
 
-## Access policy
+## Access control
 
 `Who can message the bot` maps to `weixin.dm_policy`:
 
@@ -62,7 +62,7 @@ Context length is managed automatically: at `weixin.soft_threshold_pct` (80%) th
 bot suggests `/compact` or `/new`; at `weixin.hard_threshold_pct` (95%) it
 compacts on its own.
 
-## Behaviour notes
+## Limits
 
 - **One reply per turn.** iLink cannot edit a sent message, so the answer is
   buffered and delivered when the turn completes rather than streamed. The native
@@ -74,8 +74,12 @@ compacts on its own.
 - **No approval buttons.** iLink has no interactive controls, so the channel runs
   the approval ladder without a decider: `interactive` mode is deny-by-default,
   while `auto` / `trust` behave normally.
+- **Not an owner-DM target.** The peer list is learned from inbound traffic, so
+  "the owner" cannot be resolved to a known person here. Rather than risk
+  delivering to whoever last messaged the bot, this channel is excluded from
+  owner-DM routing: a `send_message` aimed at it will not arrive.
 
-## Configuration reference
+## Settings reference
 
 Set under `weixin` in `config.json` (or via the Settings panel):
 
@@ -104,6 +108,12 @@ credential store) and overrides `weixin.token`.
 | Group messages ignored | Expected: iLink bot identities do not receive group events |
 | An image, voice note or file isn't read | The message arrived but the file was skipped — the gateway log shows `attachment_skip` with the reason. Video is never read; send a screenshot instead |
 | Startup error about `aiohttp` | Install the messaging extra |
+
+## Related docs
+
+- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Getting Started](getting-started.md): install, first run, connecting a channel
+- [Configuration](configuration.md): the config file and environment variables
 
 ## Attribution
 

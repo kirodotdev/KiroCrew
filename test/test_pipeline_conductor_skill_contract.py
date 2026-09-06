@@ -34,7 +34,7 @@ from kiro_crew import agent
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor"
 SKILL_MD = SKILL_DIR / "SKILL.md"
-DESIGN_DOC = REPO_ROOT / "docs" / "design" / "pipeline-conductor.md"
+DESIGN_DOC = REPO_ROOT / "docs" / "request-for-change" / "rfc-pipeline-conductor.md"
 
 #: The three scripts the procedure delegates its deterministic half to. Named
 #: here rather than globbed from the directory on purpose: the point is that the

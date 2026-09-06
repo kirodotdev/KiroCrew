@@ -13,8 +13,9 @@ them.
 | If you are touching… | Read first |
 |---|---|
 | layout of a page, panels, headers | [page-layout](docs/page-layout.md) |
+| narrow screens, gutters, page zoom, touch gestures | [narrow-viewport](docs/narrow-viewport.md) |
 | themes, colors, CSS vars, stable class hooks | [theming-contract](docs/theming-contract.md) |
-| shared components, a11y, URL sanitization, data fetching | [frontend-conventions](docs/frontend-conventions.md) |
+| shared components, a11y, URL sanitization, data fetching, the stack, adding a dependency | [frontend-conventions](docs/frontend-conventions.md) |
 | any user-facing string, date, number, or sort order | [i18n-catalog](docs/i18n-catalog.md) + [i18n gates](../docs/ci/i18n-gates.md) |
 | `src/extensions.ts`, edition composition, registries | [extension-seams](docs/extension-seams.md) |
 | tests (vitest, MSW, Playwright, Electron), or a test that fails only in CI | [testing](docs/testing.md) |
@@ -22,12 +23,6 @@ them.
 | anything backend, or a whole-system question | [`../AGENTS.md`](../AGENTS.md) |
 
 Everything under `website/docs/` is indexed by [its README](docs/README.md).
-
-## Stack
-
-React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
-Framer Motion, Tailwind CSS 3, Lucide React, DOMPurify, highlight.js, Monaco,
-TypeScript, Vite 5. Prefer the library already here over a new dependency.
 
 ## Build and test: a gotcha that produces a silent false green
 
@@ -41,18 +36,13 @@ copy-paste before a single test executes. Commands and layers:
 
 ## This is a public OSS fork: don't reintroduce internal couplings
 
-- **Build/infra:** no `npm-pretty-much`, Brazil, AIM, or CodeArtifact registries.
-  The public build is plain npm + Vite; `.npmrc` deliberately does not pin a
-  registry -- the system-configured registry applies (see
-  `docs/build/desktop-app.md`).
-- **Identity/telemetry:** no live Cognito pools or RUM app ids (`src/rum.ts` is an
-  inert no-op stub, keep it inert), no `aws-rum-web`.
-- **Removed product surfaces:** internal feature-app pages, tabs, API-client
-  methods, and the credential-TTL card were deleted with their backend. A
-  downstream edition re-adds them additively through the extension seams, never by
-  editing core.
-- The **Channels** app is hidden from the App Store and the **Board** app is
-  removed. An upstream sync must not restore either.
+The public build is plain npm + Vite, `src/rum.ts` is an inert no-op stub that stays
+inert, and a downstream edition re-adds a removed surface **additively** through the
+extension seams, never by editing core. The full list — build and infra, identity and
+telemetry, the removed product surfaces, and the Channels / Board divergences an
+upstream sync must not restore — is
+[oss-fork-boundaries](../docs/system-specs/oss-fork-boundaries.md), gated by
+`scripts/scrub-lint.sh`.
 
 > **`AUTOSDE.yaml` in this directory is live and authoritative.** The frontend
 > review rules it declares are read by the `claude-review`, `codex-review`,
@@ -60,27 +50,21 @@ copy-paste before a single test executes. Commands and layers:
 > `blocking: true` rule there outranks a reviewer's own prompt. Read it before
 > changing frontend code; never treat it as historical.
 
-## Browser support
-
-Chrome, Firefox, Safari, Edge. Use standard Web APIs only; guard browser-specific
-ones (e.g. `typeof Notification !== 'undefined'`).
-
 ## Rules that must not wait for a pointer
 
 - **Settings primitives: pass `configKey` on every new `SettingsToggle`/`SettingsField`**
-  that writes a config path. It flows into the generated settings registry and makes
-  `<SettingRef configKey="...">` chips deep-link to the control; omit it and the chip
-  silently degrades to a CLI popover even though a toggle exists. Backend drift guards
-  catch bad keys, not missing ones — this rule is the only gate for the missing case.
+  that writes a config path, or the `<SettingRef configKey="...">` chip silently
+  degrades to a CLI popover even though a toggle exists. Backend drift guards catch bad
+  keys, not missing ones, so this rule is the only gate for the missing case.
 - **Icons: `lucide-react` only, with `className="lucide-inline"`.** Never an emoji,
   never a hand-rolled SVG, never `size={N}`. Enforced by `AUTOSDE.yaml`
   (`use-lucide-icons`, `no-emoji-as-icons`).
-- **Errors shown to the user render through `ErrorNotice`, with `askAgent` on
-  wherever the hand-off cannot lose anything.** Never a hand-written
-  `<div className="text-danger">{err}</div>`. The hand-off navigates away and
-  destroys unsaved local state, so next to an unsaved draft leave `askAgent` off
-  and say why in a `{/* No hand-off: … */}` comment — a silent omission reads as
-  "forgot". Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`).
+- **Errors shown to the user render through `ErrorNotice`**, never a hand-written
+  `<div className="text-danger">{err}</div>`, with `askAgent` on wherever the hand-off
+  cannot lose anything. It navigates away and destroys unsaved local state, so next to
+  an unsaved draft leave `askAgent` off and say why in a `{/* No hand-off: … */}`
+  comment — a silent omission reads as "forgot". Enforced by `AUTOSDE.yaml`
+  (`errors-use-error-notice`).
 - **Security: every `dangerouslySetInnerHTML` goes through DOMPurify** via
   `md()` / `sanitize()` / `esc()` in `src/api/helpers.ts`. A bypass is an XSS bug,
   so there is no acceptable pointer for this one.

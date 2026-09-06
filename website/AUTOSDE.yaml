@@ -132,7 +132,7 @@ custom-rules:
       value owned in another file. That is how this repo accumulated a long series of
       one-component-at-a-time mobile patches. A page whose narrow layout is an
       afterthought is not conformant to this pattern even when its class string
-      matches; see the narrow-viewport section of website/docs/page-layout.md for the
+      matches; see website/docs/narrow-viewport.md for the
       recommended baseline.
 
       Required structure:
@@ -141,7 +141,7 @@ custom-rules:
          container. What this rule requires is the structure — `overflow-y-auto
          flex-1 min-h-0` plus a horizontal gutter, not a specific gutter value. The
          narrow gutter shown here is a RECOMMENDATION, not a requirement: see the
-         narrow-viewport section of website/docs/page-layout.md. A page using a single
+         website/docs/narrow-viewport.md. A page using a single
          gutter value at every width is conformant; do not flag it. When a page does
          narrow its gutter, `PageHeader`'s must match, or the title sits inset from the
          content it labels.

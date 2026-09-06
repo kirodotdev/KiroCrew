@@ -20,7 +20,7 @@ Redeemability takes TWO questions and they die independently: the PKCE verifier 
 the PROCESS (``generation_is_live``) while the loopback listener answering the redirect
 belongs to the SESSION (``activation_is_live``). Process liveness alone passed a
 terminated-session row, which is how a card kept serving an unredeemable URL. Both
-failures are recorded in ``docs/architecture/design-notes/connections-warm-table.md``.
+failures are recorded in ``docs/system-specs/modules/connections.md``.
 
 Four rules are load-bearing and recorded in that same note: the SESSION is HELD (see
 :func:`_warm_row_alive`), specs are enumerated ONCE at spawn -- which fixes the mode's

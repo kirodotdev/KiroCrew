@@ -2568,7 +2568,8 @@ def _invalid_session_path_id(session_id: str, agent_id: str | None = None) -> we
     in a real key like ``dashboard:slot-3``) and no narrower (a wider one puts
     the 500 back). Shape follows ``cron.py``'s ``_invalid_path_id_response`` --
     400 with an ``invalid_<name>`` ``code`` -- which is the contract #6301 names
-    and which AGENTS.md's code-field rule requires.
+    and which docs/system-specs/common/code-style.md
+    requires of a backend-owned error body.
 
     ``agent_id`` is checked second because that is the order the sinks validate
     in, so the reported code names the half the caller must actually fix.

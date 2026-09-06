@@ -3145,7 +3145,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const tabsCtl = usePanelTabs(activeSlot)
   // An MCP App tab hosts a null-origin iframe with no storage: unmounting it
   // reloads the app and destroys whatever the user has drawn (see
-  // docs/dashboard-iframe-hosts.md). The whole SidePanel subtree is normally
+  // docs/architecture/dashboard-iframe-hosts.md). The whole SidePanel subtree is normally
   // gated on `activityOpen`, so closing the panel would unmount it. While an app
   // tab is live we therefore keep the subtree MOUNTED and hide it instead — the
   // same hide-not-unmount rule SidePanel already applies to its own tab bodies.

@@ -313,7 +313,8 @@ class TestPrSearch(unittest.TestCase):
 class _NoRealGhBase(unittest.TestCase):
     """Fail loudly if a test in this class reaches a real ``gh`` subprocess.
 
-    AGENTS.md: "Mock external processes (kiro-cli) - never spawn real processes in
+    docs/system-specs/common/testing-conventions.md: mock external processes
+    (kiro-cli), never spawn real processes in
     tests." ``enrich_pulls`` fans out to FOUR calls (card summaries + its by-number
     top-up, merge readiness + its by-number top-up), and each top-up fires whenever
     the mocked first call does not cover every row, so a test that mocks only some of
@@ -545,7 +546,8 @@ class TestPrListMergeReadiness(unittest.TestCase):
     def _no_spawn(self):
         """Fail loudly if a test reaches a real ``gh`` process.
 
-        AGENTS.md: "Mock external processes — never spawn real processes in tests."
+        docs/system-specs/common/testing-conventions.md: mock external processes,
+        never spawn real processes in tests.
         ``enrich_pulls`` makes FOUR calls (summaries + its by-number top-up, readiness +
         its by-number top-up), so mocking only some leaves the rest to shell out, which
         measurably happened, and which makes the suite depend on network and on a

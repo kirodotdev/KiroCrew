@@ -2280,13 +2280,14 @@ class ContextBuilder:
                 "skill for theme variables, format rules, interactive widgets, and "
                 "best practices when emitting one.\n\n"
                 "## Artifacts\n\n"
-                "Widgets render once and disappear with chat scrollback. Persist "
-                "and iterate on them via `@kirocrew-core/artifact_save`, "
-                "`artifact_get`, `artifact_update`, `artifact_list`, "
-                "`artifact_versions`, `artifact_delete`. Load the `artifacts` skill "
-                "for the full workflow — when to save proactively, the iterate "
-                "decision tree (including iterate-without-slug auto-save), naming "
-                "conventions, and worked examples."
+                "Every widget auto-registers as an UNPINNED artifact as its "
+                "response segment finalizes — do not "
+                "`@kirocrew-core/artifact_save` one you rendered. The user's "
+                "star pins it; unpinned ones are pruned oldest-first, and "
+                "registration is skipped in a restricted (incognito or "
+                "temporary) session. Save explicitly only for content you "
+                "never emitted as a widget; iterate with `artifact_get`, "
+                "`artifact_update`, `artifact_revert`. Load the `artifacts` skill."
             )
         else:
             widget_block = (
@@ -2295,8 +2296,9 @@ class ContextBuilder:
                 "plain markdown by default. Load the `widgets` skill when a widget is "
                 "genuinely warranted.\n\n"
                 "## Artifacts\n\n"
-                "Persist widgets via `@kirocrew-core/artifact_save` (and friends). "
-                "Load the `artifacts` skill when iterating, listing, or persisting."
+                "Every widget auto-registers as an unpinned artifact, so do not "
+                "`@kirocrew-core/artifact_save` one you rendered. Load the "
+                "`artifacts` skill to save other content, iterate or list."
             )
         return prompt.replace("{{WIDGET_BLOCK}}", widget_block)
 

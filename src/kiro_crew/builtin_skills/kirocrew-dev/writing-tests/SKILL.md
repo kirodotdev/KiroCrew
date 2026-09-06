@@ -110,11 +110,18 @@ Two shapes escape the env var:
   projected the developer's *installed* agent specs and failed with an
   `AcpRuntimeError` naming a prompt file in an unrelated worktree.
 
-  Two entries are excluded because they must *never* be redirected —
-  `security._EXTRACT_INTO_TRUST_ROOT_RE` and `kiro_usage_api._CLI_SQLITE_DBS` are
-  security anchors whose whole point is naming the real home. **Stub the reader, never
+  Some entries are excluded, and for two opposite reasons — already redirected
+  elsewhere (the macOS launchd set, moved as one group by `_isolate_launchd_paths`),
+  or a **security anchor that must never move**:
+  `security._EXTRACT_INTO_TRUST_ROOT_RE` and the file browser's allow-list root
+  `file_explorer/server._HOME`. **Stub the reader, never
   move the anchor.** Redirecting a matcher so a test can pass makes it assert against a
-  pattern that no longer matches the thing it protects.
+  pattern that no longer matches the thing it protects. An anchor that stops being an
+  import-time `Path.home()` binding leaves this tripwire's reach entirely —
+  `kiro_usage_api`'s kiro-cli sqlite tuples now resolve the home inside
+  `identity_stores.sqlite_dbs()`, so their anchor rule is pinned by
+  `test_identity_stores.py::TestUsageTuplesAnchorTheRealHome` instead. Read
+  `_EXCLUDED` for the live list rather than a copy here.
 
 ### 1c. A child process inherits pytest's CWD, which is the repo root
 
@@ -242,11 +249,15 @@ later on a bare `KeyError`, not on the assert that would have named the cause. A
 file driving `spawn` takes `pytestmark = pytest.mark.usefixtures("healthy_host_memory")`,
 and `test_subagent_spawn_host_pin.py` fails when a new one does not. The two guards it
 pins, and why it stays transparent for the parser's own tests, are in
-testing-conventions § Determinism 1.
+testing-conventions § Determinism 1. Both the fixture and its ratchet are
+`test/`-only — `healthy_host_memory` lives in `test/conftest.py`, and
+`test_subagent_spawn_host_pin.py` scans `test/*.py` non-recursively. An in-package
+app suite cannot request the fixture and is not swept, so a test there that drives
+`SubagentManager.spawn` must pin the two guards itself.
 
 ## Rule 3 — Cross-platform: macOS, Linux (x86_64 + arm64), Windows
 
-- **Route POSIX calls through `platform_compat`.** See AGENTS.md's shim table. Most
+- **Route POSIX calls through `platform_compat`.** See docs/system-specs/common/platform-compat.md. Most
   important: `os.kill(pid, 0)` **TERMINATES** the target on Windows — it is not a
   liveness probe. Use `platform_compat.pid_exists`.
 - **Path length is a real constraint.** Windows caps a path at 260 characters unless
@@ -327,7 +338,7 @@ did *not* work.
 ## Rule 6 — MEMORY is the other budget, and collection is most of it
 
 A worker costs ~1.5 GiB, and ~750 MiB of that is paid before your test runs: every
-xdist worker independently collects all 56,546 items, and 99% of that footprint is
+xdist worker independently collects every item in both testpaths (~57k), and 99% of that footprint is
 private, so more workers never amortize it. This is why `-n auto` is bounded by
 available memory — on an 8–16 GiB laptop the full suite otherwise swaps the machine.
 

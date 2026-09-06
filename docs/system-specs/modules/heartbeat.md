@@ -7,7 +7,9 @@ The heartbeat service (`kiro_crew/heartbeat.py`) runs periodic background tasks 
 ## Responsibilities
 
 1. **Task processing** — reads `~/.kiro/crew/workspace/HEARTBEAT.md`, sends non-empty tasks to the agent
-2. **FTS index rebuild** — every 15 ticks (~15 min at default interval)
+2. **FTS index rebuild** — every `_FTS_REBUILD_TICKS` ticks (~15 min at the default interval)
+3. **Daily retention prune** — every `_PRUNE_TICKS` ticks (~24h at the default interval): `prune_history(keep_days=memory.history_max_days)` plus `sel().prune()`. Both run on the maintenance executor, never on the event loop, and a failed SEL prune increments the `kirocrew.sel.prune_failed.count` counter rather than aborting the beat.
+4. **Idle-session consolidation** — `HistoryConsolidator.check_idle_sessions()` on **every** tick, not on a multiple
 
 ## HEARTBEAT.md Format
 
@@ -135,6 +137,8 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 |----------|-------|----------|
 | `_DEFAULT_INTERVAL` | 60 | `heartbeat.py` |
 | `_FTS_REBUILD_TICKS` | 15 | `heartbeat.py` |
+| `_PRUNE_TICKS` | 1440 | `heartbeat.py` |
+| `_KEEP_SENTINEL` | `HEARTBEAT_KEEP` | `heartbeat.py` |
 | `HEARTBEAT_TASK_TIMEOUT_SECS` | 1800 | `heartbeat.py` |
 | `HEARTBEAT_FILE` | `HEARTBEAT.md` | `heartbeat.py` |
 | `HEARTBEAT_KEY` | `_hb` | `session.py` |

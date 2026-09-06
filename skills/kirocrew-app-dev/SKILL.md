@@ -116,15 +116,20 @@ my-app/
 
 ## UI Development
 
-### Design System (MANDATORY)
+### Design System
 
-All KiroCrew apps MUST use the same visual language for consistency:
+All Kiro Crew apps MUST use the same visual language for consistency. Colors come
+from the theme tokens (`var(--accent)` and friends) — see "Don't Reinvent the
+Dashboard" below, which is the normative rule. The hex values here are the legacy
+palette, kept for apps that predate the tokens and as the fallback inside
+`var(--accent, #7c3aed)`; a hardcoded hex breaks every custom palette, so reach for
+one only when a deliberate custom style is the point.
 
 | Element | Style |
 |---------|-------|
 | **Styling method** | Inline `style={}` objects. NO Tailwind classes. |
-| **Primary accent** | `#7c3aed` (purple) |
-| **Light accent bg** | `#e8d5f5` (light purple) |
+| **Primary accent** | `var(--accent)` (legacy: `#7c3aed`) |
+| **Light accent bg** | legacy `#e8d5f5` |
 | **Success color** | `#047857` (green) |
 | **Warning color** | `#b45309` (amber) |
 | **Danger color** | `#b91c1c` (red) |
@@ -345,7 +350,7 @@ _jsx('button', {
 | Use 30s polling via `setInterval` + `/api/file-read` | Use `/api/file-watch` SSE (overwrites React state on connect) |
 | Use `useNavigate()` from `@kirocrew/app-sdk` for navigation | Use `window.location` (causes full reload) |
 | Use theme vars for backgrounds/text/borders | Hardcode hex for theme-dependent colors |
-| Use `#7c3aed` / `#e8d5f5` for accent elements | Use blue (`var(--accent)`) or other accent colors |
+| Use theme tokens (`var(--accent)`) for accent elements | Hardcode `#7c3aed` outside a `var(--accent, …)` fallback |
 | Read version from `app.json` via `/api/file-read` | Read version from `data/config.json` (stale) or `/api/apps/MY-APP` (needs session auth) |
 | Run background work via `POST /api/chat?ws=1` | Navigate to `/chat` for automated actions |
 | Show "initializing" state when config missing | Show cryptic error messages |
@@ -436,16 +441,22 @@ Publish the app as a plain git repository (any git host — e.g. GitHub):
 
 ### 2. App Registry Entry
 
-Open a pull request to the KiroCrew repo adding an entry to `app-registry.json`:
+Open a pull request to the Kiro Crew repo adding an entry to
+`src/kiro_crew/apps/app-registry.json`:
 ```json
 {
   "name": "my-app",
   "gitUrl": "https://github.com/<org>/my-app",
-  "branch": "main",
-  "resources": [],
-  "lifecycle": "stable"
+  "branch": "main"
 }
 ```
+
+`gitUrl` alone resolves. `repo` is a legacy alias for the same clone URL and is
+only read when `gitUrl` is absent; it is never a slug.
+
+That file is the offline seed. The live App Store reads `official-registry.json`
+from the hosted catalog at `https://apps.crew.kiro.dev/`, so a listing lands there
+too, alongside its editorial and category-order files.
 
 Display metadata (description, tags, author) comes from `app.json` in the app's own repo (cached 24h).
 
@@ -534,8 +545,8 @@ fetch('/api/chat?ws=1', {
 
 ## Installation Flow (User Perspective)
 
-1. `kirocrew app install <path-or-git-url>`
-2. Gateway restart: `kirocrew gateway restart`
+1. `kirocrew app install /path/to/my-app` — the CLI verb takes a local directory containing `app.json`. A git-hosted app is installed from the App Store / registry, which is the path that clones.
+2. Gateway restart: `kirocrew restart` (`kirocrew gateway restart` is not a command — `gateway` has flags, not subcommands). An agent cannot run it: the shell layer blocks the spelling under `self-protection-restart`, so use the gateway-restart skill's scheduled-restart flow instead.
 3. App appears in sidebar immediately (if UI defined)
 4. First cron run (within `every` seconds) self-heals all setup
 5. UI transitions from "initializing" to functional
@@ -586,7 +597,7 @@ No separate workspace needed. The installed app IS the workspace.
 
 1. Place app in any directory
 2. Install: `kirocrew app install /path/to/my-app`
-3. Restart gateway: `kirocrew gateway restart`
+3. Restart gateway: `kirocrew restart`
 4. Open fresh dashboard session
 5. Verify: UI loads, cron runs self-heal, skill appears in `/skills` list
 

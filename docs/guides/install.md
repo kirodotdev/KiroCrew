@@ -271,6 +271,33 @@ dashboard's changelog view works on a wheel install with no source tree.
 
 The pip install name is **`kirocrew`**; the import package is `kiro_crew`.
 
+#### Installing a PUBLISHED wheel with pip
+
+Kiro Crew is not on PyPI, so `pip` reaches it through the release CDN. Two forms
+are published, and they serve different needs:
+
+```bash
+# 1. Track a channel. A PEP 503 simple index per channel, so pip resolves the
+#    newest version itself. --pre is required: every published version carries a
+#    prerelease suffix on nightly and insider.
+pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
+
+# 2. Pin one exact wheel by hash. Every version directory publishes a SHA256SUMS
+#    file beside the wheel; take your wheel's hash from there. pip verifies it and
+#    consults no index for Kiro Crew itself.
+pip install "https://download.crew.kiro.dev/cli/stable/<version>/kirocrew-<version>-py3-none-any.whl#sha256=<sha256>"
+```
+
+Swap `stable` for `insider` or `nightly` in either URL. The two names split by
+class as a convention — `updates.crew.kiro.dev` for mutable pointers and indexes,
+`download.crew.kiro.dev` for the bytes — and today both alias the same
+distribution, which is why `KIROCREW_CDN_BASE` (or `cli.sh --cdn`) overrides both
+at once. Use the documented name for each class rather than relying on the
+aliasing.
+
+Form 1 is the one to use unless a deployment must pin a byte-exact artifact — a
+locked requirements file, an airgapped mirror, or a reproducible image build.
+
 Installed console script:
 
 | Command | Entry point |

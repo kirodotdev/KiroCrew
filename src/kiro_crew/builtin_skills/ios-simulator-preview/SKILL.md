@@ -27,7 +27,8 @@ preview marker (see the `web-preview` skill).
   401s on a public package). The `serve-sim` version is **pinned** in the
   launcher (`SERVE_SIM_VERSION`) rather than floated, so a start never
   auto-executes an unreviewed release; bumping it is a deliberate change.
-- First `start` takes a couple of minutes (npx download + device boot); later
+- First `start` takes a couple of minutes (npx download + device boot); the
+  launcher gives up after 240s with a JSON error naming the log. Later
   starts are fast.
 
 ## Resolve the launcher path once
@@ -74,6 +75,11 @@ Emit the hidden marker in your NEXT message, using the exact `url` from step 1:
 
 This is the only reliable auto-open path — a bare URL in prose merely pre-fills
 the panel. Name the mirrored device in prose too.
+
+Do NOT reach for the `browser` MCP tool here: its `navigate` op refuses loopback,
+private and link-local targets outright, so the mirror URL is unreachable that
+way. The marker is the path; `playwright-cli` would work but prompts the user for
+approval on every local address.
 
 **A loaded page is not proof the stream is healthy.** Confirm real frames are
 arriving (see Failure modes) before telling the user it works.

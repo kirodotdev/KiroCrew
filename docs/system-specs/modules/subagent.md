@@ -293,7 +293,7 @@ The slow-command record (`record_slow_command`, `subagent_persistence.py`) is ap
 Every subagent card names the model the run actually ran on, so a model-pinned
 review's real model is auditable. `SubagentInfo` carries two fields: `requested_model`
 — the EFFECTIVE pin, i.e. the per-spawn `model` OR, when empty, the
-`agent.role_models['subagent']` config pin (AGENTS.md's documented way to pin a
+`agent.role_models['subagent']` config pin ([model-selection](../common/model-selection.md) is the documented way to pin a
 subagent model), resolved once at spawn; `"auto"` when completely unpinned (no
 per-spawn model, no role pin) — and `resolved_model`, the id the live
 session actually served, read via the provider's public `served_model` accessor

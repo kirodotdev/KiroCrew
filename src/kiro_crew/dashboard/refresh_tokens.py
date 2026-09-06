@@ -4,7 +4,7 @@ Adds a paired refresh cookie alongside the existing access cookie
 (``mc_token_<port>``) so users do not need to re-mint via the
 ``kirocrew token`` URL every ~20 hours.
 
-Design (full spec in ``docs/system-specs/features/dashboard-token-auth.md``):
+Design (full spec in ``docs/system-specs/modules/dashboard-token-auth.md``):
 
 - Refresh cookie ``mc_refresh_<port>`` is path-restricted to
   ``/api/auth/refresh`` — narrower attack surface than the access cookie.
@@ -111,7 +111,7 @@ REFRESH_GRACE_SECS = 60
 # multi-tab UX (a second stale tab racing a refresh may be logged out). The
 # single-tab / single-refresh false-revocation race (a duplicate request
 # presenting the just-consumed head) is still absorbed. Keep this behaviour and
-# the spec (``docs/system-specs/features/dashboard-token-auth.md`` — "Multi-tab
+# the spec (``docs/system-specs/modules/dashboard-token-auth.md`` — "Multi-tab
 # grace window") in sync.
 
 # Persistence file name (resolved against ``config_dir()`` lazily so

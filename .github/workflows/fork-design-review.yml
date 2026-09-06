@@ -344,6 +344,8 @@ jobs:
             speculative surface.
 
             CLAUDE.md and AGENTS.md (root and website/) hold the conventions.
+            AGENTS.md is a router, so open the doc its routing table names for
+            the area under review.
 
             THIS IS A DESIGN REVIEW, NOT A LINE-LEVEL REVIEW. Two OTHER automated
             reviewers already cover line-level correctness, security, style,

@@ -9601,7 +9601,6 @@
       "could_not_switch_variant": "Não foi possível trocar de versão",
       "could_not_start_a_new_session": "Não foi possível iniciar uma nova sessão",
       "could_not_start_session_message_restored": "Não foi possível iniciar uma nova sessão: {{error}}. Sua mensagem foi restaurada — envie novamente para tentar de novo.",
-      "dismiss_upload_error": "Descartar erro de upload",
       "enter_split_view": "Entrar na visualização dividida",
       "esc_to_dismiss": "Esc para descartar",
       "expand_knowledge_context": "Expandir o contexto de conhecimento",

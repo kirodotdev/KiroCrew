@@ -529,8 +529,8 @@ async def link_meta_get(request: web.Request) -> web.Response:
     """GET /api/link-meta?url=... — title/description/favicon for one link.
 
     Non-2xx bodies carry only a machine-readable ``code`` (no English prose):
-    the dashboard ships in 10 languages and translates these client-side, per
-    AGENTS.md on backend-owned strings.
+    the dashboard is translated client-side, per
+    docs/system-specs/common/code-style.md on backend-owned strings.
     """
     # Offloaded: KiroCrewConfig.load() stats, reads and validates config files,
     # and this endpoint is hit once per distinct link in a transcript.

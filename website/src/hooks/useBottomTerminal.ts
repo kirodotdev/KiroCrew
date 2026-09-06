@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { safeSetItem } from '../utils/safeStorage'
+import { secureRandomId } from '../utils/secureId'
 
 /* ── App-wide bottom terminal panel ───────────────────────────────────────
  * A single docked terminal panel shared by the ENTIRE app (every route), as
@@ -55,7 +56,10 @@ export const MAX_VH = 0.72
 /** Fraction of the viewport width the right-docked panel may occupy. */
 export const MAX_VW = 0.55
 
-const mintId = () => Math.random().toString(36).slice(2, 14)
+// A terminal tab id doubles as the PTY session id the backend addresses, so it
+// is a security token and must not come from Math.random(); same rule as the
+// chat-scoped terminal tabs in usePanelTabs.
+const mintId = () => secureRandomId()
 const clampHeight = (h: number) => Math.max(MIN_HEIGHT, Math.round(h))
 const clampWidth = (w: number) => Math.max(MIN_WIDTH, Math.round(w))
 

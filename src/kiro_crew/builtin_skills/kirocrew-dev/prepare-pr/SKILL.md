@@ -39,7 +39,12 @@ Generic remediation ("fix CI", "make it green") is not a ship request.
 
 All four, together:
 
-1. `pr_status.py` exits **0** — `PR Readiness` status and `readiness: passed` label green.
+1. `pr_status.py` exits **0** — `PR Readiness` status and `readiness: passed`
+   label green. The workflow maintains four mutually exclusive labels —
+   `readiness: checking`, `readiness: action required`, `readiness: maintainer
+   review`, `readiness: passed` — and removes all four once the PR closes.
+   `readiness: maintainer review` is not a failure to fix: it means the remaining
+   gate is a human one, so report it and stop rather than pushing.
 2. Mergeable: no conflicts, not draft, not `CHANGES_REQUESTED`.
 3. One clean commit on a feature branch (when the profile sets `single_commit`).
 4. **Every raised concern answered on the PR** — see "Dispositions" below.
@@ -90,6 +95,7 @@ Answering is prose work. It never needs a push and never widens the diff.
 loop will surface them):
 
 - Non-PASS advisory verdicts: `Design Review 🟡 CONCERNS`, `UX Review 🟡 CONCERNS`, and non-blocking observations in the GPT / Opus bodies.
+- `First Principles Review 🟡 CONCERNS` — a premise-level review of whether the shipped surface is the smallest honest version. Its **BLOCK** verdict blocks readiness, so it reaches you as exit `20`; PASS and CONCERNS are advisory and must still be answered. It has no local pre-check, because the profile's `reviewers[]` covers only `gpt` and `opus` — a BLOCK from this lane is discoverable only after the push. `pr_status.py` also ships marker bindings for GPT, OPUS, DESIGN and UX only, so a `target=first-principles` disposition has no findings to resolve against; pass the lane in with `--marker-bindings first-principles-review=FIRST-PRINCIPLES` when you need the ledger to adjudicate it.
 - One-way-door concerns from Design Review — fix or justify in writing.
 - Human review comments and inline threads.
 
@@ -137,6 +143,19 @@ whenever any bundled script or helper changes to make the full tree re-sync.
 Pure review-contract helpers are direct exports from that sibling; only helpers
 that execute `gh` keep entry-local adapters so each CLI can supply its runner.
 
+`pr_status.py` takes four flags beyond `--readiness-context` and `--reviewers`.
+`--json` appends one machine-readable object as the LAST line of stdout and
+changes nothing else; only its `progress_key` sub-object is safe to compare
+between runs, which is what a babysit stall tripwire uses.
+`--head-run-check=off` (or `PREPARE_PR_HEAD_RUN_CHECK=off`) disables the
+run-exists-for-head assertion for a repo that does not use Actions.
+`--marker-authors` / `PREPARE_PR_MARKER_AUTHORS` and `--marker-bindings` /
+`PREPARE_PR_MARKER_BINDINGS` retarget which comment authors and which stamp names
+count, for a repo whose reviewer fleet is named differently.
+`--disposition-gate --repo OWNER/NAME --pr N --head SHA` evaluates ONLY the
+disposition rule and always exits 0 with one JSON object — that is the mode
+`pr-readiness.yml` calls, not a mode this loop uses.
+
 `pr_status.py` drives the loop: **10** → hand the next poll to `monitor_start` and
 end the turn; **20** → drill in and fix; **0** → Phase 4; **2** → fix env or escalate.
 
@@ -146,6 +165,14 @@ closed at **20**, with a reason naming the environment cause rather than a code
 blocker. Use a token with Checks read access.
 
 **Platform:** GitHub — uses `gh` and GitHub Actions.
+
+**`Fast Gate`** runs eleven cheap blocking gates in ~44s, split out of `ci.yml`.
+Two things wait on it. `ci.yml`'s `await-fast-gate` job does, so a red Fast Gate
+**skips the heavy matrix instead of racing it** — a `20` with Fast Gate red
+therefore shows far fewer reds than the diff really has, and re-reading the
+rollup for more failures is wasted work until it is green. The five
+`fork-*-review.yml` lanes do too: they trigger on Fast Gate rather than on CI, so
+a fork PR's AI verdicts arrive after Fast Gate, not after the full CI run.
 
 ## Guardrails
 
@@ -192,7 +219,7 @@ on forks via the Stage-2 `fork-*-review.yml` lanes, posting under the same check
 names. CodeQL is the one lane a fork head cannot run — a non-blocking "Not eligible"
 note, not a blocker.
 
-Full design + `.prepare-pr.toml` schema: `docs/ci/prepare-pr-portability.md`.
+Full design + `.prepare-pr.toml` schema: `docs/request-for-change/rfc-prepare-pr-portability.md`.
 
 ## The loop
 
@@ -243,7 +270,14 @@ backstop.
    was invalidated. Then run the profile's `gates[]` on every pass. Gates are pure
    checks; a nonzero exit means the diff is not ready. For Kiro Crew that is the
    diff-scoped test runner / isort / flake8 / mypy, plus `tsc -b` for frontend
-   changes. All gates must exit 0 before review.
+   changes. All gates must exit 0 before review. While ITERATING inside this
+   phase, `python3 scripts/local-gate.py` runs the change-scoped equivalent of
+   CI's own bucket classification (frontend / meta / backend, catch-all on
+   unrecognised paths), which avoids the full backend suite — roughly an hour at
+   16 workers — on a diff that cannot reach it. It narrows only when exactly one
+   of frontend/backend changed and meta did not. It is the iteration gate and
+   never the push gate: the complete resolved `gates[]` list must be green on the
+   pass you push.
 
    **The setup and gate lists are data.** Read them from
    `profiles/kirocrew.json` `setup[]` and `gates[]`: provisioning belongs in setup;
@@ -270,7 +304,7 @@ backstop.
    site is still broken. A change under `src/kiro_crew/deploy/` must be diffed
    against its `scripts/*.sh` counterpart, and vice versa.
 
-2. **Local review — one subagent per profile reviewer**, briefed from CI's own workflows. Set `BASE_SHA=$(git merge-base HEAD origin/<base>)` and `HEAD_SHA=$(git rev-parse HEAD)`, then run `python3 $SKILL_DIR/scripts/local_review.py`: it writes one task file per reviewer (`local-review-<name>.md`) carrying that reviewer's prompt **extracted literally from its `contract` workflow**, plus the inputs CI assembles — base-ref `AUTOSDE.yaml` snapshots, the prefetched `BASE...HEAD` diff, and the PR intent inside the workflow's own UNTRUSTED framing. It stages outside the worktree and never calls a model.
+2. **Local review — one subagent per profile reviewer**, briefed from CI's own workflows. Run `python3 $SKILL_DIR/scripts/local_review.py --base origin/<base>` from the worktree: it resolves the worktree and both SHAs itself and reads no environment variable, so exporting `BASE_SHA` / `HEAD_SHA` does nothing (`$BASE_SHA` survives only as a token it substitutes inside extracted CI snippets). It writes one task file per reviewer (`local-review-<name>.md`) carrying that reviewer's prompt **extracted literally from its `contract` workflow**, plus the inputs CI assembles — base-ref `AUTOSDE.yaml` snapshots, the prefetched `BASE...HEAD` diff, and the PR intent inside the workflow's own UNTRUSTED framing. `--out-dir` / `--stage-dir` override the unique temp directories it otherwise creates and `--json` emits the summary machine-readably. It stages outside the worktree and never calls a model.
 
    Then dispatch **one model-pinned `spawn_run` call per entry** in `reviewers[]` —
    `spawn_run`'s `model` is batch-wide, so fire them back-to-back rather than
@@ -395,8 +429,16 @@ re-runs them on the new head.
                "Exit 0 -> go to Phase 4 (which arms auto-merge on an explicit ship request), "
                "and only once no unanswered concern remains, tell the user and call autonudge_stop.",
        interval_secs=300,
-       max_cycles=80)
+       max_cycles=80,
+       max_runtime_secs=43200,
+       banner="prepare-pr: polling PR #<n>")
      ```
+
+     `max_runtime_secs` is the only bound that survives growing per-cycle work:
+     `max_cycles=80` at 300s is ~6.7h of idle gaps but far more wall clock once
+     each cycle's own turn is counted, so pass an explicit wall-clock budget too.
+     The `banner` keeps the multi-line instruction from being re-stored as a
+     transcript row on all 80 cycles.
 
      **Did it arm? VERIFY — the reply text is not evidence.** `monitor_start` is a
      stateless *directive*: the tool validates the arguments and returns "Monitor

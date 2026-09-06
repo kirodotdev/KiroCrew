@@ -114,6 +114,31 @@ renders in the same themed iframe:
 </mcwidget>
 ```
 
+The opening tag takes two attributes: `title=` and `slug=`. A `slug=` binds the
+impression to an artifact that already exists and suppresses registration; omit
+it for new content.
+
+## Every widget is already an artifact
+
+When your message is finalized, each `<mcwidget>` in it is auto-registered as
+an **unpinned** artifact, keyed by the message timestamp and the widget's index
+in that message. Registration is idempotent and happens on the backend, so it
+does not depend on the user scrolling the message into view. Unpinned
+auto-registered widgets are pruned oldest-first past 200; the star in chat pins
+one and takes it out of the sweep. Widgets emitted in an incognito or temporary
+session are never registered.
+
+Two consequences:
+
+- Do **not** call `artifact_save` on a widget you just emitted — that creates a
+  duplicate, and the tool answers with a duplicate warning.
+- `slug=` binds the chat impression to an artifact; it does **not** persist
+  content. Registration is skipped entirely for a widget carrying one, so
+  nothing reads or writes that artifact. To revise a saved widget, run
+  `artifact_get` then `artifact_update` to bump the version, and re-emit with
+  `<mcwidget title="…" slug="<known-slug>">` so the impression binds to it
+  instead of registering a second record.
+
 Rules:
 
 - One `<mcwidget>` per visual payload — don't nest widgets.
@@ -141,6 +166,15 @@ Rules:
   blank. Any library that sizes a canvas from its container — Chart.js,
   ECharts, Plotly's responsive mode — carries the same hazard; inline SVG with
   a fixed `viewBox` has no feedback path at all.
+- The iframe CSP is `default-src 'none'`, which forbids more than script
+  sources: there are **no network calls** (`connect-src 'none'`, so `fetch`,
+  XHR and websockets fail), **no remote images or web fonts** (`img-src data:
+  blob:`, `font-src data:` — use inline SVG or a data URI), **no form
+  submission** (`form-action 'none'` — use the `data-action` event path
+  below), and **no `eval`** (`'unsafe-eval'` is not granted, so a library that
+  compiles at runtime is dead on arrival). Pass every value the widget needs
+  in its HTML; a widget cannot fetch its own data. A silently blank widget is
+  usually one of these.
 - The dashboard sanitizes CSS via `src/lib/cssSanitize.ts` (shared with
   `WidgetFrame.tsx`) — a small allowlist of properties plus a denylist of
   dangerous functions (`expression()`, `javascript:`, `url(` with external

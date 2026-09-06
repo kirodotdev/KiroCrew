@@ -1,7 +1,8 @@
 """Shared constants for the Meetings builtin app.
 
 Every hardcoded string/limit the app's business logic depends on lives here
-(AGENTS.md "no hardcoded strings in business logic"). Nothing in this module
+(docs/system-specs/common/code-style.md: no hardcoded strings in business
+logic). Nothing in this module
 touches the network or the filesystem at import time, so it is safe to import
 from a Windows gateway even though the app's live-transcription feature is
 macOS/Linux only.

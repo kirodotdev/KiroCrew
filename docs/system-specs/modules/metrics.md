@@ -12,8 +12,11 @@ survive a process death — currently only the session-lifetime breadcrumb — m
 gate that state on the same consent, and fail closed when consent cannot be
 read, so this sentence stays literally true.
 
-Source: `src/kiro_crew/metrics/` — `schema.py`, `recorder.py`, `provider.py`,
-`local_exporter.py`, `http_metrics.py`. Tests: `test/metrics/`.
+Source: the `src/kiro_crew/metrics/` package. The tables below cover the modules
+that carry contract meaning; the package holds more (per-domain instrument modules
+for sessions, turns, tool calls, DB, process and inventory gauges, plus
+`temporality.py` and `events.py`), so read the directory rather than treating any
+list here as the inventory. Tests: `test/metrics/`.
 
 ## Components
 

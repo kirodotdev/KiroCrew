@@ -517,7 +517,9 @@ jobs:
             surfaces (occasional use — spacious, self-evident). The frontend
             uses a theme-token system (CSS variables) and Radix/shadcn
             primitives in website/src/components/ui/. CLAUDE.md and
-            website/AGENTS.md hold the conventions.
+            website/AGENTS.md hold the conventions. website/AGENTS.md is a
+            router, so open the doc its routing table names for the area under
+            review.
 
             THIS IS A UX REVIEW, NOT A CODE OR DESIGN REVIEW. Three other
             automated reviewers already cover line-level correctness, security,

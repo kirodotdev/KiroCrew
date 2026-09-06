@@ -18,7 +18,7 @@ describe('capability panes reach the card edge below the breakpoint', () => {
   // inset moved into a variable, so it was pinning nothing.
 
   it('keeps the pane row its OWN padding, which is load-bearing', async () => {
-    // The rows inside these panes are NOT the shape page-layout.md gates: an
+    // The rows inside these panes are NOT the shape narrow-viewport.md gates: an
     // unpadded bordered pane sits between them and the card, so their px-4 is the
     // only gutter they have. Gating it would put the text against a visible border.
     for (const file of PANE_FILES) {

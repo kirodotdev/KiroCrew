@@ -976,7 +976,8 @@ class TestProxyAuthDenialIsAudited:
         h = _H()
         assert server.Handler._authorized(h, "GET", b"") is False
         assert h.sent and h.sent[0][0] == 401
-        # Machine-readable code, per AGENTS.md's non-2xx body contract.
+        # Machine-readable code, per the non-2xx body contract in
+        # docs/system-specs/common/code-style.md.
         assert h.sent[0][1].get("code") == "invalid_proxy_signature"
 
         assert len(calls) == 1, "the 401 emitted no audit record"

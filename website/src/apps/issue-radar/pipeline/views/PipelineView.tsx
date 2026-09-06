@@ -414,7 +414,7 @@ const ID_CARD_W = 176 // compact: id + title, no dead gap (defects #14/#17)
  * black smear and the dwell numbers overprinted each other (`3.2h` over `10m`).
  *
  * Gated on the width the ResizeObserver reports for the TRACK, never on a viewport
- * breakpoint -- per the repo's page-layout note, a 1280px window can hold a 200px
+ * breakpoint -- per the repo's narrow-viewport note, a 1280px window can hold a 200px
  * pane, so the constraint is the pane and `useIsMobile()` would answer the wrong
  * question. */
 const NARROW_TRACK_W = 560

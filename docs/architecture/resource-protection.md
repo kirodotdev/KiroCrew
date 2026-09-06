@@ -46,7 +46,7 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Context compaction | `session.py` | Chat sessions | `session.autocompact_pct` | No | Sends `/compact` to kiro-cli to free context window |
 | Background session recycle | `session.py` | Background sessions (cron, subagent) | 70% context usage (`_BG_RECYCLE_PCT`) | No | Recycles the session before context overflow |
 | Watchdog process liveness | `taskrunner.py` | Task runner steps | 2 consecutive dead checks (`_DEAD_THRESHOLD`) at 30s intervals | Yes, part of the watchdog loop | Resets the session to trigger crash recovery |
-| Config bound clamp | `config/loader.py` | Subagent count, turns, timeouts and pool size at load time | `subagent_auto_max` and `max_subagents` to 64 (`SUBAGENT_AUTO_MAX_CEILING`), `subagent_max_turns` 1..200, `chat_turn_timeout_secs` 300..7200, `tool_approval_timeout_secs` 30..7200 and cross-field to 60s under the turn ceiling (`APPROVAL_TURN_MARGIN_SECS`), `loop_stall_exit_after_secs` 10..300, `pool_size` 0..10 (`_SECURITY_BOUNDED_FIELDS`) | No | `_clamp_security_bounds` clamps out-of-range ints, logs a WARNING, emits SEL `config_bounds_clamped` (`outcome=clamped`) |
+| Config bound clamp | `config/loader.py` | Subagent count, turns, timeouts and pool size at load time | `subagent_auto_max` and `max_subagents` to 64 (`SUBAGENT_AUTO_MAX_CEILING`), `subagent_max_turns` 1..200, `chat_turn_timeout_secs` 300..86400 (`CHAT_TURN_TIMEOUT_MAX`; 7200 is the default, not the ceiling), `session_start_timeout_secs`, `tool_approval_timeout_secs` 30..7200 and cross-field to 60s under the turn ceiling (`APPROVAL_TURN_MARGIN_SECS`), `loop_stall_exit_after_secs` 10..300, `pool_size` 0..10 (`_SECURITY_BOUNDED_FIELDS`) | No | `_clamp_security_bounds` clamps out-of-range ints, logs a WARNING, emits SEL `config_bounds_clamped` (`outcome=clamped`) |
 
 ## Per-workflow coverage matrix
 
@@ -263,7 +263,7 @@ tracking, `killpg` and descendant scan are unaffected. It composes *outside* the
 sandbox: a child is filesystem-isolated (namespace or seatbelt) **and** cgroup-bounded.
 `test/test_spawn_audit.py` asserts every sandbox-routed spawn also applies the scope.
 
-### The aggregate slice ceiling
+### The aggregate slice hard cap (`memory.max` and `TasksMax`)
 
 `memory.max` is a **per-cgroup** limit and every scope is a sibling, so the per-scope
 ceilings do not compose: N concurrent spawns may collectively request N × 65% of host RAM
@@ -382,7 +382,7 @@ itself and the injection works as described above.
 
 3. **cgroup enforcement depends on cgroup v2 delegation being present.** Where it is
    missing (older Linux, no systemd user session, macOS), neither the per-scope ceilings
-   nor the aggregate slice ceiling apply. The load-time config clamp bounds process
+   nor the aggregate slice throttle and hard cap apply. The load-time config clamp bounds process
    *counts* (subagent count, turn budget, pool size), not memory or CPU. The slice's
    runtime property is dropped when the user manager restarts (logout/reboot); the
    resource-pressure sampler detects the vanished ceiling on its next tick and

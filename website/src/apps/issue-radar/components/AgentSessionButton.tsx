@@ -71,7 +71,7 @@ export default function AgentSessionButton({
   // component already renders inline text for its error branch — it is WRAPPING:
   // the group is `flex-shrink-0 flex items-stretch` (`DetailHeader.tsx`), so a
   // sibling that wraps stretches the button to its height, and this sentence wraps
-  // at 320px (`website/docs/page-layout.md`: "verify at 320px"). A popover is
+  // at 320px (`website/docs/narrow-viewport.md`: "verify at 320px"). A popover is
   // portalled OUT of that flex row, so neither the wrapping nor the stretching
   // applies and the constraint does not reach it.
   const noticeText = i18nT('apps.issueRadar.components.agentSessionButton.already_finished_its_session_was_closed')

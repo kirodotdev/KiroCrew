@@ -1,5 +1,8 @@
 # Voice Input & Output
 
+> **Not a mirror.** This page has no upstream source: it documents Kiro Crew's
+> own voice setup. The surrounding tree's do-not-author rule does not reach it.
+
 Kiro Crew supports hands-free interaction through voice input (speech-to-text)
 and voice output (text-to-speech). Both work in the dashboard and Slack.
 

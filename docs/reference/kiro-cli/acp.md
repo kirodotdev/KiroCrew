@@ -2,6 +2,10 @@
 
 Source: https://kiro.dev/docs/cli/acp/
 
+> **Carries local additions.** The `session/set_config_option` and
+> `_session/terminate` rows have no counterpart in upstream's method table; they
+> describe Kiro Crew's claude-agent-acp path. A re-fetch must preserve them.
+
 ACP is an open standard for agent-editor communication (like LSP for language servers). Kiro CLI implements ACP, enabling use in JetBrains IDEs, Zed, and other compatible editors.
 
 ## Quick start

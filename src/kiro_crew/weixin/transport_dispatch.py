@@ -70,7 +70,8 @@ _DEFAULT_KIROCREW_AGENT = "kirocrew"
 # ── Bot-facing strings, owned here rather than inline at each send ──
 # One block so the channel's whole voice is visible at once and a wording change
 # is one edit. These are CHINESE because iLink addresses WeChat users in it;
-# backend-owned strings have no catalog path yet (AGENTS.md), so the owning module
+# backend-owned strings have no catalog path yet
+# (docs/system-specs/common/code-style.md), so the owning module
 # is the unit of ownership.
 _ATTACHMENT_WITH_COMMAND = "📎 附件未读取：这条是命令消息，请把附件单独发送。"
 _NEW_SESSION = "✅ 已开始新对话"

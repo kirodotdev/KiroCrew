@@ -412,7 +412,7 @@ custom-rules:
     rule: |
       CHANGELOG.md is written ONLY when a version is bumped, and released
       history in it is immutable. The spec for the section itself is
-      AGENTS.md -> "Release Changelog".
+      docs/build/changelog.md.
 
       This rule exists because the file has already been destroyed once: a
       docs commit on a release branch replaced CHANGELOG.md instead of
@@ -445,7 +445,8 @@ custom-rules:
         (see commit log)". That is not a changelog entry; it is the thing a
         changelog entry exists to replace, and nobody reads it. A curated
         `### Notable fixes` list of individually-named user-observable outcomes
-        is NOT a dump and is allowed — see AGENTS.md for the line between them.
+        is NOT a dump and is allowed — see docs/build/changelog.md for the line
+        between them.
       - FLAG a heading that is not a plain release: `## [0.3.0-insider.9]`,
         `## [0.3.0-rc.2]` and similar prerelease spellings must not appear.
         A prerelease is a draft of its base version and is folded onto it by

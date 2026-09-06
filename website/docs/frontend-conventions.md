@@ -6,6 +6,23 @@ Page structure is in [page-layout](page-layout.md); color and CSS-var rules are
 in [theming-contract](theming-contract.md); user-facing strings are in
 [i18n-catalog](i18n-catalog.md).
 
+## The stack
+
+React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
+Framer Motion, Tailwind CSS 3, Lucide React, DOMPurify, highlight.js, Monaco,
+TypeScript, Vite 8. Read the pins from `website/package.json` rather than this list.
+
+Prefer the library already here over a new dependency. Every addition is bytes in a
+bundle a user downloads and a supply-chain surface someone has to review, and two
+libraries doing one job is how a codebase ends up with two animation systems whose
+transitions do not compose.
+
+## Browser support
+
+Chrome, Firefox, Safari and Edge. Use standard Web APIs only, and guard the
+browser-specific ones (`typeof Notification !== 'undefined'`): an unguarded API
+throws at module scope, so the page renders blank rather than degrading.
+
 ## Shared components
 
 `src/components/ui.tsx` is the primitive set. Compose from it rather than
@@ -15,7 +32,10 @@ hand-rolling:
 `SearchInput`, `Badge`, `SourceBadge`, `StatCard`, `Skeleton`,
 `ContentSkeleton`, `SkeletonToggleRow`, `SkeletonField`, `SkeletonInfoRow`,
 `FormSkeleton`, `EmptyState`, `PanelSectionHeader`, `PageHeader`, `Toggle`,
-`Slider`, `Checkbox`, `Select`.
+`Slider`, `Checkbox`, `FilteredEmpty`.
+
+There is deliberately no `Select` primitive: use `SimpleSelect`,
+`SettingsSelect`, or `SearchableSelect`.
 
 The provenance pill is **`SourceBadge`**, not a badge named after any one source.
 Two implementations exist on purpose:

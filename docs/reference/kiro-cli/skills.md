@@ -1,6 +1,7 @@
 # Agent Skills
 
-Source: https://kiro.dev/docs/cli/skills/
+Source: https://kiro.dev/docs/skills/ (the former `/docs/cli/skills/` now
+redirects there — CLI and IDE skills are documented as one page).
 
 Portable instruction packages that extend what Kiro knows. Follows the open [Agent Skills](https://agentskills.io) standard.
 

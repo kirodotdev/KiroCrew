@@ -471,7 +471,8 @@ jobs:
           speculative surface.
 
           Follow the conventions in CLAUDE.md and AGENTS.md (root and
-          website/) when present.
+          website/) when present. AGENTS.md is a router, so open the doc its
+          routing table names for the area under review.
 
           The changes under review are the GitHub-authentic, SHA-pinned unified
           diff at: ${{ runner.temp }}/authentic.patch — read it (Read/Grep) as

@@ -926,5 +926,5 @@ servers and tool calls fail with ENOENT.
 - [install.md](install.md): all build and install methods
 - [docker.md](docker.md): container deployment, including `KIROCREW_BIND`
 - [slack-setup.md](slack-setup.md): chat app creation and configuration
-- [../system-specs/features/dashboard-token-auth.md](../system-specs/features/dashboard-token-auth.md): the full access + refresh cookie design
+- [../system-specs/modules/dashboard-token-auth.md](../system-specs/modules/dashboard-token-auth.md): the full access + refresh cookie design
 - [../architecture/security-deep-dive.md](../architecture/security-deep-dive.md): token auth, origin checks, the local-request gate
