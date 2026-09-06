@@ -326,15 +326,10 @@ class TestMemberServerJoinsSubtraction:
 class TestSelectProviderBackend:
     """The per-session half of the one backend-selection gate (H3/H13)."""
 
-    def test_explicit_pick_wins(self):
-        from kiro_crew.members import select_provider_backend
-
-        assert select_provider_backend("kas", MEMBER_KEY, "claude", "") == "kas"
-
     def test_member_route(self):
         from kiro_crew.members import select_provider_backend
 
-        assert select_provider_backend(None, MEMBER_KEY, "kas", "") == "kas"
+        assert select_provider_backend(MEMBER_KEY, "kas", "") == "kas"
 
     def test_non_member_gets_the_configured_default_unresolved(self):
         """The default arm passes the configured value through UNCHANGED —
@@ -342,12 +337,12 @@ class TestSelectProviderBackend:
         would be the second check H3 forbids."""
         from kiro_crew.members import select_provider_backend
 
-        assert select_provider_backend(None, "dashboard_abc", "kas", "") == ""
+        assert select_provider_backend("dashboard_abc", "kas", "") == ""
 
     def test_denied_member_backend_degrades_to_kiro(self):
         from kiro_crew.members import select_provider_backend
 
-        assert select_provider_backend(None, MEMBER_KEY, "no-such-backend", "") == ""
+        assert select_provider_backend(MEMBER_KEY, "no-such-backend", "") == ""
 
 
 class TestSessionHistoryWriteProtected:

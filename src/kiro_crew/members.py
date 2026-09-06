@@ -148,18 +148,16 @@ def is_member_session_key(session_key: str | None) -> bool:
 
 
 def select_provider_backend(
-    explicit: str | None,
     session_key: str | None,
     member_backend: str,
     configured_default: str,
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
-    Precedence: an explicit caller pick, then the member-DM auto-route, then
-    the configured default. Both non-default arms go through
-    :func:`resolve_selected_backend` — the same governance/selectability gate
-    the persisted field crosses, so a denied or unknown value degrades to kiro
-    and the member thread runs as plain chat.
+    Precedence: the member-DM auto-route, then the configured default. The
+    member arm goes through :func:`resolve_selected_backend` — the same
+    governance/selectability gate the persisted field crosses, so a denied or
+    unknown value degrades to kiro and the member thread runs as plain chat.
 
     Lives here rather than inline in ``create_provider_factory`` so the
     factory body stays a single selection CALL with no branching of its own:
@@ -168,8 +166,6 @@ def select_provider_backend(
     """
     from kiro_crew.acp_backends import resolve_selected_backend
 
-    if explicit:
-        return resolve_selected_backend(explicit)
     if is_member_session_key(session_key):
         backend = resolve_selected_backend(member_backend)
         logger.info(
