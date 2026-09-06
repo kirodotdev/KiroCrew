@@ -38,6 +38,7 @@ from kiro_crew.dashboard.handlers.knowledge_sync import (
 )
 from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure, knowledge_upload_max_bytes
 from kiro_crew.knowledge.ingestion import ImportChunkBudgetError, _redact
+from kiro_crew.knowledge.store import _ACCOUNT_BOUND_SOURCE_TYPE
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
@@ -60,6 +61,20 @@ async def ingest_text(request: web.Request) -> web.Response:
         source = await asyncio.to_thread(_source_row, store, source_id)
         if not source:
             return web.json_response({"error": "source not found"}, status=404)
+        # A live-retrieval source holds no items: the store refuses the write
+        # (LiveSourceHoldsNoItems), and refusing here, before the body is read
+        # and extraction runs, turns that into a coded 409 instead of a 500 at
+        # the end of the pipeline. Any authenticated caller can read a
+        # bedrock_kb id off the sources list, so the target is checked, not
+        # the caller.
+        if source["source_type"] == _ACCOUNT_BOUND_SOURCE_TYPE:
+            return web.json_response(
+                {
+                    "error": "a live-retrieval source holds no items; it is queried at search time",
+                    "code": "live_source_holds_no_items",
+                },
+                status=409,
+            )
         body, body_err = await read_bounded_json(request, max_bytes=None)
         if body_err is not None:
             return body_err
