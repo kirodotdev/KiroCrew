@@ -4939,12 +4939,12 @@ function ChatSidebar({
   // (topics); the session itself is an engineered routing pipeline.
   //
   // Preview-gated: the create-menu entry below only renders once the operator
-  // opts in at Developer > Feature Previews. `usePreviewFlag` rather than a bare
+  // opts in at Settings > Developer > Feature Previews. `usePreviewFlag` rather than a bare
   // read because the sidebar does not remount when that toggle flips.
   const crewPreview = usePreviewFlag(PREVIEW_CREW)
   // Separate flag, separate feature: this one holds "New chat on crew", which
   // dispatches a session to another MACHINE. Its toggle is in Settings > Remote
-  // crews rather than Developer > Feature Previews, because it only means
+  // crews rather than Settings > Developer > Feature Previews, because it only means
   // anything to someone who already has a crew connected.
   const remoteCrewChatPreview = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
   const createCrewMutation = useMutation({
@@ -5832,7 +5832,7 @@ function ChatSidebar({
                 </DropdownMenuItem>
                 {/* Crew Mode is preview-gated (`utils/previewFlags.ts`): the mode
                  *  is not released, so the menu does not offer it unless the
-                 *  operator opted in at Developer > Feature Previews. The
+                 *  operator opted in at Settings > Developer > Feature Previews. The
                  *  mutation above stays wired either way, so a session already in
                  *  crew mode is unaffected — only this ingress disappears. */}
                 {crewPreview && (

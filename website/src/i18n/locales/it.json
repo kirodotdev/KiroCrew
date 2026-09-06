@@ -10285,8 +10285,8 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chatta su un Crew",
-        "chat_on_a_crew_desc": "Aggiunge “New chat on crew” al menu di creazione, che avvia una sessione eseguita su un Crew connesso. Incompleto: si apre nel pannello del Crew stesso e le sessioni eseguite su un Crew non sono ancora elencate qui.",
-        "crew": "Crew",
+        "chat_on_a_crew_desc": "Aggiunge “New chat on crew” al menu di creazione, che avvia una sessione su un’istanza remota, cioè un altro computer che hai connesso in Impostazioni > Istanze remote. Incompleto: la sessione si apre nel pannello di quell’istanza e non compare ancora nell’elenco delle sessioni di questa dashboard; per tornarci più tardi, passa al pannello di quell’istanza.",
+        "crew": "Membri della crew e Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "Token dei webhook in ingresso, contesti registrati e cronologia delle esecuzioni. L’API funziona, ma la pagina non è finita.",
         "open_webhooks": "Apri Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "La pagina Membri della crew e le chat Crew Mode. Entrambi sono ancora in sviluppo, quindi non vengono proposti finché non si attiva questa opzione.",
@@ -10295,6 +10295,7 @@
     },
     "developerPage": {
       "developer": "Sviluppatore",
+      "feature_previews_moved": "Le anteprime delle funzionalità sono passate in Impostazioni > Sviluppatore",
       "tabs": {
         "agentBackend": {
           "description": "Quale agente avviano le nuove sessioni: Kiro CLI, Claude Code o KAS",
@@ -10311,10 +10312,6 @@
         "debugTools": {
           "label": "Strumenti di debug",
           "description": "Sovrapposizioni che mostrano sul dispositivo cosa fa l'app a se stessa."
-        },
-        "featurePreviews": {
-          "description": "Funzionalità e pagine non rilasciate, nascoste dalla barra laterale e da Cerca in tutto finché non le attivi qui. Valgono solo per questo dispositivo e sono incomplete di proposito.",
-          "label": "Anteprime delle funzionalità"
         },
         "logs": {
           "description": "Visualizzatore dei log in tempo reale con filtro per livello e ricerca",
@@ -12611,6 +12608,8 @@
       "developerPanel": {
         "developer_mode": "Modalità sviluppatore",
         "developer_tools": "Strumenti per sviluppatori",
+        "feature_previews": "Anteprime delle funzionalità",
+        "feature_previews_desc": "Funzionalità e pagine non rilasciate. Le pagine restano nascoste dalla barra laterale e da Cerca in tutto finché non le attivi qui; gli interruttori stessi compaiono invece nella ricerca delle impostazioni. Valgono solo per questo dispositivo e sono incomplete di proposito.",
         "gateway": "Gateway",
         "open_developer_page": "Apri la pagina Sviluppatore",
         "run_a_local_gateway": "Esegui un gateway locale",
@@ -14203,7 +14202,7 @@
         "label": "Uso del computer"
       },
       "developer": {
-        "description": "Modalità sviluppatore, log, metriche di sistema e diagnostica",
+        "description": "Modalità sviluppatore, anteprime delle funzionalità, log, metriche di sistema e diagnostica",
         "label": "Sviluppatore"
       },
       "display": {

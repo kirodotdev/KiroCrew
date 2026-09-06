@@ -9991,8 +9991,8 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "在 crew 上聊天",
-        "chat_on_a_crew_desc": "在新建菜单里加入“New chat on crew”，用它创建的会话运行在已连接的 crew 上。尚未完善：它会打开该 crew 自己的面板，而运行在 crew 上的会话还不会显示在这里。",
-        "crew": "Crew",
+        "chat_on_a_crew_desc": "在新建菜单里加入“New chat on crew”，用它创建的会话运行在远程实例上，也就是你在“设置 > 远程实例”里连接的另一台机器。尚未完善：会话会在该实例自己的面板中打开，且暂不会出现在本仪表板的会话列表里；之后要回到它，请切换到该实例的面板。",
+        "crew": "团队成员与 Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
         "the_crew_members_page_and_crew_mode_chats_both_a": "团队成员页面和 Crew Mode 聊天。两者仍在开发中，开启后才会显示。",
@@ -10001,6 +10001,7 @@
     },
     "developerPage": {
       "developer": "开发者",
+      "feature_previews_moved": "功能预览已移至“设置 > 开发者”",
       "tabs": {
         "agentBackend": {
           "description": "新会话启动哪个代理 — Kiro CLI、Claude Code 或 KAS",
@@ -10017,10 +10018,6 @@
         "debugTools": {
           "label": "调试工具",
           "description": "在真实设备上叠加显示应用内部行为的诊断浮层。"
-        },
-        "featurePreviews": {
-          "description": "尚未发布的功能和页面。在此开启之前，它们不会出现在侧边栏和全局搜索中。设置仅对本设备生效，且这些内容有意保留未完善的状态。",
-          "label": "功能预览"
         },
         "logs": {
           "description": "支持按级别筛选和搜索的实时日志查看器",
@@ -12273,6 +12270,8 @@
       "developerPanel": {
         "developer_mode": "开发者模式",
         "developer_tools": "开发者工具",
+        "feature_previews": "功能预览",
+        "feature_previews_desc": "尚未发布的功能和页面。在此开启之前，这些页面不会出现在侧边栏和全局搜索中；下面的开关本身则可以通过设置搜索找到。设置仅对本设备生效，且这些内容有意保留未完善的状态。",
         "gateway": "网关",
         "open_developer_page": "打开开发者页面",
         "run_a_local_gateway": "运行本地网关",
@@ -13845,7 +13844,7 @@
         "label": "电脑操作"
       },
       "developer": {
-        "description": "开发者模式、日志、系统指标与诊断",
+        "description": "开发者模式、功能预览、日志、系统指标与诊断",
         "label": "开发者"
       },
       "display": {

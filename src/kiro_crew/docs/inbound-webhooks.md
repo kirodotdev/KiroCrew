@@ -11,18 +11,17 @@ owns, a webhook fires when something outside Kiro Crew decides it is time.
 ## The Webhooks page is preview-gated
 
 The HTTP endpoint is fully supported. Its dashboard page is currently hidden
-behind two per-device switches:
+behind one per-device switch:
 
-1. **Settings > Developer > Developer Mode** — off by default, and while it is
-   off there is no **Developer** row in the sidebar at all. Turn it on first, or
-   step 2 has nowhere to happen.
-2. **Developer > Feature Previews** — switch **Webhooks** on. A
-   **Webhooks** row appears in the sidebar immediately (and an "Open Webhooks"
-   link on the feature's own card).
+**Settings > Developer > Feature Previews** — switch **Webhooks** on. A
+**Webhooks** row appears in the sidebar immediately (and an "Open Webhooks"
+link on the feature's own card). Developer Mode is NOT required: the previews
+section sits on the always-visible Settings tab, not on the Developer page it
+used to be a tab of.
 
 Nothing about the API changes either way — tokens, the kill switch, and delivery
 all behave the same whether the page is visible or not. The one consequence is
-that when this document says "the Webhooks page", you need both switches on to
+that when this document says "the Webhooks page", you need that switch on to
 get there.
 
 ## Sources, routing, and management

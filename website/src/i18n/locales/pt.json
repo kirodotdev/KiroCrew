@@ -10285,8 +10285,8 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Conversar em um Crew",
-        "chat_on_a_crew_desc": "Adiciona “New chat on crew” ao menu de criação, que inicia uma sessão executada em um Crew conectado. Inacabado: ela abre no painel do próprio Crew, e sessões executadas em um Crew ainda não aparecem aqui.",
-        "crew": "Crew",
+        "chat_on_a_crew_desc": "Adiciona “New chat on crew” ao menu de criação, que inicia uma sessão em uma instância remota, ou seja, outra máquina que você conectou em Configurações > Instâncias remotas. Inacabado: a sessão abre no painel da própria instância e ainda não aparece na lista de sessões deste painel; para voltar a ela depois, mude para o painel dessa instância.",
+        "crew": "Membros da equipe e Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks de entrada, contextos registrados e histórico de execuções. A API funciona; a página não está concluída.",
         "open_webhooks": "Abrir Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "A página Membros da equipe e os chats do Crew Mode. Ambos ainda estão em construção, por isso só aparecem quando esta opção é ativada.",
@@ -10295,6 +10295,7 @@
     },
     "developerPage": {
       "developer": "Desenvolvedor",
+      "feature_previews_moved": "As prévias de recursos foram movidas para Configurações > Desenvolvedor",
       "tabs": {
         "agentBackend": {
           "description": "Qual agente as novas sessões iniciam: Kiro CLI, Claude Code ou KAS",
@@ -10311,10 +10312,6 @@
         "debugTools": {
           "label": "Ferramentas de depuração",
           "description": "Sobreposições que mostram no dispositivo o que o aplicativo faz consigo mesmo."
-        },
-        "featurePreviews": {
-          "description": "Recursos e páginas não lançados, ocultos da barra lateral e da Pesquisar em tudo até você ativá-los aqui. Valem só para este dispositivo e estão inacabados de propósito.",
-          "label": "Prévias de recursos"
         },
         "logs": {
           "description": "Visualizador de logs ao vivo com filtro por nível e busca",
@@ -12611,6 +12608,8 @@
       "developerPanel": {
         "developer_mode": "Modo desenvolvedor",
         "developer_tools": "Ferramentas de desenvolvedor",
+        "feature_previews": "Prévias de recursos",
+        "feature_previews_desc": "Recursos e páginas não lançados. As páginas ficam ocultas da barra lateral e da Pesquisar em tudo até você ativá-las aqui; os próprios interruptores, porém, aparecem na busca das configurações. Valem só para este dispositivo e estão inacabados de propósito.",
         "gateway": "Gateway",
         "open_developer_page": "Abrir a página Desenvolvedor",
         "run_a_local_gateway": "Executar um gateway local",
@@ -14203,7 +14202,7 @@
         "label": "Uso do computador"
       },
       "developer": {
-        "description": "Modo desenvolvedor, logs, métricas do sistema e diagnósticos",
+        "description": "Modo desenvolvedor, prévias de recursos, logs, métricas do sistema e diagnósticos",
         "label": "Desenvolvedor"
       },
       "display": {

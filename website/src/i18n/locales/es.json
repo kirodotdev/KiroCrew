@@ -10285,8 +10285,8 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chatear en un Crew",
-        "chat_on_a_crew_desc": "Añade “New chat on crew” al menú de creación, que inicia una sesión que se ejecuta en un Crew conectado. Sin terminar: se abre en el panel propio de ese Crew y las sesiones que se ejecutan en un Crew todavía no aparecen aquí.",
-        "crew": "Crew",
+        "chat_on_a_crew_desc": "Añade “New chat on crew” al menú de creación, que inicia una sesión en una instancia remota, es decir, otra máquina que conectaste en Configuración > Instancias remotas. Sin terminar: la sesión se abre en el panel propio de esa instancia y todavía no aparece en la lista de sesiones de este panel de control; para volver a ella más tarde, cambia al panel de esa instancia.",
+        "crew": "Miembros del equipo y Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks entrantes, contextos registrados e historial de ejecuciones. La API funciona; la página no está terminada.",
         "open_webhooks": "Abrir Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "La página Miembros del equipo y los chats de Crew Mode. Ambos están todavía en desarrollo, así que no se ofrecen hasta que se active esta opción.",
@@ -10295,6 +10295,7 @@
     },
     "developerPage": {
       "developer": "Desarrollador",
+      "feature_previews_moved": "Las vistas previas de funciones se movieron a Configuración > Desarrollador",
       "tabs": {
         "agentBackend": {
           "description": "Qué agente inician las sesiones nuevas: Kiro CLI, Claude Code o KAS",
@@ -10311,10 +10312,6 @@
         "debugTools": {
           "label": "Herramientas de depuración",
           "description": "Superposiciones que muestran en el dispositivo lo que la aplicación hace consigo misma."
-        },
-        "featurePreviews": {
-          "description": "Funciones y páginas sin publicar, ocultas de la barra lateral y de Buscar en todo hasta que las actives aquí. Solo para este dispositivo y sin terminar a propósito.",
-          "label": "Vistas previas de funciones"
         },
         "logs": {
           "description": "Visor de registros en vivo con filtrado por nivel y búsqueda",
@@ -12612,6 +12609,8 @@
       "developerPanel": {
         "developer_mode": "Modo de desarrollador",
         "developer_tools": "Herramientas de desarrollo",
+        "feature_previews": "Vistas previas de funciones",
+        "feature_previews_desc": "Funciones y páginas sin publicar. Las páginas siguen ocultas de la barra lateral y de Buscar en todo hasta que las actives aquí; los propios interruptores sí aparecen en la búsqueda de configuración. Solo para este dispositivo y sin terminar a propósito.",
         "gateway": "Gateway",
         "open_developer_page": "Abrir la página Desarrollador",
         "run_a_local_gateway": "Ejecutar un gateway local",
@@ -14204,7 +14203,7 @@
         "label": "Uso del ordenador"
       },
       "developer": {
-        "description": "Modo de desarrollador, registros, métricas del sistema y diagnósticos",
+        "description": "Modo de desarrollador, vistas previas de funciones, registros, métricas del sistema y diagnósticos",
         "label": "Desarrollador"
       },
       "display": {

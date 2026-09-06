@@ -10285,8 +10285,8 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Discuter sur un Crew",
-        "chat_on_a_crew_desc": "Ajoute « New chat on crew » au menu de création, qui démarre une session exécutée sur un Crew connecté. Inachevé : elle s’ouvre dans le panneau propre à ce Crew, et les sessions exécutées sur un Crew ne sont pas encore listées ici.",
-        "crew": "Crew",
+        "chat_on_a_crew_desc": "Ajoute « New chat on crew » au menu de création, qui démarre une session sur une instance distante, c’est-à-dire une autre machine que tu as connectée dans Paramètres > Instances distantes. Inachevé : la session s’ouvre dans le panneau propre à cette instance et n’apparaît pas encore dans la liste des sessions de ce tableau de bord ; pour y revenir plus tard, passe au panneau de cette instance.",
+        "crew": "Membres de l’équipe et Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "La page Membres de l'équipe et les chats Crew Mode. Les deux sont encore en construction : rien n'est proposé tant que cette option n'est pas activée.",
@@ -10295,6 +10295,7 @@
     },
     "developerPage": {
       "developer": "Développeur",
+      "feature_previews_moved": "Les aperçus de fonctionnalités sont passés dans Paramètres > Développeur",
       "tabs": {
         "agentBackend": {
           "description": "Quel agent les nouvelles sessions démarrent : Kiro CLI, Claude Code ou KAS",
@@ -10311,10 +10312,6 @@
         "debugTools": {
           "label": "Outils de débogage",
           "description": "Des surcouches qui montrent, sur l'appareil, ce que l'application se fait à elle-même."
-        },
-        "featurePreviews": {
-          "description": "Fonctionnalités et pages non publiées, masquées dans la barre latérale et dans Rechercher partout jusqu'à ce que vous les activiez ici. Valable pour cet appareil uniquement, et inachevées à dessein.",
-          "label": "Aperçus de fonctionnalités"
         },
         "logs": {
           "description": "Visualiseur de journaux en direct avec filtrage par niveau et recherche",
@@ -12612,6 +12609,8 @@
       "developerPanel": {
         "developer_mode": "Mode développeur",
         "developer_tools": "Outils de développement",
+        "feature_previews": "Aperçus de fonctionnalités",
+        "feature_previews_desc": "Fonctionnalités et pages non publiées. Les pages restent masquées dans la barre latérale et dans Rechercher partout jusqu’à ce que tu les actives ici ; les interrupteurs eux-mêmes apparaissent bien dans la recherche des paramètres. Valable pour cet appareil uniquement, et inachevées à dessein.",
         "gateway": "Passerelle",
         "open_developer_page": "Ouvrir la page Développeur",
         "run_a_local_gateway": "Exécuter une passerelle locale",
@@ -14204,7 +14203,7 @@
         "label": "Utilisation de l'ordinateur"
       },
       "developer": {
-        "description": "Mode développeur, journaux, métriques système et diagnostics",
+        "description": "Mode développeur, aperçus de fonctionnalités, journaux, métriques système et diagnostics",
         "label": "Développeur"
       },
       "display": {

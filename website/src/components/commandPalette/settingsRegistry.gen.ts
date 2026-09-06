@@ -1237,6 +1237,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.chat-on-a-crew",
+    "label": "Chat on a crew",
+    "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
+    "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.crew-members-and-crew-mode",
+    "label": "Crew Members and Crew Mode",
+    "labelKey": "pages.developer.featurePreviewsTab.crew",
+    "description": "The Crew Members page and Crew Mode chats. Both are still being built, so neither is offered until you turn this on.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.developer-mode",
     "label": "Developer Mode",
     "labelKey": "pages.settings.developerPanel.developer_mode",
@@ -1250,6 +1268,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Run a local gateway",
     "labelKey": "pages.settings.developerPanel.run_a_local_gateway",
     "description": "Start a gateway on this machine. Turn it off to use Kiro Crew as a client only, connecting to the gateway you have configured instead of running one here. Takes effect next time you open the app.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.webhooks",
+    "label": "Webhooks",
+    "labelKey": "pages.developer.featurePreviewsTab.webhooks",
+    "description": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1

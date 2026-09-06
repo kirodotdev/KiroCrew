@@ -9991,8 +9991,8 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "crew에서 채팅",
-        "chat_on_a_crew_desc": "만들기 메뉴에 “New chat on crew”를 추가합니다. 연결된 crew에서 실행되는 세션을 시작합니다. 미완성입니다: 해당 crew의 자체 창에서 열리며, crew에서 실행 중인 세션은 아직 여기에 표시되지 않습니다.",
-        "crew": "Crew",
+        "chat_on_a_crew_desc": "만들기 메뉴에 “New chat on crew”를 추가합니다. 원격 인스턴스, 즉 설정 > 원격 인스턴스에서 연결한 다른 컴퓨터에서 세션을 시작합니다. 미완성입니다: 세션은 해당 인스턴스의 자체 창에서 열리며 이 대시보드의 세션 목록에는 아직 표시되지 않으므로, 나중에 돌아가려면 해당 인스턴스의 창으로 전환하세요.",
+        "crew": "크루 멤버 및 Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
         "open_webhooks": "Webhooks 열기",
         "the_crew_members_page_and_crew_mode_chats_both_a": "크루 멤버 페이지와 Crew Mode 채팅입니다. 둘 다 아직 개발 중이므로 이 옵션을 켜기 전에는 표시되지 않습니다.",
@@ -10001,6 +10001,7 @@
     },
     "developerPage": {
       "developer": "개발자",
+      "feature_previews_moved": "기능 미리 보기가 설정 > 개발자로 이동했습니다",
       "tabs": {
         "agentBackend": {
           "description": "새 세션이 시작할 에이전트 — Kiro CLI, Claude Code 또는 KAS",
@@ -10017,10 +10018,6 @@
         "debugTools": {
           "label": "디버그 도구",
           "description": "앱 내부 동작을 실제 기기에서 그대로 보여 주는 오버레이입니다."
-        },
-        "featurePreviews": {
-          "description": "아직 출시되지 않은 기능과 페이지입니다. 여기서 켜기 전에는 사이드바와 전체 검색에 표시되지 않습니다. 이 기기에만 적용되며, 의도적으로 미완성 상태입니다.",
-          "label": "기능 미리 보기"
         },
         "logs": {
           "description": "레벨 필터와 검색을 지원하는 실시간 로그 뷰어",
@@ -12273,6 +12270,8 @@
       "developerPanel": {
         "developer_mode": "개발자 모드",
         "developer_tools": "개발자 도구",
+        "feature_previews": "기능 미리 보기",
+        "feature_previews_desc": "아직 출시되지 않은 기능과 페이지입니다. 여기서 켜기 전에는 페이지가 사이드바와 전체 검색에 표시되지 않지만, 아래 스위치 자체는 설정 검색에서 찾을 수 있습니다. 이 기기에만 적용되며, 의도적으로 미완성 상태입니다.",
         "gateway": "게이트웨이",
         "open_developer_page": "개발자 페이지 열기",
         "run_a_local_gateway": "로컬 게이트웨이 실행",
@@ -13845,7 +13844,7 @@
         "label": "컴퓨터 사용"
       },
       "developer": {
-        "description": "개발자 모드, 로그, 시스템 메트릭, 진단",
+        "description": "개발자 모드, 기능 미리 보기, 로그, 시스템 메트릭, 진단",
         "label": "개발자"
       },
       "display": {

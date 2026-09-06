@@ -79,7 +79,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 // Not mocked: the gate reads real localStorage, so the fixture that turns crew
-// on is the same write the Developer > Feature Previews toggle performs.
+// on is the same write the Settings > Developer > Feature Previews toggle performs.
 import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 
 function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string } = {}) {

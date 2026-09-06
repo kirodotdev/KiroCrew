@@ -9991,8 +9991,8 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "crew 上でチャット",
-        "chat_on_a_crew_desc": "作成メニューに「New chat on crew」を追加します。接続済みの crew 上で実行されるセッションを開始します。未完成です: その crew 自身のペインで開き、crew 上で実行中のセッションはまだここに表示されません。",
-        "crew": "Crew",
+        "chat_on_a_crew_desc": "作成メニューに「New chat on crew」を追加します。リモートインスタンス（「設定 > リモートインスタンス」で接続した別のマシン）上でセッションを開始します。未完成です: セッションはそのインスタンス自身のペインで開き、このダッシュボードのセッション一覧にはまだ表示されません。後で戻るには、そのインスタンスのペインに切り替えてください。",
+        "crew": "クルーメンバーと Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
         "open_webhooks": "Webhooks を開く",
         "the_crew_members_page_and_crew_mode_chats_both_a": "クルーメンバーのページと Crew Mode チャット。どちらもまだ開発中のため、これをオンにするまで表示されません。",
@@ -10001,6 +10001,7 @@
     },
     "developerPage": {
       "developer": "デベロッパー",
+      "feature_previews_moved": "機能プレビューは「設定 > デベロッパー」に移動しました",
       "tabs": {
         "agentBackend": {
           "description": "新しいセッションが起動するエージェント — Kiro CLI、Claude Code、KAS",
@@ -10017,10 +10018,6 @@
         "debugTools": {
           "label": "デバッグツール",
           "description": "アプリ内部の挙動を実機上でそのまま可視化するオーバーレイ。"
-        },
-        "featurePreviews": {
-          "description": "未リリースの機能とページです。ここでオンにするまで、サイドバーと「すべてから検索」には表示されません。この設定はこのデバイスのみに適用され、内容は意図的に未完成のままです。",
-          "label": "機能プレビュー"
         },
         "logs": {
           "description": "レベルフィルタリング検索機能付きライブログビューア",
@@ -12273,6 +12270,8 @@
       "developerPanel": {
         "developer_mode": "開発者モード",
         "developer_tools": "開発者ツール",
+        "feature_previews": "機能プレビュー",
+        "feature_previews_desc": "未リリースの機能とページです。ここでオンにするまで、ページ自体はサイドバーと「すべてから検索」には表示されませんが、下のスイッチは設定の検索で見つかります。この設定はこのデバイスのみに適用され、内容は意図的に未完成のままです。",
         "gateway": "ゲートウェイ",
         "open_developer_page": "開発者ページを開く",
         "run_a_local_gateway": "ローカルゲートウェイを実行する",
@@ -13845,7 +13844,7 @@
         "label": "コンピューター使用"
       },
       "developer": {
-        "description": "デベロッパーモード、ログ、システムメトリクス、および診断",
+        "description": "デベロッパーモード、機能プレビュー、ログ、システムメトリクス、および診断",
         "label": "デベロッパー"
       },
       "display": {

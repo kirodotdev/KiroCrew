@@ -3894,6 +3894,7 @@
       "disk_usage_unavailable": "Disk usage unavailable"
     },
     "developerPage": {
+      "feature_previews_moved": "Feature Previews moved to Settings > Developer",
       "tabs": {
         "agentBackend": {
           "description": "Which agent new sessions start — Kiro CLI, Claude Code, or KAS",
@@ -3910,10 +3911,6 @@
         "debugTools": {
           "label": "Debug tools",
           "description": "Overlays that report what the app is doing to itself, on the device where it happens."
-        },
-        "featurePreviews": {
-          "description": "Unreleased features and pages, hidden from the sidebar and from Search Everywhere until you turn them on here. Per-device, and unpolished on purpose.",
-          "label": "Feature Previews"
         },
         "logs": {
           "description": "Live log viewer with level filtering and search",
@@ -4782,6 +4779,10 @@
         "copy_failed_select_the_command_and_copy_it_manually": "Copy failed. Select the command and copy it manually.",
         "update_info_unavailable": "Couldn't read this build's version and update channel from the app."
       },
+      "developerPanel": {
+        "feature_previews": "Feature Previews",
+        "feature_previews_desc": "Unreleased features and pages. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Per-device, and unpolished on purpose."
+      },
       "computerUsePanel": {
         "computer_use_lets_the_agent_read_any_app_window": "Computer use lets the agent read any app window and send clicks and keystrokes into it. Most clicks are delivered straight to the app and leave your pointer alone, but the agent can ask to move the real pointer when a target needs it. Password fields are never read; nothing else limits which apps it may drive.",
         "computer_use_not_available": "Computer use is not available on {{platform}}.",
@@ -5603,7 +5604,7 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat on a crew",
-        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet."
+        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane."
       }
     },
     "appPage": {
@@ -5685,7 +5686,7 @@
         "label": "Computer Use"
       },
       "developer": {
-        "description": "Developer mode, logs, system metrics, and diagnostics",
+        "description": "Developer mode, feature previews, logs, system metrics, and diagnostics",
         "label": "Developer"
       },
       "display": {

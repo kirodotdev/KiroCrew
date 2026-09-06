@@ -1771,7 +1771,7 @@ export default function App() {
   const appNavHidden = useAppNavHidden()
   // Preview-gated surfaces (see `utils/previewFlags.ts`) must not be advertised
   // anywhere. `surfacePreviewEnabled` is a synchronous storage read, so the rail
-  // needs this subscription to re-render when Developer > Feature Previews flips a flag —
+  // needs this subscription to re-render when Settings > Developer > Feature Previews flips a flag —
   // otherwise the row would appear only after a reload. The revision also
   // invalidates the memo below, which a bare re-render would not recompute.
   const previewFlagRevision = usePreviewFlagRevision()

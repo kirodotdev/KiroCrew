@@ -52,7 +52,7 @@ registerBuiltinSurface({
 //
 // `previewFlag` because crew is not released yet: the page errors out on paths
 // that are still being built, so it is not advertised until the operator opts in
-// at Developer > Feature Previews. Unlike Webhooks below this surface is NOT
+// at Settings > Developer > Feature Previews. Unlike Webhooks below this surface is NOT
 // `hiddenFromNav` — the rail IS where it belongs once released, so dropping the
 // flag is the whole release. Two of the three advertising paths apply the gate
 // for themselves — the rail and Search Everywhere both read
@@ -120,7 +120,7 @@ registerBuiltinSurface({
 //
 //   previewFlag    — WHETHER to advertise it at all. The page works but is not
 //                    polished enough to release, so nothing surfaces it until
-//                    the operator enables it in Developer > Feature Previews.
+//                    the operator enables it in Settings > Developer > Feature Previews.
 //   hiddenFromNav  — WHERE it lives once advertised. It is operator
 //                    configuration touched once at setup, not a daily
 //                    destination, and a top-level rail slot overstated it next
@@ -131,7 +131,7 @@ registerBuiltinSurface({
 // the rail and palette never see it and cannot apply the preview gate
 // themselves. The two places that DO surface it — the Settings tab
 // (`SettingsPage`) and the palette entry (`pagesProvider` EXTRA_PAGES) — read
-// PREVIEW_WEBHOOKS directly, so the Developer > Feature Previews toggle still controls
+// PREVIEW_WEBHOOKS directly, so the Settings > Developer > Feature Previews toggle still controls
 // visibility end to end. Dropping `previewFlag` to release means dropping it in
 // those two readers and the PREVIEW_SURFACES row too.
 //

@@ -63,10 +63,10 @@ async function main() {
     shot.push(`${PREFIX}-${name}.png`)
   }
 
-  // 1. The destination — Developer > Feature Previews, one card per held
-  //    feature, with the moved opt-in as its own card rather than folded into
-  //    the existing Crew card (the word names two unrelated features).
-  await page.goto(base + '/developer?tab=feature-previews', { waitUntil: 'domcontentloaded' })
+  // 1. The destination — Settings > Developer > Feature Previews, one card per
+  //    held feature, with the moved opt-in as its own card rather than folded
+  //    into the existing Crew card (the word names two unrelated features).
+  await page.goto(base + '/settings/developer', { waitUntil: 'domcontentloaded' })
   const previews = page.getByRole('switch', { name: /webhooks/i })
   await previews.waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(500) // let the cards' rise animation finish

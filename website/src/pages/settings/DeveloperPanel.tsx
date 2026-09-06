@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { ExternalLink } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { useLocalGateway } from '../../hooks/useLocalGateway'
+import { FeaturePreviewsSection } from './FeaturePreviewsSection'
 
 import { i18nT } from '../../i18n/t'
 const DEV_MODE_KEY = 'mc-dev-mode'
@@ -17,6 +18,12 @@ const DEV_MODE_EVENT = 'mc-dev-mode-changed'
  *  that gate — not in always-visible Settings. Early-access updates are handled
  *  by the stable | insider channel switcher in Settings > About, so this tab
  *  carries no beta-channel toggle.
+ *
+ *  Feature Previews is the one thing that DID move here from that page: like
+ *  Developer Mode it is a per-device opt-in switch, not an internals view, so
+ *  it belongs beside the other consent gate rather than behind it — a reader
+ *  should not have to unlock the Developer page to find out how to turn an
+ *  unfinished feature on. Its cards live in `FeaturePreviewsSection.tsx`.
  *
  *  The Gateway section is desktop-app-only and appears only when the Electron
  *  bridge is present: a browser tab has no local gateway to start or stop. It
@@ -59,6 +66,10 @@ export function DeveloperPanel() {
         )}
       </SettingsCard>
     </SettingsSection>
+    {/* Between the two consent gates and the desktop-only Gateway switch:
+        Developer Mode and the previews are the two things a reader comes to this
+        tab to flip; the local-gateway switch is rare and platform-gated. */}
+    <FeaturePreviewsSection />
     {localGatewaySupported && (
       <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>
         <SettingsCard>

@@ -10138,8 +10138,8 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat auf einer Crew",
-        "chat_on_a_crew_desc": "Fügt dem Erstellen-Menü „New chat on crew“ hinzu und startet damit eine Sitzung, die auf einer verbundenen Crew läuft. Unfertig: Sie öffnet sich im eigenen Bereich dieser Crew, und auf einer Crew laufende Sitzungen erscheinen hier noch nicht.",
-        "crew": "Crew",
+        "chat_on_a_crew_desc": "Fügt dem Erstellen-Menü „New chat on crew“ hinzu und startet damit eine Sitzung auf einer Remote-Instanz – einem anderen Rechner, den du unter Einstellungen > Remote-Instanzen verbunden hast. Unfertig: Die Sitzung öffnet sich im eigenen Bereich dieser Instanz und erscheint noch nicht in der Sitzungsliste dieses Dashboards; um später zu ihr zurückzukehren, wechsle in den Bereich dieser Instanz.",
+        "crew": "Crew-Mitglieder und Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens für eingehende Webhooks, registrierte Kontexte und Ausführungsverlauf. Die API funktioniert, die Seite ist noch nicht fertig.",
         "open_webhooks": "Webhooks öffnen",
         "the_crew_members_page_and_crew_mode_chats_both_a": "Die Seite „Crew-Mitglieder“ und Crew-Mode-Chats. Beides ist noch in Arbeit und wird erst angeboten, wenn diese Option aktiviert ist.",
@@ -10148,6 +10148,7 @@
     },
     "developerPage": {
       "developer": "Entwickler",
+      "feature_previews_moved": "Funktionsvorschauen sind jetzt unter Einstellungen > Entwickler",
       "tabs": {
         "agentBackend": {
           "description": "Welchen Agenten neue Sitzungen starten – Kiro CLI, Claude Code oder KAS",
@@ -10164,10 +10165,6 @@
         "debugTools": {
           "label": "Debug-Werkzeuge",
           "description": "Overlays, die auf dem Gerät zeigen, was die App mit sich selbst macht."
-        },
-        "featurePreviews": {
-          "description": "Nicht veröffentlichte Funktionen und Seiten. Sie erscheinen weder in der Seitenleiste noch in „Überall suchen“, bis du sie hier aktivierst. Gilt nur für dieses Gerät, und sie sind absichtlich unfertig.",
-          "label": "Funktionsvorschauen"
         },
         "logs": {
           "description": "Live-Protokollansicht mit Ebenenfilter und Suche",
@@ -12442,6 +12439,8 @@
       "developerPanel": {
         "developer_mode": "Entwicklermodus",
         "developer_tools": "Entwicklerwerkzeuge",
+        "feature_previews": "Funktionsvorschauen",
+        "feature_previews_desc": "Nicht veröffentlichte Funktionen und Seiten. Die Seiten erscheinen weder in der Seitenleiste noch in „Überall suchen“, bis du sie hier aktivierst; die Schalter selbst findet die Einstellungssuche aber. Gilt nur für dieses Gerät, und sie sind absichtlich unfertig.",
         "gateway": "Gateway",
         "open_developer_page": "Entwicklerseite öffnen",
         "run_a_local_gateway": "Lokales Gateway ausführen",
@@ -14024,7 +14023,7 @@
         "label": "Computer-Nutzung"
       },
       "developer": {
-        "description": "Entwicklermodus, Protokolle, Systemmetriken und Diagnose",
+        "description": "Entwicklermodus, Funktionsvorschauen, Protokolle, Systemmetriken und Diagnose",
         "label": "Entwickler"
       },
       "display": {

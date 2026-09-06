@@ -200,7 +200,7 @@ is `/settings/<key>`. Panels live in `pages/settings/`.
 | `privacy` | Telemetry disclosure and opt-out | `PrivacyPanel.tsx` | `handlers/telemetry.py` | `GET /api/telemetry/collection`, `GET /api/telemetry/beacon` |
 | `security` | Denied commands, sensitive paths, approval posture | `SecurityPanel.tsx`, `PostureDisclosure.tsx` | `handlers/security.py`, `handlers/tailnet.py`, `handlers/file_delivery_consent.py` | `GET /api/security/denied-commands`, `PATCH .../builtins/{id}`, `POST .../user`, `GET,POST,DELETE /api/file-delivery/consent` |
 | `secrets` | Stored credentials the agent may use | `SecretsPanel.tsx` | `handlers/secrets.py` | `GET,POST /api/secrets`, `DELETE /api/secrets/{name}` |
-| `developer` | Pointer into the developer surfaces | `DeveloperPanel.tsx` | — | — |
+| `developer` | Developer Mode gate, Feature Previews opt-ins (client flags), local-gateway switch | `DeveloperPanel.tsx`, `FeaturePreviewsSection.tsx` | — | — |
 | `releases` | Release channel, update check, changelog | `ReleasesPanel.tsx` | `handlers/updates.py` | `GET /api/update/check`, `POST /api/update`, `GET /api/changelog`, `GET /api/releases` |
 | `about` | Version, build, diagnostics bundle | `AboutPanel.tsx`, `ReportProblemCard.tsx` | `handlers/diagnostics.py`, `handlers/feedback.py` | `POST /api/diagnostics/collect`, `GET /api/diagnostics/download/{filename}` |
 
@@ -218,8 +218,10 @@ from the header tab strip. Webhooks carries both a preview flag and
 
 ## Developer
 
-`/developer` (`pages/DeveloperPage.tsx`), eleven `?tab=` values. Internals views;
-not where a user manages their own data.
+`/developer` (`pages/DeveloperPage.tsx`), ten `?tab=` values. Internals views;
+not where a user manages their own data. The former `feature-previews` tab moved
+to Settings > Developer (`pages/settings/FeaturePreviewsSection.tsx`); the old
+`?tab=feature-previews` link redirects there.
 
 | Tab | What it is | Page | Handler | Endpoints |
 |---|---|---|---|---|
@@ -231,7 +233,6 @@ not where a user manages their own data.
 | `memory` | Memory graph visualizer | `pages/overview/MemoryGraphTab.tsx` | `handlers/memory.py` | `GET /api/memory/graph` |
 | `config` | Raw Kiro Crew and agent config editors | `pages/overview/KiroCrewCfgTab.tsx`, `AgentCfgTab.tsx` | `handlers/core.py`, `handlers/agents.py` | `GET,PUT,PATCH /api/config/kirocrew`, `GET,PUT /api/agent/config` |
 | `agent-backend` | Which agent harness backend is live | `pages/developer/AgentBackendTab.tsx` | `handlers/acp_backend_status.py`, `handlers/kiro_prerequisite.py` | `GET /api/acp-backends`, `GET /api/kiro-prerequisite` |
-| `feature-previews` | Toggle unreleased surfaces on | `pages/developer/FeaturePreviewsTab.tsx` | — (client flags) | — |
 | `debug-tools` | Diagnostic overlays, currently the chat scroll inspector | `pages/developer/DebugToolsTab.tsx` | — (client only) | — |
 | `archive` | Consolidated session archive browser | `pages/SessionArchive.tsx` | `handlers/sessions.py` | `GET /api/session/archive`, `GET /api/session/archive/{name}` |
 
