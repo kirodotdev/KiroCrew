@@ -1221,6 +1221,12 @@ def _marker_bearing_text(payload: dict[str, Any], _max_nodes: int = 512) -> str 
 
 ELIDED_MARKER_VALUE = "[[directive marker emitted on its own line above]]"
 
+#: Stands in for one top-level sibling whose value the JSON encoder refuses (see
+#: :func:`_dumps_elided_siblings`). Visible in the transcript on purpose: the
+#: user can see that detail is missing, which is the whole difference between
+#: this and dropping the field.
+UNSERIALISABLE_SIBLING_VALUE = "[[value omitted: nested too deeply to serialise]]"
+
 
 def _elide_marker_value(payload: Any, marker: str) -> Any:
     """Copy *payload* with the one *marker*-bearing string replaced by a note.
@@ -1232,14 +1238,93 @@ def _elide_marker_value(payload: Any, marker: str) -> Any:
     the marker goes out verbatim and this copy carries everything ELSE, with the
     one value that already went out replaced by a short note instead of
     duplicated.
+
+    Iterative over an explicit heap stack, NOT recursive. The nesting depth comes
+    out of a tool's own output, so whatever produced the frame chooses it, and a
+    recursive walk raises ``RecursionError`` on a deep one -- a ``RuntimeError``,
+    which neither this module's ``(ValueError, TypeError)`` handlers nor any
+    caller catches, so it escapes ``parse_session_update`` and kills the whole
+    agent turn. A heap stack has no such ceiling, so no depth constant and no
+    refusal branch is needed.
+
+    ``payload`` is always JSON-DECODED input (``json.loads`` of a frame, or a
+    parsed JSON-RPC member), which cannot contain a reference cycle. That
+    invariant is what makes the unbounded loop safe.
     """
-    if isinstance(payload, str):
-        return ELIDED_MARKER_VALUE if payload == marker else payload
-    if isinstance(payload, dict):
-        return {k: _elide_marker_value(v, marker) for k, v in payload.items()}
-    if isinstance(payload, list):
-        return [_elide_marker_value(v, marker) for v in payload]
-    return payload
+    # One slot to receive the root, so the loop can write every result through
+    # the same (container, key) mechanism.
+    root: list[Any] = [None]
+    stack: list[tuple[Any, Any, Any]] = [(payload, root, 0)]
+    while stack:
+        node, target, key = stack.pop()
+        if isinstance(node, str):
+            target[key] = ELIDED_MARKER_VALUE if node == marker else node
+        elif isinstance(node, dict):
+            copied: dict[Any, Any] = {}
+            target[key] = copied
+            for k, v in node.items():
+                # Reserve the slot NOW so the copy keeps the source's key order
+                # regardless of the order the stack pops the children in.
+                copied[k] = None
+                stack.append((v, copied, k))
+        elif isinstance(node, list):
+            listed: list[Any] = [None] * len(node)
+            target[key] = listed
+            for i, v in enumerate(node):
+                stack.append((v, listed, i))
+        else:
+            target[key] = node
+    return root[0]
+
+
+def _dumps_elided_siblings(payload: Any, marker: str) -> str | None:
+    """Serialise *payload*'s marker-elided copy, or None if it cannot be encoded.
+
+    The second, independent limit on this path: ``json.dumps`` recurses in C
+    against the PROCESS stack rather than ``sys.recursionlimit``, so a payload
+    :func:`_elide_marker_value` copies fine can still overflow the ENCODER -- and
+    at a depth that differs per platform, since a thread's stack size does. The
+    depth is chosen by whatever produced the frame, so the encoder can always be
+    reached, and the failure is the same uncaught ``RecursionError`` that kills
+    the turn.
+
+    Degrades per FIELD rather than all-or-nothing, because the two possible
+    losses are not symmetric. A lost directive silently unarms a loop the model
+    was told was armed -- there is no error anywhere and no way to notice. Lost
+    sibling detail costs transcript content the user can SEE is missing. So the
+    marker (emitted by the caller, not here) always survives, every top-level
+    field that encodes is kept whole, and only the offending branches become
+    :data:`UNSERIALISABLE_SIBLING_VALUE`. Returns None only when even the reduced
+    object will not encode, leaving the caller to emit the directive alone.
+    """
+    elided = _elide_marker_value(payload, marker)
+    try:
+        return json.dumps(elided, default=str)
+    except RecursionError:
+        pass
+
+    def _encodable(value: Any) -> bool:
+        try:
+            json.dumps(value, default=str)
+        except RecursionError:
+            return False
+        return True
+
+    # Re-encoding the survivors together adds exactly one level over the deepest
+    # of them, which each one just cleared on its own -- but a value sitting on
+    # the boundary can still fail there, so the outer dump stays guarded too.
+    if isinstance(elided, dict):
+        reduced: Any = {
+            k: (v if _encodable(v) else UNSERIALISABLE_SIBLING_VALUE) for k, v in elided.items()
+        }
+    elif isinstance(elided, list):
+        reduced = [(v if _encodable(v) else UNSERIALISABLE_SIBLING_VALUE) for v in elided]
+    else:
+        return None
+    try:
+        return json.dumps(reduced, default=str)
+    except RecursionError:
+        return None
 
 
 def _repair_escaped_marker(text: str) -> str | None:
@@ -1285,7 +1370,10 @@ def _repair_escaped_marker(text: str) -> str | None:
     # loop armed and nothing to inspect).
     try:
         outer = json.loads(text)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
+        # RecursionError is listed because the C scanner raises it on text nested
+        # past the interpreter's limit, and it is a RuntimeError -- so the two
+        # ValueError-family names alone let it escape and abort the turn.
         outer = None
     if isinstance(outer, str):
         # One sentinel only, the same bar ``_marker_bearing_text`` holds the dict
@@ -1305,8 +1393,10 @@ def _repair_escaped_marker(text: str) -> str | None:
             # only this one survives display: session_directive.strip_marker cuts
             # from the sentinel to the END of the string, so anything after the
             # marker is dropped from the transcript the user actually reads.
-            siblings = json.dumps(_elide_marker_value(outer, inner), default=str)
-            return siblings + "\n" + inner
+            # A None here means the encoder could not represent the siblings at
+            # all, so the directive goes out alone rather than not at all.
+            siblings = _dumps_elided_siblings(outer, inner)
+            return inner if siblings is None else siblings + "\n" + inner
 
     if text.count(session_directive.SENTINEL) > 1:
         # Ambiguous for the LINE-BASED recovery only: (2) below reads the FIRST
@@ -1669,9 +1759,11 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
                                     # They go BEFORE the marker: strip_marker cuts
                                     # from the sentinel to the end of the string,
                                     # so anything after it is lost from display.
-                                    output_parts.append(
-                                        json.dumps(_elide_marker_value(j, _mcp_text), default=str)
-                                    )
+                                    # A None means the encoder could not represent
+                                    # them; the marker below still goes out.
+                                    _siblings = _dumps_elided_siblings(j, _mcp_text)
+                                    if _siblings is not None:
+                                        output_parts.append(_siblings)
                                 output_parts.append(_mcp_text)
                             else:
                                 output_parts.append(json.dumps(j, default=str))

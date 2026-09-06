@@ -26,14 +26,19 @@ Each test here drives a REAL boundary end-to-end:
 
 import ast
 import json
+import sys
 import types
 
 import pytest
 from source_corpus import parsed_candidates, src_root
 
 from kiro_crew import session_directive as sd
+from kiro_crew.acp import _dispatch
 from kiro_crew.acp._dispatch import (
+    ELIDED_MARKER_VALUE,
+    UNSERIALISABLE_SIBLING_VALUE,
     _build_tool_result_event,
+    _elide_marker_value,
     _mcp_content_text,
     _repair_escaped_marker,
     parse_session_update,
@@ -791,3 +796,182 @@ class TestUnknownKindWithholdsThePayload:
         assert reason.startswith("unknown-kind"), reason
         assert CANARY not in reason, "the payload's kind reached the log"
         assert "len=" in reason and "sha=" in reason, reason
+
+
+def _nest(depth: int, leaf: object) -> dict[str, object]:
+    """A ``depth``-deep chain of single-key dicts ending in *leaf*."""
+    node: object = {"leaf": leaf}
+    for _ in range(depth):
+        node = {"n": node}
+    assert isinstance(node, dict)
+    return node
+
+
+def _leaf(node: object) -> object:
+    """Walk a :func:`_nest` chain iteratively -- a recursive reader has the bug."""
+    while isinstance(node, dict) and "n" in node:
+        node = node["n"]
+    return node["leaf"] if isinstance(node, dict) else node
+
+
+def _depth_of(node: object) -> int:
+    """Nesting depth of *node*, measured without recursing."""
+    deepest = 0
+    stack: list[tuple[object, int]] = [(node, 1)]
+    while stack:
+        current, level = stack.pop()
+        deepest = max(deepest, level)
+        if isinstance(current, dict):
+            stack.extend((v, level + 1) for v in current.values())
+        elif isinstance(current, list):
+            stack.extend((v, level + 1) for v in current)
+    return deepest
+
+
+def _encoder_refusing_past(limit: int):
+    """A ``json`` stand-in whose ``dumps`` raises like the C encoder does.
+
+    The real encoder recurses in C against the PROCESS stack, so the depth it
+    refuses at is a property of the platform's thread stack size rather than of
+    ``sys.recursionlimit``: a branch that encodes on Linux raises on Windows. A
+    test that reproduces the overflow by NESTING therefore passes for the wrong
+    reason on the machine most people run it on and reds only on the Windows
+    shard. Raising the encoder's error directly makes the degrade path
+    deterministic everywhere.
+
+    Returned as a whole module stand-in, patched over ``_dispatch.json``, so the
+    injected fault reaches only the module under test -- ``session_directive``
+    parses the marker with the real ``json`` on the same call.
+    """
+    real = json.dumps
+
+    def _dumps(obj, **kwargs):
+        if _depth_of(obj) > limit:
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(obj, **kwargs)
+
+    return types.SimpleNamespace(dumps=_dumps, loads=json.loads, JSONDecoder=json.JSONDecoder)
+
+
+class TestPathologicallyNestedEnvelopeDegrades:
+    """A frame too deep for the walk or the encoder must degrade, not kill the turn.
+
+    The nesting depth comes out of a TOOL's own output, so whatever produced the
+    frame chooses it. Two independent limits sit on the marker path, and both
+    raise ``RecursionError`` -- a ``RuntimeError``, so the module's
+    ``(ValueError, TypeError)`` handlers do not catch it and it escapes
+    ``parse_session_update`` and aborts the whole agent turn:
+
+    * the elision walk that copies the envelope's siblings, bounded by
+      ``sys.recursionlimit`` while it recurses;
+    * ``json.dumps`` of that copy, bounded by the process stack instead.
+
+    The directive is what must survive either one. Losing it silently unarms a
+    loop the model was told was armed; losing sibling detail costs transcript
+    content the user can see is missing.
+    """
+
+    def test_elision_walk_survives_depth_past_the_recursion_limit(self):
+        # The walk is pure Python, so sys.recursionlimit bounds it -- which makes
+        # this depth deterministic on every platform, unlike the encoder's.
+        marker = _monitor()
+        payload = {"out": marker, "sib": _nest(sys.getrecursionlimit() * 3, CANARY)}
+        copied = _elide_marker_value(payload, marker)
+        assert copied["out"] == ELIDED_MARKER_VALUE, "the marker value is elided"
+        assert _leaf(copied["sib"]) == CANARY, "the deep sibling branch is copied whole"
+        assert copied is not payload and copied["sib"] is not payload["sib"], "it is a copy"
+
+    def test_elision_walk_preserves_key_order(self):
+        # The iterative walk reserves each slot before pushing the child, so the
+        # copy dumps in the source's field order rather than the pop order.
+        marker = _monitor()
+        payload = {"z": 1, "out": marker, "a": [2, {"b": 3}]}
+        assert list(_elide_marker_value(payload, marker)) == ["z", "out", "a"]
+
+    def test_deep_envelope_yields_a_readable_directive(self):
+        # End to end, at a depth the recursive walk could not take. Only the
+        # directive is asserted: whether the REAL encoder also refuses this depth
+        # is platform-dependent, and the frame must stay readable either way.
+        out = _runtime_output(
+            _update(
+                rawOutput={
+                    "items": [
+                        {"Json": {"out": _monitor(), "sib": _nest(sys.getrecursionlimit() * 3, 1)}}
+                    ]
+                }
+            )
+        )
+        assert sd.peek(out) == ("monitor_start", MONITOR_ARGS), "the directive stays readable"
+
+    def test_encoder_refusal_keeps_the_directive(self, monkeypatch):
+        # The encoder error raised DIRECTLY -- see _encoder_refusing_past.
+        monkeypatch.setattr(_dispatch, "json", _encoder_refusing_past(0))
+        out = _runtime_output(
+            _update(rawOutput={"items": [{"Json": {"out": _monitor(), "sib": {"deep": 1}}}]})
+        )
+        assert sd.peek(out) == ("monitor_start", MONITOR_ARGS), "the directive still arms the loop"
+
+    def test_encoder_refusal_keeps_the_siblings_it_can_encode(self, monkeypatch):
+        # An all-or-nothing bail drops SHALLOW sibling output the encoder had no
+        # trouble with, so the degrade is per field.
+        monkeypatch.setattr(_dispatch, "json", _encoder_refusing_past(4))
+        out = _runtime_output(
+            _update(
+                rawOutput={
+                    "items": [
+                        {
+                            "Json": {
+                                "out": _monitor(),
+                                "stderr": CANARY,
+                                "exit_status": 7,
+                                "sib": _nest(40, 1),
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        assert sd.peek(out) == ("monitor_start", MONITOR_ARGS), "the directive survives"
+        assert CANARY in out and "exit_status" in out, "encodable siblings survive"
+        assert UNSERIALISABLE_SIBLING_VALUE in out, "the refused field is named, not dropped"
+
+    def test_repair_survives_a_scanner_refusal(self, monkeypatch):
+        # json.loads' C scanner raises RecursionError on text nested past its own
+        # limit, and RecursionError is a RuntimeError -- outside the ValueError
+        # family that handler names. Raised directly for the same reason the
+        # encoder's is: the depth it gives up at is a platform property.
+        frame = json.dumps({"out": _monitor(), "note": CANARY})
+
+        def _refuse(*_args, **_kwargs):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(
+            _dispatch,
+            "json",
+            types.SimpleNamespace(dumps=json.dumps, loads=_refuse, JSONDecoder=json.JSONDecoder),
+        )
+        repaired = _repair_escaped_marker(frame)
+        assert repaired is not None, "the escaped-line recovery still runs"
+        assert sd.peek(repaired) == ("monitor_start", MONITOR_ARGS)
+
+    def test_repair_encoder_refusal_returns_the_directive_alone(self, monkeypatch):
+        frame = json.dumps({"out": _monitor(), "note": CANARY})
+        monkeypatch.setattr(_dispatch, "json", _encoder_refusing_past(0))
+        repaired = _repair_escaped_marker(frame)
+        assert repaired is not None, "the directive is recovered even with no siblings"
+        assert sd.peek(repaired) == ("monitor_start", MONITOR_ARGS)
+
+    def test_parse_session_update_does_not_abort_the_turn(self, monkeypatch):
+        # The seam the RecursionError escaped through. Both limits at once.
+        monkeypatch.setattr(_dispatch, "json", _encoder_refusing_past(2))
+        events = parse_session_update(
+            _update(
+                rawOutput={
+                    "items": [
+                        {"Json": {"out": _monitor(), "sib": _nest(sys.getrecursionlimit() * 3, 1)}}
+                    ]
+                }
+            ),
+            cache_scope="scope",
+        )
+        assert [e for e in events if e.kind == EVENT_TOOL_RESULT], "the result event still arrives"

@@ -256,6 +256,20 @@ the original text instead of substituting something worse. A frame carrying two
 DIFFERENT markers is refused rather than resolved to the first, since applying
 the wrong directive is worse than applying none.
 
+**Nesting depth is chosen by the tool, so the recovery degrades rather than
+raises.** The envelope's non-marker fields are copied by an ITERATIVE walk
+(`_elide_marker_value`, an explicit heap stack) because a recursive one raises
+`RecursionError` — a `RuntimeError`, outside the `(ValueError, TypeError)`
+handlers on this path, so it escapes `parse_session_update` and aborts the whole
+turn. `json.dumps` of that copy is a second, independent ceiling: it recurses in C
+against the process stack, so the depth it refuses at is a platform property (a
+branch that encodes on Linux raises on Windows). When it refuses, the copy
+degrades PER FIELD — every top-level field that encodes is kept and only the
+offending ones become `UNSERIALISABLE_SIBLING_VALUE` — because the two losses are
+not symmetric: a dropped directive silently unarms a loop the model was told was
+armed, while dropped sibling detail costs transcript content the user can see is
+missing. The directive is emitted even when no sibling copy survives at all.
+
 **A provider must declare:** whether its tool-result text arrives verbatim or
 pre-serialised, and — if any builder it adds can emit an `EVENT_TOOL_RESULT` —
 that the builder runs the repair. This is the one bucket in this document with a
