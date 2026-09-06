@@ -55,7 +55,7 @@ interface AssistantProps {
 }
 let assistantProps: AssistantProps | null = null
 
-interface InputProps { value: string; onChange: (v: string) => void }
+interface InputProps { value: string; onChange: (v: string) => void; onScreenshot?: () => void }
 let inputProps: InputProps | null = null
 
 vi.mock('../pages/chat', async () => {
@@ -695,5 +695,33 @@ describe('ChatPage widget composer bridge', () => {
       window.dispatchEvent(new CustomEvent('mc-widget-send', { detail: {} }))
     })
     expect(inputProps!.value).toBe('')
+  })
+})
+
+// A failed screen capture used to be discarded by a bare `catch {}` commented
+// "user cancelled" -- but cancellation is NOT an error path: the route answers a
+// cancelled capture with 200 `{"path": ""}`, which the caller's `if (path)`
+// guard absorbs. So the only things that reached that catch were real failures
+// (the 400 off macOS, the 120s capture timeout, the request never reaching the
+// gateway), and the user saw nothing at all.
+describe('ChatPage screen capture failures', () => {
+  it('reports a failed capture instead of swallowing it', async () => {
+    apiSpy('screenshot').mockRejectedValue(new Error('screenshot timed out'))
+    await renderTurn()
+    await waitFor(() => expect(inputProps?.onScreenshot).toBeTypeOf('function'))
+    await act(async () => { inputProps!.onScreenshot!() })
+    // The notice names the action, not just the transport text: a bare
+    // "screenshot timed out" above the composer tells the user nothing about
+    // which click failed.
+    expect(await screen.findByText('Screenshot failed: screenshot timed out')).toBeInTheDocument()
+  })
+
+  it('stays silent when the user cancels, which is not a failure', async () => {
+    // The cancelled shape: HTTP 200, empty path. No notice, no attachment.
+    apiSpy('screenshot').mockResolvedValue({ path: '' })
+    await renderTurn()
+    await waitFor(() => expect(inputProps?.onScreenshot).toBeTypeOf('function'))
+    await act(async () => { inputProps!.onScreenshot!() })
+    expect(screen.queryByText(/unknown error/i)).not.toBeInTheDocument()
   })
 })

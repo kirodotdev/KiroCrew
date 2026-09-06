@@ -9918,6 +9918,7 @@
       "send_failed_with_error": "Не удалось отправить: {{error}}",
       "delivery_unconfirmed": "Доставка не подтверждена — ваш текст возвращён в поле ввода; проверьте переписку, прежде чем отправлять снова.",
       "could_not_read_file_reason": "Не удалось прочитать {{path}} ({{reason}})",
+      "screenshot_failed_reason": "Не удалось сделать снимок экрана: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Не удалось переименовать сессию",
       "could_not_generate_title": "Не удалось создать заголовок",

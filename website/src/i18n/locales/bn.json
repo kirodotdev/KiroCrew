@@ -9642,6 +9642,7 @@
       "send_failed_with_error": "পাঠানো যায়নি: {{error}}",
       "delivery_unconfirmed": "ডেলিভারি নিশ্চিত হয়নি — আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে; আবার পাঠানোর আগে কথোপকথনটি দেখে নিন।",
       "could_not_read_file_reason": "{{path}} পড়া যায়নি ({{reason}})",
+      "screenshot_failed_reason": "স্ক্রিনশট ব্যর্থ হয়েছে: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "সেশনের নাম পরিবর্তন করা যায়নি",
       "could_not_generate_title": "শিরোনাম তৈরি করা যায়নি",

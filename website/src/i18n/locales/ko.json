@@ -9504,6 +9504,7 @@
       "send_failed_with_error": "전송 실패: {{error}}",
       "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
       "could_not_read_file_reason": "{{path}}을(를) 읽을 수 없습니다 ({{reason}})",
+      "screenshot_failed_reason": "스크린샷 실패: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "세션 이름을 바꿀 수 없습니다",
       "could_not_generate_title": "제목을 생성할 수 없습니다",

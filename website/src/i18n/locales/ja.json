@@ -9504,6 +9504,7 @@
       "send_failed_with_error": "送信に失敗しました: {{error}}",
       "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
       "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
+      "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "セッション名を変更できませんでした",
       "could_not_generate_title": "タイトルを生成できませんでした",

@@ -3647,6 +3647,7 @@
       "send_failed_with_error": "Send failed: {{error}}",
       "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again.",
       "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",
+      "screenshot_failed_reason": "Screenshot failed: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Couldn't rename the session",
       "could_not_generate_title": "Couldn't generate a title",

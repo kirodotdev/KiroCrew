@@ -9780,6 +9780,7 @@
       "send_failed_with_error": "Falha ao enviar: {{error}}",
       "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
       "could_not_read_file_reason": "Não foi possível ler {{path}} ({{reason}})",
+      "screenshot_failed_reason": "Falha na captura de tela: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Não foi possível renomear a sessão",
       "could_not_generate_title": "Não foi possível gerar um título",

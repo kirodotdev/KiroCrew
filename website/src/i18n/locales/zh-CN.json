@@ -9504,6 +9504,7 @@
       "send_failed_with_error": "发送失败：{{error}}",
       "delivery_unconfirmed": "尚未确认送达——你的文字已放回输入框；再次发送前请先查看对话记录。",
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
+      "screenshot_failed_reason": "截图失败：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "无法重命名会话",
       "could_not_generate_title": "无法生成标题",

@@ -9780,6 +9780,7 @@
       "send_failed_with_error": "Invio non riuscito: {{error}}",
       "delivery_unconfirmed": "Consegna non confermata: il testo è tornato nel campo di scrittura; controlla la conversazione prima di inviarlo di nuovo.",
       "could_not_read_file_reason": "Impossibile leggere {{path}} ({{reason}})",
+      "screenshot_failed_reason": "Screenshot non riuscito: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Impossibile rinominare la sessione",
       "could_not_generate_title": "Impossibile generare un titolo",
