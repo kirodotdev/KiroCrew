@@ -281,6 +281,62 @@ def is_vouched(text: str) -> bool:
     return bool(_VOUCHED) and _VOUCHED[0] == content_free_digest(text)
 
 
+def _bounded_marker_payload(full: str, probe: int) -> str | None:
+    """The marker LINE starting at *probe* (sentinel included), or ``None`` when
+    the line is too long to be a marker.
+
+    The bound is :data:`MAX_TOOL_RESULT_CHARS`, and it is a semantic bar, not a
+    shortcut, for three independent reasons: :func:`encode` refuses any directive
+    over :data:`MAX_DIRECTIVE_CHARS` (far below it), a tail this long fails
+    :func:`preserve_tail_marker`'s own room check so it could never be
+    re-attached, and the transport cuts every frame to the same budget so no
+    consumer ever reads a marker line past it. A longer line is model-authored
+    bytes wearing the sentinel, and treating it as bytes is what keeps this walk
+    O(occurrences): the frame is unbounded, so per-occurrence work must not
+    scale with the frame.
+    """
+    limit = probe + MAX_TOOL_RESULT_CHARS
+    end = full.find("\n", probe, limit)
+    if end < 0:
+        if len(full) > limit:
+            return None
+        end = len(full)
+    return full[probe:end]
+
+
+def _reads_as_marker(line: str) -> bool:
+    """True iff *line* (sentinel-prefixed) parses as a genuine directive marker.
+
+    A SELECTOR test with NO identity check: it answers "is this occurrence a real
+    marker or model-authored bytes wearing the sentinel?", which is all the walk
+    in :func:`preserve_tail_marker` needs to skip an embedded look-alike and land
+    on the true tail. The JSON after the sentinel must be an object whose ``kind``
+    is a known directive tool -- the same shape :func:`decode` requires before it
+    will honour a marker, minus the trusted-identity match, because provenance is
+    established out of band (:func:`call_input_digest`) and never from this text.
+    """
+    idx = line.find(_SENTINEL)
+    if idx < 0:
+        return False
+    payload = line[idx + len(_SENTINEL) :].split("\n", 1)[0]
+    try:
+        block = json.loads(payload)
+    except (ValueError, TypeError, RecursionError):
+        # RecursionError (a RuntimeError, not caught by the value/type pair)
+        # is reachable: model-authored output can nest brackets thousands deep,
+        # and json.loads recurses per level. A frame that cannot be parsed is
+        # not a marker, whatever made it unparseable.
+        return False
+    if not isinstance(block, dict):
+        return False
+    kind = block.get("kind")
+    # ``kind`` must be a string before the membership test: it is read straight
+    # from model-authored bytes, and an unhashable value (``{"kind": []}``) would
+    # raise ``TypeError`` from ``in`` against the ``frozenset``. A non-string kind
+    # can match no directive tool anyway, so rejecting it here is also correct.
+    return isinstance(kind, str) and kind in DIRECTIVE_TOOLS
+
+
 def preserve_tail_marker(full: str, truncated: str) -> str:
     """Re-attach a tail-anchored marker that truncating *full* into *truncated* cut.
 
@@ -294,38 +350,48 @@ def preserve_tail_marker(full: str, truncated: str) -> str:
     same reason: a control token that decides how a frame is interpreted must not
     be a casualty of a length cut applied to the frame's prose.
 
-    The marker is located by walking sentinel occurrences from the RIGHT and
-    accepting the first whose tail actually reads (:func:`peek` for the directive
-    sentinel; exact tail anchoring for the refusal tag, which :func:`tag_refusal`
-    appends as the final line). ``rfind`` alone picked the last occurrence of the
-    sentinel *substring* -- and the payload is model-authored, JSON string
-    escaping leaves ``[`` alone, so a directive whose own arguments carry the
-    sentinel bytes embeds a later occurrence inside the payload. Preserving from
-    there re-attached a tail that began mid-payload, unreadable to every
-    consumer: the helper built to save the marker was what corrupted it (#8962).
-    Occurrences reading as genuinely DIFFERENT markers are refused outright --
-    the ambiguity bar ``_repair_escaped_marker`` already holds, kept here so a
-    length cut cannot launder a two-marker frame into a clean one. When nothing
+    The marker is located by scanning sentinel occurrences left to right and
+    keeping the RIGHTMOST whose own line actually reads (:func:`_reads_as_marker`
+    for the directive sentinel; exact tail anchoring for the refusal tag, which
+    :func:`tag_refusal` appends as the final line). A plain rightmost-substring
+    search is not enough: the payload is model-authored, JSON string escaping
+    leaves ``[`` alone, so a directive whose own arguments carry the sentinel
+    bytes embeds a later occurrence inside the payload, and re-attaching from
+    there yields a tail that begins mid-payload and reads to no consumer. Each
+    occurrence is judged on a BOUNDED line (:func:`_bounded_marker_payload`),
+    never on a suffix of the frame: ``full`` is unbounded, so per-occurrence
+    suffix slices are O(N*L) -- an event-loop stall reachable by one command
+    that repeats the sentinel bytes.
+    Occurrences reading as genuinely DIFFERENT markers are refused outright, so
+    a length cut cannot launder a two-marker frame into a clean single-marker
+    one. The refusal is fail-safe: :func:`encode` cannot produce two different
+    readable markers, so a frame carrying them was not built here, and surfacing
+    it as the lost-marker case is safer than picking one. When nothing
     reads, nothing is re-attached: a garbage tail protects no consumer and costs
     the prose the cut had kept.
     """
     for sentinel in (_SENTINEL, _REFUSAL_SENTINEL):
         if sentinel is _SENTINEL:
-            idx, lines = -1, set()
-            probe = full.rfind(sentinel)
+            idx, kept_line = -1, None
+            probe = full.find(sentinel)
             while probe >= 0:
-                tail = full[probe:]
-                if peek(tail) is not None:
-                    if idx < 0:
-                        idx = probe
-                    lines.add(tail.split("\n", 1)[0])
-                probe = full.rfind(sentinel, 0, probe)
-            if len(lines) > 1:
-                return truncated
+                line = _bounded_marker_payload(full, probe)
+                if line is not None and _reads_as_marker(line):
+                    if kept_line is not None and line != kept_line:
+                        # Two genuinely different readable markers: refuse the
+                        # whole frame rather than pick one. Return on the first
+                        # divergence so the retained state is one bounded line,
+                        # never a set that grows with the occurrence count.
+                        return truncated
+                    idx = probe
+                    kept_line = line
+                probe = full.find(sentinel, probe + 1)
         else:
-            # The genuine refusal tag is tail-anchored by construction; an
-            # embedded occurrence mid-prose is bytes, not a tag.
-            idx = len(full) - len(sentinel) if full.endswith(sentinel) else -1
+            # The refusal tag carries no payload and grants nothing, so it needs
+            # no exactness bar: take the rightmost occurrence, which also re-attaches
+            # a tag embedded in a backend-serialised envelope (the mid-string shape
+            # strip_marker handles) rather than only a strictly tail-anchored one.
+            idx = full.rfind(sentinel)
         if idx < 0:
             continue
         tail = full[idx:]
