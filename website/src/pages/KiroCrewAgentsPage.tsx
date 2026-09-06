@@ -19,7 +19,9 @@ import InfoTip from '../components/InfoTip'
 import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
 import CrewAvatar, { ghostTraitsFrom, imageAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
+import CrewStateAvatar from '../components/CrewStateAvatar'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
+import { expressionsFrom, soundsFrom } from '../lib/crewAvatarState'
 import CrewWakeSection from '../components/CrewWakeSection'
 import CrewWebhookSection from '../components/CrewWebhookSection'
 import CrewEditorRail from '../components/crew/CrewEditorRail'
@@ -851,12 +853,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // override" everywhere).
     const storedTraits = ghostTraitsFrom(a.avatar)
     const storedImage = imageAvatarFrom(a.avatar)
+    // The reaction layer rides on both tiers, and on neither: a record that
+    // pins no face and no picture but carries expressions or sounds is still
+    // an override ("the name-derived face, plus these reactions").
+    const storedExpressions = expressionsFrom(a.avatar)
+    const storedSounds = soundsFrom(a.avatar)
+    const reactions = {
+      ...(storedExpressions ? { expressions: storedExpressions } : {}),
+      ...(storedSounds ? { sounds: storedSounds } : {}),
+    }
     setEditAvatar(
       storedTraits
-        ? { kind: 'ghost', traits: storedTraits }
+        ? { kind: 'ghost', traits: storedTraits, ...reactions }
         : storedImage
-          ? { kind: 'image', v: storedImage.v }
-          : null,
+          ? { kind: 'image', v: storedImage.v, ...reactions }
+          : Object.keys(reactions).length
+            ? { kind: 'ghost', ...reactions }
+            : null,
     )
     setAvatarBuilderOpen(false)
     setSheet({ mode: 'edit', name: a.name })
@@ -1019,9 +1032,16 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       // committed by this one, and a plain {kind:'image'} keeps the current
       // picture while the server discards any stale staging. The server
       // stamps the cache-buster `v` at the commit.
+      // Rebuilt rather than spread from the draft (the staging token and
+      // `promote` are wire-only), so the reaction layer must be carried over
+      // by hand — without this, saving a picture silently drops it.
+      const reactions = {
+        ...(editAvatar.expressions ? { expressions: editAvatar.expressions } : {}),
+        ...(editAvatar.sounds ? { sounds: editAvatar.sounds } : {}),
+      }
       avatarPayload = stagedToken
-        ? { kind: 'image', promote: true, token: stagedToken }
-        : { kind: 'image' }
+        ? { kind: 'image', promote: true, token: stagedToken, ...reactions }
+        : { kind: 'image', ...reactions }
     }
     // A discard question raised WHILE this save was staging owns the outcome,
     // so wait for the answer instead of racing it: a PUT fired mid-question
@@ -1203,6 +1223,17 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
           : null
     if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
+    // Compared separately from the face, and BOTH sides go through the same
+    // coercion — which is what makes the comparison sound rather than merely
+    // convenient. `JSON.stringify` is order-sensitive: the draft's map is in
+    // the order the user touched the states (and, inside one state, the order
+    // they picked eyes vs mouth), while the coercion always emits
+    // working/done/error with eyes before mouth. Comparing the raw draft
+    // against a coerced record would report two identical sets of overrides as
+    // a change, and the rail would show an unsaved dot on a freshly saved crew.
+    const savedReactions = [expressionsFrom(editingAgent.avatar), soundsFrom(editingAgent.avatar)]
+    const draftReactions = [expressionsFrom(editAvatar), soundsFrom(editAvatar)]
+    if (JSON.stringify(draftReactions) !== JSON.stringify(savedReactions)) out.add('routing')
     // An open inline schedule-create form is pending work too: it gets the
     // rail's unsaved dot and the note, so closing the editor cannot silently
     // eat a half-typed schedule the way an untracked surface would.
@@ -1613,7 +1644,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 title={i18nT('components.avatarBuilder.title')}
                 data-testid="header-avatar-button"
               >
-                <CrewAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={() => setError(i18nT('components.avatarBuilder.image_load_failed'))} />
+                <CrewStateAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={() => setError(i18nT('components.avatarBuilder.image_load_failed'))} />
               </button>
             )}
             <DialogTitle className="font-mono">

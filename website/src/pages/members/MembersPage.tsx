@@ -40,6 +40,7 @@ import { fmtDateTimeNumeric } from '../../i18n/format'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { markSlotRead } from '../../store/dashboardSlice'
 import CrewAvatar from '../../components/CrewAvatar'
+import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
 import DetailPanel from '../../components/DetailPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -608,11 +609,17 @@ export default function MembersPage() {
                 aria-current={m.name === activeName ? 'true' : undefined}
               >
                 <span className="relative shrink-0">
-                  <CrewAvatar
+                  {/* The face reacts: it animates while the member works and
+                      flashes its finished / failed expression on the turn's
+                      trailing edge. The dot below stays presence-only — a
+                      finished turn is not presence. */}
+                  <CrewStateAvatar
                     seed={m.name}
                     avatar={m.avatar}
+                    slotKey={slots[m.name] || m.slot_key}
+                    running={!!isRunning(m)}
                     size={36}
-                    working={isRunning(m) ? 'subtle' : undefined}
+                    working="subtle"
                   />
                   {/* Presence dot renders only while the member is working —
                       an idle member shows nothing rather than a gray dot,
@@ -746,11 +753,13 @@ export default function MembersPage() {
               >
                 <ArrowLeft size={16} className="lucide-inline" />
               </button>
-              <CrewAvatar
+              <CrewStateAvatar
                 seed={active.name}
                 avatar={active.avatar}
+                slotKey={activeSlot || active.slot_key}
+                running={!!isRunning(active)}
                 size={30}
-                working={isRunning(active) ? 'full' : undefined}
+                working="full"
               />
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-semibold truncate">{active.name}</div>

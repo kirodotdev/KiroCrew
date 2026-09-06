@@ -139,6 +139,7 @@
     "components.avatarBuilder.opt_cat": "Thumbnail label in the crew avatar builder's mouth tab: a cat-like ':3' mouth shape. The animal, describing the mouth's look.",
     "components.avatarBuilder.opt_mug": "Thumbnail label in the crew avatar builder's prop tab: a steaming coffee mug the ghost holds. The drinking vessel, not the verb or the face.",
     "components.avatarBuilder.opt_oh": "Thumbnail label in the crew avatar builder's mouth tab: a small round open mouth, as in saying \"oh\". An interjection; transliterate rather than translate if no equivalent.",
+    "components.avatarBuilder.sound_pop": "Name of one notification-sound preset in the crew avatar builder's Expressions tab, alongside Chime, Ding, Blip and Pulse. The short percussive sound a cork or a bubble makes; not the music genre and not the verb.",
     "components.avatarBuilder.tile_amber": "Accessible color name for an avatar background swatch: the warm yellow-orange color, not the fossil resin.",
     "components.avatarBuilder.tile_coral": "Accessible color name for an avatar background swatch: the pink-orange color, not the sea animal.",
     "components.avatarBuilder.tile_olive": "Accessible color name for an avatar background swatch: the dull yellow-green color, not the fruit.",
