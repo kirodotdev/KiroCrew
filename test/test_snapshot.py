@@ -2360,6 +2360,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         pool = dashboard_state._notification_io_executor()
         note = {"ts": "2026-09-05T00:00:00Z", "msg": "LIVE-NOTE", "kind": "agent"}
         ran_during_copy = threading.Event()
+        ran_while_worker_held: list[bool] = []
         submitted: list[object] = []
         dst = str(home / "notifications.jsonl")
         real_open = os.open
@@ -2382,15 +2383,23 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
             if flags & os.O_CREAT and os.fspath(path) == dst and not submitted:
                 submitted.append(pool.submit(append_note))
                 # A FREE worker runs this in microseconds; a worker the copy is running
-                # on cannot run it at all until the copy returns.
-                ran_during_copy.wait(timeout=1.0)
+                # on cannot run it at all until the copy returns. RECORDED HERE rather
+                # than read back after the merge: the instant the copy returns, the
+                # worker is released and runs the queued append -- which is CORRECT and
+                # sets the event. `is_set()` after `_merge` therefore measured whether
+                # the main thread reached the assertion before that legitimate run, a
+                # footrace it loses on a loaded shard (issue #8893, second cause: #8992
+                # scoped the trigger but left this observation point). The wait's own
+                # return value is taken while the copy still holds the worker, which is
+                # the only window in which the defect -- and nothing else -- can set it.
+                ran_while_worker_held.append(ran_during_copy.wait(timeout=1.0))
             return fd
 
         monkeypatch.setattr(os, "open", opening)
         self._merge(snap, home)
 
         assert submitted, "the note was never queued, so this test proved nothing"
-        assert not ran_during_copy.is_set(), (
+        assert ran_while_worker_held == [False], (
             "the append ran while the copy was still writing, so the two are concurrent "
             "rather than ordered"
         )
@@ -2469,6 +2478,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         monkeypatch.setattr(dashboard_state, "_notification_io_pool", None)
         note = {"ts": "2026-09-05T00:00:00Z", "msg": "LIVE-NOTE", "kind": "agent"}
         ran_during_copy = threading.Event()
+        ran_while_worker_held: list[bool] = []
         fired: list[int] = []
         dst = str(home / "notifications.jsonl")
         real_open = os.open
@@ -2491,14 +2501,19 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
                 # The delivery sink's own route on a fresh gateway: it ACQUIRES the
                 # executor, creating it if the copy did not.
                 dashboard_state._notification_io_executor().submit(append_note)
-                ran_during_copy.wait(timeout=1.0)
+                # Measured INSIDE the trigger, for the reason the READER test above
+                # records: after the copy returns, the released worker runs the queued
+                # append legitimately and sets the event, so a post-merge `is_set()`
+                # read is a footrace against correct behaviour rather than a
+                # measurement of the ordering.
+                ran_while_worker_held.append(ran_during_copy.wait(timeout=1.0))
             return fd
 
         monkeypatch.setattr(os, "open", opening)
         self._merge(snap, home)
 
         assert fired, "the delivery was never queued, so this test proved nothing"
-        assert not ran_during_copy.is_set(), (
+        assert ran_while_worker_held == [False], (
             "a delivery on a fresh gateway ran concurrently with the copy: 'no pool' "
             "was read as 'no writer'"
         )
