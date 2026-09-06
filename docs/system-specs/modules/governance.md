@@ -2549,6 +2549,35 @@ during connection setup registers as a change. The client invalidates its cached
 counter restarts with the process) — so a withdrawn entry disappears within one
 status tick rather than waiting out the cache's stale window.
 
+**And follows a profile-layer edit.** The value in that frame is
+`governance_profiles.governance_answer_generation()`, which is
+`context.governance_generation()` plus a module-private `_profile_generation()`
+bumped whenever `ProfileStore._ensure_fresh` publishes a new snapshot. The field's
+contract is unchanged — it stays an opaque, comparison-only integer, so combining two
+monotonic counters is not a change of meaning and no consumer needs to know. This
+exists because the ceiling counter alone missed Level-2 edits: a profile file
+tightening a capability is enforced on the very next decision (the authorization
+path calls `_ensure_fresh`), while the dashboard's cached answer kept the withdrawn
+entry until its 30-second stale window, focus, or an unrelated slot mutation.
+
+Detecting the edit needs the profiles directory re-stat'd, and on an idle dashboard
+nothing else would touch the store, so the watcher has to be what looks. That walk
+lives in a separate `poll_profiles_fresh()`, which the watcher offloads with
+`asyncio.to_thread`: `_dir_fingerprint` is an `iterdir` plus a `stat` per file, and
+AUTOSDE's `no-blocking-call-on-event-loop` names filesystem walks as the prohibited
+class, so a slow or large profile store must delay one socket's tick rather than
+stall chat turns and heartbeats for every session. `governance_answer_generation()`
+itself is two locked integer reads with no filesystem access, which is why the
+synchronous slots broadcast may call it inline. Measured walk cost on one host: 57us
+at 5 profile files, 107us at 15, 303us at 50, 1.12ms at 200 — small at a realistic
+count and unbounded in principle, hence offloaded rather than defended by the number.
+
+`_profile_generation()` is an OUTPUT of the profile store and must never become an
+input to it. Folding it into `_ceiling_token()` — the obvious-looking symmetry with
+the ceiling half described below — would make the store reload on every access
+forever, because `_ensure_fresh` computes its fingerprint *before* reloading and so
+would commit a pre-bump value that the next read can never match.
+
 The Security panel picks the row up automatically (`api_governance_policy` iterates
 `SCOPE_CATALOG`; its label is the humanised leaf, "Social share").
 

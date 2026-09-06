@@ -537,7 +537,10 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         schedule_check_refresh,
         schedule_visibility_refresh,
     )
-    from kiro_crew.platform.context import governance_generation
+    from kiro_crew.platform.governance_profiles import (
+        governance_answer_generation,
+        poll_profiles_fresh,
+    )
 
     owner_request = is_owner_dashboard_request(request)
     ws = web.WebSocketResponse(heartbeat=30)
@@ -608,12 +611,19 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
-    # Read the ceiling generation ONCE here and seed both the initial frame and
-    # the refresh loop's baseline from it. Two independent reads would leave a
+    # Read the governance-answer generation ONCE here and seed both the initial frame
+    # and the refresh loop's baseline from it. Two independent reads would leave a
     # gap: a ceiling swapped between them is already the loop's baseline, so the
     # loop never pushes, while the client still holds the number the frame sent —
     # the change would be missed until an unrelated slot mutation.
-    initial_ceiling_generation = governance_generation()
+    #
+    # This token covers the PROFILE layer as well as the ceiling (#8623). Watching
+    # the ceiling counter alone meant an operator tightening a capability in a local
+    # profile file was enforced on the next decision but never invalidated the
+    # dashboard's cached answer, so the UI kept offering a withdrawn entry until the
+    # 30s staleness window. The local is named for the answer, not the ceiling,
+    # because it is no longer ceiling-only.
+    initial_answer_generation = governance_answer_generation()
     try:
         is_dashboard_user = ws.get("_is_dashboard_user", False)
         all_slots = state.serialize_slots(
@@ -670,7 +680,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                 # Seed the client's generation baseline so a later change is
                 # detectable as a change rather than as a first sighting.
                 "gitlabHostsGeneration": gitlab_hosts_generation(),
-                "governanceGeneration": initial_ceiling_generation,
+                "governanceGeneration": initial_answer_generation,
             }
         )
         if owner_request or is_dashboard_user:
@@ -709,7 +719,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         # Seeded from the value the initial slots frame carried, not a fresh read:
         # the client's baseline IS that value, so a swap since then must register
         # here as a change or the two sides disagree with no push to reconcile.
-        ceiling_generation = initial_ceiling_generation
+        answer_generation = initial_answer_generation
         try:
             while not ws.closed and not shutdown_event.is_set():
                 # Gateway-wide cache: one store touch per TTL across ALL
@@ -755,8 +765,18 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                 # connection may do, and spends no credentials.
                 if ws.get("_is_dashboard_user", False):
                     try:
-                        if governance_generation() != ceiling_generation:
-                            ceiling_generation = governance_generation()
+                        # The profile half of this token needs the profiles directory
+                        # re-stat'd, and ``_dir_fingerprint`` is an ``iterdir`` plus a
+                        # ``stat`` per file — a synchronous filesystem walk, which is
+                        # what AUTOSDE's ``no-blocking-call-on-event-loop`` prohibits
+                        # here. Offloaded, so a slow or large profile store delays
+                        # this socket's own tick instead of stalling chat turns and
+                        # heartbeats for every session on the loop. The token read
+                        # itself is two locked integer reads and stays inline.
+                        await asyncio.to_thread(poll_profiles_fresh)
+                        current = governance_answer_generation()
+                        if current != answer_generation:
+                            answer_generation = current
                             state.push_slots_update()
                     except Exception:
                         logger.warning("governance watch tick failed; continuing", exc_info=True)

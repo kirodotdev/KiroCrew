@@ -7800,7 +7800,9 @@ class DashboardState:
         from kiro_crew.dashboard.handlers.source_providers import (
             gitlab_hosts_generation,
         )
-        from kiro_crew.platform.context import governance_generation
+        from kiro_crew.platform.governance_profiles import (
+            governance_answer_generation,
+        )
 
         yolo_active = self.is_yolo_active()  # expire first if needed
         # PUBLIC-repo chip status rides the general frame so any authenticated
@@ -7833,6 +7835,16 @@ class DashboardState:
             raise
         mgr = getattr(self, "channel_manager", None)
         ch_trusted = bool(mgr and any(ch.trusted for ch in mgr._channels.values()))
+        # ONE read, shared by the generic and owner frames below. Two independent
+        # reads could straddle a ceiling install or a profile reload and ship two
+        # different tokens for one broadcast, which would make one of the two
+        # audiences invalidate while the other did not.
+        # test_public_repo_status_rides_general_frame_owner_gets_full asserts the two
+        # frames' governanceGeneration values are equal, so a torn read reddens it.
+        # Filesystem-free by contract: governance_answer_generation is two locked
+        # integer reads. The profiles directory re-stat lives in poll_profiles_fresh,
+        # which only the async watcher calls, and only off the event loop.
+        answer_generation = governance_answer_generation()
         # Piggyback the allowlist generation so clients invalidate the cached
         # ['dashboardConfig'] query only when the GitLab-hosts allowlist actually
         # changed -- an event-driven refresh that replaces a constant 30s poll
@@ -7878,7 +7890,7 @@ class DashboardState:
                 # blinked": this frame fires on routine slot activity, so the
                 # tree alone is not a change signal.
                 "foldersGeneration": self.folders_generation(),
-                "governanceGeneration": governance_generation(),
+                "governanceGeneration": answer_generation,
             }
         )
         # The owner frame is the owner's ONLY slots frame — `_send_ws_all` skips
@@ -7900,7 +7912,7 @@ class DashboardState:
                     gitlab_hosts_gen=gitlab_hosts_generation(),
                     folders=_safe_folder_tree(getattr(self, "_folders", None)),
                     folders_gen=self.folders_generation(),
-                    governance_gen=governance_generation(),
+                    governance_gen=answer_generation,
                 )
             )
 
