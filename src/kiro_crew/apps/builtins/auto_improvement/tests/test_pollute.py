@@ -19,7 +19,34 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.auto_improvement.spine import pollute
+from kiro_crew.platform_compat import unlink_link_or_junction
+
+
+def _make_dir_link(link: Path, target: Path) -> None:
+    """Create a reparse point at *link* resolving to the directory *target*.
+
+    A local mirror of ``test/conftest.py::make_dir_link``, which these in-package
+    tests cannot import: only the ``test/`` testpath gets that conftest.
+
+    ``platform_compat.symlink_or_junction`` is deliberately NOT used here. It
+    tries ``os.symlink`` FIRST and falls back to a junction only where the
+    privilege is missing, so a runner with Developer Mode or an elevated shell
+    gets a SYMLINK and the junction arm these tests exist for is never exercised
+    -- silently, while still reporting green. ``CreateJunction`` is what that
+    helper falls back to, taken directly so the link type is not left to the host.
+    """
+    if platform_compat.IS_WINDOWS:
+        # Function-local because the module does not exist off Windows, so a
+        # top-level import would break collection on POSIX. Both in-repo callers
+        # of CreateJunction do the same -- test/conftest.py::make_dir_link and
+        # platform_compat.symlink_or_junction.
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))  # type: ignore[attr-defined]
+        return
+    link.symlink_to(target, target_is_directory=True)
 
 
 def _symlinks_supported(tmp: Path) -> bool:
@@ -305,3 +332,71 @@ class TestTheGateFailsLoudlyRatherThanSilently:
         result = pollute.run_do_not_pollute(paths=[], boot=lambda: None)
         assert result.zero_diff is True
         assert result.snapshotted == 0
+
+
+class TestALinkDoesNotWidenTheSnapshot:
+    """A link inside a watched tree is recorded BY TARGET and never followed, so the
+    snapshot cannot escape its own root -- and a flipped link is still a write.
+
+    Both directions were broken for a junction: the walk descended through it (a write
+    outside the root read as a leak) AND it was hashed as a plain directory (re-pointing
+    it read as no change at all).
+
+    Staged with ``_make_dir_link`` -- a plain symlink on POSIX, a real directory
+    JUNCTION on Windows -- so these run on every platform and the junction arm is
+    the one actually exercised there. The symlink tests above are gated on
+    ``_symlinks_supported`` and SKIP on an ordinary Windows host, which is exactly
+    where the junction case lives.
+    """
+
+    def test_the_staged_plant_is_really_a_junction_on_windows(self, tmp_path: Path) -> None:
+        """Guards the guard: if the plant were something ``Path.is_symlink()`` already
+        catches on this host, the two tests below would stop exercising the junction arm
+        and quietly cease to be evidence."""
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        _make_dir_link(link, target)
+        assert platform_compat.is_link_or_junction(link)
+        if os.name == "nt":
+            assert not link.is_symlink(), "expected a junction -- the arm under test"
+
+    def test_a_write_under_a_linked_child_is_not_a_leak(self, tmp_path: Path) -> None:
+        """The defect. ``rglob`` deliberately does not recurse into a symlink, but it
+        DOES descend through a junction -- so on Windows the walk pulled the link
+        target's whole tree into the hash. An unrelated write out there, by anything on
+        the machine, then read as a leak by the measured runtime and blocked the run."""
+        home = tmp_path / "home"
+        watched = _seed(home)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "unrelated.txt").write_text("before", encoding="utf-8")
+        _make_dir_link(watched / "link", outside)
+
+        def write_outside_the_watched_root() -> None:
+            # Not under `watched`. Only reachable from it by following the link.
+            (outside / "unrelated.txt").write_text("after", encoding="utf-8")
+
+        result = pollute.run_do_not_pollute(paths=[watched], boot=write_outside_the_watched_root)
+        assert result.blocked is False, "a write outside the watched root is not a leak"
+
+    def test_a_repointed_link_still_blocks(self, tmp_path: Path) -> None:
+        """The same defect in the opposite direction. A junction was hashed as a plain
+        directory (a ``D`` marker plus its relative name), so re-pointing one to another empty
+        directory produced an IDENTICAL hash and the flip was invisible -- a real host
+        write the gate was built to catch, passing as hermetic. Recording it by target
+        restores the symlink behaviour the docstring already promised."""
+        home = tmp_path / "home"
+        watched = _seed(home)
+        one = tmp_path / "one"
+        one.mkdir()
+        two = tmp_path / "two"
+        two.mkdir()
+        link = watched / "link"
+        _make_dir_link(link, one)
+
+        def repoint() -> None:
+            unlink_link_or_junction(link)
+            _make_dir_link(link, two)
+
+        assert pollute.run_do_not_pollute(paths=[watched], boot=repoint).blocked is True

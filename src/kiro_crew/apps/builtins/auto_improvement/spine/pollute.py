@@ -42,6 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from kiro_crew.platform_compat import is_link_or_junction
+
 # A boot callable: boots the measurement runtime once and tears it down. It returns
 # nothing the spine inspects — the WHOLE point is that the spine measures the host-state
 # delta the boot leaves behind, not anything the boot reports. Target-supplied (opaque).
@@ -75,8 +77,15 @@ def _hash_path(path: Path, exclude: frozenset[str] = frozenset()) -> str:
 
     For a directory we hash the sorted (relpath, size, mtime_ns, content-hash) of every
     file beneath it — so a new/removed/edited file anywhere in the tree changes the hash.
-    For a file we hash its bytes. Symlinks are recorded by their target string (a flipped
-    symlink is a change) without following them (avoids escaping the snapshot scope).
+    For a file we hash its bytes. Links are recorded by their target string (a flipped
+    link is a change) without following them (avoids escaping the snapshot scope).
+
+    "Link" is :func:`platform_compat.is_link_or_junction`, not ``Path.is_symlink``. A
+    Windows directory JUNCTION answers ``False`` to ``is_symlink`` and — unlike a
+    symlink, which ``rglob`` deliberately does not recurse into — is DESCENDED THROUGH
+    by the walk. Naming only symlinks therefore let the hash absorb the link target's
+    whole tree: the snapshot escaped its own root, and any unrelated change under that
+    target read as a leak by the measured runtime.
 
     ``exclude`` is an opaque set of absolute subpaths to SKIP during a directory walk.
     Its sole purpose is to ignore writes the ORCHESTRATOR itself makes inside a snapshot
@@ -90,11 +99,11 @@ def _hash_path(path: Path, exclude: frozenset[str] = frozenset()) -> str:
         # The whole path is excluded — hash to a constant so its before/after are equal
         # regardless of what the orchestrator writes inside it.
         return "\0excluded\0"
-    if not path.exists() and not path.is_symlink():
+    if not path.exists() and not is_link_or_junction(path):
         return "\0missing\0"
     h = hashlib.sha256()
-    if path.is_symlink():
-        # Record the link target, not the resolved tree (a re-pointed symlink is a write).
+    if is_link_or_junction(path):
+        # Record the link target, not the resolved tree (a re-pointed link is a write).
         h.update(b"symlink\0")
         h.update(str(Path(path).readlink()).encode("utf-8", "surrogatepass"))
         return h.hexdigest()
@@ -105,12 +114,20 @@ def _hash_path(path: Path, exclude: frozenset[str] = frozenset()) -> str:
     if path.is_dir():
         h.update(b"dir\0")
         # Walk deterministically (sorted) so the hash is stable across runs.
+        link_roots: list[Path] = []
         for child in sorted(path.rglob("*"), key=lambda p: str(p)):
+            if any(root in child.parents for root in link_roots):
+                # Inside a link already recorded by target. rglob does not recurse into
+                # a POSIX symlink, but it DOES descend through a Windows junction, so
+                # without this the walk hashes the target tree and the snapshot escapes
+                # its own root.
+                continue
             if _is_excluded(child, exclude):
                 continue  # orchestrator-owned subtree — not the measured runtime's write
             rel = child.relative_to(path)
             try:
-                if child.is_symlink():
+                if is_link_or_junction(child):
+                    link_roots.append(child)
                     h.update(b"L\0")
                     h.update(str(rel).encode("utf-8", "surrogatepass"))
                     h.update(str(Path(child).readlink()).encode("utf-8", "surrogatepass"))
