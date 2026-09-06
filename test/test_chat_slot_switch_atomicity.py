@@ -1865,6 +1865,52 @@ class TestAliasSlotSwitchSerialization:
             assert slot.model == _MODEL_B
 
     @pytest.mark.asyncio
+    async def test_a_rebind_while_queued_locks_the_new_session(self):
+        # The window GPT 5.6 found on the first revision, closed structurally.
+        # A rebind can land while a request queues on slot._lock, which is why
+        # every handler resolves the key INSIDE that lock (pinned by
+        # test_binding_that_lands_while_queued_on_the_lock_is_the_one_switched).
+        # Had the session lock been keyed on any EARLIER read, the handler would
+        # hold the lock for the OLD session while probing and resetting the new
+        # one -- so an alias switching the new session would not be serialized
+        # against it, and the post-await re-checks could not see it because they
+        # compare against session_key, which is already the new key.
+        # Entering the session lock AFTER the in-lock read makes the lock key
+        # and the acted-on key the same value. This pins that: hold the NEW
+        # session's lock, and the handler must wait for it.
+        s2 = "slack:8442.999"
+        s2_lock = _slot_switch_session_lock(s2)
+        slot = _ChatSlot("alias-a")
+        slot.model = _MODEL_A
+        slot.linked_session_key = _LINKED_KEY
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await s2_lock.acquire()
+            try:
+                async with slot._lock:
+                    task = asyncio.create_task(
+                        client.post("/api/chat/slots/alias-a/model", json={"model": _MODEL_B})
+                    )
+                    await asyncio.sleep(0.05)
+                    # Rebind while it is queued on slot._lock.
+                    slot.linked_session_key = s2
+                # slot._lock is free now, so the handler resolves s2 and must
+                # queue on L(s2) -- which this test holds. Keyed on the stale
+                # pre-lock read it would instead sail through holding L(S1).
+                await asyncio.sleep(0.05)
+                assert not task.done()
+                assert slot.model == _MODEL_A
+                state.sessions.reset.assert_not_awaited()
+            finally:
+                s2_lock.release()
+            resp = await task
+            assert resp.status == 200
+            # The binding that landed is still the one switched.
+            assert slot.model == _MODEL_B
+            assert state.sessions.reset.await_args.args[0] == s2
+
+    @pytest.mark.asyncio
     async def test_a_different_sessions_switch_is_not_blocked(self):
         # The complement, and the reason this is a session-keyed lock rather
         # than one global switch lock: a global lock would also stop the
