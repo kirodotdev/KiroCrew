@@ -106,7 +106,9 @@ class TestCronService:
         svc = CronService(base_dir=tmp_path)
         svc._load()
         job = svc.add_job(
-            name="shipped-disabled", message="", cron_expr="0 22 * * *",
+            name="shipped-disabled",
+            message="",
+            cron_expr="0 22 * * *",
             enabled=False,
         )
         assert job.enabled is False
@@ -118,7 +120,9 @@ class TestCronService:
         assert loaded and loaded[0].enabled is False
 
     def test_add_job_enabled_false_never_persisted_enabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The paused state is part of the FIRST persist — no save may ever
         capture the disabled-by-manifest job in an enabled state (a crash or a
@@ -137,13 +141,15 @@ class TestCronService:
 
         monkeypatch.setattr(svc, "_save", spy_save)
         svc.add_job(
-            name="shipped-disabled", message="", cron_expr="0 22 * * *",
+            name="shipped-disabled",
+            message="",
+            cron_expr="0 22 * * *",
             enabled=False,
         )
         assert snapshots, "add_job must persist the new job"
-        assert all(s == (False, True) for s in snapshots), (
-            f"a save captured the job enabled: {snapshots}"
-        )
+        assert all(
+            s == (False, True) for s in snapshots
+        ), f"a save captured the job enabled: {snapshots}"
 
     def test_add_job_invalid_cron_expr(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
@@ -599,13 +605,15 @@ class TestLastResultTimestamp:
         the row content the dedup compares, so anything coarser merges two runs
         that finished within the same interval.
         """
-        job = CronJob(id="tz1", name="tz", message="go", schedule=CronSchedule(kind="every", every_secs=300))
+        job = CronJob(
+            id="tz1", name="tz", message="go", schedule=CronSchedule(kind="every", every_secs=300)
+        )
         job.timezone = "UTC"
         job.set_run_result("output")
         assert job.last_result_stamp.startswith(" | ")
         # ' | YYYY-MM-DD HH:MM:SS UTC'
         assert job.last_result_stamp.endswith("UTC")
-        stamped = job.last_result_stamp[len(" | "): -len(" UTC")]
+        stamped = job.last_result_stamp[len(" | ") : -len(" UTC")]
         datetime.strptime(stamped, "%Y-%m-%d %H:%M:%S")
 
     def test_an_unknown_timezone_still_renders_via_the_utc_fallback(self) -> None:
@@ -616,7 +624,9 @@ class TestLastResultTimestamp:
         rows dedup against: a run must not lose its stamp over a config typo.
         """
         job = CronJob(
-            id="tz2", name="tz", message="go",
+            id="tz2",
+            name="tz",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=300),
         )
         job.timezone = "Not/AZone"
@@ -632,7 +642,9 @@ class TestLastResultTimestamp:
         instead of gaining a third variant of the same row.
         """
         job = CronJob(
-            id="tz3", name="tz", message="go",
+            id="tz3",
+            name="tz",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=300),
         )
         # Beyond what the platform can turn into a date, which is what the
@@ -829,7 +841,9 @@ class TestJobCompletionRearmsTimer:
     async def test_run_job_isolated_rearms_the_timer(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -845,14 +859,489 @@ class TestJobCompletionRearmsTimer:
         mock_arm.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_run_job_isolated_does_not_rearm_a_stopped_service(
+    async def test_run_job_isolated_keeps_a_pruned_every_job_overdue(self, tmp_path: Path) -> None:
+        """The outer 'every'-job drift correction must not re-consume a
+        keep_overdue (pruned-install) run: _execute deliberately left
+        last_run_ts untouched so the replacement gateway retries the owed
+        run immediately."""
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="watch",
+            message="go",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+        job.last_run_ts = 1234.5
+        svc._jobs = [job]
+        svc._save()
+        svc._running = True
+
+        async def pruned_execute(j):
+            # _record_pruned_launch_skip contract as _execute observes it.
+            j.last_status = "error"
+            j.run_never_started = True
+            j.keep_overdue = True
+
+        with (
+            patch.object(svc, "_execute_with_timeout", side_effect=pruned_execute),
+            patch.object(svc, "_arm_timer"),
+        ):
+            await svc._run_job_isolated(job)
+
+        assert job.last_run_ts == 1234.5
+
+    @pytest.mark.asyncio
+    async def test_owed_fire_makes_a_cron_job_due_off_minute_and_is_consumed(
         self, tmp_path: Path
     ) -> None:
+        """An owed occurrence is due regardless of the current minute, and
+        the make-up run consumes the marker exactly once."""
+        import time as _time
+
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            # A minute that is (almost surely) not now; owed_fire must
+            # override the mismatch.
+            schedule=CronSchedule(kind="cron", cron_expr="3 3 29 2 *"),
+        )
+        job.owed_fire = True
+
+        assert svc._is_due(job, _time.time()) is True
+
+        async def clean_cb(j):
+            return None
+
+        svc._on_job = clean_cb
+        # The make-up run consumes the marker via _execute's per-run reset.
+        await svc._execute(job)
+
+        assert job.owed_fire is False
+        assert svc._is_due(job, _time.time()) is False
+
+    @pytest.mark.asyncio
+    async def test_a_never_started_run_does_not_consume_the_owed_fire(self, tmp_path: Path) -> None:
+        """The debt reset at run start must not stick when the run never
+        started (overlap, pool starvation, fire-time deny) — the merge would
+        persist the cleared debt and the occurrence would never run."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="3 3 29 2 *"),
+        )
+        job.owed_fire = True
+
+        async def never_started_cb(j):
+            # Overlap/starvation contract: the run never dispatched.
+            j.last_status = "error"
+            j.run_never_started = True
+
+        svc._on_job = never_started_cb
+        await svc._execute(job)
+
+        assert job.owed_fire is True
+
+    def test_owed_fire_drain_repersists_after_merge_contention(self, tmp_path: Path) -> None:
+        """A merge lost to store contention queues the debt; the next locked
+        transaction re-persists it."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        assert job.owed_fire is False
+
+        svc._pending_owed_fires["j1"] = True
+        with svc._file_lock():
+            svc._drain_pending_owed_fires_locked()
+
+        assert job.owed_fire is True
+        assert not svc._pending_owed_fires
+        # Persisted: a fresh load sees the debt.
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is True
+
+    def test_owed_fire_drain_clears_stale_debt_after_a_consumed_run(self, tmp_path: Path) -> None:
+        """The clear direction: a make-up run consumed the debt but its merge
+        was lost — the drain must persist False or the replacement gateway
+        duplicates the occurrence."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+        svc._jobs = [job]
+        svc._save()
+
+        job.owed_fire = False  # the make-up run consumed it in memory
+        svc._pending_owed_fires["j1"] = False
+        svc._drain_owed_fires_with_lock()
+
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is False
+
+    def test_owed_fire_drain_requeues_its_claim_when_the_save_fails(self, tmp_path: Path) -> None:
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc._pending_owed_fires["j1"] = True
+
+        with (
+            patch.object(svc, "_save", side_effect=OSError("disk full")),
+            svc._file_lock(),
+        ):
+            with pytest.raises(OSError):
+                svc._drain_pending_owed_fires_locked()
+
+        # The claim was restored, so a later drain retries.
+        assert svc._pending_owed_fires == {"j1": True}
+        svc._drain_owed_fires_with_lock()
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is True
+
+    def test_a_drain_save_failure_does_not_abort_the_tick_scan(self, tmp_path: Path) -> None:
+        """The tick's locked transaction contains the drain's re-raise: an
+        unrelated persistence failure must not make a due job miss its
+        minute."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc._pending_owed_fires["j1"] = True
+
+        with patch.object(svc, "_save", side_effect=OSError("disk full")):
+            snapshot = svc._tick_scan_locked()  # must NOT raise
+
+        assert [j.id for j in snapshot] == ["j1"]
+        # The claim survived for a later drain.
+        assert svc._pending_owed_fires == {"j1": True}
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_the_callback_restores_the_debt(self, tmp_path: Path) -> None:
+        """A stop()/reap cancellation BEFORE dispatch never delivered the
+        occurrence — the debt reset at run start must not stick, but only
+        when the callback recorded the run as never-started."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+
+        async def cancelled_cb(j):
+            j.run_never_started = True
+            raise asyncio.CancelledError()
+
+        svc._on_job = cancelled_cb
+        with pytest.raises(asyncio.CancelledError):
+            await svc._execute(job)
+
+        assert job.owed_fire is True
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_setup_restores_the_debt(self, tmp_path: Path) -> None:
+        """The round-16 window: a cancel after the callback starts but
+        BEFORE positive dispatch confirmation (session/context setup) sets
+        neither run_never_started nor run_dispatched — nothing ran, so the
+        debt must survive."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+
+        async def cancelled_in_setup_cb(j):
+            # No run_never_started, no run_dispatched: the setup window.
+            raise asyncio.CancelledError()
+
+        svc._on_job = cancelled_in_setup_cb
+        with pytest.raises(asyncio.CancelledError):
+            await svc._execute(job)
+
+        assert job.owed_fire is True
+        assert svc._pending_owed_fires == {}
+
+    @pytest.mark.asyncio
+    async def test_cancellation_after_dispatch_keeps_the_debt_consumed(
+        self, tmp_path: Path
+    ) -> None:
+        """A cancellation landing AFTER the run dispatched must not restore
+        the debt: the run's side effects exist, and a restored debt would
+        replay them on the replacement gateway."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+
+        async def cancelled_mid_run_cb(j):
+            # Dispatched: the launch/prompt went out before the cancel.
+            j.run_dispatched = True
+            raise asyncio.CancelledError()
+
+        svc._on_job = cancelled_mid_run_cb
+        with pytest.raises(asyncio.CancelledError):
+            await svc._execute(job)
+
+        assert job.owed_fire is False
+        # The reaper's terminal merge does not carry owed_fire, so the
+        # durable clear must be queued or the stale on-disk True replays
+        # the occurrence on the next tick.
+        assert svc._pending_owed_fires == {"j1": False}
+
+    @pytest.mark.asyncio
+    async def test_a_policy_denied_owed_run_drops_the_debt(self, tmp_path: Path) -> None:
+        """A fire-time policy denial can persist indefinitely, and an owed
+        job is due on every poll — restoring the debt would refire every 30
+        seconds for as long as the policy holds. The occurrence is dropped;
+        the job resumes at its next scheduled slot."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+
+        async def denied_cb(j):
+            j.last_status = "error"
+            j.fire_time_denied = True
+
+        svc._on_job = denied_cb
+        await svc._execute(job)
+
+        assert job.owed_fire is False
+
+    @pytest.mark.asyncio
+    async def test_quiesced_pruned_job_survives_a_store_reload(self, tmp_path: Path) -> None:
+        """A per-object enabled=False dies at the next _sync (fresh disk
+        copies are enabled by design, for the replacement gateway) — the
+        service-level pruned-quiesce registry must keep the job out of the
+        due-scan on THIS process regardless of reloads."""
+        import time as _time
+
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="watch",
+            message="go",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc.quiesce_pruned("j1")
+
+        # Simulate the resurrection: a store reload hands back a FRESH,
+        # enabled copy of the job.
+        svc._sync()
+        reloaded = next(j for j in svc._jobs if j.id == "j1")
+        assert reloaded.enabled is True  # on-disk state, by design
+
+        now = _time.time()
+        due = [
+            j
+            for j in svc._jobs
+            if j.enabled
+            and j.id not in svc._executing
+            and j.id not in svc._pruned_quiesced
+            and svc._is_due(j, now)
+        ]
+        assert due == []
+        # And without the registry the job WOULD be due — proving the
+        # registry is the operative guard.
+        assert svc._is_due(reloaded, now) is True
+        # And the wake computation must skip it too: a quiesced overdue job
+        # driving _next_wake_secs to 0 would re-arm the timer immediately
+        # after every empty scan — a zero-delay loop.
+        assert svc._next_wake_secs() is None
+
+    def test_a_string_false_owed_fire_on_disk_loads_as_false(self, tmp_path: Path) -> None:
+        """Strict identity on deserialization: the string "false" is truthy
+        and would dispatch the job outside its schedule."""
+        import json
+
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        store = tmp_path / "crons.json"
+        data = json.loads(store.read_text())
+        data["jobs"][0]["owed_fire"] = "false"
+        store.write_text(json.dumps(data))
+
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is False
+
+    def test_merge_queues_owed_state_when_the_store_is_unreadable(self, tmp_path: Path) -> None:
+        """_sync degrades an unreadable store to an empty list WITHOUT
+        raising, and the merge must degrade too (never crash the job
+        runner) — but the owed state must reach the recovery queue instead
+        of being silently swallowed."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        (tmp_path / "crons.json").write_text("{ not json")
+        job.owed_fire = True
+
+        svc._merge_job_result(job)  # must NOT raise
+
+        assert svc._pending_owed_fires == {"j1": True}
+
+    def test_merge_queues_the_one_shot_removal_when_the_store_is_unreadable(
+        self, tmp_path: Path
+    ) -> None:
+        """A completed delete_after_run one-shot must not re-fire after the
+        store heals: the unreadable-store branch owes the removal to the
+        defer_removal queue exactly like the base path's delete_owed."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="oneshot",
+            message="go",
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        svc._jobs = [job]
+        svc._save()
+        (tmp_path / "crons.json").write_text("{ not json")
+        job.last_status = "ok"
+
+        svc._merge_job_result(job)  # must NOT raise
+
+        assert "j1" in svc._pending_removals
+
+    def test_merge_does_not_queue_removal_for_a_never_started_one_shot(
+        self, tmp_path: Path
+    ) -> None:
+        """The retention guards travel with the deferred delete: a
+        never-started (e.g. pruned-skip) one-shot is retained, not consumed."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="oneshot",
+            message="go",
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        svc._jobs = [job]
+        svc._save()
+        (tmp_path / "crons.json").write_text("{ not json")
+        job.run_never_started = True
+
+        svc._merge_job_result(job)  # must NOT raise
+
+        assert "j1" not in svc._pending_removals
+
+    @pytest.mark.asyncio
+    async def test_stop_drains_pending_owed_fires(self, tmp_path: Path) -> None:
+        """The drained (pruned-install) gateway is by definition about to
+        shut down — stop() must be a drain point, because the 'next timer
+        tick' the deferral normally relies on never comes."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc._pending_owed_fires["j1"] = True
+
+        await svc.stop()
+
+        assert not svc._pending_owed_fires
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is True
+
+    @pytest.mark.asyncio
+    async def test_run_job_isolated_does_not_rearm_a_stopped_service(self, tmp_path: Path) -> None:
         """A job finishing during/after shutdown must not spin up a fresh
         timer task behind close_all()'s back."""
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -880,7 +1369,9 @@ class TestJobCompletionRearmsTimer:
         shorter one instead of leaving the stale one in place."""
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -916,9 +1407,7 @@ class TestArmTimerDuringOnTimer:
     doesn't cover it. See _arm_timer's second guard clause."""
 
     @pytest.mark.asyncio
-    async def test_arm_timer_does_not_cancel_the_timer_task_mid_sweep(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_arm_timer_does_not_cancel_the_timer_task_mid_sweep(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         svc._running = True
         svc._loop = asyncio.get_running_loop()
@@ -1053,10 +1542,19 @@ class TestFormatSchedule:
         # Mock "now" to 2026-04-10, job at 3PM same day
         fake_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
         # Mock only covers now() and fromtimestamp() — extend if format_schedule evolves.
-        monkeypatch.setattr("kiro_crew.cron.datetime", type("D", (datetime,), {
-            "now": classmethod(lambda cls, tz=None: fake_now),
-            "fromtimestamp": staticmethod(lambda ts, tz=None: datetime.fromtimestamp(ts, tz)),
-        }))
+        monkeypatch.setattr(
+            "kiro_crew.cron.datetime",
+            type(
+                "D",
+                (datetime,),
+                {
+                    "now": classmethod(lambda cls, tz=None: fake_now),
+                    "fromtimestamp": staticmethod(
+                        lambda ts, tz=None: datetime.fromtimestamp(ts, tz)
+                    ),
+                },
+            ),
+        )
         job_ts = datetime(2026, 4, 10, 15, 0, tzinfo=timezone.utc).timestamp()
         result = format_schedule(CronSchedule(kind="at", at_ts=job_ts))
         assert result.startswith("at ")
@@ -1068,10 +1566,19 @@ class TestFormatSchedule:
         # Mock "now" to 2026-04-10, job on Apr 17
         fake_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
         # Mock only covers now() and fromtimestamp() — extend if format_schedule evolves.
-        monkeypatch.setattr("kiro_crew.cron.datetime", type("D", (datetime,), {
-            "now": classmethod(lambda cls, tz=None: fake_now),
-            "fromtimestamp": staticmethod(lambda ts, tz=None: datetime.fromtimestamp(ts, tz)),
-        }))
+        monkeypatch.setattr(
+            "kiro_crew.cron.datetime",
+            type(
+                "D",
+                (datetime,),
+                {
+                    "now": classmethod(lambda cls, tz=None: fake_now),
+                    "fromtimestamp": staticmethod(
+                        lambda ts, tz=None: datetime.fromtimestamp(ts, tz)
+                    ),
+                },
+            ),
+        )
         job_ts = datetime(2026, 4, 17, 8, 0, tzinfo=timezone.utc).timestamp()
         result = format_schedule(CronSchedule(kind="at", at_ts=job_ts))
         assert "Apr 17" in result
@@ -1121,9 +1628,7 @@ class TestFormatSchedule:
             return type("C", (), {"timezone": "Bad/Zone"})()
 
         monkeypatch.setattr("kiro_crew.cron.KiroCrewConfig.load", staticmethod(_record_load))
-        monkeypatch.setattr(
-            "kiro_crew.cron.published_config_timezone", lambda: "America/New_York"
-        )
+        monkeypatch.setattr("kiro_crew.cron.published_config_timezone", lambda: "America/New_York")
         s = CronSchedule(kind="cron", cron_expr="0 22 * * 1-5")
         result = format_schedule(s)
         # Expression is evaluated in job timezone (ET fallback), so 22:00 = 10 PM local
@@ -1292,16 +1797,14 @@ class TestTimezoneScheduling:
             return type("C", (), {"timezone": "Bad/Zone"})()
 
         monkeypatch.setattr("kiro_crew.cron.KiroCrewConfig.load", staticmethod(_record_load))
-        monkeypatch.setattr(
-            "kiro_crew.cron.published_config_timezone", lambda: "America/Toronto"
-        )
+        monkeypatch.setattr("kiro_crew.cron.published_config_timezone", lambda: "America/Toronto")
 
         assert _job_tz(CronJob(id="j1", name="t", message="m", timezone="")) == ZoneInfo(
             "America/Toronto"
         )
-        assert _job_tz(
-            CronJob(id="j2", name="t", message="m", timezone="Asia/Tokyo")
-        ) == ZoneInfo("Asia/Tokyo")
+        assert _job_tz(CronJob(id="j2", name="t", message="m", timezone="Asia/Tokyo")) == ZoneInfo(
+            "Asia/Tokyo"
+        )
         assert not loads, "_job_tz loaded config.json on the event loop"
 
     def test_get_local_tz_never_loads_the_config_file(self, monkeypatch) -> None:
@@ -1468,9 +1971,7 @@ class TestTimezoneScheduling:
         )
         window_start = datetime(2025, 3, 10, 6, 0, tzinfo=timezone.utc)
         fires = [
-            i
-            for i in range(180)
-            if CronService._is_due(job, window_start.timestamp() + i * 60)
+            i for i in range(180) if CronService._is_due(job, window_start.timestamp() + i * 60)
         ]
         assert len(fires) == 1
 

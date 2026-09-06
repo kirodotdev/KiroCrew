@@ -785,6 +785,84 @@ def _running_install_was_pruned() -> bool:
     return not Path(sys.executable).is_file() and not Path(__file__).is_file()
 
 
+def _enoent_names_this_install(exc: FileNotFoundError) -> bool:
+    """Whether the missing path belongs to this (replaced) install.
+
+    A pruned install must only excuse launches that failed on the install's
+    OWN vanished files (interpreter, launcher, package tree). A user script
+    or provider binary deleted while the install happens to be pruned is
+    still a real job failure and must keep raising.
+    """
+    missing = exc.filename
+    if not missing:
+        # A pathless ENOENT (e.g. resolve_script_path() refusing a missing
+        # user script) names nothing install-owned: treat it as a real
+        # failure. Launch-path failures on the replaced install always
+        # carry the missing file's path.
+        return False
+    # Two containment roots, both concrete: the interpreter prefix (the
+    # launch interpreter lives under it) and this module's own package tree
+    # (a sibling of sys.prefix in versioned installs, so neither implies
+    # the other). Deliberately NOT sys.prefix's parent, which degrades to
+    # '/' or '/usr' on non-versioned layouts and would excuse everything.
+    roots = (Path(sys.prefix), Path(__file__).resolve().parents[2])
+    target = Path(missing)
+    for root in roots:
+        try:
+            if target.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _record_pruned_launch_skip(job: "CronJob", cron_svc: "CronService | None" = None) -> None:
+    """Book a launch skipped by a pruned install as never-started.
+
+    Mirrors the overlap-skip retention pattern: ``last_status = "error"``
+    keeps ``CronScheduler._execute`` from recording a success (so
+    ``record_success()`` cannot mask the missed run), ``run_never_started``
+    is the retention marker that stops ``_merge_job_result`` deleting a due
+    one-shot ``delete_after_run`` job, and ``record_failure()`` is
+    deliberately NOT called so the update handoff costs no auto-pause
+    strike. The replacement gateway launches a version-consistent child on
+    its next tick.
+    """
+    job.clear_carried_result()
+    job.last_status = "error"
+    job.last_error = "Launch skipped: the running install was replaced by an update"
+    job.run_never_started = True
+    # Leave the schedule exactly as owed as it was: _execute neither
+    # advances last_run_ts nor durably disables an at-job when this is set,
+    # and _merge_job_result skips its at-job enabled propagation, so the
+    # replacement gateway retries the job as if this launch never happened.
+    job.keep_overdue = True
+    if job.schedule.kind == "cron" and not (
+        cron_svc is not None and cron_svc.run_is_manual(job.id)
+    ):
+        # 'every' stays due (last_run_ts untouched) and 'at' stays due
+        # (at_ts in the past), but a cron-expression job is only due while
+        # the CURRENT minute matches — a slow handoff would silently lose
+        # the occurrence. Persist the debt; _is_due honors it and the
+        # make-up run consumes it. A MANUAL trigger (run_job / cron
+        # trigger) is excluded: the schedule never owed that run, and a
+        # paused job resumed later must not execute it unscheduled.
+        job.owed_fire = True
+    # On this drained gateway every launch fails the same way forever, and
+    # a job left enabled while still due (which keep_overdue guarantees)
+    # would refire in a zero-delay loop — flooding history and contending
+    # the store lock against the replacement gateway. Two quiesce layers:
+    # the snapshot object is disabled for the CURRENT tick, and the
+    # service's pruned-quiesce registry excludes the id from every FUTURE
+    # due-scan — necessary because each tick's _sync() replaces the job
+    # list with fresh disk copies (enabled=True on disk by design, so the
+    # replacement gateway retries), which would resurrect a per-object
+    # disable. Neither layer is persisted; user_paused is untouched.
+    job.enabled = False
+    if cron_svc is not None:
+        cron_svc.quiesce_pruned(job.id)
+
+
 class _GateTally:
     """Tool-gate outcomes accumulated over one cron run.
 
@@ -4099,6 +4177,11 @@ class GatewayOrchestrator:
                     # holds at the moment of use.  It also now shares the
                     # backstop below, which is why it must stay short.
                     try:
+                        # POSITIVE dispatch confirmation for the owed-debt
+                        # cancellation handler: past this await the sandboxed
+                        # launch may have side effects, so a cancellation must
+                        # not restore (and thus replay) an owed occurrence.
+                        job.run_dispatched = True
                         result = await run_in_cron_pool(
                             _vet_at_claim_then,
                             handoff,
@@ -4118,16 +4201,20 @@ class GatewayOrchestrator:
                             ),
                             timeout=_claim_backstop(job, script_timeout),
                         )
-                    except FileNotFoundError:
-                        if not _running_install_was_pruned():
+                    except FileNotFoundError as enoent:
+                        if not _running_install_was_pruned() or not _enoent_names_this_install(
+                            enoent
+                        ):
                             raise
-                        # The replacement gateway owns the next wake. Reuse the
-                        # normal Skip bookkeeping so runtime maintenance cannot
-                        # spend an auto-pause strike on an otherwise healthy job.
+                        # The replacement gateway owns the next wake. Record
+                        # the launch as never-started so the scheduler neither
+                        # counts a success nor deletes a due one-shot, and no
+                        # auto-pause strike is spent on a healthy job.
                         logger.info(
                             "Script cron launch skipped because the running install was replaced"
                         )
-                        result = {"status": "skip"}
+                        _record_pruned_launch_skip(job, self.cron_svc)
+                        return None
                     status = result.get("status", "error")
                     if status == "cancelled":
                         # User-initiated cancel: CronService.cancel() owns the
@@ -4515,8 +4602,8 @@ class GatewayOrchestrator:
                             extra_env=_cron_extra_env(),
                         )
                         return client, is_new, resumed, True
-                except FileNotFoundError:
-                    if not _running_install_was_pruned():
+                except FileNotFoundError as enoent:
+                    if not _running_install_was_pruned() or not _enoent_names_this_install(enoent):
                         raise
                     # Do not pair this old gateway's in-memory protocol and
                     # package paths with the newly promoted interpreter. The
@@ -4554,6 +4641,24 @@ class GatewayOrchestrator:
                         if acquired is None:
                             if self.cron_svc is not None:
                                 self.cron_svc.clear_active_session_key(job.id)
+                            if _prompt_dispatched:
+                                # A prior agent in this sequence already ran —
+                                # its side effects exist. Never-started would
+                                # retain the one-shot and REPLAY that completed
+                                # work on the replacement gateway, so record a
+                                # normal failed run instead: the strike and
+                                # error message surface the partial completion
+                                # to the operator rather than silently rerunning.
+                                job.clear_carried_result()
+                                job.last_status = "error"
+                                job.last_error = (
+                                    f"Agent sequence interrupted by an install update after "
+                                    f"'{agents[agents.index(agent) - 1]}' completed; not retried "
+                                    "automatically to avoid duplicating finished work"
+                                )
+                                job.record_failure()
+                                return None
+                            _record_pruned_launch_skip(job, self.cron_svc)
                             return None
                         client, is_new, _resumed, _downgraded = acquired
                         _seq_downgraded = _seq_downgraded or _downgraded
@@ -4584,6 +4689,18 @@ class GatewayOrchestrator:
                         # the episodic-query embed above are setup, not the turn.
                         _turn_t0 = time.monotonic()
                         _prompt_dispatched = True
+
+                        def _confirm_dispatch_gate(*a: Any, _n=_gate.note, **kw: Any):
+                            # Earliest side-effect signal: a tool call reached
+                            # the gate, so the prompt was submitted and work
+                            # may have run — the owed debt must stay consumed.
+                            # A cancelled turn that produced NO tool calls
+                            # delivered nothing and is safe to replay, so no
+                            # text-chunk confirmation is needed (the resume
+                            # helper owns on_chunk).
+                            job.run_dispatched = True
+                            return _n(*a, **kw)
+
                         result_text, _carried_credits = await _cron_stream_with_posttoken_resume(
                             client,
                             full_message,
@@ -4599,7 +4716,7 @@ class GatewayOrchestrator:
                                 if job.approval_mode == "auto"
                                 else self._interactive_approval("cron")
                             ),
-                            on_tool_gate=_gate.note,
+                            on_tool_gate=_confirm_dispatch_gate,
                             fallback_models=configured_fallback_chain(),
                         )
                         if not result_text:
@@ -4698,6 +4815,7 @@ class GatewayOrchestrator:
                 if acquired is None:
                     if self.cron_svc is not None:
                         self.cron_svc.clear_active_session_key(job.id)
+                    _record_pruned_launch_skip(job, self.cron_svc)
                     return None
                 client, is_new, _resumed, _model_downgraded = acquired
                 _acquired = True
@@ -4728,6 +4846,17 @@ class GatewayOrchestrator:
                 _turn_t0 = time.monotonic()
                 _gate = _GateTally()
                 _prompt_dispatched = True
+
+                def _confirm_dispatch_gate(*a: Any, _n=_gate.note, **kw: Any):
+                    # Earliest side-effect signal: a tool call reached the
+                    # gate, so the prompt was submitted and work may have
+                    # run — the owed debt must stay consumed. A cancelled
+                    # turn that produced NO tool calls delivered nothing and
+                    # is safe to replay, so no text-chunk confirmation is
+                    # needed (the resume helper owns on_chunk).
+                    job.run_dispatched = True
+                    return _n(*a, **kw)
+
                 result_text, _carried_credits = await _cron_stream_with_posttoken_resume(
                     client,
                     full_message,
@@ -4741,7 +4870,7 @@ class GatewayOrchestrator:
                     on_tool_approval=(
                         None if job.approval_mode == "auto" else self._interactive_approval("cron")
                     ),
-                    on_tool_gate=_gate.note,
+                    on_tool_gate=_confirm_dispatch_gate,
                     fallback_models=configured_fallback_chain(),
                 )
 
