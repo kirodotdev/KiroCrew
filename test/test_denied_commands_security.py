@@ -39,9 +39,9 @@ class TestCatalog:
         # names + boto3 underscore destructive forms) restored as regexes,
         # plus later additions (e.g. the dev-mode out-of-install confirmation
         # flag, #6907).
-        assert len(BUILTIN_DENIED_RULES) == 149
+        assert len(BUILTIN_DENIED_RULES) == 150
         ids = [r.id for r in BUILTIN_DENIED_RULES]
-        assert len(set(ids)) == 149
+        assert len(set(ids)) == 150
 
     def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
         """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway
@@ -180,7 +180,7 @@ class TestCatalog:
     def test_patterns_match_manifest_verbatim(self):
         golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
         golden_by_id = {g["id"]: g for g in golden}
-        assert len(golden_by_id) == 149
+        assert len(golden_by_id) == 150
         for rule in BUILTIN_DENIED_RULES:
             g = golden_by_id[rule.id]
             assert rule.pattern == g["pattern"]
@@ -194,7 +194,7 @@ class TestCatalog:
 
     def test_builtin_denied_rules_accessor_returns_dicts(self):
         rules = builtin_denied_rules()
-        assert len(rules) == 149
+        assert len(rules) == 150
         first = rules[0]
         assert set(first.keys()) == {"id", "pattern", "category", "description"}
         assert isinstance(first["id"], str)
@@ -225,6 +225,7 @@ class TestSelfProtectionFlagInterposition:
     _TEMPLATES = {
         "self-protection-restart": "kirocrew {flags} restart",
         "self-protection-update": "kirocrew {flags} update",
+        "self-protection-file-delivery": "kirocrew {flags} file-delivery approve",
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
         # cron-adopt (added on main) already tolerates interposed flags via its own
@@ -365,6 +366,7 @@ class TestSelfProtectionFlagInterposition:
     _SUBCOMMANDS = {
         "self-protection-restart": ["restart"],
         "self-protection-update": ["update"],
+        "self-protection-file-delivery": ["file-delivery"],
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
     }

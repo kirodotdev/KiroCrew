@@ -1703,6 +1703,61 @@ def _update_approve() -> None:
     print("   and will restart itself; watch progress in the dashboard.")
 
 
+def _file_delivery_approve() -> None:
+    """Approve a flagged-file delivery consent armed from the dashboard.
+
+    Same step-up shape as :func:`_update_approve`: the proof of host identity is
+    READING THE NONCE FILE, which lives on the keystone floor with owner-only
+    permissions, so presenting its nonce back to the gateway demonstrates
+    filesystem access as the gateway's own user -- the step an owner-authenticated
+    but agent-DRIVEN browser cannot perform, which is the hole this closes. The
+    gateway records the grant only after the nonce validates.
+    """
+    from kiro_crew.file_delivery_consent import read_pending_grant
+
+    print("👻 Approving the pending flagged-file delivery consent…\n")
+    pending = read_pending_grant()
+    if pending is None:
+        print("❌ No armed grant request (it may have expired).")
+        print("   Confirm from the dashboard's Security panel first, then re-run this.")
+        sys.exit(1)
+    print(f"  📦 {pending.destination_class}, expires in {pending.expires_in}s")
+
+    port = resolve_client_port(None)
+    url = f"http://127.0.0.1:{port}/api/file-delivery/consent/approve"
+    payload = json.dumps({"nonce": pending.nonce}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    # Same local-secret / unix-socket authentication as _update_approve: reading
+    # the secret is itself host-local evidence, and an absent secret still works
+    # on a default loopback install where no token auth runs.
+    secret = read_local_secret(port)
+    if secret:
+        headers["X-Internal-Secret"] = secret
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        from kiro_crew.dashboard.urls import dashboard_socket_path
+
+        socket_path: str | None = str(dashboard_socket_path(port))
+    except Exception:
+        socket_path = None
+    try:
+        with loopback_urlopen(req, timeout=15, unix_socket_path=socket_path) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        print(f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else ""))
+        sys.exit(1)
+    except (urllib.error.URLError, OSError):
+        print("❌ Gateway is not running — start it, then re-run: kirocrew file-delivery approve")
+        sys.exit(1)
+    grant = body.get("grant") if isinstance(body, dict) else None
+    dest = grant.get("destination_class") if isinstance(grant, dict) else pending.destination_class
+    print(f"\n✅ Confirmed delivery to {dest}. The dashboard now shows it as confirmed.")
+
+
 def _status(args: argparse.Namespace) -> None:
     """Query the running gateway for stats, or print offline message."""
     port = resolve_client_port(getattr(args, "port", None))

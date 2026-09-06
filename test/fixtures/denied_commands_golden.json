@@ -810,6 +810,12 @@
     "description": "Blocks 'kirocrew update' so the agent cannot self-update (git pull + rebuild + execv restart) and swap out its own running code without operator oversight."
   },
   {
+    "id": "self-protection-file-delivery",
+    "pattern": ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+file-delivery.*",
+    "category": "self-protection",
+    "description": "Blocks 'kirocrew file-delivery approve' so the agent cannot complete the flagged-file delivery consent step-up itself. The approve verb reads a single-use nonce from the sandbox-MASKED file-delivery-consent-pending/ leaf and POSTs it over loopback to record the grant; without this floor rule a prompt-injected agent that armed a request via the owner's browser could run the verb through its own shell and self-approve delivery of the owner's secrets -- the exact hole the arm/approve split exists to close. The nonce leaf being bind-masked from the sandbox already stops the agent reading or forging the nonce; this rule is the defence-in-depth partner that also denies the agent invoking the verb, mirroring 'self-protection-update', which is agent-proof on this same floor."
+  },
+  {
     "id": "self-protection-cloud",
     "pattern": ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|log(in|out)).*",
     "category": "self-protection",

@@ -24,6 +24,9 @@ vi.mock('../../api/client', () => ({
     kirocrewConfig: vi.fn(),
     patchConfig: vi.fn(),
     tailnetStatus: vi.fn(),
+    // Also read by the rail on mount; resolved in beforeEach for the same reason
+    // as the others here.
+    fileDeliveryConsent: vi.fn(),
   },
 }))
 
@@ -81,6 +84,13 @@ describe('SecurityPanel — tailnet origin', () => {
     })
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.patchConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      grantable: ['owner_dashboard'],
+      never_grantable: ['channel_upload', 'slack_upload'],
+      labels: { owner_dashboard: "This machine's outbox and my own dashboard" },
+      grants: { owner_dashboard: null },
+    })
   })
 
   it('active: green state badge, the MagicDNS origin, and the three status chips', async () => {

@@ -22,6 +22,7 @@ import base64
 import hashlib
 import inspect
 import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -246,13 +247,33 @@ class TestKeystoneFencing:
         assert "file_delivery_consent.json" in security._CREW_SECRET_LEAVES
         assert "aws_service_consent.json" in security._CREW_SECRET_LEAVES
 
-    def test_there_is_no_cli_verb_for_the_grant(self):
-        """A CLI verb is a grant an automated caller can take, so there is none."""
-        from kiro_crew import cli
+    def test_the_cli_verb_is_an_approve_step_up_not_a_self_grant(self):
+        """The CLI verb finishes an owner-armed grant by presenting the host nonce.
 
-        src = inspect.getsource(cli)
-        assert "file-delivery-consent" not in src
-        assert "file_delivery_consent" not in src
+        It must NOT be a verb that records a grant on request (which an automated
+        caller could take): it reads the armed nonce from the keystone file and
+        POSTs it to the approve endpoint, so it authorizes nothing on its own.
+        """
+        from kiro_crew import cli, cli_server
+
+        cli_src = inspect.getsource(cli)
+        assert '"file-delivery"' in cli_src
+        assert "_file_delivery_approve" in cli_src
+
+        # The action positional is REQUIRED (no nargs="?"): a bare
+        # ``kirocrew file-delivery`` must not dispatch to approve. The token is
+        # not the security boundary (the nonce read is), but an optional verb
+        # that silently means "approve" is a footgun -- argparse must demand it.
+        fd_block = cli_src[cli_src.index('add_command(sub, "file-delivery")') :]
+        fd_block = fd_block[: fd_block.index('add_argument(\n        "action"') + 400]
+        assert 'nargs="?"' not in fd_block, "file-delivery action must be required"
+
+        approve_src = inspect.getsource(cli_server._file_delivery_approve)
+        # Proves host presence by READING the nonce, then presents it -- it does
+        # not call record_grant directly.
+        assert "read_pending_grant" in approve_src
+        assert "/api/file-delivery/consent/approve" in approve_src
+        assert "record_grant" not in approve_src
 
 
 # ---------------------------------------------------------------- the tool
@@ -318,6 +339,267 @@ def _consent_request(*, app: str = "", user: str = "owner-1", owner: str = "owne
     return req
 
 
+def _local_approve_request(*, nonce: str, local: bool = True):
+    """A request shaped like the host CLI's approve POST.
+
+    ``_approve_is_local`` passes on ``internal_auth`` / ``peer_verified`` marks or a
+    loopback remote; a remote-shaped request omits all three.
+    """
+    from unittest.mock import MagicMock
+
+    req = MagicMock()
+    store = {"internal_auth": True} if local else {}
+    if not local:
+        req.remote = "203.0.113.7"
+    req.get = lambda key, default=None: store.get(key, default)
+
+    async def _json():
+        return {"nonce": nonce}
+
+    req.json = _json
+    return req
+
+
+class TestGrantRequiresAHostStepUp:
+    """Recording a grant needs an owner ARM plus a host-only nonce APPROVE.
+
+    The hole issue #7770 set out to close: an owner-authenticated but agent-DRIVEN
+    browser satisfies ``is_owner_dashboard_request`` (an identity check, not a
+    proof of human presence), so an owner-session POST alone must NOT record a
+    grant. Reading the nonce from the keystone file is the presence proof an
+    agent-driven browser cannot fake.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_nonce(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            file_delivery_consent,
+            "pending_grant_path",
+            lambda: tmp_path / "file-delivery-consent-pending" / "nonce.json",
+            raising=True,
+        )
+        store = tmp_path / "file_delivery_consent.json"
+        monkeypatch.setattr(
+            file_delivery_consent, "file_delivery_consent_path", lambda: store, raising=True
+        )
+        # Default the two approve-time fences to their PERMITTING state so the
+        # success-path tests exercise the round-trip; the fence-specific tests
+        # override these. Without this the backend-less CI env resolves
+        # credential_mask_applies() to False and every approve would 403.
+        from kiro_crew import sandbox
+        from kiro_crew.computer_use import enable_state
+
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: False, raising=True)
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda mode: True, raising=True)
+
+    def test_arming_records_no_grant_and_leaks_no_nonce(self):
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        # Armed, but nothing granted yet.
+        assert (
+            file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
+        )
+        # The SPA projection never carries the nonce.
+        view = file_delivery_consent.public_pending_view(pending)
+        assert view["armed"] is True
+        assert "nonce" not in view
+        assert view["approve_command"] == "kirocrew file-delivery approve"
+
+    def test_approve_from_a_remote_caller_is_refused(self):
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        req = _local_approve_request(nonce=pending.nonce, local=False)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 403
+        assert json.loads(resp.text)["code"] == "file_delivery_approve_not_local"
+        # A refused remote approve records nothing.
+        assert (
+            file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
+        )
+
+    def test_approve_with_a_wrong_nonce_is_refused(self):
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        req = _local_approve_request(nonce="0" * 64)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 403
+        assert (
+            file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
+        )
+
+    def test_approve_is_refused_while_computer_use_is_enabled(self, monkeypatch):
+        # F1 fence: computer use (desktop observation + input synthesis) lets a
+        # prompt-injected agent TYPE the approve command into a host terminal, so
+        # the terminal step-up no longer proves a human is present. While it is
+        # enabled the grant must NOT be recorded.
+        from kiro_crew.computer_use import enable_state
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: True, raising=True)
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        req = _local_approve_request(nonce=pending.nonce, local=True)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 403
+        assert json.loads(resp.text)["code"] == "file_delivery_approve_computer_use_active"
+        # Nothing recorded, and the single-use nonce is NOT consumed by a refusal
+        # (fail fast before consume), so the owner can retry after disabling.
+        assert (
+            file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
+        )
+
+    def test_approve_is_allowed_when_computer_use_is_disabled(self, monkeypatch):
+        # The fence is CONDITIONAL, not a blanket break: with computer use off,
+        # the terminal step-up holds and a local approve records the grant.
+        from kiro_crew.computer_use import enable_state
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: False, raising=True)
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        req = _local_approve_request(nonce=pending.nonce, local=True)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 200
+        assert file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is True
+
+    def test_approve_is_refused_when_the_sandbox_mask_does_not_apply(self, monkeypatch):
+        # F1(new) fence: the nonce's secrecy rests on the pending leaf being masked
+        # out of the agent sandbox. If the effective sandbox would NOT apply that
+        # mask (agent.sandbox 'off', or no backend + unsandboxed exec opted in), an
+        # unsandboxed agent can read/forge the nonce directly, so the host step-up
+        # no longer proves human presence. The grant must NOT be recorded.
+        from kiro_crew import sandbox
+        from kiro_crew.computer_use import enable_state
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: False, raising=True)
+        monkeypatch.setattr(sandbox, "configured_sandbox_mode", lambda: "off", raising=True)
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda mode: False, raising=True)
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        req = _local_approve_request(nonce=pending.nonce, local=True)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 403
+        assert json.loads(resp.text)["code"] == "file_delivery_approve_unsandboxed"
+        assert (
+            file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
+        )
+
+    def test_approve_is_allowed_when_the_sandbox_mask_applies(self, monkeypatch):
+        # Conditional, not a blanket break: with the mask in effect the nonce is
+        # hidden from the agent and a local approve records the grant.
+        from kiro_crew import sandbox
+        from kiro_crew.computer_use import enable_state
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: False, raising=True)
+        monkeypatch.setattr(sandbox, "configured_sandbox_mode", lambda: "strict", raising=True)
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda mode: True, raising=True)
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        req = _local_approve_request(nonce=pending.nonce, local=True)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 200
+        assert file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is True
+
+    def test_a_failed_grant_write_leaves_the_nonce_retryable(self, monkeypatch):
+        # Order side effects so the irreversible one is last: if record_grant
+        # fails, the single-use nonce must NOT already be consumed, so the owner
+        # can retry rather than lose the armed request to a 500.
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+
+        real_record = file_delivery_consent.record_grant
+
+        def _boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(file_delivery_consent, "record_grant", _boom, raising=True)
+        req = _local_approve_request(nonce=pending.nonce, local=True)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 500
+        assert json.loads(resp.text)["code"] == "file_delivery_approve_write_failed"
+        # Nothing recorded, and the nonce is STILL VALID -- a retry (with a working
+        # writer) now succeeds, which proves the failure was non-destructive.
+        assert (
+            file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
+        )
+        assert file_delivery_consent.read_pending_grant() is not None
+        # Restore ONLY record_grant (not monkeypatch.undo, which would also drop the
+        # fixture's mask / computer-use fence defaults and 403 the retry).
+        monkeypatch.setattr(file_delivery_consent, "record_grant", real_record, raising=True)
+        retry = _local_approve_request(nonce=pending.nonce, local=True)
+        resp2 = asyncio.run(handler.api_file_delivery_consent_approve(retry))
+        assert resp2.status == 200
+        assert file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is True
+        # And after the successful retry the nonce is consumed (single-use holds).
+        assert file_delivery_consent.read_pending_grant() is None
+
+    def test_the_nonce_is_single_use(self):
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        assert (
+            file_delivery_consent.consume_grant(pending.nonce).destination_class
+            == file_delivery_consent.CLASS_OWNER_DASHBOARD
+        )
+        with pytest.raises(file_delivery_consent.StepUpError):
+            file_delivery_consent.consume_grant(pending.nonce)
+
+    def test_the_nonce_leaf_is_masked_from_the_agent_sandbox(self):
+        # The forge path GPT found: trust/ is sandbox-VISIBLE, so a runtime-
+        # constructed shell write could forge a nonce there. The nonce therefore
+        # lives in its OWN leaf that is BOTH keystone-fenced (file gate) AND
+        # bind-masked from the sandbox (no runtime-shell forge), and is NOT under
+        # trust/.
+        from kiro_crew import sandbox
+
+        leaf = file_delivery_consent._PENDING_GRANT_DIRNAME
+        assert leaf in security._CREW_SECRET_LEAVES
+        assert leaf in sandbox._CREW_HIDDEN_LEAVES
+        # The mask loop is isdir-guarded, and this dir is created LAZILY at arm
+        # time -- so on a fresh install it is absent at spawn and the mask skips
+        # it unless it is also precreated before every namespace spawn.
+        assert leaf in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        # Real path (no monkeypatch): parent is the dedicated leaf, not trust/.
+        real_parent = (
+            file_delivery_consent.data_home() / leaf / file_delivery_consent._PENDING_GRANT_FILENAME
+        ).parent.name
+        assert real_parent == leaf
+        assert real_parent != "trust"
+
+    def test_precreate_materialises_the_nonce_dir_before_spawn(self, tmp_path, monkeypatch):
+        # BEHAVIOURAL, not just membership: prove _materialize_maskable_dirs
+        # actually creates the leaf so the isdir-guarded mask is non-vacuous on a
+        # fresh install (no prior arm). Without the leaf in the precreate list the
+        # dir stays absent here and the mask would skip it.
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "config_dir", lambda: tmp_path)
+        leaf = file_delivery_consent._PENDING_GRANT_DIRNAME
+        target = tmp_path / leaf
+        assert not target.exists()  # fresh install: nothing armed yet
+
+        created = sandbox._materialize_maskable_dirs()
+
+        assert target.is_dir()
+        assert str(target) in created
+        if os.name == "posix":
+            # Owner-only: no group/other access, whatever the umask.
+            assert (target.stat().st_mode & 0o077) == 0
+
+    def test_the_approve_path_is_strict_internal_not_mixed(self):
+        # The approve endpoint is the host-side step-up: loopback + X-Internal-
+        # Secret only, NEVER cookie-reachable. STRICT membership is the outer
+        # fence that denies a dashboard/agent bearer at the middleware (no cookie
+        # fall-through). MIXED would add the browser-polled cookie path and reopen
+        # the self-approve hole -- so it must be STRICT and must NOT be MIXED, the
+        # exact posture of its sibling /api/update/approve.
+        from kiro_crew.dashboard import server
+
+        path = "/api/file-delivery/consent/approve"
+        assert path in server._STRICT_INTERNAL_API_PATHS
+        assert path not in server._MIXED_INTERNAL_API_PATHS
+        # Pin the sibling too, so a refactor that drops the pattern reddens here.
+        assert "/api/update/approve" in server._STRICT_INTERNAL_API_PATHS
+
+
 class TestConsentEndpointRequiresTheOwner:
     """Every verb, reads included, is refused to anyone but the dashboard owner.
 
@@ -375,13 +657,52 @@ class TestConsentEndpointAsOwner:
         assert set(payload["never_grantable"]) == set(file_delivery_consent.NEVER_GRANTABLE_CLASSES)
         assert payload["grants"][file_delivery_consent.CLASS_OWNER_DASHBOARD] is None
 
-    def test_post_then_get_then_delete_round_trip(self):
+    def test_post_arms_then_approve_records_then_get_then_delete_round_trip(
+        self, tmp_path, monkeypatch
+    ):
+        # The approve leg's two fences must be in their permitting state for the
+        # round-trip: computer use disabled, and the sandbox mask in effect (the
+        # backend-less CI env would otherwise resolve credential_mask_applies to
+        # False and 403 the approve).
+        from kiro_crew import sandbox
+        from kiro_crew.computer_use import enable_state
         from kiro_crew.dashboard.handlers import file_delivery_consent as handler
 
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: False, raising=True)
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda mode: True, raising=True)
+
+        # Isolate BOTH the store and the armed-nonce file so nothing touches the
+        # real data home.
+        store = tmp_path / "file_delivery_consent.json"
+        monkeypatch.setattr(
+            file_delivery_consent, "file_delivery_consent_path", lambda: store, raising=True
+        )
+        monkeypatch.setattr(
+            file_delivery_consent,
+            "pending_grant_path",
+            lambda: tmp_path / "file-delivery-consent-pending" / "nonce.json",
+            raising=True,
+        )
+
         q = {"destination_class": file_delivery_consent.CLASS_OWNER_DASHBOARD}
+        # POST ARMS: it must NOT record a grant, and the response carries no nonce.
         post = asyncio.run(handler.api_file_delivery_consent_post(_consent_request(query=q)))
         assert post.status == 200
-        assert json.loads(post.text)["grant"]["destination_class"] == (
+        armed = json.loads(post.text)
+        assert armed["armed"] is True
+        assert "nonce" not in armed
+        # Still not confirmed after arming.
+        got = json.loads(
+            asyncio.run(handler.api_file_delivery_consent_get(_consent_request())).text
+        )
+        assert got["grants"][file_delivery_consent.CLASS_OWNER_DASHBOARD] is None
+
+        # APPROVE with the armed nonce (read from the host file) RECORDS the grant.
+        pending = file_delivery_consent.read_pending_grant()
+        approve_req = _local_approve_request(nonce=pending.nonce)
+        approve = asyncio.run(handler.api_file_delivery_consent_approve(approve_req))
+        assert approve.status == 200
+        assert json.loads(approve.text)["grant"]["destination_class"] == (
             file_delivery_consent.CLASS_OWNER_DASHBOARD
         )
         got = json.loads(
@@ -393,7 +714,7 @@ class TestConsentEndpointAsOwner:
 
     @pytest.mark.parametrize("leg", sorted(file_delivery_consent.NEVER_GRANTABLE_CLASSES))
     def test_post_refuses_a_never_grantable_leg_as_unknown(self, leg):
-        """A request naming an upload leg is refused before the store is reached."""
+        """A request naming an upload leg is refused before anything is armed."""
         from kiro_crew.dashboard.handlers import file_delivery_consent as handler
 
         resp = asyncio.run(

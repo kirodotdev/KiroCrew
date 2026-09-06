@@ -1581,6 +1581,24 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         ),
     ),
     DeniedCommandRule(
+        id="self-protection-file-delivery",
+        pattern=".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+file-delivery.*",
+        category="self-protection",
+        description=(
+            "Blocks 'kirocrew file-delivery approve' so the agent cannot complete the "
+            "flagged-file delivery consent step-up itself. The approve verb reads a "
+            "single-use nonce from the sandbox-MASKED file-delivery-consent-pending/ "
+            "leaf and POSTs it over loopback to record the grant; without this floor "
+            "rule a prompt-injected agent that armed a request via the owner's browser "
+            "could run the verb through its own shell and self-approve delivery of the "
+            "owner's secrets -- the exact hole the arm/approve split exists to close. "
+            "The nonce leaf being bind-masked from the sandbox already stops the agent "
+            "reading or forging the nonce; this rule is the defence-in-depth partner "
+            "that also denies the agent invoking the verb, mirroring "
+            "'self-protection-update', which is agent-proof on this same floor."
+        ),
+    ),
+    DeniedCommandRule(
         id="self-protection-cloud",
         pattern=(
             ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloud\\s+"
@@ -1919,6 +1937,7 @@ _SELF_PROTECTION_FLOOR_RULE_IDS: frozenset[str] = frozenset(
         "self-protection-kill",
         "self-protection-restart",
         "self-protection-update",
+        "self-protection-file-delivery",
         "self-protection-gateway-restart",
         "self-protection-cloud",
         "self-protection-dev-mode-out-of-root-confirm",
@@ -1963,6 +1982,11 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
     "self-protection-update": (
         "Matched structurally on the command's argv, not by the pattern text above: "
         "shell de-escaping resolves the command to a self-update."
+    ),
+    "self-protection-file-delivery": (
+        "Matched structurally on the command's argv, not by the pattern text above: "
+        "shell de-escaping resolves the command to 'kirocrew file-delivery', whose "
+        "approve verb would complete a flagged-file delivery consent step-up."
     ),
     "self-protection-gateway-restart": (
         "Matched structurally on the command's argv, not by the pattern text above: "
@@ -6415,6 +6439,20 @@ def _is_self_update(text_lower: str) -> bool:
     return _matches_self_subcommand(text_lower, ("update",))
 
 
+def _is_self_file_delivery(text_lower: str) -> bool:
+    """``kirocrew file-delivery`` behind any shell dressing of interposed flags.
+
+    Structural, not regex-tier, for the same reason the other self-protection
+    predicates are: the approve verb's authority is possession of a nonce on the
+    sandbox-MASKED ``file-delivery-consent-pending/`` leaf. The mask already stops
+    a prompt-injected agent reading or forging that nonce; denying the command
+    here is the defence-in-depth partner that also stops the agent invoking the
+    verb to complete its own armed step-up -- exactly as ``_is_self_update``
+    fences ``kirocrew update``.
+    """
+    return _matches_self_subcommand(text_lower, ("file-delivery",))
+
+
 def _is_self_gateway_restart(text_lower: str) -> bool:
     """``kirocrew gateway restart`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("gateway", "restart"))
@@ -8470,6 +8508,20 @@ _CREW_SECRET_LEAVES: list[str] = [
     # writer and opens the path directly, not through this gate, so it keeps
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
+    # The single-use step-up nonce that authorizes RECORDING a flagged-file
+    # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
+    # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level
+    # leaf rather than under ``trust/`` on purpose: ``trust/`` is sandbox-VISIBLE
+    # (it holds SEL append targets an in-sandbox MCP server writes), so a
+    # prompt-injected agent could FORGE a nonce there with a runtime-constructed
+    # shell path (the acknowledged evadable tier) and then drive the owner's
+    # loopback browser to POST that chosen nonce -- recording a grant with no
+    # human present. This leaf has NO in-sandbox reader (the gateway writes it on
+    # arm, the host ``kirocrew file-delivery approve`` reads it), so it is also
+    # bind-masked in ``sandbox._CREW_HIDDEN_LEAVES``; masking is what actually
+    # closes the forge path, since the text/argv file gate alone does not stop a
+    # runtime-constructed shell write.
+    "file-delivery-consent-pending",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
@@ -17845,6 +17897,7 @@ def is_denied(
         ("self-protection-kill", _is_self_kill),
         ("self-protection-restart", _is_self_restart),
         ("self-protection-update", _is_self_update),
+        ("self-protection-file-delivery", _is_self_file_delivery),
         ("self-protection-gateway-restart", _is_self_gateway_restart),
         ("self-protection-cloud", _is_self_cloud_destructive),
         ("self-protection-dev-mode-out-of-root-confirm", _is_dev_mode_out_of_root_confirm),

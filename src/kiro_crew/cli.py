@@ -1904,6 +1904,17 @@ Examples:
         ),
     )
 
+    # file-delivery
+    file_delivery_parser = cli_help.add_command(sub, "file-delivery")
+    file_delivery_parser.add_argument(
+        "action",
+        choices=["approve"],
+        help=(
+            "approve: finish a flagged-file delivery consent armed from the "
+            "dashboard's Security panel (proves you are at the host)"
+        ),
+    )
+
     # stop
     stop_parser = cli_help.add_command(sub, "stop")
     stop_parser.add_argument(
@@ -2849,6 +2860,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             from kiro_crew.cli_server import _update
 
             _update(force=args.force)
+    elif args.command == "file-delivery":
+        from kiro_crew.cli_server import _file_delivery_approve
+
+        _file_delivery_approve()
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 

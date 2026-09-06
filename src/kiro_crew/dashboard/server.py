@@ -400,6 +400,18 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # boundary, and the handler re-asserts host-locality itself because a
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
+        # Flagged-file delivery approval (issue #7770 step-up), the exact mirror
+        # of /api/update/approve above and STRICT for the identical reason: its
+        # only legitimate caller is `kirocrew file-delivery approve` on the gateway
+        # host presenting the sandbox-masked nonce plus X-Internal-Secret. As with
+        # update approve, "no browser ever posts to it -- the SPA can only ARM;
+        # keeping it off the cookie fall-through means a dashboard bearer cannot
+        # even reach the handler whose refusal is the boundary". The handler
+        # (api_file_delivery_consent_approve -> _approve_is_local) re-asserts
+        # host-locality itself, so the STRICT entry is the outer of two fences and
+        # a local_only=False deployment that reclassifies strict paths as mixed is
+        # still caught by the handler's own check.
+        "/api/file-delivery/consent/approve",
         "/api/session-tool-policy",
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no

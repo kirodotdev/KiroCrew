@@ -139,6 +139,12 @@ def register(app: web.Application) -> None:
     # its only legitimate caller IS the owner's browser.
     app.router.add_get("/api/file-delivery/consent", handlers.api_file_delivery_consent_get)
     app.router.add_post("/api/file-delivery/consent", handlers.api_file_delivery_consent_post)
+    app.router.add_get(
+        "/api/file-delivery/consent/arm", handlers.api_file_delivery_consent_arm_status
+    )
+    app.router.add_post(
+        "/api/file-delivery/consent/approve", handlers.api_file_delivery_consent_approve
+    )
     app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)

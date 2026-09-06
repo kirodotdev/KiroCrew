@@ -611,9 +611,11 @@ class TestMaskableDirsAreMaterializedBeforeTheSpawn:
             assert (crew_home / leaf).is_dir()
 
     def test_an_existing_directory_is_left_alone_and_not_reported(self, crew_home):
-        target = crew_home / "aws-control-staging"
-        target.mkdir(parents=True)
-        marker = target / "drive-preview-live"
+        # Pre-create every maskable leaf: an already-present dir must be left
+        # alone and not reported, whatever leaves the list carries.
+        for leaf in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES:
+            (crew_home / leaf).mkdir(parents=True, exist_ok=True)
+        marker = crew_home / "aws-control-staging" / "drive-preview-live"
         marker.mkdir()
 
         assert sandbox._materialize_maskable_dirs() == []

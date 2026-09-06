@@ -220,12 +220,26 @@ is `/settings/<key>`. Panels live in `pages/settings/`.
 | `about` | Version, build, diagnostics bundle | `AboutPanel.tsx`, `ReportProblemCard.tsx` | `handlers/diagnostics.py`, `handlers/feedback.py` | `POST /api/diagnostics/collect`, `GET /api/diagnostics/download/{filename}` |
 
 Flagged-file delivery consent (`GET,POST,DELETE /api/file-delivery/consent`,
-owner-gated) is listed on the `security` row because that is the tab it belongs
-to, but **no panel is wired to it yet** -- the endpoints are the only way to
-record or withdraw the grant today (#8793). Stated rather than implied: the
-backend control landed first so the delivery gates could read it, and the panel
-is a follow-up. Nothing about the grant is reachable from an agent either way;
-the record sits on the sandbox-sealed keystone floor.
+plus `GET /api/file-delivery/consent/arm` and the host-only
+`POST /api/file-delivery/consent/approve`) is listed on the `security` row
+because that is the tab it belongs to, and the panel wired to it is that tab's
+`Flagged-file delivery` section (#8793). Stated rather than implied: the backend
+control landed first so the delivery gates could read it, and the panel followed.
+The panel is a VIEW over the grant -- it reads and withdraws through the
+owner-gated endpoints, and it does not record a grant directly. Recording takes a
+two-step human-only step-up (issue #7770): the owner-gated POST only ARMS a
+request (writing a single-use nonce), and the grant is recorded by the
+loopback-only `/approve` endpoint whose authority is host-locality plus
+possession of that nonce, NOT an owner session -- so an owner-authenticated but
+agent-DRIVEN browser cannot self-grant. Two things fence the agent from the
+nonce: it lives in its own leaf (`file-delivery-consent-pending/`) that is
+bind-MASKED from the agent sandbox, so a prompt-injected agent cannot read it or
+forge one there with a runtime-constructed shell path; and the
+`self-protection-file-delivery` denied-command floor rule blocks the agent from
+running `kirocrew file-delivery approve` at all (the same floor that makes
+`kirocrew update`'s step-up agent-proof). The nonce is deliberately NOT under
+`trust/`, which is sandbox-VISIBLE for SEL appends and so would leave the file
+forgeable.
 
 Instances is deliberately not a rail row: it is set up here once and switched
 from the header tab strip. Webhooks carries both a preview flag and

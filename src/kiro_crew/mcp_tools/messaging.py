@@ -789,9 +789,12 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             return (
                 "Error: file content contains sensitive data; send aborted. The owner "
                 "can allow delivery to this machine's outbox and their own dashboard "
-                "by recording consent at POST /api/file-delivery/consent"
-                "?destination_class=owner_dashboard (owner-gated; no agent can write "
-                "it). The Slack and channel upload legs can never be granted."
+                "in Settings > Security > Flagged-file delivery (owner-gated; no agent "
+                "can write it). That panel ARMS the request via POST "
+                "/api/file-delivery/consent?destination_class=owner_dashboard; the grant "
+                "is then RECORDED only by running `kirocrew file-delivery approve` on the "
+                "host, so arming alone leaves delivery blocked. The Slack and channel "
+                "upload legs can never be granted."
             )
         delivered_under_consent = True
         mcp_core.sel().log_tool_invocation(
