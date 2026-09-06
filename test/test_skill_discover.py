@@ -21,6 +21,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from conftest import make_dir_link
+from kiro_crew import platform_compat
+
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
@@ -250,6 +253,91 @@ class TestDiscoverInstall:
             assert (link / "SKILL.md").exists()
             # ...and NOTHING landed at the old symlink target.
             assert list(outside.iterdir()) == []
+        finally:
+            await client.close()
+
+    async def test_install_overwrite_replaces_junctioned_skill_dir(
+        self, fake_home, reset_registry, tmp_path
+    ):
+        """The same regression as the test above, spelled the way Windows spells it.
+
+        `skill_dir.is_symlink()` is False for a junction, so the leaf-link defence
+        never fires. With `overwrite=True` the next line is
+        `shutil.rmtree(skill_dir)`, and `rmtree` REFUSES a junction exactly as it
+        refuses a symlink — an uncaught `OSError` out of
+        `asyncio.to_thread(_write_bundle)`, which has no `except` in scope.
+
+        A junction is not an exotic spelling of this layout: a *directory* symlink
+        on Windows needs `SeCreateSymbolicLinkPrivilege`, a junction needs none, so
+        it is the shape an unprivileged process can actually plant.
+        """
+        client, skills_dir = await self._client(fake_home)
+        try:
+            outside = tmp_path / "outside-target"
+            outside.mkdir()
+            provider_dir = skills_dir / "fakeprov"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            link = provider_dir / "fake-skill"
+            make_dir_link(link, outside)
+
+            # Guard the guard, through an oracle OUTSIDE the module under test:
+            # if this were an ordinary directory the test would prove nothing.
+            assert platform_compat.is_link_or_junction(link)
+            assert link.exists(), "the link must be followable, or rmtree never runs"
+
+            resp = await client.post(
+                "/api/skills/-/discover/install",
+                json={
+                    "provider": "fakeprov",
+                    "skill_id": "fake-skill",
+                    "overwrite": True,
+                },
+            )
+            assert resp.status == 200
+            assert not platform_compat.is_link_or_junction(link)
+            assert (link / "SKILL.md").exists()
+            # ...and NOTHING landed at the old link target.
+            assert list(outside.iterdir()) == []
+        finally:
+            await client.close()
+
+    async def test_the_junctions_target_survives_being_replaced(
+        self, fake_home, reset_registry, tmp_path
+    ):
+        """Removing the link must not remove what it pointed at.
+
+        This is the property `unlink_link_or_junction` exists for and the reason
+        the defence cannot simply be `shutil.rmtree`: a junction is a directory
+        reparse point, so it is unlinked with `rmdir` — which detaches the
+        junction and never touches the target's contents.
+
+        The sibling test above proves nothing was WRITTEN outside the root; this
+        one proves nothing was DELETED outside it either.
+        """
+        client, skills_dir = await self._client(fake_home)
+        try:
+            outside = tmp_path / "outside-target"
+            outside.mkdir()
+            bystander = outside / "keep-me.txt"
+            bystander.write_text("not ours to delete", encoding="utf-8")
+            provider_dir = skills_dir / "fakeprov"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            link = provider_dir / "fake-skill"
+            make_dir_link(link, outside)
+            assert platform_compat.is_link_or_junction(link)
+
+            resp = await client.post(
+                "/api/skills/-/discover/install",
+                json={
+                    "provider": "fakeprov",
+                    "skill_id": "fake-skill",
+                    "overwrite": True,
+                },
+            )
+            assert resp.status == 200
+            assert bystander.read_text(encoding="utf-8") == "not ours to delete"
+            assert (link / "SKILL.md").exists()
+            assert not (outside / "SKILL.md").exists()
         finally:
             await client.close()
 
