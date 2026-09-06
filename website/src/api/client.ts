@@ -20,6 +20,7 @@ import type {
   WorkflowRunSummary,
 } from '../types'
 import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
+import type { AutoNudgeListResponse } from '../components/autoNudgeLoop'
 import { ApiError, friendlyErrText } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
@@ -2977,9 +2978,12 @@ export const api = {
   /** Top contributors to an app's source repo (GitHub only). Owner-gated. */
   appContributors: (url: string, refresh = false) => post('/api/source/contributors', { url, refresh }).then(j) as Promise<{ contributors: AppContributor[] }>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
-  /** All goal loops across sessions. Returns `{enabled:false, loops:[]}` when
-   *  the auto-nudge feature flag is off, so callers need no flag check. */
-  autonudgeList: (): Promise<{ enabled: boolean; loops: { slot_key: string; active?: boolean; cycle_count?: number; max_cycles?: number }[] }> =>
+  /** All goal loops across sessions — every record the service holds, ACTIVE
+   *  OR STOPPED (a stopped loop keeps `active: false` + `stopped_reason`, which
+   *  is how a surface can say WHY a patrol went quiet). Returns
+   *  `{enabled:false, loops:[]}` when the auto-nudge feature flag is off, so
+   *  callers need no flag check. */
+  autonudgeList: (): Promise<AutoNudgeListResponse> =>
     fetch('/api/autonudge').then(j),
   /** Every pull request / issue link a session carries — the unbudgeted read
    *  behind the sidebar's expandable "+N" overflow chip. The slots payload caps

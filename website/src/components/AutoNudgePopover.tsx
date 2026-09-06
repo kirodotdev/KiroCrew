@@ -9,21 +9,9 @@ import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDraft
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
-import { fmtTimeNumeric, fmtDuration } from '../i18n/format'
-export interface AutoNudgeLoop {
-  id: string
-  slot_key: string
-  message: string
-  idle_secs: number
-  max_cycles: number
-  cycle_count: number
-  active: boolean
-  last_fire_ts: number
-  /** Absolute wall-clock deadline for the next fire; 0 = not yet scheduled.
-   *  Already serialized by the backend's `asdict(loop)` — the field simply
-   *  was not surfaced here before (#6482). */
-  next_due_ts: number
-}
+import { fmtTimeNumeric } from '../i18n/format'
+import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText } from './autoNudgeLoop'
+export type { AutoNudgeLoop } from './autoNudgeLoop'
 
 interface Props {
   slotKey: string
@@ -235,41 +223,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     return () => clearInterval(timer)
   }, [ticking])
   const refreshNow = () => setNowTs(Date.now() / 1000)
-  /** Hover/popover line for the next trigger, or '' when no active loop.
-   *  Semantics: the loop is deadline-preserving — a user turn defers a due fire
-   *  until the turn ends but never pushes the deadline back — so an elapsed
-   *  deadline reads "due, fires after the current turn" rather than a negative
-   *  countdown. next_due_ts of 0 means the next arm has not scheduled yet.
-   *  next_due_ts is a SERVER wall-clock deadline rendered against the CLIENT
-   *  clock; skew shifts the countdown by that skew, and the due-fallback below
-   *  bounds the visible damage. */
-  const countdownText = (() => {
-    if (!loop?.active) return ''
-    if (!(loop.next_due_ts > 0)) return i18nT('components.autoNudgePopover.next_cycle_unscheduled')
-    const remaining = Math.round(loop.next_due_ts - nowTs)
-    if (remaining <= 0) return i18nT('components.autoNudgePopover.next_cycle_due')
-    const h = Math.floor(remaining / 3600)
-    const m = Math.floor((remaining % 3600) / 60)
-    const s = remaining % 60
-    // Above an hour the seconds digit is noise on a tooltip; below it, keep
-    // the tick visible so the affordance reads as live.
-    const parts: Array<[number, 'hour' | 'minute' | 'second']> =
-      h > 0 ? [[h, 'hour'], [m, 'minute']] : [[m, 'minute'], [s, 'second']]
-    return i18nT('components.autoNudgePopover.next_cycle_in', {
-      time: fmtDuration(parts, { dropZero: true }),
-    })
-  })()
+  /** Hover/popover line for the next trigger, or '' when no active loop — the
+   *  shared deadline-preserving reading (see `nextCycleText`). */
+  const countdownText = nextCycleText(loop, nowTs)
   /** The tooltip only carries a REAL deadline signal (counting or due) — the
    *  "not yet scheduled" placeholder is popover-only, so an armed-but-unscheduled
    *  loop keeps the plain "Goal active (cycle N)" title. */
   const titleCountdown = loop?.active && (loop.next_due_ts || 0) > 0 ? countdownText : ''
-  /** Cycle readout for the chip, tooltip and popover header: "3/24" when a
-   *  finite cap is armed, and a bare "3" when max_cycles is 0, which means
-   *  infinite -- a loop with no backstop has no denominator to count toward.
-   *  Interpolated as the {{cycle}} VALUE of the existing strings, so no
-   *  catalogue text changes. Unlike the countdown this is safe in aria-label:
-   *  it changes once per cycle, not once per second. */
-  const cycleText = loop?.max_cycles && loop.max_cycles > 0 ? `${loop.cycle_count}/${loop.max_cycles}` : String(loop?.cycle_count ?? 0)
+  /** Cycle readout for the chip, tooltip and popover header ("3/24", or a
+   *  bare "3" under an infinite cap). Interpolated as the {{cycle}} VALUE of
+   *  the existing strings, so no catalogue text changes. Unlike the countdown
+   *  this is safe in aria-label: it changes once per cycle, not once per
+   *  second. */
+  const cycleText = loopCycleText(loop)
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>

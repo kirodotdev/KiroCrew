@@ -15,6 +15,7 @@ import {
 import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
+import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
 import { slotChangeUrls } from '../utils/pullRequestLinks'
@@ -396,6 +397,9 @@ export function useWebSocket() {
     // an exception escaping here would silently strand those — a cosmetic seed
     // must never be able to do that.
     try {
+      // Same moment, same reason, for the full-registry readers: a stop that
+      // landed while the socket was down was a frame nobody received.
+      queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
       api.autonudgeList()
         .then(res => {
           // A live frame superseded this snapshot — it is now stale, so drop it
@@ -410,7 +414,7 @@ export function useWebSocket() {
         })
         .catch(() => {})
     } catch { /* seed is cosmetic — never break the connect path */ }
-  }, [dispatch])
+  }, [dispatch, queryClient])
 
   const syncPendingApprovals = useCallback(async () => {
     try {
@@ -1856,6 +1860,11 @@ export function useWebSocket() {
                 max_cycles: Number(nudge.loop?.max_cycles) || 0,
               }))
             }
+            // Readers of the FULL registry (the Crew Members drawer's patrol
+            // block needs stopped_reason, next_due_ts and banner, none of which
+            // ride this frame) re-read it in place rather than merging a partial
+            // payload — one seed path, not a third copy of the merge.
+            queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
             break
           }
           case 'voice_chunk': {

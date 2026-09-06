@@ -15,6 +15,10 @@ vi.mock('../../api/client', () => ({
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
     kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: '' })),
+    // The auto-patrol block and roster badge read the whole loop registry;
+    // the default is "feature on, nothing armed" so every other case renders
+    // the page without a loop in the way.
+    autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
   },
 }))
 
@@ -643,5 +647,194 @@ describe('MembersPage drawer — driving sessions', () => {
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('research'))
     await waitFor(() => expect(screen.getAllByTestId('member-driving-row')).toHaveLength(5))
     expect(screen.getByTestId('member-driving-toggle')).toHaveAttribute('aria-expanded', 'false')
+  })
+})
+
+describe('MembersPage auto patrol (monitor loop status)', () => {
+  // The auto-nudge loop bound to a member's own DM slot is what wakes a
+  // standing member without anyone asking. The block reads the whole
+  // registry (`GET /api/autonudge`) and filters on the member's slot key —
+  // `member-<slug>` — so a loop on somebody else's slot must never show up
+  // under this member.
+  const loop = (overrides: Record<string, unknown> = {}) => ({
+    id: 'loop-1',
+    slot_key: 'member-oncall',
+    message: 'Patrol the queue.\nSecond line the row must not show.',
+    idle_secs: 1200,
+    max_cycles: 24,
+    cycle_count: 3,
+    active: true,
+    last_fire_ts: Date.now() / 1000 - 180,
+    next_due_ts: Date.now() / 1000 + 900,
+    banner: '',
+    stopped_reason: '',
+    ...overrides,
+  })
+
+  async function openDrawerWith(registry: { loops: unknown[] }) {
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, ...registry })
+    const utils = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('member-drawer')
+    await waitFor(() => expect(screen.queryByTestId('member-patrol-loading')).toBeNull())
+    return utils
+  }
+
+  // `mockResolvedValue` / `mockRejectedValue` outlive `vi.clearAllMocks()`
+  // (that clears calls, not implementations), so each case starts from the
+  // module default rather than inheriting the previous case's registry.
+  beforeEach(() => {
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [] })
+    // The wake-sources cases above leave `crons` REJECTING for the rest of the
+    // file; the Wake sources assertions below need a good read.
+    vi.mocked(api.crons).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.webhooks).mockResolvedValue({ tokens: [] })
+  })
+
+  it('an active loop renders as patrolling, with interval, cycles, last and next wake, and the banner-or-instruction line', async () => {
+    await openDrawerWith({ loops: [loop()] })
+    const block = screen.getByTestId('member-patrol')
+    expect(block).toHaveAttribute('data-state', 'active')
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/patrolling/i)
+    // Finite cap: self-describing in the drawer ("3 of 24"); the compact
+    // "3/24" stays on the roster badge, where it has the tooltip's sentence.
+    expect(screen.getByTestId('member-patrol-cycles')).toHaveTextContent('3 of 24')
+    // Interval via the shared narrow-unit duration formatter (`20m`).
+    expect(screen.getByTestId('member-patrol-interval')).toHaveTextContent('20m')
+    // The value is the bare remainder ("Due in 14m 59s"): the row label already
+    // says "Next wake", so the popover's full sentence would read doubled.
+    expect(block).toHaveTextContent(/next wake/i)
+    expect(screen.getByTestId('member-patrol-next')).toHaveTextContent(/^Due in \d/)
+    expect(screen.getByTestId('member-patrol-next')).not.toHaveTextContent(/next cycle/i)
+    // No banner: the instruction's FIRST line stands in, the rest is title-only.
+    const instruction = screen.getByTestId('member-patrol-instruction')
+    expect(instruction).toHaveTextContent('Patrol the queue.')
+    expect(instruction).not.toHaveTextContent('Second line')
+  })
+
+  it('an unlimited cap says so instead of rendering a denominator of zero', async () => {
+    await openDrawerWith({ loops: [loop({ max_cycles: 0, cycle_count: 61 })] })
+    const cycles = screen.getByTestId('member-patrol-cycles')
+    expect(cycles).toHaveTextContent('61')
+    expect(cycles).toHaveTextContent(/no limit/i)
+    expect(cycles).not.toHaveTextContent('61/0')
+  })
+
+  it('a banner, when set, is what the instruction row shows', async () => {
+    await openDrawerWith({ loops: [loop({ banner: 'watching PR #123' })] })
+    expect(screen.getByTestId('member-patrol-instruction')).toHaveTextContent('watching PR #123')
+  })
+
+  it('no loop on the member slot renders "no patrol scheduled" — and a loop on ANOTHER slot does not leak in', async () => {
+    await openDrawerWith({ loops: [loop({ slot_key: 'member-research' }), loop({ slot_key: 'chat-1-abc' })] })
+    expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'none')
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/no patrol scheduled/i)
+  })
+
+  it('a stopped loop keeps its reason visible instead of collapsing into "no patrol scheduled"', async () => {
+    // This is the failure the block exists for: a loop that hit its cycle
+    // cap stops silently, and a page that reads that as "nothing scheduled"
+    // hides the one fact that would have told someone the member is dead.
+    await openDrawerWith({ loops: [loop({ active: false, stopped_reason: 'cycle_cap' })] })
+    expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'stopped')
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/patrol stopped/i)
+    expect(screen.getByTestId('member-patrol-reason')).toHaveTextContent(/wake limit/i)
+    expect(screen.queryByText(/no patrol scheduled/i)).toBeNull()
+  })
+
+  it('an active patrol is listed under Wake sources, so the card cannot say "nothing wakes this member" above a live one', async () => {
+    await openDrawerWith({ loops: [loop()] })
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/auto patrol/i)
+    expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/every 20m/i)
+    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
+  })
+
+  it('without a live patrol the Wake sources empty line still renders', async () => {
+    await openDrawerWith({ loops: [loop({ active: false, stopped_reason: 'manual' })] })
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    expect(screen.queryByTestId('member-wake-patrol')).toBeNull()
+    expect(screen.getByText(/nothing wakes this member/i)).toBeInTheDocument()
+  })
+
+  it('a failed registry read renders the error state, never the affirmative empty state', async () => {
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('member-drawer')
+    // The shared ErrorNotice (structured context + agent hand-off), not a
+    // hand-rolled alert box.
+    const notice = await screen.findByTestId('member-patrol-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent(/patrol status/i)
+    expect(screen.queryByTestId('member-patrol')).toBeNull()
+    // The roster says so too: every badge is blank for an unknown reason,
+    // which must not read as "no member has a patrol".
+    expect(screen.getByTestId('member-roster-patrol-error')).toHaveAttribute('role', 'alert')
+  })
+
+  it('a failed registry read is announced on the roster even with no drawer open', async () => {
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    await screen.findByText('oncall')
+    expect(await screen.findByTestId('member-roster-patrol-error')).toHaveTextContent(/patrol status/i)
+    expect(screen.queryByTestId('member-patrol-dot')).toBeNull()
+  })
+
+  it('the roster badge is accent on an active loop and warn on a stopped one, beside — not instead of — the presence dot', async () => {
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: true,
+      loops: [
+        loop({ slot_key: 'member-radar' }),
+        loop({ id: 'loop-2', slot_key: 'member-scout', active: false, stopped_reason: 'cycle_cap' }),
+      ],
+    })
+    await renderPage([
+      row({ name: 'radar', slug: 'radar', bound: true, slot_key: 'member-radar', running: true }),
+      row({ name: 'scout', slug: 'scout', bound: true, slot_key: 'member-scout' }),
+      row({ name: 'scribe', slug: 'scribe', bound: true, slot_key: 'member-scribe' }),
+    ])
+    await screen.findByText('radar')
+    // Two badges: radar's (active, accent) and scout's (stopped, warn — the
+    // dead patrol must show at the roster, not only in the drawer). scribe
+    // never armed one and shows nothing. The active badge carries the wake
+    // readout for AT; the stopped one names the state.
+    const badges = await screen.findAllByTestId('member-patrol-dot')
+    expect(badges).toHaveLength(2)
+    const byState = Object.fromEntries(badges.map((b) => [b.getAttribute('data-state'), b]))
+    expect(byState.active).toHaveAttribute('aria-label', expect.stringMatching(/3 of 24/))
+    expect(byState.stopped).toHaveAttribute('aria-label', expect.stringMatching(/patrol stopped/i))
+    // Both signals on one avatar: patrol badge (top-right) AND presence dot
+    // (bottom-right) — neither replaces the other.
+    expect(screen.getAllByTestId('member-presence-dot')).toHaveLength(1)
+  })
+
+  it('the registry is a live React Query read: invalidating it (what the websocket hook does on every frame and reconnect) arms and disarms the badge', async () => {
+    const { queryClient } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    await screen.findByText('oncall')
+    await waitFor(() => expect(api.autonudgeList).toHaveBeenCalled())
+    expect(screen.queryByTestId('member-patrol-dot')).toBeNull()
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [loop()] })
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['autonudge-loops'] })
+    })
+    expect(await screen.findByTestId('member-patrol-dot')).toBeInTheDocument()
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [] })
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['autonudge-loops'] })
+    })
+    // AnimatePresence keeps the badge for its exit tween — wait for removal.
+    await waitFor(() => expect(screen.queryByTestId('member-patrol-dot')).toBeNull())
+  })
+
+  it('a refetch failure after a good read keeps the last verdict instead of flipping to the error state', async () => {
+    const { queryClient } = await openDrawerWith({ loops: [loop()] })
+    expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'active')
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['autonudge-loops'] })
+    })
+    expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'active')
+    expect(screen.queryByTestId('member-patrol-error')).toBeNull()
   })
 })

@@ -21,13 +21,22 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Circle, Clock, ExternalLink, Pencil, UserPlus, Users, Webhook } from 'lucide-react'
+import { ArrowLeft, Circle, Clock, ExternalLink, Goal, Pause, Pencil, UserPlus, Users, Webhook } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberActivityEntry, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
 import type { CronJob } from '../../types'
 import { wakesCrew, webhookBoundToCrew } from '../../components/crew/wakesCrew'
+import {
+  AUTONUDGE_LOOPS_QUERY_KEY,
+  type AutoNudgeLoop,
+  intervalText,
+  nextCycle,
+} from '../../components/autoNudgeLoop'
+import { useQuery } from '@tanstack/react-query'
+import ErrorNotice from '../../components/ErrorNotice'
 import { timeAgo } from '../../utils/timeAgo'
+import { fmtDateTimeNumeric } from '../../i18n/format'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { markSlotRead } from '../../store/dashboardSlice'
 import CrewAvatar from '../../components/CrewAvatar'
@@ -85,6 +94,27 @@ const DRIVING_STATUS: Record<TabStatus, { cls: string; text: string; label: stri
 }
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
 const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROSTER_MAX, ROSTER_DEFAULT)
+/** The auto-nudge service's terminal codes (`NudgeLoop.stopped_reason`) a
+ *  member slot can actually receive, each mapped to the sentence the patrol
+ *  block shows for a stopped loop. A code not listed here — a future terminal
+ *  condition, or `autonudge_stop`, which today only research loops are
+ *  stamped with — falls back to the code itself rather than to a sentence
+ *  nothing produces. */
+const PATROL_STOPPED_REASON: Record<string, string> = {
+  manual: 'pages.membersPage.patrol_stopped_manual',
+  cycle_cap: 'pages.membersPage.patrol_stopped_cycle_cap',
+  runtime_budget: 'pages.membersPage.patrol_stopped_runtime_budget',
+  approval_stalled: 'pages.membersPage.patrol_stopped_approval_stalled',
+}
+/** Floor under the websocket-driven invalidation of the loop registry: frames
+ *  fire only on change, so a frame lost to a dropped socket would otherwise
+ *  leave a stale verdict on screen indefinitely. One minute bounds that. */
+const PATROL_REFRESH_MS = 60_000
+/** How often the "next wake in …" countdown in the drawer re-reads the clock.
+ *  Coarser than the popover's per-second tick on purpose: the drawer line is
+ *  an at-a-glance status, and a per-second re-render of the whole drawer for
+ *  a readout that already drops seconds above a minute buys nothing. */
+const PATROL_TICK_MS = 15_000
 
 export default function MembersPage() {
   const { t } = useTranslation()
@@ -345,6 +375,86 @@ export default function MembersPage() {
     [slots, unreadSlots],
   )
 
+  // Auto patrol: the auto-nudge loop (monitor / goal loop) bound to a member's
+  // own DM slot. This is the thing that wakes a standing member without anyone
+  // asking — so a member whose loop has silently stopped, or never armed, is a
+  // member that will not act again until someone notices. The roster badge
+  // and the drawer block both read from here, so the whole registry is read
+  // (the badge needs every member, not just the open drawer's) and filtered
+  // per member at render by slot key — the member's derived slot is
+  // `member-<slug>`, resolved the same way isRunning resolves it.
+  //
+  // One React Query read, not a private fetch + frame merge: the websocket
+  // hook invalidates AUTONUDGE_LOOPS_QUERY_KEY on every `autonudge_state`
+  // frame AND on every (re)connect, so a stop that landed while the socket was
+  // down is re-read the moment it comes back, and a transient mount-time
+  // failure is retried on the next signal rather than freezing the block in
+  // its failed state. The interval is a floor under that: frames fire only on
+  // change, and the one reading this block must never give is a stale
+  // "Patrolling" for a dead patrol.
+  const patrolQuery = useQuery({
+    queryKey: AUTONUDGE_LOOPS_QUERY_KEY,
+    queryFn: () => api.autonudgeList(),
+    refetchInterval: PATROL_REFRESH_MS,
+    refetchOnReconnect: true,
+  })
+  // `failed` is kept distinct from empty for the same reason the wake-sources
+  // block keeps it: a failed read must never render the affirmative "no patrol
+  // scheduled", which is precisely the false statement this block exists to
+  // prevent. A refetch error after a good read keeps showing the last data.
+  const patrol = useMemo(() => {
+    const data = patrolQuery.data
+    const loops: Record<string, AutoNudgeLoop> = {}
+    for (const lp of data?.loops || []) if (lp?.slot_key) loops[lp.slot_key] = lp
+    return {
+      loaded: data !== undefined || patrolQuery.isError,
+      failed: data === undefined && patrolQuery.isError,
+      loops,
+    }
+  }, [patrolQuery.data, patrolQuery.isError])
+  const patrolLoopOf = useCallback(
+    (m: MemberRosterRow) => {
+      const key = slots[m.name] || m.slot_key
+      return key ? patrol.loops[key] : undefined
+    },
+    [slots, patrol.loops],
+  )
+  /** Roster-level reading of a member's loop record: `active` while it
+   *  patrols, `stopped` for a record that went inactive (any reason), and
+   *  nothing for a member that never armed one. The stopped state is the
+   *  incident's at-a-glance case — a dead patrol must show at the roster,
+   *  not only once someone opens the drawer. */
+  const patrolBadgeOf = useCallback(
+    (m: MemberRosterRow): 'active' | 'stopped' | null => {
+      const lp = patrolLoopOf(m)
+      return lp ? (lp.active ? 'active' : 'stopped') : null
+    },
+    [patrolLoopOf],
+  )
+  const activePatrol = activeMemberKey ? patrol.loops[activeMemberKey] : undefined
+  // Which of the block's three verdicts to render. An active loop wins; a
+  // stopped loop keeps its reason visible rather than collapsing into
+  // "nothing scheduled" — that collapse is exactly how a dead patrol goes
+  // unnoticed. (A refused arm is a reserved fourth verdict: the registry
+  // contract names the field, but no backend emits it yet, so nothing here
+  // renders one.)
+  const patrolState: 'active' | 'stopped' | 'none' = activePatrol?.active
+    ? 'active'
+    : activePatrol
+      ? 'stopped'
+      : 'none'
+  // Clock for the "next wake" countdown, ticking only while the drawer shows
+  // an active loop — the same deadline-preserving reading the composer's goal
+  // chip renders (see nextCycleText), on a coarser tick.
+  const [nowTs, setNowTs] = useState(() => Date.now() / 1000)
+  const patrolTicking = drawerOpen && patrolState === 'active'
+  useEffect(() => {
+    if (!patrolTicking) return
+    setNowTs(Date.now() / 1000)
+    const timer = setInterval(() => setNowTs(Date.now() / 1000), PATROL_TICK_MS)
+    return () => clearInterval(timer)
+  }, [patrolTicking])
+
   const openMember = useCallback(
     (m: MemberRosterRow) => {
       setActiveName(m.name)
@@ -434,6 +544,22 @@ export default function MembersPage() {
         <div className="px-4 pb-2 text-[11px] text-muted">
           {t('pages.membersPage.member_count', { count: members.length })}
         </div>
+        {/* A failed registry read blanks EVERY roster badge at once. That is
+            not "no member has a patrol" — it is a page-level unknown, so it
+            is said here, on the roster the badges live on, not only inside
+            whichever drawer happens to be open. Same shared notice as the
+            drawer block; a read failure on a page holding no draft is safe
+            to hand to the agent. */}
+        {patrol.failed && (
+          <div className="px-4 pb-2">
+            <ErrorNotice
+              message={t('pages.membersPage.patrol_error_roster')}
+              variant="inline"
+              askAgent
+              testId="member-roster-patrol-error"
+            />
+          </div>
+        )}
         {/* Same search idiom as the Sessions sidebar. */}
         <div className="px-2 pb-1">
           <SearchInput
@@ -498,6 +624,63 @@ export default function MembersPage() {
                       data-testid="member-presence-dot"
                     />
                   )}
+                  {/* Patrol badge — the member has an auto-nudge loop on its
+                      own thread. Accent while it patrols; warn once the loop
+                      has STOPPED, because a dead patrol is the thing this
+                      page exists to make visible at a glance, not only after
+                      the drawer opens. Top-right corner of the avatar, the
+                      composer's goal-chip glyph on a solid fill (the presence
+                      dot's own idiom — an outline read as nothing at a
+                      glance): a different corner from the presence dot (bottom-right, ok-green, "working now") and
+                      a different edge from the row's right-side markers, so
+                      all of them can show at once without covering each
+                      other. Mount/unmount and the colour flip are animated:
+                      a badge that pops in or changes mid-glance is what a
+                      state change looks like when it is not a glitch. */}
+                  <AnimatePresence initial={false}>
+                    {(() => {
+                      const badge = patrolBadgeOf(m)
+                      if (!badge) return null
+                      const lp = patrolLoopOf(m)
+                      // The tooltip spells the count the drawer's way ("3 of 24"
+                      // / "61 · no limit"): the compact "3/24" alone read as a date.
+                      const cycle = lp
+                        ? lp.max_cycles > 0
+                          ? t('pages.membersPage.patrol_cycles_of', { n: lp.cycle_count, max: lp.max_cycles })
+                          : t('pages.membersPage.patrol_cycles_unlimited', { n: lp.cycle_count })
+                        : ''
+                      const label =
+                        badge === 'active'
+                          ? t('pages.membersPage.patrol_badge', { cycle })
+                          : t('pages.membersPage.patrol_badge_stopped')
+                      return (
+                        <motion.span
+                          key="patrol"
+                          initial={{ opacity: 0, scale: 0.6 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.6 }}
+                          transition={{ duration: 0.15, ease: [0.2, 0, 0, 1] }}
+                          className={`absolute -right-1 -top-1 w-4 h-4 rounded-full border-2 border-bg flex items-center justify-center transition-colors duration-150 ${
+                            badge === 'active' ? 'bg-accent text-accent-fg' : 'bg-warn text-warn-fg'
+                          }`}
+                          role="img"
+                          aria-label={label}
+                          title={label}
+                          data-testid="member-patrol-dot"
+                          data-state={badge}
+                        >
+                          {/* Distinct glyph per state, not colour alone: the
+                              goal target while patrolling, a pause mark once
+                              stopped, so the two read apart without the hover. */}
+                          {badge === 'active' ? (
+                            <Goal size={10} aria-hidden="true" />
+                          ) : (
+                            <Pause size={9} aria-hidden="true" strokeWidth={3} />
+                          )}
+                        </motion.span>
+                      )
+                    })()}
+                  </AnimatePresence>
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-[13px] font-medium truncate">{m.name}</span>
@@ -741,6 +924,148 @@ export default function MembersPage() {
               )}
             </div>
           )}
+          {/* Auto patrol — the auto-nudge loop on this member's own thread,
+              beside the sessions it drives: together they answer "is this
+              member alive, and what is it doing". Three verdicts, never
+              conflated (see patrolState), plus the loading / failed states
+              every block in this drawer keeps. The readouts are the composer's
+              goal chip's: same cycle spelling, same deadline-preserving
+              countdown, same "last fire" wording — so a person who has read
+              one has read the other. The block cross-fades on a verdict
+              change; a stop that lands while the drawer is open must read as
+              a change, not a flicker. */}
+          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5 flex items-center gap-1.5">
+            <Goal
+              size={12}
+              className={`lucide-inline shrink-0 ${patrolState === 'active' ? 'text-accent' : 'text-muted'}`}
+              aria-hidden="true"
+            />
+            <span className="flex-1">{t('pages.membersPage.patrol_title')}</span>
+          </div>
+          {!patrol.loaded ? (
+            <div className="mb-4 space-y-1.5" data-testid="member-patrol-loading" aria-hidden>
+              <div className="h-3 rounded bg-bg-hover animate-pulse" />
+              <div className="h-3 w-3/4 rounded bg-bg-hover animate-pulse" />
+            </div>
+          ) : patrol.failed ? (
+            /* The shared notice, not a hand-rolled alert: it keeps the
+               structured error context and the agent hand-off. askAgent is
+               safe here — a read failure on a drawer that holds no draft. */
+            <div className="mb-4">
+              <ErrorNotice
+                message={t('pages.membersPage.patrol_error')}
+                variant="inline"
+                askAgent
+                testId="member-patrol-error"
+              />
+            </div>
+          ) : (
+            <motion.div
+              key={patrolState}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+              className="mb-4"
+              data-testid="member-patrol"
+              data-state={patrolState}
+            >
+              {patrolState === 'active' && activePatrol ? (
+                <>
+                  <div className="text-[11px] font-medium text-accent mb-1.5" data-testid="member-patrol-status">
+                    {t('pages.membersPage.patrol_active')}
+                  </div>
+                  {/* Same label/value idiom as the Configuration list below. */}
+                  <dl className="text-[11px] space-y-1 m-0">
+                    <div className="flex gap-2">
+                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_interval')}</dt>
+                      <dd className="min-w-0 truncate m-0" data-testid="member-patrol-interval">
+                        {intervalText(activePatrol.idle_secs)}
+                      </dd>
+                    </div>
+                    <div className="flex gap-2">
+                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_cycles')}</dt>
+                      <dd className="min-w-0 truncate m-0" data-testid="member-patrol-cycles">
+                        {/* Self-describing here ("3 of 24"); the chip keeps its
+                            compact "3/24", which alone read as a date. */}
+                        {activePatrol.max_cycles > 0
+                          ? t('pages.membersPage.patrol_cycles_of', { n: activePatrol.cycle_count, max: activePatrol.max_cycles })
+                          : t('pages.membersPage.patrol_cycles_unlimited', { n: activePatrol.cycle_count })}
+                      </dd>
+                    </div>
+                    <div className="flex gap-2">
+                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_last_wake')}</dt>
+                      <dd
+                        className="min-w-0 truncate m-0"
+                        title={activePatrol.last_fire_ts ? fmtDateTimeNumeric(activePatrol.last_fire_ts) : undefined}
+                      >
+                        {activePatrol.last_fire_ts
+                          ? timeAgo(activePatrol.last_fire_ts)
+                          : t('components.autoNudgePopover.never')}
+                      </dd>
+                    </div>
+                    <div className="flex gap-2">
+                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_next_wake')}</dt>
+                      <dd
+                        className="min-w-0 truncate m-0"
+                        title={activePatrol.next_due_ts > 0 ? fmtDateTimeNumeric(activePatrol.next_due_ts) : undefined}
+                        data-testid="member-patrol-next"
+                      >
+                        {(() => {
+                          // The row already says "Next wake", so the value is
+                          // the bare remainder; the due / unscheduled readings
+                          // are the composer chip's own sentences.
+                          const next = nextCycle(activePatrol, nowTs)
+                          switch (next.kind) {
+                            case 'in':
+                              return t('pages.membersPage.patrol_next_in', { time: next.time })
+                            case 'due':
+                              return t('components.autoNudgePopover.next_cycle_due')
+                            default:
+                              return t('components.autoNudgePopover.next_cycle_unscheduled')
+                          }
+                        })()}
+                      </dd>
+                    </div>
+                    {(activePatrol.banner || activePatrol.message) && (
+                      <div className="flex gap-2">
+                        <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_instruction')}</dt>
+                        {/* The banner is the SHORT stand-in the transcript row
+                            shows; without one, the instruction's first line.
+                            The full text sits in the hover title. */}
+                        <dd
+                          className="min-w-0 truncate m-0"
+                          title={activePatrol.banner || activePatrol.message}
+                          data-testid="member-patrol-instruction"
+                        >
+                          {(activePatrol.banner || activePatrol.message).split('\n')[0]}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                </>
+              ) : patrolState === 'stopped' && activePatrol ? (
+                <div className="text-[11px] text-muted" data-testid="member-patrol-status">
+                  <span className="text-text">{t('pages.membersPage.patrol_stopped')}</span>
+                  {activePatrol.stopped_reason && (
+                    <span className="block mt-0.5" data-testid="member-patrol-reason">
+                      {PATROL_STOPPED_REASON[activePatrol.stopped_reason]
+                        ? t(PATROL_STOPPED_REASON[activePatrol.stopped_reason])
+                        : activePatrol.stopped_reason}
+                    </span>
+                  )}
+                  {activePatrol.last_fire_ts > 0 && (
+                    <span className="block mt-0.5" title={fmtDateTimeNumeric(activePatrol.last_fire_ts)}>
+                      {t('pages.membersPage.patrol_last_wake_ago', { when: timeAgo(activePatrol.last_fire_ts) })}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-muted" data-testid="member-patrol-status">
+                  {t('pages.membersPage.patrol_none')}
+                </div>
+              )}
+            </motion.div>
+          )}
           <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5">
             {t('pages.membersPage.recent_activity')}
           </div>
@@ -799,10 +1124,22 @@ export default function MembersPage() {
             <div className="text-[11px] text-muted mb-4" role="alert" data-testid="member-wake-error">
               {t('pages.membersPage.wake_error')}
             </div>
-          ) : wakeJobs.length === 0 && wakeHooks.length === 0 ? (
+          ) : wakeJobs.length === 0 && wakeHooks.length === 0 && patrolState !== 'active' ? (
             <div className="text-[11px] text-muted mb-4">{t('pages.membersPage.wake_none')}</div>
           ) : (
             <ul className="list-none m-0 p-0 mb-4 space-y-1.5" data-testid="member-wake-sources">
+              {/* An active patrol IS a wake source — the one this member set
+                  for itself. Listing it here keeps the card from saying
+                  "Last wake 6m ago" above "Nothing wakes this member". */}
+              {patrolState === 'active' && activePatrol && (
+                <li className="flex items-center gap-2 text-[11px]" data-testid="member-wake-patrol">
+                  <Goal size={12} className="lucide-inline text-accent shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 truncate flex-1">{t('pages.membersPage.patrol_title')}</span>
+                  <span className="text-muted shrink-0">
+                    {t('pages.membersPage.wake_patrol_every', { every: intervalText(activePatrol.idle_secs) })}
+                  </span>
+                </li>
+              )}
               {wakeJobs.map((jb) => (
                 <li key={jb.id} className="flex items-center gap-2 text-[11px]">
                   <Clock size={12} className="lucide-inline text-muted shrink-0" />
