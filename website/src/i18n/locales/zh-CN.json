@@ -5432,6 +5432,9 @@
       "could_not_submit_that_decision_see_the_console_f": "无法提交此决定 — 详见控制台。",
       "detached_head_at": "游离 HEAD，位于 {{branch}}",
       "drag_to_resize_double_click_to_reset": "拖动调整大小（双击重置）",
+      "collapse_composer": "收起消息输入",
+      "collapse_composer_desc": "隐藏输入框，让回答占满空间；草稿会保留",
+      "expand_composer": "展开消息输入",
       "file": "文件",
       "force_kill_discards_in_progress_work_and_queued": "强制终止 — 丢弃进行中的工作和排队消息",
       "force_kill_session_discards_in_progress_work_and": "强制终止会话（丢弃进行中的工作和排队消息）",
@@ -5513,7 +5516,8 @@
       "sketch": "草图",
       "sketch_desc": "画个草图；会附上图片和可编辑源文件",
       "optimize_failed": "无法优化提示词。已恢复原始文本。",
-      "optimize_failed_elsewhere": "无法优化在另一个会话中发起的提示词。原始文本已在该会话中恢复。"
+      "optimize_failed_elsewhere": "无法优化在另一个会话中发起的提示词。原始文本已在该会话中恢复。",
+      "more_actions": "更多操作"
     },
     "chatPane": {
       "agent_list": "代理列表",

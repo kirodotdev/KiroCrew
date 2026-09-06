@@ -5522,6 +5522,9 @@
       "could_not_submit_that_decision_see_the_console_f": "সেই সিদ্ধান্ত জমা দেওয়া যায়নি — বিস্তারিত জানতে কনসোল দেখো।",
       "detached_head_at": "{{branch}}-এ detached HEAD",
       "drag_to_resize_double_click_to_reset": "আকার বদলাতে টানুন (রিসেট করতে ডাবল-ক্লিক করুন)",
+      "collapse_composer": "বার্তা ইনপুট সংকুচিত করুন",
+      "collapse_composer_desc": "উত্তরের জন্য জায়গা করতে বক্সটি লুকায়; খসড়া সংরক্ষিত থাকে",
+      "expand_composer": "বার্তা ইনপুট দেখান",
       "file": "ফাইল",
       "force_kill_discards_in_progress_work_and_queued": "জোর করে বন্ধ — চলমান কাজ ও সারিতে থাকা বার্তা বাতিল করে",
       "force_kill_session_discards_in_progress_work_and": "জোর করে সেশন বন্ধ করুন (চলমান কাজ ও সারিতে থাকা বার্তা বাতিল হয়)",
@@ -5603,7 +5606,8 @@
       "sketch": "স্কেচ",
       "sketch_desc": "স্কেচ আঁকুন; ছবি এবং সম্পাদনাযোগ্য উৎস সংযুক্ত করে",
       "optimize_failed": "প্রম্পট অপ্টিমাইজ করা যায়নি। আপনার মূল লেখা পুনরুদ্ধার করা হয়েছে।",
-      "optimize_failed_elsewhere": "অন্য সেশনে শুরু করা প্রম্পট অপ্টিমাইজ করা যায়নি। সেখানে মূল লেখা পুনরুদ্ধার করা হয়েছে।"
+      "optimize_failed_elsewhere": "অন্য সেশনে শুরু করা প্রম্পট অপ্টিমাইজ করা যায়নি। সেখানে মূল লেখা পুনরুদ্ধার করা হয়েছে।",
+      "more_actions": "আরও অ্যাকশন"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",

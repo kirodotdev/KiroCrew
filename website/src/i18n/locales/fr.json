@@ -5612,6 +5612,9 @@
       "could_not_submit_that_decision_see_the_console_f": "Impossible d’envoyer cette décision — détails dans la console.",
       "detached_head_at": "HEAD détachée sur {{branch}}",
       "drag_to_resize_double_click_to_reset": "Faire glisser pour redimensionner (double-cliquer pour réinitialiser)",
+      "collapse_composer": "Réduire la saisie du message",
+      "collapse_composer_desc": "Masque le champ pour laisser la place à la réponse ; conserve le brouillon",
+      "expand_composer": "Afficher la saisie du message",
       "file": "Fichier",
       "force_kill_discards_in_progress_work_and_queued": "Arrêt forcé — abandonne le travail en cours et les messages en file d'attente",
       "force_kill_session_discards_in_progress_work_and": "Forcer l'arrêt de la session (abandonne le travail en cours et les messages en file d'attente)",
@@ -5693,7 +5696,8 @@
       "sketch": "Croquis",
       "sketch_desc": "Dessinez un croquis ; joint une image et sa source modifiable",
       "optimize_failed": "Impossible d'optimiser le prompt. Ton texte d'origine a été restauré.",
-      "optimize_failed_elsewhere": "Impossible d'optimiser le prompt lancé dans une autre session. Son texte d'origine y a été restauré."
+      "optimize_failed_elsewhere": "Impossible d'optimiser le prompt lancé dans une autre session. Son texte d'origine y a été restauré.",
+      "more_actions": "Plus d'actions"
     },
     "chatPane": {
       "agent_list": "Liste des agents",

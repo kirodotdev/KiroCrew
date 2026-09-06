@@ -9759,6 +9759,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onDismissHint={() => setPrefillHint(false)}
               onScreenshot={handleCapture}
               onUploadFiles={uploadFiles}
+              /* The one collapsible composer. Opt-in rather than default so the
+                 shared preference key and the window-level expand event stay
+                 correct by construction -- see ChatInput's `collapsible` prop. */
+              collapsible
               uploading={uploading}
               pendingFiles={pendingFiles}
               pendingDirs={pendingDirs}

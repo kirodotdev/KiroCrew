@@ -4077,6 +4077,9 @@
       "continue_interrupted_turn": "Continue the interrupted turn",
       "continue_thread": "Ask the agent to continue",
       "drag_to_resize_double_click_to_reset": "Drag to resize (double-click to reset)",
+      "collapse_composer": "Collapse the message input",
+      "collapse_composer_desc": "Hides the box so the answer has the room; the draft is kept",
+      "expand_composer": "Show the message input",
       "file": "File",
       "force_kill_discards_in_progress_work_and_queued": "Force kill — discards in-progress work and queued messages",
       "force_kill_session_discards_in_progress_work_and": "Force kill session (discards in-progress work and queued messages)",
@@ -4117,7 +4120,8 @@
       "use_a_skill": "Use a skill",
       "used": "Used",
       "sketch": "Sketch",
-      "sketch_desc": "Draw a sketch; attaches an image plus its editable source"
+      "sketch_desc": "Draw a sketch; attaches an image plus its editable source",
+      "more_actions": "More actions"
     },
     "chatPane": {
       "agent_list": "Agent list",

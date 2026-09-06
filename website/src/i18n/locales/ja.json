@@ -5432,6 +5432,9 @@
       "could_not_submit_that_decision_see_the_console_f": "その決定を送信できません — 詳細はコンソールを参照してください。",
       "detached_head_at": "{{branch}} で HEAD が切り離されています",
       "drag_to_resize_double_click_to_reset": "ドラッグしてリサイズ (ダブルクリックでリセット)",
+      "collapse_composer": "メッセージ入力を折りたたむ",
+      "collapse_composer_desc": "回答のために入力欄を隠します。下書きは保持されます",
+      "expand_composer": "メッセージ入力を表示",
       "file": "ファイル",
       "force_kill_discards_in_progress_work_and_queued": "強制終了 — 進行中の作業とキューに入れられたメッセージを破棄",
       "force_kill_session_discards_in_progress_work_and": "セッションを強制終了 (進行中の作業とキューに入れられたメッセージを破棄)",
@@ -5513,7 +5516,8 @@
       "sketch": "スケッチ",
       "sketch_desc": "スケッチを描く。画像と編集可能なソースを添付します",
       "optimize_failed": "プロンプトを最適化できませんでした。元のテキストを復元しました。",
-      "optimize_failed_elsewhere": "別のセッションで開始したプロンプトを最適化できませんでした。元のテキストはそのセッションに復元されています。"
+      "optimize_failed_elsewhere": "別のセッションで開始したプロンプトを最適化できませんでした。元のテキストはそのセッションに復元されています。",
+      "more_actions": "その他の操作"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",

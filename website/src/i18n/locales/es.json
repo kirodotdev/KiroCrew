@@ -5612,6 +5612,9 @@
       "could_not_submit_that_decision_see_the_console_f": "No se pudo enviar esa decisión — consulta la consola para ver los detalles.",
       "detached_head_at": "HEAD desacoplado en {{branch}}",
       "drag_to_resize_double_click_to_reset": "Arrastra para redimensionar (doble clic para restablecer)",
+      "collapse_composer": "Contraer el campo de mensaje",
+      "collapse_composer_desc": "Oculta el campo para dejar espacio a la respuesta; conserva el borrador",
+      "expand_composer": "Mostrar el campo de mensaje",
       "file": "Archivo",
       "force_kill_discards_in_progress_work_and_queued": "Forzar terminación — descarta el trabajo en curso y los mensajes en cola",
       "force_kill_session_discards_in_progress_work_and": "Forzar terminación de la sesión (descarta el trabajo en curso y los mensajes en cola)",
@@ -5693,7 +5696,8 @@
       "sketch": "Boceto",
       "sketch_desc": "Dibuja un boceto; adjunta una imagen y su fuente editable",
       "optimize_failed": "No se pudo optimizar el prompt. Se restauró tu texto original.",
-      "optimize_failed_elsewhere": "No se pudo optimizar el prompt que iniciaste en otra sesión. Su texto original se restauró allí."
+      "optimize_failed_elsewhere": "No se pudo optimizar el prompt que iniciaste en otra sesión. Su texto original se restauró allí.",
+      "more_actions": "Más acciones"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",

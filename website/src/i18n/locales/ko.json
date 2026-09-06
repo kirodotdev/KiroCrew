@@ -5432,6 +5432,9 @@
       "could_not_submit_that_decision_see_the_console_f": "해당 결정을 제출하지 못했습니다 — 자세한 내용은 콘솔을 확인하세요.",
       "detached_head_at": "{{branch}}에서 HEAD가 분리되었습니다",
       "drag_to_resize_double_click_to_reset": "드래그하여 크기 조절 (더블클릭하면 초기화)",
+      "collapse_composer": "메시지 입력 접기",
+      "collapse_composer_desc": "답변에 공간을 주기 위해 입력창을 숨깁니다; 임시 작성 내용은 유지됩니다",
+      "expand_composer": "메시지 입력 표시",
       "file": "파일",
       "force_kill_discards_in_progress_work_and_queued": "강제 종료 — 진행 중인 작업과 대기 중인 메시지를 버립니다",
       "force_kill_session_discards_in_progress_work_and": "세션 강제 종료 (진행 중인 작업과 대기 중인 메시지를 버립니다)",
@@ -5513,7 +5516,8 @@
       "sketch": "스케치",
       "sketch_desc": "스케치를 그리기. 이미지와 편집 가능한 원본을 첨부합니다",
       "optimize_failed": "프롬프트를 최적화할 수 없습니다. 원래 텍스트를 복원했습니다.",
-      "optimize_failed_elsewhere": "다른 세션에서 시작한 프롬프트를 최적화할 수 없습니다. 원래 텍스트는 해당 세션에 복원되었습니다."
+      "optimize_failed_elsewhere": "다른 세션에서 시작한 프롬프트를 최적화할 수 없습니다. 원래 텍스트는 해당 세션에 복원되었습니다.",
+      "more_actions": "추가 작업"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",

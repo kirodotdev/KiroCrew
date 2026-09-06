@@ -11,7 +11,7 @@ import { performAgentSlotSwitch } from './lib/agentSwitch'
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
 import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
-import { queryComposer } from './pages/chat/composerFocus'
+import { queryComposerOrExpand } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
@@ -2091,7 +2091,12 @@ export default function App() {
       // focusComposer()'s touch-device skip would wrongly suppress focus on a
       // tablet with a physical keyboard. Next frame, so the new slot's
       // composer has been committed to the DOM.
-      requestAnimationFrame(() => queryComposer()?.focus())
+      //
+      // Through the resolver rather than a bare lookup, so a composer the user
+      // left collapsed is asked back instead of swallowing the caret: creating a
+      // session IS a typing intent, and the alternative is a new chat whose
+      // first keystroke goes nowhere.
+      requestAnimationFrame(() => queryComposerOrExpand(ta => ta.focus()))
     },
   })
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)

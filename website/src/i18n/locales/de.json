@@ -5522,6 +5522,9 @@
       "could_not_submit_that_decision_see_the_console_f": "Entscheidung konnte nicht übermittelt werden — Details in der Konsole.",
       "detached_head_at": "Detached HEAD bei {{branch}}",
       "drag_to_resize_double_click_to_reset": "Ziehen zum Ändern der Größe (Doppelklick zum Zurücksetzen)",
+      "collapse_composer": "Nachrichteneingabe einklappen",
+      "collapse_composer_desc": "Blendet das Feld aus, damit die Antwort Platz hat; der Entwurf bleibt erhalten",
+      "expand_composer": "Nachrichteneingabe anzeigen",
       "file": "Datei",
       "force_kill_discards_in_progress_work_and_queued": "Zwangsweise beenden — laufende Arbeit und wartende Nachrichten werden verworfen",
       "force_kill_session_discards_in_progress_work_and": "Sitzung zwangsweise beenden (laufende Arbeit und wartende Nachrichten werden verworfen)",
@@ -5603,7 +5606,8 @@
       "sketch": "Skizze",
       "sketch_desc": "Skizze zeichnen; hängt ein Bild plus bearbeitbare Quelle an",
       "optimize_failed": "Der Prompt konnte nicht optimiert werden. Der ursprüngliche Text wurde wiederhergestellt.",
-      "optimize_failed_elsewhere": "Der in einer anderen Sitzung gestartete Prompt konnte nicht optimiert werden. Der ursprüngliche Text wurde dort wiederhergestellt."
+      "optimize_failed_elsewhere": "Der in einer anderen Sitzung gestartete Prompt konnte nicht optimiert werden. Der ursprüngliche Text wurde dort wiederhergestellt.",
+      "more_actions": "Weitere Aktionen"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
