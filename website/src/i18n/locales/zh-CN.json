@@ -125,7 +125,12 @@
       "streaming": "流式输出中"
     },
     "chatMessageList": {
-      "open_path": "打开 {{path}}"
+      "copied": "已复制！",
+      "copy": "复制",
+      "copy_failed": "复制失败",
+      "open_path": "打开 {{path}}",
+      "show_less": "收起",
+      "show_more": "展开更多"
     }
   },
   "apps": {

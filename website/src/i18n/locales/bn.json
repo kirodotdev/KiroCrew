@@ -128,7 +128,12 @@
       "streaming": "স্ট্রিমিং হচ্ছে"
     },
     "chatMessageList": {
-      "open_path": "{{path}} খোলো"
+      "copied": "কপি হয়েছে!",
+      "copy": "কপি করুন",
+      "copy_failed": "কপি ব্যর্থ হয়েছে",
+      "open_path": "{{path}} খোলো",
+      "show_less": "কম দেখান",
+      "show_more": "আরও দেখান"
     }
   },
   "apps": {

@@ -74,6 +74,13 @@
     "chatEmbed": {
       "agent_is_working": "Agent is working...",
       "message": "Message..."
+    },
+    "chatMessageList": {
+      "copied": "Copied!",
+      "copy": "Copy",
+      "copy_failed": "Copy failed",
+      "show_less": "Show less",
+      "show_more": "Show more"
     }
   },
   "apps": {

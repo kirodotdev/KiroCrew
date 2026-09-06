@@ -125,7 +125,12 @@
       "streaming": "스트리밍 중"
     },
     "chatMessageList": {
-      "open_path": "{{path}} 열기"
+      "copied": "복사했습니다!",
+      "copy": "복사",
+      "copy_failed": "복사 실패",
+      "open_path": "{{path}} 열기",
+      "show_less": "간략히 보기",
+      "show_more": "더 보기"
     }
   },
   "apps": {

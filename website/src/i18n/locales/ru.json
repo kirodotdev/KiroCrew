@@ -134,7 +134,12 @@
       "streaming": "потоковая передача"
     },
     "chatMessageList": {
-      "open_path": "Открыть {{path}}"
+      "copied": "Скопировано!",
+      "copy": "Копировать",
+      "copy_failed": "Не удалось скопировать",
+      "open_path": "Открыть {{path}}",
+      "show_less": "Показать меньше",
+      "show_more": "Показать больше"
     }
   },
   "apps": {

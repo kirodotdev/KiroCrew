@@ -131,7 +131,12 @@
       "streaming": "em streaming"
     },
     "chatMessageList": {
-      "open_path": "Abrir {{path}}"
+      "copied": "Copiado!",
+      "copy": "Copiar",
+      "copy_failed": "Falha ao copiar",
+      "open_path": "Abrir {{path}}",
+      "show_less": "Mostrar menos",
+      "show_more": "Mostrar mais"
     }
   },
   "apps": {
