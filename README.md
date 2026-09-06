@@ -123,10 +123,18 @@ the installer with `--channel`, and a container switches by pulling a different
 tag. Either way, the other lane's current version then arrives as an ordinary
 update.
 
+Because they are one app, keeping a Stable *and* an Insider copy side by side
+does not give you two independent installs. Both read the same desktop settings
+store, so the channel is a single value and whichever copy wrote it last wins —
+switch to Insider in one and the other follows. They share one update download
+cache as well. `KIROCREW_HOME` does not separate them either: it moves the data
+home, not the desktop settings.
+
 Nightly is a separate app with its own name and icon, so it installs *alongside*
-a Stable or Insider one rather than replacing it. It is not a sandbox, though: it
-reads the same `~/.kiro/crew` data home unless you point it elsewhere with
-`KIROCREW_HOME`.
+a Stable or Insider one rather than replacing it. That also makes it the one copy
+that keeps its own channel and its own settings store. It is not a sandbox,
+though: it reads the same `~/.kiro/crew` data home unless you point it elsewhere
+with `KIROCREW_HOME`.
 
 Running Insider or Nightly is a real contribution. When something looks wrong,
 please [open an issue](https://github.com/kirodotdev/KiroCrew/issues) so it gets
