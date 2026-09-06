@@ -12056,8 +12056,8 @@ class TestFindTraversalReachesFence:
     def test_flat_backtick_spans_are_not_refused_for_the_budget(self) -> None:
         """66 backticks are 33 substitutions, so prose full of code spans is judged.
 
-        This is the shape that made the double-count expensive: a source body's
-        docstrings are subjects of this pass (``_source_traversal_subjects``), and a
+        This is the shape that made the double-count expensive while cron script
+        bodies were briefly routed through this pass (since reverted), and a
         markdown code span is a backtick PAIR, so an ordinary docstring with 33 spans
         read as 66 nested substitutions and refused the whole script on every fire.
 

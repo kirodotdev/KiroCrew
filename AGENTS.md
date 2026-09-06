@@ -92,6 +92,24 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
 - **Never restate the denied-rule count in prose.**
   `test/test_denied_commands_security.py` pins it, and a restated count goes stale
   silently.
+- **A cron script body is never a shell-gate subject.** `is_sensitive_bash_command`
+  and `is_denied` read a SHELL COMMAND LINE; `mcp_cron._vet_script_contents` scans a
+  Python source body with whole-body, source-aware detectors only (credential path,
+  secret env name, exfil URL) and the sandbox is the runtime control. Handing the
+  body to the shell gate was tried (#4243 → #8811) and every shell-grammar pass
+  produced a permanent false denial on ordinary scripts (#7912, #8563, #8643,
+  #8812), each patched with another AST layer that still could not stop
+  `open(a + b)`. Do not add a `subject_is_*` flag, a `_traversal_subjects`
+  re-pointing, or an `is_sensitive_source_body` back. A new script detector is a
+  whole-body match in `_vet_script_contents`, or a sandbox mask. Pinned by
+  `test_the_shell_gate_has_no_source_body_entry_point` and
+  `test_script_body_is_never_a_shell_gate_subject`.
+- **A regex spelling-chase is a review smell, not a fix.** When a security review
+  finds "X also reaches the fence via spelling Y", ask first whether the SUBJECT is
+  wrong (a document handed to a command-line matcher) or whether the sandbox
+  already covers it. Add a table entry only when the subject is genuinely a shell
+  command line and the OS sandbox does not hold the path (#7441 went four rounds
+  of `command`/`exec -a`/`nice`/`env -i`/`timeout`/`busybox` before restructuring).
 - **Computer use is deliberately NOT governed**: it is one operator opt-in on the
   keystone `computer_use.json`. Never add `computer_use.*` scopes, capability rows,
   approval ordinals or pointer permits. Its refusals run **in band** on

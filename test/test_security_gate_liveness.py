@@ -221,95 +221,47 @@ def test_ceiling_matches_the_tool_input_tier() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# The ceiling belongs to the SUBJECT CLASS, not to the function
+# A cron SCRIPT BODY has its own ceiling, and is not a shell subject at all
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _long_python_body() -> str:
-    """A benign Python body LONGER than a command line may be, but well inside every
-    other bound the source-body gate applies -- in particular under
-    ``_SOURCE_COMMAND_SUBJECT_CAP``, so a refusal here is about SIZE and nothing else.
-    Length comes from long values rather than many of them for exactly that reason."""
-    value = "t" * 200
-    body = "".join(f'value_{i} = "{value}"\n' for i in range(120))
-    assert body.count('"') // 2 < security._SOURCE_COMMAND_SUBJECT_CAP
-    return body
-
-
-def test_a_source_body_past_the_command_ceiling_is_still_scanned() -> None:
-    """A cron script is not a command line, and one ceiling for both bans an
-    ordinary script for its LENGTH on every fire -- the availability defect
-    ``_source_command_subjects`` was introduced to remove. So the source-body entry
-    raises the ceiling on BOTH its paths: the parsed one, and the unparseable fallback,
-    where the ceiling is the only size bound a body with few pipeline stages meets.
-    """
-    assert MAX_SCANNABLE_SOURCE_BODY_CHARS > MAX_SCANNABLE_COMMAND_CHARS
-
-    py_body = _long_python_body()
-    assert MAX_SCANNABLE_COMMAND_CHARS < len(py_body) <= MAX_SCANNABLE_SOURCE_BODY_CHARS
-    assert security._parse_source_body(py_body) is not None, "must take the parsed path"
-    assert security.is_sensitive_source_body(py_body) is None
-
-    # Unparseable, so the fallback runs the whole document with pass 1b -- and few
-    # enough newlines to stay under ``_ALT_MAX_STAGES``, which is what makes the size
-    # ceiling the operative bound here rather than the stage budget.
-    raw_body = "}{\n" + ("x" * 300 + "\n") * 100
-    assert MAX_SCANNABLE_COMMAND_CHARS < len(raw_body) <= MAX_SCANNABLE_SOURCE_BODY_CHARS
-    assert security._parse_source_body(raw_body) is None, "must take the fallback path"
-    assert raw_body.count("\n") < security._ALT_MAX_STAGES
-    assert security.is_sensitive_source_body(raw_body) is None
-
-
-def test_a_source_body_past_its_own_ceiling_is_refused_not_skipped() -> None:
-    """Raised is not removed: past its own bound a body is refused with a reason,
-    never scanned partially and never waved through."""
-    body = "x = 1\n" * MAX_SCANNABLE_SOURCE_BODY_CHARS
-    assert len(body) > MAX_SCANNABLE_SOURCE_BODY_CHARS
-    reason = security.is_sensitive_source_body(body)
-    assert reason is not None
-    assert "too large to security-scan" in reason
-    assert str(MAX_SCANNABLE_SOURCE_BODY_CHARS) in reason
-
-
-def test_an_oversized_body_is_refused_before_it_is_parsed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``ast.parse`` is unbounded work on an unbounded body (0.3 s at the ceiling,
-    12 s at 1.5 MB of the same shape), so a ceiling applied only inside the passes
-    BELOW the parse does not bound this entry point. The parse must not run at all."""
-    calls: list[int] = []
-    real = security._parse_source_body
-
-    def spy(source: str) -> object:
-        calls.append(len(source))
-        return real(source)
-
-    monkeypatch.setattr(security, "_parse_source_body", spy)
-
-    over = "x = 1\n" * MAX_SCANNABLE_SOURCE_BODY_CHARS
-    assert len(over) > MAX_SCANNABLE_SOURCE_BODY_CHARS
-    assert security.is_sensitive_source_body(over) is not None
-    assert calls == [], "the body was parsed before its size was checked"
-
-    # And the spy is wired correctly: a body under the ceiling still gets parsed.
-    assert security.is_sensitive_source_body("x = 1\n") is None
-    assert calls == [len("x = 1\n")]
-
-
-def test_a_fenced_path_is_still_found_past_the_command_ceiling() -> None:
-    """The raised ceiling widens what is SCANNED, not what is allowed: a fenced
-    read in a body larger than a command line may be is still denied."""
-    body = _long_python_body() + 'open("~/.aws/credentials")\n'
-    assert len(body) > MAX_SCANNABLE_COMMAND_CHARS
-    assert security.is_sensitive_source_body(body) is not None
-
-
-def test_the_source_body_reader_admits_exactly_what_the_gate_scans() -> None:
-    """``mcp_cron`` truncates the file it reads at the same bound the gate refuses
-    above, so neither becomes the operative limit behind the other's back."""
+def test_the_source_body_ceiling_is_larger_and_owned_by_the_cron_reader() -> None:
+    """20 KiB of shell on one ``Bash`` call is a heredoc; 20 KiB of cron script is an
+    ordinary script, and refusing it there is permanent (every tick until edited). The
+    cron gate reads and refuses on ONE number so the reader and the scan agree."""
     from kiro_crew import mcp_cron
 
+    assert MAX_SCANNABLE_SOURCE_BODY_CHARS > MAX_SCANNABLE_COMMAND_CHARS
     assert mcp_cron._MAX_SCRIPT_SCAN_BYTES == MAX_SCANNABLE_SOURCE_BODY_CHARS
+
+    body = "".join(f'value_{i} = "{"t" * 200}"\n' for i in range(120))
+    assert MAX_SCANNABLE_COMMAND_CHARS < len(body) <= MAX_SCANNABLE_SOURCE_BODY_CHARS
+    assert mcp_cron._vet_script_contents(body) is None
+    assert mcp_cron._vet_script_contents(body + 'open("~/.aws/credentials")\n') is not None
+
+    over = "x = 1\n" * MAX_SCANNABLE_SOURCE_BODY_CHARS
+    reason = mcp_cron._vet_script_contents(over)
+    assert reason is not None and "too large to security-scan" in reason
+
+
+def test_the_shell_gate_has_no_source_body_entry_point() -> None:
+    """RATCHET: ``is_sensitive_bash_command`` takes a shell command line and nothing
+    else -- no subject flag, no re-pointed traversal subjects, no per-caller ceiling.
+    Every one of those knobs existed once to make a Python source body survive a
+    shell-grammar pass, and each pass still produced a false-denial class on ordinary
+    scripts (#7912, #8563, #8643). A source body is not this gate's subject; see
+    ``mcp_cron._vet_script_contents``."""
+    params = inspect.signature(security.is_sensitive_bash_command).parameters
+    assert set(params) == {"command", "enabled_ids"}, sorted(params)
+    for name in (
+        "is_sensitive_source_body",
+        "_source_command_subjects",
+        "_sensitive_run_in_source_literals",
+        "_parse_source_body",
+        "_SOURCE_PATTERN_SINKS",
+        "_SOURCE_COMMAND_SUBJECT_CAP",
+    ):
+        assert not hasattr(security, name), name
 
 
 # ─────────────────────────────────────────────────────────────────────────────

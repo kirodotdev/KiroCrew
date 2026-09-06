@@ -66,7 +66,6 @@ from kiro_crew.security import (
     enabled_rule_ids,
     is_sensitive_bash_command,
     is_sensitive_path,
-    is_sensitive_source_body,
     scan_exfiltration_urls,
 )
 from kiro_crew.sel import sel
@@ -776,40 +775,43 @@ def _vet_script_contents(text: str) -> str | None:
     that the agent itself can write (via its file-write tool) and then register.
     ``resolve_script_path`` validates only the *path*, so without this the body
     is never inspected. The script runs under ``mode="standard"`` (user scripts
-    may legitimately use creds), which does NOT hide ``~/.aws`` — so a body that
+    may legitimately use creds), which does NOT hide ``~/.aws`` -- so a body that
     reads ``~/.aws/credentials`` or ``os.environ["AWS_SECRET_ACCESS_KEY"]`` and
-    POSTs it out would succeed. We reuse the same credential-path / secret-env /
-    exfil detectors as the command path (plus a bare-name env match for
-    ``os.environ[...]`` style access). We deliberately do NOT run ``is_denied``
-    over a script body: it encodes shell tool-name semantics (e.g. ``*git*push*``)
-    that false-positive on ordinary Python source, and destructive-op risk is
-    covered by the now-required ``cron_add`` approval prompt. Credential
-    exfiltration — which a human rubber-stamping the prompt would not catch — is
-    the threat this gate closes.
+    POSTs it out would succeed. Credential exfiltration -- which a human
+    rubber-stamping the ``cron_add`` approval prompt would not catch -- is the
+    threat this gate closes.
 
-    ``is_sensitive_source_body`` is the same carve-out for the same reason,
-    one pass further in: ``is_sensitive_bash_command``'s pass 1b collapses
-    separator RUNS because a Win32 shell treats them as redundant, but in Python
-    source a backslash run is an ESCAPE. Collapsing strips it, so a body that
-    merely REDACTS or NAMES a fenced store — a ``re`` pattern, a docstring —
-    reads as an access to it and the job is denied at every fire, permanently
-    (the fire-time gate deliberately does not auto-pause).
+    The body is PYTHON SOURCE, not a shell command line, so it is scanned only with
+    the detectors that are meaningful on source text and are all linear, whole-body
+    matches: a credential-path spelling anywhere (``_CRON_CRED_PATH_RE``), a
+    protected secret env var by ``$NAME`` or bare name (``_CRON_SECRET_ENV_RE`` /
+    ``_CRON_SECRET_NAME_RE``), and an exfiltration URL (``scan_exfiltration_urls``).
 
-    Dropping that pass outright would reopen the doubled-separator fence bypass
-    INSIDE a script, so it is REPLACED rather than removed:
-    ``is_sensitive_source_body`` owns that pairing in ``security.py`` — it applies
-    the same three checks to each
-    DECODED string literal, which is where the run still exists —
-    ``open(r"...\\\\kiro-cli\\\\c.json")`` hands the OS two backslashes and Win32
-    collapses them. A literal is exonerated only when it provably flows into the
-    PATTERN operand of a pattern-consuming call, so an unknown sink over-blocks. A
-    body that does not
-    parse yields no literals to inspect, and then the raw shell scan runs WITH the
-    collapse, so an unparseable body is never quietly exonerated.
+    It is deliberately NOT handed to ``is_denied`` or ``is_sensitive_bash_command``.
+    Both read their subject with shell grammar -- tool-name globs like ``*git*push*``,
+    separator-run collapse (in source a backslash run is an ESCAPE), newline-split
+    pipeline stages under a fail-closed budget (every line of a script counted as a
+    stage, so ~512 lines was a permanent refusal), ordered-existence ``env | grep``
+    rules matching pieces hundreds of lines apart, and a ``find``-grammar parse of
+    English docstrings. Each produced a class of false denial on ordinary scripts
+    (#7912, #8563, #8643, #8812), each was closed by another layer of AST analysis in
+    ``security.py``, and the ~1500 lines that resulted still could not stop
+    ``open(os.environ["LOCALAPPDATA"] + r"\\kiro-cli\\config.json")``: static text
+    analysis of a Turing-complete body cannot be the fence. The runtime control for
+    what a script may OPEN is the sandbox ``run_script`` spawns it in (``wrap_argv``
+    bind-masks the crew home's credential leaves, the vault and the keystone in
+    ``standard`` mode); this gate stops the obvious register-a-malicious-script case
+    and nothing more. Destructive-op risk is covered by the required ``cron_add``
+    approval prompt.
 
-    Every other pass still runs, and ``_vet_script_file`` keeps its own
-    ``is_sensitive_path`` on the resolved path.
+    ``_vet_script_file`` keeps its own ``is_sensitive_path`` on the resolved path.
     """
+    if len(text) > _MAX_SCRIPT_SCAN_BYTES:
+        return (
+            "Error: cron script blocked: input is too large to security-scan "
+            f"({len(text)} chars > {_MAX_SCRIPT_SCAN_BYTES} limit); refused rather "
+            "than left unscanned"
+        )
     if _CRON_CRED_PATH_RE.search(text):
         return (
             "Error: cron script blocked: references a credential path "
@@ -817,13 +819,6 @@ def _vet_script_contents(text: str) -> str | None:
         )
     if _CRON_SECRET_ENV_RE.search(text) or _CRON_SECRET_NAME_RE.search(text):
         return "Error: cron script blocked: references a protected secret environment variable"
-    # One entry point owns the pairing: the literal scan replaces pass 1b for a source
-    # subject, and a body that did not parse keeps the raw-text collapse. See
-    # ``is_sensitive_source_body``.
-    reason = is_sensitive_source_body(text)
-    if reason:
-        safe_reason = redact(reason)
-        return f"Error: cron script blocked by security policy: {safe_reason}"
     exfil = scan_exfiltration_urls(text)
     if exfil:
         safe = redact("; ".join(exfil))
