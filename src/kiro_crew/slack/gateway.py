@@ -7750,7 +7750,7 @@ class GatewayOrchestrator:
                                     _slot_name,
                                 )
                                 # Bounded by the configured turn ceiling
-                                # (chat_turn_timeout_secs, 7200s default):
+                                # (chat_turn_timeout_secs, 14400s default):
                                 # _run_chat's finally block drains slot._queue
                                 # on any exit path.
                                 # Carry the structured completion facts so the

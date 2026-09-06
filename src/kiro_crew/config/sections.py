@@ -1039,16 +1039,18 @@ class AgentConfig:
         ),
     )
     chat_turn_timeout_secs: int = field(
-        default=7200,
+        default=14400,
         metadata=_meta(
             "Chat Turn Timeout (secs)",
             "Wall-clock ceiling for one chat turn. This is a runaway backstop, "
             "so it is clamped to 300s..86400s (24h) and can never be disabled. "
-            "Raise it above the 2h default for long unattended turns (full test "
-            "suites, long builds); the ACP transport's prompt wait follows it. "
-            "Hitting the ceiling is visible: the turn ends with a card naming "
-            "the limit. For work spanning days, prefer monitor/goal loops — "
-            "they end the turn between cycles and survive restarts.",
+            "The 4h default covers the longest single turn the shipped budgets "
+            "produce (a 90-minute test command plus a fix and a re-run, or a "
+            "blocking subagent wave at its 2h wait cap); the ACP transport's "
+            "prompt wait follows it. Hitting the ceiling is visible: the turn ends "
+            "with a card naming the limit. For work spanning many hours or days, "
+            "prefer monitor/goal loops — they end the turn between cycles and "
+            "survive restarts, which a single marathon turn cannot.",
         ),
     )
     session_start_timeout_secs: int = field(
@@ -3456,13 +3458,18 @@ POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
 # agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The ACP
 # transport's per-prompt wait follows this value (acp/client.py
 # ``resolve_prompt_timeout``, which adds a margin so the dashboard's visible
-# card fires before the transport cut), so the max is no longer pinned to the
-# transport's 2h default. It is bounded at 24h because the ceiling is a runaway
-# backstop, not a scheduler: a single prompt→response turn longer than a day is
-# pathological, and multi-day unattended operation belongs to the loop
-# mechanisms (monitor/goal loops, crons), which end the turn between cycles and
-# survive restarts — a marathon turn does not. The floor keeps the backstop
-# from being set so low it cuts ordinary work.
+# card fires before the transport cut), so the max is not pinned to the
+# transport's default. The default is 4h: the longest single turn the shipped
+# budgets can legitimately produce is a 90-minute test command plus a fix and a
+# re-run, or a blocking subagent wave at its 2h wait cap plus synthesis, and
+# the watchdog's UNKNOWN-verdict windows must sit well inside the ceiling so its
+# non-lethal recovery is reachable before the turn is cut. It is bounded at 24h
+# because the ceiling is a runaway backstop, not a scheduler: a single
+# prompt→response turn longer than a day is pathological, and multi-day
+# unattended operation belongs to the loop mechanisms (monitor/goal loops,
+# crons), which end the turn between cycles and survive restarts — a marathon
+# turn does not. The floor keeps the backstop from being set so low it cuts
+# ordinary work.
 CHAT_TURN_TIMEOUT_MIN = 300
 CHAT_TURN_TIMEOUT_MAX = 86400
 
@@ -4692,24 +4699,33 @@ class WatchdogConfig:
         ),
     )
     stale_window_secs: float = field(
-        default=300.0,
+        default=600.0,
         metadata=_meta(
             "Stale probe window (s)",
             "Idle seconds before an UNKNOWN-verdict model-wait turn is safe-probed "
-            "via session/cancel. Probes are non-lethal: a live turn auto-recovers.",
+            "via session/cancel. Probes are non-lethal, but a probe of a LIVE think "
+            "cancels and regenerates it, so the window must clear an ordinary "
+            "silent think. Default 10 min. A think the oracle can attest (an "
+            "established backend socket) gets the longer model-silent window "
+            "instead, so this one governs only thinks with no such evidence: a "
+            "host without procfs, or a backend connection that is momentarily "
+            "down. Its cost is wedge-recovery latency on a runtime that is "
+            "already dead, never lost work.",
         ),
     )
     tool_stall_suspect_secs: float = field(
-        default=3600.0,
+        default=5400.0,
         metadata=_meta(
             "Tool stall suspect (s)",
             "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and "
             "the turn routed to tool-stall recovery (continue-nudge, no re-run of "
-            "the original message). WORKING tools (e.g. a matched live build child) "
-            "are never cancelled regardless of duration. Default 1h: generous enough "
-            "for long builds and MCP tools on macOS, where the liveness oracle "
-            "degrades (no /proc) and cannot distinguish a live build from a stall, "
-            "while still landing inside the turn's own ceiling "
+            "the original message). WORKING tools (a matched live build child, an "
+            "MCP subtree with CPU movement) are never cancelled regardless of "
+            "duration, so this window governs only what the liveness oracle cannot "
+            "attest. Default 90 min: it clears every shipped budget a single tool "
+            "call can legitimately spend silent (the task runner's 90-minute test "
+            "command, a full test suite with one retry in one shell call) while "
+            "still landing inside the turn's own ceiling "
             "(agent.chat_turn_timeout_secs) so recovery is reachable. Enforcement is "
             "at handle construction, not config load: a window past the headroom "
             "fraction of the transport's per-prompt timeout is clamped with a "
@@ -4719,25 +4735,27 @@ class WatchdogConfig:
         ),
     )
     tool_stall_hard_cap_secs: float = field(
-        default=3600.0,
+        default=7200.0,
         metadata=_meta(
             "Hard cap (s)",
             "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
-            "probably-thinking window). Applies ONLY to UNKNOWN verdicts — never "
-            "to a WORKING session, which is deferred before this cap is consulted "
-            "and is therefore bounded only by the turn's own ceiling. Default 1h, "
-            "clamped against the transport's per-prompt timeout like the suspect "
-            "window.",
+            "probably-thinking window) and for any per-agent "
+            "watchdog_tool_stall_* override. Applies ONLY to UNKNOWN verdicts — "
+            "never to a WORKING session, which is deferred before this cap is "
+            "consulted and is therefore bounded only by the turn's own ceiling. "
+            "Default 2h, clamped against the transport's per-prompt timeout like "
+            "the suspect window.",
         ),
     )
     model_silent_probe_secs: float = field(
-        default=900.0,
+        default=1800.0,
         metadata=_meta(
             "Silent-think probe window (s)",
             "Extended probe window for a model-wait with an established backend "
             "connection but flat counters (non-streamed server-side reasoning, "
             "e.g. long xhigh thinks). Probing a live think cancels and regenerates "
-            "it, so this window is deliberately generous.",
+            "it, so this window is deliberately generous: 30 min clears the long "
+            "end of an extended-effort think.",
         ),
     )
     wellness_sample_secs: float = field(

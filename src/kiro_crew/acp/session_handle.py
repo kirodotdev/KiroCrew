@@ -69,6 +69,7 @@ from kiro_crew.acp.liveness import (
     _consume_future_exception,
     boottime_now,
     consult_offloaded,
+    steady_now,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
@@ -137,10 +138,10 @@ class WatchdogSettings:
     :data:`_TURN_CEILING_WINDOW_FRACTION` for the enforced headroom."""
 
     check_after_secs: float = 60.0
-    stale_window_secs: float = 300.0
-    tool_stall_suspect_secs: float = 3600.0
-    tool_stall_hard_cap_secs: float = 3600.0
-    model_silent_probe_secs: float = 900.0
+    stale_window_secs: float = 600.0
+    tool_stall_suspect_secs: float = 5400.0
+    tool_stall_hard_cap_secs: float = 7200.0
+    model_silent_probe_secs: float = 1800.0
     wellness_sample_secs: float = 3.0
     # Whether a per-agent watchdog_tool_stall_* override was applied to this
     # snapshot. Telemetry-only (the kirocrew.watchdog.action attr): a BOOLEAN,
@@ -2240,7 +2241,7 @@ class AcpSessionHandle:
                             self._log_working_deferral(_tool_idle, evidence, timeout)
                             continue
                         # UNKNOWN acts at the suspect window. The suspect
-                        # default (1h) is BUILD-scale forbearance — an LLM-shaped
+                        # default (90 min) is BUILD-scale forbearance — an LLM-shaped
                         # stall (flat subtree whose only live evidence is an
                         # established backend socket: a model turn riding inside
                         # a tool, e.g. kiro-cli use_subagent) narrows to the
@@ -2363,9 +2364,9 @@ class AcpSessionHandle:
                         # user"), and an unacked cancel confirms the wedge via the
                         # unresponsive-cancel branch at the loop top.
                         # ``window`` = "extended" when the established_flat
-                        # model-wait probe window (model_silent_probe_secs, 900s)
+                        # model-wait probe window (model_silent_probe_secs, 1800s)
                         # governed the decision instead of the ordinary stale
-                        # window (stale_window_secs, 300s). The established_flat
+                        # window (stale_window_secs, 600s). The established_flat
                         # case is an EXTENSION for model-wait (silence of a
                         # non-streamed think), not a narrowing as on the tool
                         # branch — emitting "extended" lets dashboards distinguish
@@ -2864,7 +2865,7 @@ class AcpSessionHandle:
         "standard" (default), "narrowed" (a tool-branch tag reduces the
         build-scale suspect window — established_flat to the model-silent budget,
         shell_child_absent to the ordinary silence window), or "extended"
-        (model-wait established_flat extends the 300s stale window to the
+        (model-wait established_flat extends the 600s stale window to the
         model-silent probe window for a non-streamed server-side think).
         ``agent_override`` is the per-agent-override BOOLEAN from the settings
         snapshot — deliberately NOT the agent name (per-agent joins happen via
@@ -3696,6 +3697,7 @@ class AcpSessionHandle:
                     command=ev.tool_input,
                     dispatch_ts=time.monotonic(),
                     dispatch_boot_ts=boottime_now(),
+                    dispatch_steady_ts=steady_now(),
                     dispatch_parked_secs=self._parked_total,
                     is_shell=ev.is_shell,
                     tool_name=ev.tool_name,

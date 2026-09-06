@@ -281,11 +281,11 @@ graph TB
   older than `session.pool_ttl_secs` (default 1800s) are discarded at claim time.
 - **Idle timeout** reclaims a session after `session.timeout_secs`, default
   **3600s**.
-- **Turn ceiling**: `agent.chat_turn_timeout_secs` defaults to **7200s** (2h),
-  clamped to 300s..86400s (`CHAT_TURN_TIMEOUT_MAX`, deliberately decoupled from the 7200s default) and never disable-able. It is a runaway backstop, so a
+- **Turn ceiling**: `agent.chat_turn_timeout_secs` defaults to **14400s** (4h),
+  clamped to 300s..86400s (`CHAT_TURN_TIMEOUT_MAX`, deliberately decoupled from the 14400s default) and never disable-able. It is a runaway backstop, so a
   turn that hits it ends with a card naming the limit rather than failing
-  silently. The ACP transport carries its own prompt timeout of the same
-  magnitude and bounds the turn first.
+  silently. The ACP transport's prompt timeout follows the configured ceiling
+  (plus a margin) so the dashboard's card always fires first.
 - **Tool-approval window**: `agent.tool_approval_timeout_secs` defaults to
   **600s** (10 min). It must expire *inside* the turn that opened it — otherwise
   an unanswered prompt is reported as a turn timeout and the real cause is lost —

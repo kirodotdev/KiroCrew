@@ -5818,11 +5818,11 @@ class DashboardState:
     MAX_BACKGROUND_TURNS_CEIL = 16  # hard ceiling — config can raise up to here
     # Longest a queued turn may sit waiting for a permit. Needed because the
     # queue wait happens INSIDE the coroutine ``spawn_guarded_turn`` already
-    # bounds at ``CHAT_TURN_TIMEOUT`` (7200s), so an unbounded wait would let a
+    # bounds at ``CHAT_TURN_TIMEOUT`` (14400s), so an unbounded wait would let a
     # fully-saturated cap consume a turn's whole ceiling and then kill it with
-    # "turn exceeded the 7200s ceiling" — a true statement that names the wrong
-    # cause. 1800s never trips under ordinary throttling and leaves 90 minutes
-    # of the ceiling for the turn itself; on expiry the turn fails with a
+    # "turn exceeded the 14400s ceiling" — a true statement that names the wrong
+    # cause. 1800s never trips under ordinary throttling and leaves three and a half
+    # hours of the ceiling for the turn itself; on expiry the turn fails with a
     # message that says what actually happened.
     _BACKGROUND_QUEUE_WAIT_SECS = 1800
 

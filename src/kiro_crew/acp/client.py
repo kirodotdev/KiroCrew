@@ -943,7 +943,7 @@ def _mentions_skill_file(raw_params: dict | None, command: str | None) -> bool:
 # security filter cancels every tool use in an assistant turn (e.g. shell commands
 # containing "credentials").  After this text kiro-cli returns to an idle state waiting
 # for the next user prompt and NEVER sends a ``complete`` response for the in-flight
-# ``session/prompt`` — so without special handling KiroCrew waits the full 2h timeout.
+# ``session/prompt`` — so without special handling Kiro Crew waits the full prompt timeout.
 # Treating this chunk as end-of-turn unblocks the caller; the text itself is still
 # yielded so the user/agent sees what happened.  We use an exact (stripped) match so
 # the detection does not fire if the model merely quotes the marker string in prose.
@@ -1015,7 +1015,7 @@ _DRAIN_DURATION = 1.0  # hard cap on draining MCP server init notifications
 # active server. Must stay strictly below _DRAIN_DURATION, otherwise the hard cap
 # fires first and the idle path becomes dead code.
 _DRAIN_IDLE_EXIT = 0.5
-_DEFAULT_PROMPT_TIMEOUT = 7200.0  # 2 hours — allow very long tool execution
+_DEFAULT_PROMPT_TIMEOUT = 14400.0  # 4 hours — mirrors constants.CHAT_TURN_TIMEOUT
 # Slack the transport leaves ABOVE the configured turn ceiling. The dashboard's
 # own deadline (turn_dispatch._bounded_turn) must always fire first so the user
 # sees the "turn hit the N-hour limit" card; a transport cut at the same instant
@@ -6411,7 +6411,7 @@ class AcpClient:
           strict improvement on the gateway's Linux deploy target.
         - Subtree-aggregate movement. A busy *unrelated* descendant (e.g. an
           MCP child polling) can read WORKING even if the model turn itself is
-          wedged with a lost completion frame, extending that turn to the 2h
+          wedged with a lost completion frame, extending that turn to the
           ``_DEFAULT_PROMPT_TIMEOUT`` backstop rather than reaping at 90s. This
           is an inherent property of the shared ``LivenessOracle`` (the kiro
           path has it too); tighter per-branch attribution belongs in
@@ -6653,7 +6653,7 @@ class AcpClient:
                     if not is_thinking and _is_tool_interrupted_marker(chunk):
                         # kiro-cli's built-in security filter cancelled the turn's tools.
                         # It will not send a ``complete`` response — synthesize one so the
-                        # caller exits instead of waiting 2 hours for the prompt timeout.
+                        # caller exits instead of waiting out the prompt timeout.
                         # (_emit_tool_interrupted_sel logs + audits the cancellation.)
                         self._emit_tool_interrupted_sel("_dispatch_events")
                         got_complete = True

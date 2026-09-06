@@ -324,11 +324,19 @@ class TestLoadTimeClamp:
         _clamp_security_bounds(data)
         assert data["agent"]["tool_approval_timeout_secs"] == 600
 
-    def test_absent_ceiling_uses_the_field_default(self) -> None:
-        """Omitting the ceiling must not disable the cross-field clamp."""
+    def test_absent_ceiling_uses_the_field_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Omitting the ceiling must not disable the cross-field clamp.
+
+        With the shipped default ceiling the static ``TOOL_APPROVAL_TIMEOUT_MAX``
+        binds first, so the cross-field clamp can only be SEEN to consult the
+        field default by lowering that default below the static max.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "_DEFAULT_CHAT_TURN_TIMEOUT_SECS", 1200)
         data = {"agent": {"tool_approval_timeout_secs": 7200}}
         _clamp_security_bounds(data)
-        assert data["agent"]["tool_approval_timeout_secs"] == 7200 - APPROVAL_TURN_MARGIN_SECS
+        assert data["agent"]["tool_approval_timeout_secs"] == 1200 - APPROVAL_TURN_MARGIN_SECS
 
     def test_static_bounds_applied_first(self) -> None:
         """The generic range clamp still runs on this field."""
@@ -338,8 +346,18 @@ class TestLoadTimeClamp:
 
         data = {"agent": {"tool_approval_timeout_secs": TOOL_APPROVAL_TIMEOUT_MAX * 10}}
         _clamp_security_bounds(data)
-        # Static ceiling first, then the cross-field margin under the default
-        # turn ceiling (both 7200, so the margin binds).
+        # Static ceiling first. The default turn ceiling sits above the static
+        # max by more than the margin, so the cross-field clamp leaves the
+        # statically-clamped value alone.
+        assert data["agent"]["tool_approval_timeout_secs"] == TOOL_APPROVAL_TIMEOUT_MAX
+        # With a ceiling INSIDE the static max the cross-field margin binds after it.
+        data = {
+            "agent": {
+                "tool_approval_timeout_secs": TOOL_APPROVAL_TIMEOUT_MAX * 10,
+                "chat_turn_timeout_secs": TOOL_APPROVAL_TIMEOUT_MAX,
+            }
+        }
+        _clamp_security_bounds(data)
         assert (
             data["agent"]["tool_approval_timeout_secs"]
             == TOOL_APPROVAL_TIMEOUT_MAX - APPROVAL_TURN_MARGIN_SECS
@@ -371,10 +389,17 @@ class TestLoadTimeClamp:
         _clamp_security_bounds(data)
         assert data["agent"]["tool_approval_timeout_secs"] is True
 
-    def test_non_int_ceiling_falls_back_to_the_default(self) -> None:
+    def test_non_int_ceiling_falls_back_to_the_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config import loader as loader_mod
+
+        # Lowered below the static max so the fallback is observable (see
+        # test_absent_ceiling_uses_the_field_default).
+        monkeypatch.setattr(loader_mod, "_DEFAULT_CHAT_TURN_TIMEOUT_SECS", 1200)
         data = {"agent": {"tool_approval_timeout_secs": 7200, "chat_turn_timeout_secs": "lots"}}
         _clamp_security_bounds(data)
-        assert data["agent"]["tool_approval_timeout_secs"] == 7200 - APPROVAL_TURN_MARGIN_SECS
+        assert data["agent"]["tool_approval_timeout_secs"] == 1200 - APPROVAL_TURN_MARGIN_SECS
 
 
 class TestArmTimeBudget:

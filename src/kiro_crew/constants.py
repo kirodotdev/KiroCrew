@@ -46,12 +46,16 @@ DATA_WARNING = (
 
 # Outer wall-clock cap on a single ``_run_chat`` invocation (any dispatch site:
 # primary user turn, queue-drain, cron injection, subagent injection, Slack first
-# turn). Sized to match the inner ACP ``_DEFAULT_PROMPT_TIMEOUT`` (7200s) in
+# turn). Sized to match the inner ACP ``_DEFAULT_PROMPT_TIMEOUT`` (14400s) in
 # ``acp/client.py`` so the dashboard layer doesn't bound below the transport.
+# Four hours is the longest single turn the shipped budgets can legitimately
+# produce (the task runner's 90-minute test command plus a fix and a re-run, or a
+# blocking subagent wave at its 2h wait cap plus synthesis); work that outlives
+# it belongs to the loop mechanisms, which end the turn between cycles.
 # Wedged-session detection is handled by ``_STALE_TURN_TIMEOUT`` (90s, also in
 # ``acp/client.py``); this cap is the upper safety ceiling for genuinely runaway
 # work, not a "this turn took too long" guard.
-CHAT_TURN_TIMEOUT = 7200.0
+CHAT_TURN_TIMEOUT = 14400.0
 
 # How long the dashboard chat path parks a turn waiting for a human to answer a
 # tool-approval prompt, when config is unavailable (tests, early bootstrap).

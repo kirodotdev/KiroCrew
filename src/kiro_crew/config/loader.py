@@ -2689,8 +2689,8 @@ class KiroCrewConfig:
                     agent_data.get("subagent_mem_buffer_pct", 20), 20
                 ),
                 chat_turn_timeout_secs=_safe_int(
-                    agent_data.get("chat_turn_timeout_secs", 7200),
-                    7200,
+                    agent_data.get("chat_turn_timeout_secs", 14400),
+                    14400,
                     CHAT_TURN_TIMEOUT_MIN,
                     CHAT_TURN_TIMEOUT_MAX,
                 ),
@@ -2848,15 +2848,15 @@ class KiroCrewConfig:
             ),
             watchdog=WatchdogConfig(
                 check_after_secs=_safe_float(watchdog_data.get("check_after_secs", 60.0), 60.0),
-                stale_window_secs=_safe_float(watchdog_data.get("stale_window_secs", 300.0), 300.0),
+                stale_window_secs=_safe_float(watchdog_data.get("stale_window_secs", 600.0), 600.0),
                 tool_stall_suspect_secs=_safe_float(
-                    watchdog_data.get("tool_stall_suspect_secs", 3600.0), 3600.0
+                    watchdog_data.get("tool_stall_suspect_secs", 5400.0), 5400.0
                 ),
                 tool_stall_hard_cap_secs=_safe_float(
-                    watchdog_data.get("tool_stall_hard_cap_secs", 3600.0), 3600.0
+                    watchdog_data.get("tool_stall_hard_cap_secs", 7200.0), 7200.0
                 ),
                 model_silent_probe_secs=_safe_float(
-                    watchdog_data.get("model_silent_probe_secs", 900.0), 900.0
+                    watchdog_data.get("model_silent_probe_secs", 1800.0), 1800.0
                 ),
                 wellness_sample_secs=_safe_float(
                     watchdog_data.get("wellness_sample_secs", 3.0), 3.0
