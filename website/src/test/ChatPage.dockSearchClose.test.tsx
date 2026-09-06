@@ -149,7 +149,8 @@ const fileReadStub = () => vi.fn().mockResolvedValue({
 }) as never
 globalThis.fetch = fileReadStub()
 
-import ChatPage, { virtualKeyFor, turnLeadKey } from '../pages/ChatPage'
+import ChatPage from '../pages/ChatPage'
+import { virtualKeyFor, turnLeadKey } from '../pages/chat/ChatPageMessageContent'
 import type { DisplayItem } from '../pages/chat/types'
 import type { ChatMessage } from '../types'
 

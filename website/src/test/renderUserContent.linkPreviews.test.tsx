@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
-import { renderUserContent } from '../pages/ChatPage'
+import { renderUserContent } from '../pages/chat/ChatPageMessageContent'
 import { __resetLinkMetaForTests } from '../lib/linkMeta'
 
 // Link previews in USER messages (issue #2580): the `linkPreviews` value must

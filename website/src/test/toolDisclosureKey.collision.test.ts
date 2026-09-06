@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import reducer, { refreshSlot } from '../store/chatSlice'
-import { messageRowKey } from '../pages/ChatPage'
+import { messageRowKey } from '../pages/chat/ChatPageMessageContent'
 import { toolDisclosureKey } from '../pages/chat/transcriptRenderers'
 import type { ChatMessage } from '../types'
 

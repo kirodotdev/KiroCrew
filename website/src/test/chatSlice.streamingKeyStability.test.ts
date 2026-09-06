@@ -18,7 +18,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import reducer, { sseChatMessage, sseThinkingChunk, refreshSlot } from '../store/chatSlice'
-import { virtualKeyFor, messageRowKey } from '../pages/ChatPage'
+import { virtualKeyFor, messageRowKey } from '../pages/chat/ChatPageMessageContent'
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 

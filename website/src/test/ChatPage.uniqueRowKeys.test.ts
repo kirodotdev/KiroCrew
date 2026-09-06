@@ -15,7 +15,7 @@
 // pass survives — and each later duplicate gets an occurrence suffix.
 
 import { describe, it, expect } from 'vitest'
-import { uniqueRowKeys, virtualKeyFor } from '../pages/ChatPage'
+import { uniqueRowKeys, virtualKeyFor } from '../pages/chat/ChatPageMessageContent'
 import type { DisplayItem } from '../pages/chat/types'
 import type { ChatMessage } from '../types'
 
