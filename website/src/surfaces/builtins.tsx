@@ -164,7 +164,7 @@ registerBuiltinSurface({
   hiddenFromNav: true,
 })
 
-// Instances (multi-instance management) is configured under Settings → Instances
+// Instances (multi-instance management) is configured under Settings → Remote Instances
 // (after Browser, before Security) and switched via the top-header tab strip —
 // it intentionally has no left-rail surface of its own.
 
