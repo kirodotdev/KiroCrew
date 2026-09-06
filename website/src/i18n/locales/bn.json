@@ -10297,7 +10297,8 @@
       "session_color": "সেশন রঙ",
       "session_color_hint": "এই এজেন্ট শুরু করা সেশনগুলি এই রঙ ব্যবহার করে, যদি না সেশনের নিজস্ব রঙ থাকে। এটি সম্পাদনা করলে সেই সেশনগুলি পুনরায় রঙিন হয়। কোনো এজেন্ট রঙ না রাখতে খালি রাখুন।",
       "session_color_hex": "সেশন রঙের হেক্স মান",
-      "session_color_clear": "সাফ করুন"
+      "session_color_clear": "সাফ করুন",
+      "editor_options_load_failed": "ক্রু এডিটরের ওয়ার্কস্পেস, টেমপ্লেট এবং মেমরি স্টোর অপশন লোড করা যায়নি।"
     },
     "knowledge": {
       "detailView": {
@@ -10583,7 +10584,8 @@
       "tail_off": "টেইল: বন্ধ",
       "tail_on": "টেইল: চালু",
       "wrap_off": "মোড়ানো: বন্ধ",
-      "wrap_on": "মোড়ানো: চালু"
+      "wrap_on": "মোড়ানো: চালু",
+      "level_change_failed": "লগ লেভেল পরিবর্তন করা যায়নি"
     },
     "mcpGatewayCard": {
       "active_sessions": "সক্রিয় সেশন",
@@ -10709,7 +10711,6 @@
       "cleanup_complete": "ক্লিনআপ সম্পূর্ণ",
       "cleanup_failed": "ক্লিনআপ ব্যর্থ",
       "coming_soon_this_app_is_not_yet_available_in_app": "শীঘ্রই আসছে — এই অ্যাপটি এখনও অ্যাপসে উপলব্ধ নয়। পরবর্তী আপডেটের পরে আবার দেখুন।",
-      "dismiss_error": "ত্রুটি খারিজ করো",
       "failed_to_load_app_info": "অ্যাপের তথ্য লোড করা যায়নি",
       "has_moved_to_a_standalone_app": "একটি স্বতন্ত্র অ্যাপে স্থানান্তরিত হয়েছে",
       "install_from_apps": "অ্যাপস থেকে ইনস্টল করুন",
@@ -11433,7 +11434,8 @@
       "phased": "ধাপভিত্তিক",
       "task_is_waiting_for_your_decision": "টাস্ক {{index}} \"{{title}}\" আপনার সিদ্ধান্তের অপেক্ষায় আছে",
       "tasks": "টাস্ক",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "পরিকল্পনা প্রস্তুত হলে DAG ভিউ দেখা যাবে"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "পরিকল্পনা প্রস্তুত হলে DAG ভিউ দেখা যাবে",
+      "failed_to_update_task": "টাস্ক আপডেট করা যায়নি"
     },
     "projectsPage": {
       "agent": "এজেন্ট:",
@@ -11490,7 +11492,8 @@
       "workspace": "ওয়ার্কস্পেস:",
       "workspace_folder": "ওয়ার্কস্পেস ফোল্ডার",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML ফাইল \"YAML থেকে\" ট্যাব দিয়ে আপলোড করা উচিত।",
-      "yaml_workflows_bypass_the_llm_decomposer": "YAML ওয়ার্কফ্লো LLM ডিকম্পোজার এড়িয়ে যায় —"
+      "yaml_workflows_bypass_the_llm_decomposer": "YAML ওয়ার্কফ্লো LLM ডিকম্পোজার এড়িয়ে যায় —",
+      "action_failed": "কাজটি ব্যর্থ হয়েছে"
     },
     "remoteArtifactDetailPage": {
       "back": "ফিরুন",

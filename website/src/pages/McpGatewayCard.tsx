@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Circle } from 'lucide-react'
 import { api } from '../api/client'
 import { StatCard, Card } from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 type Backend = { server: string; agent: string; pid: number | null; sessions: number; idle_s: number; rss_kb: number }
@@ -56,7 +57,25 @@ export default function McpGatewayCard() {
     refetchInterval: enabled ? 3000 : false,
   })
 
-  if (!enabled) return null
+  // A failed status read is not "gateway disabled": `enabled` defaults to
+  // false on error, so hiding the card would make a broken endpoint
+  // indistinguishable from the feature being off. The notice renders whenever
+  // the query is errored — a failed refetch keeps the last status on screen
+  // (react-query retains `data`) but says so above it, so a stale reading never
+  // passes for a live one while the 5s poll retries. askAgent on: a read-only
+  // status card, no input.
+  const statusNotice = statusQ.isError ? (
+    <ErrorNotice message={statusQ.error?.message} askAgent className="mb-3" testId="mcp-gateway-status-error" />
+  ) : null
+  if (!enabled) {
+    if (!statusNotice) return null
+    return (
+      <Card className="mb-6">
+        <div className="text-[15px] font-semibold text-text-strong mb-3">{i18nT('pages.mcpGatewayCard.shared_mcp_gateway')}</div>
+        {statusNotice}
+      </Card>
+    )
+  }
 
   const backends = metricsQ.data?.backends ?? []
   const sessions = backends.reduce((n, b) => n + b.sessions, 0)
@@ -85,6 +104,14 @@ export default function McpGatewayCard() {
           {healthy ? 'active' : running ? 'unhealthy' : 'stopped'}
         </span>
       </div>
+
+      {statusNotice}
+      {/* askAgent on: a metrics read; without it the tiles below silently showed
+          zeros when the poll failed. Rendered above the tiles so the stale
+          numbers are visibly qualified rather than replaced. */}
+      {metricsQ.isError && (
+        <ErrorNotice message={metricsQ.error?.message} askAgent className="mb-3" testId="mcp-gateway-metrics-error" />
+      )}
 
       <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(130px,1fr))] mb-4">
         <StatCard label={i18nT('pages.mcpGatewayCard.backends')} value={`${backends.length}${metricsQ.data?.max_backends ? ` / ${metricsQ.data.max_backends}` : ''}`} />

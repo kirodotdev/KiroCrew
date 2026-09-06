@@ -10150,7 +10150,8 @@
       "session_color": "会话颜色",
       "session_color_hint": "由此代理启动的会话在自身没有颜色时使用此颜色。修改它会重新为这些会话着色。留空则不使用代理颜色。",
       "session_color_hex": "会话颜色十六进制值",
-      "session_color_clear": "清除"
+      "session_color_clear": "清除",
+      "editor_options_load_failed": "无法加载团队编辑器的工作区、模板和记忆存储选项。"
     },
     "knowledge": {
       "detailView": {
@@ -10430,7 +10431,8 @@
       "tail_off": "跟随：关",
       "tail_on": "跟随：开",
       "wrap_off": "换行：关",
-      "wrap_on": "换行：开"
+      "wrap_on": "换行：开",
+      "level_change_failed": "更改日志级别失败"
     },
     "mcpGatewayCard": {
       "active_sessions": "活动会话",
@@ -10554,7 +10556,6 @@
       "cleanup_complete": "清理完成",
       "cleanup_failed": "清理失败",
       "coming_soon_this_app_is_not_yet_available_in_app": "即将推出 — 此应用尚未在“应用”中提供。请在下次更新后再查看。",
-      "dismiss_error": "忽略错误",
       "failed_to_load_app_info": "加载应用信息失败",
       "has_moved_to_a_standalone_app": "已迁移为独立应用",
       "install_from_apps": "从“应用”安装",
@@ -11274,7 +11275,8 @@
       "phased": "分阶段",
       "task_is_waiting_for_your_decision": "任务 {{index}}“{{title}}”正在等待你的决定",
       "tasks": "任务",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "计划就绪后将显示 DAG 视图"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "计划就绪后将显示 DAG 视图",
+      "failed_to_update_task": "更新任务失败"
     },
     "projectsPage": {
       "agent": "代理：",
@@ -11331,7 +11333,8 @@
       "workspace": "工作区：",
       "workspace_folder": "工作区文件夹",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML 文件应通过“From YAML”标签页上传。",
-      "yaml_workflows_bypass_the_llm_decomposer": "YAML 工作流会跳过 LLM 分解器 —"
+      "yaml_workflows_bypass_the_llm_decomposer": "YAML 工作流会跳过 LLM 分解器 —",
+      "action_failed": "操作失败"
     },
     "remoteArtifactDetailPage": {
       "back": "返回",

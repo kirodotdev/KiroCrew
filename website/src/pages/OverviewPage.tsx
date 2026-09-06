@@ -9,6 +9,7 @@ import { Card, CardTitle, StatCard } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
 import ErrorBoundary from '../components/ErrorBoundary'
+import ErrorNotice from '../components/ErrorNotice'
 import { getOverviewStatCards } from './overviewStatCards'
 import { getOverviewPanel } from './overviewPanel'
 import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
@@ -59,7 +60,7 @@ function DrillIn({ title, onBack, children }: { title: string; onBack: () => voi
 /** Usage summary card — shares the query cache with the Usage drill-in. */
 function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
   const provider = useProvider()
-  const { data } = useQuery<NormalizedUsage>({
+  const { data, isError, error } = useQuery<NormalizedUsage>({
     queryKey: ['provider-usage', provider.id],
     queryFn: () => provider.fetchUsage(),
     enabled: provider.capabilities.usageBilling,
@@ -76,6 +77,10 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
       </CardTitle>
       {!provider.capabilities.usageBilling ? (
         <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.usage_tracking_is_not_available_for')} {provider.displayName}.</div>
+      ) : isError ? (
+        // askAgent on: a read of the provider's usage report; the card holds no
+        // input. Without this branch a rejected fetch left the skeleton up forever.
+        <ErrorNotice message={error?.message} askAgent testId="overview-usage-error" />
       ) : !data ? (
         <div className="skeleton h-14 rounded" />
       ) : (
@@ -106,7 +111,7 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
 
 /** Memory summary card — consolidation cadence + retention at a glance. */
 function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
-  const { data } = useQuery<{ history_idle_hours?: number; history_max_days?: number; migrated?: boolean }>({
+  const { data, isError, error } = useQuery<{ history_idle_hours?: number; history_max_days?: number; migrated?: boolean }>({
     queryKey: ['memory-settings'],
     queryFn: () => api.memorySettings(),
   })
@@ -118,7 +123,11 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
           {i18nT('pages.overviewPage.view_details')} <ArrowRight size={12} />
         </button>
       </CardTitle>
-      {!data ? (
+      {isError ? (
+        // askAgent on: a read of the persisted memory settings; the card holds no
+        // input. Without this branch a rejected fetch left the skeleton up forever.
+        <ErrorNotice message={error?.message} askAgent testId="overview-memory-error" />
+      ) : !data ? (
         <div className="skeleton h-14 rounded" />
       ) : (
         <div className="flex flex-col gap-1 text-[13px] text-muted">

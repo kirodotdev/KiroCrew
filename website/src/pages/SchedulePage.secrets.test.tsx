@@ -112,7 +112,8 @@ describe('JobSecretsPanel', () => {
     )
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     expect(screen.getByText('Approve').closest('button')).toBeDisabled()
-    // A truncated source is equally unreviewable.
+    // A truncated source is equally unreviewable. The fetch SUCCEEDED here, so
+    // this is a status line inside the warn note, not a second alert.
     vi.mocked(api.cronScript).mockResolvedValue({ ...SOURCE_A, truncated: true, reviewable: false })
     renderWithProviders(
       <JobSecretsPanel
@@ -120,7 +121,8 @@ describe('JobSecretsPanel', () => {
         onSaved={vi.fn()}
       />,
     )
-    await waitFor(() => expect(screen.getAllByRole('alert').length).toBe(2))
+    await screen.findByTestId('schedule-secrets-source-truncated')
+    expect(screen.getAllByRole('alert').length).toBe(1)
     expect(screen.getAllByText('Approve')[1].closest('button')).toBeDisabled()
     // ...as is a source the server could not render verbatim (redaction
     // masked a span, or undecodable bytes): the digest would cover code the
@@ -132,8 +134,8 @@ describe('JobSecretsPanel', () => {
         onSaved={vi.fn()}
       />,
     )
-    await waitFor(() => expect(screen.getAllByRole('alert').length).toBe(3))
-    expect(screen.getByText(/cannot be shown as written/)).toBeInTheDocument()
+    expect(await screen.findByText(/cannot be shown as written/)).toBeInTheDocument()
+    expect(screen.getAllByRole('alert').length).toBe(1)
     expect(screen.getAllByText('Approve')[2].closest('button')).toBeDisabled()
     expect(api.cronSecretsGrant).not.toHaveBeenCalled()
   })

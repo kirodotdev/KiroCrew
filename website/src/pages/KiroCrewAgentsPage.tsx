@@ -109,6 +109,12 @@ function readStoredView(): CrewView {
  */
 type SharedKind = 'none' | 'memory' | 'files' | 'both'
 
+/** Text for a failed query: the thrown message, or the value itself when the
+ *  rejection was not an Error. */
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
 /* ── Workspace Creation Dialog (a nested Radix layer inside the crew editor) ── */
 
 /** The form itself, mounted only while the dialog is open.
@@ -130,6 +136,9 @@ function WorkspaceForm({
   const [wsDir, setWsDir] = useState('workspace')
   const [dirTouched, setDirTouched] = useState(false)
   const [copyFrom, setCopyFrom] = useState('')
+  // Two states, because they are two different things: `wsHint` is client-side
+  // validation (nothing failed), `wsError` is the outcome of a request that did.
+  const [wsHint, setWsHint] = useState('')
   const [wsError, setWsError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -143,9 +152,10 @@ function WorkspaceForm({
   }
 
   const submit = async () => {
+    setWsHint('')
     setWsError('')
     const n = wsName.trim()
-    if (!n) { setWsError(i18nT('pages.kiroCrewAgentsPage.workspace_name_is_required')); return }
+    if (!n) { setWsHint(i18nT('pages.kiroCrewAgentsPage.workspace_name_is_required')); return }
     setSubmitting(true)
     try {
       const body: Record<string, string> = { name: n, dir: wsDir }
@@ -196,7 +206,13 @@ function WorkspaceForm({
               aria-label={i18nT('pages.kiroCrewAgentsPage.copy_from_workspace')}
             />
           </div>
-          {wsError && <div className="text-danger text-[13px]">{wsError}</div>}
+          {/* Client-side validation hint (the name never left the browser) —
+              not an error surface, so it stays plain text rather than ErrorNotice. */}
+          {wsHint && <div className="text-danger text-[13px]">{wsHint}</div>}
+          {/* No hand-off: the workspace name / directory / copy-from fields
+              (wsName, wsDir, copyFrom) are unsaved — a failed create is exactly
+              what did not store them. */}
+          <ErrorNotice message={wsError} variant="inline" testId="workspace-create-error" />
         </div>
       </DialogBody>
       <DialogFooter>
@@ -696,7 +712,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const provider = useProvider()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
-  const { data: agentsData, refetch: refetchAgents } = useQuery({
+  const { data: agentsData, refetch: refetchAgents, error: agentsError } = useQuery({
     queryKey: ['kirocrew-agents'],
     queryFn: () => api.kirocrewAgents(),
   })
@@ -708,23 +724,27 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const agents = useMemo<KiroCrewAgent[]>(() => agentsData?.agents || [], [agentsData])
   const defaultAgent = agentsData?.default_agent || ''
 
-  const { data: installedAgents } = useQuery({
+  const { data: installedAgents, error: installedError } = useQuery({
     queryKey: ['agents-installed'],
     queryFn: () => api.agentsInstalled(),
   })
   const kiroAgentOptions = Array.isArray(installedAgents) ? installedAgents.map((x: { name: string }) => x.name).filter(Boolean) : ['kirocrew']
 
-  const { data: workspacesData, refetch: refetchWorkspaces } = useQuery({
+  const { data: workspacesData, refetch: refetchWorkspaces, error: workspacesError } = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => api.workspaces(),
   })
   const workspaceOptions = workspacesData?.workspaces?.map((w: { name: string }) => w.name) || ['default']
 
-  const { data: kirocrewCfg } = useQuery({
+  const { data: kirocrewCfg, error: cfgError } = useQuery({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
   const memoryStoreOptions = kirocrewCfg?.memory_stores ? Object.keys(kirocrewCfg.memory_stores) : ['default']
+  // The three option lists above fall back to a built-in default when their
+  // fetch fails, so without this the editor would offer `default` / `kirocrew`
+  // as though those were the only choices. One notice, first failure wins.
+  const editorOptionsError = installedError ?? workspacesError ?? cfgError
 
   // Model list for the per-agent default. Same query key as every other model
   // picker so the list is fetched once. INHERIT_MODEL leads so "no pin" is the
@@ -738,6 +758,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [filter, setFilter] = useState('')
   const [view, setView] = useState<CrewView>(readStoredView)
   const [error, setError] = useState('')
+  // Client-side validation for the create form ("name is required"). Kept apart
+  // from `error`, which holds the outcome of a request that FAILED: a blank name
+  // never left the browser, so it must not render as a failed operation.
+  const [sheetHint, setSheetHint] = useState('')
   const [sheet, setSheet] = useState<SheetTarget>(null)
   const [name, setName] = useState('')
   // Starts UNSELECTED, not at the built-in 'kirocrew'. Pre-filling the built-in
@@ -779,7 +803,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
   /** The model a new session on this crew would actually run on, resolved by
    *  the backend so the precedence is not re-derived (and drifted) here. */
-  const { data: resolved } = useQuery({
+  const { data: resolved, error: resolvedError } = useQuery({
     queryKey: ['agent-resolved-model', editing],
     queryFn: () => api.agentResolvedModel(editing),
     enabled: !!editing,
@@ -805,7 +829,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
   const openCreate = useCallback(() => {
     sheetEpoch.current += 1
-    setError('')
+    setError(''); setSheetHint('')
     setConfirmDelete(false)
     setName(''); setKiroAgent(''); setWorkspace('default'); setMemoryStore('default')
     setTriggers('')
@@ -815,7 +839,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
   const openEdit = useCallback((a: KiroCrewAgent) => {
     sheetEpoch.current += 1
-    setError('')
+    setError(''); setSheetHint('')
     setConfirmDelete(false)
     setKiroAgent(a.kiro_agent); setWorkspace(a.workspace); setMemoryStore(a.memory_store)
     setTriggers(a.triggers || '')
@@ -838,7 +862,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setSheet({ mode: 'edit', name: a.name })
   }, [])
 
-  const closeSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setConfirmDelete(false) }, [])
+  const closeSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setSheetHint(''); setConfirmDelete(false) }, [])
 
   /**
    * Identity of the CURRENT panel opening, bumped on every open and every
@@ -895,13 +919,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   })
 
   const create = () => {
-    setError('')
+    setError(''); setSheetHint('')
     const n = name.trim()
-    if (!n) { setError(i18nT('pages.kiroCrewAgentsPage.name_is_required')); return }
+    if (!n) { setSheetHint(i18nT('pages.kiroCrewAgentsPage.name_is_required')); return }
     // Refuse an unset template rather than letting the server apply its
     // 'kirocrew' default: that default is what silently turns a new crew into an
     // alias for the DEFAULT agent (#1684).
-    if (!kiroAgent) { setError(i18nT('pages.kiroCrewAgentsPage.agent_template_is_required')); return }
+    if (!kiroAgent) { setSheetHint(i18nT('pages.kiroCrewAgentsPage.agent_template_is_required')); return }
     createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore, triggers, session_color: sessionColor, epoch: sheetEpoch.current })
   }
 
@@ -1257,6 +1281,25 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     <>
       {!embedded && <PageHeader title={i18nT('pages.kiroCrewAgentsPage.agents')} subtitle={i18nT('pages.kiroCrewAgentsPage.manage_agent_workspace_memory_store_bindings')} />}
       <div className={`${embedded ? '' : 'px-4 md:px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
+        {/* A roster that failed to load must not read as "you have no crews":
+            the empty state below would say exactly that. Hand-off only while the
+            crew sheet is closed — open, its unsaved pane edits (dirtyPanes) would
+            go with the navigation. */}
+        <ErrorNotice
+          className="mb-3.5"
+          title={i18nT('components.agentSelector.roster_load_failed')}
+          message={agentsError ? errorText(agentsError) : null}
+          askAgent={!sheet}
+          testId="crews-roster-load-error"
+        />
+        {/* Same hand-off decision as the roster notice above (dirtyPanes). */}
+        <ErrorNotice
+          className="mb-3.5"
+          title={i18nT('pages.kiroCrewAgentsPage.editor_options_load_failed')}
+          message={editorOptionsError ? errorText(editorOptionsError) : null}
+          askAgent={!sheet}
+          testId="crews-editor-options-load-error"
+        />
         {/* Says out loud what the bindings below cannot: a crew's workspace and
             memory store are shown and editable, but the isolation they imply is
             only partly built — every crew still reads one shared semantic
@@ -1288,9 +1331,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               aria-label={i18nT('pages.kiroCrewAgentsPage.new_sessions_use')}
               style={{ width: 190 }}
             />
-            {/* Hand-off is safe here: the select commits immediately on change,
-                so there is no unsaved draft for the navigation to destroy. */}
-            <ErrorNotice message={error} variant="inline" askAgent />
+            {/* `error` is ONE state shared with the crew sheet: settleFor writes
+                the sheet's create / update / delete failures into it too, and
+                those render in the sheet's own footer without a hand-off because
+                dirtyPanes hold unsaved edits. So this copy shows only while the
+                sheet is closed (closeSheet clears the state on the way out) — the
+                only writer then is the select above, which commits immediately on
+                change, so the hand-off has no draft to destroy. */}
+            <ErrorNotice message={sheet ? null : error} variant="inline" askAgent testId="crews-default-agent-error" />
           </div>
         )}
 
@@ -1601,6 +1649,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                             : i18nT('pages.kiroCrewAgentsPage.effort_pin_needs_a_model')}
                         </div>
                       )}
+                      {/* No hand-off: the crew sheet's unsaved pane edits
+                          (dirtyPanes). Without this a failed resolve just left the
+                          readout below absent, as if the crew had no model. */}
+                      <ErrorNotice
+                        message={resolvedError ? errorText(resolvedError) : null}
+                        testId="crew-resolved-model-error"
+                      />
                       {resolved && (
                         <div className="flex flex-col gap-1 rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
                           <div>
@@ -1737,8 +1792,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               beside them implies those toggles are drafts that Cancel would roll
               back — which it cannot. */}
           <DialogFooter>
-            <ErrorNotice message={error} variant="inline" className="mr-auto" />
-            {!creating && dirtyPanes.size > 0 && !error && (
+            {/* No hand-off: the crew sheet's unsaved pane edits (dirtyPanes) —
+                a failed save is exactly what did not persist them. */}
+            <ErrorNotice message={error} variant="inline" className="mr-auto" testId="crew-sheet-error" />
+            {/* Client-side validation hint — the form never reached the server,
+                so this is plain text, not an error surface. */}
+            {sheetHint && <span className="mr-auto text-[12px] text-danger" data-testid="crew-sheet-hint">{sheetHint}</span>}
+            {!creating && dirtyPanes.size > 0 && !error && !sheetHint && (
               <span className="mr-auto text-[11.5px] text-muted" data-testid="crew-unsaved-note">
                 {/* While the open schedule draft is what disables Save, the note
                     names that reason in visible text — the `title` on the button

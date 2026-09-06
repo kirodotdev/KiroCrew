@@ -35,6 +35,7 @@ import type {
   WebhookTestResult, WebhookTokenCreated, WebhookTokenEntry, WebhooksView,
 } from '../api/client'
 import AgentSelector, { type KiroCrewAgent } from '../components/AgentSelector'
+import ErrorNotice from '../components/ErrorNotice'
 import Tablist, { type TablistTab } from '../components/Tablist'
 import { TABS_RAIL_ROW_CLASS } from '../components/ui/tabsPill'
 import { Badge, Btn, Checkbox, IconButton, Input, PageHeader, SearchInput, Skeleton } from '../components/ui'
@@ -429,7 +430,7 @@ export default function WebhooksPage() {
     const firstSource = view.tokens[0]
     if (firstSource) setSelection({ kind: 'token', id: firstSource.id })
   }, [isLoading, view.tokens])
-  const { data: agents = [] } = useQuery<KiroCrewAgent[]>({
+  const agentsQuery = useQuery<KiroCrewAgent[]>({
     queryKey: ['agents-installed'],
     queryFn: async () => {
       const response = await Promise.resolve(api.agentsInstalled?.())
@@ -437,11 +438,21 @@ export default function WebhooksPage() {
     },
     retry: false,
   })
+  const agents = agentsQuery.data ?? []
+  // A roster that failed to LOAD must not look like an install with no agents,
+  // so the failure is rendered at page level (below), with its own Retry.
+  const rosterError = agentsQuery.isError
+    ? (agentsQuery.error instanceof Error ? agentsQuery.error.message : String(agentsQuery.error))
+    : null
   const destinationAgent = newAgent || agents[0]?.name || ''
-  // Only a failure with NOTHING to show is an "unavailable" state. A failed
-  // background refetch while a snapshot is already on screen must not claim the
-  // page is broken.
-  const loadError = error && !data
+  // The new-source form (label + destination agent) lives in page state, so it
+  // outlives switching panes: an agent hand-off from ANY notice on this page
+  // unmounts it. Offer the hand-off only while that draft is empty.
+  const hasSourceDraft = label.trim() !== '' || newAgent !== ''
+  // Rendered whenever the query is errored: a failed background refetch keeps
+  // the last snapshot on screen (react-query retains `data`) but is still SAID
+  // above it, so a stale view never passes for a live one.
+  const loadError = error
     ? i18nT('pages.webhooksPage.could_not_load_webhook_settings', {
       detail: error instanceof Error ? error.message : String(error),
     })
@@ -1125,9 +1136,13 @@ export default function WebhooksPage() {
 
       {selectedRun.outcome !== 'completed' && (
         <Section title={i18nT('pages.webhooksPage.failure_detail')}>
-          <div className="text-[13px] text-text">
-            {selectedRun.detail || OUTCOME[selectedRun.outcome].blurb()}
-          </div>
+          {/* Hand-off while the new-source draft is empty: the run itself is
+              history and cannot be lost, see hasSourceDraft. */}
+          <ErrorNotice
+            message={selectedRun.detail || OUTCOME[selectedRun.outcome].blurb()}
+            askAgent={!hasSourceDraft}
+            testId="webhook-run-failure"
+          />
         </Section>
       )}
     </>
@@ -1286,42 +1301,82 @@ export default function WebhooksPage() {
 
         <div className="flex-1 min-h-0 overflow-y-auto" data-testid="webhook-detail" data-pane={pane}>
           {loadError && (
-            <Banner
-              tone="warn"
-              icon={<AlertTriangle size={16} className="text-warn" />}
-              title={i18nT('pages.webhooksPage.webhook_settings_are_unavailable')}
-              right={<Btn onClick={reload}>{i18nT('pages.webhooksPage.retry')}</Btn>}
-            >
-              {loadError} {i18nT('pages.webhooksPage.reference_below_still_describes_the_endpoint')}
-            </Banner>
+            <div className="flex flex-col gap-1.5 px-4 py-3 border-b border-border" data-testid="webhooks-load-error">
+              <div className="flex items-start gap-2.5">
+                {/* Hand-off only while the new-source draft is empty: the setup
+                    pane below keeps its label input live in this state, see
+                    hasSourceDraft. Retry stays a sibling — retry and hand-off are
+                    different next steps. */}
+                <ErrorNotice
+                  className="flex-1"
+                  title={i18nT('pages.webhooksPage.webhook_settings_are_unavailable')}
+                  message={loadError}
+                  askAgent={!hasSourceDraft}
+                />
+                <Btn onClick={reload} className="shrink-0">{i18nT('pages.webhooksPage.retry')}</Btn>
+              </div>
+              <p className="text-[12px] text-muted">
+                {i18nT('pages.webhooksPage.reference_below_still_describes_the_endpoint')}
+              </p>
+            </div>
+          )}
+          {rosterError && (
+            <div className="flex items-start gap-2.5 px-4 py-3 border-b border-border" data-testid="webhooks-roster-error">
+              {/* Hand-off only while the new-source draft is empty (hasSourceDraft):
+                  the destination-agent picker below is part of that draft. Retry
+                  stays a sibling — retry and hand-off are different next steps. */}
+              <ErrorNotice
+                className="flex-1"
+                title={i18nT('components.agentSelector.roster_load_failed')}
+                message={rosterError}
+                askAgent={!hasSourceDraft}
+              />
+              <Btn onClick={() => { void agentsQuery.refetch() }} disabled={agentsQuery.isFetching} className="shrink-0">
+                {i18nT('pages.webhooksPage.retry')}
+              </Btn>
+            </div>
           )}
           {mutationMessage && (
-            <Banner
-              tone="danger"
-              icon={<AlertTriangle size={16} className="text-danger" />}
-              title={i18nT('pages.webhooksPage.that_action_did_not_go_through')}
-            >
-              {mutationMessage}
-            </Banner>
+            <div className="px-4 py-3 border-b border-border">
+              {/* Hand-off only while the new-source draft is empty (hasSourceDraft):
+                  the token label / agent picker draft (label, newAgent) is page
+                  state and would go with the navigation. */}
+              <ErrorNotice
+                title={i18nT('pages.webhooksPage.that_action_did_not_go_through')}
+                message={mutationMessage}
+                askAgent={!hasSourceDraft}
+                testId="webhooks-mutation-error"
+              />
+            </div>
           )}
           {testResult && (
-            <Banner
-              tone={testResult.ok ? 'ok' : 'danger'}
-              testId="webhook-test-result"
-              icon={testResult.ok
-                ? <Check size={16} className="text-ok" />
-                : <AlertTriangle size={16} className="text-danger" />}
-              title={testResult.ok
-                ? i18nT('pages.webhooksPage.test_request_accepted_http', { status: testResult.status })
-                : testResult.status
-                  ? i18nT('pages.webhooksPage.test_request_failed_http', { status: testResult.status })
-                  : i18nT('pages.webhooksPage.test_request_failed')}
-              right={<Btn onClick={() => setTestResult(null)}><X size={13} /> {i18nT('pages.webhooksPage.dismiss')}</Btn>}
-            >
-              {testResult.ok
-                ? <>{i18nT('pages.webhooksPage.session')} <code className="font-mono">{testResult.session_key}</code> {i18nT('pages.webhooksPage.started_the_agent_s_answer_arrives_in_notificati')}</>
-                : testResult.error || i18nT('pages.webhooksPage.the_gateway_refused_the_call')}
-            </Banner>
+            testResult.ok
+              ? (
+                <Banner
+                  tone="ok"
+                  testId="webhook-test-result"
+                  icon={<Check size={16} className="text-ok" />}
+                  title={i18nT('pages.webhooksPage.test_request_accepted_http', { status: testResult.status })}
+                  right={<Btn onClick={() => setTestResult(null)}><X size={13} /> {i18nT('pages.webhooksPage.dismiss')}</Btn>}
+                >
+                  {i18nT('pages.webhooksPage.session')} <code className="font-mono">{testResult.session_key}</code> {i18nT('pages.webhooksPage.started_the_agent_s_answer_arrives_in_notificati')}
+                </Banner>
+              )
+              : (
+                <div className="px-4 py-3 border-b border-border">
+                  {/* Hand-off only while the new-source draft is empty — same
+                      decision as the mutation notice above (label, newAgent). */}
+                  <ErrorNotice
+                    testId="webhook-test-result"
+                    title={testResult.status
+                      ? i18nT('pages.webhooksPage.test_request_failed_http', { status: testResult.status })
+                      : i18nT('pages.webhooksPage.test_request_failed')}
+                    message={testResult.error || i18nT('pages.webhooksPage.the_gateway_refused_the_call')}
+                    askAgent={!hasSourceDraft}
+                    onDismiss={() => setTestResult(null)}
+                  />
+                </div>
+              )
           )}
 
           {isLoading

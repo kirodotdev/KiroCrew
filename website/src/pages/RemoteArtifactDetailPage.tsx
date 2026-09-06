@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, ExternalLink, GitFork, Loader2, User, MessageSquare, RotateCw } from 'lucide-react'
+import { ArrowLeft, ExternalLink, GitFork, Loader2, User, MessageSquare, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -129,9 +129,11 @@ export default function RemoteArtifactDetailPage() {
     setSidebarOpen(comments.length > 0)
   }, [externalId, comments.length])
 
-  // Writes go through useMutation (use-react-query guideline): errors aren't
-  // swallowed and cache invalidation is centralized. Status-change + delete on
-  // a shared artifact write straight through to the provider.
+  // Writes go through useMutation (use-react-query guideline): cache
+  // invalidation is centralized, and each mutation's `error` is rendered below
+  // (`commentWriteError`) so a refused post/reply/status change/delete is
+  // reported rather than just re-fetched. Status-change + delete on a shared
+  // artifact write straight through to the provider.
   const postMut = useMutation({
     mutationFn: (vars: { text: string; anchor?: object }) =>
       api.postRemoteArtifactComment(provider, externalId, vars),
@@ -150,6 +152,17 @@ export default function RemoteArtifactDetailPage() {
     mutationFn: (id: string) => api.deleteRemoteComment(provider, externalId, id),
     onSuccess: invalidateComments, onError: invalidateComments,
   })
+  // The most recent refused write. react-query clears a mutation's error on its
+  // next `mutate`, and Dismiss resets all four, so a stale failure cannot linger
+  // past the user's next attempt.
+  const commentWriteError = postMut.error?.message
+    ?? replyMut.error?.message
+    ?? markReviewMut.error?.message
+    ?? deleteMut.error?.message
+    ?? null
+  const dismissCommentWriteError = useCallback(() => {
+    postMut.reset(); replyMut.reset(); markReviewMut.reset(); deleteMut.reset()
+  }, [postMut, replyMut, markReviewMut, deleteMut])
   const onAdd = useCallback((text: string) => { postMut.mutate({ text }) }, [postMut])
   const onReply = useCallback((parentId: string, text: string) => { replyMut.mutate({ parentId, text }) }, [replyMut])
   const onMarkReview = useCallback((id: string) => { markReviewMut.mutate(id) }, [markReviewMut])
@@ -262,7 +275,8 @@ export default function RemoteArtifactDetailPage() {
   }, [isMarkdown])
 
   if (detailQuery.isLoading) return <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.loading')}</div>
-  if (detailQuery.error || !art) {
+  if (detailQuery.isError || !art) {
+    const failed = detailQuery.isError
     const msg = detailQuery.error instanceof Error ? detailQuery.error.message : i18nT('pages.remoteArtifactDetailPage.failed_to_load_remote_artifact')
     return (
       <>
@@ -275,16 +289,26 @@ export default function RemoteArtifactDetailPage() {
           </div>
         </div>
         <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-          <Card>
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="lucide-inline text-danger" />
-              <div>
-                <div className="text-sm text-danger font-medium">{i18nT('pages.remoteArtifactDetailPage.failed_to_load_remote_artifact')}</div>
-                <div className="text-[13px] text-muted mt-1">{msg}</div>
-              </div>
-            </div>
-            <div className="mt-3"><Btn onClick={() => navigate('/artifacts')}>{i18nT('pages.remoteArtifactDetailPage.back_to_library')}</Btn></div>
-          </Card>
+          {failed ? (
+            <Card>
+              {/* askAgent on: the detail read rejected, so nothing else rendered —
+                  no comment draft exists on this branch to lose. */}
+              <ErrorNotice
+                title={i18nT('pages.remoteArtifactDetailPage.failed_to_load_remote_artifact')}
+                message={msg}
+                askAgent
+                testId="remote-artifact-detail-error"
+              />
+              <div className="mt-3"><Btn onClick={() => navigate('/artifacts')}>{i18nT('pages.remoteArtifactDetailPage.back_to_library')}</Btn></div>
+            </Card>
+          ) : (
+            // The provider answered but had no artifact under this id: an empty
+            // state, not a failure — the same plain note the local detail page uses.
+            <Card>
+              <div className="text-sm text-muted">{i18nT('pages.artifactDetailPage.not_found')}</div>
+              <div className="mt-3"><Btn onClick={() => navigate('/artifacts')}>{i18nT('pages.remoteArtifactDetailPage.back_to_library')}</Btn></div>
+            </Card>
+          )}
         </div>
       </>
     )
@@ -354,6 +378,26 @@ export default function RemoteArtifactDetailPage() {
           /* No hand-off: the comments sidebar's draft shares this page —
              navigating away would discard an in-progress comment. */
           <ErrorNotice message={forkError} className="mb-3" />
+        )}
+        {commentsQuery.isError && (
+          /* No hand-off: the comments sidebar's comment draft (and an open
+             anchored-comment popover) share this page — navigating away would
+             discard an in-progress comment. */
+          <ErrorNotice
+            message={commentsQuery.error?.message}
+            className="mb-3"
+            testId="remote-artifact-comments-error"
+          />
+        )}
+        {commentWriteError && (
+          /* No hand-off: the comments sidebar's comment draft is exactly what a
+             refused post/reply leaves behind — navigating away would discard it. */
+          <ErrorNotice
+            message={commentWriteError}
+            onDismiss={dismissCommentWriteError}
+            className="mb-3"
+            testId="remote-artifact-comment-write-error"
+          />
         )}
 
         <div className="flex gap-4 items-start">
