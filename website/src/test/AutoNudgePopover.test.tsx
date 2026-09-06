@@ -222,6 +222,17 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
       active: true,
     })
   })
+
+  it('does not restart an approval-stalled loop whose cycle cap is already spent', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'approval_stalled', cycle_count: 3, max_cycles: 3 }))
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Save$/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no config PATCH for the approval-stalled goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).not.toHaveProperty('active')
+  })
 })
 
 describe('AutoNudgePopover trigger chip — interrupted state', () => {

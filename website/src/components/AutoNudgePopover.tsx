@@ -95,12 +95,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const parseIdle = (s: string) => parseInt(s, 10) || 60
   const parseCycles = (s: string) => parseInt(s, 10) || 0
   const parsedMaxCycles = parseCycles(maxCyclesInput)
+  const capAllowsAnotherCycle = parsedMaxCycles === 0 || parsedMaxCycles > (loop?.cycle_count ?? 0)
   // A retained stopped loop is restartable through PATCH only when the stop's
   // own condition has been cleared. Runtime-budget and manual stops need a
   // fresh monitor_start (new runtime anchor) rather than a misleading pulse.
-  const resumeOnSave = !!loop && !loop.active && (
-    loop.stopped_reason === 'approval_stalled' ||
-    (loop.stopped_reason === 'cycle_cap' && (parsedMaxCycles === 0 || parsedMaxCycles > loop.cycle_count))
+  const resumeOnSave = !!loop && !loop.active && capAllowsAnotherCycle && (
+    loop.stopped_reason === 'approval_stalled' || loop.stopped_reason === 'cycle_cap'
   )
 
   // Only a genuine user edit should persist a draft. Seeding from the live loop
