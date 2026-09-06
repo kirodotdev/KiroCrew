@@ -232,32 +232,16 @@ _JOB_ID_RE = re.compile(r"^[a-f0-9]{1,16}$")
 # must not abuse that upgrade).
 CRON_SESSION_RE = re.compile(r"^cron:[a-zA-Z0-9]+(?::[a-zA-Z0-9]+)?$")
 
-# Hidden Unicode categories to strip (control chars, format chars, etc.)
-# Keeps: letters, numbers, punctuation, symbols, separators (space/newline)
-# Categories removed wholesale. ``Cf`` (format) is deliberately NOT here: it
-# holds ZWJ U+200D, ZWNJ U+200C and the variation selectors that emoji
-# sequences and Arabic / Persian / Indic scripts REQUIRE to render correctly,
-# so deleting the category corrupts user content instead of hardening anything
-# (``dashboard/chat_folders.py`` already treats U+200D / U+FE0F as meaningful
-# emoji modifiers, and test_context_marker_neutralization asserts ZWNJ/ZWJ
-# survive). ``Co`` (private use) is likewise excluded — Nerd Fonts and terminal
-# themes carry real icon glyphs there. The genuinely dangerous Cf members are
-# removed by codepoint via ``_BIDI_CONTROLS`` instead of by category.
-_HIDDEN_CATEGORIES = frozenset(
-    {
-        "Cc",  # control (except \n \r \t)
-        "Cs",  # surrogate — never valid in well-formed text
-    }
-)
-
-# Categories removed wholesale. ``Cf`` (format) IS included — it is stripped by
-# default and only the shaping characters named in ``_ALLOWED_FORMAT`` below get
-# through. Fail-closed is required here rather than aesthetic: this sanitizer
-# runs BEFORE credential redaction, so any invisible character it preserves can
-# be inserted into a credential to defeat ``redact_credentials``' patterns and
-# carry a recoverable secret into the dashboard and the notification JSONL. An
-# allowlist means a newly-assigned or simply un-enumerated ``Cf`` codepoint is
-# blocked instead of silently becoming an evasion vector.
+# Unicode categories :func:`strip_hidden_unicode` strips, minus the
+# ``_ALLOWED_CONTROL`` / ``_ALLOWED_FORMAT`` carve-outs below. ``Cf`` (format)
+# IS included — it is stripped by default and only the shaping characters named
+# in ``_ALLOWED_FORMAT`` get through, and only next to non-ASCII text.
+# Fail-closed is required here rather than aesthetic: this sanitizer runs BEFORE
+# credential redaction, so any invisible character it preserves can be inserted into a
+# credential to defeat ``redact_credentials``' patterns and carry a recoverable
+# secret into the dashboard and the notification JSONL. An allowlist means a
+# newly-assigned or simply un-enumerated ``Cf`` codepoint is blocked instead of
+# silently becoming an evasion vector.
 #
 # ``Co`` (private use) is excluded: Nerd Fonts and terminal themes carry real
 # icon glyphs there, and unlike ``Cf`` those are visible, so they cannot hide a
@@ -273,8 +257,8 @@ _HIDDEN_CATEGORIES = frozenset(
 # The ONLY format characters allowed through. Each has a real text-shaping job
 # that scripts and emoji sequences cannot express without it, so removing them
 # corrupts user content (``dashboard/chat_folders.py`` treats U+200D as a
-# meaningful emoji modifier, and test_context_marker_neutralization asserts
-# ZWNJ/ZWJ survive).
+# meaningful emoji modifier, and ``test_validation.TestStripHiddenUnicode`` pins
+# ZWNJ/ZWJ survival here).
 #
 # Everything else in ``Cf`` stays denied, including ZWSP U+200B, the word joiner
 # and invisible operators U+2060-2064, BOM U+FEFF, the bidi embedding/override/

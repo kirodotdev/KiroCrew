@@ -1374,7 +1374,7 @@ Mermaid `securityLevel` is set to `'strict'` in `MarkdownRenderer.tsx`, renderin
 Centralized validation for all 12 MCP tool handlers (SDO-183):
 
 - **Type-safe schemas**: `FieldSpec` + `ToolSchema` declarative validation
-- **Unicode normalization**: NFC normalization + hidden character stripping (control chars, format chars, private use, surrogates — preserves `\n`, `\r`, `\t`)
+- **Unicode normalization**: NFC normalization + hidden character stripping (control chars, format chars, surrogates — preserves `\n`, `\r`, `\t`). Private-use code points are deliberately kept: Nerd Font and terminal-theme icon glyphs live there and are visible to a reader, so they cannot hide a credential from one.
 - **Allow-lists**: enum enforcement for lesson categories, cron schedule kinds
 - **Regex patterns**: agent name, job ID format validation
 - **Range checks**: positive numbers for timeouts/intervals, valid timestamps
