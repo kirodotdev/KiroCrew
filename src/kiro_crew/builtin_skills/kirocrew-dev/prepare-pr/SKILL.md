@@ -539,9 +539,73 @@ the depth — the facts stay complete and technically exact.
   thread, not the body.
 - **Say the effect in user words.** What a person sees now that they did not see
   before, or stops seeing. Not "improves robustness".
+- **Show it, when words alone are slow.** A ten-year-old gets a moved flow from
+  one picture before they finish the first paragraph about it. When the change
+  moves steps, states, or who calls whom, add one Mermaid diagram. See *Draw it*
+  below.
 
 Rewrite check before opening the PR: read section 3 once, out loud. If any
 sentence needs a second read to find its point, rewrite that sentence.
+
+#### Draw it — the Age 10 diagram
+
+The doctrine lives in the `explain-for` skill: *Draw it when the thing has a
+shape* says when a Mermaid fence beats prose, and *Colour it, and make every
+colour mean something* says how to colour it. Do not restate it here — follow it.
+What this section adds is only what a PR body needs on top: the trigger, the fixed
+diff palette, the legend, the placement, and the render check.
+
+Draw one when the change alters **a sequence, a state machine, or who calls
+whom** — a step added, removed, reordered, or given a new owner. Skip it for a
+one-line fix, a rename, a test-only change, or a doc edit. **One diagram, at most.**
+
+- **Mermaid, in the body.** GitHub renders a ```` ```mermaid ```` fence in the PR
+  body directly. Nothing to commit, no SHA to re-pin, nothing for
+  `cleanup-temp-screenshots.yml` to prune, and a reviewer can fix a box label in
+  the text. A real rendered screen or a pixel before/after is not a diagram — that
+  is a screenshot; see *Screenshots* below, which owns the path and pinning rules.
+- **Show the delta, not the whole system.** Before → after side by side
+  (`flowchart LR` with two subgraphs), or one graph where the changed edge is the
+  only thing that stands out. Six to ten nodes is the ceiling.
+- **The diff palette is fixed.** Declare these four `classDef`s and tag every
+  node, so each PR reads the same way at a glance:
+
+  | class | fill / stroke | meaning |
+  |---|---|---|
+  | `added` | `#DCFCE7` / `#16A34A` | new after this PR |
+  | `changed` | `#FEF3C7` / `#D97706` | behaviour changed |
+  | `removed` | `#FEE2E2` / `#DC2626`, dashed | gone after this PR |
+  | `ctx` | `#E0F2FE` / `#0284C7` | untouched, shown for context |
+
+  Colour the edges too: `linkStyle <n> stroke:#16A34A,stroke-width:2px` on the
+  new path, `stroke:#DC2626,stroke-dasharray:4 3` on the removed one. Put one
+  legend line under the fence: `🟩 added · 🟨 changed · 🟥 removed · 🟦 unchanged`.
+- **Caption in the Age 10 register**, one sentence: who now calls whom, and what
+  the reader sees because of it.
+- **Place it inside section 3**, right after the paragraph it illustrates.
+
+```mermaid
+flowchart LR
+  subgraph Before
+    A1[cron fires]:::ctx --> B1[LLM turn]:::removed --> C1[open PR]:::ctx
+  end
+  subgraph After
+    A2[cron fires]:::ctx --> B2[open_maintenance_prs.py]:::added --> C2[open PR]:::ctx
+  end
+  classDef added fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:2px
+  classDef changed fill:#FEF3C7,stroke:#D97706,color:#78350F,stroke-width:2px
+  classDef removed fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-dasharray:4 3
+  classDef ctx fill:#E0F2FE,stroke:#0284C7,color:#0C4A6E
+  linkStyle 0,1 stroke:#DC2626,stroke-dasharray:4 3
+  linkStyle 2,3 stroke:#16A34A,stroke-width:2px
+```
+
+🟩 added · 🟨 changed · 🟥 removed · 🟦 unchanged
+
+*The cron now runs a script instead of spending an LLM turn; the PR still opens.*
+
+Check the render before pushing — `gh pr view <n> --web`. A fence that fails to
+parse shows as a red error box, which is worse than no diagram.
 
 ### Screenshots
 
