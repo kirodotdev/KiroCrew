@@ -396,6 +396,49 @@ describe('usePanelTabs — per-slot isolation', () => {
     expect(result.current.tabs[0].kind).toBe('terminal')
   })
 
+  /* ── A terminal is bound to the chat it was opened in ──────────────────
+   * `openTerminal`'s contract is that "the per-slot bucketing makes those
+   * sessions chat-specific automatically", so selecting a chat surfaces that
+   * chat's own shell. The sibling case above covers the null fallback bucket
+   * only; this covers named slot -> named slot, which is the pairing a user
+   * actually switches between.
+   *
+   * THREE slots, each asserted against ITS OWN session id: with fewer, every
+   * candidate key expression coincides, so a bucketing slip that resolved every
+   * slot to the FIRST chat's terminal would still pass. The complement
+   * assertion (a foreign id appears in NO other strip) is what makes the
+   * isolation claim, rather than merely observing that some terminal is
+   * present. */
+  it('binds a terminal to the chat that opened it, and restores that same session on return', () => {
+    const { result, rerender } = renderHook(({ slot }: { slot: string | null }) => usePanelTabs(slot), {
+      initialProps: { slot: 'chat-a' as string | null },
+    })
+
+    const sid: Record<string, string> = {}
+    for (const slot of ['chat-a', 'chat-b', 'chat-c']) {
+      rerender({ slot })
+      act(() => { sid[slot] = result.current.openTerminal({ cwd: `/srv/${slot}` }) })
+    }
+
+    // Every chat minted its own distinct session.
+    expect(new Set(Object.values(sid)).size).toBe(3)
+
+    // Per-item pairing: each chat restores ITS OWN terminal, addressed by the
+    // stable tab identity rather than by the value under assertion.
+    for (const slot of ['chat-a', 'chat-b', 'chat-c']) {
+      rerender({ slot })
+      expect(result.current.tabs.map(t => t.id)).toEqual([`terminal:${sid[slot]}`])
+      expect(result.current.activeTab).toMatchObject({
+        kind: 'terminal', sessionId: sid[slot], cwd: `/srv/${slot}`,
+      })
+      // Complement: no OTHER chat's shell is reachable from this strip.
+      const foreign = Object.entries(sid).filter(([s]) => s !== slot).map(([, v]) => v)
+      for (const other of foreign) {
+        expect(result.current.tabs.some(t => t.sessionId === other)).toBe(false)
+      }
+    }
+  })
+
   it('syncPinned adds content-gated views at the front, in PINNED_VIEWS order', () => {
     const { result } = renderHook(() => usePanelTabs())
     act(() => result.current.openView('logs'))
