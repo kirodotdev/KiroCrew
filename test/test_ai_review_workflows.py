@@ -2091,7 +2091,9 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         assert "every user-visible control this PR adds or changes is an evidence gap" in prompt
 
     @pytest.mark.parametrize("lane", UX_LANES)
-    def test_review_prompts_carry_no_expression_so_the_21000_cap_cannot_bite(self, lane: str) -> None:
+    def test_review_prompts_carry_no_expression_so_the_21000_cap_cannot_bite(
+        self, lane: str
+    ) -> None:
         """GitHub rejects the whole workflow file -- zero jobs, no error on the
         PR -- when any expression-bearing string exceeds 21000 characters. Both
         UX prompts sat at ~19000 WITH expressions before these rules were
@@ -2106,7 +2108,9 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
             args = with_["claude_args"]
             for value in args.split("\n"):
                 if "${{" in value:
-                    assert len(value) < 2000, f"{lane}: an expression-bearing claude_args line is {len(value)} chars"
+                    assert (
+                        len(value) < 2000
+                    ), f"{lane}: an expression-bearing claude_args line is {len(value)} chars"
         review = _step(lane, UX_REVIEW_STEP)["with"]
         system = _line_containing(review["claude_args"], "--append-system-prompt")
         assert "HEAD sha ${{" in system, f"{lane}: the HEAD sha is not handed to the reviewer"
@@ -2114,7 +2118,9 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         # action's parser; the PR number must not be written as `#N` at a line
         # start, and no claude_args line may begin with `#`.
         for value in review["claude_args"].split("\n"):
-            assert not value.strip().startswith("#"), f"{lane}: claude_args line would be stripped as a comment"
+            assert not value.strip().startswith(
+                "#"
+            ), f"{lane}: claude_args line would be stripped as a comment"
         prompt = _flat(review["prompt"])
         assert "[UX-REVIEWED] <HEAD sha>" in prompt
         assert "copied verbatim from your system prompt" in prompt
@@ -2156,7 +2162,10 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         assert "Read it FIRST" not in prompt
         # The fork head is never checked out, so the fork lane must not claim
         # to hand the reviewer a screenshot list or a report it cannot have.
-        system = _line_containing(_step("fork-ux-review.yml", UX_REVIEW_STEP)["with"]["claude_args"], "--append-system-prompt")
+        system = _line_containing(
+            _step("fork-ux-review.yml", UX_REVIEW_STEP)["with"]["claude_args"],
+            "--append-system-prompt",
+        )
         assert "ux-blind-read.md" not in system
         assert "ux-screenshots.txt" not in system
         assert "authentic.patch" in system
@@ -2231,7 +2240,9 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
             env=self._git_env(repo.parent),
         ).stdout.strip()
 
-    def test_the_evidence_step_copies_regular_images_under_opaque_names(self, tmp_path: Path) -> None:
+    def test_the_evidence_step_copies_regular_images_under_opaque_names(
+        self, tmp_path: Path
+    ) -> None:
         """Execute the ACTUAL evidence script. The blind reader is handed
         copies named shot-NN.<ext>, never the repository paths: an author-named
         `pinned-turn-chip.png` would prime it with the exact word the wall
@@ -2277,10 +2288,15 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         ]
         # `git diff --name-only` orders by path, so the recording list is
         # byte-ordered too: c.webm sorts before restore.GIF.
-        assert clip_list.splitlines() == ["temp-screenshots/f/c.webm", "temp-screenshots/f/restore.GIF"]
+        assert clip_list.splitlines() == [
+            "temp-screenshots/f/c.webm",
+            "temp-screenshots/f/restore.GIF",
+        ]
         assert "screens=true" in output
 
-    def test_the_evidence_step_reports_no_screens_for_a_code_only_ui_change(self, tmp_path: Path) -> None:
+    def test_the_evidence_step_reports_no_screens_for_a_code_only_ui_change(
+        self, tmp_path: Path
+    ) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
         self._git(repo, "init", "-q")
