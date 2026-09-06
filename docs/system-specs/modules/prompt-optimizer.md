@@ -8,7 +8,7 @@ There is no client- or server-side heuristic that decides whether a nonempty pro
 
 ## Backend
 
-`dashboard/handlers/optimizer.py` serves `POST /api/optimizer/optimize`; `dashboard/routes/chat.py::register_chat_routes` registers it through `handlers.handle_optimize`. The request contains `prompt`, `context`, and optional `pastes`; the response contains `optimized` and `changed`.
+`dashboard/handlers/optimizer.py` serves `POST /api/optimizer/optimize`; `dashboard/routes/chat.py::register` registers it through `handlers.handle_optimize`. The request contains `prompt`, `context`, and optional `pastes`; the response contains `optimized` and `changed`.
 
 - `handle_optimize` acquires a dedicated `_optimizer` `kirocrew-lite` session rather than sharing the background session. The dedicated key keeps an on-demand edit from queuing behind background side work; the nested `_optimize` coroutine releases the session in `finally`, and its enclosing `asyncio.wait_for` bounds acquire, streaming, and release together.
 - The stream accepts text chunks until `EVENT_COMPLETE` and rejects every `EVENT_PERMISSION_REQUEST` with `client.reject_tool`. Rejecting permission requests keeps the side session from turning a draft rewrite into an authorized tool action.

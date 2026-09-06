@@ -504,7 +504,7 @@ branches read `/proc`, `sysctl` or `resource` instead of calling Win32.
 
 Taking `ctypes.POINTER()` is what pins the type, so a struct that is only ever
 instantiated (never pointed at) does not leak — but the distinction is too subtle
-to rely on, and `test_platform_compat.py::TestWin32StructsAreModuleScoped`
+to rely on, and `test_platform_compat.py::TestCtypesStructsAreModuleScoped`
 enforces the blanket rule by parsing each helper's source. That check runs on the
 POSIX fleet too, where the Windows branches never execute.
 

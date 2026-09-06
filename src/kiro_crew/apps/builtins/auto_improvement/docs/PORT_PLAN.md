@@ -29,8 +29,8 @@ not a code-writing system that happens to measure."*
 target-agnostic: no build-tool, auth, or host references at all. Only real
 coupling is 3 imports in `agent_runner.py` (the host config class and the host's
 ACP event-constant module, both repointed at `kiro_crew`). Kiro Crew's ACP event constants
-match the source's names exactly, and `create_provider_factory` exists
-(`config/loader.py:4612`), so `SessionAgentRunner` ports directly.
+match the source's names exactly, and `create_provider_factory` exists on
+`KiroCrewConfig` in `config/loader.py`, so `SessionAgentRunner` ports directly.
 
 **Rewritten for GitHub/PRs (new code).**
 - `backend/pr_checks.py` ← replaces the internal review-service client (303 lines of

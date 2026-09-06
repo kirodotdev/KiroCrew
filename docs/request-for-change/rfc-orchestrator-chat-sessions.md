@@ -14,11 +14,11 @@ superseded-by: []
 ---
 # RFC: Orchestrator Chat Sessions — an engineered pipeline with a decision-only agent
 
-> **No spec owns Crew Mode, so this document doubles as its contract.** Crew
-> Mode ships and diverges from the design below in three places — no
-> snapshot-generation CAS, no `release` action, immediate per-result delivery
-> instead of burst coalescing. Until a `system-specs/modules/` spec is opened
-> for it, read the divergences as the description of current behaviour.
+> **[`../system-specs/modules/crew-mode.md`](../system-specs/modules/crew-mode.md)
+> owns Crew Mode; this document carries the intent.** Crew Mode ships and
+> diverges from the design below in three places — no snapshot-generation CAS, no
+> `release` action, immediate per-result delivery instead of burst coalescing.
+> Read the spec for current behaviour and the divergences here for why it differs.
 
 Status: partial — v5 was accepted as design of record in PR #1280 and Crew Mode
 shipped in PR #1295. The implementation has since received store and routing fixes,

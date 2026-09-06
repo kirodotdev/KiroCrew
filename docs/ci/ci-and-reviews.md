@@ -209,7 +209,7 @@ Widening that is a separate decision from moving the gates.
 | `loop-bound-locks` | `scripts/check_loop_bound_locks.py`, self-test first. Fails on any module-global `asyncio.Lock()`/`Event()`/`Queue()` declaration — those bind to the import-time (or first-use) event loop and raise `RuntimeError` when acquired from another loop (Python 3.10+). #4800 converted the tree to `kiro_crew.loop_lock.LoopBoundLock`; whole-tree, since the backlog is zero |
 | `testpaths-coverage` | `scripts/check_testpaths_coverage.py`, self-test first. Fails on a `test_*.py` file outside the roots `setup.cfg` pins in `testpaths` — such a file is never collected, so it is green by omission and rots against the code it claims to cover (#6577 found twelve). Whole-tree, since the backlog is zero |
 | `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
-| `docs-lint` | `scripts/docs_lint.py --test` then `scripts/docs-lint.sh`. Every internal link resolves, every doc is reachable from its directory index, every directory holding docs has one, no code comment cites a doc that does not exist, no doc cites a source LINE past the end of the file it names, no module spec names a source file that exists nowhere, and no doc whose filename is hardcoded in code has been renamed out from under its consumer. Plus the fact checks below, behind a shrink-only baseline |
+| `docs-lint` | `scripts/docs_lint.py --test` then `scripts/docs-lint.sh`. Every internal link resolves, every doc is reachable from its directory index, every directory holding docs has one, no code comment cites a doc that does not exist, no doc cites a source LINE past the end of the file it names, no module spec names a source file that exists nowhere, and no doc whose filename is hardcoded in code has been renamed out from under its consumer. Four trees are walked: `docs/`, the packaged `src/kiro_crew/docs/`, `website/docs/`, and the markdown a builtin app ships under `src/kiro_crew/apps/builtins/`. Plus the fact checks below, behind a shrink-only baseline |
 
 Each of these runs its own self-test in the same step, ahead of the real check. A
 gate that has silently stopped matching reads as a green signal, which is worse than
@@ -238,6 +238,13 @@ Three checks skip a doc whose genre names things that do not exist yet
 names a file or a symbol precisely BECAUSE it is not there yet. `fenced-path` also
 skips the packaged user docs under `src/kiro_crew/docs/`, where a task-spec path is
 a template for the reader's own project rather than a file in this checkout.
+
+The builtin app tree is the mirror image of that exemption: it keeps every fact
+check and every link check, and drops only the two CURATION rules, reachability and
+the per-directory index. A `SKILL.md` is a skill definition an agent loads verbatim,
+so a rotted path in one misroutes the agent rather than a human reader, but an index
+file in `skills/<name>/` would be a file the app never loads. `UNCURATED_PREFIXES` in
+`scripts/docs_lint.py` is where that line is drawn, alongside the archives.
 
 `python3 scripts/docs_lint.py --update-baseline` prunes the list, and it is
 prune-only by construction: it intersects the recorded triples with the ones firing

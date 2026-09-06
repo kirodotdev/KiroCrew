@@ -1,6 +1,7 @@
 # Model Context Protocol (MCP)
 
-Source: https://kiro.dev/docs/cli/mcp/
+Source: https://kiro.dev/docs/mcp/ (fetched 2026-09-06; upstream retired
+`/docs/cli/mcp/` and made the page surface-agnostic)
 
 ## In this section
 
@@ -60,5 +61,6 @@ User: `~/.kiro/settings/mcp.json`
 
 ## Troubleshooting
 
-- Tool name must be ≤64 chars, match `^[a-zA-Z][a-zA-Z0-9_]*$`, have non-empty description
-- Large descriptions (>10k chars) may slow responses
+- Tool name must be ≤64 chars including the server prefix, match
+  `^[a-zA-Z][a-zA-Z0-9_]*$`, and carry a non-empty description
+- A description over 10,000 chars still works but warns and may slow responses

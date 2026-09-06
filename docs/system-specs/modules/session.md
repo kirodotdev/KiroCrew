@@ -410,7 +410,6 @@ send time.
 | `close_all(drain_timeout=None)` | Pre-shutdown **drain** of in-flight turns (via `drain_active_turns`), then save all active session mappings, shut down every session, and drain the warm pool. `drain_timeout` bounds that drain (`None` = full default budget); a caller wrapping `close_all()` in its own hard deadline (Slack's restart wraps it in `wait_for(..., 5s)`) passes a smaller budget (e.g. `2.0`) so the kill path still fits inside the deadline. A cancel that fires mid-drain (outer deadline) **propagates** (CancelledError is deliberately not caught) so the caller's hard deadline stays honest; recovery of a still-held native-session lock is the next-startup orphan reaper's job. |
 | `drain_active_turns(timeout=None)` | Best-effort co-operative drain that brings in-flight prompts to a safe turn boundary **before** teardown, so kiro-cli closes its native turn and releases its session lock (`~/.kiro/sessions/cli/<uuid>.json`) on the subsequent SIGTERM — otherwise the next gateway's `session/load` hits "active in another process" and the slot returns empty completions (the Make-Live empty-response incident, #200). For each registered session with an **unfinished** turn (native turn-done not yet acked — independent of cancel state, so an already-cancelled-but-not-acked turn is still drained), it issues a graceful `session/cancel` and waits (bounded) for the ack; a turn already cancelled (`cancel()` → `"no_turn"`) is waited on directly via `wait_turn_done`. The whole operation is bounded by `timeout` (`None` → `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS`, default 5.0s; internal cap is `timeout+1.0`); on timeout it logs and returns so the caller falls through to the SIGTERM-first kill path — never hangs teardown, never raises. `timeout <= 0` disables the drain. Returns the count of unfinished turns (observability/tests). Only registered user sessions are drained; the warm pool holds never-prompted processes. |
 | `begin_turn(key)` | **Synchronous** pre-dispatch gate against the lease-dispatch race (#200 / Codex HIGH). A caller holds the per-session semaphore *lease* from `get_or_create` through the whole turn, but the native turn only opens on the first `provider.stream(...)` iteration; the `get_or_create` `_closing` gate cannot revoke a lease already issued before `close_all` set `_closing`. Callers (dashboard `chat_runner`, Slack handler, and structured Slack/Discord monitor adapters through `TurnDriver.closing_gate`) MUST call `begin_turn` synchronously — **no `await` between it and the `async for` stream drive** — so the `_closing` read and the stream's turn registration (`AcpClient.stream_events` clears `_turn_done` before its first `await`) form one yield-free span, strictly ordered w.r.t. `close_all`'s `_closing` set: the turn is either registered before the drain snapshot (and drained) or the caller aborts. Raises `SessionClosingError` (a `RuntimeError`) when closing; the caller's `finally` releases the lease. Deliberately NOT `async`/lock-guarded (an `await` would reopen the race). |
-| `warm_pool_size` | Property: number of warm sessions available. |
 
 ## Stop Orchestration
 
@@ -1131,7 +1130,7 @@ dashboard. Two models relate the surfaces:
   dashboard surfaces it as a separate slot with its own sid. One logical
   conversation therefore has two backing sids, bridged by the mirror.
 
-`messaging.link.dashboard_mirror_key(channel_session_key)` computes the
+`messaging.link.legacy_dashboard_mirror_key(channel_session_key)` computes the
 dashboard-side key: `"dashboard:" + history._safe_key(channel_session_key)`. It
 MUST use the same `_safe_key` sanitizer as the slot-naming path (every non-word
 char → `_`, not only `:`); a narrower sanitizer silently mismatches for keys
@@ -1207,7 +1206,7 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   keeps those rows keyboard-focusable, shows the reason inline, and announces
   the same reason instead of presenting an unexplained disabled action.
 - In-channel `/link` / `/unlink` — `/link` writes the link on the current
-  conversation's `dashboard_mirror_key`; it does not control display, history,
+  conversation's `legacy_dashboard_mirror_key`; it does not control display, history,
   or the inbound direction — only the outbound echo. `/unlink` frees the
   LOCATION via the shared `messaging.link.release_conversation_location`
   helper (one implementation for every DM dispatcher): after the key-addressed

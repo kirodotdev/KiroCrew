@@ -1,13 +1,19 @@
 # Agent Configuration Reference
 
-Source: https://kiro.dev/docs/cli/custom-agents/configuration-reference/
+Source: https://kiro.dev/docs/custom-agents/configuration-reference/ (fetched
+2026-09-06; upstream retired `/docs/cli/custom-agents/configuration-reference/`)
+
+The schema below is the IDE 1.0 / CLI 3.0 one. An older config still loads;
+`/upgrade-agent` reports which configs need migration, backs the originals up and
+converts the supported fields in place, including object-form hooks to the array
+form V3 requires. `/upgrade-agent diagnostics` reports without converting.
 
 ## File locations
 
 - Local (project): `.kiro/agents/` — local takes precedence
 - Global (user): `~/.kiro/agents/`
 
-Filename (without `.json`) becomes the agent name.
+Filename (without `.json` or `.md`) becomes the agent name.
 
 ## All fields
 
@@ -18,12 +24,15 @@ Filename (without `.json`) becomes the agent name.
 | `prompt` | System prompt (inline string or `file://` URI) |
 | `mcpServers` | MCP servers the agent can access |
 | `tools` | Available tools list |
+| `excludedTools` | Tools excluded even when `tools` allows them |
 | `toolAliases` | Tool name remapping |
 | `allowedTools` | Tools that skip permission prompts |
-| `toolsSettings` | Per-tool configuration |
+| `permissions` | Inline capability-based rules; replaces `toolsSettings` for shell and fs rules |
+| `toolsSettings` | Per-tool configuration; deprecated for shell and fs rules |
 | `resources` | Files, skills, knowledge bases |
-| `hooks` | Lifecycle commands |
+| `hooks` | Lifecycle commands (CLI field; the IDE also accepts this format) |
 | `includeMcpJson` | Include MCP servers from mcp.json files |
+| `includePowers` | Include IDE-installed powers |
 | `model` | Model ID (e.g. `claude-sonnet-4`) |
 | `keyboardShortcut` | Quick-switch shortcut (e.g. `ctrl+a`) |
 | `welcomeMessage` | Message shown on agent switch |
@@ -95,9 +104,46 @@ Tools that run without permission prompts. Supports exact matches and glob patte
 
 Pattern rules: `*` matches any chars, `?` matches one char, case-sensitive.
 
+## excludedTools
+
+Removes a tool even when `tools` would allow it, so a broad `tools` entry does
+not have to be enumerated to drop one member:
+
+```json
+{ "tools": ["@builtin"], "excludedTools": ["knowledge"] }
+```
+
+## permissions
+
+Inline capability-based rules, in the same syntax as a `permissions.yaml` file
+but scoped to this agent. This is what replaces `toolsSettings` for shell and
+filesystem rules.
+
+```json
+{
+  "permissions": {
+    "rules": [
+      { "capability": "shell", "match": ["npm *", "git *"], "effect": "allow" },
+      { "capability": "fs_write", "match": ["src/**", "tests/**"], "effect": "allow" },
+      { "capability": "shell", "match": ["rm -rf *", "sudo *"], "effect": "deny" }
+    ]
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `capability` | `fs_read`, `fs_write`, `shell`, `web_fetch`, `web_search`, `mcp`, `subagent`, `all` |
+| `match` | Glob patterns scoping the rule: file paths for fs, command prefixes for shell, server or tool names for MCP |
+| `effect` | `allow` proceeds silently, `ask` prompts, `deny` always blocks |
+| `exclude` | Optional glob patterns that must NOT match |
+
+Deny overrides: a `deny` in any scope wins over an `allow` anywhere else.
+
 ## toolsSettings
 
-Per-tool configuration:
+Per-tool configuration. Deprecated for the shell and write rules below, which
+`permissions.rules` now expresses:
 
 ```json
 {

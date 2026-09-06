@@ -154,7 +154,7 @@ and a `.tex` here is untrusted by construction (the agent writes it; a cloned re
 supplies it wholesale). Tectonic keeps shell escape off unless `-Z shell-escape`
 is passed, and we never pass it. The document is passed after `--` so a
 dash-leading filename cannot become an option. Pinned by
-`test_latex.py::TestCompilerArgv`.
+`test_papyrus_latex.py::TestCompilerArgv`.
 
 ### Spawn discipline
 
@@ -216,7 +216,7 @@ app was a stdlib `ThreadingHTTPServer` on its own port using blocking
   shape;
 - the compiler download itself runs on a daemon thread, not the loop and not a
   pooled executor (see Managed compiler). Pinned by
-  `test_tectonic.py::TestEventLoopDiscipline` and
+  `test_papyrus_tectonic.py::TestEventLoopDiscipline` and
   `test_routes.py::TestProvisionCompiler::test_the_handler_never_blocks_the_event_loop`.
 
 ### Offloading the gate without weakening it
@@ -265,7 +265,7 @@ a refused name never reaches `gitops` or the compiler.
    process-wide, including the negative result, so a successful provision MUST call
    `reset_compiler_cache()` or the stale "no compiler" answer sticks (it does, from
    the provisioning job's completion). Pinned by
-   `test_tectonic.py::TestResolutionOrder`.
+   `test_papyrus_tectonic.py::TestResolutionOrder`.
 3. Extend `BSTINPUTS`/`BIBINPUTS` with **every** project subdirectory holding a
    `.bst`/`.bib`. Conference templates stash `acl_natbib.bst` under
    `templates/<conf>/`, and without this bibtex fails with "I couldn't open style
@@ -296,7 +296,7 @@ a refused name never reaches `gitops` or the compiler.
 is bounded to the text before the next `^!`; without that bound the second error
 inherits the first's line and the editor jumps somewhere wrong while looking
 authoritative. Carried over from upstream and pinned by
-`test_latex.py::test_two_bangs_do_not_share_a_line`.
+`test_papyrus_latex.py::test_two_bangs_do_not_share_a_line`.
 
 ## Managed compiler
 
@@ -399,7 +399,7 @@ empty names. Beyond names:
 - Both cap a member at `_MAX_MEMBER_BYTES` (256MB), bounding a decompression bomb
   even though the digest pin already means the archive can only be the named one.
 
-Pinned by `test_tectonic.py::TestSafeTarExtraction` / `TestSafeZipExtraction`,
+Pinned by `test_papyrus_tectonic.py::TestSafeTarExtraction` / `TestSafeZipExtraction`,
 including that a refused archive leaves the destination empty and writes nothing
 outside it.
 
@@ -442,7 +442,7 @@ half-written file can never read as a usable compiler.
   exactly as it was. **If the stash pop itself conflicts the stash is deliberately
   KEPT** and reported (409) — silently discarding the user's edits to let the
   operation "succeed" is the worse outcome. Pinned by
-  `test_gitops.py::test_a_failed_pop_keeps_the_stash`.
+  `test_papyrus_gitops.py::test_a_failed_pop_keeps_the_stash`.
 
   **Every** post-stash failure path restores the stash, including the ones that
   raise from inside `_git` rather than returning a non-zero code — a pull that

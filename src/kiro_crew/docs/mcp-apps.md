@@ -233,7 +233,7 @@ these being absent, per the spec's own graceful-degradation rule:
 | app-initiated `resources/read`, `ping` | not answered |
 | `pip` display mode | not offered (`availableDisplayModes` is `inline`, `fullscreen`) |
 
-`HostContext` carries `theme`, `displayMode`, `availableDisplayModes` and
+The `hostContext` reply carries `theme`, `displayMode`, `availableDisplayModes` and
 `containerDimensions`. The spec's `styles.variables` theming channel is not sent,
 so an app should declare its own fallbacks for every CSS variable it consumes and
 key off `theme` for light/dark.

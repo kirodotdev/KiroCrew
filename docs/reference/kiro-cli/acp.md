@@ -1,10 +1,13 @@
 # Agent Client Protocol (ACP)
 
-Source: https://kiro.dev/docs/cli/acp/
+Source: https://kiro.dev/docs/cli/acp/ (fetched 2026-09-06)
 
-> **Carries local additions.** The `session/set_config_option` and
-> `_session/terminate` rows have no counterpart in upstream's method table; they
-> describe Kiro Crew's claude-agent-acp path. A re-fetch must preserve them.
+> **Carries local additions.** `session/set_config_option`, the snake_case
+> session-update names and everything below them, and the
+> `_kiro.dev/mcp/server_init_failure` and `_kiro.dev/agent/switched` rows have no
+> counterpart in upstream's method table; they are measured here and describe Kiro
+> Crew's claude-agent-acp path. A re-fetch must preserve them. Upstream's own
+> table now carries `_session/terminate`, so that row is no longer local-only.
 
 ACP is an open standard for agent-editor communication (like LSP for language servers). Kiro CLI implements ACP, enabling use in JetBrains IDEs, Zed, and other compatible editors.
 

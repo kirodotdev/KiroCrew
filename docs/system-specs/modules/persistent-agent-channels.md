@@ -121,7 +121,7 @@ The page renders pending, working, listening, done, failed, and tool-running sta
 | POST | `/api/channels/{id}/agents/{aid}/wake` | Restart a terminal agent. |
 | POST | `/api/channels/{id}/agents/{aid}/approve` | Resolve a pending provider permission request; command/base trust decisions include a consent-proof `pattern`. |
 
-`src/kiro_crew/dashboard/routes/connections.py::register_connection_routes` registers these routes.
+`src/kiro_crew/dashboard/routes/connections.py::register` registers these routes.
 
 ## Files
 

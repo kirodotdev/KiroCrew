@@ -602,7 +602,7 @@ would durably auto-pause a healthy job, since `record_success()` clears
 The effective-enabled predicate of a serialized job — enabled iff neither
 `user_paused` nor `auto_paused`, with the legacy `!enabled` fallback for stores
 written before those fields existed — has exactly ONE owner, the module
-function `_record_is_enabled(job_dict)`. Both `_load` (the scheduler
+function `_record_is_enabled()`. Both `_load` (the scheduler
 deserialization path) and `count_enabled_from_disk` route through it, so a
 future pause-state change cannot land in only one reader and drift.
 

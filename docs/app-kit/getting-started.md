@@ -227,7 +227,7 @@ undeclared paths throws an error.
 
 ## Next Steps
 
-- **Backend communication**: Your dashboard UI can call your app's backend through the gateway reverse proxy at `/apps/{name}/api/*` — no CORS issues. Verify requests with `verifyProxyRequest()` from the SDK.
+- **Backend communication**: Your dashboard UI can call your app's backend through the gateway reverse proxy at `/apps/{name}/api/*` — no CORS issues. Verify requests in your backend with `verify_proxy_request()` from `kiro_crew.apps.proxy_auth`.
 - See [App Manifest Reference](manifest-reference.md) for all `app.json` fields
 - See [API Reference](api-reference.md) for TypeScript and Python client APIs
 - See [Publishing Guide](publishing-guide.md) for publishing to the App Store registry

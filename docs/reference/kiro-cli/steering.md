@@ -1,7 +1,8 @@
 # Steering
 
-Source: https://kiro.dev/docs/steering/ (the former `/docs/cli/steering/` now
-redirects there — CLI and IDE steering are documented as one page).
+Source: https://kiro.dev/docs/steering/ (fetched 2026-09-06; the former
+`/docs/cli/steering/` redirects there — steering is documented as one page across
+every surface).
 
 Persistent project knowledge via markdown files. Instead of explaining conventions every chat, steering files ensure Kiro follows your patterns.
 
@@ -12,7 +13,10 @@ Persistent project knowledge via markdown files. Instead of explaining conventio
 | `.kiro/steering/` | Workspace | Project-specific patterns |
 | `~/.kiro/steering/` | Global | Personal conventions across all projects |
 
-Workspace steering takes priority over global on conflicts.
+Workspace steering takes priority over global on conflicts. Global steering is
+also the team mechanism: files pushed to `~/.kiro/steering` by MDM or Group
+Policy, or pulled from a central repository, apply to every workspace on that
+machine.
 
 ## Inclusion modes
 
@@ -25,9 +29,17 @@ fileMatchPattern: "src/**/*.ts"
 ---
 ```
 
-`always` (the default), `fileMatch` + `fileMatchPattern`, `manual` (referenced
-from chat as `#<file-name>`), and `auto` + `name` + `description` (included when
-the request matches the description).
+`always` (the default), `fileMatch` + `fileMatchPattern` (a single glob or an
+array of them), `manual` (referenced from chat as `#<file-name>`), and `auto` +
+`name` + `description` (included when the request matches the description). A
+`manual` or `auto` document also appears as a slash command, so typing `/`
+followed by its name includes it explicitly.
+
+**Upstream now documents the CLI as not honoring any of this**: its steering page
+states that inclusion modes are not currently supported on Kiro CLI and that
+every file in `.kiro/steering/` is loaded automatically. The measurement below
+disagrees on one row — `manual` — so treat both as claims about specific
+versions, not as a standing property.
 
 **What kiro-cli actually does with them differs from the IDE.** Measured against
 **2.19.1** over ACP, driven with `acp --agent <name>` + `session/set_mode` and the
@@ -105,7 +117,11 @@ empty `resources` list still receives both steering roots.
 
 ## AGENTS.md
 
-Kiro supports `AGENTS.md` files (always included). Place in `~/.kiro/steering/` or workspace root.
+Kiro supports `AGENTS.md` files (always included; the file format carries no
+inclusion modes). Place one in `~/.kiro/steering/`, at the workspace root, or in
+any subdirectory beside the code it describes — upstream documents subdirectory
+discovery throughout the workspace, so `services/api/AGENTS.md` and
+`packages/ui/AGENTS.md` are each loaded as steering context.
 
 ## Best practices
 

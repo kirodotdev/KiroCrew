@@ -190,7 +190,7 @@ Command name configurable via `slack.command` in config (default: `kirocrew`).
 | `/<command> sessions` | `_handle_slash` | List active sessions with Slack link status (Block Kit) |
 | `/<command> sessions resume <key>` | `_handle_slash` | Resume a session in the current Slack thread |
 | `/<command> dashboard` | `_handle_slash` | Generate presigned dashboard link (DM'd to user) |
-| `/<command> restart` | `_handle_restart` | Restart the gateway (owner-only; requires an `INVOCATION_ID` / systemd supervisor, else refuses). SEL-audited (approved/denied). Best-effort `save_all_slots` + `close_all` + `sel.flush` (each bounded by `wait_for`), then `os._exit(1)` so the supervisor respawns |
+| `/<command> restart` | `_handle_restart` | Restart the gateway (owner-only; requires an `INVOCATION_ID` / systemd supervisor, else refuses). SEL-audited (approved/denied). Best-effort `save_all_slots_to_history` + `close_all` + `sel.flush` (each bounded by `wait_for`), then `os._exit(1)` so the supervisor respawns |
 
 #### Owner-Only `!` Commands (`handler.py`)
 

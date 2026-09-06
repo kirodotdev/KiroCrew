@@ -2339,13 +2339,13 @@ task so the receive loop keeps breathing during long turns. Outbound is REST
 email-shaped conversation id maps onto `toPersonEmail` (opens/reuses the 1:1
 space server-side). Outbound markdown is bounded in UTF-8 BYTES, not
 characters — Webex's limit is 7439 bytes. The renderer's own final answer is
-chunked by `webex/client.py::chunk_utf8`, which is byte-exact and **lossless**:
+chunked by `messaging/split.py::chunk_utf8_bytes`, which is byte-exact and **lossless**:
 the concatenation of its chunks equals its input. That is the property the table
 path requires, because an oversized safe-raw grid is chunked here and must
 reassemble exactly, and a line-oriented splitter cannot promise it — it consumes
 the boundary whitespace (pinned by
 `test_channel_table_rendering.py::TestDeliveryFraming`). The accepted cost is that
-`chunk_utf8` carries no fence state, so a code fence spanning a chunk boundary
+`chunk_utf8_bytes` carries no fence state, so a code fence spanning a chunk boundary
 lands unbalanced; trading the grid's exact reassembly for that is the worse of the
 two. The fence-safe `messaging.split.split_markdown_bytes` — shared splitter
 against a character budget, shrunk until every chunk measures under Webex's byte

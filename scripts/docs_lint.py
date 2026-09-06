@@ -103,10 +103,19 @@ from pathlib import Path
 # Documentation roots, each with the index file that must reach every doc in it.
 # ``docs/`` is repo-only contributor/architecture material; ``src/kiro_crew/docs/``
 # is PACKAGED end-user material (see MANIFEST.in) and is read at runtime.
+#
+# ``src/kiro_crew/apps/builtins/`` is the third kind: thousands of lines of
+# spec-grade markdown that ship INSIDE a builtin app -- its README, its agent
+# briefs and prompts, and its SKILL.md files, which an agent loads verbatim at
+# runtime. A stale path or a dead link there misroutes the agent rather than a
+# human reader, so it is link- and fact-checked, and it is listed in
+# :data:`UNCURATED_PREFIXES` because an app's markdown is curated by its own
+# manifest rather than by a documentation index.
 DOC_ROOTS: tuple[str, ...] = (
     "docs",
     "src/kiro_crew/docs",
     "website/docs",
+    "src/kiro_crew/apps/builtins",
 )
 
 # Per-directory index filenames, in priority order. A directory is "indexed" by
@@ -144,6 +153,12 @@ UNCURATED_PREFIXES: tuple[str, ...] = (
     # skill definition rather than documentation, so a leaf skill directory gets no
     # index of its own.
     "docs/app-kit/examples/",
+    # A builtin app's markdown is app PAYLOAD: `app.json` names the skills and
+    # agent prompts it ships, and the app's own README is the entry a reader
+    # opens. Requiring an index in `skills/<name>/` or `agents/context/` would
+    # add a file the app never loads, so reachability and the index requirement
+    # are off here while every link and every cited path is still checked.
+    "src/kiro_crew/apps/builtins/",
 )
 
 # Directories that legitimately hold docs without their own index: a vendored

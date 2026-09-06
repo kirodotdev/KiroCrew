@@ -636,6 +636,60 @@ class TestEntryPointDocs:
             assert not path.is_dir(), name
 
 
+class TestBuiltinAppDocRoot:
+    """A builtin app's own markdown is linted, and is not asked to be indexed.
+
+    An app's README, its agent briefs and its SKILL.md files are loaded verbatim
+    at runtime, so a rotted path there misroutes the agent. They are covered by
+    the same fact checks as the doc trees, and exempt from reachability because an
+    app's markdown is curated by ``app.json`` rather than by a documentation index.
+    """
+
+    def test_the_tree_is_a_declared_lint_root(self) -> None:
+        assert "src/kiro_crew/apps/builtins" in gate.DOC_ROOTS
+        assert "src/kiro_crew/apps/builtins/" in gate.UNCURATED_PREFIXES
+
+    def test_the_real_checkout_has_markdown_under_it(self) -> None:
+        found = gate._walk_markdown(_REPO_ROOT, "src/kiro_crew/apps/builtins")
+        assert found, "the root would be silently empty"
+
+    def test_reports_a_dead_path_in_an_app_readme(self, tree: Path) -> None:
+        _write(
+            tree,
+            "src/kiro_crew/apps/builtins/demo/README.md",
+            "# Demo\n\nBacked by `src/kiro_crew/apps/builtins/demo/ghost.py`.\n",
+        )
+        assert "src/kiro_crew/apps/builtins/demo/ghost.py" in _tokens(tree, gate.CHECK_PATH_EXISTS)
+
+    def test_reports_a_line_citation_in_an_app_readme(self, tree: Path) -> None:
+        _write(
+            tree,
+            "src/kiro_crew/apps/builtins/demo/README.md",
+            "# Demo\n\nSee `loader.py:4612`.\n",
+        )
+        assert "loader.py:4612" in _tokens(tree, gate.CHECK_LINE_REF)
+
+    def test_reports_a_broken_link_in_an_app_readme(self, tree: Path) -> None:
+        _write(
+            tree,
+            "src/kiro_crew/apps/builtins/demo/README.md",
+            "# Demo\n\nSee [the brief](backend/ghost.md).\n",
+        )
+        findings = gate.run(tree)
+        assert any("backend/ghost.md" in item for item in findings.broken_links)
+
+    def test_a_leaf_skill_needs_no_index_of_its_own(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/apps/builtins/demo/README.md", "# Demo\n\nBody.\n")
+        _write(
+            tree,
+            "src/kiro_crew/apps/builtins/demo/skills/thing/SKILL.md",
+            "# Thing\n\nBody.\n",
+        )
+        findings = gate.run(tree)
+        assert not findings.unreachable
+        assert not findings.missing_index
+
+
 class TestShippedBaseline:
     """The committed baseline is the repository's recorded backlog."""
 

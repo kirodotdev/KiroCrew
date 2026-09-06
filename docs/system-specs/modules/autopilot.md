@@ -52,15 +52,14 @@ exactly one of them:
 |---|---|
 | `""` | Ordinary chat. No plan machinery. |
 | `"orchestrator"` | Autopilot — everything in this spec. |
-| `"crew"` | Crew Mode, a separate control plane in `crew_chat.py` (durable ingress queue, single-flight decision agent, continuable per-topic sub-sessions). It is not Autopilot and shares none of the plan state below. |
+| `"crew"` | Crew Mode, a separate control plane in `crew_chat.py` (durable ingress queue, single-flight decision agent, continuable per-topic sub-sessions). It is not Autopilot and shares none of the plan state below. Its spec is [crew-mode.md](crew-mode.md). |
 
 `"crew"` carries a capability gate the other two do not: the switch is refused
 with `crew_unsupported_slot` unless `crew_chat.is_crew_capable_slot_key(slot.key)`
 holds, because the slot name is folded into a directory and some names cannot be
-one (dots-only, a trailing dot, a Win32 reserved device basename). The design of
-record for that mode is
-[`../../request-for-change/rfc-orchestrator-chat-sessions.md`](../../request-for-change/rfc-orchestrator-chat-sessions.md);
-it has no module spec of its own yet.
+one (dots-only, a trailing dot, a Win32 reserved device basename). That mode is
+owned by [crew-mode.md](crew-mode.md); its design of record is
+[`../../request-for-change/rfc-orchestrator-chat-sessions.md`](../../request-for-change/rfc-orchestrator-chat-sessions.md).
 
 ## Slot State
 
