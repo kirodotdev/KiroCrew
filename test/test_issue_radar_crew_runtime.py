@@ -80,6 +80,22 @@ def _private_sel_root_per_test(sel_private_root):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _app_is_on():
+    """The grant's predicate includes the APP gate, and the test host has no
+    installed app -- so pin it on, the way ``test_watch`` does, and let the tests
+    that exercise a disable flip it themselves."""
+    # ``create=True`` so the pin is inert against a build that predates the gate:
+    # then the falsification run (production reverted, tests kept) reports the
+    # regression tests as FAILED rather than erroring in fixture setup.
+    with mock.patch.object(cr, "is_app_enabled", return_value=True, create=True):
+        if hasattr(cr, "_disabling"):
+            cr._disabling = False
+        yield
+        if hasattr(cr, "_disabling"):
+            cr._disabling = False
+
+
 # ── fakes ───────────────────────────────────────────────────────────────────
 
 
@@ -947,6 +963,763 @@ class TestSession(unittest.IsolatedAsyncioTestCase):
             await cr.watchdog_cycle(_FakeState(), OWNER, REPO, [retired], self.root)
         rehydrate.assert_not_awaited()
         self.assertEqual(svc.updates, [("nl_0", {"active": False})])
+
+
+# ── a pause that lands while a crew is being woken ──────────────────────────
+
+
+class TestPauseRacesTheWake(unittest.IsolatedAsyncioTestCase):
+    """The operator pauses a crew DURING the wake that is about to run it.
+
+    Every path here is handed a snapshot of the record, and a pause writes only to
+    the store — so a liveness check made against the snapshot reads live for a crew
+    that is already stopped, and the crew gets an auto-approve grant and one
+    unattended turn after being told to stop. Each test below drives the pause into
+    one specific ``await`` in the path, which is the only way to pin the window: the
+    record on disk is paused and the caller's snapshot still says live.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        reset_singleton()
+        self.addCleanup(reset_singleton)
+
+    def _pause_mid_flight(self, crew_id: str, result: Any) -> Any:
+        """An async stand-in that pauses *crew_id* and then returns *result*.
+
+        The pause is taken through ``crew_store`` — the same call the pause route
+        and the tab-close hook make — so the test reproduces the real interleaving
+        rather than hand-editing the snapshot the code under test is holding.
+        """
+
+        async def _paused(*_a: Any, **_kw: Any) -> Any:
+            cs.set_crew_paused(OWNER, REPO, crew_id, True, "operator paused", self.root)
+            return result
+
+        return _paused
+
+    async def test_a_pause_during_the_rehydrate_gets_no_trust_and_no_turn(self):
+        """The window the wake opens BEFORE it grants: the crew's slot is not
+        resident, so the wake rehydrates it, and the pause lands in that await."""
+        crew = _crew(self.root, unattended=True)
+        slot_key = f"crew-{crew['id']}"
+        revived = _FakeSlot(slot_key)
+        state = _FakeState()  # no resident slot, as a closed tab leaves it
+        with mock.patch.object(
+            cr,
+            "rehydrate_slot_from_history_async",
+            new=self._pause_mid_flight(crew["id"], revived),
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(revived.prompts, [])  # and nothing was queued either
+        self.assertFalse(_effectively_trusted(revived))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_a_pause_after_the_grant_takes_the_grant_back_and_runs_nothing(self):
+        """The second window, which a single re-read would miss: composing the
+        prompt and refreshing the loop message are both awaits AFTER the grant, so a
+        pause landing there leaves a live grant on a stopped crew — and its armed
+        loop can fire into it long before a watchdog cycle notices."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        self.assertTrue(_effectively_trusted(slot))
+        real = cr.compose_turn_prompt_async
+
+        async def _pause_then_compose(*a: Any, **kw: Any) -> str:
+            cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
+            return await real(*a, **kw)
+
+        with mock.patch.object(
+            cr, "compose_turn_prompt_async", new=_pause_then_compose
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_a_resume_between_the_reads_leaves_the_crew_TRUSTED_for_its_turn(self):
+        """The mirror of the test above, and what reconciling rather than
+        hand-checking buys: a crew paused when the wake started and resumed before it
+        dispatched had its grant taken away by the first read, and the pre-dispatch
+        reconciliation gives it back. Dispatching an unattended crew with no grant
+        would park it on an approval prompt nobody is watching."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        paused = cs.set_crew_paused(
+            OWNER, REPO, crew["id"], True, "operator paused", self.root
+        )
+        real = cr.compose_turn_prompt_async
+
+        async def _resume_then_compose(*a: Any, **kw: Any) -> str:
+            cs.set_crew_paused(OWNER, REPO, crew["id"], False, "", self.root)
+            return await real(*a, **kw)
+
+        with mock.patch.object(
+            cr, "compose_turn_prompt_async", new=_resume_then_compose
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, paused, "ci-changed", self.root)
+        self.assertTrue(started)
+        self.assertEqual(len(slot.prompts), 1)
+        self.assertTrue(_effectively_trusted(slot))
+
+    async def test_a_pause_inside_the_grants_own_thread_hop_dispatches_nothing(self):
+        """The residue every ORDERING leaves, and why the last read before the
+        dispatch is taken on the event loop. ``sync_trust`` runs in a worker thread,
+        so the loop is free while it runs: a pause committing there revokes, the
+        worker then re-mints the grant from its pre-pause record, and a liveness
+        check made before that hop reads live. Only a read with no suspension point
+        before ``dispatch_crew_turn`` sees it."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        real = cr.sync_trust
+
+        def _pause_then_sync(slot_arg: Any, crew_arg: dict[str, Any]) -> bool:
+            # Runs on the worker thread, exactly where the real pause interleaves.
+            cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
+            return real(slot_arg, crew_arg)
+
+        with mock.patch.object(cr, "sync_trust", _pause_then_sync), mock.patch.object(
+            cr, "_run_chat", mock.Mock()
+        ):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    def _pause_and_revoke_inside_sync_trust(self, crew_id: str) -> Any:
+        """A ``sync_trust`` stand-in that plays the pause route's whole move first.
+
+        The route writes the record and then revokes execution BEFORE it answers, and
+        both happen on the event loop while the real ``sync_trust`` runs on a worker
+        thread. Reproducing the revoke as well as the write is what makes the
+        resurrection observable: the grant is gone when the worker re-mints it.
+        """
+        real = cr.sync_trust
+
+        def _paused(slot_arg: Any, crew_arg: dict[str, Any]) -> bool:
+            cs.set_crew_paused(OWNER, REPO, crew_id, True, "operator paused", self.root)
+            safety_override().deactivate_scope(cr.autoapprove_scope(crew_id))
+            return real(slot_arg, crew_arg)
+
+        return _paused
+
+    async def test_a_pause_during_the_grant_does_not_survive_a_MID_TURN_wake(self):
+        """The exit that skips the dispatch gate entirely. A busy crew's wake is
+        dropped and returns early, so a grant re-minted from a pre-pause record
+        outlives the operator's stop — and the in-flight turn keeps auto-approving
+        its tools. Mid-turn is the normal state of a working crew, so this is the
+        common case rather than a corner of one."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        slot.running = True
+        with mock.patch.object(
+            cr, "sync_trust", self._pause_and_revoke_inside_sync_trust(crew["id"])
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_a_pause_during_a_wake_that_RAISES_still_loses_the_grant(self):
+        """The exit no per-return guard can ever cover, which is why the check sits in
+        a ``finally``. The sweep catches a failed wake and moves on, so without this
+        an exception mid-wake leaves a resurrected grant behind with nothing to
+        report it."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+
+        async def _raise(*_a: Any, **_kw: Any) -> str:
+            raise RuntimeError("the forge went away mid-compose")
+
+        # The pause (and its revocation) lands inside the grant's thread hop, so the
+        # grant is genuinely resurrected — and THEN the wake fails, before any exit
+        # that re-checks. Without the finally the resurrected grant is what remains.
+        with mock.patch.object(
+            cr, "sync_trust", self._pause_and_revoke_inside_sync_trust(crew["id"])
+        ), mock.patch.object(
+            cr, "compose_turn_prompt_async", new=_raise
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            with self.assertRaises(RuntimeError):
+                await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_turning_UNATTENDED_off_mid_wake_takes_the_grant_away(self):
+        """The half of the grant's predicate a liveness check cannot see. ``is_live``
+        reads enabled/retired/paused, so a crew whose ``unattended`` flag is switched
+        off stays live — and the downgrade is exactly as much a governance decision as
+        a pause. The wake must end with the grant the CURRENT record calls for, which
+        means reconciling through ``sync_trust`` rather than checking liveness."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        self.assertTrue(_effectively_trusted(slot))
+        real = cr.compose_turn_prompt_async
+
+        async def _downgrade_then_compose(*a: Any, **kw: Any) -> str:
+            # ONLY the record changes. Revoking here by hand would make the assertion
+            # below true whatever the code did.
+            cs.update_crew(OWNER, REPO, crew["id"], {"unattended": False}, self.root)
+            return await real(*a, **kw)
+
+        with mock.patch.object(
+            cr, "compose_turn_prompt_async", new=_downgrade_then_compose
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        # The crew is still LIVE, so it legitimately gets its turn — attended.
+        self.assertTrue(started)
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+        self.assertEqual(slot._trust_scope, "")
+        self.assertFalse(slot._trust)  # and never a fallback onto the unbounded flag
+
+    async def test_turning_UNATTENDED_off_mid_cycle_takes_the_grant_away(self):
+        """Same rule on the watchdog pass, whose trailing guard was liveness-only
+        too."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        svc = _FakeNudge([_FakeLoop("nl_0", slot.key, active=False)])
+        real_update = svc.update
+
+        async def _downgrade_then_update(loop_id: str, **kw: Any) -> None:
+            cs.update_crew(OWNER, REPO, crew["id"], {"unattended": False}, self.root)
+            await real_update(loop_id, **kw)
+
+        svc.update = _downgrade_then_update  # type: ignore[method-assign]
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
+        self.assertFalse(_effectively_trusted(slot))
+        # Still live, so its clock stays on — only the grant went away.
+        self.assertTrue(svc.get_by_slot(slot.key).active)
+
+    def _stop_inside_the_grant(self, state: Any, crew: dict[str, Any], stop: Any) -> Any:
+        """A ``sync_trust`` stand-in that runs *stop* on the EVENT LOOP mid-mint.
+
+        The real ``sync_trust`` runs in a worker; the stop paths run on the loop.
+        Reproducing that means the stop has to execute on the loop while the worker
+        is inside the mint, so it is scheduled there with ``call_soon_threadsafe``
+        and the worker waits for it before it mints from its (now stale) record.
+        """
+        loop = asyncio.get_running_loop()
+        real = cr.sync_trust
+
+        def _synced(slot_arg: Any, crew_arg: dict[str, Any]) -> bool:
+            done = threading.Event()
+
+            def _on_loop() -> None:
+                try:
+                    stop()
+                finally:
+                    done.set()
+
+            loop.call_soon_threadsafe(_on_loop)
+            done.wait(5)
+            return real(slot_arg, crew_arg)
+
+        return _synced
+
+    async def test_a_pause_completing_inside_the_mint_still_wins(self):
+        """THE resurrection. The pause route writes the record and revokes -- on the
+        loop, while the worker is inside ``sync_trust`` holding a pre-pause record.
+        The worker then mints. Without a revocation the mint could observe, that
+        grant outlives the stop and the crew's next approval is automatic."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+
+        def _pause() -> None:
+            # Exactly what the route does before it answers: write, then revoke.
+            cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
+            asyncio.get_running_loop().create_task(
+                cr.revoke_crew_execution(state, crew, "paused")
+            )
+
+        with mock.patch.object(
+            cr, "sync_trust", self._stop_inside_the_grant(state, crew, _pause)
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_an_APP_DISABLE_completing_inside_the_mint_still_wins(self):
+        """The half the crew record cannot express. ``revoke_crew_grants`` runs
+        synchronously on the loop and reads no record, so a re-read cannot see it --
+        only the generation can."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        slot._app = cr.APP_NAME
+        state._slots = {slot.key: slot}
+
+        with mock.patch.object(
+            cr,
+            "sync_trust",
+            self._stop_inside_the_grant(state, crew, lambda: cr.revoke_crew_grants(state)),
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_the_watchdog_honours_a_stop_that_lands_inside_its_own_mint(self):
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        slot._app = cr.APP_NAME
+        state._slots = {slot.key: slot}
+        svc = _FakeNudge([_FakeLoop("nl_0", slot.key, active=True)])
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
+            cr,
+            "sync_trust",
+            self._stop_inside_the_grant(state, crew, lambda: cr.revoke_crew_grants(state)),
+        ):
+            await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_an_app_disable_that_COMPLETED_before_the_wake_never_regrants(self):
+        """The disable finished, the record still says unattended and live, and the
+        counter has already absorbed the bump -- so neither the record nor the
+        generation can see it. Only the gate can, and the gate is what the grant now
+        consults. Without it the wake re-minted a grant on a switched-off app."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        slot._app = cr.APP_NAME
+        state._slots = {slot.key: slot}
+        cr.revoke_crew_grants(state)  # the disable, in full, BEFORE the wake
+        self.assertFalse(_effectively_trusted(slot))
+        with mock.patch.object(cr, "is_app_enabled", return_value=False), mock.patch.object(
+            cr, "_run_chat", mock.Mock()
+        ):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_an_app_disable_landing_INSIDE_the_hop_is_seen_by_the_generation(self):
+        """The gate read ON in the hop (the disable had not landed yet), and no file
+        is re-read on the loop afterwards -- so the only thing that can see the
+        disable is the generation ``revoke_crew_grants`` bumped for this crew."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        slot._app = cr.APP_NAME
+        state._slots = {slot.key: slot}
+        with mock.patch.object(
+            cr,
+            "sync_trust",
+            self._stop_inside_the_grant(state, crew, lambda: cr.revoke_crew_grants(state)),
+        ):
+            self.assertFalse(await cr._reconcile_trust(state, slot, crew))
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_the_watchdog_reconciles_a_session_it_just_CREATED(self):
+        """A crew with a loop but no resident slot and nothing to rehydrate has its
+        session created inside the pass. The trailing reconciliation must reach that
+        session: a stop landing during the pass otherwise leaves the one grant the
+        pass minted standing, because the local ``slot`` still reads None."""
+        crew = _crew(self.root, unattended=True)
+        slot_key = f"crew-{crew['id']}"
+        state = _FakeState()
+        svc = _FakeNudge([_FakeLoop("nl_0", slot_key, active=True)])
+        real_ensure = cr.ensure_crew_session
+
+        async def _create_then_downgrade(*a: Any, **kw: Any) -> Any:
+            created = await real_ensure(*a, **kw)
+            # The stop lands after the session (and its grant) exist.
+            cs.update_crew(OWNER, REPO, crew["id"], {"unattended": False}, self.root)
+            return created
+
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
+            cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock(return_value=None)
+        ), mock.patch.object(cr, "ensure_crew_session", _create_then_downgrade):
+            await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
+        self.assertIn(slot_key, state.slots)
+        self.assertFalse(_effectively_trusted(state.slots[slot_key]))
+
+    async def test_another_crews_stop_does_not_de_trust_this_one(self):
+        """The generation is per crew. A process-wide counter made crew B's pause
+        tear down crew A's freshly-minted grant -- fail-closed, but it parked a live
+        unattended crew on an approval prompt for a whole cycle."""
+        a = _crew(self.root, name="Andromeda", unattended=True)
+        b = _crew(self.root, name="Draco", unattended=True)
+        state = _FakeState()
+        slot_a = await cr.ensure_crew_session(state, OWNER, REPO, a)
+        await cr.ensure_crew_session(state, OWNER, REPO, b)
+
+        def _pause_b() -> None:
+            cs.set_crew_paused(OWNER, REPO, b["id"], True, "operator paused", self.root)
+            asyncio.get_running_loop().create_task(cr.revoke_crew_execution(state, b, "paused"))
+
+        with mock.patch.object(cr, "sync_trust", self._stop_inside_the_grant(state, a, _pause_b)):
+            self.assertTrue(await cr._reconcile_trust(state, slot_a, a))
+        self.assertTrue(_effectively_trusted(slot_a))
+
+    async def test_a_disable_whose_flag_is_not_yet_written_still_denies(self):
+        """The window between the two other sources. The disable HOOK has run --
+        grants cleared, generation bumped -- but ``installed.json`` is not written
+        yet, so the gate still reads on. A reconciliation starting HERE samples the
+        already-bumped generation and an enabled gate, and without the latch it
+        re-mints a grant on an app whose disable is in flight."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        slot._app = cr.APP_NAME
+        state._slots = {slot.key: slot}
+        cr.revoke_crew_grants(state)  # the hook's synchronous half; gate still True
+        self.assertFalse(_effectively_trusted(slot))
+        with mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_re_enabling_the_app_releases_the_latch_through_the_watchdog(self):
+        """One-way until the store agrees: only a watchdog pass -- which the sweep
+        runs solely while the app reads enabled -- clears it, and the crew is then
+        trusted again."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        slot._app = cr.APP_NAME
+        state._slots = {slot.key: slot}
+        cr.revoke_crew_grants(state)
+        self.assertFalse(await cr._reconcile_trust(state, slot, crew))  # latched
+        await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)  # re-enabled
+        self.assertTrue(_effectively_trusted(slot))
+
+    async def test_a_quiet_reconciliation_keeps_the_grant(self):
+        """The generation check must not cost a grant when nothing revoked."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        self.assertTrue(await cr._reconcile_trust(state, slot, crew))
+        self.assertTrue(_effectively_trusted(slot))
+
+    async def test_the_watchdog_neither_trusts_nor_re_arms_a_crew_paused_mid_cycle(self):
+        """The same window in the cycle that is supposed to be the RECOVERY for it.
+        Its roster is read before the pass, and its own rehydrate is an await — so a
+        pause landing there is granted trust and has its loop switched back on,
+        which hands the crew a turn on its next idle fire."""
+        crew = _crew(self.root, unattended=True)
+        slot_key = f"crew-{crew['id']}"
+        revived = _FakeSlot(slot_key)
+        svc = _FakeNudge([_FakeLoop("nl_0", slot_key, active=False)])
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
+            cr,
+            "rehydrate_slot_from_history_async",
+            new=self._pause_mid_flight(crew["id"], revived),
+        ):
+            await cr.watchdog_cycle(_FakeState(), OWNER, REPO, [crew], self.root)
+        self.assertFalse(_effectively_trusted(revived))
+        self.assertFalse(svc.get_by_slot(slot_key).active)
+        self.assertEqual(svc.added, [])  # and no new loop was armed for it
+
+    async def test_the_watchdog_does_not_regrant_a_RESIDENT_crew_paused_since_the_roster_read(self):
+        """The window has nothing to do with rehydration: a crew whose slot the
+        gateway still holds skips that branch entirely, and its snapshot is exactly
+        as stale — the roster was read before the pass and every crew ahead of it in
+        the loop awaited. So the re-read cannot be conditional on rehydrating."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)  # resident
+        svc = _FakeNudge([_FakeLoop("nl_0", slot.key, active=False)])
+        # The pause lands after the roster was read: the store says stopped while
+        # the snapshot the cycle is holding still says live.
+        cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(svc.get_by_slot(slot.key).active)
+
+    async def test_the_watchdog_undoes_its_own_pass_when_the_pause_lands_inside_it(self):
+        """The residue a single early re-read leaves: the pass itself awaits — the
+        grant, the launch, the re-arm — so a pause landing between them is still
+        answered by trusting the crew and switching its clock on. The trailing read
+        makes the cycle undo its own work, which is what makes the guard total rather
+        than merely earlier."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        svc = _FakeNudge([_FakeLoop("nl_0", slot.key, active=False)])
+        real_update = svc.update
+
+        async def _pause_then_update(loop_id: str, **kw: Any) -> None:
+            # The pause lands while the cycle is re-arming the crew's clock.
+            cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
+            await real_update(loop_id, **kw)
+
+        svc.update = _pause_then_update  # type: ignore[method-assign]
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(svc.get_by_slot(slot.key).active)
+
+    async def test_a_live_crew_is_still_woken_when_no_pause_lands(self):
+        """The re-reads must not cost a wake. Same path, same rehydrate, nothing
+        paused — the crew is trusted and gets its turn."""
+        crew = _crew(self.root, unattended=True)
+        slot_key = f"crew-{crew['id']}"
+        revived = _FakeSlot(slot_key)
+        with mock.patch.object(
+            cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock(return_value=revived)
+        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(
+                _FakeState(), OWNER, REPO, crew, "ci-changed", self.root
+            )
+        self.assertTrue(started)
+        self.assertEqual(len(revived.prompts), 1)
+        self.assertTrue(_effectively_trusted(revived))
+
+    async def test_a_record_that_cannot_be_read_FAILS_CLOSED(self):
+        """Liveness is what authorizes the grant, so a record nothing can read is not
+        permission to keep granting from a snapshot. Falling back to the caller's
+        snapshot would answer the governance question with the very value whose
+        staleness is in question — a deleted or corrupt record would go on authorizing
+        unattended turns forever."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        self.assertTrue(_effectively_trusted(slot))
+        cs.crew_path(OWNER, REPO, crew["id"], self.root).unlink()
+        with mock.patch.object(cr, "_run_chat", mock.Mock()):
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
+        self.assertFalse(started)
+        self.assertEqual(slot.prompts, [])
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(safety_override().is_scope_active(cr.autoapprove_scope(crew["id"])))
+
+    async def test_a_corrupt_record_fails_closed_in_the_watchdog_too(self):
+        """Same rule on the cycle that re-establishes trust: unreadable is stopped,
+        so a crew whose record went bad does not keep its grant and its clock."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        svc = _FakeNudge([_FakeLoop("nl_0", slot.key, active=True)])
+        cs.crew_path(OWNER, REPO, crew["id"], self.root).write_text("{not json")
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
+        self.assertFalse(_effectively_trusted(slot))
+        self.assertFalse(svc.get_by_slot(slot.key).active)
+
+
+class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
+    """The two shape rules that make the wake's liveness checks total.
+
+    1. Every exit from the wake passes the same check, which is why it sits in a
+       ``finally``: the grant is minted from a pre-``await`` record, so a path that
+       returns without re-checking leaves a grant the stop path already revoked
+       standing. A guard per ``return`` cannot cover the exception path, and each
+       instance found in review was a ``return`` nobody had listed yet.
+    2. Not one of those reads runs on the event loop. The record carries uncapped
+       operator free text, so a synchronous read of it is an unbounded blocking call
+       on the gateway's only thread — the ``no-blocking-call-on-event-loop`` hazard.
+       Correctness does not need it: :func:`crew_runtime.wake_crew` documents why the
+       read's own thread hop cannot hide a stop, since every stop path writes the
+       record before it revokes.
+
+    Pinned on the code's SHAPE because that is what regresses: an added ``return``,
+    or a read quietly taken on the loop to make a check "tighter", cannot be observed
+    behaviourally on an event loop nothing else is driving. Same source-inspection
+    idiom as :class:`TestCrewStoreScoping`.
+    """
+
+    @staticmethod
+    def _is_awaited_read(stmt: ast.stmt) -> bool:
+        return (
+            isinstance(stmt, ast.Assign)
+            and isinstance(stmt.value, ast.Await)
+            and isinstance(stmt.value.value, ast.Call)
+            and getattr(stmt.value.value.func, "id", "") == "_current_crew"
+        )
+
+    def test_no_liveness_read_runs_on_the_event_loop(self):
+        """Every ``_current_crew`` call site is awaited. The helper hops to a thread
+        internally, so an un-awaited call would not even be a read — but the shape is
+        what a future edit would break, and the AUTOSDE rule is blocking."""
+        tree = ast.parse(inspect.getsource(cr))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_current_crew"
+        ]
+        awaited = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Await)
+            and isinstance(node.value, ast.Call)
+            and getattr(node.value.func, "id", "") == "_current_crew"
+        ]
+        self.assertTrue(calls, "no _current_crew call sites at all")
+        self.assertEqual(
+            len(calls), len(awaited), "a _current_crew call site is not awaited"
+        )
+
+    def test_the_exit_guard_reconciles_through_sync_trust(self):
+        """Not through a hand-written condition. ``sync_trust`` mints on
+        ``unattended AND is_live``; a guard that re-implements half of that is blind
+        to an ``unattended`` downgrade, and a copy of the whole thing is a second
+        definition free to drift. So the guard hands the record back to the minter."""
+        final = self._wake_try().finalbody
+        dumped = "".join(ast.dump(stmt) for stmt in final)
+        self.assertIn(
+            "_reconcile_trust", dumped, "the exit guard does not reconcile the grant"
+        )
+        self.assertIn("revoke_crew_execution", dumped, "the exit guard does not revoke")
+
+    def test_only_sync_trust_ever_writes_the_trust_scope(self):
+        """The scope attribute is the grant's carrier, so a second writer is a second
+        policy. Pinned across the module: ``revoke_crew_execution`` clears it on the
+        stop path, and nothing else may assign it."""
+        tree = ast.parse(inspect.getsource(cr))
+        writers = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                targets = list(getattr(inner, "targets", []))
+                if isinstance(inner, ast.AugAssign):
+                    targets = [inner.target]
+                for target in targets:
+                    if isinstance(target, ast.Attribute) and target.attr == "_trust_scope":
+                        writers.add(node.name)
+        self.assertEqual(writers, {"sync_trust", "revoke_crew_execution", "revoke_crew_grants"})
+
+    def test_every_async_grant_goes_through_the_generation_check(self):
+        """A bare ``to_thread(sync_trust, ...)`` on an async path is the resurrection
+        window this class exists to close. The one permitted bare call is inside
+        ``_reconcile_trust`` itself; ``ensure_crew_session``'s is owned by another
+        change and is pinned here so that ownership is explicit rather than silent."""
+        tree = ast.parse(inspect.getsource(cr))
+        owners = []
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(fn):
+                if (
+                    isinstance(node, ast.Call)
+                    and "to_thread" in ast.dump(node.func)
+                    and node.args
+                    and getattr(node.args[0], "id", "") == "sync_trust"
+                ):
+                    owners.append(fn.name)
+        # ``_reconcile_trust`` reaches ``sync_trust`` through ``_trust_inputs`` so
+        # that the app gate is read in the same hop; it is no longer a direct owner.
+        self.assertEqual(sorted(owners), ["ensure_crew_session"])
+
+    def test_the_app_gate_is_read_in_the_hop_and_never_on_the_loop(self):
+        """``installed.json`` is parsed off the loop with the mint (so a disabled app
+        never mints); a disable landing inside the hop is the generation's job, not a
+        second read's -- a loop-side read of that file is the
+        ``no-blocking-call-on-event-loop`` hazard."""
+        self.assertIn("is_app_enabled", inspect.getsource(cr._trust_inputs))
+        body = ast.parse(inspect.getsource(cr._reconcile_trust)).body[0]
+        on_loop = [
+            node
+            for node in ast.walk(body)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "is_app_enabled"
+        ]
+        self.assertEqual(on_loop, [], "_reconcile_trust reads the app gate on the loop")
+
+    def test_the_disable_revoker_latches_and_only_the_watchdog_releases(self):
+        """A second writer of ``_disabling = False`` is a second place a disable can
+        be forgotten; pin the set."""
+        tree = ast.parse(inspect.getsource(cr))
+        setters: dict[str, set[bool]] = {}
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "_disabling" for t in node.targets
+                ):
+                    assert isinstance(node.value, ast.Constant)
+                    setters.setdefault(fn.name, set()).add(bool(node.value.value))
+        self.assertEqual(
+            setters, {"revoke_crew_grants": {True}, "watchdog_cycle": {False}}
+        )
+
+    def test_the_watchdog_keeps_the_slot_it_creates(self):
+        """Both session-creating awaits assign back to ``slot``, so the trailing
+        reconciliation reaches a session this pass created."""
+        src = inspect.getsource(cr.watchdog_cycle)
+        self.assertIn("slot = await launch_crew(", src)
+        self.assertIn("slot = await ensure_crew_session(", src)
+
+    def test_the_generation_is_keyed_by_crew(self):
+        self.assertIsInstance(cr._revoke_generation, dict)
+
+    def test_both_revokers_bump_the_generation(self):
+        for fn in (cr.revoke_crew_execution, cr.revoke_crew_grants):
+            self.assertIn(
+                "_note_revocation",
+                ast.dump(ast.parse(inspect.getsource(fn))),
+                f"{fn.__name__} revokes without bumping the generation",
+            )
+
+    def test_the_read_helper_hops_off_the_loop(self):
+        tree = ast.parse(inspect.getsource(cr._current_crew))
+        self.assertTrue(inspect.iscoroutinefunction(cr._current_crew))
+        self.assertIn("to_thread", ast.dump(tree), "the record read is not hoisted")
+
+    def _wake_try(self) -> ast.Try:
+        fn = ast.parse(inspect.getsource(cr.wake_crew)).body[0]
+        assert isinstance(fn, ast.AsyncFunctionDef)
+        tries = [st for st in fn.body if isinstance(st, ast.Try)]
+        self.assertEqual(len(tries), 1, "wake_crew does not wrap its body in one try")
+        return tries[0]
+
+    def test_every_exit_from_the_wake_passes_the_liveness_check(self):
+        """In a ``finally``, so a ``return`` added anywhere in the body — or an
+        exception raised out of it — cannot bypass it."""
+        final = self._wake_try().finalbody
+        self.assertTrue(final, "wake_crew's try has no finally")
+        self.assertTrue(
+            any(self._is_awaited_read(st) for st in final),
+            "wake_crew's finally does not re-read the record",
+        )
+        self.assertIn(
+            "revoke_crew_execution",
+            "".join(ast.dump(st) for st in final),
+            "wake_crew's finally does not revoke a stopped crew's grants",
+        )
+
+    def test_the_wake_wrapper_holds_nothing_the_guard_could_miss(self):
+        """The wrapper is the guard and nothing else: any work outside the ``try``
+        would run un-guarded, which is the shape this class exists to forbid."""
+        fn = ast.parse(inspect.getsource(cr.wake_crew)).body[0]
+        assert isinstance(fn, ast.AsyncFunctionDef)
+        outside = [
+            st
+            for st in fn.body
+            if not isinstance(st, ast.Try)
+            and not (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant))
+        ]
+        self.assertEqual(outside, [], "wake_crew does work outside its guarded try")
+        self.assertTrue(
+            any(isinstance(node, ast.Return) for node in ast.walk(self._wake_try())),
+            "wake_crew's try never returns the body's result",
+        )
 
 
 # ── revoking execution (the two grants the record does not express) ─────────
@@ -1824,6 +2597,9 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
     """
 
     def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
         reset_singleton()
         self.addCleanup(reset_singleton)
         from kiro_crew.apps import teardown
@@ -1832,9 +2608,13 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
         # state; drop it again so these tests cannot change another's outcome.
         self.addCleanup(teardown.unregister_slot_close_hook, cr.APP_NAME)
         self.state = _FakeState()
-        self.slot = _FakeSlot("crew-c_d15ab1ed")
+        # A PERSISTED crew, because the cycle re-reads the record before it grants:
+        # a crew the store never wrote is a state its only caller cannot produce, so
+        # a hand-built dict would test a shape the product never reaches.
+        self.crew = _crew(self.root, unattended=True)
+        self.slot = _FakeSlot(f"crew-{self.crew['id']}")
         self.slot._app = cr.APP_NAME
-        cr.sync_trust(self.slot, {"id": "c_d15ab1ed", "unattended": True, "enabled": True})
+        cr.sync_trust(self.slot, self.crew)
         self.assertTrue(_effectively_trusted(self.slot), "fixture never got its grant")
         # Both registries: ``get_slot`` reads the public one, the suspension walks
         # the private one it can enumerate.
@@ -1948,9 +2728,9 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
             await hook(cr.APP_NAME)
         self.assertFalse(_effectively_trusted(self.slot))
 
-        crew = {"id": "c_d15ab1ed", "unattended": True, "enabled": True, "slot_key": self.slot.key}
+        # Re-enabled: the gate reads on again (the autouse pin), so the cycle regrants.
         with mock.patch.object(cr, "_autonudge_instance", return_value=self.nudge):
-            await cr.watchdog_cycle(self.state, OWNER, REPO, [crew])
+            await cr.watchdog_cycle(self.state, OWNER, REPO, [self.crew], self.root)
         self.assertTrue(_effectively_trusted(self.slot))
         self.assertIn(("nl_dis", {"active": True}), self.nudge.updates)
 

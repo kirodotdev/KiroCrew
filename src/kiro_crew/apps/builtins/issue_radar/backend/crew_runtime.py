@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps import teardown
+from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.apps.teardown import register_slot_close_hook, register_slot_close_undo_hook
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
@@ -585,7 +586,8 @@ async def revoke_crew_execution(state: Any, crew: dict[str, Any], reason: str = 
     not turn a successful pause into a 500. Returns whether anything was actually
     revoked, which is what tests assert on.
     """
-    slot_key = str(crew.get("slot_key") or f"crew-{crew.get('id')}")
+    _note_revocation(str(crew.get("id") or ""))
+    slot_key = _slot_key(crew)
     scope = autoapprove_scope(str(crew.get("id") or ""))
     revoked = False
     slot = state.get_slot(slot_key) if hasattr(state, "get_slot") else None
@@ -629,6 +631,92 @@ async def revoke_crew_execution(state: Any, crew: dict[str, Any], reason: str = 
     return revoked
 
 
+#: Per-crew revocation counters. Bumped ON the loop by every revocation of that
+#: crew; read on the loop before a reconciliation hops to a worker and compared on
+#: the loop after it. A change means a stop of THIS crew landed during the mint, and
+#: the grant the worker produced must not stand. Keyed by crew id rather than kept
+#: as one process-wide counter, because an unrelated crew's pause must not de-trust
+#: a crew that is mid-turn -- that would park a live unattended crew on an approval
+#: prompt for a cycle. Process memory, like the grant itself.
+_revoke_generation: dict[str, int] = {}
+
+#: Set by :func:`revoke_crew_grants` (the app-disable revoker) and cleared by the
+#: watchdog once it observes the app enabled again. Exists because the disable hook
+#: runs BEFORE ``installed.json`` says disabled: in that window the gate reads on,
+#: and a reconciliation that starts there has already sampled the bumped generation
+#: -- so neither of the other two sources can see the stop. The latch is the
+#: in-process record of it. Never read on its own for permission; it only ever
+#: DENIES.
+_disabling = False
+
+
+def _note_revocation(crew_id: str) -> None:
+    """Record that a stop of *crew_id* happened. Called ON the loop by both revokers."""
+    _revoke_generation[crew_id] = _revoke_generation.get(crew_id, 0) + 1
+
+
+def _trust_inputs(slot: Any, crew: dict[str, Any]) -> tuple[bool, bool]:
+    """One worker-thread hop: ``(app_enabled, granted)``.
+
+    The grant has three sources of truth and the crew record carries only two of
+    them. ``unattended`` and liveness are on the record; whether the APP is on lives
+    in ``installed.json``, and :func:`sync_trust` alone cannot see it. Read together
+    here so the reconciliation decides from all three at once, off the loop.
+    """
+    enabled = is_app_enabled(APP_NAME)
+    return enabled, (sync_trust(slot, crew) if enabled else False)
+
+
+async def _reconcile_trust(state: Any, slot: Any, crew: dict[str, Any]) -> bool:
+    """Assign the crew's grant from every source of truth, honouring a stop that
+    completes during the assignment. Returns whether the crew is trusted AFTER.
+
+    The only way this module may grant from an async path. Three things decide the
+    grant and each is guarded here in the way its failure mode demands:
+
+    * **The app gate.** ``revoke_crew_grants`` (app disable) clears grants and reads
+      no crew record, so ``sync_trust`` would happily re-mint on a disabled app --
+      the record still says unattended and live. The gate is read in the SAME hop
+      as the mint (:func:`_trust_inputs`), so an app already off never mints. It is
+      NOT re-read on the loop afterwards: that would parse ``installed.json`` on the
+      gateway's only thread, and it is not needed -- a disable that completes during
+      the hop runs ``revoke_crew_grants``, which bumps this crew's generation, and
+      the generation compare below is what catches it.
+    * **The record.** ``sync_trust`` is the assignment: ``unattended AND is_live``.
+    * **A stop during the hop.** ``_revoke_generation[crew id]`` is sampled on the
+      loop before the hop and compared on the loop after. A change means this crew
+      was revoked while the worker was deciding, so whatever it minted is torn down.
+      Both reads sit on the single-threaded loop with no ``await`` between them and
+      the mint's completion, which is what makes the comparison sound.
+
+    A disable that completed BEFORE the sample is the first bullet's job and needs
+    no counter -- the gate itself is the record of that stop. A disable that lands
+    AFTER the sample, whether during the hop or after it, is the third bullet's:
+    its revoker bumps the generation and the compare sees it. One ordering slips
+    between them: the disable HOOK runs before ``installed.json`` is written, so a
+    reconciliation that starts after the hook's bump but before the flag write sees
+    a bumped-and-sampled generation and an enabled gate. ``_disabling`` -- latched
+    by the hook's revoker, released by the watchdog on re-enable -- is the record of
+    that in-flight stop, and it is checked on both sides of the hop like the
+    generation. Neither of the three reads a file on the loop.
+    """
+    crew_id = str(crew.get("id") or "")
+    if _disabling:
+        revoke_crew_grants(state)
+        return False
+    before = _revoke_generation.get(crew_id, 0)
+    enabled, granted = await asyncio.to_thread(_trust_inputs, slot, crew)
+    if not enabled or _disabling:
+        # Off before the hop, or a disable began during it. Idempotent against a
+        # disable whose synchronous half already ran.
+        revoke_crew_grants(state)
+        return False
+    if _revoke_generation.get(crew_id, 0) != before:
+        await revoke_crew_execution(state, crew, "stopped during trust reconciliation")
+        return False
+    return bool(granted)
+
+
 async def ensure_crew_session(state: Any, owner: str, repo: str, crew: dict[str, Any]) -> Any:
     """Attach to (or create) the crew's app-owned slot and return it.
 
@@ -637,7 +725,7 @@ async def ensure_crew_session(state: Any, owner: str, repo: str, crew: dict[str,
     explicit argument — that is the intended precedence: the crew's config is the
     operator's last word.
     """
-    slot_key = str(crew.get("slot_key") or f"crew-{crew.get('id')}")
+    slot_key = _slot_key(crew)
     slot = state.get_or_create_slot(
         name=slot_key,
         agent=str(crew.get("agent") or "kirocrew"),
@@ -771,13 +859,85 @@ async def wake_crew(
 ) -> bool:
     """Give the crew a turn NOW because a signal moved. Returns whether a turn started.
 
+    The wake proper is :func:`_wake_crew_body`; what this wrapper adds is the ONE
+    exit every path out of it goes through. The auto-approve grant is minted from a
+    record read before an ``await`` (``sync_trust``, off the loop), so any path that
+    returns without re-checking can leave a grant the pause route had ALREADY
+    revoked standing on a crew a human stopped — a resurrected grant, not merely a
+    late one. Guarding each ``return`` individually does not close that: it cannot
+    cover the exception path at all, and every instance found so far was a return
+    nobody had listed yet.
+
+    So the check lives in a ``finally``, where a ``return`` added anywhere in the
+    body cannot bypass it: re-read the record and revoke unless it comes back
+    readable AND live. ``revoke_crew_execution`` is idempotent and best-effort, so
+    the paths that already revoked pay nothing and a failure here cannot turn a
+    successful wake into an exception.
+
+    The reconciliation is itself an ``await``, so a stop can complete inside it and
+    the worker can then mint from a record read before the stop. That is not closed
+    by ordering reads -- the mint is always last and always a suspension point -- so
+    it is closed by making the revocation visible: :func:`_reconcile_trust` compares
+    ``_revoke_generation`` across the hop and tears the grant down if a revocation
+    ran meanwhile. A stop whose revocation lands after that comparison is not one
+    this wake raced -- nothing here mints after it -- and the grant is re-checked on
+    every approval rather than sampled once.
+
+    RECONCILED THROUGH ``sync_trust``, never through a hand-written condition. The
+    grant's predicate is ``unattended AND is_live`` (:func:`sync_trust`), so a guard
+    that checks liveness alone is blind to half of it: turning ``unattended`` off is a
+    governance downgrade the record expresses, and a crew that is still enabled walks
+    straight past a liveness check. Handing the fresh record back to the function that
+    mints the grant is what keeps the two in step — it is an assignment, so it revokes
+    and re-establishes as the record dictates, and no copy of its predicate can drift
+    from it.
+
+    The guarantee, stated as the invariant it is: **when ``wake_crew`` returns, the
+    crew's grant matches the record as the store held it after all of the wake's
+    work** — so no grant survives a stop, or an ``unattended`` downgrade, that was
+    already written when this read ran.
+    """
+    try:
+        return await _wake_crew_body(state, owner, repo, crew, reason, root, key)
+    finally:
+        current = await _current_crew(owner, repo, crew, root)
+        if current is None or not is_live(current):
+            await revoke_crew_execution(state, current or crew, "stopped while waking")
+        else:
+            # Live, but the record may still have downgraded ``unattended``. Look the
+            # slot up rather than carry it out of the body: this must run on every
+            # exit, including the ones that never resolved a slot at all.
+            slot = state.get_slot(_slot_key(current)) if hasattr(state, "get_slot") else None
+            if slot is not None:
+                await _reconcile_trust(state, slot, current)
+
+
+async def _wake_crew_body(
+    state: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    reason: str = "",
+    root: Path | None = None,
+    key: provider.RepoKey | None = None,
+) -> bool:
+    """Give the crew a turn NOW because a signal moved. Returns whether a turn started.
+
     Two writes, both needed. The armed loop's message is refreshed so an idle-timer
     fire that lands later carries the CURRENT snapshot instead of the one composed
     at launch; and the prompt is dispatched immediately, because the whole point of
     the sweep is that the crew does not wait out an idle gap after CI turns red.
     ``enqueue_or_run_prompt`` queues instead of racing when the crew is mid-turn.
+
+    The ``crew`` argument is the sweep's snapshot and a pause writes only to the
+    store, so liveness is re-read from the store before the grant and again before
+    the dispatch. Without them a pause landing anywhere in this function is
+    invisible here and the crew spends one auto-approved turn after being stopped.
+
+    Called only through :func:`wake_crew`, whose ``finally`` is what makes those
+    checks cover the paths this function returns on without reaching the dispatch.
     """
-    slot = state.get_slot(str(crew.get("slot_key") or f"crew-{crew.get('id')}"))
+    slot = state.get_slot(_slot_key(crew))
     if slot is None:
         slot = await _rehydrate(state, str(crew.get("slot_key") or ""))
     if slot is None:
@@ -785,7 +945,19 @@ async def wake_crew(
             "issue-radar crew %s: no session to wake (%s)", crew.get("id"), reason or "signal"
         )
         return False
-    await asyncio.to_thread(sync_trust, slot, crew)
+    at_grant = await _current_crew(owner, repo, crew, root)
+    if at_grant is None:
+        # No readable record: FAIL CLOSED. The grant is a governance control, so an
+        # unreadable record is not permission to keep granting from a snapshot whose
+        # liveness nothing can confirm. ``wake_crew``'s finally revokes.
+        logger.warning(
+            "issue-radar crew %s: no readable record, wake refused (%s)",
+            crew.get("id"),
+            reason or "signal",
+        )
+        return False
+    crew = at_grant
+    await _reconcile_trust(state, slot, crew)
     prompt = await compose_turn_prompt_async(slot, owner, repo, crew, root, key)
     svc = _autonudge_instance() if _autonudge_instance is not None else None
     if svc is not None:
@@ -809,6 +981,33 @@ async def wake_crew(
             reason or "signal",
         )
         return False
+    # The last check before the turn, and a re-read rather than a look at ``crew``
+    # because composing the prompt and refreshing the loop message are both awaits:
+    # the record can have moved since the grant.
+    at_dispatch = await _current_crew(owner, repo, crew, root)
+    if at_dispatch is None or not is_live(at_dispatch):
+        logger.info(
+            "issue-radar crew %s: stopped while waking, no turn dispatched (%s)",
+            crew.get("id"),
+            reason or "signal",
+        )
+        return False
+    # Re-assign trust from THAT record before the turn starts, rather than dispatching
+    # on the grant minted from the earlier one. It moves in both directions and that
+    # is the point: a crew whose ``unattended`` flag went off, or which was paused and
+    # resumed inside this wake, gets the grant the current record calls for instead of
+    # the one an older read did. :func:`wake_crew`'s finally re-runs the same
+    # reconciliation after the dispatch, which is what covers a record that moves
+    # again in between. A revocation that lands INSIDE this reconciliation is seen
+    # by it (see :func:`_reconcile_trust`), and then there is no turn to dispatch:
+    # an unattended crew whose grant was just taken must not be started untrusted.
+    if not await _reconcile_trust(state, slot, at_dispatch) and at_dispatch.get("unattended"):
+        logger.info(
+            "issue-radar crew %s: stopped during grant, no turn dispatched (%s)",
+            crew.get("id"),
+            reason or "signal",
+        )
+        return False
     tagged = f"[crew wake: {reason}]\n{prompt}" if reason else prompt
     started = dispatch_crew_turn(state, slot, tagged)
     _call_if_present(state, "push_slots_update")
@@ -819,6 +1018,12 @@ async def wake_crew(
         "started" if started else "queued",
     )
     return bool(started)
+
+
+def _slot_key(crew: dict[str, Any]) -> str:
+    """The crew's session key. One definition, because a second spelling of the
+    fallback would silently address a different slot."""
+    return str(crew.get("slot_key") or f"crew-{crew.get('id')}")
 
 
 async def _rehydrate(state: Any, slot_key: str) -> Any:
@@ -835,6 +1040,40 @@ async def _rehydrate(state: Any, slot_key: str) -> Any:
     except Exception:  # pragma: no cover - defensive
         logger.debug("issue-radar: rehydrate failed for %s", slot_key, exc_info=True)
         return None
+
+
+async def _current_crew(
+    owner: str, repo: str, crew: dict[str, Any], root: Path | None = None
+) -> dict[str, Any] | None:
+    """The crew's record as the store holds it NOW, or ``None`` if it cannot be read.
+
+    Liveness is durable state and every caller here holds a SNAPSHOT of it. A pause
+    writes ``paused_reason`` through ``crew_store`` and can reach no snapshot any
+    caller is holding, so ``is_live`` on a snapshot taken before an ``await`` reads
+    live for a crew that is already stopped — and the two things that follow, the
+    auto-approve grant and the turn itself, are exactly what a pause exists to
+    prevent. Re-reading immediately before them is what makes the check current.
+
+    OFF the loop, like every other store read here, and that is not a weakness of
+    the check: :func:`wake_crew` documents why the read's own thread hop cannot hide
+    a stop. The record carries operator free text (``extra_prompt``) that the write
+    path length-checks no further than "is a string", so parsing it on the loop would
+    put an unbounded blocking read on the gateway's only thread — precisely the
+    hazard ``no-blocking-call-on-event-loop`` exists for.
+
+    ``None``, never the caller's snapshot, when there is no readable record — FAIL
+    CLOSED. Falling back to the snapshot would answer a governance question with the
+    very value whose staleness is in question, so a record that is missing, corrupt
+    or unreadable would go on authorizing turns from it. Every caller here is handed
+    crews listed from the same store and root, so a readable record is the ordinary
+    case and ``None`` means something is genuinely wrong; treating that as stopped
+    costs at most one cycle's turn and repairs itself on the next read.
+    """
+    crew_id = str(crew.get("id") or "")
+    if not crew_id:
+        return None
+    fresh = await asyncio.to_thread(crew_store.read_crew, owner, repo, crew_id, root)
+    return fresh if isinstance(fresh, dict) else None
 
 
 # ── the watchdog (one pass per poll cycle) ──────────────────────────────────
@@ -1081,16 +1320,19 @@ async def watchdog_cycle(
       memory, so a restart empties them. Re-registering here is what keeps a ✕ and
       an app disable from going quiet for the rest of a process's life.
     """
+    global _disabling
     svc = _autonudge_instance() if _autonudge_instance is not None else None
     install_slot_close_hook(root)
     install_app_disable_hook(state)
+    # The sweep runs this only while the app reads ENABLED, so reaching it means any
+    # disable in flight when the latch was set has long since written its flag and
+    # the operator has re-enabled the app. Releasing here, and nowhere else, is what
+    # keeps the latch a one-way denial until the store agrees the app is back.
+    _disabling = False
     for crew in crews:
-        slot_key = str(crew.get("slot_key") or f"crew-{crew.get('id')}")
+        slot_key = _slot_key(crew)
         slot = state.get_slot(slot_key) if hasattr(state, "get_slot") else None
-        if not is_live(crew):
-            await revoke_crew_execution(state, crew, "not live")
-            continue
-        if slot is None:
+        if slot is None and is_live(crew):
             # A live crew with no resident slot: a restart, or a tab someone
             # closed. Rehydrate HERE and not only in the ``loop is None`` branch
             # below, because a PERSISTED loop fires against the slot key whether
@@ -1099,24 +1341,52 @@ async def watchdog_cycle(
             # crew parks on an approval nobody is there to answer. Rehydration
             # first, so the crew keeps its own transcript (and its brief).
             slot = await _rehydrate(state, slot_key)
+        # UNCONDITIONALLY, and not only on the branch that rehydrated. The roster
+        # was read before this pass and every crew ahead of this one in the loop
+        # awaited, so a resident crew's snapshot is just as stale as a rehydrated
+        # one's — and everything below decides on it: the grant, the launch, and
+        # switching the crew's clock back on.
+        current = await _current_crew(owner, repo, crew, root)
+        if current is None or not is_live(current):
+            await revoke_crew_execution(state, crew, "not live")
+            continue
+        crew = current
         if slot is not None:
-            await asyncio.to_thread(sync_trust, slot, crew)
-        if svc is None:
-            continue
-        loop = svc.get_by_slot(slot_key)
-        if loop is None:
-            # No loop for a live crew: either it has never been launched or a
-            # restart lost it. Launching is idempotent on the slot key.
-            await launch_crew(state, owner, repo, crew, root, key)
-            continue
-        if slot is None:
-            # Loop but still no slot — nothing on disk to rehydrate from (a crew
-            # armed and then never given a turn). ``ensure_crew_session`` creates
-            # the session and establishes trust the same way launch does, without
-            # re-arming a loop that already exists.
-            await ensure_crew_session(state, owner, repo, crew)
-        if not loop.active:
-            await svc.update(loop.id, active=True)
+            await _reconcile_trust(state, slot, crew)
+        if svc is not None:
+            loop = svc.get_by_slot(slot_key)
+            if loop is None:
+                # No loop for a live crew: either it has never been launched or a
+                # restart lost it. Launching is idempotent on the slot key. The slot
+                # is KEPT: the trailing reconciliation below must reach a session
+                # this pass just created, or its grant is the one thing in the pass
+                # nothing re-checks.
+                slot = await launch_crew(state, owner, repo, crew, root, key)
+            else:
+                if slot is None:
+                    # Loop but still no slot — nothing on disk to rehydrate from (a
+                    # crew armed and then never given a turn). ``ensure_crew_session``
+                    # creates the session and establishes trust the same way launch
+                    # does, without re-arming a loop that already exists.
+                    slot = await ensure_crew_session(state, owner, repo, crew)
+                if not loop.active:
+                    await svc.update(loop.id, active=True)
+        # The pass itself awaits — the grant, the launch, the re-arm — so read once
+        # more and undo it if the operator stopped the crew while it ran.
+        # ``revoke_crew_execution`` is the exact inverse of what this body just
+        # established (the grant, the loop, the interactive flag), so this closes the
+        # window rather than narrowing it: no branch above can leave a stopped crew
+        # holding a grant or a live clock until the next cycle. The straight-line
+        # shape above, in place of the earlier ``continue``s, is what makes it total.
+        current = await _current_crew(owner, repo, crew, root)
+        if current is None or not is_live(current):
+            await revoke_crew_execution(state, current or crew, "stopped mid-cycle")
+        elif slot is not None:
+            # Still live, but ``unattended`` may have gone off mid-pass. Same rule as
+            # the wake's exit guard: reconcile through the function that mints the
+            # grant, never through a copy of half its predicate -- and through the
+            # generation check, so a stop landing inside the hop wins.
+            await _reconcile_trust(state, slot, current)
 
 
 def revoke_crew_grants(state: Any) -> int:
@@ -1133,10 +1403,17 @@ def revoke_crew_grants(state: Any) -> int:
     record was deleted while the session was live, which a record-driven walk would
     miss. Idempotent.
     """
+    global _disabling
+    _disabling = True
     cleared = 0
     for key, slot in list((getattr(state, "_slots", None) or {}).items()):
         if not str(key).startswith(_CREW_SLOT_PREFIX) or getattr(slot, "_app", "") != APP_NAME:
             continue
+        # Every crew slot this walk reaches counts as revoked, granted or not: a
+        # reconciliation mid-hop for it must see the disable whatever the slot
+        # carried when the walk arrived. The id comes from the key because the
+        # record may be gone.
+        _note_revocation(str(key)[len(_CREW_SLOT_PREFIX) :])
         touched = False
         # The scope key is read off the SLOT rather than rebuilt from the record:
         # this walk exists precisely to catch a crew session whose record is gone.
