@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import IO
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk import finish_suspended_spawn
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.github_runner import (
     PROVIDER_CLI_OVERRIDE_ENV,
@@ -21,17 +22,14 @@ from kiro_crew.github_runner import (
     provider_executable_candidates,
     validate_provider_executable,
 )
-from kiro_crew.sandbox import (
-    apply_windows_resource_ceiling,
-    popen_limited,
-    sandboxed_spawn_argv,
-)
+from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
 from kiro_crew.sel import sel
 
 _PASSTHROUGH = {
     "glab": frozenset({"GLAB_CONFIG_DIR", "GITLAB_TOKEN"}),
     "az": frozenset({"AZURE_CONFIG_DIR", "AZURE_DEVOPS_EXT_PAT", "AZURE_EXTENSION_DIR"}),
 }
+_RESOLVABLE_PROVIDER_CLIS = frozenset(_PASSTHROUGH)
 _NETWORK_ENV = frozenset(
     {
         "HTTP_PROXY",
@@ -70,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 def resolve_provider_cli(executable: str) -> str:
     """Resolve one allowlisted provider CLI through the shared trust policy."""
-    if executable not in _PASSTHROUGH:
+    if executable not in _RESOLVABLE_PROVIDER_CLIS:
         raise SetupError("unsupported provider CLI")
     override_name = PROVIDER_CLI_OVERRIDE_ENV[executable]
     override = os.environ.get(override_name)
@@ -81,7 +79,7 @@ def resolve_provider_cli(executable: str) -> str:
             last_error = "empty override"
             continue
         try:
-            return validate_provider_executable(candidate)
+            return validate_provider_executable(candidate, require_protected=True)
         except ValueError as exc:
             last_error = str(exc)
     detail = f" ({last_error})" if last_error else ""
@@ -219,7 +217,14 @@ def run_provider_cli(
                 platform_compat.CREATE_NEW_PROCESS_GROUP | platform_compat.CREATE_SUSPENDED
             ),
         ) as proc:
-            _finish_suspended_provider_spawn(proc)
+            if not finish_suspended_spawn(
+                proc,
+                proc.pid,
+                label=f"{executable} monitor probe",
+            ):
+                raise SetupError(
+                    "failed to resume provider CLI after applying Windows resource limits"
+                )
             assert proc.stdout is not None
             assert proc.stderr is not None
             readers = ThreadPoolExecutor(max_workers=2)
@@ -268,28 +273,6 @@ def run_provider_cli(
         raise SetupError("provider CLI returned non-UTF-8 output") from exc
     _audit_provider_cli(executable, "completed" if decoded.returncode == 0 else "failed")
     return decoded
-
-
-def _finish_suspended_provider_spawn(proc: subprocess.Popen[bytes]) -> None:
-    """Bound a confirmed Windows child before allowing it to execute."""
-    if not platform_compat.IS_WINDOWS:
-        return
-    owned = platform_compat.get_ppid(proc.pid) == os.getpid()
-    try:
-        if owned:
-            apply_windows_resource_ceiling(proc.pid)
-        else:
-            logger.debug(
-                "PID %d is not a confirmed provider CLI child; skipping its resource ceiling",
-                proc.pid,
-            )
-    finally:
-        resumed = platform_compat.resume_process_main_thread(proc.pid)
-    if resumed or not owned or not platform_compat.pid_exists(proc.pid):
-        return
-    with suppress(Exception):
-        proc.kill()
-    raise SetupError("failed to resume provider CLI after applying Windows resource limits")
 
 
 def _read_limited(

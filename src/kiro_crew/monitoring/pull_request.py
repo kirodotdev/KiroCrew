@@ -18,8 +18,8 @@ from kiro_crew.monitoring.models import (
     PULL_REQUEST_STATES,
     MonitorObservation,
     MonitorObservationStatus,
-    ProviderErrorKind,
     MonitorProbeResult,
+    ProviderErrorKind,
 )
 from kiro_crew.security import redact
 

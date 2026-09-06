@@ -83,10 +83,10 @@ A terminal success uses zero model turns, so a structured watch does not create
 a final reporting turn. If the user requires a final report or notification even
 when no action is needed, use the finite legacy path.
 
-Typed providers do not observe generic issue or pull-request comments, or
-advisory findings outside their canonical review and check facts. When readiness
-depends on those, call the finite legacy path directly with `gate=false`; a
-typed fingerprint cannot stand in for missing evidence.
+Typed providers do not observe generic issue/pull-request comments or advisory
+review findings outside their canonical review and check facts. When readiness
+depends on those, call the finite legacy path directly with `gate=false`; a typed
+fingerprint cannot stand in for missing evidence.
 
 Use `monitor_update` without an id for cadence, positive budgets or
 `wake_instructions`: these preserve the comparison baseline. Changing `target`

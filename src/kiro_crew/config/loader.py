@@ -5028,8 +5028,7 @@ class KiroCrewConfig:
                     logger.warning(
                         "Unknown key %s in .env is not a recognised credential"
                         " -- it will propagate to child processes but is NOT"
-                        " agent-isolated. Supported credential keys are listed"
-                        " in Settings.",
+                        " agent-isolated.",
                         uk,
                     )
 

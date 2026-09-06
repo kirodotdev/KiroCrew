@@ -208,6 +208,7 @@ async def apply_session_directive(
     *,
     producer_is_user_facing: bool = False,
     producer_is_self_wake: bool = False,
+    producer_is_channel: bool = False,
 ) -> str:
     """Apply directive *kind* with *args* to *slot*/*session_key*; return a
     confirmation string for the model. Fail-soft: any error is returned as a
@@ -273,14 +274,30 @@ async def apply_session_directive(
     try:
         if kind == "monitor_start":
             result = await _monitor_start(
-                state, session_key, args, slot=slot, self_arm_ok=self_arm_ok
+                state,
+                session_key,
+                args,
+                slot=slot,
+                self_arm_ok=self_arm_ok,
+                producer_is_channel=producer_is_channel,
             )
         elif kind == "monitor_watch":
             result = await _monitor_watch(
-                state, session_key, args, slot=slot, self_arm_ok=self_arm_ok
+                state,
+                session_key,
+                args,
+                slot=slot,
+                self_arm_ok=self_arm_ok,
+                producer_is_channel=producer_is_channel,
             )
         elif kind == "monitor_update":
-            result = await _monitor_update(state, session_key, args, self_arm_ok=self_arm_ok)
+            result = await _monitor_update(
+                state,
+                session_key,
+                args,
+                self_arm_ok=self_arm_ok,
+                producer_is_channel=producer_is_channel,
+            )
         elif kind == "monitor_stop":
             result = await _monitor_stop(session_key, args)
         elif kind == "autonudge_stop":
@@ -342,9 +359,11 @@ async def _monitor_start(
     *,
     slot: Any = None,
     self_arm_ok: bool = False,
+    producer_is_channel: bool,
 ) -> str:
     from kiro_crew.autonudge import get_instance
     from kiro_crew.autonudge_authz import authorize_and_add_nudge
+    from kiro_crew.monitoring.models import MonitorCreationSurface
 
     svc = get_instance()
     # Not-applied paths RAISE so the wrapper audits them as denied — a plain
@@ -392,6 +411,11 @@ async def _monitor_start(
         # the same session without being it, and a loop such a turn armed would
         # be the outsider's loop wearing the member's key; those pass "".
         initiator_slot_key=binding if self_arm_ok else "",
+        creation_surface=(
+            MonitorCreationSurface.CHANNEL
+            if producer_is_channel
+            else MonitorCreationSurface.DASHBOARD
+        ),
     )
     if error is not None:
         # The authorizer already audited its own refusal; the wrapper's record
@@ -441,10 +465,15 @@ async def _monitor_watch(
     *,
     slot: Any = None,
     self_arm_ok: bool = False,
+    producer_is_channel: bool,
 ) -> str:
     from kiro_crew.autonudge import get_instance
     from kiro_crew.autonudge_authz import authorize_and_add_nudge
-    from kiro_crew.monitoring.models import MonitorBudgets, MonitorState
+    from kiro_crew.monitoring.models import (
+        MonitorBudgets,
+        MonitorCreationSurface,
+        MonitorState,
+    )
 
     svc = get_instance()
     if svc is None:
@@ -484,6 +513,11 @@ async def _monitor_watch(
         monitor=monitor,
         # Self-arm provenance, same rule as _monitor_start: human-started turns only.
         initiator_slot_key=binding if self_arm_ok else "",
+        creation_surface=(
+            MonitorCreationSurface.CHANNEL
+            if producer_is_channel
+            else MonitorCreationSurface.DASHBOARD
+        ),
     )
     if error is not None:
         raise _DirectiveDenied(f"Failed to start structured monitor: {error} [status {status}]")
@@ -505,7 +539,12 @@ async def _monitor_watch(
 
 
 async def _monitor_update(
-    state: Any, session_key: str, args: dict[str, Any], *, self_arm_ok: bool = False
+    state: Any,
+    session_key: str,
+    args: dict[str, Any],
+    *,
+    self_arm_ok: bool = False,
+    producer_is_channel: bool = False,
 ) -> str:
     from kiro_crew.autonudge import get_instance, is_structured_monitor_loop
     from kiro_crew.autonudge_authz import (
@@ -530,7 +569,12 @@ async def _monitor_update(
         if _structured_binding(session_key) != binding:
             raise _DirectiveDenied("monitor_update is not supported from this session type.")
         return await _structured_monitor_update(
-            state, svc, loop, patch, initiator=binding if self_arm_ok else ""
+            state,
+            svc,
+            loop,
+            patch,
+            initiator=binding if self_arm_ok else "",
+            producer_is_channel=producer_is_channel,
         )
     structured_only = sorted(
         set(patch)
@@ -752,10 +796,17 @@ def _no_loop_message(svc: Any, binding: str) -> str:
 
 
 async def _structured_monitor_update(
-    state: Any, svc: Any, loop: Any, patch: dict[str, Any], *, initiator: str = ""
+    state: Any,
+    svc: Any,
+    loop: Any,
+    patch: dict[str, Any],
+    *,
+    initiator: str = "",
+    producer_is_channel: bool = False,
 ) -> str:
     from kiro_crew.autonudge_authz import authorize_and_update_monitor
     from kiro_crew.dashboard.handlers.source_providers import ensure_gitlab_hosts_loaded
+    from kiro_crew.monitoring.models import MonitorCreationSurface
     from kiro_crew.monitoring.targets import normalize_pull_request_target
 
     # ``banner`` is a message-loop-only field (a structured monitor shows its
@@ -775,11 +826,14 @@ async def _structured_monitor_update(
     if "target" in patch:
         try:
             gitlab_hosts = await ensure_gitlab_hosts_loaded()
-            structured["target"] = normalize_pull_request_target(
+            target = normalize_pull_request_target(
                 monitor_state.kind,
                 str(patch["target"]),
                 gitlab_hosts=tuple(gitlab_hosts),
             )
+            structured["target"] = target
+            if producer_is_channel and target != monitor_state.target:
+                structured["creation_surface"] = MonitorCreationSurface.CHANNEL
         except ValueError as exc:
             raise _DirectiveDenied(str(exc)) from exc
     if "objective" in patch:

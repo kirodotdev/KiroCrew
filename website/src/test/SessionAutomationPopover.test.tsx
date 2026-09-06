@@ -325,7 +325,7 @@ describe('SessionAutomationPopover', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(await screen.findByText(
-      "This monitor can't change providers. Create a monitor in a new session for the other provider.",
+      'This monitor is tied to its current code host. Watch the new link from a new session.',
     ))
       .toBeInTheDocument()
   })
@@ -340,7 +340,7 @@ describe('SessionAutomationPopover', () => {
 
     expect(await screen.findByText('Enter a pull request URL.')).toBeInTheDocument()
     expect(screen.queryByText(
-      "This monitor can't change providers. Create a monitor in a new session for the other provider.",
+      'This monitor is tied to its current code host. Watch the new link from a new session.',
     ))
       .not.toBeInTheDocument()
   })
@@ -359,7 +359,7 @@ describe('SessionAutomationPopover', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start monitor' }))
 
     expect(await screen.findByText(
-      "This GitLab host isn't allowed yet. Add it to dashboard.gitlab_hosts in config.json.",
+      "This GitLab host isn't allowed yet. Add it to dashboard.gitlab_hosts in ~/.kiro/crew/config.json.",
     )).toBeInTheDocument()
   })
 
@@ -378,7 +378,7 @@ describe('SessionAutomationPopover', () => {
 
     expect(await screen.findByText('The monitor request failed. Try again.')).toBeInTheDocument()
     expect(screen.queryByText(
-      "This GitLab host isn't allowed yet. Add it to dashboard.gitlab_hosts in config.json.",
+      "This GitLab host isn't allowed yet. Add it to dashboard.gitlab_hosts in ~/.kiro/crew/config.json.",
     )).not.toBeInTheDocument()
   })
 
@@ -495,7 +495,7 @@ describe('SessionAutomationPopover', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(await screen.findByText(
-      "This monitor can't change providers. Create a monitor in a new session for the other provider.",
+      'This monitor is tied to its current code host. Watch the new link from a new session.',
     )).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop monitor' }))

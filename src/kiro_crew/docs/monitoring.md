@@ -14,6 +14,13 @@ operator's `dashboard.gitlab_hosts` allowlist; Azure DevOps Server and Bitbucket
 Data Center are not supported. Start the monitor from a dashboard, Slack, or
 Discord conversation.
 
+Channel-bound GitHub and GitLab monitors retain the existing authenticated `gh`
+and host-authorized `glab` behavior. They do not use the operator's protected
+Azure or Bitbucket credentials: Bitbucket Cloud can monitor a public pull request
+anonymously from a channel, while private Bitbucket pull requests and Azure DevOps
+pull requests that need operator authentication must be started from a dashboard
+conversation.
+
 Use a finite legacy loop instead when the decision depends on generic comments,
 advisory findings, another forge, a deployment, a ticket, or a custom objective.
 

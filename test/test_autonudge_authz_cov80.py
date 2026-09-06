@@ -574,6 +574,12 @@ async def test_update_monitor_conflict_records_a_denied_audit(
     audits: list[dict],
 ) -> None:
     class ConflictingSvc:
+        def get_by_id(self, _loop_id: str) -> None:
+            return None
+
+        async def rollback_monitor_update(self, *_args: Any) -> bool:
+            return True
+
         async def update_monitor(self, *_args: Any, **_kwargs: Any) -> Any:
             raise MonitorUpdateConflict("existing monitor wake is in flight")
 

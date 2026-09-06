@@ -400,7 +400,14 @@ def build_directive_consumer(
         state: Any = getattr(dispatcher, "dashboard_state", None)
         if state is None:
             state = _ChannelDirectiveState(sessions=sessions)
-        result = await apply_session_directive(state, None, session_key, kind, args)
+        result = await apply_session_directive(
+            state,
+            None,
+            session_key,
+            kind,
+            args,
+            producer_is_channel=True,
+        )
         # The channel surface never renders tool results, so the applier's
         # confirmation has no user-facing sink here; this log is the operator's
         # record (the applier itself SEL-audits every outcome). Failures log at

@@ -343,11 +343,13 @@ per-host credential, and self-managed-host authorization policy. Azure extends
 that trusted-binary policy to `az`, disables dynamic extension installation, and
 passes only Azure-scoped configuration/authentication variables; operators may
 authenticate with `az login` or the recognized `AZURE_DEVOPS_EXT_PAT` protected
-credential. Bitbucket reads public targets anonymously when possible and reads
-private targets with recognized `BITBUCKET_EMAIL` and `BITBUCKET_API_TOKEN`
-credentials from the protected credential store. Bitbucket authorization headers
-exist only inside the pinned HTTPS client; they never appear in argv, URLs, logs,
-monitor state, or wake messages.
+credential. Those operator-owned Azure credentials are available only to
+dashboard-bound monitors. Bitbucket reads public targets anonymously and, for a
+dashboard-bound monitor, can read private targets with recognized
+`BITBUCKET_EMAIL` and `BITBUCKET_API_TOKEN` credentials from the protected
+credential store. A channel-bound Bitbucket monitor is always anonymous.
+Bitbucket authorization headers exist only inside the pinned HTTPS client; they
+never appear in argv, URLs, logs, monitor state, or wake messages.
 
 Every provider call has fixed time, response-size, pagination, and concurrency
 bounds. CLI output is drained under the transport byte ceiling rather than first
@@ -801,7 +803,12 @@ Exit criteria:
 - The gateway applies existing ownership, routability, channel, and native-subagent
   restrictions before creating or changing a monitor.
 - Provider credentials stay behind their adapter boundaries and are never
-  persisted in monitor state or injected into the transcript.
+  persisted in monitor state or injected into the transcript. The controller's
+  provider contract passes credential authority explicitly and denies it to
+  unlisted channel providers. GitHub and host-authorized GitLab retain their
+  established ambient CLI behavior; channel-bound monitors cannot consume
+  dashboard-operator Azure or Bitbucket credentials, so Bitbucket falls back to
+  anonymous HTTPS and Azure records a denial before failing closed.
 - Targets are normalized and validated against the closed provider/host/path
   matrix, and canonical URLs containing credential-shaped path text are rejected
   before persistence; no adapter accepts arbitrary URLs or commands.

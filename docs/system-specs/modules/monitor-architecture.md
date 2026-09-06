@@ -8,10 +8,10 @@ never does.
 
 The goal is a substrate, not a pull-request watcher. Any loop with an external
 subject plugs in -- a pipeline run, a ticket, a deployment, an alarm, a queue
-depth -- and a pull request is the **first plugin**, not the subject matter.
-Where a layer below names a pull request it is naming today's only plugin, and
-the measure of this design is whether the second plugin costs less than the
-first did.
+depth -- and pull requests are the **first subject family**, not the subject
+matter. Where a layer below names a pull request it is naming the first
+implemented family; the measure of this design is whether the next family costs
+less than the first did.
 
 This spec is the contract for the consolidation proposed in
 [rfc-consolidated-monitor.md](../../request-for-change/rfc-consolidated-monitor.md).
@@ -19,7 +19,7 @@ It is written as the target, and the code does not yet match it everywhere, so
 every section carries its status. Read the status table before trusting a
 section as a description of what runs today.
 
-Verified against `53987e756`.
+Verified against the provider-neutral feature layer at `52f33de15`.
 
 Two implementation specs sit under this one and describe what runs today:
 [agent-interrupt-controller.md](agent-interrupt-controller.md) for the kernel
@@ -29,10 +29,10 @@ this spec states the target and that one states the present.
 
 | Layer | Status | Where it lives today |
 |---|---|---|
-| Subject and registry | `proposed` | `probes/__init__.py` maps one kind in an `if`; its own docstring says a registry was deferred |
-| Probe | `partial` | typed and error-classified in `monitoring/github_pull_request.py`; per-subject on both sides, so unbatchable |
+| Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`; `probes/__init__.py` still has its separate dispatch branch |
+| Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural; the `irq.Probe` path remains separate |
 | Observation | `partial` | the `Observation` type and the `Severity` vocabulary live in `irq.py`; `PrWatchProbe` in `probes/gh_pr.py` emits the keys; `monitoring/` reduces a subject to one fingerprint |
-| Decision | `partial` | `decide_monitor` in `monitoring/decision.py` is a pure function with budgets and terminal handling, but edge-triggered and with no coalescing; `irq.py` already level-triggers with a re-alert window and a coalescing floor |
+| Decision | `partial` | `decide_monitor` returns a `MonitorVerdict` carrying its entries and remains pure, but is edge-triggered and has no coalescing; `irq.py` already level-triggers with a re-alert window and a coalescing floor |
 | Persistence | `partial` | versioned in `monitoring/`; unversioned in `irq.py`, which also holds decision logic |
 | Driver | `implemented` | in-session timer in `autonudge.py`; out-of-session script cron in `babysit/scripts/pr_watch.py` |
 | Delivery | `implemented` | session directive keyed by the call's input digest, shared by both arming paths |
@@ -45,76 +45,67 @@ inconveniencing it.
 
 ### A verdict that can carry its evidence
 
-`MonitorDecision` is a seven-value enum -- `NO_CHANGE`, `RECORD_ONLY`,
-`WAKE_ACTIONABLE`, `STOP_SUCCESS`, `STOP_BLOCKED`, `RETRY_PROVIDER`,
-`STOP_BUDGET` -- and `decide_monitor` returns it bare. A verdict is therefore an
-effect selector and nothing more: it cannot say which observations caused it, and
-it cannot carry what to tell the woken agent. Both have to be reconstructed
-afterwards from state the verdict never named, which is what
-`format_monitor_wake` does out of `MonitorState.last_observation` and
-`MonitorState.wake_instructions`. That observation dict is not part of
-`MonitorObservation` at all -- it originates as `canonical` on
-`GitHubPullRequestProbeResult` and is copied into the state, so the wake text is
-assembled from a payload the decision layer never sees.
+**Status: implemented at the structured-monitor boundary.** `MonitorDecision`
+remains the seven-value effect selector, but `decide_monitor` returns a
+`MonitorVerdict(decision, entries)` and every consumer reads the selector through
+that wrapper. The entries tuple is provider-neutral and plural, so adding more
+evidence no longer requires changing the return type.
 
-This return type is what forces one fingerprint per subject. A verdict with no
-room for a list has nothing to compare per condition, so the observation reduces
-the whole subject to a single `MonitorObservation.fingerprint` and the decision
-becomes that fingerprint against `last_wake_fingerprint`. The named-entry
-vocabulary in layer 3 is unreachable until the verdict can hold entries. That is
-a consequence of the return type, not a preference for hashes over names.
+The live decision still places exactly one `MonitorObservation` in that tuple,
+reduces the subject to one fingerprint, and lets `format_monitor_wake` compose
+operator text from `MonitorState.last_observation` and `wake_instructions`. The
+return-type prerequisite is therefore complete; per-condition entries,
+coalescing, and delivery from those entries remain target work in layers 3, 4,
+and 7.
 
 ### A probe boundary not typed to one implementation
 
-`_Provider` in `controller.py` and `GitHubShadowProvider` in `shadow.py` are two
-Protocols declaring the same `probe` method, and both annotate its return as the
-concrete `GitHubPullRequestProbeResult`. They are structurally equivalent rather
-than byte-identical: one is private, and one carries a docstring.
+**Status: implemented for structured monitors.** `MonitorProbe` in `models.py`
+is the public, plural Protocol and returns
+`Mapping[str, MonitorProbeResult]`. `run_shadow_probe` consumes it directly.
+The controller's private `_Provider` mirrors that provider-neutral result and
+adds only the `use_owner_credentials` capability its delivery path owns. GitHub,
+GitLab, Azure DevOps, Bitbucket, and the workflow-run acceptance provider all
+return the shared record; no boundary names a GitHub-specific result.
 
-The duplication is not the defect. The defect is that both boundaries name a
-GitHub-specific type, so the abstraction is typed to its one concrete
-implementation, and a second kind cannot satisfy either Protocol until the return
-type is widened first.
+The remaining duplication is between the structured-monitor Protocol and
+`irq.Probe`, not between provider implementations. Consolidation still has to
+make those two drivers consume one extension point.
 
 ### A kind and objective vocabulary that is not one shared list
 
-`kind` and `objective` are both required parameters with exactly one legal value
-each, `github_pull_request` and `review_ready`. Neither is a Python enum --
-`objective` is a plain `str` field on `MonitorState` -- and both are constrained
-by string allowlists at three separate boundaries: the `monitor_watch` schema in
-`mcp_tools/control.py`, the `MONITOR_WATCH_SCHEMA` field specs in `validation.py`,
-and the REST handler in `dashboard/handlers/autonudge.py`.
+**Status: implemented for structured monitors.** `monitoring/registry.py` owns
+one `MonitorKind` data row per kind. Each row declares its own objectives and
+capabilities; `kind_supports_objective` enforces the pairing. The MCP schema,
+validation schema, REST handler, arming path, and shadow path derive their
+answers from that registry instead of maintaining independent allowlists.
 
-Nothing scopes `objective` to `kind`. A shared objective vocabulary means every
-new kind edits a list it does not own, which is the same defect as a dispatch
-branch wearing a different shape. Here the cost is paid three times.
+Four pull-request kinds are publicly armable with `review_ready`. The internal
+`gh-pr` kind and the `github_workflow_run` acceptance kind are registered but
+not public; the latter alone declares `run_complete`. The `irq` inference path
+still owns a separate `gh-pr` spelling, with `test_monitor_kind_registry.py`
+pinning that the two vocabularies agree until consolidation removes the split.
 
-## One extension point, and only one stack has it
+## Two extension points, not yet one
 
 There is an extension point, and an author adding a kind today conforms to it
 rather than inventing it. `irq.Probe` is a base class whose docstring says
 "Domain half of a watch. Subclass and implement both methods": two required hooks
 raise `NotImplementedError`, and `tuning()` and `wake_suffix()` are optional
-overrides. `PrWatchProbe` in `probes/gh_pr.py` is today's one kind, already
-conforming. So the first step for a second kind on the cron path is to subclass
-`irq.Probe` and add its branch to `build` in `probes/__init__.py`.
+overrides. `PrWatchProbe` in `probes/gh_pr.py` conforms, and a second cron-path
+kind still subclasses `irq.Probe` and adds its branch to `build` in
+`probes/__init__.py`.
 
-The `monitoring/` package has no such point. Zero `ABC`, zero `abstractmethod`,
-and no behaviour inheritance. All inheritance there is enums on `str, Enum` --
-`MonitorDecision`, `MonitorObservationStatus`, `ProviderErrorKind`,
-`MonitorOutcome`, `MonitorActionDisposition`, `MonitorDispatchResult` -- plus one
-exception, `ShadowWakeDeliveryRefused` on `RuntimeError`. All polymorphism is
-Protocols, and every one but `GitHubShadowProvider` in `shadow.py` is private:
-`_Loop`, `_Service` and `_Provider` in `controller.py`. Everything else, the
-dataclasses in `models.py` and `github_pull_request.py` together with the plain
-classes `MonitorController` and `GitHubPullRequestProvider`, has no base at all.
+The `monitoring/` package now has a different extension point:
+`models.MonitorProbe`, a structural Protocol with no behaviour inheritance, plus
+the data-only kind registry. The four source-provider adapters and the workflow
+run acceptance provider conform to it. The controller still owns the concrete
+default provider map, while the shadow path receives a provider explicitly.
 
-That asymmetry is the problem this spec exists to fix, and it is sharper than a
-missing abstraction would be. One stack takes a subclass and the other takes
-none, so a kind written for either cannot plug into the other: there is no shape
-a single plugin could have that both stacks would accept. Consolidation is what
-gives the two one extension point, and the acceptance test below is what proves
-it happened.
+That is progress, not consolidation: a kind intended for both drivers still has
+to integrate with two contracts. The remaining target is one plugin shape that
+both drivers consume; the acceptance fixture below proves the structured half
+is provider-neutral, not that the two stacks are already one.
 
 ## A monitor is a field, not a system
 
@@ -155,8 +146,9 @@ identity, because identity is what state is filed under.
 
 Kinds are registered as **data**, not as a branch. A new kind must not require
 editing a dispatch function, because a dispatch branch is where every future
-kind accumulates its special case. The current single-branch `build(kind)` is
-the thing this replaces.
+kind accumulates its special case. The structured path now has that registry;
+the `irq` path's single-branch `build(kind)` is the thing consolidation still
+replaces.
 
 A subject is one addressable thing. A pipeline of several pull requests is not a
 subject; it is several subjects sharing a watch.
@@ -437,13 +429,14 @@ leaves it enforced nowhere:
 The extensibility test is mechanical: adding a kind must not touch layers 4
 through 7.
 
-**What this looks like today, before the consolidation lands.** On the cron path
-there is already a point to conform to: subclass `irq.Probe`, implement its two
-required hooks, and add a branch for the kind to `build` in `probes/__init__.py`.
-That branch is the thing the target below removes, so expect to write it now and
-delete it later. On the in-session path there is no equivalent, which is why a
-kind added today reaches only one of the two drivers. The numbered steps that
-follow describe the target, not the current tree.
+**What this looks like today, before consolidation lands.** On the cron path,
+subclass `irq.Probe`, implement its two required hooks, and add a branch for the
+kind to `build` in `probes/__init__.py`. On the structured path, register a
+`MonitorKind`, implement the plural `MonitorProbe` contract, and wire that
+provider into the controller and/or shadow caller whose capability the registry
+declares. A kind that must reach both drivers still pays for both integrations.
+The numbered steps that follow describe the unified target, not the current
+tree.
 
 1. Define the subject type with a stable `identity()`.
 2. Register the kind as data in the registry.
@@ -461,6 +454,15 @@ A kind that cannot be added without editing layer 4 is a design defect in this
 spec, and should be reported as one rather than worked around with a branch.
 
 ### The acceptance test
+
+**Structured-path status: implemented.** `github_workflow_run` is registered as
+non-public with its own `run_complete` objective; its provider returns the shared
+`MonitorProbeResult`, and `run_shadow_probe` consumes it without a
+GitHub-workflow branch in the decision layer. `test_github_workflow_run_monitor.py`
+and `test_monitor_kind_registry.py` pin the result boundary, objective scoping,
+and capability declaration. This proves the three prerequisites above for the
+structured path. It does not yet prove driver consolidation, because the `irq`
+path remains separate.
 
 The six steps above are a procedure, and a procedure cannot fail. This is the
 test, stated so that it can:

@@ -25,6 +25,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
 from kiro_crew.monitoring.models import (
+    MonitorCreationSurface,
     MonitorObservationStatus,
     MonitorOutcome,
     MonitorState,
@@ -616,6 +617,7 @@ async def test_monitor_restart_is_conditional_on_the_record_it_read(
     loop.active = False
     loop.monitor.outcome = MonitorOutcome.USER_STOP
     loop.monitor.config_generation = 7
+    loop.monitor.creation_surface = MonitorCreationSurface.CHANNEL
     _svc(monkeypatch, _FakeSvc([loop]))
     authorize = AsyncMock(return_value=(loop, None, 200))
     monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
@@ -630,6 +632,7 @@ async def test_monitor_restart_is_conditional_on_the_record_it_read(
     assert response.status == 200
     assert authorize.await_args.kwargs["expected_existing_monitor_id"] == "mon-1"
     assert authorize.await_args.kwargs["expected_existing_config_generation"] == 7
+    assert authorize.await_args.kwargs["creation_surface"] is MonitorCreationSurface.CHANNEL
 
 
 @pytest.mark.asyncio

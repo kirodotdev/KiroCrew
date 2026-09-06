@@ -526,6 +526,91 @@ async def test_consumed_entry_emits_an_allowed_audit(tmp_path, monkeypatch, _inl
     assert allowed and qid in allowed[-1].kwargs["metadata"]["queue_ids"]
 
 
+@pytest.mark.asyncio
+async def test_channel_provenance_reaches_the_drained_turn(tmp_path, monkeypatch, _inline_audit):
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = _busy(state.get_or_create_slot("chat-1"))
+    slot.queue_append(
+        "watch the pull request",
+        meta=sc.containment_meta(state, slot),
+        directive_user_origin=True,
+        directive_channel_origin=True,
+    )
+    slot.task = None
+    captured: dict[str, object] = {}
+
+    def _stub_run_chat(_state, _slot, _prompt, **kwargs):
+        captured.update(kwargs)
+
+        async def _done():
+            return None
+
+        return _done()
+
+    def _fake_spawn(_state, _slot, coro):
+        coro.close()
+        task = MagicMock()
+        task.done.return_value = True
+        return task
+
+    monkeypatch.setattr(cr, "_run_chat", _stub_run_chat)
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _fake_spawn)
+
+    assert await cr._start_next_queued_turn(state, slot) is True
+    assert captured["_directive_user_origin"] is True
+    assert captured["_directive_channel_origin"] is True
+
+
+@pytest.mark.asyncio
+async def test_mixed_origin_merge_keeps_channel_provenance(tmp_path, monkeypatch, _inline_audit):
+    """Any channel entry makes the merged turn channel-authorized.
+
+    Changing the origin reduction back to ``all`` would let an adjacent dashboard
+    entry erase the channel boundary for the whole model turn.
+    """
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = _busy(state.get_or_create_slot("chat-1"))
+    admission = sc.containment_meta(state, slot)
+    slot.queue_append(
+        "from the linked channel",
+        meta=admission,
+        directive_user_origin=True,
+        directive_channel_origin=True,
+    )
+    slot.queue_append(
+        "from the dashboard",
+        meta=admission,
+        directive_user_origin=True,
+    )
+    slot.task = None
+    config = MagicMock()
+    config.dashboard.merge_queued_messages = True
+    captured: dict[str, object] = {}
+
+    def _stub_run_chat(_state, _slot, _prompt, **kwargs):
+        captured.update(kwargs)
+
+        async def _done():
+            return None
+
+        return _done()
+
+    def _fake_spawn(_state, _slot, coro):
+        coro.close()
+        task = MagicMock()
+        task.done.return_value = True
+        return task
+
+    monkeypatch.setattr(cr.KiroCrewConfig, "load", lambda: config)
+    monkeypatch.setattr(cr, "_run_chat", _stub_run_chat)
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _fake_spawn)
+
+    assert await cr._start_next_queued_turn(state, slot) is True
+    assert captured["_directive_channel_origin"] is True
+
+
 def test_requeued_steer_in_a_plain_slot_carries_human_provenance(tmp_path):
     """The only steer producer is the api_chat composer branch, and app
     isolation confines app requests to app slots — so a non-app slot's

@@ -1107,7 +1107,10 @@ class TestMonitorToolsCanSetTheBanner:
             patch("kiro_crew.autonudge_authz.authorize_and_add_nudge", authz),
         ):
             await sda._monitor_start(
-                MagicMock(), "chat-9-1", {"message": "go", "banner": "watching CI"}
+                MagicMock(),
+                "chat-9-1",
+                {"message": "go", "banner": "watching CI"},
+                producer_is_channel=False,
             )
         assert authz.await_args.kwargs["banner"] == "watching CI"
 

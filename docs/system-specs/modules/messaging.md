@@ -223,6 +223,13 @@ completion evidence the terminal record remains uncharged and cannot probe, re-a
 or redispatch.
 
 The structured monitor controller probes before entering any channel turn.
+The authenticated creation surface is carried through native channel directives and
+through linked dashboard-slot turns, including queued/recovered turns, then persisted
+on the monitor. A merged queue batch retains channel provenance when any consumed item
+came from a channel; dashboard input in the same batch cannot widen the entire turn.
+Credential authority therefore follows the producer surface rather than the storage
+slot key; linking a channel thread to a dashboard chat cannot promote that
+channel-created monitor to dashboard owner credentials.
 No-change, record-only, provider-retry, and terminal decisions therefore call
 no messaging dispatcher and consume no model turn. For a newly actionable
 fingerprint it persists the in-flight claim first, then supplies one redacted,

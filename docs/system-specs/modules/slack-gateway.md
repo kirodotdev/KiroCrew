@@ -673,6 +673,12 @@ in-flight claim, and calls the Slack/Discord or dashboard adapter only for
 not add the legacy cycle tag. Every non-actionable, retry, and terminal decision
 dispatches zero turns.
 
+A Slack message routed into a linked dashboard slot retains channel provenance on
+the immediate turn, queue entries, and recovery turns. A monitor directive produced
+there persists `channel` as its creation surface even though its storage binding is
+the linked chat key, so the link cannot confer dashboard owner credentials on its
+provider probes.
+
 Terminal observer notifications are deduplicated for structured monitors within
 one gateway process. The retained monitor record also stores whether the dashboard
 durably appended its terminal notice. Startup schedules every terminal notice without

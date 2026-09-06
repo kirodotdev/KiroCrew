@@ -76,6 +76,7 @@ from kiro_crew.agent_sdk.capabilities import (
     capabilities_for,
     capabilities_of,
 )
+from kiro_crew.agent_sdk.drivers.acp import finish_suspended_spawn
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
     AgentAuthDeclaration,
@@ -120,6 +121,7 @@ __all__ = [
     "BackendInstallState",
     "NativeCommandBatch",
     "clear_probe_cache",
+    "finish_suspended_spawn",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",

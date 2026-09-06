@@ -204,6 +204,14 @@ class MonitorDispatchResult(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class MonitorCreationSurface(str, Enum):
+    """Authenticated surface that armed a durable monitor."""
+
+    UNKNOWN = "unknown"
+    DASHBOARD = "dashboard"
+    CHANNEL = "channel"
+
+
 def monitor_frontend_contract() -> dict[str, object]:
     """Return the checked data contract consumed by the dashboard bundle."""
     return {
@@ -496,6 +504,7 @@ class MonitorState:
     target: str
     objective: str
     created_ts: float
+    creation_surface: MonitorCreationSurface = MonitorCreationSurface.UNKNOWN
     version: int = MONITOR_STATE_VERSION
     config_generation: int = 1
     budgets: MonitorBudgets = field(default_factory=MonitorBudgets)
@@ -670,6 +679,8 @@ class MonitorState:
             self.terminal_pending = "blocked" if self.terminal_pending else ""
         if not isinstance(self.budgets, MonitorBudgets):
             raise ValueError("budgets must be MonitorBudgets")
+        if not isinstance(self.creation_surface, MonitorCreationSurface):
+            raise ValueError("creation_surface must be a MonitorCreationSurface")
         if (
             isinstance(self.cadence_secs, bool)
             or not isinstance(self.cadence_secs, int)
@@ -796,6 +807,9 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
     observation_status = values.get("last_observation_status")
     if observation_status is not None:
         values["last_observation_status"] = MonitorObservationStatus(observation_status)
+    creation_surface = values.get("creation_surface")
+    if creation_surface is not None:
+        values["creation_surface"] = MonitorCreationSurface(creation_surface)
     return MonitorState(**values)
 
 
@@ -855,11 +869,16 @@ def _public_pull_request_observation(
     """Project only the bounded canonical schema across the public boundary."""
     if not raw:
         return {}
-    checks = raw.get("checks")
+    # ``checks_complete`` was added after the initial GitHub schema. Old
+    # snapshots could only be written from a complete rollup, so absence has
+    # the precise legacy meaning True. Present malformed values still fail
+    # closed instead of being truthiness-coerced.
+    projected = raw if "checks_complete" in raw else {**raw, "checks_complete": True}
+    checks = projected.get("checks")
     if not isinstance(checks, dict):
         return {}
     for field_name in PULL_REQUEST_OBSERVATION_FIELDS:
-        if field_name not in raw:
+        if field_name not in projected:
             return {}
     for field_name in PULL_REQUEST_CHECK_FIELDS:
         values = checks.get(field_name)
@@ -874,19 +893,20 @@ def _public_pull_request_observation(
             or len(values) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
         ):
             return {}
-    unresolved = raw.get("unresolved_review_threads")
-    blocking_review = raw.get("blocking_review")
-    mergeability = raw.get("mergeability")
-    review_decision = raw.get("review_decision")
-    pull_request_state = raw.get("state")
+    unresolved = projected.get("unresolved_review_threads")
+    blocking_review = projected.get("blocking_review")
+    mergeability = projected.get("mergeability")
+    review_decision = projected.get("review_decision")
+    pull_request_state = projected.get("state")
     if (
-        raw.get("kind") != expected_kind
+        projected.get("kind") != expected_kind
         or expected_kind not in PULL_REQUEST_MONITOR_KINDS
-        or not isinstance(raw.get("target"), str)
-        or not raw.get("target")
-        or not isinstance(raw.get("head_revision"), str)
-        or not isinstance(raw.get("draft"), bool)
-        or not isinstance(raw.get("review_threads_complete"), bool)
+        or not isinstance(projected.get("target"), str)
+        or not projected.get("target")
+        or not isinstance(projected.get("head_revision"), str)
+        or not isinstance(projected.get("draft"), bool)
+        or not isinstance(projected.get("checks_complete"), bool)
+        or not isinstance(projected.get("review_threads_complete"), bool)
         or isinstance(unresolved, bool)
         or not isinstance(unresolved, int)
         or unresolved < 0
@@ -900,7 +920,7 @@ def _public_pull_request_observation(
         or pull_request_state not in PULL_REQUEST_STATES
     ):
         return {}
-    public = {key: deepcopy(raw[key]) for key in PULL_REQUEST_OBSERVATION_FIELDS}
+    public = {key: deepcopy(projected[key]) for key in PULL_REQUEST_OBSERVATION_FIELDS}
     public["checks"] = {key: deepcopy(checks[key]) for key in PULL_REQUEST_CHECK_FIELDS}
     return public
 

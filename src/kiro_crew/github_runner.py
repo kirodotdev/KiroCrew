@@ -93,9 +93,7 @@ PROVIDER_EXECUTABLE_DIRS = (
     "/home/linuxbrew/.linuxbrew/bin",
 )
 PROVIDER_EXECUTABLE_CANDIDATES = {
-    executable: tuple(
-        f"{directory}/{executable}" for directory in PROVIDER_EXECUTABLE_DIRS
-    )
+    executable: tuple(f"{directory}/{executable}" for directory in PROVIDER_EXECUTABLE_DIRS)
     for executable in ("gh", "glab", "az")
 }
 
@@ -153,11 +151,24 @@ GH_PREVALIDATED_ENV = "_KIROCREW_GH_PREVALIDATED"
 # gh-scoped auth/network/TLS config, so the union adds no new secret class to
 # the child.
 GH_ENV_PASSTHROUGH = (
-    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-    "GH_HOST", "GH_CONFIG_DIR",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GH_HOST",
+    "GH_CONFIG_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
 )
 
 # Ambient identity a gh child must never inherit: `gh api` authenticates with
@@ -309,7 +320,7 @@ def check_provider_path_component_windows(
         raise ValueError(f"{label} can be replaced by {joined}")
 
 
-def validate_provider_executable(candidate: str) -> str:
+def validate_provider_executable(candidate: str, *, require_protected: bool = False) -> str:
     """Return the canonical path of a provider CLI we will run, or raise.
 
     Default policy — *if `gh` works in your terminal, it works here*. Any
@@ -353,7 +364,9 @@ def validate_provider_executable(candidate: str) -> str:
 
     Set ``KIROCREW_PROVIDER_BIN_STRICT=1`` on shared or multi-tenant hosts to
     restore the previous rule: canonical, symlink-free, root-owned and
-    unwritable by the gateway user through every parent.
+    unwritable by the gateway user through every parent. Callers that expose
+    provider credentials to the child set ``require_protected`` to apply that
+    rule regardless of the operator's global mode.
     """
     if not os.path.isabs(candidate):
         raise ValueError("path must be absolute")
@@ -367,7 +380,9 @@ def validate_provider_executable(candidate: str) -> str:
         # answer refuses: an unverifiable SID is not a trusted one.
         me_sid = platform_compat.current_user_sid() or ""
         if not me_sid:
-            raise ValueError("provider execution is disabled: the gateway user's SID is unverifiable")
+            raise ValueError(
+                "provider execution is disabled: the gateway user's SID is unverifiable"
+            )
     else:
         getuid = getattr(os, "getuid", None)
         geteuid = getattr(os, "geteuid", getuid)
@@ -376,7 +391,7 @@ def validate_provider_executable(candidate: str) -> str:
         if geteuid() == 0:
             raise ValueError("provider execution is disabled for a root gateway")
         uid = geteuid()
-    strict = strict_provider_bins()
+    strict = require_protected or strict_provider_bins()
 
     def _check(target: Path, *, label: str) -> None:
         """Dispatch one component to the platform's ownership policy."""
@@ -753,9 +768,7 @@ def run_gh(
     try:
         _audit_run(audit_caller, operation, "invoked", critical=True)
     except Exception as exc:
-        raise SetupError(
-            "gh spawn audit unavailable — refusing to run gh unaudited"
-        ) from exc
+        raise SetupError("gh spawn audit unavailable — refusing to run gh unaudited") from exc
     try:
         # Deliberately BYTES here (no `text=True`), then decoded below.
         #
@@ -841,8 +854,10 @@ def parse_github_repo_url(link: str) -> tuple[str, str]:
     if len(parts) < 2:
         raise RepoUrlError(f"not a full repo URL: {link!r} (expected .../<owner>/<repo>)")
     owner, repo = parts[0], re.sub(r"\.git$", "", parts[1])
-    if owner in (".", "..") or repo in (".", "..") or not (
-        _SEGMENT_RE.match(owner) and _SEGMENT_RE.match(repo)
+    if (
+        owner in (".", "..")
+        or repo in (".", "..")
+        or not (_SEGMENT_RE.match(owner) and _SEGMENT_RE.match(repo))
     ):
         raise RepoUrlError(f"invalid owner/repo segment in {link!r}")
     return owner, repo

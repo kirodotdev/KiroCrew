@@ -168,8 +168,14 @@ class _Provider:
     results: list[GitHubPullRequestProbeResult]
     probe_count: int = 0
 
-    def probe(self, subjects, *, previous_observations=None):
-        del previous_observations
+    def probe(
+        self,
+        subjects,
+        *,
+        previous_observations=None,
+        use_owner_credentials: bool = True,
+    ):
+        del previous_observations, use_owner_credentials
         result = self.results[min(self.probe_count, len(self.results) - 1)]
         self.probe_count += 1
         return {subject: result for subject in subjects}

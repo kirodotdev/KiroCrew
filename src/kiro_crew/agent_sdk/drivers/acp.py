@@ -42,10 +42,23 @@ __all__ = [
     "claude_adapter_install_command",
     "claude_components_resolve",
     "derived_agent_permissions",
+    "finish_suspended_spawn",
     "kiro_cli_resolves",
     "resolve_pin_spelling",
     "run_kiro_native_commands",
 ]
+
+
+def finish_suspended_spawn(process: object, pid: int, *, label: str) -> bool:
+    """Apply the backend spawn policy, translating its typed failure to a bool."""
+    from kiro_crew.acp.client import AcpError
+    from kiro_crew.acp.client import finish_suspended_spawn as _impl
+
+    try:
+        _impl(process, pid, label=label)  # type: ignore[arg-type]
+    except AcpError:
+        return False
+    return True
 
 
 def resolve_pin_spelling(model_id: str, advertised: object) -> str:

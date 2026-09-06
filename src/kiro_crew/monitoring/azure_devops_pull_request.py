@@ -10,7 +10,7 @@ from typing import Any
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.github_runner import SetupError
 from kiro_crew.monitoring.models import ProviderErrorKind
-from kiro_crew.monitoring.provider_cli import run_provider_cli
+from kiro_crew.monitoring.provider_cli import audit_provider_cli_denied, run_provider_cli
 from kiro_crew.monitoring.pull_request import (
     PullRequestCheck,
     PullRequestFacts,
@@ -46,17 +46,32 @@ class AzureDevOpsPullRequestProvider:
         subjects: Sequence[str],
         *,
         previous_observations: Mapping[str, Mapping[str, object]] | None = None,
+        use_owner_credentials: bool = True,
     ) -> Mapping[str, PullRequestProbeResult]:
         previous = previous_observations or {}
-        return {subject: self._probe_one(subject, previous.get(subject)) for subject in subjects}
+        return {
+            subject: self._probe_one(
+                subject,
+                previous.get(subject),
+                use_owner_credentials=use_owner_credentials,
+            )
+            for subject in subjects
+        }
 
     def _probe_one(
         self,
         raw_target: str,
         previous_observation: Mapping[str, object] | None = None,
+        use_owner_credentials: bool = True,
     ) -> PullRequestProbeResult:
         try:
             target = parse_azure_devops_pull_request_target(raw_target)
+            if self._fetch is None and not use_owner_credentials:
+                audit_provider_cli_denied("az")
+                return provider_error_result(
+                    ProviderErrorKind.AUTHORIZATION,
+                    "provider_authorization",
+                )
             credentials = (
                 None
                 if self._fetch is not None

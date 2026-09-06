@@ -23,9 +23,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
+from kiro_crew import autonudge_provider_trust
 from kiro_crew.autonudge import (
     MAX_BANNER_CHARS,
     MonitorUpdateConflict,
@@ -37,6 +39,7 @@ from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
     MONITOR_STATE_VERSION,
+    MonitorCreationSurface,
     MonitorState,
 )
 from kiro_crew.security import (
@@ -107,6 +110,7 @@ async def authorize_and_update_monitor(
     source: str,
     caller: str = "",
     initiator_slot_key: str = "",
+    grant_owner_provider_credentials: bool = False,
 ) -> tuple[Any | None, str | None, int]:
     """Audit-or-deny one ownership-resolved structured monitor patch.
 
@@ -172,8 +176,26 @@ async def authorize_and_update_monitor(
             error = "incognito and temporary sessions cannot host automation loops"
             await _audit("denied", error)
             return None, error, 403
+    prior_loop = None
+    credential_update_needs_rollback = grant_owner_provider_credentials or "target" in safe_patch
+    if credential_update_needs_rollback:
+        rollback_update = getattr(svc, "rollback_monitor_update", None)
+        if not callable(rollback_update):
+            error = "monitor authorization requires a rollback-capable loop store"
+            await _audit("denied", error)
+            return None, error, 503
     try:
-        loop = await svc.update_monitor(loop_id, **safe_patch)
+        if credential_update_needs_rollback:
+            prior_snapshots: list[Any] = []
+            loop = await svc.update_monitor(
+                loop_id,
+                _prior_snapshot_out=prior_snapshots,
+                **safe_patch,
+            )
+            if prior_snapshots:
+                prior_loop = prior_snapshots[0]
+        else:
+            loop = await svc.update_monitor(loop_id, **safe_patch)
     except MonitorUpdateConflict as exc:
         error = str(exc)
         await _audit("denied", error)
@@ -182,6 +204,99 @@ async def authorize_and_update_monitor(
         error = "structured monitor not found or already terminal"
         await _audit("denied", error)
         return None, error, 404
+    monitor = getattr(loop, "monitor", None)
+    if isinstance(monitor, MonitorState):
+        if grant_owner_provider_credentials:
+            failed_update = deepcopy(loop)
+            try:
+                prior_monitor = getattr(prior_loop, "monitor", None)
+                had_exact_grant = (
+                    prior_loop is not None
+                    and isinstance(prior_monitor, MonitorState)
+                    and await asyncio.to_thread(
+                        autonudge_provider_trust.is_monitor_owner_credentials_recorded,
+                        prior_loop.id,
+                        prior_loop.slot_key,
+                        prior_monitor.kind,
+                        prior_monitor.target,
+                    )
+                )
+                if had_exact_grant:
+                    await asyncio.to_thread(
+                        autonudge_provider_trust.record_monitor_owner_credentials,
+                        loop.id,
+                        loop.slot_key,
+                        monitor.kind,
+                        monitor.target,
+                    )
+                else:
+                    await asyncio.to_thread(
+                        autonudge_provider_trust.forget_monitor_owner_credentials,
+                        loop.id,
+                    )
+            except OSError:
+                logger.error(
+                    "monitor credential provenance unavailable after update",
+                    exc_info=True,
+                )
+                if prior_loop is None:
+                    return loop, "monitor credential authorization unavailable", 503
+                try:
+                    rolled_back = await svc.rollback_monitor_update(
+                        loop.id,
+                        prior_loop,
+                        failed_update,
+                    )
+                except Exception:  # noqa: BLE001 - report committed state honestly
+                    logger.error(
+                        "monitor rollback failed after credential update failure",
+                        exc_info=True,
+                    )
+                    return loop, "monitor credential authorization and rollback unavailable", 503
+                if not rolled_back:
+                    return None, "monitor changed while credential authorization failed", 409
+                return (
+                    None,
+                    "monitor credential authorization unavailable — prior monitor restored",
+                    503,
+                )
+        elif "target" in safe_patch:
+            # A non-dashboard target change must not retain a grant for a
+            # previous dashboard-selected identity. The exact-match read is
+            # already fail closed; revocation also prevents a forged rollback
+            # of the agent-writable target from reviving the old grant.
+            failed_update = deepcopy(loop)
+            try:
+                await asyncio.to_thread(
+                    autonudge_provider_trust.forget_monitor_owner_credentials,
+                    loop.id,
+                )
+            except OSError:
+                logger.error(
+                    "monitor credential revocation unavailable after update",
+                    exc_info=True,
+                )
+                if prior_loop is None:
+                    return loop, "monitor credential revocation unavailable", 503
+                try:
+                    rolled_back = await svc.rollback_monitor_update(
+                        loop.id,
+                        prior_loop,
+                        failed_update,
+                    )
+                except Exception:  # noqa: BLE001 - report committed state honestly
+                    logger.error(
+                        "monitor rollback failed after credential revocation failure",
+                        exc_info=True,
+                    )
+                    return loop, "monitor credential revocation and rollback unavailable", 503
+                if not rolled_back:
+                    return None, "monitor changed while credential revocation failed", 409
+                return (
+                    None,
+                    "monitor credential revocation unavailable — prior monitor restored",
+                    503,
+                )
     return loop, None, 200
 
 
@@ -612,6 +727,8 @@ async def authorize_and_add_nudge(
     # when the caller has no such provenance (REST, workflow ctx.nudge, apps).
     # Decides the crew/member self-arm exception -- see ``is_self_arm``.
     initiator_slot_key: str = "",
+    creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
+    grant_owner_provider_credentials: bool = False,
 ) -> tuple[Any | None, str | None, int]:
     """Validate + authorize + arm a nudge loop; return ``(loop, error, status)``.
 
@@ -844,7 +961,7 @@ async def authorize_and_add_nudge(
             return (
                 current is authorized_slot
                 and mode_ok
-                and not bool(getattr(authorized_slot, "_closing", False))
+                and not bool(getattr(authorized_slot, "is_closing", False))
                 and str(getattr(current, "memory_mode", "persistent")) == "persistent"
             )
 
@@ -954,8 +1071,27 @@ async def authorize_and_add_nudge(
     # concurrent removal of the new loop now runs AFTER the entry exists, so its
     # revoke (``remove_sync``) finds and drops the entry. If the add itself
     # fails, the orphaned entry is forgotten best-effort below.
-    self_arm_loop_id: str | None = None
-    if self_armed:
+    owner_credentials_grant = bool(
+        monitor is not None
+        and grant_owner_provider_credentials
+        and creation_surface is MonitorCreationSurface.DASHBOARD
+    )
+    if owner_credentials_grant and expected_existing_monitor_id is not None:
+        assert monitor is not None
+        owner_credentials_grant = await asyncio.to_thread(
+            autonudge_provider_trust.is_monitor_owner_credentials_recorded,
+            expected_existing_monitor_id,
+            slot_key,
+            monitor.kind,
+            monitor.target,
+        )
+    if owner_credentials_grant and (
+        not callable(getattr(svc, "commit_monitor_replacement", None))
+        or not callable(getattr(svc, "rollback_monitor_replacement", None))
+    ):
+        return _deny("monitor authorization requires a rollback-capable loop store", 503)
+    reserved_loop_id: str | None = None
+    if self_armed or owner_credentials_grant:
         # Reserve a COLLISION-FREE id before touching the trust record. The
         # record is an upsert keyed by loop id, so an id already held by a live
         # loop would overwrite that loop's entry -- and the add's conflict
@@ -966,23 +1102,45 @@ async def authorize_and_add_nudge(
         # guess, so the arm is denied.
         get_by_id = getattr(svc, "get_by_id", None)
         if not callable(get_by_id):
-            return _deny("self-arm requires a loop store that can resolve ids", 503)
+            return _deny("monitor authorization requires a loop store that can resolve ids", 503)
         for _attempt in range(8):
             candidate = uuid.uuid4().hex[:8]
             if get_by_id(candidate) is None:
-                self_arm_loop_id = candidate
+                reserved_loop_id = candidate
                 break
-        if self_arm_loop_id is None:
+        if reserved_loop_id is None:
             return _deny("could not reserve a loop id — loop not armed", 503)
+    if self_armed:
         try:
-            await asyncio.to_thread(record_self_arm, self_arm_loop_id, slot_key)
+            assert reserved_loop_id is not None
+            await asyncio.to_thread(record_self_arm, reserved_loop_id, slot_key)
         except OSError:
             logger.error("self-arm record unavailable; loop not armed", exc_info=True)
             return _deny("self-arm record unavailable — loop not armed", 503)
 
-    def _forget_orphaned_self_arm() -> None:
-        if self_arm_loop_id is not None:
-            forget_self_arm(self_arm_loop_id)  # never raises
+    if owner_credentials_grant:
+        assert monitor is not None and reserved_loop_id is not None
+        try:
+            await asyncio.to_thread(
+                autonudge_provider_trust.prepare_monitor_owner_credentials,
+                reserved_loop_id,
+                slot_key,
+                monitor.kind,
+                monitor.target,
+            )
+        except OSError:
+            if self_armed:
+                await asyncio.to_thread(forget_self_arm, reserved_loop_id)
+            logger.error("monitor credential provenance unavailable; loop not armed", exc_info=True)
+            return _deny("monitor credential authorization unavailable — loop not armed", 503)
+
+    def _forget_orphaned_trust() -> None:
+        if reserved_loop_id is None:
+            return
+        if self_armed:
+            forget_self_arm(reserved_loop_id)  # never raises
+        if owner_credentials_grant:
+            autonudge_provider_trust.forget_monitor_owner_credentials(reserved_loop_id)
 
     try:
         if monitor is None:
@@ -996,6 +1154,7 @@ async def authorize_and_add_nudge(
                 "banner": banner,
                 "admission_check": admission_check,
                 "gate": gate,
+                "creation_surface": creation_surface,
             }
             if not replace_existing:
                 add_kwargs["replace_existing"] = False
@@ -1005,7 +1164,8 @@ async def authorize_and_add_nudge(
                 # Conditional so the kwargs shape an external arm produces is
                 # unchanged (contract tests compare the dict by equality).
                 add_kwargs["self_armed"] = True
-                add_kwargs["loop_id"] = self_arm_loop_id
+            if reserved_loop_id is not None:
+                add_kwargs["loop_id"] = reserved_loop_id
             loop = await svc.add(
                 **add_kwargs,
             )
@@ -1019,6 +1179,7 @@ async def authorize_and_add_nudge(
                 "budgets": monitor.budgets,
                 "wake_instructions": monitor_wake_instructions,
                 "admission_check": admission_check,
+                "creation_surface": creation_surface,
             }
             if not replace_existing:
                 add_monitor_kwargs["replace_existing"] = False
@@ -1026,7 +1187,10 @@ async def authorize_and_add_nudge(
                 add_monitor_kwargs["replace_stopped"] = True
             if self_armed:
                 add_monitor_kwargs["self_armed"] = True
-                add_monitor_kwargs["loop_id"] = self_arm_loop_id
+            if reserved_loop_id is not None:
+                add_monitor_kwargs["loop_id"] = reserved_loop_id
+            if owner_credentials_grant:
+                add_monitor_kwargs["defer_replaced_trust_revocation"] = True
             if expected_existing_monitor_id is not None:
                 add_monitor_kwargs["expected_existing_monitor_id"] = expected_existing_monitor_id
                 add_monitor_kwargs["expected_existing_config_generation"] = (
@@ -1036,15 +1200,44 @@ async def authorize_and_add_nudge(
                 **add_monitor_kwargs,
             )
     except NudgeAdmissionRefused:
-        await asyncio.to_thread(_forget_orphaned_self_arm)
+        await asyncio.to_thread(_forget_orphaned_trust)
         return _deny("session changed before nudge arm committed", 409)
     except MonitorUpdateConflict as exc:
-        await asyncio.to_thread(_forget_orphaned_self_arm)
+        await asyncio.to_thread(_forget_orphaned_trust)
         return _deny(str(exc), 409)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
-        await asyncio.to_thread(_forget_orphaned_self_arm)
+        await asyncio.to_thread(_forget_orphaned_trust)
         _audit("error", f"svc.add failed: {type(exc).__name__}")
         raise
+    if owner_credentials_grant:
+        try:
+            await asyncio.to_thread(
+                autonudge_provider_trust.activate_monitor_owner_credentials,
+                loop.id,
+            )
+        except OSError:
+            logger.error(
+                "monitor credential provenance unavailable after arm",
+                exc_info=True,
+            )
+            try:
+                rolled_back = await svc.rollback_monitor_replacement(loop.id)
+            except Exception:  # noqa: BLE001 - report the committed state honestly
+                logger.error(
+                    "monitor rollback failed after credential activation failure",
+                    exc_info=True,
+                )
+                return loop, "monitor credential authorization and rollback unavailable", 503
+            await asyncio.to_thread(_forget_orphaned_trust)
+            if not rolled_back:
+                return None, "monitor changed while credential authorization failed", 409
+            restored = (
+                "prior monitor restored"
+                if expected_existing_monitor_id is not None
+                else "monitor not armed"
+            )
+            return None, f"monitor credential authorization unavailable — {restored}", 503
+        svc.commit_monitor_replacement(loop.id)
     try:
         success_metadata = (
             {"loop_id": loop.id, **_audit_metadata()}

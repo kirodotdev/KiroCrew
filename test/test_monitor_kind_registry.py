@@ -12,9 +12,9 @@ import pytest
 
 from kiro_crew.monitoring import registry
 from kiro_crew.monitoring.registry import (
-    PULL_REQUEST_MONITOR_KINDS,
     GH_PR,
     GITHUB_PULL_REQUEST,
+    PULL_REQUEST_MONITOR_KINDS,
     REVIEW_READY,
     MonitorKind,
     kind_supports_objective,

@@ -18,6 +18,7 @@ from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResul
 from kiro_crew.monitoring.models import (
     MONITOR_STOP_COMPLETION_UNAVAILABLE,
     MonitorBudgets,
+    MonitorCreationSurface,
     MonitorDecision,
     MonitorDispatchResult,
     MonitorObservation,
@@ -32,16 +33,30 @@ class _Provider:
     def __init__(self, result: GitHubPullRequestProbeResult) -> None:
         self.result = result
         self.previous: list[dict[str, object]] = []
+        self.owner_credential_permissions: list[bool] = []
 
-    def probe(self, subjects, *, previous_observations=None):
+    def probe(
+        self,
+        subjects,
+        *,
+        previous_observations=None,
+        use_owner_credentials: bool = True,
+    ):
         previous = previous_observations or {}
         for subject in subjects:
             self.previous.append(deepcopy(previous.get(subject) or {}))
+            self.owner_credential_permissions.append(use_owner_credentials)
         return {subject: self.result for subject in subjects}
 
 
 class _RaisingProvider:
-    def probe(self, subjects, *, previous_observations=None):
+    def probe(
+        self,
+        subjects,
+        *,
+        previous_observations=None,
+        use_owner_credentials: bool = True,
+    ):
         raise RuntimeError("provider bug")
 
 
@@ -52,7 +67,13 @@ class _BlockingProvider:
         self.release = threading.Event()
         self.targets: list[str] = []
 
-    def probe(self, subjects, *, previous_observations=None):
+    def probe(
+        self,
+        subjects,
+        *,
+        previous_observations=None,
+        use_owner_credentials: bool = True,
+    ):
         self.targets.extend(subjects)
         self.entered.set()
         if not self.release.wait(timeout=2):
@@ -146,6 +167,66 @@ async def test_controller_selects_provider_by_persisted_monitor_kind(tmp_path):
     assert provider.previous == [{}]
     assert loop.monitor is not None
     assert loop.monitor.last_observation["kind"] == "gitlab_merge_request"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("slot_key", "kind", "creation_surface", "trusted", "expected_permission"),
+    [
+        ("chat-1", "bitbucket_pull_request", MonitorCreationSurface.DASHBOARD, True, True),
+        ("chat-1", "bitbucket_pull_request", MonitorCreationSurface.DASHBOARD, False, False),
+        (
+            "slack:171234.500",
+            "bitbucket_pull_request",
+            MonitorCreationSurface.CHANNEL,
+            False,
+            False,
+        ),
+        ("chat-1", "bitbucket_pull_request", MonitorCreationSurface.CHANNEL, False, False),
+        ("chat-1", "bitbucket_pull_request", MonitorCreationSurface.UNKNOWN, False, False),
+        (
+            "slack:171234.500",
+            "github_pull_request",
+            MonitorCreationSurface.CHANNEL,
+            False,
+            True,
+        ),
+    ],
+)
+async def test_controller_denies_owner_provider_credentials_to_channel_loops(
+    tmp_path,
+    slot_key,
+    kind,
+    creation_surface,
+    trusted,
+    expected_permission,
+):
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add_monitor(
+        slot_key=slot_key,
+        kind=kind,
+        target="https://bitbucket.org/acme/widgets/pull-requests/10",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(max_runtime_secs=600),
+        wake_instructions="",
+        now=100.0,
+        creation_surface=creation_surface,
+    )
+    result = _result(MonitorObservationStatus.PENDING)
+    result.canonical["kind"] = kind
+    result.canonical["target"] = "bitbucket.org/acme/widgets#10"
+    provider = _Provider(result)
+    controller = MonitorController(
+        service,
+        AsyncMock(),
+        providers={kind: provider},
+        owner_credentials_authorized=lambda _loop, _state: trusted,
+    )
+
+    await controller.tick(loop, now=120.0)
+
+    assert provider.owner_credential_permissions == [expected_permission]
 
 
 @pytest.mark.asyncio
@@ -1658,7 +1739,7 @@ async def test_a_provider_that_omits_the_requested_subject_fails_closed(tmp_path
         result=_result(MonitorObservationStatus.PENDING),
         dispatch=dispatched,
     )
-    controller._provider = _EmptyProvider()
+    controller._providers["github_pull_request"] = _EmptyProvider()
 
     verdict = await controller.tick(loop, now=120.0)
 
@@ -1683,7 +1764,7 @@ async def test_a_provider_returning_an_untyped_result_fails_closed(tmp_path):
         result=_result(MonitorObservationStatus.PENDING),
         dispatch=dispatched,
     )
-    controller._provider = _UntypedProvider()
+    controller._providers["github_pull_request"] = _UntypedProvider()
 
     verdict = await controller.tick(loop, now=120.0)
 
@@ -1707,11 +1788,17 @@ async def test_the_controller_asks_for_exactly_its_own_subject(tmp_path):
     seen: list[tuple[str, ...]] = []
 
     class _RecordingProvider:
-        def probe(self, subjects, *, previous_observations=None):
+        def probe(
+            self,
+            subjects,
+            *,
+            previous_observations=None,
+            use_owner_credentials=True,
+        ):
             seen.append(tuple(subjects))
             return {subject: provider_result for subject in subjects}
 
-    controller._provider = _RecordingProvider()
+    controller._providers["github_pull_request"] = _RecordingProvider()
 
     await controller.tick(loop, now=120.0)
 
@@ -1798,7 +1885,13 @@ async def test_a_tick_whose_provider_omits_the_subject_does_log(tmp_path, caplog
     """The case the message was written for still reports at ERROR."""
 
     class _OmittingProvider:
-        def probe(self, subjects, *, previous_observations=None):
+        def probe(
+            self,
+            subjects,
+            *,
+            previous_observations=None,
+            use_owner_credentials=True,
+        ):
             return {}
 
     service = AutoNudgeService(base_dir=tmp_path)
@@ -1817,7 +1910,10 @@ async def test_a_tick_whose_provider_omits_the_subject_does_log(tmp_path, caplog
             return True
 
         controller = MonitorController(
-            service, dispatch, provider=_OmittingProvider(), clock=lambda: 120.0
+            service,
+            dispatch,
+            providers={"github_pull_request": _OmittingProvider()},
+            clock=lambda: 120.0,
         )
         with caplog.at_level(logging.ERROR):
             await controller.tick(loop, now=120.0)

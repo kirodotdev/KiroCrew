@@ -6595,7 +6595,7 @@ class GatewayOrchestrator:
                     await self._audit_fire_refused(loop, turn_slot)
                 if (
                     current_slot is not turn_slot
-                    or bool(getattr(turn_slot, "_closing", False))
+                    or bool(getattr(turn_slot, "is_closing", False))
                     or mode_refused
                     or str(getattr(turn_slot, "memory_mode", "persistent")) != "persistent"
                 ):

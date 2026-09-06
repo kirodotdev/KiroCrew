@@ -173,9 +173,7 @@ def test_no_unresolvable_free_names(domain: str) -> None:
             elif isinstance(node, ast.ExceptHandler) and node.name:
                 bound.add(node.name)
             elif isinstance(node, ast.withitem) and node.optional_vars is not None:
-                bound.update(
-                    t.id for t in ast.walk(node.optional_vars) if isinstance(t, ast.Name)
-                )
+                bound.update(t.id for t in ast.walk(node.optional_vars) if isinstance(t, ast.Name))
             elif isinstance(node, ast.comprehension):
                 bound.update(t.id for t in ast.walk(node.target) if isinstance(t, ast.Name))
         loaded = {

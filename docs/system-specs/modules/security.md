@@ -1658,9 +1658,15 @@ accepts `gitlab.com` plus
 only exact operator-configured self-managed hosts and rechecks that allowlist on
 each probe; self-managed calls carry an explicit empty `GITLAB_TOKEN` scrub
 sentinel through environment construction so the shared minimal-environment
-builder cannot reintroduce the ambient token. GitLab
-and Azure execute only validated absolute `glab`/`az` binaries with minimal
-provider-scoped environments. The shared CLI transport strips ambient SSH and
+builder cannot reintroduce the ambient token. GitHub, GitLab,
+and Azure execute only validated absolute `gh`/`glab`/`az` binaries with minimal
+provider-scoped environments. GitLab and Azure monitor probes always require the
+protected canonical system-owned policy because their child processes receive
+provider credentials; an agent-replaceable same-user Homebrew or user-local binary
+cannot receive those credentials. GitHub retains its established same-user resolver,
+and operators can opt every shared provider CLI into protected resolution with
+`KIROCREW_PROVIDER_BIN_STRICT=1`. The shared CLI transport
+strips ambient SSH and
 language-runtime injection variables (including Python, virtualenv, Conda, and
 Node search paths), replaces inherited `PATH` with the platform's trusted system
 path when one exists, and routes the validated argv through
@@ -1687,6 +1693,50 @@ credential file and is denied to agent subprocesses. Bitbucket accepts only
 HTTPS Authorization header and are never placed in argv, monitor state, logs, or
 browser payloads. Azure DevOps Server and Bitbucket Data Center URLs fail before
 credentials or network access.
+
+The controller passes credential authority through the provider protocol on every
+probe. Each monitor persists its descriptive creation surface (`dashboard`,
+`channel`, or fail-closed `unknown`) separately from its storage binding. The surface
+does not grant credentials: the dashboard mutation boundary reserves an exact loop id
+and prepares a pending grant in the sandbox-hidden encrypted-vault directory before
+persistence, then activates that grant only after the monitor commit. Updates rebind
+the grant to the exact provider kind and target, and deletion or replacement revokes
+it. Revocation first persists the id in a separate protected tombstone record and
+only then removes the active grant. A failed grant cleanup therefore remains denied
+after restart; an unreadable or malformed tombstone record denies all grants. A
+failed tombstone write also places the id on an immediate process-local deny set, and
+the removal is refused before the agent-writable row disappears. Later credential
+checks retry until the durable denial lands. A later authenticated prepare or rebind
+clears its id only after the replacement identity is protected. A generic AutoNudge
+removal cancels and quiesces its timer before awaiting the durable denial, restoring
+the active timer if that denial fails, so the off-loop trust write opens no fire window.
+It snapshots whether the exact row held a provider grant before revocation; if the
+subsequent monitor-store write fails, rollback restores that exact grant with the
+durable row before re-arming its timer.
+A generic AutoNudge replacement must revoke a displaced structured monitor before
+committing the new agent-writable row; if that combined snapshot fails, it restores the
+exact prior provider grant before re-arming the restored monitor. When a target update's revocation
+cannot become durable, the controller uses compare-and-swap to restore the prior monitor
+identity before it returns failure, so a restart cannot expose a stale grant under an
+attacker-selected target. The failed update captures that prior snapshot under the same
+service lock that applies its patch, preserving any concurrent update that committed
+first instead of rolling the monitor back past it.
+Restart first durably revokes the exact displaced provider grant before the
+replacement snapshot can commit; a failed snapshot restores that grant while the
+prior row is still current. Credential-activation rollback then restores the grant
+only after the displaced terminal row is durable again and only while the exact
+replacement snapshot remains current. A concurrent monitor patch wins and the
+failed restart reports a conflict instead of overwriting that committed edit. Any
+later best-effort trust cleanup is therefore redundant rather than the security
+boundary.
+The controller requires an exact active grant before giving Azure or Bitbucket a gateway-owner
+credential snapshot, so an agent-written monitor record cannot forge dashboard
+authority. GitHub and GitLab explicitly retain the established authenticated `gh` and
+host-authorized `glab` behavior. That exception is an allowlist, so an added provider
+gets no channel access to gateway-owner credentials by default. Channel-bound Azure probes record a
+credential-free `denied` SEL event and return authorization failure before reading
+the credential store or Azure CLI state. Channel-bound Bitbucket probes never read
+the credential store and use anonymous HTTPS, which limits them to public targets.
 
 Pod environments scrub the loader's complete credential roster, including the
 Azure DevOps and Bitbucket source-provider credentials, before an isolated gateway
@@ -1719,7 +1769,8 @@ gateway's provider logins available to its own monitor probes while preventing a
 pod from inheriting the operator's persisted GitHub, GitLab, or Azure CLI identity through
 the intentionally shared process `HOME`; `pod down` reclaims all of those stores.
 
-Azure status and policy display labels and Bitbucket build-status labels are
+GitHub check records with blank provider labels retain their provider-derived state
+under a stable opaque identity. Azure status and policy display labels and Bitbucket build-status labels are
 provider-controlled text. The adapters replace them with stable, namespaced SHA-256
 identities before they enter canonical state, fingerprints, persistence, or a wake
 envelope; the display labels themselves never reach an unattended agent prompt.

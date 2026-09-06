@@ -474,6 +474,11 @@ consumers        dashboard/  slack/  discord/  telegram/  messaging/
 If this goes red you introduced a boundary violation; fix the import direction,
 do not relax the rule.
 
+Provider-neutral process setup also crosses through this surface. The SDK's ACP
+driver applies the shared suspended-child resource policy and translates the ACP
+failure into a boolean, so application transports can fail in their own vocabulary
+without importing an ACP exception or lifecycle helper.
+
 `kiro_crew.providers` becomes a thin deprecated shim during migration (§9) and
 its **shim surface** is deleted at the end. Not the whole package: since v3,
 `src/kiro_crew/providers/mirrors/` has become a real and growing layer —

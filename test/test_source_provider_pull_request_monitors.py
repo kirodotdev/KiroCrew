@@ -13,7 +13,10 @@ from urllib.request import Request
 import pytest
 
 from kiro_crew import github_runner
+from kiro_crew.acp import client as acp_client_module
+from kiro_crew.monitoring import azure_devops_pull_request as azure_module
 from kiro_crew.monitoring import bitbucket_pull_request as bitbucket_module
+from kiro_crew.monitoring import github_pull_request as github_module
 from kiro_crew.monitoring import provider_cli as provider_cli_module
 from kiro_crew.monitoring.azure_devops_pull_request import AzureDevOpsPullRequestProvider
 from kiro_crew.monitoring.bitbucket_pull_request import BitbucketPullRequestProvider
@@ -425,8 +428,9 @@ def test_gitlab_native_fetch_reads_only_the_latest_current_head_pipeline(monkeyp
         succeed,
     )
 
-    result = _probe(GitLabMergeRequestProvider(gitlab_hosts=[]),
-        "https://gitlab.com/acme/widgets/-/merge_requests/8"
+    result = _probe(
+        GitLabMergeRequestProvider(gitlab_hosts=[]),
+        "https://gitlab.com/acme/widgets/-/merge_requests/8",
     )
 
     assert result.observation.status is MonitorObservationStatus.SUCCESS
@@ -459,8 +463,9 @@ def test_gitlab_exactly_two_full_discussion_pages_are_complete(monkeypatch):
         succeed,
     )
 
-    result = _probe(GitLabMergeRequestProvider(gitlab_hosts=[]),
-        "https://gitlab.com/acme/widgets/-/merge_requests/8"
+    result = _probe(
+        GitLabMergeRequestProvider(gitlab_hosts=[]),
+        "https://gitlab.com/acme/widgets/-/merge_requests/8",
     )
 
     assert result.observation.status is MonitorObservationStatus.SUCCESS
@@ -774,13 +779,51 @@ def test_bitbucket_loads_one_non_propagating_credential_snapshot(monkeypatch):
     )
     monkeypatch.setattr(BitbucketPullRequestProvider, "_fetch_https", staticmethod(fetch))
 
-    result = _probe(BitbucketPullRequestProvider(),
-        "https://bitbucket.org/acme/widgets/pull-requests/10"
+    result = _probe(
+        BitbucketPullRequestProvider(), "https://bitbucket.org/acme/widgets/pull-requests/10"
     )
 
     assert result.observation.status is MonitorObservationStatus.SUCCESS
     assert credential_calls == [False]
     assert fetch_credentials == [credentials] * 4
+
+
+def test_bitbucket_channel_probe_does_not_load_owner_credentials(monkeypatch):
+    supplied_credentials: list[object] = []
+    payloads = {
+        "pull_request": {
+            "state": "OPEN",
+            "draft": False,
+            "source": {"commit": {"hash": "fed"}},
+            "participants": [],
+        },
+        "statuses": {"values": [], "next": None},
+        "tasks": {"values": [], "next": None},
+        "conflicts": {"values": [], "next": None},
+    }
+
+    def fail_load():
+        pytest.fail("channel probe loaded the operator credential store")
+
+    def fetch(_target, resource, credentials):
+        supplied_credentials.append(credentials)
+        return payloads[resource]
+
+    monkeypatch.setattr(
+        bitbucket_module,
+        "KiroCrewConfig",
+        SimpleNamespace(load=fail_load),
+    )
+    monkeypatch.setattr(BitbucketPullRequestProvider, "_fetch_https", staticmethod(fetch))
+
+    result = _probe(
+        BitbucketPullRequestProvider(),
+        "https://bitbucket.org/acme/widgets/pull-requests/10",
+        use_owner_credentials=False,
+    )
+
+    assert result.observation.status is MonitorObservationStatus.SUCCESS
+    assert supplied_credentials == [{}] * 4
 
 
 def test_bitbucket_missing_source_commit_stays_pending():
@@ -843,8 +886,9 @@ def test_bitbucket_auth_failure_is_typed_without_raw_error_payload():
     def fail(_target, _resource):
         raise PermissionError("token=super-secret")
 
-    result = _probe(BitbucketPullRequestProvider(fetch=fail),
-        "https://bitbucket.org/acme/widgets/pull-requests/10"
+    result = _probe(
+        BitbucketPullRequestProvider(fetch=fail),
+        "https://bitbucket.org/acme/widgets/pull-requests/10",
     )
 
     assert result.response is None
@@ -887,8 +931,9 @@ def test_bitbucket_failures_map_to_fixed_provider_errors(error, kind, reason_cod
     def fail(_target, _resource):
         raise error
 
-    result = _probe(BitbucketPullRequestProvider(fetch=fail),
-        "https://bitbucket.org/acme/widgets/pull-requests/10"
+    result = _probe(
+        BitbucketPullRequestProvider(fetch=fail),
+        "https://bitbucket.org/acme/widgets/pull-requests/10",
     )
 
     assert result.observation.provider_error is kind
@@ -937,8 +982,9 @@ def test_gitlab_not_found_is_terminal_and_omits_provider_text(monkeypatch):
         fail,
     )
 
-    result = _probe(GitLabMergeRequestProvider(gitlab_hosts=[]),
-        "https://gitlab.com/acme/widgets/-/merge_requests/8"
+    result = _probe(
+        GitLabMergeRequestProvider(gitlab_hosts=[]),
+        "https://gitlab.com/acme/widgets/-/merge_requests/8",
     )
 
     assert result.observation.provider_error is ProviderErrorKind.NOT_FOUND
@@ -960,13 +1006,46 @@ def test_azure_forbidden_is_terminal_and_omits_provider_text(monkeypatch):
         fail,
     )
 
-    result = _probe(AzureDevOpsPullRequestProvider(),
-        "https://dev.azure.com/acme/project/_git/widgets/pullrequest/9"
+    result = _probe(
+        AzureDevOpsPullRequestProvider(),
+        "https://dev.azure.com/acme/project/_git/widgets/pullrequest/9",
     )
 
     assert result.observation.provider_error is ProviderErrorKind.AUTHORIZATION
     assert result.observation.reason_code == "provider_authorization"
     assert "super-secret" not in result.observation.reason_code
+
+
+def test_azure_channel_probe_does_not_load_owner_credentials_or_cli_state(monkeypatch):
+    audit_calls: list[str] = []
+
+    def fail(*_args, **_kwargs):
+        pytest.fail("channel probe reached operator-owned Azure state")
+
+    monkeypatch.setattr(
+        "kiro_crew.monitoring.azure_devops_pull_request.KiroCrewConfig",
+        SimpleNamespace(load=fail),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.monitoring.azure_devops_pull_request.run_provider_cli",
+        fail,
+    )
+    monkeypatch.setattr(
+        azure_module,
+        "audit_provider_cli_denied",
+        audit_calls.append,
+        raising=False,
+    )
+
+    result = _probe(
+        AzureDevOpsPullRequestProvider(),
+        "https://dev.azure.com/acme/project/_git/widgets/pullrequest/9",
+        use_owner_credentials=False,
+    )
+
+    assert result.observation.provider_error is ProviderErrorKind.AUTHORIZATION
+    assert result.observation.reason_code == "provider_authorization"
+    assert audit_calls == ["az"]
 
 
 def test_azure_cli_uses_supported_project_scoping_for_each_command(monkeypatch):
@@ -1011,8 +1090,9 @@ def test_azure_cli_uses_supported_project_scoping_for_each_command(monkeypatch):
         succeed,
     )
 
-    result = _probe(AzureDevOpsPullRequestProvider(),
-        "https://dev.azure.com/acme/project/_git/widgets/pullrequest/9"
+    result = _probe(
+        AzureDevOpsPullRequestProvider(),
+        "https://dev.azure.com/acme/project/_git/widgets/pullrequest/9",
     )
 
     assert result.observation.status is MonitorObservationStatus.SUCCESS
@@ -1033,8 +1113,9 @@ def test_bitbucket_not_found_is_terminal():
     def fail(_target, _resource):
         raise HTTPError("https://api.bitbucket.org", 404, "missing", {}, None)
 
-    result = _probe(BitbucketPullRequestProvider(fetch=fail),
-        "https://bitbucket.org/acme/widgets/pull-requests/10"
+    result = _probe(
+        BitbucketPullRequestProvider(fetch=fail),
+        "https://bitbucket.org/acme/widgets/pull-requests/10",
     )
 
     assert result.observation.provider_error is ProviderErrorKind.NOT_FOUND
@@ -1234,7 +1315,8 @@ def test_resolve_provider_cli_uses_only_validated_candidates(monkeypatch):
         lambda _executable: ("/untrusted/glab", "/trusted/glab"),
     )
 
-    def validate(candidate):
+    def validate(candidate, *, require_protected=False):
+        assert require_protected
         if candidate == "/untrusted/glab":
             raise ValueError("untrusted executable")
         return candidate
@@ -1246,6 +1328,32 @@ def test_resolve_provider_cli_uses_only_validated_candidates(monkeypatch):
     monkeypatch.setenv("KIROCREW_GLAB_BIN", "")
     with pytest.raises(provider_cli_module.SetupError, match="empty override"):
         provider_cli_module.resolve_provider_cli("glab")
+
+
+def test_monitor_provider_resolution_requires_a_protected_provider_binary(monkeypatch):
+    """Credential-bearing monitor probes reject same-user provider CLIs."""
+    validations: list[tuple[str, bool]] = []
+    monkeypatch.delenv("KIROCREW_AZ_BIN", raising=False)
+    monkeypatch.setattr(
+        provider_cli_module,
+        "provider_executable_candidates",
+        lambda _executable: ("/provider/az",),
+    )
+
+    def validate(candidate: str, *, require_protected: bool = False) -> str:
+        validations.append((candidate, require_protected))
+        return candidate
+
+    monkeypatch.setattr(provider_cli_module, "validate_provider_executable", validate)
+
+    assert provider_cli_module.resolve_provider_cli("az") == "/provider/az"
+    assert validations == [("/provider/az", True)]
+
+
+def test_github_monitor_retains_the_same_user_cli_resolver():
+    provider = github_module.GitHubPullRequestProvider()
+
+    assert provider._resolver is github_runner.resolve_gh
 
 
 def test_run_provider_cli_audits_resolution_denial(monkeypatch):
@@ -1302,9 +1410,14 @@ def test_provider_cli_windows_spawn_is_bounded_before_resume(monkeypatch):
     monkeypatch.setattr(provider_cli_module.platform_compat, "CREATE_SUSPENDED", 4)
     monkeypatch.setattr(provider_cli_module.platform_compat, "get_ppid", lambda _pid: os.getpid())
     monkeypatch.setattr(
-        provider_cli_module,
+        acp_client_module,
         "apply_windows_resource_ceiling",
         lambda pid: events.append(("ceiling", pid)),
+    )
+    monkeypatch.setattr(
+        provider_cli_module,
+        "apply_windows_resource_ceiling",
+        lambda _pid: (_ for _ in ()).throw(AssertionError("duplicate spawn policy called")),
         raising=False,
     )
     monkeypatch.setattr(
@@ -1358,10 +1471,11 @@ def test_provider_cli_windows_resume_failure_kills_owned_child(monkeypatch):
         "resume_process_main_thread",
         lambda _pid: False,
     )
+    monkeypatch.setattr(acp_client_module, "apply_windows_resource_ceiling", lambda _pid: True)
     monkeypatch.setattr(
         provider_cli_module,
         "apply_windows_resource_ceiling",
-        lambda _pid: True,
+        lambda _pid: (_ for _ in ()).throw(AssertionError("duplicate spawn policy called")),
         raising=False,
     )
 
