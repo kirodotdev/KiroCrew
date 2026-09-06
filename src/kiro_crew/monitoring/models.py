@@ -87,7 +87,13 @@ MONITOR_PUBLIC_FIELDS = (
 )
 
 
-def _is_finite_non_negative_number(value: object) -> bool:
+def is_finite_non_negative_number(value: object) -> bool:
+    """Whether *value* is a real, finite, non-negative timestamp-shaped number.
+
+    ``bool`` is excluded even though it is an ``int`` subclass, and an ``int``
+    too large to convert to a float (``10**400``) is rejected rather than
+    letting ``math.isfinite``'s ``OverflowError`` escape to the caller.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         return False
     try:
@@ -294,16 +300,15 @@ class MonitorState:
     last_provider_error: ProviderErrorKind | None = None
     #: Adoption metering. Without these two numbers a probe gate that never
     #: fires and a probe gate that is doing its job are indistinguishable from
-    #: the outside -- which is how the earlier attempts at this saving stayed at
-    #: zero adoption, unnoticed, for over a week. ``quiet_ticks`` counts the ticks
-    #: the probe judged QUIET; ``wakes`` counts the turns actually DELIVERED because
-    #: it judged otherwise -- not every non-quiet tick, since a gate that could not
-    #: decide is ``gate_fallbacks`` below and a fire the slot refuses is charged to
-    #: neither. A quiet verdict is
-    #: not the same as a free tick: the streak floor below deliberately delivers on
-    #: one of them, so ``quiet_ticks`` minus ``floor_ticks`` is the count that cost
-    #: no model turn. Saying "cost no turn" here would overstate the saving by
-    #: exactly the floor, which is the one number this PR must not get wrong.
+    #: the outside, so a gate stuck at zero adoption goes unnoticed.
+    #: ``quiet_ticks`` counts the ticks the probe judged QUIET; ``wakes`` counts
+    #: the turns actually DELIVERED because it judged otherwise -- not every
+    #: non-quiet tick, since a gate that could not decide is ``gate_fallbacks``
+    #: below and a fire the slot refuses is charged to neither. A quiet verdict
+    #: is not the same as a free tick: the streak floor below deliberately
+    #: delivers on one of them, so ``quiet_ticks`` minus ``floor_ticks`` is the
+    #: count that cost no model turn. Reading ``quiet_ticks`` alone as "cost no
+    #: turn" overstates the saving by exactly the floor.
     quiet_ticks: int = 0
     wakes: int = 0
     #: Ticks where the gate could not decide, so the tick resolved toward firing on
@@ -399,7 +404,7 @@ class MonitorState:
             "stopped_at",
         ):
             value = getattr(self, name)
-            if not _is_finite_non_negative_number(value):
+            if not is_finite_non_negative_number(value):
                 raise ValueError(f"{name} must be a finite non-negative number")
         for name in (
             "wake_count",
@@ -520,7 +525,7 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
             value = raw.get(key)
             values[key] = value if isinstance(value, str) and value else f"unsupported_{key}"
         created_ts = raw.get("created_ts")
-        values["created_ts"] = created_ts if _is_finite_non_negative_number(created_ts) else 0.0
+        values["created_ts"] = created_ts if is_finite_non_negative_number(created_ts) else 0.0
         values["budgets"] = MonitorBudgets()
         values["_raw_payload"] = deepcopy(raw)
         return MonitorState(**values)
@@ -539,8 +544,6 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
     outcome = values.get("outcome")
     if outcome is not None:
         values["outcome"] = MonitorOutcome(outcome)
-    else:
-        values["outcome"] = None
     disposition = values.get("last_completion_disposition")
     if disposition is not None:
         values["last_completion_disposition"] = MonitorActionDisposition(disposition)
@@ -567,7 +570,7 @@ def quarantine_monitor_state(raw: object) -> MonitorState:
 
     raw_created_ts = raw.get("created_ts")
     created_ts: int | float = 0.0
-    if _is_finite_non_negative_number(raw_created_ts):
+    if is_finite_non_negative_number(raw_created_ts):
         assert isinstance(raw_created_ts, (int, float)) and not isinstance(raw_created_ts, bool)
         created_ts = raw_created_ts
     return MonitorState(

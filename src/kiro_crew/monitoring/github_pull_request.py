@@ -179,18 +179,8 @@ class GitHubPullRequestProvider:
                     unresolved_review_threads=unresolved,
                     review_threads_complete=complete,
                 )
-        except SetupError as exc:
-            if _transient_os_error(exc.__cause__):
-                return _provider_error(ProviderErrorKind.TRANSIENT, "provider_transient")
-            return _provider_error(ProviderErrorKind.SETUP, "provider_setup")
-        except FileNotFoundError:
-            return _provider_error(ProviderErrorKind.SETUP, "provider_setup")
-        except subprocess.TimeoutExpired:
-            return _provider_error(ProviderErrorKind.TRANSIENT, "provider_transient")
-        except OSError as exc:
-            if _transient_os_error(exc):
-                return _provider_error(ProviderErrorKind.TRANSIENT, "provider_transient")
-            return _provider_error(ProviderErrorKind.SETUP, "provider_setup")
+        except (SetupError, FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            return _provider_exception_error(exc)
         except (TypeError, ValueError, KeyError):
             return _provider_error(
                 ProviderErrorKind.TRANSIENT,
@@ -271,7 +261,7 @@ class GitHubPullRequestProvider:
         unresolved = 0
         cursor: str | None = None
         seen_cursors: set[str] = set()
-        for page in range(_REVIEW_THREAD_MAX_PAGES):
+        for _ in range(_REVIEW_THREAD_MAX_PAGES):
             argv = [
                 gh,
                 "api",
@@ -337,8 +327,9 @@ class GitHubPullRequestProvider:
                 return unresolved, False, ProviderErrorKind.TRANSIENT
             seen_cursors.add(next_cursor)
             cursor = next_cursor
-            if page + 1 == _REVIEW_THREAD_MAX_PAGES:
-                return unresolved, False, None
+        # Falling out of the loop means the page cap was reached with more pages
+        # still advertised: the count so far is real but incomplete, and that is
+        # not a provider failure.
         return unresolved, False, None
 
 
@@ -710,10 +701,16 @@ def _classify_cli_error(raw: str) -> ProviderErrorKind:
             return ProviderErrorKind.TRANSIENT
     if "could not resolve host" in lowered:
         return ProviderErrorKind.TRANSIENT
-    if any(
-        marker in lowered
-        for marker in ("http 429", "rate limit", "abuse detection", "too many requests")
-    ):
+    # The status regex above reads only the first `http <ddd>` it matches, so a
+    # real 429 behind an earlier status reaches here instead: on
+    # "http 200 ... http 429" the regex matches the 200, which is not a status
+    # that block maps, so it returns nothing and the 429 survives to this check.
+    # The substring form also fires on a malformed "http 4290", which the regex
+    # skips because \b rejects a fourth digit. That false positive is accepted
+    # but not free: RATE_LIMITED is retryable, yet every provider error still
+    # spends one of the monitor's `max_provider_errors` (3 by default) and that
+    # cumulative count is never refunded, so mislabelling shortens the watch.
+    if "http 429" in lowered:
         return ProviderErrorKind.RATE_LIMITED
     if any(
         marker in lowered
@@ -791,6 +788,24 @@ def _provider_exception_kind(error: BaseException) -> ProviderErrorKind:
     if isinstance(error, OSError) and _transient_os_error(error):
         return ProviderErrorKind.TRANSIENT
     return ProviderErrorKind.SETUP
+
+
+def _provider_exception_error(error: BaseException) -> GitHubPullRequestProbeResult:
+    """Turn a runner exception into its provider-error result.
+
+    ``_provider_exception_kind`` returns only TRANSIENT or SETUP, so the reason
+    code is derivable from the kind. The split is not cosmetic: TRANSIENT
+    becomes RETRY_PROVIDER, but only until ``max_provider_errors`` (3 by
+    default) is reached, after which it too retires the monitor; SETUP is not
+    retryable at all and retires it on the FIRST occurrence (STOP_BLOCKED,
+    outcome BLOCKED). So a host fault mislabelled SETUP costs the whole watch
+    immediately rather than after the budget. If that classifier ever gains a
+    third kind, this ternary must gain the matching reason rather than stamping
+    ``"provider_setup"`` on it.
+    """
+    kind = _provider_exception_kind(error)
+    reason = "provider_transient" if kind is ProviderErrorKind.TRANSIENT else "provider_setup"
+    return _provider_error(kind, reason)
 
 
 def _provider_error(kind: ProviderErrorKind, reason_code: str) -> GitHubPullRequestProbeResult:
