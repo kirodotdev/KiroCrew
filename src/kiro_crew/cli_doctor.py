@@ -364,6 +364,25 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
     return linux
 
 
+# The Linux arm of the missing-ffmpeg fix, a module constant so the test can hold
+# it against the resolver's real search set. An earlier version told the user to
+# drop a static build into ``~/.local/bin``, which ``transcribe._find_ffmpeg``
+# deliberately never searches (``_ffmpeg_candidate_dirs`` documents removing it:
+# a generic user-writable PATH dir would let agent-written code run as the
+# gateway), so a user who followed the advice still ended at "not found" (#8897).
+# Name only remedies that actually resolve: the dashboard's decoder download
+# installs into the digest-verified store ``_find_ffmpeg`` checks last and needs
+# no PATH reasoning (the working fix on distros with no packaged ffmpeg, e.g.
+# AL2023 — pinned artifacts exist for x86_64 and aarch64, the Linux ISAs the
+# desktop matrix ships; on any other ISA the fetch is refused and the second
+# clause is the remedy), and ``/usr/local/bin`` is both a real
+# ``_FFMPEG_CANDIDATE_DIRS`` entry and the conventional manual-install prefix.
+_FFMPEG_LINUX_HINT = (
+    "download the audio decoder from the dashboard (Settings → Speech-to-Text), "
+    "or install ffmpeg into /usr/local/bin"
+)
+
+
 # kiro-cli is the DEFAULT agent backend; the claude-agent-acp binary below belongs
 # to Claude Code, which is also selectable. Doctor reports it as an optional
 # backend, and the verdict comes from ``agent_sdk.probe_backend`` so doctor and the
@@ -3235,8 +3254,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 "               Fix: "
                 + _os_fix_hint(
                     "brew install ffmpeg",
-                    "drop a static ffmpeg build into ~/.local/bin "
-                    "(not in AL2023 repos; Kiro Crew auto-detects it)",
+                    _FFMPEG_LINUX_HINT,
                     windows="winget install Gyan.FFmpeg",
                 )
             )

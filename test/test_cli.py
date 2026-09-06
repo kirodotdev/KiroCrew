@@ -4302,7 +4302,10 @@ class TestDoctorStt:
         )
 
         assert "ffmpeg:      ❌ not found" in out
-        assert "drop a static ffmpeg build into ~/.local/bin" in out
+        # The wiring assertion: doctor must print the module constant the
+        # resolvable-hint tests hold against the resolver's candidate list, so
+        # nobody can inline a literal back into the _os_fix_hint call (#8897).
+        assert _doc._FFMPEG_LINUX_HINT in out
         assert "reinstall Kiro Crew" not in out
         assert "❌ Fix these issues: " in out
         assert "ffmpeg" in out.split("❌ Fix these issues: ", 1)[1]
