@@ -110,7 +110,7 @@ from kiro_crew.safety_override import (
     describe_new_grant,
     grant_declared_yolo,
     safety_override,
-    yolo_policy_verdict,
+    yolo_policy_permits,
 )
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
@@ -1475,32 +1475,25 @@ async def _handle_slash_command(
                     # a refused arm would tell the operator auto-approve is on while
                     # every tool still stops to ask, and would audit it as allowed.
                     #
-                    # NAME THE ACTUAL CAUSE. ``activate`` refuses for three different
-                    # reasons and they send the operator to three different places,
-                    # so a single message is wrong for two of them:
+                    # NAME THE ACTUAL CAUSE. ``activate`` refuses for two different
+                    # reasons and they send the operator to two different places, so a
+                    # single message is wrong for one of them:
                     #
                     # | verdict   | why the arm failed          | where to look     |
                     # |-----------|-----------------------------|-------------------|
                     # | denied    | an admin's policy forbids   | the org's policy  |
-                    # | unknown   | policy could not be READ    | the profiles dir  |
                     # | permitted | the fail-closed SEL audit   | the audit system  |
                     #
                     # This branch used to post the policy line unconditionally, so a
                     # solo operator with no policy at all was told a phantom
                     # organization had blocked them and went hunting a file that does
-                    # not exist, while the real fault went unnamed.
-                    _verdict = await asyncio.to_thread(yolo_policy_verdict)
-                    if _verdict == "denied":
+                    # not exist, while the real fault went unnamed. The verdict is a
+                    # memory read (pushed when the ceiling was installed), so no thread.
+                    if not yolo_policy_permits():
                         _outcome, _error = "approval_mode_denied_by_policy", (
                             "mode_disabled_by_policy"
                         )
                         _msg = "🔒 YOLO mode is disabled by your organization's policy."
-                    elif _verdict == "unknown":
-                        _outcome, _error = "approval_mode_policy_unreadable", ("policy_unreadable")
-                        _msg = (
-                            "❌ Failed to activate YOLO mode "
-                            "(the governance policy could not be read)."
-                        )
                     else:
                         _outcome, _error = "activation_failed", "audit_unavailable"
                         _msg = "❌ Failed to activate YOLO mode (audit system unavailable)."

@@ -16,7 +16,7 @@ import pytest
 from hypothesis import HealthCheck, settings
 
 from kiro_crew.safety_override import reset_singleton as _reset_safety_override
-from kiro_crew.safety_override import reset_yolo_policy_cache as _reset_yolo_policy_cache
+from kiro_crew.safety_override import reset_yolo_policy_state as _reset_yolo_policy_state
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
 
@@ -437,26 +437,21 @@ def _release_stt_engine():
 def _reset_safety_override_between_tests():
     """Reset the SafetyOverride singleton between tests to prevent state leaking.
 
-    The cached ``approval_modes`` verdict is reset WITH it, because it is the same
-    leak wearing different clothes. That cache stamps the governance generation it
-    was resolved under, and this suite reinstalls the platform context constantly
-    (~30 files call ``set_context``/``reset_context``, and each install bumps the
-    counter). A stamp left by an earlier test therefore names a ceiling that is no
-    longer installed, which the verdict correctly reads as "current policy unknown"
-    and — being a safety predicate — fails closed on.
-
-    That surfaced as INTERMITTENT failures in files that never touch governance:
-    which tests share an xdist worker decides whether a stale stamp is present, so
-    a yolo arm would be honoured in one run and refused in the next. The state was
-    always leaking; it used to be invisible only because an unstamped cache read as
-    the permissive default, which is precisely the stale-permit behaviour that is
-    now fixed.
+    The pushed ``approval_modes`` verdict is reset WITH it, because it is the same
+    leak wearing different clothes. That verdict is a module-level flag resolved when
+    a platform context is installed, and this suite installs contexts constantly
+    (~30 files call ``set_context``/``reset_context``). A DENY pushed by an earlier
+    test therefore keeps refusing yolo arms in a later one that never configured a
+    policy, which surfaces as INTERMITTENT failures in files that never touch
+    governance — which tests share an xdist worker decides whether the stale flag is
+    present. Resetting it here makes the next reader resolve the ceiling actually
+    installed.
     """
     _reset_safety_override()
-    _reset_yolo_policy_cache()
+    _reset_yolo_policy_state()
     yield
     _reset_safety_override()
-    _reset_yolo_policy_cache()
+    _reset_yolo_policy_state()
 
 
 @pytest.fixture(autouse=True)

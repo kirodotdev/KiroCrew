@@ -177,34 +177,37 @@ class TestYoloCommand:
         assert "ON" in _texts(slack)
 
     @pytest.mark.asyncio
-    async def test_off_revokes_while_the_policy_verdict_is_unknown(
+    async def test_off_revokes_while_policy_masks_the_grant(
         self, slack, sessions, owner, monkeypatch
     ):
         """An explicit off must not be gated on the POLICY-FILTERED liveness.
 
-        ``!yolo`` computes ``yolo_active = is_yolo_mode()``, which policy can veto.
-        While the governance verdict is momentarily unknown that reads False, so the
-        off branch reported "already off" and never called ``disable_yolo()`` -- and
-        the retained grant then resumed once the refresh settled, silently undoing
-        the operator's revocation. ``disable_yolo`` itself was corrected to read
-        ``has_grant``; this covers its CALLER, which was still gating it out.
+        ``!yolo`` computes ``yolo_active = is_yolo_mode()``, which policy can veto. A
+        grant that policy masks but that still EXISTS therefore reads False, so the
+        off branch reported "already off" and never called ``disable_yolo()`` --
+        leaving a grant standing that the operator had explicitly revoked.
+        ``disable_yolo`` itself was corrected to read ``has_grant``; this covers its
+        CALLER, which was still gating it out.
+
+        A deny normally destroys the grant at ceiling-install time, so the mask is the
+        fail-closed floor for a teardown that did not complete -- which is exactly the
+        state where an explicit off has work to do.
 
         Driven through ``_slash`` on purpose: an earlier attempt re-implemented the
         gate inside the test and therefore exercised no handler code, passing even
         with the fix reverted.
         """
-        import time as _time
-
         from kiro_crew import safety_override as so
 
         await _slash("!yolo on", slack, sessions)
         assert h.is_yolo_mode() is True
         slack.actions.clear()
 
-        # Force the verdict undated: fresh by the clock, stamped with a generation
-        # nothing will match. On a running loop the refresh cannot settle inline.
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: True)
-        monkeypatch.setattr(so, "_yolo_policy_cache", (_time.monotonic(), True, -999))
+        # Push a DENY without going through a ceiling install, so the grant survives
+        # and only the policy mask is in force -- which is the state that misled the
+        # branch under test.
+        monkeypatch.setattr(so, "_yolo_policy_permitted", False)
+        monkeypatch.setattr(so, "_yolo_policy_resolved", True)
         assert h.is_yolo_mode() is False, "the filtered reading is what misled the branch"
         assert so.safety_override().has_grant() is True, "the grant is still standing"
 

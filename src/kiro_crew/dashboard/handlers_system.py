@@ -35,7 +35,7 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform import current_context
 from kiro_crew.safety_override import (
-    resolve_disabled_approval_modes_blocking,
+    cached_disabled_approval_modes,
     safety_override,
     until_shutdown_permitted,
 )
@@ -140,10 +140,12 @@ def _get_telemetry_salt() -> bytes:
 def _yolo_duration_fields() -> tuple[str, bool, list[str]]:
     """``(configured_duration, until_shutdown_permitted, disabled_approval_modes)``.
 
-    ALL values touch the filesystem — the config read and the governance profile
-    resolution (``iterdir``/``stat`` over the profiles dir) — so this runs in a
-    worker thread, never on the event loop. ``/api/status`` is polled
-    continuously; doing this inline stalls the whole gateway on a slow home.
+    The first two touch the filesystem — the config read, and the ``yolo_duration``
+    governance resolution (``iterdir``/``stat`` over the profiles dir) — so this runs
+    in a worker thread, never on the event loop. ``/api/status`` is polled
+    continuously; doing this inline stalls the whole gateway on a slow home. The
+    disabled-modes list does NOT touch the filesystem (it reads the verdict pushed at
+    ceiling install) and only rides along here because it belongs in the same frame.
     """
     try:
         label = str(KiroCrewConfig.load().agent.yolo_duration)
@@ -155,12 +157,10 @@ def _yolo_duration_fields() -> tuple[str, bool, list[str]]:
     except Exception:
         logger.debug("could not resolve until_shutdown permission", exc_info=True)
         permitted = True
-    # ONE shared resolver with ``status_snapshot`` AND with the per-tool-call
+    # ONE shared reader with ``status_snapshot`` AND with the per-tool-call
     # enforcement predicate, so the HTTP, SSE and WS status frames cannot report a
-    # list the enforcement path disagrees with. This call also primes that shared
-    # cache from inside this worker thread, which is why the event-loop reader can
-    # stay filesystem-free.
-    disabled_modes = resolve_disabled_approval_modes_blocking()
+    # list the enforcement path disagrees with.
+    disabled_modes = cached_disabled_approval_modes()
     return label, permitted, disabled_modes
 
 
@@ -195,7 +195,7 @@ async def api_status(request: web.Request) -> web.Response:
         except Exception:
             owner_hash = "unknown"
     so_status = safety_override().status()
-    # Off-loop: both values hit the filesystem (see _yolo_duration_fields).
+    # Off-loop: the duration values hit the filesystem (see _yolo_duration_fields).
     yolo_duration, until_shutdown_ok, disabled_approval_modes = await asyncio.to_thread(
         _yolo_duration_fields
     )

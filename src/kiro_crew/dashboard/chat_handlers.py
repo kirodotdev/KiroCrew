@@ -127,7 +127,7 @@ from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import (
     approval_mode_permitted,
     safety_override,
-    yolo_policy_verdict,
+    yolo_policy_permits,
 )
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import (
@@ -8824,34 +8824,19 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     # mode check rather than a YOLO special case so that widening the scope needs
     # no change here; YOLO is additionally guarded at arming in ``safety_override``.
     #
-    # ``mode_disabled_by_policy`` is reserved for a DEFINITE deny. Reading the
-    # boolean alone conflated two different answers: ``approval_mode_permitted``
-    # fails closed, so a governance READ FAILURE also returned False and the caller
-    # was told their organization's policy forbids the mode -- sending them to look
-    # for a policy that may not exist, while the real fault (governance unreadable)
-    # went unnamed. Same defect, and same three-way split, as the two Slack paths.
-    # ``yolo`` is the only deniable mode, so it is the only one that can be unknown.
+    # ``yolo`` reads the PUSHED verdict, which is resolved when a ceiling is installed
+    # and so needs no thread: there is one answer for the ceiling in force, and a
+    # governance-evaluation error resolved to a deny at that install. Every other mode
+    # is non-deniable and short-circuits inside ``approval_mode_permitted`` -- but an
+    # unrecognised ``mode`` string does reach governance, so that branch keeps its
+    # offload.
     if mode == "yolo":
-        _verdict = await asyncio.to_thread(yolo_policy_verdict)
-        if _verdict == "denied":
+        if not yolo_policy_permits():
             return _deny_approval_mode(
                 caller="dashboard:chat_mode",
                 operation=f"chat_mode:{mode}",
                 mode=mode,
                 resource=str(body.get("slot") or ""),
-            )
-        if _verdict != "permitted":
-            return web.json_response(
-                {
-                    "ok": False,
-                    "error": (
-                        "could not read the governance policy for approval mode "
-                        f"{mode!r}; try again"
-                    ),
-                    "code": "approval_mode_policy_unreadable",
-                    "mode": mode,
-                },
-                status=503,
             )
     elif not await asyncio.to_thread(approval_mode_permitted, mode):
         return _deny_approval_mode(
@@ -8919,7 +8904,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             # them apart: an ``approval_modes`` deny of ``yolo`` is a permanent
             # policy answer (403, same code the picker already understands),
             # while anything else is a transient activation failure (503).
-            if not await asyncio.to_thread(approval_mode_permitted, "yolo"):
+            if not yolo_policy_permits():
                 return _deny_approval_mode(
                     caller="dashboard:chat_mode",
                     operation="mode_change:yolo",
@@ -9342,7 +9327,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             # deny of ``yolo`` is a permanent policy answer the client can render
             # (403 + the code the picker already understands), while anything else
             # is a transient activation failure worth retrying (503).
-            if not await asyncio.to_thread(approval_mode_permitted, "yolo"):
+            if not yolo_policy_permits():
                 return _deny_approval_mode(
                     caller=f"dashboard:{name}",
                     operation="tool_approval:yolo",
@@ -9358,6 +9343,26 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             # linked cron/workflow or channel-surfaced slot runs under its
             # linked_session_key.
             state.sessions.set_approval_policy(effective_session_key(s), "auto")
+        # Reconcile against a policy deny that landed while this was writing.
+        #
+        # This write is the grant's inherited half -- ``admission.parent_trusted``
+        # reads the slot's approval policy directly rather than any flag in
+        # ``safety_override`` -- and it happens OUTSIDE the lock the revocation takes.
+        # So a denying ceiling installed after the arm returned can revoke the grant
+        # and run its ``_on_expired`` cleanup, and this loop then puts the inherited
+        # trust straight back with nothing left to clear it: a subagent spawned under
+        # it is auto-approved, and is not un-spawned by the next event either.
+        #
+        # The two halves are complete together: a write that lands BEFORE the
+        # cleanup is cleared by the cleanup, and one that lands after -- or
+        # interleaved with it -- is cleared here. Standing trust is preserved on the
+        # same rule ``_on_override_expired`` uses, since a Trust press is a separate,
+        # longer-lived decision that no yolo deny expires.
+        if not yolo_policy_permits():
+            for s in state._slots.values():
+                if not (s._trust or s._trust_reads):
+                    state.sessions.set_approval_policy(effective_session_key(s), "")
+            state.push_slots_update()
         action = "approved"
     resolved = action if action in ("approved", "approved_trust_reads") else "rejected"
     if not fut or fut.done():

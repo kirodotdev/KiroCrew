@@ -402,13 +402,139 @@ _ACTIVE: Optional[PlatformContext] = None
 _GOVERNANCE_GENERATION = 0
 _GENERATION_LOCK = threading.Lock()
 
+# Callbacks run on every DECLARED install of ``_ACTIVE`` (every one except the silent
+# lazy default -- see ``register_ceiling_install_hook``), so a consumer that must
+# re-derive something from the new ceiling is PUSHED the change instead of polling.
+#
+# The alternative — every consumer re-reading governance behind a TTL cache — was
+# tried for the ``approval_modes`` YOLO verdict and is what this registry replaces:
+# a cache needs a freshness key, a three-state "not resolved under this ceiling yet"
+# verdict, and an off-loop refresh, and each of those carries its own window in
+# which a stale answer is served. An install is a discrete event, so a consumer told
+# about it holds an answer that is either current or does not exist.
+#
+# A registry rather than a direct import because the consumers sit ABOVE this module
+# (``safety_override`` already imports from here), so calling into them by name would
+# be a cycle. Each registers itself at its own import.
+_CEILING_INSTALL_HOOKS: "list[Callable[[Optional[PlatformContext]], None]]" = []
+# Run BEFORE ``_ACTIVE`` is reassigned, so a consumer can invalidate what it derived
+# from the OUTGOING ceiling while the incoming one is not yet visible.
+#
+# Publishing first and invalidating after leaves a window whose width is a full
+# governance resolution: the new ceiling is live, the derived answer still belongs to
+# the retired one, and a concurrent authorization read is decided by the stale answer.
+# For an authorization consumer that window is a bypass, so invalidation cannot be the
+# second half of the install -- it has to be the first.
+_CEILING_INVALIDATE_HOOKS: "list[Callable[[], None]]" = []
+_HOOKS_LOCK = threading.Lock()
 
-def _install(ctx: Optional[PlatformContext]) -> None:
-    """Assign ``_ACTIVE`` and bump the generation.  The single writer."""
+
+def register_ceiling_install_hook(cb: "Callable[[Optional[PlatformContext]], None]") -> None:
+    """Call ``cb(ctx)`` after every DECLARED install of the active context.
+
+    ``ctx`` is the context just installed, or ``None`` for :func:`reset_context` —
+    a hook that caches something ceiling-derived should treat ``None`` as "there is
+    no ceiling to derive from" rather than as a ceiling that permits everything.
+
+    "Declared" excludes ONE install: the lazy default :func:`current_context` composes
+    when nothing was installed. That one is reached from inside a governance read (the
+    profile store resolves the active context to build its freshness key), so a hook
+    that reads governance would call back into a store that is mid-load and be handed
+    its fail-closed "not loaded" answer -- a verdict about nothing. It also needs no
+    hook: a consumer cannot be holding anything derived from a ceiling before the first
+    derivation happens, and that first derivation is what triggers the lazy install.
+
+    Idempotent per callable, so a module imported twice under different names does
+    not get its hook run twice. Registration does NOT replay the install that may
+    already have happened: a hook that needs to cope with being registered late must
+    say so itself (see ``safety_override.yolo_policy_permits``), because resolving
+    governance from inside an import is how import cycles are born.
+    """
+    with _HOOKS_LOCK:
+        if cb not in _CEILING_INSTALL_HOOKS:
+            _CEILING_INSTALL_HOOKS.append(cb)
+
+
+def register_ceiling_invalidate_hook(cb: "Callable[[], None]") -> None:
+    """Call ``cb()`` just BEFORE a declared install replaces the active context.
+
+    For a consumer whose derived value is an AUTHORIZATION answer. ``cb`` must make
+    that value fail closed and must do no I/O and take no lock a reader might hold:
+    it runs on the install path, ahead of the new ceiling becoming visible, and the
+    matching install hook writes the real answer immediately afterwards. It is told
+    nothing about the incoming ceiling on purpose -- its only job is to stop serving
+    the outgoing one.
+
+    Paired with :func:`register_ceiling_install_hook` and skipped on exactly the same
+    one install (the lazy default), so a consumer registering both is masked and
+    re-resolved as a unit.
+    """
+    with _HOOKS_LOCK:
+        if cb not in _CEILING_INVALIDATE_HOOKS:
+            _CEILING_INVALIDATE_HOOKS.append(cb)
+
+
+def _notify_ceiling_invalidating() -> None:
+    """Run the pre-publication invalidate hooks. Never raises.
+
+    A hook that raises must not stop the install, and it cannot leave a consumer
+    fail-OPEN either: the hooks here only ever withdraw a derived permission, so a
+    failure at worst leaves the previous answer in place -- which is the same state
+    publishing-then-invalidating had, and the install hook still corrects it.
+    """
+    with _HOOKS_LOCK:
+        hooks = list(_CEILING_INVALIDATE_HOOKS)
+    for cb in hooks:
+        try:
+            cb()
+        except Exception:
+            _logger.debug("ceiling invalidate hook %r failed", cb, exc_info=True)
+
+
+def _notify_ceiling_installed(ctx: Optional[PlatformContext]) -> None:
+    """Run the install hooks. Called with NO lock held, and never raises.
+
+    Outside ``_GENERATION_LOCK`` deliberately: a hook resolves governance, which
+    reads :func:`governance_generation` through ``ProfileStore``'s freshness key —
+    and that takes the same non-reentrant lock, so calling a hook while holding it
+    deadlocks the install. A hook that raises must not take the install down with
+    it either: the context IS installed by the time these run, so a failed hook
+    leaves a stale derived value, not a half-installed ceiling.
+    """
+    with _HOOKS_LOCK:
+        hooks = list(_CEILING_INSTALL_HOOKS)
+    for cb in hooks:
+        try:
+            cb(ctx)
+        except Exception:
+            _logger.debug("ceiling install hook %r failed", cb, exc_info=True)
+
+
+def _install(ctx: Optional[PlatformContext], *, notify: bool = True) -> None:
+    """Assign ``_ACTIVE``, bump the generation, then push to the hooks.
+
+    The single writer of ``_ACTIVE``, which is what makes the hooks complete: every
+    declared install -- boot, ``policy_distribution.apply_ceiling``, the test reset --
+    goes through here, so no install site can forget to announce itself.
+
+    Three phases, and the ORDER is the point. Invalidation runs first, so no consumer
+    serves an answer derived from the outgoing ceiling once the incoming one is live;
+    then the context is published; then the install hooks resolve the real answer
+    against it. Publishing before invalidating leaves a governance-resolution-wide
+    window in which the new ceiling is in force and the old answer is still being
+    handed out -- for an authorization answer, a bypass.
+
+    ``notify=False`` is for the lazy default alone; see
+    :func:`register_ceiling_install_hook` for why that one install is silent.
+    """
     global _ACTIVE, _GOVERNANCE_GENERATION
+    if notify:
+        _notify_ceiling_invalidating()
     with _GENERATION_LOCK:
         _ACTIVE = ctx
         _GOVERNANCE_GENERATION += 1
+    if notify:
+        _notify_ceiling_installed(ctx)
 
 
 def governance_generation() -> int:
@@ -564,8 +690,12 @@ def current_context() -> PlatformContext:
                 "open-source defaults (fail-closed). Boot did not run or failed "
                 "to compose the companion."
             )
+        # Silent: this runs INSIDE a governance read (the profile store resolves the
+        # active context for its freshness key), so notifying here would re-enter a
+        # store that is mid-load. Nothing needs it -- see
+        # ``register_ceiling_install_hook``.
         ctx = build_default_context(cfg, profile=PROFILE_STANDALONE)
-        _install(ctx)
+        _install(ctx, notify=False)
         # Return the value just built rather than re-reading the global: the read
         # would need a narrowing cast, and another thread could have installed a
         # different context between the install and the read.

@@ -331,7 +331,6 @@ src/kiro_crew/pod/unit.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
-src/kiro_crew/safety_override.py
 src/kiro_crew/security.py
 src/kiro_crew/seed.py
 src/kiro_crew/sel.py

@@ -1,15 +1,22 @@
 """Enforcement of the ``approval_modes`` policy at every ``yolo`` arming surface.
 
 ``test_approval_modes_governance.py`` pins the *predicate*
-(``approval_mode_permitted`` reading the boot-frozen ceiling). This module pins the
-places that must CONSULT it, because a mode the policy denies is only actually off
-if every path that can arm it -- and every path that HONOURS an existing grant --
-refuses:
+(``approval_mode_permitted`` reading the ceiling on the active context). This module
+pins the places that must CONSULT it, because a mode the policy denies is only
+actually off if every path that can arm it -- and every path that HONOURS an existing
+grant -- refuses:
 
 * ``POST /api/chat/mode`` -- the explicit session-mode switch (403, no mutation).
 * ``safety_override`` arming -- session-wide and scoped.
 * ``is_active`` / ``is_scope_active`` / ``renew_scoped`` -- the consult points that
-  honour a LIVE grant, so a mid-session deny revokes rather than waiting for a TTL.
+  honour a LIVE grant.
+
+It also pins WHEN the verdict is computed, which is the design property the rest of
+the module rests on: ``approval_mode_permitted("yolo")`` is resolved ONCE per ceiling,
+pushed by a hook on ``platform.context._install``, and every consumer then reads a
+module-level flag with no filesystem access, no TTL and no third "not resolved yet"
+state. A deny arriving that way destroys live grants at the moment it is installed
+rather than when something next asks.
 
 The scope governs ``yolo`` only. ``trust`` / ``trust_reads`` are non-deniable (a
 policy naming them is refused at parse time), because their consumption predicates
@@ -23,9 +30,8 @@ record an operator needs after an attempted escalation.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import dataclasses
-import time
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -47,61 +53,20 @@ def _isolate(tmp_path, monkeypatch):
     d.mkdir()
     monkeypatch.setattr(gp, "_PROFILES_DIR", d)
     # Reset on BOTH sides, and reset the context too. Every piece of state these
-    # cases touch is module-level: the profile store, the boot-frozen context, and
-    # the YOLO verdict cache -- which has a WALL-CLOCK TTL. Resetting only on
-    # teardown leaves each case at the mercy of whatever ran before it in the same
-    # worker, which is an order-dependent result that says nothing about the code
-    # under test. Cleaning up on entry is what makes a case mean the same thing
-    # alone and inside the file.
-    # Wait out a resolve an earlier case left in flight BEFORE installing
-    # anything. It runs on a worker thread and its governance read installs the
-    # lazy default context as a side effect, so one that lands after this case has
-    # installed its ceiling REPLACES that ceiling -- and the deny then silently
-    # stops applying in a case that never touched a thread itself. Taking and
-    # releasing the resolve lock is precisely "no resolve is in flight"; it is held
-    # across the whole resolve, so this cannot return while one is running.
-    with so_mod._yolo_policy_lock:
-        pass
+    # cases touch is module-level: the profile store, the active context, and the
+    # pushed YOLO verdict. Resetting only on teardown leaves each case at the mercy
+    # of whatever ran before it in the same worker, which is an order-dependent
+    # result that says nothing about the code under test. Cleaning up on entry is
+    # what makes a case mean the same thing alone and inside the file.
     gp.reset_store()
     ctx_mod.reset_context()
-    so_mod.reset_yolo_policy_cache()
+    so_mod.reset_yolo_policy_state()
     so_mod.reset_singleton()
     yield
-    so_mod.reset_yolo_policy_cache()
+    so_mod.reset_yolo_policy_state()
     so_mod.reset_singleton()
     gp.reset_store()
     ctx_mod.reset_context()
-
-
-@contextlib.asynccontextmanager
-async def _refresh_in_flight(monkeypatch):
-    """Hold a REAL in-flight refresh record for the currently running loop.
-
-    The scheduler suppresses a duplicate only when the record names THIS loop and
-    its task is not done, so a stand-in has to satisfy both. A pending task on the
-    live loop is the honest way to say "a refresh is already running"; the boolean
-    these cases used before could be set from anywhere and stopped meaning anything
-    once the loop lookup moved ahead of the suppression check.
-
-    A context manager rather than a plain helper so the task is always released --
-    a test that abandoned it pending would emit the very "Task was destroyed but it
-    is pending!" noise this record exists to remove.
-    """
-    from kiro_crew import safety_override as so
-
-    loop = asyncio.get_running_loop()
-    gate = asyncio.Event()
-
-    async def _blocked() -> None:
-        await gate.wait()
-
-    task = loop.create_task(_blocked())
-    monkeypatch.setattr(so, "_yolo_policy_refresh", (loop, task))
-    try:
-        yield task
-    finally:
-        gate.set()
-        await task
 
 
 def _install_no_policy() -> None:
@@ -114,7 +79,11 @@ def _install_no_policy() -> None:
 
 
 def _deny(*modes: str) -> None:
-    """Install a boot-frozen ceiling denying ``modes``."""
+    """Install a ceiling denying ``modes``.
+
+    This is the push: ``set_context`` resolves the verdict and revokes live grants
+    before it returns, so nothing in a case needs to nudge a cache afterwards.
+    """
     from kiro_crew.config.loader import KiroCrewConfig
 
     base = build_default_context(KiroCrewConfig.load())
@@ -123,6 +92,27 @@ def _deny(*modes: str) -> None:
             "version": 1,
             "boot": {"fail_closed": True},
             "approval_modes": {"mode": "deny", "deny": list(modes)},
+        }
+    )
+    ctx_mod.set_context(dataclasses.replace(base, governance=ceiling))
+
+
+def _install_unrelated_ceiling() -> None:
+    """Install a DIFFERENT ceiling that still permits ``yolo``.
+
+    Names a real scope rather than another mode: ``approval_modes`` may only deny
+    ``yolo`` (the other three are non-deniable and a policy naming one is refused at
+    parse time), so an install that changes something without touching this verdict
+    has to change a different scope.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    base = build_default_context(KiroCrewConfig.load())
+    ceiling = parse_policy(
+        {
+            "version": 1,
+            "boot": {"fail_closed": True},
+            "yolo_duration": {"mode": "deny", "deny": ["permanent"]},
         }
     )
     ctx_mod.set_context(dataclasses.replace(base, governance=ceiling))
@@ -179,66 +169,24 @@ class TestChatModeEndpointRefusalIsAudited:
         assert data["code"] == "mode_disabled_by_policy"
         assert recorded[-1]["outcome"] == "approval_mode_denied_by_policy"
 
-
-class TestTheEndpointNamesTheRealCause:
-    """``mode_disabled_by_policy`` is reserved for a DEFINITE deny.
-
-    ``approval_mode_permitted`` fails closed, so reading its boolean alone conflated
-    two different answers: a governance READ FAILURE also came back False and the
-    caller was told their organization's policy forbids the mode -- sent looking for
-    a policy that may not exist, while the real fault went unnamed. The two Slack
-    paths were given a three-way split in an earlier round; this endpoint was the
-    twin that did not get it.
-    """
-
     @pytest.mark.asyncio
-    async def test_an_unreadable_policy_is_503_not_a_policy_403(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-        state.get_or_create_slot("s1")
+    async def test_a_governance_error_is_also_a_refusal(self, tmp_path, monkeypatch):
+        """An unreadable policy denies. There is no third answer to report.
 
-        # Current policy could not be read. The two stand-ins are the SAME
-        # governance failure seen through the two readers, which is the whole
-        # point: the verdict says ``unknown``, and the fail-closed boolean the
-        # endpoint used to read on its own says False for exactly that reason --
-        # so reading the boolean alone is indistinguishable from a real deny.
-        #
-        # Stubbed at the ENDPOINT's two readers rather than by forging the module
-        # cache: the verdict is backed by an off-loop refresh, so a thread left
-        # over from an earlier case in this file can restamp it mid-request. The
-        # cache's own three states are pinned by ``TestAPolicyChangeIsNotBoundedByTheTTL``
-        # and ``TestUNKNOWNNeverDestroysAScopedGrant``; what is under test HERE is
-        # which answer the endpoint gives for each.
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers.yolo_policy_verdict", lambda: "unknown"
-        )
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers.approval_mode_permitted", lambda m: False
-        )
-
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post("/api/chat/mode", json={"mode": "yolo", "slot": "s1"})
-            data = await resp.json()
-
-        assert resp.status == 503, "an unreadable policy is transient, not a refusal"
-        assert data["code"] == "approval_mode_policy_unreadable", data
-        assert data["code"] != "mode_disabled_by_policy", (
-            "blaming the organization's policy for a policy nobody could read sends "
-            "the operator down the wrong troubleshooting path"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_definite_deny_is_still_the_audited_403(self, tmp_path, monkeypatch):
-        """The refusal must still work, or the split has broken the control.
-
-        Same stubbing rationale as the case above; the end-to-end refusal against a
-        real boot-frozen ceiling is ``TestChatModeEndpointRefusalIsAudited``.
+        While the verdict was polled behind a TTL it could also be "not resolved
+        under the installed ceiling yet", which this endpoint reported as a
+        transient 503 so an operator was not sent hunting a policy that may not
+        exist. A pushed verdict has no such state: the resolve happens at install
+        time and an error there fails CLOSED, so the honest answer at request time
+        is the same refusal a real deny gets.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        _deny("yolo")
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers.yolo_policy_verdict", lambda: "denied"
-        )
+
+        def _boom(mode: str) -> bool:
+            raise RuntimeError("governance unavailable")
+
+        monkeypatch.setattr(so_mod, "approval_mode_permitted", _boom)
+        _install_no_policy()  # a permissive ceiling; the RESOLVE is what fails
         state = _make_state(tmp_path)
         state.get_or_create_slot("s1")
 
@@ -246,7 +194,7 @@ class TestTheEndpointNamesTheRealCause:
             resp = await client.post("/api/chat/mode", json={"mode": "yolo", "slot": "s1"})
             data = await resp.json()
 
-        assert resp.status == 403
+        assert resp.status == 403, "a policy nobody can read must not select yolo"
         assert data["code"] == "mode_disabled_by_policy", data
 
 
@@ -286,70 +234,1387 @@ class TestSafetyOverrideRefusalIsAudited:
         assert "session:abc" in recorded[-1]["resources"]
 
 
-class TestStatusSnapshotNeverResolvesOnTheEventLoop:
-    """``status_snapshot`` runs on the event loop for every 5s WS frame.
+class TestTheVerdictIsResolvedAtCeilingInstall:
+    """The push, stated directly: an install is what computes the verdict.
 
-    Resolving governance there walks the profiles dir, so the reader must be pure
-    memory: a stale value schedules an off-loop refresh and returns the previous
-    one rather than blocking the frame.
-
-    The status field is derived from the SAME verdict the per-tool-call enforcement
-    predicate reads. It used to have its own TTL cache in ``dashboard/state.py``,
-    which had already drifted from this one: that copy was TTL-only while this one is
-    generation-aware, so the picker could show YOLO selectable for up to a TTL after
-    enforcement had stopped honouring it.
+    Every consumer then reads a flag. That ordering is what removes the windows a
+    polled cache had -- a freshness key, an "unknown" third state, and a per-caller
+    rule for collapsing it -- because a flag is either the answer for the ceiling in
+    force or there is no ceiling installed at all.
     """
 
-    @pytest.mark.asyncio
-    async def test_cached_reader_does_not_resolve_inline(self, monkeypatch):
+    def test_a_deny_install_revokes_a_live_grant_and_fires_the_callback_once(self, monkeypatch):
         from kiro_crew import safety_override as so
 
-        calls: list[str] = []
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        assert override.activate("dashboard").active is True
+        seen: list[str] = []
+        override.on_expired = seen.append
 
-        def _tripwire(mode: str) -> bool:
-            calls.append(mode)
-            return True
+        _deny("yolo")
 
-        monkeypatch.setattr(so, "approval_mode_permitted", _tripwire)
-        monkeypatch.setattr(so, "_yolo_policy_cache", (0.0, False, so._governance_generation()))
-
-        # Stale cache + a refresh already in flight: the reader must return the
-        # last good value WITHOUT resolving, which is what keeps the frame off
-        # the filesystem.
-        async with _refresh_in_flight(monkeypatch):
-            assert so.cached_disabled_approval_modes() == ["yolo"]
-            assert calls == []
-
-    def test_blocking_resolver_updates_the_shared_cache(self, monkeypatch):
-        from kiro_crew import safety_override as so
-
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda mode: mode != "yolo")
-
-        assert so.resolve_disabled_approval_modes_blocking() == ["yolo"]
-        # The event-loop reader now serves the resolved value from memory.
-        assert so.cached_disabled_approval_modes() == ["yolo"]
-
-    def test_a_resolve_error_keeps_the_last_good_value(self, monkeypatch):
-        from kiro_crew import safety_override as so
-
-        monkeypatch.setattr(
-            so, "_yolo_policy_cache", (time.monotonic(), False, so._governance_generation())
+        assert seen == ["policy"], (
+            "the revocation must run when the ceiling is installed, not when "
+            "something next consults the predicate"
         )
+        assert override.has_grant() is False, "a deny DESTROYS the grant, it does not mask it"
+        # The consult points agree, and consulting them repeatedly cannot re-fire a
+        # teardown that broadcasts and rewrites every slot's approval policy.
+        for _ in range(5):
+            assert override.is_active() is False
+        assert seen == ["policy"], f"expected exactly one teardown, got {seen}"
+
+    def test_a_permitting_install_leaves_a_live_grant_alone(self, monkeypatch):
+        """A ceiling install is not itself a revocation.
+
+        Central distribution re-installs a ceiling on every refresh, most of which
+        change nothing. Tearing a grant down on any install would make an unattended
+        run lose its authority on an unrelated poll.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        assert override.activate_scoped("run:abc", "dashboard").active is True
+        seen: list[str] = []
+        override.on_expired = seen.append
+
+        _install_unrelated_ceiling()  # a new ceiling that says nothing about yolo
+
+        assert seen == [], "an install that still permits yolo must revoke nothing"
+        assert override.is_active() is True
+        assert override.is_scope_active("run:abc") is True
+
+    def test_a_raising_governance_layer_resolves_to_denied(self, monkeypatch):
+        """Fail CLOSED. The alternative is auto-approving against unreadable policy."""
+        from kiro_crew import safety_override as so
 
         def _boom(mode: str) -> bool:
             raise RuntimeError("governance unavailable")
 
         monkeypatch.setattr(so, "approval_mode_permitted", _boom)
 
-        # NOT [] — reporting "nothing is denied" would unhide a locked mode in
-        # the picker on a transient governance error.
-        assert so.resolve_disabled_approval_modes_blocking() == ["yolo"]
+        _install_no_policy()
 
-    def test_the_status_field_cannot_contradict_enforcement(self, monkeypatch):
+        assert so.yolo_policy_permits() is False
+        assert so.cached_disabled_approval_modes() == ["yolo"], (
+            "reporting nothing-denied on a resolve error would unhide a mode the "
+            "gate is refusing"
+        )
+
+    def test_a_resolve_failure_is_visible_at_warning_level(self, monkeypatch, caplog):
+        """Fail-closed silently is a misattribution, not just a missing log line.
+
+        Collapsing the old three-state verdict folded "policy could not be read" into
+        "policy denies", so the operator now gets the organization-policy refusal for
+        both causes -- and a solo operator with no policy at all being told a phantom
+        organization blocked them is a defect this code fixed once already. Enforcement
+        has to stay collapsed (a deny is the only fail-closed answer), so the CAUSE has
+        to surface somewhere an operator will actually see it.
+        """
+        import logging
+
+        from kiro_crew import safety_override as so
+
+        def _boom(mode: str) -> bool:
+            raise RuntimeError("governance unavailable")
+
+        monkeypatch.setattr(so, "approval_mode_permitted", _boom)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.safety_override"):
+            _install_no_policy()
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings, "a resolve failure that denies yolo must not be debug-only"
+        assert any(
+            "approval_modes" in r.getMessage() for r in warnings
+        ), "the warning must name the scope that could not be resolved"
+        assert so.yolo_policy_permits() is False
+
+    def test_a_raising_governance_layer_still_revokes_a_live_grant(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        seen: list[str] = []
+        override.on_expired = seen.append
+
+        def _boom(mode: str) -> bool:
+            raise RuntimeError("governance unavailable")
+
+        monkeypatch.setattr(so, "approval_mode_permitted", _boom)
+        _install_no_policy()
+
+        assert override.has_grant() is False
+        assert seen == ["policy"]
+
+    def test_the_first_read_without_an_install_does_not_leave_yolo_dead(self, monkeypatch):
+        """A process that never booted the platform must still be able to arm.
+
+        The flag starts DENIED so a failed bootstrap cannot hand out auto-approve,
+        which makes the bootstrap itself load-bearing: reading the verdict with no
+        ceiling installed has to resolve one (``current_context`` composes and
+        installs the standalone default) rather than serve that initial value.
+        """
+        from kiro_crew import safety_override as so
+
+        ctx_mod.reset_context()
+        so.reset_yolo_policy_state()
+        assert ctx_mod.installed_context() is None
+
+        assert so.yolo_policy_permits() is True, (
+            "an ungoverned host has no ceiling denying yolo; leaving the initial "
+            "fail-closed value in place would disable the feature outright"
+        )
+        assert ctx_mod.installed_context() is not None, "the read resolved a ceiling"
+
+    def test_the_silent_lazy_install_still_yields_the_real_ceilings_verdict(self, monkeypatch):
+        """The lazy default is the one install that does NOT notify, and that is safe.
+
+        It is reached from inside a governance read (the profile store resolves the
+        active context for its freshness key), so a hook that reads governance would
+        re-enter a store that is mid-load and get its fail-closed "not loaded" answer
+        -- a verdict about nothing, cached as the truth.
+
+        Skipping the notification is not a hole, and this is the case that proves it:
+        the lazy default composes ``load_security_policy()``, so it CAN carry a deny,
+        and the first read must still see it. It does, because the read's own bootstrap
+        pushes after composing. Nothing can hold a grant earlier than that, since
+        arming reads the same verdict.
+        """
+        from kiro_crew import safety_override as so
+        from kiro_crew.platform import bootstrap as bs
+
+        denying = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "approval_modes": {"mode": "deny", "deny": ["yolo"]},
+            }
+        )
+        monkeypatch.setattr(bs, "load_security_policy", lambda: denying)
+        ctx_mod.reset_context()
+        so.reset_yolo_policy_state()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+
+        assert so.yolo_policy_permits() is False
+        assert so.safety_override().activate("dashboard").active is False
+
+    def test_a_ceiling_installed_before_registration_is_still_resolved(self, monkeypatch):
+        """The late-registration ordering.
+
+        Registration deliberately does not replay an install that already happened --
+        resolving governance from inside a module import is how cycles are born -- so
+        the first read has to cope with a context that is already in place and has no
+        pending install to announce.
+        """
+        from kiro_crew import safety_override as so
+
+        _deny("yolo")
+        # Exactly the state a late import leaves behind: the ceiling is installed,
+        # but nothing has been pushed into the flag.
+        so.reset_yolo_policy_state()
+
+        assert so.yolo_policy_permits() is False
+
+    def test_a_context_reset_forgets_the_verdict_rather_than_keeping_it(self):
+        """``reset_context`` means there is no ceiling to derive an answer from.
+
+        Keeping the last answer would let a deny outlive the ceiling that issued it,
+        which in this suite reads as yolo being refused in a file that never
+        configured a policy.
+        """
+        from kiro_crew import safety_override as so
+
+        _deny("yolo")
+        assert so.yolo_policy_permits() is False
+
+        ctx_mod.reset_context()
+        assert so._yolo_policy_resolved is False, "the pushed verdict is dropped"
+        assert so.yolo_policy_permits() is True, "the re-resolve sees no denying ceiling"
+
+
+class TestADenyLandingMidArmDoesNotLeaveAGrantBehind:
+    """The gate is a check and the commit is the act, with I/O in between.
+
+    Arming reads the verdict, then writes a fail-closed SEL event -- a synchronous
+    filesystem write -- and only then records the grant. A denying ceiling installed
+    in that gap has already run ``revoke_for_policy`` past an entry that does not
+    exist yet, so committing anyway leaves a grant nothing will ever tear down. The
+    dashboard caller then writes ``approval_policy="auto"`` onto its slots, and
+    ``admission.parent_trusted`` reads that policy directly.
+
+    Driven by installing the ceiling from inside the audit write, which is the real
+    ordering rather than a simulation of it: that is exactly where the gap is.
+    """
+
+    def _deny_during_the_audit(self, monkeypatch, so):
+        """Make the fail-closed audit write install a denying ceiling as it runs."""
+        real = so.SafetyOverride._log_sel
+        fired: list[str] = []
+
+        def _log_sel(self, **kw):
+            if kw.get("critical") and not fired:
+                fired.append(kw.get("operation", ""))
+                _deny("yolo")
+            return real(self, **kw)
+
+        monkeypatch.setattr(so.SafetyOverride, "_log_sel", _log_sel)
+        return fired
+
+    def test_a_session_wide_arm_is_refused(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        fired = self._deny_during_the_audit(monkeypatch, so)
+
+        result = override.activate("dashboard")
+
+        assert fired, "the ceiling must have been installed during the audit"
+        assert result.active is False, (
+            "an arm whose policy was withdrawn mid-flight must be reported as refused, "
+            "or the dashboard writes approval_policy='auto' onto its slots"
+        )
+        assert override.has_grant() is False, (
+            "the revocation already ran past this grant, so committing it would leave "
+            "one that nothing tears down"
+        )
+
+    def test_a_grant_revoked_after_the_commit_is_not_reported_as_active(self, monkeypatch):
+        """The caller acts on the RESULT, not on the grant, so the result must be true.
+
+        A deny landing after the commit revokes the grant through
+        ``revoke_for_policy``. If ``activate`` still answered ``active=True``, the
+        dashboard would write ``approval_policy="auto"`` onto its slots on the
+        strength of that answer, and ``admission.parent_trusted`` reads that policy
+        directly -- so the inherited trust the revocation had just cleared would come
+        straight back, with nothing left to clear it again.
+
+        Driven through ``_sync_breadcrumb``, which runs in the real gap between the
+        commit and the return.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+
+        real = so.SafetyOverride._sync_breadcrumb
+        fired: list[int] = []
+
+        def _sync(self):
+            if not fired:
+                fired.append(1)
+                _deny("yolo")
+            return real(self)
+
+        monkeypatch.setattr(so.SafetyOverride, "_sync_breadcrumb", _sync)
+
+        result = override.activate("dashboard")
+
+        assert fired, "the deny must have landed inside the commit-to-return gap"
+        assert override.has_grant() is False, "the revocation tore the grant down"
+        assert result.active is False, (
+            "reporting a revoked grant as active is what puts approval_policy='auto' "
+            "back onto the slots after the deny cleared it"
+        )
+
+    def test_the_survival_check_reads_both_kinds_of_grant(self, monkeypatch):
+        """Both arming paths report from live state through one shared check.
+
+        ``activate_scoped`` has no I/O between its commit and its return, so the
+        scoped branch cannot be driven by a mid-flight deny the way the session-wide
+        one can. Its logic is asserted directly instead -- the branch, not the race.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        override.activate_scoped("run:abc", "dashboard")
+
+        assert override._committed_grant_survives() is True
+        assert override._committed_grant_survives("run:abc") is True
+        assert override._committed_grant_survives("run:missing") is False
+
+        assert override.revoke_for_policy() is True
+
+        assert override._committed_grant_survives() is False
+        assert override._committed_grant_survives("run:abc") is False, (
+            "a scoped grant revoked by policy must not be reported back to its caller "
+            "-- taskrunner persists run.auto_approve straight from that result"
+        )
+
+    def test_the_verdict_is_written_before_the_revocation_runs(self, monkeypatch):
+        """The ordering the two commit re-checks rely on, pinned directly.
+
+        Under real concurrency the two checks above are only sound because the push
+        writes the denied verdict BEFORE taking ``_lock`` to revoke. If it revoked
+        first, a commit already holding the lock would read a stale permit, the revoke
+        would then run past an entry that did not exist yet, and the grant would
+        survive -- the same orphan, reached by the interleaving instead of by the gap.
+        No single-threaded case can observe that, so the invariant is asserted here.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+
+        seen: list[bool] = []
+        real = so.SafetyOverride.revoke_for_policy
+
+        def _spy(self):
+            seen.append(so._yolo_policy_permitted)
+            return real(self)
+
+        monkeypatch.setattr(so.SafetyOverride, "revoke_for_policy", _spy)
+
+        _deny("yolo")
+
+        assert seen == [False], (
+            "the denied verdict must already be visible when the revocation runs, or a "
+            "concurrent commit holding the lock reads a stale permit and its grant "
+            "outlives the deny"
+        )
+
+    def test_a_scoped_arm_is_refused(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        fired = self._deny_during_the_audit(monkeypatch, so)
+
+        result = override.activate_scoped("run:abc", "dashboard")
+
+        assert fired
+        assert result.active is False
+        assert override.is_scope_active("run:abc") is False
+        with override._lock:
+            assert "run:abc" not in override._scoped, "no orphaned scoped grant"
+
+
+class TestTheVerdictFailsClosedWhileANewCeilingIsBeingResolved:
+    """Publishing the ceiling before re-resolving is a bypass, so it does not.
+
+    ``_install`` makes the new ceiling visible and only then runs the hook that
+    re-resolves the verdict, and that resolve is an ``iterdir`` plus a per-file
+    ``stat``. Ordered that way, the denying ceiling is in force for the whole width of
+    a governance read while ``is_active()`` still hands out the permit resolved under
+    the ceiling that was just retired -- and a tool call landing there is
+    auto-approved against a policy that denies it, with nothing to undo afterwards
+    because the tool has already run.
+
+    So invalidation is the FIRST phase of an install, not the second: the verdict is
+    masked before the assignment and the true answer is written after it.
+    """
+
+    def test_a_reader_inside_the_resolve_window_is_denied(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        assert override.is_active() is True
+
+        # Sampled from INSIDE the post-publication resolve, which is exactly the
+        # window: the new ceiling is already visible and the verdict has not been
+        # rewritten yet.
+        real = so.approval_mode_permitted
+        seen: list[bool] = []
+
+        def _sampling(mode: str) -> bool:
+            seen.append(override.is_active())
+            return real(mode)
+
+        monkeypatch.setattr(so, "approval_mode_permitted", _sampling)
+
+        _deny("yolo")
+
+        assert seen, "the resolve must have run"
+        assert seen == [False], (
+            "a reader inside the resolve window must fail closed -- the new ceiling "
+            "is already in force there, so serving the previous permit auto-approves "
+            "against a policy that denies"
+        )
+
+    def test_the_mask_runs_before_the_new_ceiling_is_published(self, monkeypatch):
+        """The ordering itself, not just its effect.
+
+        Masking during the resolve is not enough: the window that has to be closed
+        opens the instant the new ceiling becomes visible. So the invalidation runs
+        while ``installed_context()`` still answers the OUTGOING ceiling -- which is
+        what leaves no moment where the incoming one is in force and the previous
+        permit is still being served.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        before = ctx_mod.installed_context()
+        seen: list[object] = []
+
+        def _probe() -> None:
+            seen.append(ctx_mod.installed_context())
+
+        ctx_mod.register_ceiling_invalidate_hook(_probe)
+        try:
+            _deny("yolo")
+        finally:
+            ctx_mod._CEILING_INVALIDATE_HOOKS.remove(_probe)
+
+        assert seen, "the invalidate hook must run on a declared install"
+        assert seen[0] is before, (
+            "invalidation must happen BEFORE the new ceiling is published, or the "
+            "denying ceiling is live while the stale permit is still served"
+        )
+        assert so.yolo_policy_permits() is False
+
+    def test_a_permitting_install_restores_the_verdict_it_masked(self, monkeypatch):
+        """The mask is transient, and must not outlive the resolve.
+
+        Masking on EVERY install is what makes the window safe, so a permitting
+        install masks too. If the install hook then failed to write the true answer
+        back, auto-approve would be off for the life of the process.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+
+        _install_unrelated_ceiling()
+
+        assert so.yolo_policy_permits() is True
+        assert override.is_active() is True, "the grant survives a permitting install"
+
+    def test_the_mask_does_not_revoke(self, monkeypatch):
+        """Masking is not a teardown: a permitting install must keep the grant.
+
+        Revoking on the mask would destroy a live grant on every unrelated ceiling
+        refresh -- central distribution re-installs constantly.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        seen: list[str] = []
+        override.on_expired = seen.append
+
+        real = so.approval_mode_permitted
+        during: list[bool] = []
+
+        def _sampling(mode: str) -> bool:
+            during.append(override.has_grant())
+            return real(mode)
+
+        monkeypatch.setattr(so, "approval_mode_permitted", _sampling)
+        _install_unrelated_ceiling()
+
+        assert during == [True], "the grant must still EXIST while the mask is on"
+        assert seen == [], "a mask fires no expiry teardown"
+
+
+class TestInheritedTrustIsSuspendedWhileANewCeilingResolves:
+    """The verdict mask alone does not close the resolve window for spawn admission.
+
+    ``_on_ceiling_invalidating`` masks ``is_active()`` before the new ceiling publishes,
+    but ``admission.parent_trusted`` never reads ``is_active()`` -- it reads the slot's
+    approval policy directly, and that is cleared only AFTER a deny has been resolved.
+    So for the whole width of the resolve a spawn from a slot carrying the override's
+    inherited ``"auto"`` was auto-approved against a ceiling that may deny, and the
+    launched subagent is never un-spawned. The inherited state has to be suspended
+    before publication, alongside the mask, and restored if the ceiling still permits.
+    """
+
+    def _armed_with_inherited_trust(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        policies: dict[str, str] = {"dashboard:s1": "auto", "dashboard:standing": "auto"}
+        standing = {"dashboard:standing"}
+
+        def _suspend():
+            taken = [k for k, v in policies.items() if v == "auto" and k not in standing]
+            for k in taken:
+                policies[k] = ""
+            if not taken:
+                return None
+
+            def _restore():
+                for k in taken:
+                    policies[k] = "auto"
+
+            return _restore
+
+        def _clear(_source):
+            for k in list(policies):
+                if k not in standing:
+                    policies[k] = ""
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        override.on_policy_suspend = _suspend
+        override.on_policy_revoked = _clear
+        return so, override, policies
+
+    def test_a_spawn_admission_read_inside_the_resolve_sees_no_inherited_auto(self, monkeypatch):
+        so, override, policies = self._armed_with_inherited_trust(monkeypatch)
+
+        real = so.approval_mode_permitted
+        seen: list[str] = []
+
+        def _sampling(mode):
+            # Exactly what ``admission.parent_trusted`` reads, sampled from INSIDE the
+            # post-publication resolve: the new ceiling is live here.
+            seen.append(policies["dashboard:s1"])
+            return real(mode)
+
+        monkeypatch.setattr(so, "approval_mode_permitted", _sampling)
+        _deny("yolo")
+
+        assert seen == [""], (
+            "the slot's inherited approval_policy must already be suspended while the "
+            f"new ceiling resolves, or a spawn there is auto-approved; saw {seen}"
+        )
+        assert policies["dashboard:s1"] == "", "a deny makes the suspension permanent"
+        assert policies["dashboard:standing"] == "auto", "standing trust is never touched"
+
+    def test_a_denying_install_never_calls_the_restore(self, monkeypatch):
+        """Restore-then-revoke would reopen the gap for the statements in between.
+
+        The end state is the same either way, which is why this asserts on the CALL
+        rather than on the policies: a restore that runs and is immediately re-cleared
+        puts ``"auto"`` back on the slots for a moment, on a ceiling already resolved
+        to deny -- exactly the read ``parent_trusted`` makes.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        restored: list[int] = []
+        override.on_policy_suspend = lambda: (lambda: restored.append(1))
+
+        _deny("yolo")
+
+        assert restored == [], "a deny must drop the restore, never call it"
+        assert override.has_grant() is False
+
+    def test_a_permitting_install_restores_the_suspended_trust(self, monkeypatch):
+        so, override, policies = self._armed_with_inherited_trust(monkeypatch)
+
+        real = so.approval_mode_permitted
+        during: list[str] = []
+        monkeypatch.setattr(
+            so,
+            "approval_mode_permitted",
+            lambda m: (during.append(policies["dashboard:s1"]), real(m))[1],
+        )
+        _install_unrelated_ceiling()
+
+        assert during == [""], "suspended during the resolve even on a permitting install"
+        assert (
+            policies["dashboard:s1"] == "auto"
+        ), "a ceiling that still permits must hand the inherited trust back exactly"
+        assert override.is_active() is True
+
+    def test_an_explicit_revoke_during_the_resolve_is_not_undone_by_the_restore(self, monkeypatch):
+        """The restore belongs to ONE grant; if that grant is gone, nothing goes back.
+
+        The governance read between suspend and restore is long enough for the operator
+        to revoke YOLO explicitly, which clears the same slot policies the restore would
+        put back. A permitting ceiling then resurrecting ``"auto"`` would hand
+        ``parent_trusted`` an auto-approve the operator had just withdrawn.
+        """
+        so, override, policies = self._armed_with_inherited_trust(monkeypatch)
+
+        real = so.approval_mode_permitted
+
+        def _revoke_mid_resolve(mode):
+            # The operator's `!yolo off` / picker->normal, landing inside the resolve.
+            override.deactivate("dashboard")
+            for k in policies:
+                if k != "dashboard:standing":
+                    policies[k] = ""
+            return real(mode)
+
+        monkeypatch.setattr(so, "approval_mode_permitted", _revoke_mid_resolve)
+        _install_unrelated_ceiling()  # permits yolo
+
+        assert so.yolo_policy_permits() is True, "the ceiling itself still permits"
+        assert override.has_grant() is False, "the operator's revoke stands"
+        assert policies["dashboard:s1"] == "", (
+            "a permitting resolve must not resurrect inherited trust the operator "
+            "revoked while it was running"
+        )
+
+    def test_the_epoch_moves_on_deactivate_not_only_on_activate(self, monkeypatch):
+        """``_activation_count`` alone cannot see a revoke; the epoch has to."""
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        e1 = override.grant_epoch()
+        override.deactivate("dashboard")
+        e2 = override.grant_epoch()
+        assert e1 != e2, "an explicit revoke must change the epoch"
+        override.activate_scoped("run:x", "dashboard")
+        assert override.grant_epoch() not in (e1, e2)
+
+    def test_nothing_is_suspended_without_a_grant(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        calls: list[int] = []
+        so.safety_override().on_policy_suspend = lambda: calls.append(1) or None
+
+        _deny("yolo")
+
+        assert calls == [], "no grant means no inherited state to suspend"
+
+    def test_a_raising_suspend_does_not_break_the_install(self, monkeypatch):
+        so, override, policies = self._armed_with_inherited_trust(monkeypatch)
+
+        def _boom():
+            raise RuntimeError("session store unavailable")
+
+        override.on_policy_suspend = _boom
+        _deny("yolo")
+
+        assert so.yolo_policy_permits() is False
+        assert override.has_grant() is False
+        assert policies["dashboard:s1"] == "", "the revoke still clears it"
+
+
+class TestTheDashboardInheritedTrustHandlers:
+    """The two module-level handlers ``start_dashboard`` wires, driven for real.
+
+    ``_suspend_override_derived_trust`` blanks the override's inherited ``"auto"`` on
+    every non-standing slot before a ceiling publishes and returns a restore;
+    ``_clear_override_derived_trust`` is the permanent clear a resolved deny runs. Both
+    touch only the slot dict and the session store, which is what lets them run on the
+    installing thread.
+    """
+
+    @staticmethod
+    def _state_with_slots(tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        policies: dict[str, str] = {}
+        state = _make_state(tmp_path)
+        state.sessions.get_approval_policy = lambda key: policies.get(key, "")
+        state.sessions.set_approval_policy = lambda key, value: policies.__setitem__(key, value)
+        return state, policies
+
+    def test_suspend_blanks_inherited_auto_and_restore_puts_it_back(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.server import _suspend_override_derived_trust
+
+        state, policies = self._state_with_slots(tmp_path, monkeypatch)
+        plain = state.get_or_create_slot("plain")
+        standing = state.get_or_create_slot("standing")
+        standing._trust = True
+        untouched = state.get_or_create_slot("untouched")  # never had auto
+        for s in (plain, standing):
+            policies[effective_session_key(s)] = "auto"
+
+        restore = _suspend_override_derived_trust(state)
+
+        assert restore is not None
+        assert policies[effective_session_key(plain)] == "", "inherited auto is suspended"
+        assert policies[effective_session_key(standing)] == "auto", "standing trust is spared"
+        assert effective_session_key(untouched) not in policies
+
+        restore()
+        assert policies[effective_session_key(plain)] == "auto", "restored exactly"
+
+    def test_restore_does_not_upgrade_a_slot_moved_to_trust_reads(self, tmp_path, monkeypatch):
+        """The operator changed the slot's mode during the resolve; honour it.
+
+        ``trust_reads`` / ``trust`` / ``normal`` all write this same policy. Restoring
+        ``"auto"`` over a ``trust_reads`` slot would upgrade read-only trust to full
+        auto-approve on the read ``parent_trusted`` makes.
+        """
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.server import _suspend_override_derived_trust
+
+        state, policies = self._state_with_slots(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        key = effective_session_key(slot)
+        policies[key] = "auto"
+        restore = _suspend_override_derived_trust(state)
+        assert restore is not None and policies[key] == ""
+
+        # What api_chat_mode(mode="trust_reads") does to the slot, mid-resolve.
+        slot._trust_reads = True
+        policies[key] = ""
+
+        restore()
+        assert policies[key] == "", "a trust_reads slot must not be upgraded to auto"
+
+    def test_restore_skips_a_slot_whose_policy_changed_or_that_was_removed(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.server import _suspend_override_derived_trust
+
+        state, policies = self._state_with_slots(tmp_path, monkeypatch)
+        changed = state.get_or_create_slot("changed")
+        gone = state.get_or_create_slot("gone")
+        for s in (changed, gone):
+            policies[effective_session_key(s)] = "auto"
+        restore = _suspend_override_derived_trust(state)
+        assert restore is not None
+
+        # A Trust press wrote "auto" itself mid-resolve; a slot was closed.
+        policies[effective_session_key(changed)] = "auto"
+        changed._trust = True
+        del state._slots["gone"]
+
+        restore()
+        assert policies[effective_session_key(changed)] == "auto", "left as the operator set it"
+        assert policies[effective_session_key(gone)] == "", "a removed slot gets nothing back"
+
+    def test_restore_only_writes_over_the_empty_policy_it_left(self, tmp_path, monkeypatch):
+        """The policy is the contract, not the slot flags.
+
+        ``add_trusted_session`` (a channel Trust press) writes the session policy
+        without touching any dashboard slot flag, so a flag check alone cannot see it.
+        A restore that finds anything but the empty string it wrote leaves it alone --
+        somebody else owns that value now.
+        """
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.server import _suspend_override_derived_trust
+
+        state, policies = self._state_with_slots(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        key = effective_session_key(slot)
+        policies[key] = "auto"
+        restore = _suspend_override_derived_trust(state)
+        assert restore is not None and policies[key] == ""
+
+        # Some other owner wrote the policy mid-resolve; no slot flag changed.
+        policies[key] = "reads"
+
+        restore()
+        assert policies[key] == "reads", "restore must not overwrite a policy it did not leave"
+
+    def test_suspend_returns_none_when_nothing_carried_inherited_auto(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.server import _suspend_override_derived_trust
+
+        state, _ = self._state_with_slots(tmp_path, monkeypatch)
+        state.get_or_create_slot("s1")
+        assert _suspend_override_derived_trust(state) is None
+
+    def test_clear_survives_a_slot_removed_during_the_walk(self, tmp_path, monkeypatch):
+        """The clear runs off-loop while the loop churns slots; it must not abort partway.
+
+        Iterating the live dict would raise "dictionary changed size during iteration"
+        and leave every unreached slot at ``"auto"`` -- a partial revocation.
+        """
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.server import _clear_override_derived_trust
+
+        state, policies = self._state_with_slots(tmp_path, monkeypatch)
+        slots = [state.get_or_create_slot(f"s{i}") for i in range(4)]
+        for s in slots:
+            policies[effective_session_key(s)] = "auto"
+
+        # Mutate the slot dict from inside the walk, via the policy write.
+        real_set = state.sessions.set_approval_policy
+
+        def _set_and_churn(key, value):
+            real_set(key, value)
+            state._slots.pop("s3", None)
+            state._slots.setdefault("new", slots[0])
+
+        state.sessions.set_approval_policy = _set_and_churn
+        monkeypatch.setattr(
+            "kiro_crew.messaging.session_trust.clear_trusted_sessions", lambda **kw: None
+        )
+
+        _clear_override_derived_trust(state, "policy")
+
+        assert all(
+            policies[effective_session_key(s)] == "" for s in slots
+        ), "every slot snapshotted at the start must be cleared, whatever the loop did"
+
+    def test_start_dashboard_wires_both_handlers_to_the_singleton(self):
+        """The seams are only closed if start_dashboard actually installs them."""
+        import pathlib as _pl
+
+        src = (
+            _pl.Path(__file__).resolve().parents[1]
+            / "src"
+            / "kiro_crew"
+            / "dashboard"
+            / "server.py"
+        ).read_text(encoding="utf-8")
+        assert (
+            "safety_override().on_policy_revoked = functools.partial("
+            "_clear_override_derived_trust, state)" in src
+        )
+        assert (
+            "safety_override().on_policy_suspend = functools.partial("
+            "_suspend_override_derived_trust, state)" in src
+        )
+
+
+class TestTheRevocationNoticeReachesTheLoopItWasInstalledOn:
+    """``apply_ceiling`` can install a ceiling from a worker thread.
+
+    ``_on_expired`` is loop-affine: it schedules the Slack expiry DM and the
+    unattended-run notice with ``loop.create_task`` behind a ``get_running_loop()``
+    probe, so called off-loop it silently posts nothing -- and silence about a
+    security grant being revoked is what that notice exists to prevent. So the
+    callback is scheduled onto the loop it was installed from, while the grant
+    teardown itself (thread-safe, and the part that must be true immediately) runs
+    inline on the installing thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_inherited_trust_teardown_is_not_deferred(self, monkeypatch):
+        """Only the NOTIFICATION may wait for the loop; the state may not.
+
+        ``admission.parent_trusted`` reads a session's ``approval_policy == "auto"``
+        directly, consulting no flag here, so deferring that teardown leaves a
+        loop-turn window in which a spawn is auto-approved against the denying ceiling
+        -- and the subagent it launched is not un-spawned by the cleanup that arrives
+        afterwards. So the inherited half runs inline, on the installing thread, before
+        anything is scheduled.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+
+        loop = asyncio.get_running_loop()
+        notified = asyncio.Event()
+        order: list[str] = []
+        threads: dict[str, str] = {}
+
+        def _clear_state(source: str) -> None:
+            order.append(f"state:{source}")
+            threads["state"] = threading.current_thread().name
+
+        def _notify(source: str) -> None:
+            order.append(f"notify:{source}")
+            threads["notify"] = threading.current_thread().name
+            loop.call_soon_threadsafe(notified.set)
+
+        override.on_policy_revoked = _clear_state
+        override.on_expired = _notify
+
+        loop_thread = threading.current_thread().name
+        install_thread: list[str] = []
+
+        def _install() -> None:
+            install_thread.append(threading.current_thread().name)
+            _deny("yolo")
+
+        await asyncio.to_thread(_install)
+        await asyncio.wait_for(notified.wait(), timeout=5)
+
+        # Which THREAD each half ran on is the timing-independent form of "one is
+        # inline and the other is deferred": sampling the ordering mid-flight would
+        # race the loop, which is free to run the scheduled half the moment the
+        # installing thread yields.
+        assert threads["state"] == install_thread[0], (
+            "the inherited-trust teardown must run INLINE on the thread that installed "
+            "the ceiling -- deferring it is the window a spawn is auto-approved in"
+        )
+        assert threads["notify"] == loop_thread, (
+            "the notification is loop-affine and must be scheduled, not run off-loop "
+            "where it silently posts nothing"
+        )
+        # Deterministic regardless of scheduling: the inline call precedes the
+        # ``call_soon_threadsafe`` that queues the other.
+        assert order == ["state:policy", "notify:policy"]
+
+    def test_the_notifier_still_runs_the_inherited_teardown(self):
+        """Splitting the handler must not drop the teardown from the TTL path.
+
+        A TTL lapse fires ``on_expired`` and nothing else -- there is no separate
+        synchronous call on that path -- so the notifier has to keep running the
+        inherited-trust teardown itself. Asserted against the source because the
+        handler is a closure inside ``start_dashboard`` and cannot be imported; the
+        failure it guards is silent, since a lapsed grant would simply leave every slot
+        at ``approval_policy="auto"`` for good.
+        """
+        import pathlib as _pl
+
+        repo_root = _pl.Path(__file__).resolve().parents[1]
+        src = (repo_root / "src" / "kiro_crew" / "dashboard" / "server.py").read_text(
+            encoding="utf-8"
+        )
+        body = src.split("def _on_override_expired(source: str) -> None:", 1)
+        assert len(body) == 2, "the expiry notifier was renamed; update this guard"
+        notifier = body[1].split("\n    safety_override().on_expired", 1)[0]
+        assert "_clear_override_derived_trust(state, source)" in notifier, (
+            "the expiry notifier must still clear inherited trust -- a TTL lapse has "
+            "no other path to it"
+        )
+
+    def test_inherited_trust_is_cleared_before_the_grant_flag_drops(self, monkeypatch):
+        """The two stores cannot be written atomically, so the ORDER decides the failure.
+
+        Grant-first leaves the slots at ``approval_policy="auto"`` for the statements in
+        between, and ``admission.parent_trusted`` reads that policy directly -- so a
+        spawn there is auto-approved against the denying ceiling and no later event
+        un-spawns it. Inherited-first inverts that: the spawn path is already closed
+        while only the grant flag trails, which is recoverable.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+
+        order: list[str] = []
+
+        def _clear_state(_source: str) -> None:
+            # Sampled INSIDE the clear: the grant must still be standing here, which is
+            # what proves the inherited half ran first.
+            order.append(f"state(grant={override.has_grant()})")
+
+        override.on_policy_revoked = _clear_state
+        override.on_expired = lambda source: order.append("notify")
+
+        _deny("yolo")
+
+        assert order == ["state(grant=True)", "notify"], (
+            "the inherited-trust clear must run while the grant is still standing -- "
+            f"reversing it reopens the unrecoverable spawn window; saw {order}"
+        )
+        assert override.has_grant() is False, "and the grant is gone by the end"
+
+    def test_a_scoped_only_deny_revokes_the_scope_but_clears_no_inherited_trust(self, monkeypatch):
+        """Scoped grants write no inherited state, so the clear must not run for them.
+
+        The inherited clear also empties the shared channel-trust mapping. A deny landing
+        while the only live grant is a taskrunner's scoped one would otherwise revoke an
+        independent Trust press on an unrelated channel session -- trust this override
+        never handed out. The scoped grant itself is still revoked.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        assert override.activate_scoped("run:abc", "dashboard").active is True
+        touched: list[str] = []
+        override.on_policy_revoked = lambda source: touched.append("clear")
+        override.on_policy_suspend = lambda: touched.append("suspend") or None
+        override.on_expired = lambda source: touched.append("notify")
+
+        _deny("yolo")
+
+        assert override.is_scope_active("run:abc") is False, "the scoped grant is revoked"
+        assert (
+            "clear" not in touched and "suspend" not in touched
+        ), f"a scoped-only deny must not touch inherited/channel trust; saw {touched}"
+        assert "notify" not in touched, "no session-wide grant, no expiry notice"
+
+    def test_no_grant_means_no_inherited_clear_and_no_notice(self, monkeypatch):
+        """A deny install with nothing armed must not touch inherited state.
+
+        The clear also revokes the shared channel-trust mapping, so running it when no
+        grant ever existed would revoke trust this override never handed out.
+        """
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        touched: list[str] = []
+        override.on_policy_revoked = lambda source: touched.append("state")
+        override.on_expired = lambda source: touched.append("notify")
+
+        _deny("yolo")
+
+        assert touched == [], "nothing was armed, so there is nothing derived to clear"
+
+    def test_a_raising_sync_teardown_does_not_stop_the_notification(self, monkeypatch):
+        """The two halves are independent; neither may swallow the other."""
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+
+        def _boom(_source: str) -> None:
+            raise RuntimeError("session store unavailable")
+
+        override.on_policy_revoked = _boom
+        seen: list[str] = []
+        override.on_expired = seen.append
+
+        _deny("yolo")
+
+        assert override.has_grant() is False
+        assert seen == ["policy"]
+
+    @pytest.mark.asyncio
+    async def test_an_off_thread_install_schedules_the_callback_onto_the_loop(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+
+        loop = asyncio.get_running_loop()
+        fired = asyncio.Event()
+        threads: list[str] = []
+
+        def _handler(source: str) -> None:
+            threads.append(threading.current_thread().name)
+            loop.call_soon_threadsafe(fired.set)
+
+        # Assigned from inside a running loop, which is how the dashboard installs it.
+        override.on_expired = _handler
+        assert override._on_expired_loop is loop
+
+        main_thread = threading.current_thread().name
+        await asyncio.to_thread(_deny, "yolo")
+
+        # The teardown is NOT deferred: it is done by the time the install returns.
+        assert override.has_grant() is False
+
+        await asyncio.wait_for(fired.wait(), timeout=5)
+        assert threads == [main_thread], (
+            "the handler must run on the loop it was installed from, not on the "
+            "worker thread that installed the ceiling"
+        )
+
+    def test_no_recorded_loop_means_the_callback_runs_inline(self, monkeypatch):
+        """A sync CLI or test has no loop to schedule onto; dropping it is not an option."""
+        from kiro_crew import safety_override as so
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.activate("dashboard")
+        seen: list[str] = []
+        override.on_expired = seen.append
+        assert override._on_expired_loop is None
+
+        _deny("yolo")
+
+        assert seen == ["policy"]
+
+
+class TestInheritedSlotTrustIsClearedOnADenyInstall:
+    """Clearing the grant flag is NOT the whole revocation.
+
+    A dashboard grant also writes ``approval_policy="auto"`` onto the slots and into
+    the shared channel-trust mapping, and ``subagent_manager.admission`` reads THAT
+    policy -- ``sessions.get_approval_policy(parent_session_key) == "auto"`` -- rather
+    than any flag in ``safety_override``. So a revocation that stopped at the flag
+    left ``spawn_run`` auto-approved, and a subagent already launched under it is not
+    un-spawned when the deny lands. ``_on_expired`` is the handler that resets those
+    policies, which is why the deny install fires it.
+    """
+
+    def test_the_admission_predicate_stops_reading_auto_after_a_deny_install(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        policies: dict[str, str] = {}
+
+        class _Sessions:
+            def get_approval_policy(self, key: str) -> str:
+                return policies.get(key, "")
+
+            def set_approval_policy(self, key: str, value: str) -> None:
+                policies[key] = value
+
+        sessions = _Sessions()
+        parent_key = "dashboard:s1"
+
+        def _on_expired(_source: str) -> None:
+            # The shape of the dashboard's own handler: every slot's inherited
+            # policy is reset. Reproduced here rather than imported because the real
+            # one is defined inside ``start_dashboard``.
+            for key in list(policies):
+                sessions.set_approval_policy(key, "")
+
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        override = so.safety_override()
+        override.on_expired = _on_expired
+        assert override.activate("dashboard").active is True
+        # What the dashboard grant does to the slot it was armed from.
+        sessions.set_approval_policy(parent_key, "auto")
+        assert sessions.get_approval_policy(parent_key) == "auto"
+
+        _deny("yolo")
+
+        assert sessions.get_approval_policy(parent_key) != "auto", (
+            "spawn admission reads the slot's approval policy directly, so a "
+            "revocation that leaves it at 'auto' keeps auto-approving subagents "
+            "against a policy that denies yolo"
+        )
+        assert override.is_active() is False
+
+
+class TestTheApprovalCardDoesNotRestoreTrustAfterADeny:
+    """The grant's INHERITED half is written by the caller, outside the revoke's lock.
+
+    ``POST /api/chat/slots/<slot>/approve`` with ``action=yolo`` arms the grant and
+    then writes ``approval_policy="auto"`` onto every slot -- and
+    ``admission.parent_trusted`` reads that policy directly rather than any flag in
+    ``safety_override``. A denying ceiling installed after the arm returns revokes the
+    grant and runs its ``_on_expired`` cleanup, so a write landing after that cleanup
+    puts the inherited trust straight back with nothing left to clear it: a subagent
+    spawned under it is auto-approved, and no later event un-spawns it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_deny_during_the_policy_write_leaves_no_inherited_auto(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import safety_override as so
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        _install_no_policy()
+        so.reset_singleton()
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+
+        policies: dict[str, str] = {}
+        state = _make_state(tmp_path)
+        state.sessions.get_approval_policy = lambda key: policies.get(key, "")
+        fired: list[int] = []
+
+        def _set_policy(key: str, value: str) -> None:
+            policies[key] = value
+            # The deny lands mid-write, which is the reachable ordering: the arm has
+            # already returned, so its own survival check cannot see this.
+            if value == "auto" and not fired:
+                fired.append(1)
+                _deny("yolo")
+
+        state.sessions.set_approval_policy = _set_policy
+        slot = state.get_or_create_slot("s1")
+        # A slot carrying STANDING trust. A Trust press is a separate, longer-lived
+        # decision that no yolo deny expires, so the reconcile must leave it alone --
+        # the same rule ``_on_override_expired`` applies.
+        trusted = state.get_or_create_slot("s2")
+        trusted._trust = True
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        slot._approval_futures["req-1"] = fut
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/approve",
+                json={"action": "yolo", "request_id": "req-1"},
+            )
+            body = await resp.json()
+
+        assert fired, "the deny must have landed during the policy write"
+        assert body.get("ok") is True, "the operator's click still approves that tool"
+        assert so.safety_override().has_grant() is False, "the deny revoked the grant"
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        plain_key = effective_session_key(slot)
+        trusted_key = effective_session_key(trusted)
+        assert policies.get(plain_key) != "auto", (
+            "a slot left at approval_policy='auto' after the deny keeps auto-approving "
+            "subagent spawns through admission.parent_trusted"
+        )
+        assert policies.get(trusted_key) == "auto", (
+            "standing trust is not expired by a yolo deny -- clearing it here would "
+            "revoke a grant nobody withdrew"
+        )
+
+
+class TestOnlyOneSurfaceWritesGrantDerivedTrust:
+    """A ratchet on the obligation the reconcile carries.
+
+    ``SafetyOverride`` revokes the grant, but the INHERITED half -- the
+    ``approval_policy="auto"`` a caller writes onto its sessions from an
+    ``ActivationResult`` -- is written outside the lock that revocation takes, and
+    ``admission.parent_trusted`` reads it directly. So every such writer owes a
+    post-write reconcile, and a new transport that writes inherited state from an arm
+    without one silently reopens #8849.
+
+    That obligation cannot be enforced by a type or a lock, so it is pinned here: the
+    set of files pairing an arm with an ``"auto"`` write is DECLARED, and a newcomer
+    fails this test until its author writes down that it reconciles. Same
+    declared-map-plus-scan shape as ``PEEK_CALLERS`` and the shared-path floor -- a
+    forcing function, not a proof.
+    """
+
+    #: ``<path under src/kiro_crew>`` -> why its grant-derived write is safe.
+    WRITERS = {
+        "dashboard/chat_handlers.py": (
+            "api_chat_slot_approve's action=yolo branch writes approval_policy='auto' "
+            "onto every slot from the ActivationResult, then re-reads the verdict and "
+            "clears what it just set if policy now denies -- preserving standing trust "
+            "on the same rule _on_override_expired uses."
+        ),
+    }
+
+    def test_the_declared_set_is_exactly_the_files_that_pair_the_two(self):
+        import pathlib as _pl
+
+        src = _pl.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        found: set[str] = set()
+        for path in src.rglob("*.py"):
+            if "_vendor" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            arms = "safety_override().activate" in text
+            grants = "set_approval_policy(" in text and '"auto"' in text
+            if arms and grants:
+                found.add(str(path.relative_to(src)).replace("\\", "/"))
+
+        undeclared = found - set(self.WRITERS)
+        assert not undeclared, (
+            f"{sorted(undeclared)} arms a grant AND writes approval_policy='auto'. That "
+            "write is the grant's inherited half, it happens outside the lock "
+            "revoke_for_policy takes, and admission.parent_trusted reads it directly -- "
+            "so it MUST reconcile after writing (re-read the verdict, clear what it set "
+            "if policy now denies, preserve standing trust). Then declare it in "
+            "TestOnlyOneSurfaceWritesGrantDerivedTrust.WRITERS with that reasoning."
+        )
+        stale = set(self.WRITERS) - found
+        assert not stale, (
+            f"{sorted(stale)} no longer pairs an arm with an 'auto' write; drop its "
+            "entry so this map cannot decay into permissions nobody exercises"
+        )
+
+    def test_the_declared_writer_actually_reconciles(self):
+        """The declaration is a claim; this checks the code still backs it."""
+        import pathlib as _pl
+
+        src = _pl.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        for rel in self.WRITERS:
+            text = (src / rel).read_text(encoding="utf-8")
+            assert "if not yolo_policy_permits():" in text, (
+                f"{rel} is declared as reconciling its grant-derived write, but no "
+                "post-write verdict re-read is left in it"
+            )
+
+
+class TestNothingResolvesGovernanceOffTheInstallPath:
+    """Every consumer is a bare read, and that is a hard property, not a preference.
+
+    ``is_active`` is the predicate every transport hands to ``TurnDriver`` (so it runs
+    per TOOL CALL), ``status_snapshot`` rides the 5s WebSocket push, and arming is
+    reached from the event loop by synchronous callers. Resolving the scope walks the
+    profiles dir, so any of those doing it would put filesystem work where it cannot go.
+    """
+
+    @pytest.fixture()
+    def _tripwire(self, monkeypatch):
+        from kiro_crew import safety_override as so
+
+        # Singleton reset FIRST: it forgets the pushed verdict, so installing the
+        # ceiling afterwards is what leaves a resolved flag behind for the tripwire
+        # to prove nothing re-reads.
+        so.reset_singleton()
+        _install_no_policy()  # resolves the verdict ONCE, here
+        monkeypatch.setattr(so, "sel", lambda: MagicMock())
+        calls: list[str] = []
+
+        def _boom(mode: str) -> bool:
+            calls.append(mode)
+            return True
+
+        monkeypatch.setattr(so, "approval_mode_permitted", _boom)
+        return calls
+
+    def test_the_hot_predicate_does_not_resolve(self, _tripwire):
+        from kiro_crew import safety_override as so
+
+        so.safety_override().activate("dashboard")
+        for _ in range(20):
+            so.safety_override().is_active()
+
+        assert _tripwire == [], "is_active runs per tool call; it must never resolve"
+
+    def test_arming_does_not_resolve(self, _tripwire):
+        """Arming reads the flag too, so its async callers need no offload FOR THIS.
+
+        They keep one anyway: the fail-closed SEL audit is still a filesystem write.
+        """
+        from kiro_crew import safety_override as so
+
+        assert so.safety_override().activate("dashboard").active is True
+        assert so.safety_override().activate_scoped("run:abc", "dashboard").active is True
+
+        assert _tripwire == [], "arming must not walk the profiles dir"
+
+    def test_the_scoped_consult_points_do_not_resolve(self, _tripwire):
+        from kiro_crew import safety_override as so
+
+        so.safety_override().activate_scoped("run:abc", "dashboard")
+        for _ in range(20):
+            so.safety_override().is_scope_active("run:abc")
+            so.safety_override().renew_scoped("run:abc", "dashboard")
+
+        assert _tripwire == []
+
+    def test_the_status_reader_does_not_resolve(self, _tripwire):
+        from kiro_crew import safety_override as so
+
+        for _ in range(20):
+            assert so.cached_disabled_approval_modes() == []
+
+        assert _tripwire == []
+
+    def test_the_status_field_cannot_contradict_enforcement(self):
         """The anti-divergence property, stated directly.
 
-        Two caches of one question is what allowed the picker to disagree with the
-        gate. Whatever ``yolo_policy_permits`` says, the reported list must say.
+        Two caches of one question is what let the picker disagree with the gate.
+        Whatever ``yolo_policy_permits`` says, the reported list must say.
         """
         from kiro_crew import safety_override as so
 
@@ -362,279 +1627,28 @@ class TestStatusSnapshotNeverResolvesOnTheEventLoop:
         assert so.cached_disabled_approval_modes() == ["yolo"]
 
     @pytest.mark.asyncio
-    async def test_status_snapshot_is_served_from_the_cache(self, tmp_path, monkeypatch):
+    async def test_status_snapshot_reports_the_pushed_verdict(self, tmp_path, monkeypatch):
         from kiro_crew import safety_override as so
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        # A denial cached under the CURRENT generation, with a refresh in flight so
-        # the reader cannot go resolve. ``["trust", "yolo"]`` was the shape an earlier
-        # revision asserted here; the backend can never emit it, because those modes
-        # are non-deniable.
-        monkeypatch.setattr(so, "_yolo_policy_cache", (0.0, False, so._governance_generation()))
+        _deny("yolo")
         state = _make_state(tmp_path)
 
-        async with _refresh_in_flight(monkeypatch):
-            snap = state.status_snapshot()
+        snap = state.status_snapshot()
 
+        # ``["trust", "yolo"]`` was the shape an earlier revision asserted here; the
+        # backend can never emit it, because those modes are non-deniable.
         assert snap["disabled_approval_modes"] == ["yolo"]
-
-
-class TestATightenedPolicyRevokesALiveGrant:
-    """Gating only at ARMING left a live grant honoured until its own TTL.
-
-    An admin who denies ``yolo`` mid-session then kept auto-approving every tool
-    for up to 24h, so the control announced a state it was not enforcing.
-    ``is_active()`` is the consult point every transport hands to ``TurnDriver``,
-    which is why the check lives there rather than at each call site.
-    """
-
-    def test_a_live_grant_stops_being_honoured_when_policy_denies(self, monkeypatch):
-        from kiro_crew import safety_override as so
-
-        # Arm under a policy that permits.
-        _install_no_policy()
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        assert so.safety_override().activate("dashboard").active is True
-        assert so.safety_override().is_active() is True
-
-        # The admin tightens the policy while the grant is live.
-        _deny("yolo")
-        so.reset_yolo_policy_cache()
-
-        assert so.safety_override().is_active() is False
-
-    def test_a_denied_grant_is_revoked_so_relaxing_does_not_resurrect_it(self, monkeypatch):
-        """Denial REVOKES. Masking-without-revoking was a defect, not a feature.
-
-        An earlier revision left the grant in place and only reported inactive, so
-        relaxing the policy silently restored auto-approve. That is wrong because the
-        same predicate answers "is there a grant to clear?" -- see the test below. A
-        fresh arm after the policy relaxes is the honest outcome.
-        """
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        so.safety_override().activate("dashboard")
-
-        _deny("yolo")
-        so.reset_yolo_policy_cache()
-        assert so.safety_override().is_active() is False
-
-        _install_no_policy()
-        so.reset_yolo_policy_cache()
-        assert (
-            so.safety_override().is_active() is False
-        ), "a policy-revoked grant must stay revoked once the policy relaxes"
-
-    def test_an_explicit_revoke_during_a_denial_window_is_not_swallowed(self, monkeypatch):
-        """The bug the revoke-vs-mask choice exists to prevent.
-
-        Slack's off-path is `if is_yolo_mode(): disable_yolo()`. While a mask-only
-        denial reported inactive, that branch cleared NOTHING, and a later policy
-        relaxation resurrected the grant the operator had explicitly revoked.
-        """
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        so.safety_override().activate("dashboard")
-
-        _deny("yolo")
-        so.reset_yolo_policy_cache()
-
-        # Exactly what the Slack handler does: consult, then skip when inactive.
-        if so.safety_override().is_active():
-            so.safety_override().deactivate("slack")
-
-        # Policy lifts. Nothing may come back.
-        _install_no_policy()
-        so.reset_yolo_policy_cache()
-        assert so.safety_override().is_active() is False
-
-    def test_a_declared_grant_is_revoked_too(self, monkeypatch):
-        """A permanent grant has no deadline, so policy is its ONLY off-switch."""
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        so.safety_override().activate_declared()
-        assert so.safety_override().is_active() is True
-
-        _deny("yolo")
-        so.reset_yolo_policy_cache()
-        assert so.safety_override().is_active() is False
-
-
-class TestTheHotPredicateNeverTouchesTheFilesystem:
-    """``is_active()`` runs per TOOL CALL via ``auto_approve_session``.
-
-    Resolving governance there would walk the profiles dir on every tool, so the
-    reader must be pure memory with an off-loop refresh.
-    """
-
-    def test_the_cached_reader_does_not_resolve_inline(self, monkeypatch):
-        from kiro_crew import safety_override as so
-
-        calls: list[str] = []
-
-        def _tripwire(mode: str) -> bool:
-            calls.append(mode)
-            return True
-
-        monkeypatch.setattr(so, "approval_mode_permitted", _tripwire)
-        # Stamped with the CURRENT generation: this case is about the TTL branch, and
-        # a mismatched generation would resolve inline for a different reason.
-        monkeypatch.setattr(
-            so, "_yolo_policy_cache", (time.monotonic(), True, so._governance_generation())
-        )
-
-        assert so.yolo_policy_permits() is True
-        assert calls == [], "a fresh cache must not trigger a governance read"
-
-    @pytest.mark.asyncio
-    async def test_a_stale_cache_with_a_refresh_in_flight_serves_the_last_value(self, monkeypatch):
-        from kiro_crew import safety_override as so
-
-        calls: list[str] = []
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: calls.append(m) or True)
-        monkeypatch.setattr(so, "_yolo_policy_cache", (0.0, False, so._governance_generation()))
-
-        async with _refresh_in_flight(monkeypatch):
-            assert so.yolo_policy_permits() is False
-            assert calls == []
-
-    def test_a_sync_caller_resolves_inline_because_it_has_no_loop_to_protect(self, monkeypatch):
-        """The no-running-loop branch, stated as a property rather than assumed.
-
-        The suppression check now comes AFTER the loop lookup, and that order is the
-        correct one: with no loop there is nothing to stall, and handing a CLI caller
-        a cold cache's permissive default would be the worse outcome. An in-flight
-        record belonging to some other loop must not talk a sync caller out of
-        resolving.
-        """
-        from kiro_crew import safety_override as so
-
-        calls: list[str] = []
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: calls.append(m) or False)
-        monkeypatch.setattr(so, "_yolo_policy_cache", (0.0, True, so._governance_generation()))
-
         assert so.yolo_policy_permits() is False
-        assert calls == ["yolo"], "a sync caller with a stale entry must resolve"
 
 
-class TestAnInFlightRecordCannotWedgeTheRefresh:
-    """The record is ``(loop, task)`` so that staleness is DECIDABLE.
+class TestArmingIsStillOffloadedByItsAsyncCallers:
+    """The offload survives this refactor, because the SEL audit is still I/O.
 
-    A bare boolean was set before the task existed and cleared in that task's
-    ``finally``. A loop torn down while the refresh was pending therefore left it
-    ``True`` with nothing alive to clear it, and every later call took the early
-    return -- the verdict cache stopped refreshing for the life of the process. On a
-    safety predicate that means a policy tightening silently stops landing.
+    Arming no longer resolves governance, but it still writes a fail-closed security
+    event before the grant exists -- a synchronous filesystem write -- so an async
+    caller that ran it inline would put that on the gateway's loop.
     """
-
-    @pytest.mark.asyncio
-    async def test_a_record_naming_another_loop_does_not_suppress_a_refresh(self, monkeypatch):
-        """The wedge, reproduced: a pending task whose loop is not this one.
-
-        The loop is a sentinel rather than a second real event loop on purpose. What
-        decides the branch is ``record[0] is running_loop``, and a sentinel states
-        that mismatch exactly while leaving nothing to tear down -- a real second
-        loop would have to be abandoned holding a pending task, which is the noise
-        this record removes.
-        """
-        from kiro_crew import safety_override as so
-
-        loop = asyncio.get_running_loop()
-        gate = asyncio.Event()
-
-        async def _blocked() -> None:
-            await gate.wait()
-
-        orphan = loop.create_task(_blocked())
-        monkeypatch.setattr(so, "_yolo_policy_refresh", (object(), orphan))
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: False)
-        assert not orphan.done(), "the wedging state is a PENDING task, not a finished one"
-
-        try:
-            so._schedule_yolo_policy_refresh()
-
-            record = so._yolo_policy_refresh
-            assert record is not None
-            assert record[0] is loop, (
-                "the scheduler must adopt the LIVE loop rather than defer to a record "
-                "that names a loop which is no longer running"
-            )
-            assert record[1] is not orphan
-            record[1].cancel()
-        finally:
-            gate.set()
-            await orphan
-
-    @pytest.mark.asyncio
-    async def test_a_finished_task_on_this_loop_does_not_suppress_a_refresh(self, monkeypatch):
-        """The other half of decidable: done means done, so a new one may start."""
-        from kiro_crew import safety_override as so
-
-        loop = asyncio.get_running_loop()
-
-        async def _immediate() -> None:
-            return None
-
-        finished = loop.create_task(_immediate())
-        await finished
-        monkeypatch.setattr(so, "_yolo_policy_refresh", (loop, finished))
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: False)
-
-        so._schedule_yolo_policy_refresh()
-
-        record = so._yolo_policy_refresh
-        assert record is not None and record[1] is not finished
-        record[1].cancel()
-
-    @pytest.mark.asyncio
-    async def test_a_live_refresh_on_this_loop_IS_respected(self, monkeypatch):
-        """The suppression still has to hold, or every call spawns another task."""
-        from kiro_crew import safety_override as so
-
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: False)
-
-        async with _refresh_in_flight(monkeypatch) as held:
-            so._schedule_yolo_policy_refresh()
-
-            assert so._yolo_policy_refresh is not None
-            assert (
-                so._yolo_policy_refresh[1] is held
-            ), "a live refresh for this loop must not be duplicated"
-
-    def test_the_reset_helper_clears_the_record(self):
-        """A reset must not leave a record that suppresses the next refresh."""
-        from kiro_crew import safety_override as so
-
-        so.reset_yolo_policy_cache()
-        assert so._yolo_policy_refresh is None
-
-    def test_arming_reads_authoritatively_rather_than_from_the_cache(self, monkeypatch):
-        """A deliberate, rare act must not be decided by a TTL-old value."""
-        from kiro_crew import safety_override as so
-
-        _deny("yolo")
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        # A stale-but-permissive cache must NOT let an arm through.
-        monkeypatch.setattr(
-            so, "_yolo_policy_cache", (time.monotonic(), True, so._governance_generation())
-        )
-
-        assert so.safety_override().activate("dashboard").active is False
-
-
-class TestArmingIsOffloadedByItsAsyncCallers:
-    """Arming does filesystem work, so no async caller may run it inline."""
 
     @pytest.mark.asyncio
     async def test_taskrunner_grant_run_trust_is_a_coroutine(self):
@@ -644,7 +1658,7 @@ class TestArmingIsOffloadedByItsAsyncCallers:
 
         assert inspect.iscoroutinefunction(TaskRunner._grant_run_trust), (
             "_grant_run_trust is reached from two async methods; a sync body puts "
-            "the SEL write and the governance read on the event loop"
+            "the SEL write on the event loop"
         )
 
     def test_every_grant_run_trust_call_site_is_awaited(self):
@@ -673,11 +1687,11 @@ class TestArmingIsOffloadedByItsAsyncCallers:
 class TestEveryGrantBranchHonoursAMidSessionDeny:
     """A mid-session deny must reach EVERY branch that honours a grant.
 
-    Masking only the session-wide grant revoked one kind of auto-approve and left
-    the other, and the scoped branch is the reachable one: ``task_executor``
-    consults ``is_scope_active`` before every approval and slides the grant with
-    ``renew_scoped``, so a taskrunner run armed while permitted kept auto-approving
-    for up to 24h after the deny. The branch table this pins:
+    Revoking only the session-wide grant left the other kind, and the scoped branch
+    is the reachable one: ``task_executor`` consults ``is_scope_active`` before every
+    approval and slides the grant with ``renew_scoped``, so a taskrunner run armed
+    while permitted kept auto-approving for up to 24h after the deny. The branch table
+    this pins:
 
     | consult point        | grant kind           | revoked |
     |----------------------|----------------------|---------|
@@ -701,7 +1715,6 @@ class TestEveryGrantBranchHonoursAMidSessionDeny:
         so = self._armed_scope(monkeypatch)
 
         _deny("yolo")
-        so.reset_yolo_policy_cache()
 
         assert so.safety_override().is_scope_active("run:abc") is False
 
@@ -710,323 +1723,69 @@ class TestEveryGrantBranchHonoursAMidSessionDeny:
         so = self._armed_scope(monkeypatch)
 
         _deny("yolo")
-        so.reset_yolo_policy_cache()
 
         result = so.safety_override().renew_scoped("run:abc", "dashboard")
         assert result.renewed is False
 
     def test_a_denied_scoped_grant_is_revoked_not_merely_masked(self, monkeypatch):
-        """Same correction as the session-wide grant: denial tears it down."""
+        """Denial tears the grant down, so relaxing the policy cannot resurrect it."""
         so = self._armed_scope(monkeypatch)
 
         _deny("yolo")
-        so.reset_yolo_policy_cache()
         assert so.safety_override().is_scope_active("run:abc") is False
 
         _install_no_policy()
-        so.reset_yolo_policy_cache()
         assert (
             so.safety_override().is_scope_active("run:abc") is False
         ), "a policy-revoked scoped grant must stay revoked once the policy relaxes"
 
-
-class TestAPolicyRevocationRunsTheSameTeardownAsATTLLapse:
-    """Clearing ``_active`` is not the whole revocation.
-
-    A dashboard grant also writes ``approval_policy="auto"`` onto the slots, and a
-    spawned subagent reads THAT rather than this flag -- so dropping only the flag
-    left spawn admission and every child tool auto-approved against a policy that
-    denies it. The TTL-lapse path already fixes this by firing ``on_expired``, whose
-    handler resets those policies and clears the shared trust mapping; a policy
-    revocation owes the same cleanup, so it fires the same callback rather than
-    growing a second, divergent teardown.
-    """
-
-    def test_a_policy_revocation_fires_the_expiry_callback(self, monkeypatch):
+    def test_a_declared_grant_is_revoked_too(self, monkeypatch):
+        """A permanent grant has no deadline, so policy is its ONLY off-switch."""
         from kiro_crew import safety_override as so
 
         _install_no_policy()
         so.reset_singleton()
         monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        override = so.safety_override()
-        override.activate("dashboard")
-
-        seen: list[str] = []
-        override.on_expired = seen.append
+        so.safety_override().activate_declared()
+        assert so.safety_override().is_active() is True
 
         _deny("yolo")
-        so.reset_yolo_policy_cache()
-        assert override.is_active() is False
 
-        assert seen == ["policy"], (
-            "a policy revocation must run the same teardown as a TTL lapse -- "
-            "otherwise the slots keep approval_policy='auto' and subagents stay "
-            "auto-approved against a policy that denies yolo"
-        )
+        assert so.safety_override().is_active() is False
+        assert so.safety_override().has_grant() is False
 
-    def test_the_callback_fires_exactly_once_across_repeated_consults(self, monkeypatch):
-        """``is_active`` runs per TOOL CALL.
+    def test_a_session_wide_grant_stays_revoked_when_the_policy_relaxes(self, monkeypatch):
+        """The revoke-vs-mask choice, from the caller that made it necessary.
 
-        The handler broadcasts and rewrites slot policies, so re-firing it on every
-        call would be its own defect -- which is why the teardown is gated on there
-        actually being a grant to tear down.
+        Slack's off-path is ``if is_yolo_mode(): disable_yolo()``. While a mask-only
+        denial reported inactive, that branch cleared NOTHING, and a later policy
+        relaxation resurrected the grant the operator had explicitly revoked. A fresh
+        arm after the policy relaxes is the honest outcome.
         """
         from kiro_crew import safety_override as so
 
         _install_no_policy()
         so.reset_singleton()
         monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        override = so.safety_override()
-        override.activate("dashboard")
-
-        seen: list[str] = []
-        override.on_expired = seen.append
+        so.safety_override().activate("dashboard")
 
         _deny("yolo")
-        so.reset_yolo_policy_cache()
-        for _ in range(5):
-            assert override.is_active() is False
-
-        assert seen == ["policy"], f"expected exactly one teardown, got {seen}"
-
-    def test_no_grant_means_no_callback(self, monkeypatch):
-        """A denying policy with nothing armed must not synthesise an expiry.
-
-        Every consult on an unarmed override takes this path, so an ungated fire
-        would broadcast a revocation for a grant that never existed.
-        """
-        from kiro_crew import safety_override as so
-
-        _deny("yolo")
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        override = so.safety_override()
-
-        seen: list[str] = []
-        override.on_expired = seen.append
-
-        assert override.is_active() is False
-        assert seen == [], "nothing was armed, so there is nothing to tear down"
-
-    def test_a_raising_callback_does_not_break_the_refusal(self, monkeypatch):
-        """The verdict is the safety-relevant half; the cleanup is best-effort."""
-        from kiro_crew import safety_override as so
+        assert so.safety_override().is_active() is False
 
         _install_no_policy()
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        override = so.safety_override()
-        override.activate("dashboard")
-
-        def _boom(_reason: str) -> None:
-            raise RuntimeError("handler exploded")
-
-        override.on_expired = _boom
-
-        _deny("yolo")
-        so.reset_yolo_policy_cache()
-        assert override.is_active() is False
-
-
-class TestAPolicyChangeIsNotBoundedByTheTTL:
-    """The TTL bounds staleness WITHIN one ceiling, not across a change.
-
-    A verdict primed while ``yolo`` was permitted kept auto-approving for the rest
-    of the TTL after a tightening -- the window the cache exists to make cheap was
-    also a window in which the control was not enforced. The entry now carries the
-    governance generation it was resolved under, so a newly installed ceiling makes
-    the reader resolve immediately instead of serving the primed permit.
-    """
-
-    def test_a_permit_primed_under_the_previous_ceiling_is_not_served(self, monkeypatch):
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        assert so.yolo_policy_permits() is True
-
-        # Installing a ceiling bumps the generation, which is what invalidates the
-        # entry. No cache reset here on purpose: that is the whole point.
-        _deny("yolo")
-        assert so.yolo_policy_permits() is False, (
-            "a fresh-by-TTL permit resolved under the PREVIOUS ceiling must not be "
-            "served after a tightening"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_generation_mismatch_reads_UNKNOWN_and_never_resolves_on_the_loop(
-        self, monkeypatch
-    ):
-        """Two properties at once, and an earlier revision had to break one to hold
-        the other.
-
-        Resolving inline held "never serve a stale permit" by walking the profiles
-        dir on the event loop, in a predicate that runs per TOOL CALL. Serving the
-        last-known verdict held "never block the loop" by handing back exactly the
-        stale permit. UNKNOWN is what lets both stand: it is decided from memory, and
-        it is not a permit.
-        """
-        from kiro_crew import safety_override as so
-
-        calls: list[str] = []
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: calls.append(m) or False)
-        # Fresh by the clock, but stamped with a generation nothing will ever equal.
-        monkeypatch.setattr(so, "_yolo_policy_cache", (time.monotonic(), True, -999))
-
-        assert so.yolo_policy_verdict() == so._YOLO_UNKNOWN
-        assert so.yolo_policy_permits() is False, "an undated verdict is not a permit"
-        assert calls == [], "a mismatched generation must NOT resolve on the loop"
-
-        # The entry is NOT restamped: only a successful resolve may claim the current
-        # generation, or an unresolvable policy would masquerade as a current one.
-        assert so._yolo_policy_cache[2] == -999
-
-    @pytest.mark.asyncio
-    async def test_UNKNOWN_stops_auto_approval_without_revoking_the_grant(self, monkeypatch):
-        """The reason UNKNOWN is a state rather than a boolean.
-
-        Folding it onto DENIED would revoke -- permanently, by design -- and the
-        window opens on EVERY ceiling install, including ones that still permit YOLO.
-        So an unknown verdict must refuse to auto-approve and leave the grant intact
-        for the refresh to settle.
-        """
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        override = so.safety_override()
-        override.activate("dashboard")
-
-        seen: list[str] = []
-        override.on_expired = seen.append
-
-        # Undated verdict, on a running loop so the refresh cannot settle inline.
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: True)
-        monkeypatch.setattr(so, "_yolo_policy_cache", (time.monotonic(), True, -999))
-
-        assert override.is_active() is False, "no auto-approve on an undated verdict"
-        assert seen == [], "and NO revocation -- the grant must survive to be settled"
-        with override._lock:
-            assert override._active is True, "the grant itself was not torn down"
-
-    def test_a_resolve_that_keeps_failing_never_serves_the_stale_permit(self, monkeypatch):
-        """The finding this invariant exists to close, in its plainest form.
-
-        ``_resolve_yolo_policy_blocking`` returns without restamping when the resolve
-        raises. While a stale entry could still read as a permit, a governance read
-        that kept failing served the old ``True`` indefinitely -- auto-approving every
-        tool against a ceiling nobody could read.
-        """
-        from kiro_crew import safety_override as so
-
-        # A permit resolved under the ceiling installed now...
-        _install_no_policy()
-        assert so.yolo_policy_permits() is True
-
-        # ...then the ceiling moves AND governance becomes unreadable.
-        def _boom(mode: str) -> bool:
-            raise RuntimeError("profiles dir unreadable")
-
-        monkeypatch.setattr(so, "approval_mode_permitted", _boom)
-        _deny("yolo")
-
-        for _ in range(4):
-            assert so.yolo_policy_verdict() == so._YOLO_UNKNOWN
-            assert so.yolo_policy_permits() is False, (
-                "a permit that no current resolve backs must never be served, however "
-                "many times it is asked for"
-            )
-
-    def test_arming_refuses_when_policy_cannot_be_read(self, monkeypatch):
-        """The authoritative path owed the same fail-closed reading.
-
-        Arming consults ``_resolve_yolo_policy_blocking`` directly. While that
-        returned the previous verdict on an exception, a grant could be armed against
-        a policy the host had just failed to read.
-        """
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        assert so.yolo_policy_permits() is True  # prime a permitting entry
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-
-        def _boom(mode: str) -> bool:
-            raise RuntimeError("profiles dir unreadable")
-
-        monkeypatch.setattr(so, "approval_mode_permitted", _boom)
-
-        assert so.safety_override().activate("dashboard").active is False
-
-
-class TestUNKNOWNNeverDestroysAScopedGrant:
-    """The scoped guards owed the same three-state reading as ``is_active``.
-
-    UNKNOWN was introduced with ``is_active`` taught to discriminate on it, and the
-    two SCOPED consult points were left on the two-way reading -- so they collapsed
-    it onto permanent revocation. That is the sharper end of the same defect:
-    ``is_scope_active`` runs before EVERY approval in an unattended run,
-    ``deactivate_scope`` pops the entry for good, and ``task_executor`` then clears
-    ``run.auto_approve``. Nothing re-arms. A mid-session ceiling install that STILL
-    PERMITS yolo would therefore stall a legitimately granted run for its whole
-    remainder, on nothing but the off-loop refresh window.
-    """
-
-    def _armed(self, monkeypatch):
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        override = so.safety_override()
-        assert override.activate_scoped("run:abc", "dashboard").active is True
-        return so, override
-
-    @pytest.mark.asyncio
-    async def test_UNKNOWN_withholds_approval_without_popping_the_scope(self, monkeypatch):
-        so, override = self._armed(monkeypatch)
-
-        # Undated verdict, on a running loop so the refresh cannot settle inline.
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: True)
-        monkeypatch.setattr(so, "_yolo_policy_cache", (time.monotonic(), True, -999))
-
-        assert override.is_scope_active("run:abc") is False, "no approval on unknown"
-        with override._lock:
-            assert "run:abc" in override._scoped, (
-                "the grant must SURVIVE an unknown verdict -- popping it is permanent "
-                "and nothing re-arms it"
-            )
-
-    @pytest.mark.asyncio
-    async def test_UNKNOWN_refuses_a_renewal_without_popping_the_scope(self, monkeypatch):
-        so, override = self._armed(monkeypatch)
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: True)
-        monkeypatch.setattr(so, "_yolo_policy_cache", (time.monotonic(), True, -999))
-
-        # Refusing the slide is the safe direction -- a renewal extends authority.
-        assert override.renew_scoped("run:abc", "dashboard").renewed is False
-        with override._lock:
-            assert "run:abc" in override._scoped
-
-    def test_a_definite_deny_still_revokes_the_scope(self, monkeypatch):
-        """The revocation must still work, or the deny is cosmetic."""
-        so, override = self._armed(monkeypatch)
-
-        _deny("yolo")
-        assert override.is_scope_active("run:abc") is False
-        with override._lock:
-            assert "run:abc" not in override._scoped, "a definite deny tears it down"
+        assert (
+            so.safety_override().is_active() is False
+        ), "a policy-revoked grant must stay revoked once the policy relaxes"
 
 
 class TestAnExplicitOffIsNotPolicyFiltered:
     """``is_active`` answers "may a tool be auto-approved", which policy can veto.
 
     An explicit off asks a DIFFERENT question -- "is there something to tear down" --
-    and reading the policy-filtered answer for it inverted the control: during the
-    UNKNOWN window ``is_active`` reports False, so Slack's
-    ``if is_yolo_mode(): disable_yolo()`` skipped the teardown, reported "already
-    off", and left the grant standing to RESUME once the refresh settled. The
-    operator revoked auto-approve and it came back.
+    and reading the policy-filtered answer for it inverted the control. A deny now
+    destroys the grant at install time, so the two agree; ``disable_yolo`` still reads
+    ``has_grant`` because the policy mask is the fail-closed floor for a teardown that
+    did not complete, and that is exactly the state where an off has work to do.
     """
 
     def test_has_grant_ignores_policy_entirely(self, monkeypatch):
@@ -1038,7 +1797,6 @@ class TestAnExplicitOffIsNotPolicyFiltered:
         override = so.safety_override()
         override.activate("dashboard")
 
-        # A denying ceiling makes is_active False; the grant still EXISTS.
         _deny("yolo")
         assert override.is_active() is False
         assert (
@@ -1046,7 +1804,7 @@ class TestAnExplicitOffIsNotPolicyFiltered:
         ), "a policy deny REVOKES, so after it there is genuinely nothing to clear"
 
     @pytest.mark.asyncio
-    async def test_an_off_during_the_unknown_window_actually_revokes(self, monkeypatch):
+    async def test_an_off_under_a_masked_grant_actually_revokes(self, monkeypatch):
         from kiro_crew import safety_override as so
         from kiro_crew.slack import handler as h
 
@@ -1057,20 +1815,19 @@ class TestAnExplicitOffIsNotPolicyFiltered:
         override = so.safety_override()
         override.activate("dashboard")
 
-        # Undated verdict on a running loop: is_active reports False while the grant
-        # is still standing. This is the state the off path used to skip on.
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: True)
-        monkeypatch.setattr(so, "_yolo_policy_cache", (time.monotonic(), True, -999))
+        # A masked-but-standing grant: the verdict denies while the grant survives,
+        # which is what an install-time teardown that did not complete leaves behind.
+        monkeypatch.setattr(so, "_yolo_policy_permitted", False)
+        monkeypatch.setattr(so, "_yolo_policy_resolved", True)
         assert override.is_active() is False
         assert override.has_grant() is True, "the grant is there to be cleared"
 
         h.disable_yolo()
 
         with override._lock:
-            assert override._active is False, (
-                "an explicit off must tear the grant down even while the verdict is "
-                "unknown -- otherwise it resumes when the refresh settles"
-            )
+            assert (
+                override._active is False
+            ), "an explicit off must tear the grant down even while policy masks it"
 
 
 class TestARefusedScopedArmDoesNotPersistAutoApprove:
@@ -1120,15 +1877,14 @@ class TestARefusedScopedArmDoesNotPersistAutoApprove:
 
 
 class TestALapsedGrantIsNotTornDownTwice:
-    """``_active`` alone is the grant test, and the ``or`` was a double-fire.
+    """A grant that reached its own deadline owes no second teardown.
 
     The natural-expiry branch clears ``_active`` but deliberately LEAVES
-    ``_expires_at`` set -- ``deactivate`` reads that nonzero deadline to tell
-    "lapsed" from "never armed", so it can still SEL-record an explicit off after a
-    lapse. A policy deny that also accepted ``_expires_at > 0`` therefore called
-    ``deactivate`` a second time and fired a second expiry teardown for a grant that
-    had already expired: a duplicate owner DM and a redundant broadcast, in the same
-    block whose comment promises it fires EXACTLY ONCE.
+    ``_expires_at`` set -- ``deactivate`` reads that nonzero deadline to tell "lapsed"
+    from "never armed", so it can still SEL-record an explicit off after a lapse. A
+    policy revocation that treated that stale deadline as a grant would fire a second
+    expiry teardown for a grant that had already expired: a duplicate owner DM and a
+    redundant broadcast.
     """
 
     def test_a_deny_after_a_natural_lapse_fires_no_second_teardown(self, monkeypatch):
@@ -1154,86 +1910,11 @@ class TestALapsedGrantIsNotTornDownTwice:
         assert seen == ["dashboard"], "the natural lapse fires its own teardown, once"
         with override._lock:
             assert override._expires_at > 0.0, (
-                "the lapsed deadline is deliberately retained -- that is what used to "
-                "make the policy branch double-fire"
+                "the lapsed deadline is deliberately retained -- that is what makes a "
+                "naive grant test double-fire"
             )
 
         # Policy now denies. There is no grant left to revoke.
         _deny("yolo")
         assert override.is_active() is False
-        assert seen == [
-            "dashboard"
-        ], "a grant that already expired must not be torn down a second time"
-
-    def test_a_mismatch_serves_the_last_known_verdict_not_a_fail_closed_deny(self, monkeypatch):
-        """Why the invalidation does not deny while the refresh is pending.
-
-        A deny from this predicate is not a cautious read, it is a REVOCATION --
-        ``is_active`` tears the grant down and that teardown is permanent. The
-        generation bumps on EVERY ceiling install, including one that still permits
-        YOLO, so failing closed here would destroy live grants on unrelated policy
-        refreshes.
-        """
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        so.reset_singleton()
-        monkeypatch.setattr(so, "sel", lambda: MagicMock())
-        override = so.safety_override()
-        override.activate("dashboard")
-        assert override.is_active() is True
-
-        seen: list[str] = []
-        override.on_expired = seen.append
-
-        # A ceiling is REINSTALLED that still permits yolo: generation moves, verdict
-        # does not. The grant must survive.
-        _install_no_policy()
-        assert override.is_active() is True
-        assert seen == [], "an unrelated ceiling install must not revoke a live grant"
-
-    def test_an_unreadable_generation_invalidates_rather_than_trusting_the_entry(self, monkeypatch):
-        """``-1`` never equals a STORED generation, so it can only invalidate.
-
-        Answering ``-1`` on an unreadable counter is what keeps the failure mode
-        "refresh more often" rather than "serve a value you cannot date".
-        """
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        assert so.yolo_policy_permits() is True
-
-        monkeypatch.setattr(so, "_governance_generation", lambda: -1)
-        calls: list[str] = []
-        monkeypatch.setattr(so, "approval_mode_permitted", lambda m: calls.append(m) or False)
-
-        assert so.yolo_policy_permits() is False
-        assert calls == ["yolo"]
-
-    def test_a_backwards_clock_step_cannot_freeze_the_entry_as_fresh(self):
-        """Why the stamp is monotonic rather than wall clock.
-
-        ``time.time()`` can move backwards -- an NTP step, a VM restore, an operator
-        correcting the clock. A backwards jump makes ``now - resolved_at`` negative,
-        so the TTL never elapses again and the entry reads as fresh forever: a permit
-        with no expiry, for a reason that has nothing to do with policy. A monotonic
-        stamp cannot go backwards, so a wall-clock step is simply not visible here.
-        """
-        from kiro_crew import safety_override as so
-
-        _install_no_policy()
-        assert so.yolo_policy_permits() is True
-        stamped = so._yolo_policy_cache[0]
-
-        # The entry is dated on the monotonic clock, which is what a wall-clock step
-        # cannot reach. Asserting the SOURCE rather than simulating a jump: patching
-        # the global clock would prove nothing about which clock was read.
-        assert stamped <= time.monotonic(), "the stamp must come from the monotonic clock"
-        assert stamped > 0.0, "a real reading, not the never-resolved sentinel"
-
-    def test_the_reset_helper_stamps_a_generation_nothing_matches(self):
-        """A reset must force a resolve, not leave a permit that looks current."""
-        from kiro_crew import safety_override as so
-
-        so.reset_yolo_policy_cache()
-        assert so._yolo_policy_cache == (0.0, True, -1)
+        assert seen == ["dashboard"], f"a lapsed grant must not be torn down twice: {seen}"
