@@ -11181,7 +11181,7 @@
         "session_timeout": "Timeout della sessione",
         "subagent_settings": "Impostazioni dei subagenti",
         "takes_effect_on_next_session_range_60_86400s": "Ha effetto dalla prossima sessione. Intervallo: 60–86400 s.",
-        "tool_call_budget_per_subagent_1_200_default_100": "Budget di chiamate a strumenti per subagente (1–200). Predefinito: 100.",
+        "tool_call_budget_per_subagent_1_1000_default_100": "Budget di chiamate a strumenti per subagente (1–1000). Predefinito: 100.",
         "used_by": "Utilizzato da",
         "using_global_memory_settings": "Vengono usate le impostazioni globali della memoria",
         "using_legacy_mode_agent_default_agent_as_agent_t": "Modalità legacy in uso — agent.default_agent come modello di agente",

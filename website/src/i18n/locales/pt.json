@@ -11181,7 +11181,7 @@
         "session_timeout": "Tempo limite da sessão",
         "subagent_settings": "Configurações de subagentes",
         "takes_effect_on_next_session_range_60_86400s": "Aplica-se na próxima sessão. Faixa: 60–86400s.",
-        "tool_call_budget_per_subagent_1_200_default_100": "Orçamento de chamadas de ferramenta por subagente (1–200). Padrão: 100.",
+        "tool_call_budget_per_subagent_1_1000_default_100": "Orçamento de chamadas de ferramenta por subagente (1–1000). Padrão: 100.",
         "used_by": "Usado por",
         "using_global_memory_settings": "Usando as configurações globais de memória",
         "using_legacy_mode_agent_default_agent_as_agent_t": "Usando o modo legado — agent.default_agent como modelo de agente",

@@ -10869,7 +10869,7 @@
         "session_timeout": "セッションタイムアウト",
         "subagent_settings": "サブエージェント設定",
         "takes_effect_on_next_session_range_60_86400s": "次のセッションで有効になります。範囲: 60〜86400秒。",
-        "tool_call_budget_per_subagent_1_200_default_100": "サブエージェントあたりのツール呼び出し予算（1〜200）。デフォルト: 100。",
+        "tool_call_budget_per_subagent_1_1000_default_100": "サブエージェントあたりのツール呼び出し予算（1〜1000）。デフォルト: 100。",
         "used_by": "使用者",
         "using_global_memory_settings": "グローバルメモリ設定を使用中",
         "using_legacy_mode_agent_default_agent_as_agent_t": "レガシーモード使用中 — エージェントテンプレートとして agent.default_agent を使用",

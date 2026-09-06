@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew.acp.types import JSONRPC_METHOD_NOT_FOUND
+from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway import backend as backend_mod
 from kiro_crew.mcp_gateway.backend import (
     HARD_WEDGE_CEILING_SECS,
@@ -176,7 +177,7 @@ async def test_hard_ceiling_wedged_even_with_fresh_pings() -> None:
             stub_uuid="stub-A",
             original_id=1,
             method="tools/call",
-            t_start_ms=(now - 2200) * 1000.0,  # 2200s > HARD_WEDGE_CEILING_SECS (2100)
+            t_start_ms=(now - (HARD_WEDGE_CEILING_SECS + 100)) * 1000.0,
         ),
     }
     backend = _make_backend(
@@ -516,3 +517,23 @@ def test_ping_answered_while_tool_in_flight() -> None:
     ping_responses = [(rid, res) for rid, res, err in respond_calls if rid == 99]
     assert len(ping_responses) == 1, f"Expected 1 ping response, got {len(ping_responses)}: {respond_calls}"
     assert ping_responses[0][1] == {}, f"Ping response should be empty object, got {ping_responses[0][1]}"
+
+
+def test_hard_ceiling_outlives_the_longest_legitimate_request() -> None:
+    """The ceiling must exceed the subagent deadline, not merely be large.
+
+    A blocking ``spawn_sub_agents`` is in flight for as long as its slowest
+    member runs, so a ceiling at or below the subagent deadline recycles the
+    backend under a caller whose work is healthy: the parent is told
+    ``backend gone`` while the subagent keeps running detached and its result is
+    stranded. Pinned by identity against the owning constant rather than a
+    literal, because raising the subagent default is exactly what breaks it.
+    """
+    assert HARD_WEDGE_CEILING_SECS > float(SUBAGENT_TIMEOUT_SECS), (
+        f"hard-wedge ceiling {HARD_WEDGE_CEILING_SECS}s does not outlive the "
+        f"{SUBAGENT_TIMEOUT_SECS}s subagent deadline, so a blocking "
+        "spawn_sub_agents awaiting a long subagent is recycled mid-flight"
+    )
+    # The two-condition rule (old request AND stale ping) stays the primary
+    # detector; the ceiling is the pathological backstop above it.
+    assert HARD_WEDGE_CEILING_SECS > HEARTBEAT_TIMEOUT_SECS

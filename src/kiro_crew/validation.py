@@ -31,6 +31,7 @@ from typing import Any
 # no native library is loaded on any platform. Aliased so the schema block below
 # reads as "the computer-use vocabulary" rather than bare names.
 from kiro_crew.computer_use import types as _cu_types
+from kiro_crew.config.sections import SUBAGENT_MAX_TURNS_CEILING
 from kiro_crew.constants import (
     AWS_PROFILE_NAME_RE,
     CHANNEL_OWNER_DM_NAMESPACES,
@@ -1019,8 +1020,11 @@ SPAWN_RUN_SCHEMA = ToolSchema(
             item_max_len=MAX_SHORT_STRING,
             item_pattern=_AGENT_NAME_RE,
         ),
-        # 0 = "not set" → falls through to config default via `0 or config_value`
-        FieldSpec("max_turns", int, min_val=0, max_val=200),
+        # 0 = "not set" → falls through to config default via `0 or config_value`.
+        # Bounded by the same ceiling the config loader clamps
+        # ``agent.subagent_max_turns`` to, so a per-spawn override can never
+        # exceed what a pinned default is allowed to be.
+        FieldSpec("max_turns", int, min_val=0, max_val=SUBAGENT_MAX_TURNS_CEILING),
         # Optional working directory for the subagent subprocess. Must be
         # absolute, exist, and be under subagent_cwd_allowed_roots. Validated
         # in SubagentManager.spawn.
@@ -1053,7 +1057,7 @@ SPAWN_CONTINUE_SCHEMA = ToolSchema(
         FieldSpec("conversation", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
-        FieldSpec("max_turns", int, min_val=0, max_val=200),
+        FieldSpec("max_turns", int, min_val=0, max_val=SUBAGENT_MAX_TURNS_CEILING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
     ],
 )

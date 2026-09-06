@@ -75,6 +75,29 @@ TOOL_APPROVAL_TIMEOUT = 600.0
 # "timed out" on work that is still running and subsequently succeeds.
 COMPACT_WAIT_TIMEOUT_SECS = 300.0
 
+# Wall-clock ceiling on one subagent execution: the default of
+# ``agent.subagent_timeout_secs`` and the fallback every consumer falls back to
+# when config is unavailable or the key is 0. Owned here rather than in
+# ``config/sections.py`` because three unrelated layers need the same number
+# without importing the config tree: the manager's ``asyncio.wait_for``, the
+# reaper's force-kill deadline, and the MCP gateway's hard-wedge ceiling, which
+# has to sit ABOVE it or a blocking ``spawn_sub_agents`` awaiting a legitimately
+# long subagent is recycled out from under its caller. Sized for work a
+# subagent is actually given (a full test suite, a large refactor, a wide
+# investigation); the reaper still force-kills at the deadline.
+SUBAGENT_TIMEOUT_SECS = 10800
+
+# Load-time clamp for ``agent.subagent_timeout_secs``. Same reason as the other
+# resource knobs in ``_SECURITY_BOUNDED_FIELDS``: the value governs how long one
+# subagent may hold a concurrency slot, so an inflated on-disk value (a direct
+# ``config.json`` edit by any same-uid process, including a prompt-injected
+# agent) is a denial-of-service vector rather than a preference. The max matches
+# ``CHAT_TURN_TIMEOUT_MAX``, since a subagent outliving the longest legal chat
+# turn cannot be awaited by anything; the min keeps the backstop from being set
+# so low it cuts ordinary work.
+SUBAGENT_TIMEOUT_MIN = 60
+SUBAGENT_TIMEOUT_MAX = 86400
+
 
 # ── Canonical "[OPTIONS: a | b | c]" trailer parsers ────────────────────────
 # The agent emits a trailing ``[OPTIONS: choice1 | choice2 | ...]`` marker that

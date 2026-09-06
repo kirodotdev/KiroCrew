@@ -62,7 +62,7 @@
         "subagent_auto_max": 32,
         "subagent_spawn_stagger_secs": 2.0,
         "subagent_max_turns": 100,
-        "subagent_timeout_secs": 1800,
+        "subagent_timeout_secs": 10800,
         "subagent_stall_idle_secs": 120,
         "completion_keep": "head",
         "completion_keep_chars": 3000,
@@ -856,10 +856,10 @@
       "sensitive": false,
       "tags": [],
       "label": "SubAgent Timeout (seconds)",
-      "help": "Wall-clock timeout per subagent execution. 0 uses hardcoded default (1800s).",
+      "help": "Wall-clock timeout per subagent execution. 0 uses the same default. Clamped to 60s..86400s at load (0 is preserved). Raising it past 2 hours only helps the fire-and-forget spawn_run path: a BLOCKING spawn_sub_agents call collects for at most 2 hours whatever this is set to, so use spawn_run for work longer than that.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 1800
+      "defaultValue": 10800
     },
     {
       "path": "agent.subagent_stall_idle_secs",

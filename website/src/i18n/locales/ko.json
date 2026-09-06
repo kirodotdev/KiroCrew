@@ -10869,7 +10869,7 @@
         "session_timeout": "세션 타임아웃",
         "subagent_settings": "서브에이전트 설정",
         "takes_effect_on_next_session_range_60_86400s": "다음 세션부터 적용됩니다. 범위: 60–86400초.",
-        "tool_call_budget_per_subagent_1_200_default_100": "서브에이전트당 도구 호출 예산 (1–200). 기본값: 100.",
+        "tool_call_budget_per_subagent_1_1000_default_100": "서브에이전트당 도구 호출 예산 (1–1000). 기본값: 100.",
         "used_by": "사용처",
         "using_global_memory_settings": "전역 메모리 설정 사용 중",
         "using_legacy_mode_agent_default_agent_as_agent_t": "레거시 모드 사용 중 — agent.default_agent를 에이전트 템플릿으로 사용",

@@ -152,6 +152,7 @@ import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
+import { appNotificationBadges, isAppNavId, mergeAppBadges } from './appNotificationBadges'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
 import { fmtCompact, fmtNumber, fmtPercent, fmtUnit } from './i18n/format'
 // Static on purpose, and the tradeoff is real: the sidebar updates badge
@@ -2137,6 +2138,31 @@ export default function App() {
     [appBadges, appUpdatesCount],
   )
 
+  // Rail badges for INSTALLED apps, derived from notifications the app already
+  // published: the host stamps `source: "app:<name>"` on every pushed record
+  // and owns the `acked` flag, so the count needs no new manifest field and no
+  // new app-implemented route -- see `appNotificationBadges`.
+  //
+  // Merged only into the badge map the rail rows read -- NOT into the
+  // `appBadges` state, for the same reason `discoverBadges` above stays out of
+  // it: that map feeds the tab-title `totalAttention` sum, and the
+  // notifications bell ALREADY badges these same records, so adding them there
+  // would count one notification twice in the tab title.
+  //
+  // An app that pushes its own count through `useNavBadge()` still wins on its
+  // own key, so an app using the SDK hook today sees no change at all; the
+  // derivation only fills rows that had no badge.
+  //
+  // Handed ONLY to rows that pass `isAppNavId` (see the call site). `NavBadge`
+  // keys its fallback on the BARE navId for an unprefixed row, so a host row
+  // such as `schedule` indexes the same map an app name would -- an app could
+  // otherwise put attention on host chrome by choosing its own name.
+  const notificationItems = useAppSelector(s => s.notifications.items)
+  const railAppBadges = useMemo(
+    () => mergeAppBadges(appBadges, appNotificationBadges(notificationItems)),
+    [appBadges, notificationItems],
+  )
+
   const [updating, setUpdating] = useState(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [kiroUsageOpen, setKiroUsageOpen] = useState(false)
@@ -2935,7 +2961,7 @@ export default function App() {
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}
-      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={appBadges} />}
+      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} />}
     />
   )
 

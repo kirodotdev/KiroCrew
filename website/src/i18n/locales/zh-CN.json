@@ -10869,7 +10869,7 @@
         "session_timeout": "会话超时",
         "subagent_settings": "子代理设置",
         "takes_effect_on_next_session_range_60_86400s": "下次会话生效。范围：60–86400 秒。",
-        "tool_call_budget_per_subagent_1_200_default_100": "每个子代理的工具调用预算（1–200）。默认值：100。",
+        "tool_call_budget_per_subagent_1_1000_default_100": "每个子代理的工具调用预算（1–1000）。默认值：100。",
         "used_by": "使用者",
         "using_global_memory_settings": "使用全局记忆设置",
         "using_legacy_mode_agent_default_agent_as_agent_t": "使用旧版模式 — 以 agent.default_agent 作为代理模板",

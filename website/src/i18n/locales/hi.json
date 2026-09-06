@@ -11025,7 +11025,7 @@
         "session_timeout": "सत्र टाइमआउट",
         "subagent_settings": "सबएजेंट सेटिंग",
         "takes_effect_on_next_session_range_60_86400s": "अगले सत्र से लागू होगा। रेंज: 60–86400s.",
-        "tool_call_budget_per_subagent_1_200_default_100": "हर सब-एजेंट के लिए टूल-कॉल बजट (1–200)। डिफ़ॉल्ट: 100।",
+        "tool_call_budget_per_subagent_1_1000_default_100": "हर सब-एजेंट के लिए टूल-कॉल बजट (1–1000)। डिफ़ॉल्ट: 100।",
         "used_by": "द्वारा उपयोग",
         "using_global_memory_settings": "ग्लोबल मेमोरी सेटिंग का उपयोग हो रहा है",
         "using_legacy_mode_agent_default_agent_as_agent_t": "लेगेसी मोड उपयोग में — एजेंट टेम्पलेट के रूप में agent.default_agent",

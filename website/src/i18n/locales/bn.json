@@ -11025,7 +11025,7 @@
         "session_timeout": "সেশন টাইমআউট",
         "subagent_settings": "সাবএজেন্ট সেটিংস",
         "takes_effect_on_next_session_range_60_86400s": "পরের সেশনে কার্যকর হবে। সীমা: 60–86400s।",
-        "tool_call_budget_per_subagent_1_200_default_100": "প্রতি সাবএজেন্টের টুল-কল বাজেট (1–200)। ডিফল্ট: 100।",
+        "tool_call_budget_per_subagent_1_1000_default_100": "প্রতি সাবএজেন্টের টুল-কল বাজেট (1–1000)। ডিফল্ট: 100।",
         "used_by": "যেখানে ব্যবহৃত",
         "using_global_memory_settings": "গ্লোবাল মেমরি সেটিংস ব্যবহার করা হচ্ছে",
         "using_legacy_mode_agent_default_agent_as_agent_t": "লিগ্যাসি মোড ব্যবহার হচ্ছে — এজেন্ট টেম্পলেট হিসেবে agent.default_agent",

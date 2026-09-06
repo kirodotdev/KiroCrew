@@ -11337,7 +11337,7 @@
         "session_timeout": "Тайм-аут сессии",
         "subagent_settings": "Настройки субагентов",
         "takes_effect_on_next_session_range_60_86400s": "Применится в следующей сессии. Диапазон: 60–86400s.",
-        "tool_call_budget_per_subagent_1_200_default_100": "Бюджет вызовов инструментов на субагента (1–200). По умолчанию: 100.",
+        "tool_call_budget_per_subagent_1_1000_default_100": "Бюджет вызовов инструментов на субагента (1–1000). По умолчанию: 100.",
         "used_by": "Используется",
         "using_global_memory_settings": "Используются глобальные настройки памяти",
         "using_legacy_mode_agent_default_agent_as_agent_t": "Используется устаревший режим — agent.default_agent как шаблон агента",

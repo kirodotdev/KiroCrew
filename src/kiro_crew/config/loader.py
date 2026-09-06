@@ -319,6 +319,11 @@ from kiro_crew.config.validation import (  # noqa: F401
     _mask_value,
 )
 from kiro_crew.config.validation import validate_config_data as _validate_config_data  # noqa: F401
+from kiro_crew.constants import (
+    SUBAGENT_TIMEOUT_MAX,
+    SUBAGENT_TIMEOUT_MIN,
+    SUBAGENT_TIMEOUT_SECS,
+)
 from kiro_crew.effort import is_valid_effort, model_supports_effort
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
@@ -1665,16 +1670,34 @@ def load_loop_stall_exit_after(
     return resolve_loop_stall_exit_after(dashboard_data, environ)
 
 
+def _subagent_timeout_from(raw: object) -> int:
+    """Coerce ``agent.subagent_timeout_secs``, preserving its ``0`` sentinel.
+
+    ``0`` means "use the default" and is normalized by the manager, so it must
+    survive coercion: running it through the ``[MIN, MAX]`` clamp turns a
+    documented sentinel into a 60-second deadline that kills healthy subagents.
+    Coercion still happens here as well as in ``_clamp_security_bounds``, because
+    that clamp skips non-int values and a numeric STRING (``"30"``) reaches this
+    site unbounded.
+    """
+    value = _safe_int(raw, SUBAGENT_TIMEOUT_SECS, 0, SUBAGENT_TIMEOUT_MAX)
+    return value if value == 0 else max(SUBAGENT_TIMEOUT_MIN, value)
+
+
 # (section, key, min, max) for each bounded field clamped at load time. The
 # mins match the runtime floors: subagent_auto_max has a floor of 3
 # (``subagent._LEGACY_DEFAULT_MAX`` — the auto-size minimum), so a value < 3 is
 # clamped UP to 3 with a warning, mirroring the > ceiling clamp. max_subagents
 # keeps a 0 floor here (0 = auto sentinel) — its 0-or-(>=3) rule is applied as a
-# special case after the generic loop. Only out-of-range values are altered.
+# special case after the generic loop. subagent_timeout_secs keeps a 0 floor for
+# the same reason: 0 is its documented "use the default" sentinel, which the
+# manager normalizes, so a MIN floor in the generic loop would turn it into a
+# 60-second deadline. Only out-of-range values are altered.
 _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "subagent_auto_max", 3, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
+    ("agent", "subagent_timeout_secs", 0, SUBAGENT_TIMEOUT_MAX),
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
     (
         "agent",
@@ -1809,6 +1832,31 @@ def _clamp_security_bounds(data: dict) -> None:
                 MAX_SUBAGENTS_FIXED_FLOOR,
                 MAX_SUBAGENTS_FIXED_FLOOR,
                 SUBAGENT_AUTO_MAX_CEILING,
+            )
+
+    # subagent_timeout_secs special case, and the reason its table floor is 0:
+    # 0 is the field's documented "use the default" sentinel, which the manager
+    # normalizes (``SubagentManager.__init__``). A MIN floor in the generic loop
+    # would rewrite that 0 to 60 and hand a healthy subagent a one-minute
+    # deadline, so 0 is preserved here and only a NON-zero value below the floor
+    # is raised to it.
+    if isinstance(agent, dict):
+        st = agent.get("subagent_timeout_secs")
+        if isinstance(st, int) and not isinstance(st, bool) and 0 < st < SUBAGENT_TIMEOUT_MIN:
+            agent["subagent_timeout_secs"] = SUBAGENT_TIMEOUT_MIN
+            logger.warning(
+                "config agent.subagent_timeout_secs=%d is below the floor of %d "
+                "(0 = use the default); clamped UP to %d",
+                st,
+                SUBAGENT_TIMEOUT_MIN,
+                SUBAGENT_TIMEOUT_MIN,
+            )
+            _log_config_clamp_event(
+                "agent.subagent_timeout_secs",
+                st,
+                SUBAGENT_TIMEOUT_MIN,
+                SUBAGENT_TIMEOUT_MIN,
+                SUBAGENT_TIMEOUT_MAX,
             )
 
     # tool_approval_timeout_secs cross-field case: the approval window must end
@@ -2733,7 +2781,9 @@ class KiroCrewConfig:
                 subagent_max_turns=_safe_int(
                     agent_data.get("subagent_max_turns", 100), 100, 1, SUBAGENT_MAX_TURNS_CEILING
                 ),
-                subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
+                subagent_timeout_secs=_subagent_timeout_from(
+                    agent_data.get("subagent_timeout_secs", SUBAGENT_TIMEOUT_SECS)
+                ),
                 subagent_stall_idle_secs=_safe_int(
                     agent_data.get("subagent_stall_idle_secs", 120), 120
                 ),

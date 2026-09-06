@@ -1042,7 +1042,7 @@ def prompt_timeout_for_ceiling(configured: float) -> float:
 
 
 def resolve_prompt_timeout() -> float:
-    """Per-prompt transport timeout, honouring the configured turn ceiling.
+    """Per-prompt transport timeout, honouring every deadline layered above it.
 
     ``agent.chat_turn_timeout_secs`` may be raised above
     :data:`_DEFAULT_PROMPT_TIMEOUT` (up to the loader's ``CHAT_TURN_TIMEOUT_MAX``)
@@ -1050,6 +1050,15 @@ def resolve_prompt_timeout() -> float:
     dashboard's ceiling — otherwise the transport cuts the turn first and the
     larger configured value is a limit the system does not honour (the exact
     dishonesty ``turn_dispatch.chat_turn_timeout_secs`` clamps against).
+
+    This ONE wait is shared by every prompt dispatch, so it bounds against the
+    LARGEST such deadline rather than the turn ceiling alone.
+    ``agent.subagent_timeout_secs`` is the other one: a subagent's outer
+    ``asyncio.wait_for`` runs on that value while its prompt runs on this wait,
+    so a transport cut below it kills a healthy subagent early and reports a
+    transport failure rather than the deadline the operator configured. ``0``
+    there is the "use the default" sentinel, resolved the same way the manager
+    resolves it.
 
     Never returns less than :data:`_DEFAULT_PROMPT_TIMEOUT`: a LOWERED turn
     ceiling is enforced by the dashboard's own deadline, and shrinking the
@@ -1061,8 +1070,11 @@ def resolve_prompt_timeout() -> float:
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS
 
-        configured = float(KiroCrewConfig.load().agent.chat_turn_timeout_secs)
+        agent = KiroCrewConfig.load().agent
+        subagent = float(agent.subagent_timeout_secs) or float(SUBAGENT_TIMEOUT_SECS)
+        configured = max(float(agent.chat_turn_timeout_secs), subagent)
     except Exception:
         logger.debug("turn-ceiling config unavailable; transport keeps default", exc_info=True)
         return _DEFAULT_PROMPT_TIMEOUT

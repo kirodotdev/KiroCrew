@@ -28,6 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew import constants as kc_constants
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp.client import (
     _DEFAULT_PROMPT_TIMEOUT,
@@ -42,16 +43,22 @@ from kiro_crew.config.loader import (
     _clamp_security_bounds,
     _safe_int,
 )
+from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS
 from kiro_crew.dashboard import turn_dispatch as td
 
 
-def _patch_loaded_ceiling(monkeypatch, value: object) -> None:
+def _patch_loaded_ceiling(monkeypatch, value: object, subagent: object = 60) -> None:
     """Patch ``KiroCrewConfig.load`` on the CLASS.
 
     The resolver imports the class lazily inside the function and
     ``turn_dispatch`` holds a module-scope reference — both resolve to the same
     class object, so one patch covers the whole path end-to-end. ``value=None``
     simulates config being unavailable entirely.
+
+    ``subagent`` defaults to the loader's own 60s floor, far below
+    ``_DEFAULT_PROMPT_TIMEOUT`` and so never binding — that keeps the
+    turn-ceiling cases below measuring the ceiling term alone. Pass it
+    explicitly to exercise the subagent term.
     """
     if value is None:
 
@@ -60,7 +67,12 @@ def _patch_loaded_ceiling(monkeypatch, value: object) -> None:
 
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_raise))
         return
-    cfg = SimpleNamespace(agent=SimpleNamespace(chat_turn_timeout_secs=value))
+    cfg = SimpleNamespace(
+        agent=SimpleNamespace(
+            chat_turn_timeout_secs=value,
+            subagent_timeout_secs=subagent,
+        )
+    )
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
 
 
@@ -95,6 +107,46 @@ class TestResolvePromptTimeout:
         turn a corrupt value into an instantly-dead prompt."""
         _patch_loaded_ceiling(monkeypatch, 0)
         assert resolve_prompt_timeout() == _DEFAULT_PROMPT_TIMEOUT
+
+    def test_follows_the_subagent_deadline_when_it_is_larger(self, monkeypatch) -> None:
+        """This ONE wait is shared, so the LARGER deadline above it binds.
+
+        A subagent's outer ``wait_for`` runs on ``subagent_timeout_secs`` while
+        its prompt runs on this wait. A transport cut below that deadline kills
+        a healthy subagent early and reports a transport failure instead of the
+        deadline the operator configured, so the ceiling term alone is not
+        enough.
+
+        The subagent value here sits above ``_DEFAULT_PROMPT_TIMEOUT`` on
+        purpose: the floor already covers every deadline below it, so only one
+        past the floor can show that this term is read at all.
+        """
+        larger = _DEFAULT_PROMPT_TIMEOUT + 7200.0
+        _patch_loaded_ceiling(monkeypatch, CHAT_TURN_TIMEOUT_MIN, subagent=larger)
+        assert resolve_prompt_timeout() == larger + _PROMPT_TIMEOUT_MARGIN_SECS
+
+    def test_subagent_zero_sentinel_resolves_to_its_default(self, monkeypatch) -> None:
+        """``0`` means "use the default", the same way the manager reads it.
+
+        The default is patched above ``_DEFAULT_PROMPT_TIMEOUT`` so the resolved
+        value is the one this wait reports back; at the shipped default the floor
+        covers it and the sentinel's resolution is not observable from here. The
+        resolver imports the constant lazily inside the call, so patching the
+        module attribute is what it reads.
+        """
+        resolved = _DEFAULT_PROMPT_TIMEOUT + 3600.0
+        monkeypatch.setattr(kc_constants, "SUBAGENT_TIMEOUT_SECS", int(resolved))
+        _patch_loaded_ceiling(monkeypatch, CHAT_TURN_TIMEOUT_MIN, subagent=0)
+        assert resolve_prompt_timeout() == resolved + _PROMPT_TIMEOUT_MARGIN_SECS
+
+    def test_the_shared_wait_outlives_the_stock_subagent_deadline(self, monkeypatch) -> None:
+        """The invariant, pinned against the constant rather than a literal.
+
+        Raising either default without raising this wait is what makes a long
+        subagent die at the transport cut instead of at its own deadline.
+        """
+        _patch_loaded_ceiling(monkeypatch, 7200, subagent=SUBAGENT_TIMEOUT_SECS)
+        assert resolve_prompt_timeout() > float(SUBAGENT_TIMEOUT_SECS)
 
 
 class TestEffectivePromptTimeout:
