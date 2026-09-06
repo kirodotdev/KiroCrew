@@ -8151,6 +8151,9 @@ class DashboardState:
     def ws_client_count(self) -> int:
         return _websocket_for(self).ws_client_count()
 
+    def dashboard_user_ws_count(self) -> int:
+        return _websocket_for(self).dashboard_user_ws_count()
+
     def broadcast_browser_event(self, event_type: str, data: dict) -> None:
         _websocket_for(self).broadcast_browser_event(event_type, data)
 

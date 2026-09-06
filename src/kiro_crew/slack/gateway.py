@@ -299,6 +299,7 @@ from kiro_crew.subagent import (
     _TRANSIENT_CONTINUE_MSG,
     DIGEST_HOLD_SECS,
     INJECTION_TIMEOUT,
+    SpawnApprovalUnreachable,
     SubagentInfo,
     SubagentManager,
     ToolApprovalCallback,
@@ -1818,11 +1819,53 @@ class GatewayOrchestrator:
     # Tool approval callback (shared by cron, heartbeat, subagent, task)
     # ------------------------------------------------------------------
 
+    def _dashboard_client_attached(self) -> bool:
+        """Report whether an attached dashboard client could answer a prompt NOW.
+
+        Asked at exactly one place: the dashboard-only fallback in
+        ``_interactive_approval``. Reaching it means Slack has already had its
+        turn — either no owner DM was configured, or posting the prompt to it
+        raised and the callback fell through — so the question left is only about
+        the dashboard, and a Slack term here would report a surface that
+        demonstrably did NOT receive the prompt.
+
+        Counts DASHBOARD-USER sockets, not every ``/api/ws`` registration. An app
+        token registers as a client too, and the broadcast chokepoint sends it an
+        owner-surface frame only if its manifest declared that event -- so an open
+        app UI is not somebody who can answer the prompt, for the same reason a
+        configured-but-failed Slack DM is not.
+
+        Deliberately narrow, because a false "attached" merely restores today's
+        behaviour while a false "detached" refuses a spawn a human WOULD have
+        approved:
+
+        * an unreadable client count is treated as attached;
+        * no ``dashboard_state`` at all is genuinely no surface, but the caller
+          reaches its own no-UI branch before asking, so that answer is never
+          used to refuse anything.
+
+        A relay reader is not a false positive here: it consumes the SSE stream
+        (``dashboard/remote_mirror``), never registers on ``/api/ws``, and so is
+        not in ``_ws_clients`` at all.
+        """
+        if self.dashboard_state is None:
+            return False
+        try:
+            return int(self.dashboard_state.dashboard_user_ws_count()) > 0
+        except Exception:
+            logger.debug(
+                "dashboard_user_ws_count failed; treating the dashboard as attached",
+                exc_info=True,
+            )
+            return True
+
     def _interactive_approval(
         self,
         source: str,
         slot_resolver: Callable[[str], str] | None = None,
         nudge_key: str = "",
+        *,
+        raise_when_unreachable: bool = False,
     ) -> ToolApprovalCallback:
         """Return an approval callback that races dashboard vs Slack DM.
 
@@ -1835,6 +1878,12 @@ class GatewayOrchestrator:
         through the dashboard runner, so without it an unanswered prompt on this
         path records no evidence and such a loop keeps waking, being declined and
         spending its cycle cap -- while the expiry notice still promises a stop.
+
+        ``raise_when_unreachable`` opts this callback into raising
+        ``SpawnApprovalUnreachable`` instead of parking on a prompt no surface
+        received. Only the spawn gate sets it, because only the spawn gate has a
+        terminal path that can report the refusal to the calling agent; a mid-run
+        tool approval has no such path and keeps parking exactly as before.
         """
 
         is_background = source in _BACKGROUND_APPROVAL_SOURCES
@@ -2194,6 +2243,14 @@ class GatewayOrchestrator:
 
             # Fallback: dashboard only
             if self.dashboard_state:
+                # The single park-with-nobody-attached point. Every non-human
+                # shortcut above has already been evaluated and skipped, and the
+                # Slack branch either was not taken or fell through after failing
+                # to post — so "nobody received this prompt" is now the only
+                # remaining reading, which is what makes the check sound here and
+                # nowhere else.
+                if raise_when_unreachable and not self._dashboard_client_attached():
+                    raise SpawnApprovalUnreachable("no dashboard client is connected")
                 return await self.dashboard_state.request_approval(
                     request_id,
                     source,
@@ -8317,12 +8374,20 @@ class GatewayOrchestrator:
         _approve_subagent = self._interactive_approval(
             "subagent", slot_resolver=_spawn_slot_resolver
         )
+        # A SECOND instance of the same callback, differing only in the
+        # unreachable behaviour. It is a separate closure because the one above is
+        # also wired as ``on_tool_approval``: a mid-run tool prompt has no
+        # terminal path that could report the refusal, so raising there would turn
+        # a recoverable park into a lost turn.
+        _approve_spawn_gate = self._interactive_approval(
+            "subagent", slot_resolver=_spawn_slot_resolver, raise_when_unreachable=True
+        )
 
         async def _spawn_approve(
             request_id: str, description: str, parent_session_key: str = ""
         ) -> bool:
             event = LLMEvent(kind="permission_request", request_id=request_id, title=description)
-            return await _approve_subagent(event, parent_session_key)
+            return await _approve_spawn_gate(event, parent_session_key)
 
         # Debounced slots push: keep slots[].subagents_running live for every
         # SSE consumer (composer busy affordance, Board "working" lane, and
