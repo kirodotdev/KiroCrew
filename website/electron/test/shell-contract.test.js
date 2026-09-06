@@ -68,7 +68,9 @@ test("packaging allowlist covers every relatively-required module", () => {
 
 test("packaging allowlist has no stale entries", () => {
   const listed = require(path.join(ROOT, "package.json")).build.files;
-  const stale = listed.filter((f) => !fs.existsSync(path.join(ROOT, f)));
+  // Build-time inputs are staged by build-desktop.sh, not present in a checkout.
+  const { BUILD_TIME_INPUTS: buildTimeInputs } = require("./build-time-inputs");
+  const stale = listed.filter((f) => !buildTimeInputs.has(f) && !fs.existsSync(path.join(ROOT, f)));
   assert.deepStrictEqual(
     stale,
     [],

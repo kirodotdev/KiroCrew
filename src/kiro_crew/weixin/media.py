@@ -17,6 +17,7 @@ data of our own.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
@@ -25,8 +26,6 @@ from typing import Any
 from urllib.parse import quote
 
 import aiohttp
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +96,12 @@ def decrypt_aes_ecb(ciphertext: bytes, key: bytes) -> bytes:
     # ECB is dictated by the remote protocol (see module docstring): the CDN
     # hands us objects it already encrypted this way, and we never encrypt with
     # it. There is no algorithm choice to make here.
+    # Lazy for the same reason as wecom.media.decrypt_media: this module sits on
+    # the tool-approval hook's import chain, and only decrypting a media file
+    # needs the `cryptography` native wheel.
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
     decryptor = Cipher(  # nosec B305  # lgtm[py/weak-cryptographic-algorithm]
         algorithms.AES(key), modes.ECB()
     ).decryptor()
@@ -162,7 +167,9 @@ async def download_media(
     raw = await fetch_cdn_bytes(session, url, max_bytes=max_bytes)
     if not aes_key_b64:
         return raw
-    return decrypt_aes_ecb(raw, parse_aes_key(aes_key_b64))
+    # Off the loop: AES-ECB over the whole body is CPU-bound, and the first
+    # call also pays the lazy ``cryptography`` native-module import.
+    return await asyncio.to_thread(decrypt_aes_ecb, raw, parse_aes_key(aes_key_b64))
 
 
 def media_ref(item: dict[str, Any], kind_field: str) -> tuple[str, str]:
