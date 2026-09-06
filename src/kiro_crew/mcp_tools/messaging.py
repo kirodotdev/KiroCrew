@@ -355,7 +355,14 @@ def schemas() -> list[dict[str, Any]]:
                 "also delivered there natively; otherwise it uploads to "
                 "Slack when the caller's Slack identity permits it. Use "
                 "when you've generated a report, export, artifact, or any "
-                "file the user should receive."
+                "file the user should receive. Native channel delivery is "
+                "not guaranteed: when this session has no eligible channel "
+                "destination the result says so and the file is reachable "
+                "only from the dashboard. To put an IMAGE inline in a "
+                "messaging conversation, reference it in your reply as "
+                "![alt](/abs/path) from the session's working directory — "
+                "the channel renderer uploads it as a native picture, which "
+                "this tool's outbox copy is not eligible for."
             ),
             "inputSchema": {
                 "type": "object",
@@ -712,6 +719,72 @@ def read_slack_profile(name: str, args: dict[str, Any]) -> str:
     return json.dumps(profile, indent=2)
 
 
+def _describe_channel_skip(reason: str) -> str:
+    """Render a channel-leg skip *reason* as an actionable warning clause.
+
+    The endpoint already decided, audited and serialized why native delivery
+    could not happen; this only makes that decision visible to the caller. The
+    reason codes are a closed vocabulary
+    (:mod:`kiro_crew.dashboard.upload_destination`), so an unrecognized value is
+    reported verbatim rather than guessed at — a new code must degrade to "we
+    told you the code we got", never to silence.
+
+    ``restricted_session`` deliberately gets NO remedy. It is a ceiling, not a
+    missing capability: the renderer's extraction path enforces the same shared
+    predicate, so the inline route is equally refused there. Suggesting it would
+    both fail and read as advice to route around a privacy boundary.
+
+    ``channel_upload_unsupported`` gets no remedy either, for the neighbouring
+    reason: it fires for any channel with no document verb wired, and that set
+    spans both capabilities. Discord would honour an inline reference
+    (``files_outbound=True``) but WeCom, Weixin, iMessage and Feishu declare
+    ``files_outbound=False``, so their renderers leave the reference in the text
+    as literal markup. The reason string cannot tell those cases apart, and
+    naming a route that silently does nothing on half of them is worse than
+    naming none — the channel type is already in the reason for a caller that
+    wants to look further.
+
+    This docstring is the ONE place that roster is written down; the spec and the
+    tests point here rather than restating it, so a channel flipping the flag
+    invalidates a single site instead of four.
+    """
+    head = f" (native channel delivery skipped: {reason}"
+    if reason == "restricted_session":
+        return (
+            f"{head}; this session may not ship local file bytes to a channel, "
+            "so the dashboard card is the only delivery)"
+        )
+    if reason.startswith("channel_upload_unsupported"):
+        return f"{head}; this channel has no file-upload path from this tool)"
+    if reason == "no_channel_destination":
+        # The one reason with a route worth naming: no destination here does not
+        # mean no destination anywhere, and the renderer's own outbound-image
+        # extraction uploads a real image referenced inline in the reply.
+        return (
+            f"{head}; for an inline image on a messaging channel, reference it as "
+            "![alt](/abs/path) from the session's working directory instead)"
+        )
+    return f"{head})"
+
+
+def _describe_slack_skip(reason: str) -> str:
+    """Render a SLACK-leg skip *reason* as a warning clause.
+
+    The Slack endpoint answers its own "cannot deliver here" the same way the
+    channel one does — ``{"ok": true, "skipped": "<reason>"}``, from `no_slack`
+    when no client is configured and from the shared destination oracle
+    otherwise — and this tool is that endpoint's only caller. Reporting only
+    ``error`` left a skip indistinguishable from an upload, which is the very
+    pattern the channel leg above stopped doing; fixing one branch and leaving
+    its sibling is what makes a point patch out of a general fix.
+
+    No remedy is named. Unlike a channel skip there is no alternative route to
+    point at: Slack either has a permitted destination for this caller or the
+    dashboard card is the delivery.
+    """
+    return f" (Slack upload skipped: {reason}; the file is available in the dashboard)"
+
+
 def file_send(name: str, args: dict[str, Any]) -> str:
     src = Path(args.get("path", ""))
     desc = redact(args.get("description", ""))
@@ -884,6 +957,13 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             return f"{msg} (delivered to {via})"
         if channel_resp.get("error"):
             channel_warning = f" (channel upload failed: {channel_resp['error']})"
+        elif channel_resp.get("skipped"):
+            # A SKIP is the endpoint's "no destination here" answer, and it
+            # carries the reason it decided that. Reporting it is the whole
+            # point: without it the caller reads a bare "File sent" and cannot
+            # tell a delivery from a dashboard-only copy, so an agent that
+            # picked the wrong tool has nothing to correct against.
+            channel_warning = _describe_channel_skip(str(channel_resp["skipped"]))
     # Also upload to Slack when the caller's Slack identity permits it.
     #
     # Resolve identity as a THREE-state result (see
@@ -927,6 +1007,10 @@ def file_send(name: str, args: dict[str, Any]) -> str:
         )
         if slack_resp.get("error"):
             slack_warning = f" (Slack upload failed: {slack_resp['error']})"
+        elif slack_resp.get("skipped"):
+            # Same three-state response as the channel leg above, same rule: a
+            # skip the endpoint computed and audited must not read as an upload.
+            slack_warning = _describe_slack_skip(str(slack_resp["skipped"]))
     msg = f"File sent: {dest.name} ({desc})" if desc else f"File sent: {dest.name}"
     return msg + channel_warning + slack_warning
 
