@@ -5583,7 +5583,6 @@
         },
         "pagesProvider": {
           "developer": "デベロッパー",
-          "hooks": "フック",
           "kirocrew_agents": "{{productName}} エージェント",
           "logs": "ログ",
           "pages": "ページ",
@@ -7785,6 +7784,9 @@
       "confirm_discard": "描画を破棄",
       "already_attached": "添付済み — キャンバスを編集すると再度スケッチできます",
       "load_failed": "スケッチパッドを読み込めませんでした。接続を確認して再度開いてください"
+    },
+    "pinSurfaceButton": {
+      "pin_limit_reached": "サイドバーにピン留めできるのは最大 {{n}} 個です - まず1つ解除してください"
     }
   },
   "hooks": {

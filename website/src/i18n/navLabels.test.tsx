@@ -64,6 +64,25 @@ describe('nav surface labels', () => {
   it('falls back to the literal label when a surface has no labelKey', () => {
     expect(surfaceLabel({ label: 'My App' })).toBe('My App')
   })
+
+  it('resolves a PROMOTABLE sub-item label in every language', async () => {
+    // The check above rejects a raw key only by its `nav.` prefix, so it is
+    // VACUOUS for a surface whose labelKey lives in another namespace: an
+    // unresolved `pages.capabilitiesPage.steering_label` is truthy and does not
+    // match /^nav\./, so it would sail through. Promotable sub-items reuse the
+    // host panel's own catalog keys deliberately (one destination, one name),
+    // which is exactly that case — so assert resolution against the KEY itself.
+    const pinnable = getBuiltinSurfaces().filter(s => s.pinnable)
+    expect(pinnable.length, 'no pinnable surfaces registered').toBeGreaterThan(0)
+    for (const lng of SUPPORTED_CODES) {
+      await i18next.changeLanguage(lng)
+      for (const s of pinnable) {
+        const label = surfaceLabel(s)
+        expect(label, `${s.navId} in ${lng}`).toBeTruthy()
+        expect(label, `${s.navId} in ${lng} rendered its raw key`).not.toBe(s.labelKey)
+      }
+    }
+  })
 })
 
 describe('Settings tab labels', () => {

@@ -5583,7 +5583,6 @@
         },
         "pagesProvider": {
           "developer": "개발자",
-          "hooks": "훅",
           "kirocrew_agents": "{{productName}} 에이전트",
           "logs": "로그",
           "pages": "페이지",
@@ -7785,6 +7784,9 @@
       "confirm_discard": "그림 삭제",
       "already_attached": "첨부됨 — 캔버스를 편집하면 다시 스케치할 수 있습니다",
       "load_failed": "스케치 패드를 불러오지 못했습니다. 연결을 확인하고 다시 열어 주세요"
+    },
+    "pinSurfaceButton": {
+      "pin_limit_reached": "사이드바 고정은 최대 {{n}}개입니다 - 먼저 하나를 해제하세요"
     }
   },
   "hooks": {

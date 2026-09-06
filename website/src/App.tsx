@@ -33,6 +33,7 @@ import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
 import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, FOCUS_INSET } from './hooks/useFocusMode'
 import { APP_NAV_ORDER_KEY, buildReorderBaseline, mergeVisibleReorder, readAppNavOrder, useAppNavHidden } from './lib/appNavHidden'
+import { useNavPinned } from './lib/navPinned'
 import { computeHeaderDragGaps, type DragGap } from './lib/dragGaps'
 import { isEmbeddedPane } from './lib/embedded'
 import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, registerThemeDecorSlot } from './lib/themeDecorLayer'
@@ -237,6 +238,9 @@ const NAV_ITEMS = getBuiltinSurfaces().map(s => ({
   // time. It cannot be filtered out here: this constant is evaluated once at
   // module load, so a flag flipped later would not take effect until a reload.
   previewFlag: s.previewFlag,
+  // Same reason, for the same reason: whether a promotable sub-item occupies a
+  // rail row is a localStorage read that changes without a reload.
+  pinnable: s.pinnable,
 }))
 
 /** Re-exported for the topbar readout's existing consumers; defined in
@@ -1775,12 +1779,18 @@ export default function App() {
   // otherwise the row would appear only after a reload. The revision also
   // invalidates the memo below, which a bare re-render would not recompute.
   const previewFlagRevision = usePreviewFlagRevision()
+  // Which promotable sub-items the user has pinned to the rail. Live under both
+  // propagation paths (same-tab event + cross-tab `storage`), so toggling the
+  // pin control in a page header repaints the rail without a reload.
+  const pinnedNavIds = useNavPinned()
   // ONE derivation feeding BOTH rail list paths (the Apps group just below and
   // the Main group further down). Filtering per call site is what leaks an
   // unreleased surface: the first preview-gated Apps-group surface would have
-  // shown up while only the Main branch was gated.
+  // shown up while only the Main branch was gated. The pinned test rides here
+  // for the same reason — a `pinnable` sub-item filtered in only one branch
+  // would appear on the rail in the other without the user pinning it.
   const advertisedNavItems = useMemo(
-    () => NAV_ITEMS.filter(surfacePreviewEnabled),
+    () => NAV_ITEMS.filter(n => surfacePreviewEnabled(n) && (!n.pinnable || pinnedNavIds.has(n.id))),
     // The revision is an invalidation token: what `surfacePreviewEnabled` reads
     // lives in localStorage, not in React state, so nothing else here can
     // express the dep. The directive stays on ONE line directly above the deps
@@ -1788,7 +1798,7 @@ export default function App() {
     // rationale wrapped after it aims the directive at its own continuation and
     // suppresses nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [previewFlagRevision],
+    [previewFlagRevision, pinnedNavIds],
   )
   // Apps nav reorder is dnd-kit sortable (mirrors QueueStack): rows reflow to
   // open a gap as you drag, and a DragOverlay renders the floating ghost.
@@ -2811,6 +2821,43 @@ export default function App() {
   // toggle, and badge wiring are identical across sections.
   // `surfaceLabel` resolves `labelKey` against the active language at render
   // time; a surface with no key (app-contributed) falls back to its literal.
+  // Which rail row is the current one. A promoted sub-item's `path` carries its
+  // host panel's tab param (`/capabilities?tab=steering`), so the pathname-only
+  // comparison every other row uses can never match it and the row would never
+  // paint as active while you were standing on it. Rows WITHOUT a param take
+  // the original test unchanged — including `/apps`, which must not match its
+  // own children the way the general prefix test would.
+  // A promoted sub-item row and its HOST row would otherwise both pass their own
+  // active test on the same URL: the host's is a prefix match on `/capabilities`,
+  // the promoted row's an exact `?tab=` match. The rail then paints two rows as
+  // "where I am", which answers the question with neither. Screenshot evidence
+  // is what caught it, so the host yields to the promoted row that owns the tab.
+  const promotedTabOwner = useMemo(() => {
+    const tab = new URLSearchParams(location.search).get('tab')
+    if (!tab) return null
+    const owner = advertisedNavItems.find(n => {
+      const q = n.path.indexOf('?')
+      return q !== -1
+        && n.path.slice(0, q) === activePath
+        && new URLSearchParams(n.path.slice(q + 1)).get('tab') === tab
+    })
+    return owner ? activePath : null
+  }, [advertisedNavItems, activePath, location.search])
+
+  const navRowActive = (path: string): boolean => {
+    const q = path.indexOf('?')
+    if (q !== -1) {
+      const wanted = new URLSearchParams(path.slice(q + 1)).get('tab')
+      return activePath === path.slice(0, q)
+        && new URLSearchParams(location.search).get('tab') === wanted
+    }
+    if (path === '/apps') return activePath === '/apps'
+    const selfActive = activePath === path || activePath.startsWith(path + '/')
+    // Only the host of a currently-showing promoted row yields, so every other
+    // param-free row keeps its original behaviour byte for byte.
+    return selfActive && promotedTabOwner === path ? false : selfActive
+  }
+
   const renderNavRow = (
     n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode },
   ) => (
@@ -2819,7 +2866,7 @@ export default function App() {
       path={n.path}
       label={surfaceLabel(n)}
       icon={n.icon}
-      active={n.path === '/apps' ? activePath === '/apps' : (activePath === n.path || activePath.startsWith(n.path + '/'))}
+      active={navRowActive(n.path)}
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}

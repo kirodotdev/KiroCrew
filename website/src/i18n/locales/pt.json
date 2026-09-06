@@ -5763,7 +5763,6 @@
         },
         "pagesProvider": {
           "developer": "Desenvolvedor",
-          "hooks": "Hooks",
           "kirocrew_agents": "Agentes do {{productName}}",
           "logs": "Logs",
           "pages": "Páginas",
@@ -7999,6 +7998,9 @@
       "confirm_discard": "Descartar desenho",
       "already_attached": "Anexado — edite a tela para esboçar novamente",
       "load_failed": "Não foi possível carregar o bloco de esboços — verifique sua conexão e reabra"
+    },
+    "pinSurfaceButton": {
+      "pin_limit_reached": "Máximo de {{n}} itens fixados na barra lateral: remova um primeiro"
     }
   },
   "hooks": {

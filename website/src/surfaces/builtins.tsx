@@ -7,7 +7,8 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, Users } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, Users, LayoutTemplate, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { registerBuiltinSurface, surfaceMachineValue } from './registry'
@@ -177,10 +178,70 @@ registerBuiltinSurface({
   group: 'Main',
 })
 
-// Knowledge is NOT a main-rail surface: it lives as a tab inside Agent
-// Capabilities (CapabilitiesPage), grouped with Prompts and Steering — the
-// other feed-the-agent assets. The old /knowledge route redirects there
-// (App.tsx), so bookmarks and deep links keep resolving.
+// Knowledge is not a main-rail surface BY DEFAULT: it lives as a tab inside
+// Agent Capabilities (CapabilitiesPage), grouped with Prompts and Steering —
+// the other feed-the-agent assets. The old /knowledge route redirects there
+// (App.tsx), so bookmarks and deep links keep resolving. It is registered
+// below as `pinnable`, so a user who works in it daily can promote it onto the
+// rail; absent that pin the rail is unchanged.
+
+// ── Promotable sub-items (Agent Capabilities panel) ────────────────────────
+// Each of these is a tab inside /capabilities. They are registered as real
+// surfaces so a promoted row gets the rail's ordinary label/icon/active
+// handling, `labelKey` resolution and test coverage — but `pinnable` keeps
+// them off the rail until the user promotes one, so a default install renders
+// exactly the rows it rendered before.
+//
+// `labelKey` deliberately reuses the SAME catalog keys CapabilitiesPage's own
+// tab strip renders (`pages.capabilitiesPage.*_label`) rather than minting
+// `nav.*` twins. The row and the tab it promotes are the same destination, so
+// two keys would be two names for one thing and could drift apart per locale.
+//
+// `route` carries the panel's tab query param, which is how CapabilitiesPage
+// already addresses its tabs (it does not opt into SidePanelLayout's
+// path-based `basePath` mode). No new `<Route>` is needed: /capabilities is
+// already routed and consumes `?tab=`.
+//
+// Icons are the tab's own glyph EXCEPT where that glyph is already spoken for
+// on the rail, because a promoted row sits among the rail's rows rather than
+// among its panel's tabs, and the collapsed rail is icon-only:
+//   steering  Compass -> ScrollText  (Discover owns Compass, App.tsx, always rendered)
+//   crews     Users   -> Bot         (Crew Members owns Users when its preview is on)
+// `hooks` KEEPS its tab glyph. It was briefly moved to Zap because the
+// palette's standalone /hooks entry drew a Webhook, but this change deletes that
+// entry, and the `webhooks` surface is `hiddenFromNav` so it has no rail row --
+// nothing owns Webhook on the rail, and the rule above then says keep the tab's.
+// Sibling distinguishability on the rail beats matching the tab strip; the tab
+// keeps its own glyph, which is what the panel's own rail needs.
+//
+// `label` and `group` go through `surfaceMachineValue()` for the reason the two
+// most recently added surfaces (`members`, `webhooks`) already do: `group` is a
+// `SurfaceGroup` union member, and `label` here is the English FALLBACK that
+// `surfaceLabel()` never reads while `labelKey` is set. Neither is user-visible
+// copy, and the strict i18n config looks inside ALL-CAPS module constants.
+const CAPABILITY_SUB_ITEMS: readonly { tab: string; labelKey: string; label: string; icon: ReactElement }[] = [
+  { tab: 'crews', labelKey: 'pages.capabilitiesPage.crews_label', label: surfaceMachineValue('Crews'), icon: <Bot size={16} /> },
+  { tab: 'templates', labelKey: 'pages.capabilitiesPage.templates_label', label: surfaceMachineValue('Agent Templates'), icon: <LayoutTemplate size={16} /> },
+  { tab: 'skills', labelKey: 'pages.capabilitiesPage.skills_label', label: surfaceMachineValue('Skills'), icon: <BookOpen size={16} /> },
+  { tab: 'mcp', labelKey: 'pages.capabilitiesPage.connections_label', label: surfaceMachineValue('Connections'), icon: <Link2 size={16} /> },
+  { tab: 'knowledge', labelKey: 'pages.capabilitiesPage.knowledge_label', label: surfaceMachineValue('Knowledge'), icon: <Library size={16} /> },
+  { tab: 'prompts', labelKey: 'pages.capabilitiesPage.prompts_label', label: surfaceMachineValue('Prompts'), icon: <MessageSquareText size={16} /> },
+  { tab: 'steering', labelKey: 'pages.capabilitiesPage.steering_label', label: surfaceMachineValue('Steering files'), icon: <ScrollText size={16} /> },
+  { tab: 'hooks', labelKey: 'pages.capabilitiesPage.hooks_label', label: surfaceMachineValue('Hooks'), icon: <Webhook size={16} /> },
+  { tab: 'workflows', labelKey: 'pages.capabilitiesPage.workflows_label', label: surfaceMachineValue('Workflows'), icon: <Workflow size={16} /> },
+]
+
+for (const s of CAPABILITY_SUB_ITEMS) {
+  registerBuiltinSurface({
+    navId: `capabilities-${s.tab}`,
+    route: `/capabilities?tab=${s.tab}`,
+    label: s.label,
+    labelKey: s.labelKey,
+    icon: s.icon,
+    group: surfaceMachineValue('Main'),
+    pinnable: true,
+  })
+}
 
 // ── Bottom ─────────────────────────────────────────────────────────────────
 // Agents + Capabilities merged into one bottom-pinned "Agent Capabilities"

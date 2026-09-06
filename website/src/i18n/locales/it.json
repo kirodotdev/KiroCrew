@@ -5763,7 +5763,6 @@
         },
         "pagesProvider": {
           "developer": "Sviluppatore",
-          "hooks": "Hook",
           "kirocrew_agents": "Agenti {{productName}}",
           "logs": "Log",
           "pages": "Pagine",
@@ -7999,6 +7998,9 @@
       "confirm_discard": "Elimina disegno",
       "already_attached": "Allegato — modifica la tela per disegnare di nuovo",
       "load_failed": "Impossibile caricare il blocco schizzi: controlla la connessione e riapri"
+    },
+    "pinSurfaceButton": {
+      "pin_limit_reached": "Massimo {{n}} elementi fissati alla barra laterale: rimuovine uno prima"
     }
   },
   "hooks": {

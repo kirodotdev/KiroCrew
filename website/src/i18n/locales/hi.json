@@ -5673,7 +5673,6 @@
         },
         "pagesProvider": {
           "developer": "डेवलपर",
-          "hooks": "हुक",
           "kirocrew_agents": "{{productName}} एजेंट",
           "logs": "लॉग",
           "pages": "पेज",
@@ -7892,6 +7891,9 @@
       "confirm_discard": "चित्र हटाएं",
       "already_attached": "संलग्न — फिर से स्केच करने के लिए कैनवास संपादित करें",
       "load_failed": "स्केच पैड लोड नहीं हो सका — कनेक्शन जांचें और फिर से खोलें"
+    },
+    "pinSurfaceButton": {
+      "pin_limit_reached": "साइडबार में अधिकतम {{n}} पिन - पहले किसी एक को अनपिन करें"
     }
   },
   "hooks": {

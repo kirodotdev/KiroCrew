@@ -5763,7 +5763,6 @@
         },
         "pagesProvider": {
           "developer": "Desarrollador",
-          "hooks": "Hooks",
           "kirocrew_agents": "Agentes de {{productName}}",
           "logs": "Registros",
           "pages": "Páginas",
@@ -7999,6 +7998,9 @@
       "confirm_discard": "Descartar dibujo",
       "already_attached": "Adjuntado: edita el lienzo para volver a dibujar",
       "load_failed": "No se pudo cargar el bloc de bocetos: revisa tu conexión y vuelve a abrirlo"
+    },
+    "pinSurfaceButton": {
+      "pin_limit_reached": "Máximo {{n}} elementos fijados en la barra lateral: quita uno primero"
     }
   },
   "hooks": {

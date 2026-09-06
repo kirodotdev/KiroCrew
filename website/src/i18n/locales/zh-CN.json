@@ -5583,7 +5583,6 @@
         },
         "pagesProvider": {
           "developer": "开发者",
-          "hooks": "钩子",
           "kirocrew_agents": "{{productName}} 代理",
           "logs": "日志",
           "pages": "页面",
@@ -7785,6 +7784,9 @@
       "confirm_discard": "丢弃画作",
       "already_attached": "已附加——继续编辑画布可再次草图",
       "load_failed": "草图板加载失败——请检查网络后重新打开"
+    },
+    "pinSurfaceButton": {
+      "pin_limit_reached": "侧边栏最多置顶 {{n}} 项 - 请先取消置顶一项"
     }
   },
   "hooks": {

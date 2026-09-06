@@ -155,6 +155,26 @@ export interface Surface {
    * flag is on.
    */
   previewFlag?: string
+  /**
+   * Mark this surface as a PROMOTABLE SUB-ITEM: a destination that normally
+   * lives inside another surface's secondary panel (Agent Capabilities'
+   * Steering files, Skills, Hooks), which the user may promote onto the rail.
+   *
+   * It is registered exactly like any other surface — so it stays in
+   * `getBuiltinSurfaces()` and every registry-wide invariant, `labelKey`
+   * coverage included, keeps covering it — but it occupies a rail row only
+   * while its navId is in the user's pinned set (`lib/navPinned.ts`). That
+   * read is per render and comes from localStorage, so it cannot be expressed
+   * here: `App.tsx` applies it in the ONE derivation that feeds every rail
+   * list, for the same reason `previewFlag` is filtered there.
+   *
+   * Unlike `hiddenFromNav` (a permanent "rendered elsewhere" marker) this is
+   * conditional and user-controlled, and unlike `previewFlag` the surface is
+   * fully released — an unpinned sub-item is still advertised everywhere a
+   * destination can be found, because it IS reachable inside its host panel.
+   * Only the rail row is opt-in.
+   */
+  pinnable?: boolean
 }
 
 const _builtins: Surface[] = []
@@ -235,6 +255,20 @@ export function surfacePreviewEnabled(s: { previewFlag?: string }): boolean {
  */
 export function getAdvertisedSurfaces(): readonly Surface[] {
   return getBuiltinSurfaces().filter(surfacePreviewEnabled)
+}
+
+/**
+ * The promotable sub-items a user may pin to the rail — advertised surfaces
+ * carrying `pinnable`.
+ *
+ * Named rather than left as an inline `.filter(s => s.pinnable)` at each call
+ * site for the reason `getAdvertisedSurfaces()` gives just above: a call site
+ * that reaches for the unfiltered list and forgets the predicate renders a row
+ * the user never asked for, and the failure is silent. Preview gating is
+ * applied first, so a sub-item of an unreleased surface is not offered.
+ */
+export function getPinnableSurfaces(): readonly Surface[] {
+  return getAdvertisedSurfaces().filter(s => s.pinnable)
 }
 
 /**

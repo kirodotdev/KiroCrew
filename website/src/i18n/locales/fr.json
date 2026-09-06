@@ -5763,7 +5763,6 @@
         },
         "pagesProvider": {
           "developer": "Développeur",
-          "hooks": "Hooks",
           "kirocrew_agents": "Agents {{productName}}",
           "logs": "Journaux",
           "pages": "Pages",
@@ -7999,6 +7998,9 @@
       "confirm_discard": "Abandonner le dessin",
       "already_attached": "Joint — modifiez le canevas pour dessiner à nouveau",
       "load_failed": "Impossible de charger le bloc de croquis — vérifiez votre connexion et rouvrez-le"
+    },
+    "pinSurfaceButton": {
+      "pin_limit_reached": "Maximum {{n}} éléments épinglés à la barre latérale : détachez-en un d'abord"
     }
   },
   "hooks": {

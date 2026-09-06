@@ -92,6 +92,18 @@ stay wired, but it is entered from the topbar bell rather than a rail row.
 One destination, pinned to the bottom of the rail, hosting nine tabs. Every tab
 is a `?tab=` value on `/capabilities` (`pages/CapabilitiesPage.tsx`).
 
+Any one of those tabs can also be **promoted to its own top-level rail row**, so
+a sub-item someone uses daily is one click away instead of two. Each tab is
+registered as a `pinnable` surface (`surfaces/builtins.tsx`,
+`surfaces/registry.ts`), which keeps it OFF the rail until the user promotes it;
+the promoted set is a per-browser preference held under `mc-nav-pinned` and
+owned by `lib/navPinned.ts` (the sibling of `lib/appNavHidden.ts`, which does
+the same job for app rows in the Apps group). Reach it from the pin control in
+the Agent Capabilities page header (`components/PinSurfaceButton.tsx`), which
+resolves its subject from the current `?tab=` value. Promotions are capped at
+`NAV_PINNED_LIMIT`, and the rail applies the filter in `App.tsx`. No handler and
+no endpoint: the preference never leaves the browser.
+
 | Tab | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|
 | Crews | Named agent bindings — which agent, model and workspace; per-crew custom avatar (hand-picked ghost traits or an uploaded picture, edited in the crew editor's avatar builder) | `/capabilities?tab=crews` | `pages/KiroCrewAgentsPage.tsx`, `components/CrewAvatarBuilder.tsx`, `components/CrewAvatar.tsx` | `handlers/agents.py` | `GET /api/agent/config`, `GET,PUT /api/config/default-agent`, `POST /api/agents`, `PUT,DELETE /api/agents/{name}`, `GET,POST /api/agents/{name}/avatar` |
