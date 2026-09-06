@@ -399,7 +399,7 @@
     "id": "iac-teardown-cdk-destroy",
     "pattern": "cdk destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources \u2014 irreversible infrastructure and data loss."
+    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources — irreversible infrastructure and data loss."
   },
   {
     "id": "local-destructive-chmod-777",
@@ -579,7 +579,7 @@
     "id": "iac-teardown-kubectl-delete-namespace",
     "pattern": "kubectl delete namespace.*",
     "category": "iac-teardown",
-    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it \u2014 irreversible cluster-wide teardown."
+    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it — irreversible cluster-wide teardown."
   },
   {
     "id": "local-destructive-mkfs",
@@ -603,7 +603,7 @@
     "id": "iac-teardown-pulumi-destroy",
     "pattern": "pulumi destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack \u2014 irreversible infrastructure teardown."
+    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack — irreversible infrastructure teardown."
   },
   {
     "id": "local-destructive-rm-rf-root",
@@ -613,7 +613,7 @@
   },
   {
     "id": "local-destructive-rm-rf-home",
-    "pattern": "rm -rf ~.*",
+    "pattern": "rm -rf \"?(?:~|\\$HOME|\\$\\{HOME(?:\\}|:[^}]*\\})).*",
     "category": "local-destructive",
     "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config."
   },
@@ -621,7 +621,7 @@
     "id": "iac-teardown-terraform-destroy",
     "pattern": "terraform destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state \u2014 irreversible infrastructure and data loss."
+    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state — irreversible infrastructure and data loss."
   },
   {
     "id": "sql-truncate-table",
