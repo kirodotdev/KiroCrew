@@ -293,9 +293,39 @@ def preserve_tail_marker(full: str, truncated: str) -> str:
     Mirrors the MCP App render marker's re-injection at the same seam, for the
     same reason: a control token that decides how a frame is interpreted must not
     be a casualty of a length cut applied to the frame's prose.
+
+    The marker is located by walking sentinel occurrences from the RIGHT and
+    accepting the first whose tail actually reads (:func:`peek` for the directive
+    sentinel; exact tail anchoring for the refusal tag, which :func:`tag_refusal`
+    appends as the final line). ``rfind`` alone picked the last occurrence of the
+    sentinel *substring* -- and the payload is model-authored, JSON string
+    escaping leaves ``[`` alone, so a directive whose own arguments carry the
+    sentinel bytes embeds a later occurrence inside the payload. Preserving from
+    there re-attached a tail that began mid-payload, unreadable to every
+    consumer: the helper built to save the marker was what corrupted it (#8962).
+    Occurrences reading as genuinely DIFFERENT markers are refused outright --
+    the ambiguity bar ``_repair_escaped_marker`` already holds, kept here so a
+    length cut cannot launder a two-marker frame into a clean one. When nothing
+    reads, nothing is re-attached: a garbage tail protects no consumer and costs
+    the prose the cut had kept.
     """
     for sentinel in (_SENTINEL, _REFUSAL_SENTINEL):
-        idx = full.rfind(sentinel)
+        if sentinel is _SENTINEL:
+            idx, lines = -1, set()
+            probe = full.rfind(sentinel)
+            while probe >= 0:
+                tail = full[probe:]
+                if peek(tail) is not None:
+                    if idx < 0:
+                        idx = probe
+                    lines.add(tail.split("\n", 1)[0])
+                probe = full.rfind(sentinel, 0, probe)
+            if len(lines) > 1:
+                return truncated
+        else:
+            # The genuine refusal tag is tail-anchored by construction; an
+            # embedded occurrence mid-prose is bytes, not a tag.
+            idx = len(full) - len(sentinel) if full.endswith(sentinel) else -1
         if idx < 0:
             continue
         tail = full[idx:]
