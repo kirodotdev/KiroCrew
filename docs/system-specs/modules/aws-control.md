@@ -412,6 +412,55 @@ S3 consent, runs only due backups, and SEL-audits invocation, success, and
 failure. It skips unavailable accounts or absent drives rather than creating
 resources itself.
 
+## Dashboard surface
+
+The app opens on an Overview pane, not on a listing: a strip of metric cards
+(accounts, keys healthy of total, drive used, month-to-date spend, live share
+links, backup schedule), each restating a fact one of the other panes owns and
+carrying a one-line reading under the number, then an Accounts card and a Cloud
+drive card side by side, then a Paid services card. The Overview adds no
+mutation of its own beyond the two paid-service gates. Its account rows are the
+same `AccountRow` component the Accounts pane renders (a `variant` prop decides
+density), so the remove flow, the Reconnect disclosure and the hand-off gating
+exist once. A row carries two controls, the select surface and its overflow
+menu; Reconnect (offered on a degraded resolved row) and Remove are items in
+that menu, and the health word on the row is the cue that the menu holds
+something to do. The bare `/aws-control` path and an unknown pane segment both land on
+Overview; every named pane path is unchanged. The month-to-date figure shares the
+Usage pane's cost cache entry and, like it, settles to a dash with a visible
+reason (consent missing, or the read failed) rather than a tooltip. A read that
+fails (drive, bill, share links, backup schedule) renders an `AwsErrorNotice`
+with a retry under the metric strip, and its card holds a dash. The one
+rejection that is not a failure is the `aws_consent_required` 409, the reader's
+own pending decision, which routes to the setup action or the consent gate; a
+stale connection's 409 (`account_unavailable`, `account_mismatch`) is told apart
+by its code and renders as the failed read it is. Neither the Cloud drive card
+nor the Usage pane's storage meter repeats the byte total its metric card
+already prints; each owns the split, drawn once as `StorageBar`.
+
+Paid-service consent renders in two shapes from one component. `AwsConsentGate`'s
+default mode is the full card the settings panels use; its `compact` mode is one
+row per service in every state (receipt, ask, error) with no container of its
+own, so the Overview and Usage panes lay those rows in a single `divide-y` list
+inside their Paid services card. The Usage pane's month-to-date, storage and
+object figures are metric cards; the storage split (one bar, one legend, one
+tile per section) is the shared `StorageBar` from `shared.tsx`, drawn once and
+placed by both the Usage pane's `StorageMeter` and the Overview's Cloud drive
+card, so the two readings cannot drift. Health is encoded the same way on every
+row (account, key, backup, share): a dot plus a `Badge` word, never colour alone,
+and the word is never hidden at any width.
+
+Every list on the app's panes (accounts, keys, backups, share links, library,
+files) sits inside a `Card` with a `PanelSectionHeader`, empty states render
+through the shared `EmptyState` (a filtered-to-nothing state through
+`FilteredEmpty`, which offers the clear action in place), loading states mirror
+the row box they replace, and the three file dialogs keep their hand-rolled
+overlays because `DriveSectionView` restores focus to a remembered opener that
+the Radix dialog would fight. The App Store card and detail page carry hero
+art declared in `app.json` (`heroImage`, `heroImageDark`, `heroImageDetail`,
+`heroImageDetailDark`), authored in the same palette and restraint as the other
+builtins' art.
+
 ## HTTP surface
 
 `routes.register_routes` exposes owner-gated reads for accounts, available

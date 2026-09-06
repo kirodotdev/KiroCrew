@@ -3781,9 +3781,18 @@ describe('DrivePage sections: preview, rename, search', () => {
     vi.mocked(awsControlApi.driveSearch).mockResolvedValue({ results: [], capped: false, limit: 200 })
     await renderDrive('drive')
     fireEvent.change(screen.getByTestId('drive-search-input'), { target: { value: 'zzz' } })
-    expect(await screen.findByTestId('drive-search-empty')).toHaveTextContent(
-      i18nT('apps.awsControl.console.search_no_results', { query: 'zzz' }),
-    )
+    /* The shared `FilteredEmpty` draws this now, so the sentence is the
+       primitive's ("No Files match “zzz”") rather than this app's own
+       `search_no_results`. What the test pins is unchanged and is the whole
+       point of the state: the query is echoed back, and the way OUT of it is
+       offered right there rather than only in the toolbar. */
+    const empty = await screen.findByTestId('drive-search-empty')
+    expect(empty).toHaveTextContent('zzz')
+    expect(empty).toHaveTextContent(i18nT('components.ui.no_noun_match', {
+      noun: i18nT('apps.awsControl.console.section_files'),
+    }))
+    fireEvent.click(screen.getByTestId('drive-search-empty-clear'))
+    expect((screen.getByTestId('drive-search-input') as HTMLInputElement).value).toBe('')
   })
 })
 

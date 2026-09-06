@@ -31,8 +31,13 @@ import {
   ChevronDown, RefreshCw, Library, Archive, Share2,
   Download, Trash2, Upload, FolderClosed, FolderOpen, FolderPlus, FolderInput, FileText, X,
   MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus, AlertTriangle, Pencil,
+  Database, Link2,
 } from 'lucide-react'
-import { Btn, Badge, Toggle, Input, ContentSkeleton, IconButton } from '../../components/ui'
+import type { LucideIcon } from 'lucide-react'
+import {
+  Btn, Badge, Toggle, Input, ContentSkeleton, IconButton,
+  Card, EmptyState, FilteredEmpty, PanelSectionHeader, SearchInput,
+} from '../../components/ui'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from '../../components/ui/dropdown-menu'
@@ -55,7 +60,7 @@ import type {
   DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
   BackupKind, BackupRun, BackupJobState, Share, DriveUsage,
 } from './types'
-import { CopyBtn, PaneHeader, AwsErrorNotice } from './shared'
+import { CopyBtn, PaneHeader, AwsErrorNotice, StorageBar, QuickTile } from './shared'
 
 /* Literal-key maps from enum → full catalog key, so no i18nT() call assembles a
  * key by interpolation (dynamicKeys gate): extractors and unused-key tooling
@@ -557,6 +562,9 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
           this folder holds, so the blurb restated the same two facts about
           100px above it. Kept during loading, so it does not flash out and
           back in as the listing resolves. */}
+      {/* Not the pane header's `subtitle` slot, although one exists: that slot
+          is unconditional, and this sentence must leave when the empty state
+          arrives. */}
       {!(listQ.isSuccess && slugs.length === 0) && (
       <p className="mb-3 text-[12px] text-muted" data-testid="library-blurb">
         {i18nT('apps.awsControl.console.library_blurb')}
@@ -569,7 +577,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
           the blurb over blank space, which reads as "there is nothing here" --
           the one conclusion we specifically cannot draw. */}
       {listQ.isError && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-border bg-card p-6" data-testid="library-error">
+        <Card className="flex flex-col items-center gap-3 p-6" data-testid="library-error">
           <AwsErrorNotice
             askAgent
             error={listQ.error}
@@ -580,7 +588,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
             <RefreshCw size={13} />
             {i18nT('apps.awsControl.console.retry')}
           </Btn>
-        </div>
+        </Card>
       )}
 
       {/* The cloud listing can succeed while the LOCAL lookup behind it fails.
@@ -592,8 +600,8 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
           never appears, with nothing anywhere explaining why. The cards stay;
           only the silence goes. */}
       {localQ.isError && (
-        <div
-          className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border bg-card px-3 py-2.5"
+        <Card
+          className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5"
           data-testid="library-local-error"
         >
           <AwsErrorNotice
@@ -607,41 +615,42 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
             <RefreshCw size={13} />
             {i18nT('apps.awsControl.console.retry')}
           </Btn>
-        </div>
+        </Card>
       )}
 
       {listQ.isSuccess && slugs.length === 0 && (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center" data-testid="library-empty">
-          <div className="mb-1.5 text-[13px] font-medium text-text-strong">
-            {i18nT('apps.awsControl.console.library_empty_title')}
-          </div>
-          <p className="mx-auto mb-4 max-w-[52ch] text-[12px] leading-relaxed text-muted">
-            {i18nT('apps.awsControl.console.library_empty_body')}
-          </p>
-          {/* With nothing addable the count read "(0 ready)" on a button that
-              opens a picker refusing everything in it. Say that instead. */}
-          {/* Every branch below asserts something about the LOCAL library, so
-              none may render until it answered -- otherwise a failed lookup
-              produces a confident "everything is already here" built on nothing.
-              Same mistake as reading orphan-hood out of an empty map. */}
-          {!localAnswered || nothingLocalYet ? null : pushable.length > 0 ? (
-            <Btn primary onClick={() => setPicking(true)} data-testid="library-empty-add">
-              <Plus size={13} />
-              {i18nT('apps.awsControl.console.library_add_count', { count: fmtNumber(pushable.length) })}
-            </Btn>
-          ) : (
-            <p className="text-[12px] text-muted" data-testid="library-empty-none">
-              {onlyUnaddable
-                ? i18nT('apps.awsControl.console.library_not_pushable')
-                : i18nT('apps.awsControl.console.library_add_nothing')}
-            </p>
-          )}
-        </div>
+        <EmptyState
+          icon={<Library className="h-10 w-10" aria-hidden="true" />}
+          title={i18nT('apps.awsControl.console.library_empty_title')}
+          subtitle={i18nT('apps.awsControl.console.library_empty_body')}
+          testId="library-empty"
+          /* With nothing addable the count read "(0 ready)" on a button that
+             opens a picker refusing everything in it. Say that instead.
+
+             Every branch here asserts something about the LOCAL library, so
+             none may render until it answered -- otherwise a failed lookup
+             produces a confident "everything is already here" built on nothing.
+             Same mistake as reading orphan-hood out of an empty map. */
+          action={
+            !localAnswered || nothingLocalYet ? undefined : pushable.length > 0 ? (
+              <Btn primary onClick={() => setPicking(true)} data-testid="library-empty-add">
+                <Plus size={13} />
+                {i18nT('apps.awsControl.console.library_add_count', { count: fmtNumber(pushable.length) })}
+              </Btn>
+            ) : (
+              <p className="text-[12px] text-muted" data-testid="library-empty-none">
+                {onlyUnaddable
+                  ? i18nT('apps.awsControl.console.library_not_pushable')
+                  : i18nT('apps.awsControl.console.library_add_nothing')}
+              </p>
+            )
+          }
+        />
       )}
 
       {slugs.length > 0 && mode === 'grid' && (
-        <div className="-mr-3" data-testid="library-grid">
-          <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
+        <div data-testid="library-grid">
+          <div className="grid items-start gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
             {slugs.map((slug) => (
               <LibraryCloudCard
                 key={slug}
@@ -742,14 +751,12 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
                   {RowBody}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="cursor-pointer rounded border-none bg-transparent p-1 text-muted transition-colors hover:text-text"
+                      <IconButton
                         aria-label={i18nT('apps.awsControl.console.library_actions')}
                         data-testid="library-more"
                       >
-                        <MoreHorizontal size={14} />
-                      </button>
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </IconButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onSelect={() => askRemove(slug)} data-testid="library-remove">
@@ -919,7 +926,7 @@ function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, failedW
     </>
   )
 
-  const SHELL = 'relative mb-3 mr-3 overflow-hidden rounded-lg border border-border bg-card'
+  const SHELL = 'relative overflow-hidden rounded-lg border border-border bg-card'
   /* A card backed by a local copy has somewhere to go: the artifact's own page.
      A cloud-only card does NOT -- there is no local artifact to open -- so it
      stays inert rather than offering a link that would 404, and it keeps the flat
@@ -971,14 +978,13 @@ function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, failedW
       <div className="absolute right-2 top-2">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="cursor-pointer rounded border-none bg-card/85 p-1 text-muted backdrop-blur-sm transition-colors hover:text-text"
+            <IconButton
+              className="bg-card/85 backdrop-blur-sm"
               aria-label={i18nT('apps.awsControl.console.library_actions')}
               data-testid="library-more"
             >
-              <MoreHorizontal size={14} />
-            </button>
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             {/* Offered on EVERY listed object, including one with no local row.
@@ -1143,7 +1149,7 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
     >
       <div
         ref={panelRef}
-        className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg"
+        className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
         role="dialog"
         aria-modal="true"
         aria-label={i18nT('apps.awsControl.console.library_add')}
@@ -1152,14 +1158,13 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
           <h3 className="text-sm font-semibold text-text-strong">
             {i18nT('apps.awsControl.console.library_add')}
           </h3>
-          <button
+          <IconButton
             onClick={onClose}
-            className="cursor-pointer border-none bg-transparent p-0 text-muted hover:text-text"
             aria-label={i18nT('apps.awsControl.console.close')}
             data-testid="library-add-close"
           >
-            <X size={16} />
-          </button>
+            <X className="h-4 w-4" />
+          </IconButton>
         </div>
 
         {/* The disclosure has to be HERE, where the adding happens: adding fills
@@ -1272,8 +1277,8 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
             </p>
           )}
           {shown.length > 0 && (
-            <div className="-mr-3">
-              <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
+            <div>
+              <div className="grid items-start gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
                 {shown.map((a) => (
                   <PickerCard
                     key={a.slug}
@@ -1335,7 +1340,7 @@ function PickerCard({
      that the object being emptied is one the bucket actually reported, and that
      a cloud copy with no local row at all becomes reachable. */
   return (
-    <div className="mb-3 mr-3 overflow-hidden rounded-lg border border-border bg-card" data-testid="library-tile">
+    <div className="overflow-hidden rounded-lg border border-border bg-card" data-testid="library-tile">
       <div className="pointer-events-none">
         <ArtifactPreview slug={artifact.slug} kind={artifact.kind} />
       </div>
@@ -1598,7 +1603,7 @@ function PreviewDialog({
     >
       <div
         ref={panelRef}
-        className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg"
+        className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
         role="dialog"
         aria-modal="true"
         aria-label={name}
@@ -1621,14 +1626,13 @@ function PreviewDialog({
             <Btn onClick={() => onDownload(entry.key)} data-testid="drive-preview-download">
               <Download size={13} />{i18nT('apps.awsControl.console.download')}
             </Btn>
-            <button
+            <IconButton
               onClick={onClose}
-              className="cursor-pointer border-none bg-transparent p-0 text-muted hover:text-text"
               aria-label={i18nT('apps.awsControl.console.close')}
               data-testid="drive-preview-close"
             >
-              <X size={16} />
-            </button>
+              <X className="h-4 w-4" />
+            </IconButton>
           </div>
         </div>
         <div className="min-h-[160px] overflow-auto p-4">
@@ -2377,27 +2381,32 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     >
       <PaneHeader icon={<FolderClosed size={18} />} title={i18nT('apps.awsControl.console.section_files')} actions={
         <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
-          <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted" />
-          <Input
+        {/* The shared `SearchInput`, not a hand-rolled Input plus an absolutely
+            positioned Search glyph: the glyph, its offset and the field metrics
+            live in one place, and a second spelling of them is how this toolbar
+            drifted from every other search box in the app. The clear button
+            stays a sibling in the relative wrapper, which is the same idiom
+            ChatSidebar's search boxes use -- `[&>input]:pr-8` buys it the room,
+            because the primitive owns the input's own padding. */}
+        <div className="relative w-full sm:w-[260px]">
+          <SearchInput
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape') setQuery('') }}
             placeholder={i18nT('apps.awsControl.console.search_files')}
             aria-label={i18nT('apps.awsControl.console.search_files')}
-            className="w-full pl-7 pr-6 sm:w-[260px]"
+            className="w-full [&>input]:pr-8"
             data-testid="drive-search-input"
           />
           {query && (
-            <button
-              type="button"
+            <IconButton
               onClick={() => setQuery('')}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 cursor-pointer border-none bg-transparent p-0 text-muted hover:text-text"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2"
               aria-label={i18nT('apps.awsControl.console.search_clear')}
               data-testid="drive-search-clear"
             >
-              <X size={12} />
-            </button>
+              <X className="h-3 w-3" />
+            </IconButton>
           )}
         </div>
         {/* Search replaces the folder view and hides the crumbs, so the two
@@ -2579,10 +2588,18 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
             testId="drive-search-error"
           />
           <div className={searchQ.isFetching && !searchQ.isLoading ? 'opacity-60 transition-opacity' : undefined} aria-busy={searchQ.isFetching && !searchQ.isLoading ? true : undefined} data-testid="drive-search-body">
+          {/* Not an empty FOLDER: the objects exist and the query hid them, which
+              is exactly the distinction `FilteredEmpty` draws (no big icon, the
+              query echoed back, and a clear control right there). The clear
+              callback is the same one the toolbar's X calls, so there is one way
+              back rather than two. */}
           {searchQ.isSuccess && searchQ.data.results.length === 0 && (
-            <p className="text-[13px] text-muted" data-testid="drive-search-empty">
-              {i18nT('apps.awsControl.console.search_no_results', { query: debouncedQuery })}
-            </p>
+            <FilteredEmpty
+              query={debouncedQuery}
+              onClear={() => setQuery('')}
+              noun={i18nT('apps.awsControl.console.section_files')}
+              testId="drive-search-empty"
+            />
           )}
           {searchQ.isSuccess && searchQ.data.capped && (
             <p className="mb-2 text-[11px] text-muted" data-testid="drive-search-capped">
@@ -2641,16 +2658,14 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                         <div className="flex items-center justify-end gap-1">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <button
-                                type="button"
-                                className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
+                              <IconButton
                                 aria-label={i18nT('apps.awsControl.console.file_actions')}
                                 onPointerDown={rememberMenuOpener}
                                 onKeyDown={rememberMenuOpener}
                                 data-testid="drive-search-more"
                               >
-                                <MoreHorizontal size={14} />
-                              </button>
+                                <MoreHorizontal className="h-3.5 w-3.5" />
+                              </IconButton>
                             </DropdownMenuTrigger>
                             {/* Third of the three menus that open ShareDialog: the
                                 dialog hands focus back to whichever trigger was
@@ -2799,18 +2814,18 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
           what belongs here and how it differs from Library, and carries the
           upload action rather than making the reader find it in the header. */}
       {!searching && listQ.isSuccess && folders.length === 0 && files.length === 0 && (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center" data-testid="drive-empty">
-          <div className="mb-1.5 text-[13px] font-medium text-text-strong">
-            {i18nT('apps.awsControl.console.files_empty_title')}
-          </div>
-          <p className="mx-auto mb-4 max-w-[56ch] text-[12px] leading-relaxed text-muted">
-            {i18nT('apps.awsControl.console.files_empty_body')}
-          </p>
-          <Btn primary onClick={() => fileRef.current?.click()} data-testid="drive-empty-upload">
-            <Upload size={13} />
-            {i18nT('apps.awsControl.console.drive_upload')}
-          </Btn>
-        </div>
+        <EmptyState
+          icon={<FolderClosed className="h-10 w-10" aria-hidden="true" />}
+          title={i18nT('apps.awsControl.console.files_empty_title')}
+          subtitle={i18nT('apps.awsControl.console.files_empty_body')}
+          testId="drive-empty"
+          action={
+            <Btn primary onClick={() => fileRef.current?.click()} data-testid="drive-empty-upload">
+              <Upload size={13} />
+              {i18nT('apps.awsControl.console.drive_upload')}
+            </Btn>
+          }
+        />
       )}
 
       {/* Grid mode. A stored object has no preview we can draw without a presign
@@ -2822,8 +2837,13 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
           otherwise lose Share and Delete on every future visit with nothing to
           tell them the controls existed. */}
       {!searching && mode === 'grid' && (folders.length > 0 || files.length > 0) && (
-        <div className="-mr-3" data-testid="drive-grid">
-          <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
+        /* `gap-3` rather than the old `-mr-3` bleed plus `mr-3 mb-3` on every
+           tile: the negative margin existed only to cancel a per-tile right
+           margin, and `gap` states the same gutter once without pulling the grid
+           past its container. The auto-fill TEMPLATE is untouched (the source-level
+           pin in DrivePage.gridAutoFill.test.tsx reads it byte-for-byte). */
+        <div data-testid="drive-grid">
+          <div className="grid items-start gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
             {folders.map((name) => {
               const open = () => setPath(name)
               return (
@@ -2847,22 +2867,26 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                 }}
                 aria-label={i18nT('apps.awsControl.console.folder_open', { name: name.split('/').pop() ?? name })}
                 {...dropProps(name)}
-                className={`mb-3 mr-3 flex cursor-pointer flex-col items-start gap-2 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-border-strong hover:bg-bg-hover ${dropTarget === name ? 'ring-1 ring-inset ring-accent bg-bg-hover' : ''}`}
+                className={`flex cursor-pointer flex-col items-start gap-2 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-border-strong hover:bg-bg-hover ${dropTarget === name ? 'border-accent bg-bg-hover' : ''}`}
                 data-testid="drive-grid-folder"
               >
                 <div className="flex w-full items-start justify-between gap-2">
-                  <FolderClosed size={22} className="text-accent" aria-hidden="true" />
+                  {/* The glyph sits on its own `bg-bg-elevated` block, which is
+                      what gives a tile its recognisable left edge in the mockup
+                      -- and what tells a folder tile from a file tile at a
+                      glance, since both are otherwise one flat card. */}
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-elevated text-accent">
+                    <FolderClosed className="h-4 w-4" aria-hidden="true" />
+                  </span>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
+                      <IconButton
                         onClick={(e) => e.stopPropagation()}
-                        className="cursor-pointer rounded border-none bg-transparent p-1 text-muted transition-colors hover:text-text"
                         aria-label={i18nT('apps.awsControl.console.folder_actions')}
                         data-testid="drive-grid-folder-more"
                       >
-                        <MoreHorizontal size={14} />
-                      </button>
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </IconButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onSelect={() => setConfirmFolder(name)} data-testid="drive-grid-folder-delete">
@@ -2874,7 +2898,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                 <span className="w-full truncate text-[13px] font-medium text-text-strong">
                   {name.split('/').pop()}
                 </span>
-                <span className="text-[11px] text-muted">{i18nT('apps.awsControl.console.kind_folder')}</span>
+                <span className="text-[12px] text-muted">{i18nT('apps.awsControl.console.kind_folder')}</span>
                 {confirmFolder === name && (
                   <TileConfirm
                     label={i18nT('apps.awsControl.console.folder_delete_confirm', { name: name.split('/').pop() ?? name })}
@@ -2901,12 +2925,14 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    clickable. */
                 {...dragProps(f.key)}
                 {...highlightProps(f.key)}
-                className={`mb-3 mr-3 flex flex-col items-start gap-2 rounded-lg border border-border bg-card p-3 ${highlighted(f.key) ? 'ring-2 ring-accent' : ''} ${movingKey === f.key ? 'opacity-50' : ''}`}
+                className={`flex flex-col items-start gap-2 rounded-lg border bg-card p-3 ${highlighted(f.key) ? 'border-accent' : 'border-border'} ${movingKey === f.key ? 'opacity-50' : ''}`}
                 aria-busy={movingKey === f.key || undefined}
                 data-testid="drive-grid-file"
               >
                 <div className="flex w-full items-start justify-between gap-2">
-                  <FileText size={22} className="text-muted" aria-hidden="true" />
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-elevated text-muted">
+                    <FileText className="h-4 w-4" aria-hidden="true" />
+                  </span>
                   {/* ONE home for per-item actions. Download used to sit outside
                       the menu as a bare button while Share and Delete were
                       inside it, so a card offered two different grammars for
@@ -2916,16 +2942,14 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                       same change rather than left to recreate the problem. */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="cursor-pointer rounded border-none bg-transparent p-1 text-muted transition-colors hover:text-text"
+                      <IconButton
                         aria-label={i18nT('apps.awsControl.console.file_actions')}
                         data-testid="drive-grid-more"
                         onPointerDown={rememberMenuOpener}
                         onKeyDown={rememberMenuOpener}
                       >
-                        <MoreHorizontal size={14} />
-                      </button>
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </IconButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" onCloseAutoFocus={skipRestoreIfDialog}>
                       {/* `onSelect` is dispatched synchronously from the item's
@@ -2963,13 +2987,16 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                     {f.key.split('/').pop()}
                   </button>
                 )}
-                <span className="text-[11px] text-muted">
-                  {/* A dash is the ABSENCE of a kind, not a kind -- do not print
-                      it as one beside the size. While the tile's move runs, the
-                      state goes here in words (the list row does the same). */}
+                <span className="text-[12px] text-muted tabular-nums">
+                  {/* Size and modified time, the two facts a file manager puts
+                      under a tile name -- the kind is already carried by the
+                      glyph and by the extension in the name itself, so printing
+                      it a third time crowded out the date the list view shows.
+                      While the tile's move runs, the state goes here in words
+                      (the list row does the same). */}
                   {movingKey === f.key
                     ? <span data-testid="drive-moving">{i18nT('apps.awsControl.console.move_moving')}</span>
-                    : objectKind(f.key) === '-' ? fmtBytes(f.size) : `${objectKind(f.key)} · ${fmtBytes(f.size)}`}
+                    : `${fmtBytes(f.size)} · ${fmtRelative(f.modified)}`}
                 </span>
                 {confirmDelete === f.key && (
                   <TileConfirm
@@ -3096,15 +3123,13 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                     <div className="flex items-center justify-end">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <button
-                            type="button"
+                          <IconButton
                             onClick={(e) => e.stopPropagation()}
-                            className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
                             aria-label={i18nT('apps.awsControl.console.folder_actions')}
                             data-testid="drive-folder-more"
                           >
-                            <MoreHorizontal size={14} />
-                          </button>
+                            <MoreHorizontal className="h-3.5 w-3.5" />
+                          </IconButton>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                           <DropdownMenuItem
@@ -3212,16 +3237,14 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                       <div className="flex items-center justify-end gap-1">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
+                            <IconButton
                               aria-label={i18nT('apps.awsControl.console.file_actions')}
                               data-testid="drive-more"
                               onPointerDown={rememberMenuOpener}
                               onKeyDown={rememberMenuOpener}
                             >
-                              <MoreHorizontal size={14} />
-                            </button>
+                              <MoreHorizontal className="h-3.5 w-3.5" />
+                            </IconButton>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" onCloseAutoFocus={skipRestoreIfDialog}>
                             <DropdownMenuItem onSelect={() => download(f.key)} data-testid="drive-download">
@@ -3436,7 +3459,7 @@ function MoveDialog({ fileKey, currentPath, folders, pending, error, askAgent, o
     >
       <div
         ref={panelRef}
-        className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-lg"
+        className="w-full max-w-sm rounded-xl border border-border bg-card p-4 shadow-lg"
         role="dialog"
         aria-modal="true"
         aria-labelledby="aws-move-title"
@@ -3447,14 +3470,13 @@ function MoveDialog({ fileKey, currentPath, folders, pending, error, askAgent, o
           <h3 id="aws-move-title" className="min-w-0 truncate text-sm font-semibold text-text-strong">
             {i18nT('apps.awsControl.console.move_title', { name })}
           </h3>
-          <button
+          <IconButton
             onClick={onClose}
-            className="cursor-pointer border-none bg-transparent p-0 text-muted hover:text-text"
             aria-label={i18nT('apps.awsControl.console.close')}
             data-testid="move-close"
           >
-            <X size={16} />
-          </button>
+            <X className="h-4 w-4" />
+          </IconButton>
         </div>
         {options.length === 0 ? (
           <p className="text-[13px] text-muted" data-testid="move-no-folders">
@@ -3536,7 +3558,7 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
     >
       <div
         ref={panelRef}
-        className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg"
+        className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-lg"
         role="dialog"
         aria-modal="true"
         aria-labelledby="aws-share-title"
@@ -3549,7 +3571,7 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
                 beside this dialog already does the same. */}
             {i18nT('apps.awsControl.console.share_title', { name: fileKey.split('/').pop() ?? fileKey })}
           </h3>
-          <button onClick={close} disabled={shareMut.isPending} className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 disabled:opacity-50" aria-label={i18nT('apps.awsControl.console.close')} data-testid="share-close"><X size={16} /></button>
+          <IconButton onClick={close} disabled={shareMut.isPending} aria-label={i18nT('apps.awsControl.console.close')} data-testid="share-close"><X className="h-4 w-4" /></IconButton>
         </div>
 
         {!url ? (
@@ -3604,6 +3626,14 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
 /* ── Section 6: Backup ───────────────────────────────────────────────────── */
 
 const BACKUP_KINDS: BackupKind[] = ['snapshot', 'sessions']
+
+/** The glyph each backup kind is recognised by. A snapshot is an archive of the
+ *  workspace; the sessions archive is a database dump, so they are not the same
+ *  picture. */
+const BACKUP_KIND_ICON: Record<BackupKind, React.ReactNode> = {
+  snapshot: <Archive className="h-4 w-4" aria-hidden="true" />,
+  sessions: <Database className="h-4 w-4" aria-hidden="true" />,
+}
 
 /**
  * One backup kind's row.
@@ -3666,7 +3696,10 @@ function BackupRow({
     : ''
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5" data-testid={`backup-row-${kind}`}>
+    <div className="flex flex-wrap items-center gap-3 px-3 py-2.5" data-testid={`backup-row-${kind}`}>
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-elevated text-muted">
+        {BACKUP_KIND_ICON[kind]}
+      </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text">{i18nT(BACKUP_KIND_LABEL_KEY[kind])}</div>
         <div className="text-[12px] text-muted">
@@ -3697,10 +3730,26 @@ function BackupRow({
           </div>
         )}
       </div>
-      <Btn onClick={() => runMut.mutate()} disabled={busy} data-testid={`backup-run-${kind}`}>
-        <RefreshCw size={13} className={busy ? 'animate-spin' : ''} />
-        {busy ? i18nT('apps.awsControl.console.backup_running') : i18nT('apps.awsControl.console.backup_run_now')}
-      </Btn>
+      {/* The badge states ONLY what the ledger records: a recorded run, or none.
+          It is deliberately not a health verdict -- the ledger holds successes,
+          so "a run exists" is the whole claim, and the failure line above is
+          where a bad outcome is reported. A third state would be invented.
+
+          Badge and Run travel together in one shrink-0 cluster, and the ROW
+          wraps: at 320px the label + meta + badge + button do not fit on one
+          line, and a non-wrapping row would push the button past the viewport
+          edge instead of dropping the pair beneath. */}
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <Badge variant={run ? 'ok' : 'muted'} data-testid={`backup-state-${kind}`}>
+          {run
+            ? i18nT('apps.awsControl.console.backup_state_current')
+            : i18nT('apps.awsControl.console.backup_state_never')}
+        </Badge>
+        <Btn onClick={() => runMut.mutate()} disabled={busy} data-testid={`backup-run-${kind}`}>
+          <RefreshCw size={13} className={busy ? 'animate-spin' : ''} />
+          {busy ? i18nT('apps.awsControl.console.backup_running') : i18nT('apps.awsControl.console.backup_run_now')}
+        </Btn>
+      </div>
     </div>
   )
 }
@@ -3749,7 +3798,13 @@ export function BackupSection({ account }: { account: string }) {
         testId="backup-status-error"
       />
       {data && (
-        <div className="rounded-md border border-border bg-card divide-y divide-border">
+        <Card className="px-2 py-3 md:px-3">
+          <PanelSectionHeader
+            label={i18nT('apps.awsControl.console.backup_title')}
+            count={BACKUP_KINDS.length}
+            className="mb-1 px-1"
+          />
+          <div className="divide-y divide-border">
           {BACKUP_KINDS.map((kind) => (
             <BackupRow
               key={kind}
@@ -3764,7 +3819,7 @@ export function BackupSection({ account }: { account: string }) {
               onStarted={invalidate}
             />
           ))}
-          <div className="flex items-center justify-between px-3 py-2.5" data-testid="backup-nightly">
+          <div className="flex items-center justify-between gap-3 px-3 py-2.5" data-testid="backup-nightly">
             <div className="min-w-0">
               <div className="text-[13px] font-medium text-text">{i18nT('apps.awsControl.console.backup_nightly')}</div>
               <div className="text-[12px] text-muted">{i18nT('apps.awsControl.console.backup_nightly_hint')}</div>
@@ -3785,7 +3840,8 @@ export function BackupSection({ account }: { account: string }) {
               />
             </div>
           )}
-        </div>
+          </div>
+        </Card>
       )}
 
       {/* The remote half failed INSIDE a 200: the backend read the local ledger
@@ -3900,12 +3956,25 @@ export function AccessSection({ account }: { account: string }) {
         testId="access-forget-error"
       />
       {sharesQ.data && shares.length === 0 && (
-        <p className="text-[13px] text-muted" data-testid="access-empty">{i18nT('apps.awsControl.console.access_empty')}</p>
+        <EmptyState
+          icon={<Share2 className="h-10 w-10" aria-hidden="true" />}
+          title={i18nT('apps.awsControl.console.access_empty')}
+          testId="access-empty"
+        />
       )}
       {shares.length > 0 && (
-        <div className="rounded-md border border-border bg-card divide-y divide-border" data-testid="access-list">
+        <Card className="px-2 py-3 md:px-3" data-testid="access-list">
+          <PanelSectionHeader
+            label={i18nT('apps.awsControl.console.access_title')}
+            count={shares.length}
+            className="mb-1 px-1"
+          />
+          <div className="divide-y divide-border">
           {shares.map((s: Share) => (
-            <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 text-[13px]" data-testid="access-row">
+            <div key={s.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5 text-[13px]" data-testid="access-row">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-elevated text-muted">
+                <Link2 className="h-4 w-4" aria-hidden="true" />
+              </span>
               <div className="min-w-0 flex-1">
                 {/* WRAPS, and the key keeps a floor. A narrow row puts a
                   * truncating filename and its badges in one cluster beside a
@@ -3932,10 +4001,16 @@ export function AccessSection({ account }: { account: string }) {
                   {i18nT('apps.awsControl.console.access_expires_in', { when: fmtRelative(s.expiresAt) })}
                 </div>
               </div>
-              <Btn onClick={() => forgetMut.mutate(s.id)} disabled={forgetMut.isPending} data-testid="access-forget">{i18nT('apps.awsControl.console.access_forget')}</Btn>
+              {/* `ml-auto shrink-0`, and the ROW wraps: the glyph block this
+                * change adds costs 44px the old row did not spend, which at
+                * 320px is exactly enough to push a fixed-width "Remove from
+                * list" past the viewport edge. Wrapping drops it beneath
+                * instead; nothing moves at any ordinary width. */}
+              <Btn className="ml-auto shrink-0" onClick={() => forgetMut.mutate(s.id)} disabled={forgetMut.isPending} data-testid="access-forget">{i18nT('apps.awsControl.console.access_forget')}</Btn>
             </div>
           ))}
-        </div>
+          </div>
+        </Card>
       )}
       {/* Only with rows to qualify: an unchecked EMPTY ledger has no claim to
         * qualify, and saying so would be noise on the empty state. Without this
@@ -3979,84 +4054,71 @@ const SECTION_LABEL_ON_PAGE: Record<DriveSection, string> = {
   backup: 'apps.awsControl.console.section_backup',
 }
 
-
-
-/**
- * Each section's meter colour, as a SEMANTIC token — never a hex.
- *
- * The three must be visually distinct AND survive a theme switch (including the
- * light themes), so each is one of the palette's own role tokens rather than a
- * literal: `accent` for the drive, `info` for the library, `warn` for backups.
- * The legend swatch and the bar segment read the SAME token, so a segment and
- * its legend entry can never drift to different colours.
- */
-/* Three CATEGORICAL colours, telling the segments apart -- this meter reports no
-   health, so it must not borrow a status colour. `bg-warn` sat on Backup and read
-   as "something is wrong with your backups" on a bar that only states sizes. */
-const SECTION_TONE: Record<DriveSection, string> = {
-  drive: 'bg-accent',
-  library: 'bg-info',
-  backup: 'bg-muted',
+/** The glyph each section is recognised by, the same one its pane header wears. */
+const SECTION_ICON: Record<DriveSection, LucideIcon> = {
+  drive: FolderClosed,
+  library: Library,
+  backup: Archive,
 }
 
 /**
- * The storage meter: total usage, and one horizontal bar split by section.
+ * The one section → glyph + label map every section tile draws from. The
+ * storage meter here and the Overview's drive card render the same three
+ * tiles, and two maps for one fact is how a renamed section ends up with two
+ * icons.
+ */
+export const SECTION_TILES: { section: DriveSection; icon: LucideIcon; labelKey: string }[] =
+  SECTIONS.map((section) => ({ section, icon: SECTION_ICON[section], labelKey: SECTION_LABEL_ON_PAGE[section] }))
+
+/**
+ * The storage meter: one horizontal bar split by section, and a quick tile per
+ * section.
  *
  * The bar is proportional to each section's BYTES, but a section with zero
  * bytes still gets a legible legend row (its swatch and a `0` size) — a section
  * that exists is worth naming even when empty, and a 0-width bar segment alone
  * would silently drop it. When the whole drive is empty the bar renders as a
  * single muted track so the card is never a bare outline.
+ *
+ * Exported because the pane that owns "what is using storage" places it; this
+ * file only owns what it looks like. Its section readings are read-only rows:
+ * the meter sits on the Usage pane, and every section it names is one rail
+ * click away already.
  */
 export function StorageMeter({ usage }: { usage: DriveUsage }) {
-  const total = usage.bytes
   return (
-    <div className="mb-4 rounded-lg border border-border bg-card p-4" data-testid="drive-storage-meter">
-      {/* Heading only. This card used to restate the grand total on its right,
-          ~50px below the header's identical "size | items" -- and both read
-          `usage.bytes` / `usage.objects`, the SAME fields, so they could never
-          disagree. I twice defended the pair as a cross-check of whole against
-          sum-of-parts; that was wrong. The parts live in the legend below, which
-          is the information this card actually adds. The total belongs to the
-          header, once. */}
-      <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
-        <span className="text-[13px] font-medium text-text-strong">
-          {i18nT('apps.awsControl.console.root_storage_used')}
-        </span>
+    <Card data-testid="drive-storage-meter">
+      <PanelSectionHeader label={i18nT('apps.awsControl.console.root_storage_used')} />
+
+      {/* No headline figure here: the Usage pane's stat cards own the byte
+          total and the object count, and this card owns the SPLIT — one
+          rendering per fact per pane. */}
+      {/* The bar and its legend are the shared `StorageBar`: the Overview card
+          draws the same split, and two drawings of one figure would drift. */}
+      <div className="mt-3">
+        <StorageBar usage={usage} testId="drive-meter" />
       </div>
 
-      {/* The bar. Proportional segments when there is anything to show; a single
-          muted track when the drive is empty, so it is never a bare outline. */}
-      <div
-        className="mt-3 flex h-2.5 w-full overflow-hidden rounded-full bg-bg-hover"
-        data-testid="drive-meter-bar"
-      >
-        {total > 0 &&
-          SECTIONS.map((s) => {
-            const pct = (usage.sections[s].bytes / total) * 100
-            if (pct <= 0) return null
-            return (
-              <div
-                key={s}
-                className={`h-full ${SECTION_TONE[s]}`}
-                style={{ width: `${pct}%` }}
-                data-testid={`drive-meter-segment-${s}`}
-              />
-            )
-          })}
-      </div>
-
-      {/* Legend — every section, including 0-byte ones, with its own size. */}
-      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5" data-testid="drive-meter-legend">
-        {SECTIONS.map((s) => (
-          <div key={s} className="flex items-center gap-1.5 text-[12px]" data-testid={`drive-meter-legend-${s}`}>
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${SECTION_TONE[s]}`} aria-hidden="true" />
-            <span className="text-muted">{i18nT(SECTION_LABEL_ON_PAGE[s])}</span>
-            <span className="font-mono text-text">{fmtBytes(usage.sections[s].bytes)}</span>
-          </div>
+      {/* One reading per section: the glyph it is recognised by, its name, and
+          how many objects are in it. Read-only here — this pane IS the usage
+          view and every section is one rail click away — so the tiles draw as
+          flat rows rather than as the bordered targets the Overview uses.
+          Stacked on a phone, three across from `sm`. */}
+      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3" data-testid="drive-meter-tiles">
+        {SECTION_TILES.map(({ section, icon: Icon, labelKey }) => (
+          <QuickTile
+            key={section}
+            testId={`drive-meter-tile-${section}`}
+            icon={<Icon className="h-4 w-4" aria-hidden="true" />}
+            label={i18nT(labelKey)}
+            count={i18nT('apps.awsControl.console.root_section_objects', {
+              count: usage.sections[section].objects,
+              objects: fmtNumber(usage.sections[section].objects),
+            })}
+          />
         ))}
       </div>
-    </div>
+    </Card>
   )
 }
 

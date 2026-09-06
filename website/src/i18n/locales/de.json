@@ -4821,7 +4821,6 @@
         "keys_count_other": "{{count}} Schlüssel",
         "keys_for_account": "Schlüssel für {{name}}",
         "key_healthy": "Fehlerfrei",
-        "key_failed": "Fehlgeschlagen",
         "parent_folders": "Übergeordnete Ordner",
         "folder_actions": "Ordneraktionen",
         "file_actions": "Dateiaktionen",
@@ -4874,7 +4873,6 @@
         "search_files": "Nach Dateiname oder Pfad suchen…",
         "search_clear": "Suche löschen",
         "search_pending": "Suche läuft…",
-        "search_no_results": "Keine Dateien stimmen mit „{{query}}“ überein.",
         "search_capped": "Zu viele Treffer — nur die ersten {{count}} werden angezeigt.",
         "search_failed": "Suche fehlgeschlagen. Versuchen Sie es erneut.",
         "search_goto": "Enthaltenden Ordner öffnen",
@@ -4889,7 +4887,13 @@
         "move_root": "Dateien (oberste Ebene)",
         "move_up": "Nach oben zu {{name}}",
         "move_no_folders": "Hier gibt es keinen anderen Ordner, in den die Datei verschoben werden kann. Erstellen Sie zuerst einen.",
-        "move_moving": "Wird verschoben…"
+        "move_moving": "Wird verschoben…",
+        "stat_storage": "Speicher",
+        "stat_objects": "Objekte",
+        "key_needs_attention": "Aufmerksamkeit nötig",
+        "backup_state_current": "Gesichert",
+        "backup_state_never": "Nie ausgeführt",
+        "costs_refresh_failed": "Die letzte Abfrage der Rechnung ist fehlgeschlagen. Dies ist der zwischengespeicherte Wert."
       },
       "page": {
         "totals_summary": "{{accounts}} Konten · {{healthy}} von {{keys}} Schlüsseln fehlerfrei",
@@ -4939,7 +4943,6 @@
         "add_accounts_error": "Diese Profile konnten nicht registriert werden. Es wurde nichts hinzugefügt. Versuche es erneut.",
         "add_accounts_load_error": "Die lokalen AWS-Profile konnten nicht aufgelistet werden.",
         "search_placeholder": "Konten suchen",
-        "search_none": "Keine Konten stimmen mit „{{query}}“ überein.",
         "paid_services_title": "Kostenpflichtige Dienste",
         "orphan_consent": "Bestätigt für ein AWS-Konto, das hier nicht registriert ist. Ziehen Sie die Bestätigung unten zurück, oder registrieren Sie das Konto erneut, um es auf seiner eigenen Seite zu verwalten.",
         "account_actions": "Kontoaktionen",
@@ -4957,6 +4960,38 @@
         "switch_account": "Konto wechseln",
         "usage": "Nutzung & Kosten",
         "use_account": "Dieses Konto verwenden"
+      },
+      "overview": {
+        "title": "Übersicht",
+        "subtitle": "Ein Ort für die Konten, Schlüssel, das Cloud-Laufwerk und die kostenpflichtigen Dienste, die Ihre Agenten nutzen dürfen.",
+        "stat_accounts": "Konten",
+        "stat_accounts_attention_one": "{{count}} benötigt Aufmerksamkeit",
+        "stat_accounts_attention_other": "{{count}} benötigen Aufmerksamkeit",
+        "stat_accounts_all_ok": "Alle in Ordnung",
+        "stat_keys": "Schlüssel in Ordnung",
+        "stat_keys_sub_one": "{{count}} Schlüssel registriert",
+        "stat_keys_sub_other": "{{count}} Schlüssel registriert",
+        "stat_drive": "Laufwerk belegt",
+        "stat_drive_none": "Noch kein Laufwerk",
+        "stat_spend": "Aktueller Monat",
+        "stat_spend_consent": "Kostenbericht ist aus",
+        "stat_shares_none": "Nichts geteilt",
+        "stat_shares_sub_one": "{{count}} aktiver Link",
+        "stat_shares_sub_other": "{{count}} aktive Links",
+        "stat_backups_nightly": "Nächtlich",
+        "stat_backups_manual": "Manuell",
+        "stat_backups_sub_nightly": "Läuft jede Nacht",
+        "stat_backups_sub_manual": "Kein Zeitplan festgelegt",
+        "accounts_title": "Konten",
+        "accounts_note": "Agenten nutzen diese Schlüssel, ohne sie je zu sehen. Nichts aus einem Schlüssel erscheint in einem Chat.",
+        "add_account": "Konto hinzufügen",
+        "drive_title": "Cloud-Laufwerk",
+        "drive_bar_label": "{{size}} gespeichert, verteilt auf Dateien, Artefaktbibliothek und Sicherungen",
+        "drive_empty_title": "Noch kein Cloud-Laufwerk",
+        "drive_empty_body": "Erstellen Sie in diesem Konto einen privaten, verschlüsselten Bucket für Ihre Dateien, die Artefaktbibliothek und Sicherungen.",
+        "drive_setup": "Cloud-Laufwerk einrichten",
+        "drive_bucket_label": "Bucket",
+        "stat_spend_scope": "AWS-Rechnung dieses Kontos"
       }
     }
   },
@@ -7785,7 +7820,12 @@
       "status_failed": "Der Bestätigungsstatus konnte nicht gelesen werden.",
       "confirm_failed": "Die Bestätigung wurde nicht gespeichert.",
       "withdraw_failed": "Die Bestätigung wurde nicht zurückgenommen.",
-      "retry": "Erneut versuchen"
+      "retry": "Erneut versuchen",
+      "badge_confirmed": "Bestätigt",
+      "badge_not_enabled": "Nicht aktiviert",
+      "confirmed_on": "bestätigt am {{date}}",
+      "billing_notice_short": "Kostenpflichtig. Es wird nichts gesendet, bis Sie bestätigen.",
+      "withdraw_effect": "Nach dem Zurückziehen nutzen Agenten diesen Dienst nicht mehr, bis du erneut bestätigst."
     },
     "confirmDialog": {
       "cancel": "Abbrechen"

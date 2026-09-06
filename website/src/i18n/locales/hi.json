@@ -4821,7 +4821,6 @@
         "keys_count_other": "{{count}} कुंजियाँ",
         "keys_for_account": "{{name}} की कुंजियाँ",
         "key_healthy": "ठीक",
-        "key_failed": "विफल",
         "parent_folders": "मूल फ़ोल्डर",
         "folder_actions": "फ़ोल्डर कार्रवाइयाँ",
         "file_actions": "फ़ाइल कार्रवाइयाँ",
@@ -4874,7 +4873,6 @@
         "search_files": "फ़ाइल नाम या पथ से खोजें…",
         "search_clear": "खोज साफ़ करें",
         "search_pending": "खोज रहे हैं…",
-        "search_no_results": "“{{query}}” से मेल खाती कोई फ़ाइल नहीं है।",
         "search_capped": "बहुत अधिक मिलान — केवल पहले {{count}} दिखाए जा रहे हैं।",
         "search_failed": "खोज विफल रही। फिर कोशिश करें।",
         "search_goto": "मूल फ़ोल्डर खोलें",
@@ -4889,7 +4887,13 @@
         "move_root": "फ़ाइलें (शीर्ष स्तर)",
         "move_up": "ऊपर {{name}} में",
         "move_no_folders": "यहाँ स्थानांतरित करने के लिए कोई और फ़ोल्डर नहीं है। पहले एक बनाएँ।",
-        "move_moving": "स्थानांतरित हो रहा है…"
+        "move_moving": "स्थानांतरित हो रहा है…",
+        "stat_storage": "स्टोरेज",
+        "stat_objects": "ऑब्जेक्ट",
+        "key_needs_attention": "ध्यान चाहिए",
+        "backup_state_current": "बैकअप हो गया",
+        "backup_state_never": "कभी नहीं चला",
+        "costs_refresh_failed": "बिल की ताज़ा रीडिंग विफल रही; यह कैश किया गया आँकड़ा है।"
       },
       "page": {
         "totals_summary": "{{accounts}} खाते · {{keys}} में से {{healthy}} कुंजियाँ स्वस्थ",
@@ -4939,7 +4943,6 @@
         "add_accounts_error": "उन प्रोफ़ाइल को पंजीकृत नहीं किया जा सका। कुछ भी नहीं जोड़ा गया। फिर से प्रयास करें।",
         "add_accounts_load_error": "स्थानीय AWS प्रोफ़ाइल सूचीबद्ध नहीं हो सकीं।",
         "search_placeholder": "खाते खोजो",
-        "search_none": "“{{query}}” से मेल खाता कोई खाता नहीं है।",
         "paid_services_title": "सशुल्क सेवाएँ",
         "orphan_consent": "यहाँ पंजीकृत नहीं किए गए AWS खाते के लिए पुष्टि की गई है। नीचे पुष्टि वापस लें, या उस खाते को फिर से पंजीकृत करके उसके पेज से प्रबंधित करें।",
         "account_actions": "खाता क्रियाएँ",
@@ -4957,6 +4960,38 @@
         "switch_account": "खाता बदलें",
         "usage": "उपयोग और लागत",
         "use_account": "इस खाते का उपयोग करें"
+      },
+      "overview": {
+        "title": "अवलोकन",
+        "subtitle": "तुम्हारे एजेंट जिन खातों, कुंजियों, क्लाउड ड्राइव और सशुल्क सेवाओं को छू सकते हैं, उन सबके लिए एक कमरा।",
+        "stat_accounts": "खाते",
+        "stat_accounts_attention_one": "{{count}} खाते को ध्यान चाहिए",
+        "stat_accounts_attention_other": "{{count}} खातों को ध्यान चाहिए",
+        "stat_accounts_all_ok": "सब ठीक है",
+        "stat_keys": "कुंजियाँ ठीक",
+        "stat_keys_sub_one": "{{count}} कुंजी दर्ज",
+        "stat_keys_sub_other": "{{count}} कुंजियाँ दर्ज",
+        "stat_drive": "ड्राइव इस्तेमाल",
+        "stat_drive_none": "कोई ड्राइव नहीं",
+        "stat_spend": "इस महीने अब तक",
+        "stat_spend_consent": "लागत रिपोर्ट बंद है",
+        "stat_shares_none": "कुछ साझा नहीं",
+        "stat_shares_sub_one": "{{count}} सक्रिय लिंक",
+        "stat_shares_sub_other": "{{count}} सक्रिय लिंक",
+        "stat_backups_nightly": "हर रात",
+        "stat_backups_manual": "मैनुअल",
+        "stat_backups_sub_nightly": "हर रात चलता है",
+        "stat_backups_sub_manual": "कोई शेड्यूल नहीं",
+        "accounts_title": "खाते",
+        "accounts_note": "एजेंट इन कुंजियों का इस्तेमाल करते हैं लेकिन उन्हें कभी देखते नहीं; कुंजी का कोई हिस्सा चैट में नहीं आता।",
+        "add_account": "खाता जोड़ो",
+        "drive_title": "क्लाउड ड्राइव",
+        "drive_bar_label": "{{size}} रखा है: फ़ाइलें, आर्टिफ़ैक्ट लाइब्रेरी और बैकअप",
+        "drive_empty_title": "अभी क्लाउड ड्राइव नहीं",
+        "drive_empty_body": "इस खाते में अपनी फ़ाइलों, आर्टिफ़ैक्ट लाइब्रेरी और बैकअप के लिए एक निजी, एन्क्रिप्टेड बकेट बनाओ।",
+        "drive_setup": "क्लाउड ड्राइव सेट करो",
+        "drive_bucket_label": "बकेट",
+        "stat_spend_scope": "इस खाते का AWS बिल"
       }
     }
   },
@@ -7785,7 +7820,12 @@
       "status_failed": "पुष्टि की स्थिति पढ़ी नहीं जा सकी।",
       "confirm_failed": "पुष्टि दर्ज नहीं हुई।",
       "withdraw_failed": "पुष्टि वापस नहीं ली गई।",
-      "retry": "फिर कोशिश करें"
+      "retry": "फिर कोशिश करें",
+      "badge_confirmed": "पुष्ट",
+      "badge_not_enabled": "चालू नहीं",
+      "confirmed_on": "{{date}} को पुष्ट",
+      "billing_notice_short": "शुल्क लगेगा। तुम्हारी पुष्टि तक कुछ नहीं भेजा जाता।",
+      "withdraw_effect": "वापस लेने पर एजेंट इस सेवा का इस्तेमाल तब तक बंद कर देंगे जब तक तुम दोबारा पुष्टि नहीं करते।"
     },
     "confirmDialog": {
       "cancel": "रद्द करें"

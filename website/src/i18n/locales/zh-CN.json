@@ -4741,7 +4741,6 @@
         "keys_count_other": "{{count}} 个密钥",
         "keys_for_account": "{{name}} 的密钥",
         "key_healthy": "正常",
-        "key_failed": "失败",
         "parent_folders": "上级文件夹",
         "folder_actions": "文件夹操作",
         "file_actions": "文件操作",
@@ -4793,7 +4792,6 @@
         "search_files": "按文件名或路径搜索…",
         "search_clear": "清除搜索",
         "search_pending": "正在搜索…",
-        "search_no_results": "没有匹配“{{query}}”的文件。",
         "search_capped": "匹配项过多，仅显示前 {{count}} 条。",
         "search_failed": "搜索失败，请重试。",
         "search_goto": "打开所在文件夹",
@@ -4808,7 +4806,13 @@
         "move_root": "文件（顶层）",
         "move_up": "上移到 {{name}}",
         "move_no_folders": "这里没有其他可移入的文件夹。请先创建一个。",
-        "move_moving": "正在移动…"
+        "move_moving": "正在移动…",
+        "stat_storage": "存储",
+        "stat_objects": "对象",
+        "key_needs_attention": "需要处理",
+        "backup_state_current": "已备份",
+        "backup_state_never": "从未运行",
+        "costs_refresh_failed": "最新一次账单读取失败，显示的是缓存数值。"
       },
       "page": {
         "totals_summary": "{{accounts}} 个账户 · {{keys}} 个密钥中 {{healthy}} 个正常",
@@ -4853,7 +4857,6 @@
         "add_accounts_error": "无法注册这些配置文件。没有添加任何内容。请重试。",
         "add_accounts_load_error": "无法列出本地 AWS 配置文件。",
         "search_placeholder": "搜索账户",
-        "search_none": "没有匹配“{{query}}”的账户。",
         "paid_services_title": "付费服务",
         "orphan_consent": "已为一个未在此注册的 AWS 账号确认。可在下方撤回确认，或重新注册该账号以在它自己的页面上管理。",
         "account_actions": "账户操作",
@@ -4871,6 +4874,35 @@
         "switch_account": "切换账户",
         "usage": "用量与费用",
         "use_account": "使用此账户"
+      },
+      "overview": {
+        "title": "概览",
+        "subtitle": "在一个地方管理智能体可以使用的账户、密钥、云盘和付费服务。",
+        "stat_accounts": "账户",
+        "stat_accounts_attention_other": "{{count}} 个需要处理",
+        "stat_accounts_all_ok": "全部正常",
+        "stat_keys": "密钥正常",
+        "stat_keys_sub_other": "已登记 {{count}} 个密钥",
+        "stat_drive": "云盘用量",
+        "stat_drive_none": "尚无云盘",
+        "stat_spend": "本月至今",
+        "stat_spend_consent": "费用报告已关闭",
+        "stat_shares_none": "没有共享",
+        "stat_shares_sub_other": "{{count}} 个有效链接",
+        "stat_backups_nightly": "每晚",
+        "stat_backups_manual": "手动",
+        "stat_backups_sub_nightly": "每晚运行",
+        "stat_backups_sub_manual": "未设置计划",
+        "accounts_title": "账户",
+        "accounts_note": "智能体使用这些密钥但永远看不到它们，密钥内容不会出现在聊天中。",
+        "add_account": "添加账户",
+        "drive_title": "云盘",
+        "drive_bar_label": "已存储 {{size}}，分布在文件、工件库和备份中",
+        "drive_empty_title": "尚无云盘",
+        "drive_empty_body": "在此账户中创建一个私有加密存储桶，用于存放文件、工件库和备份。",
+        "drive_setup": "设置云盘",
+        "drive_bucket_label": "存储桶",
+        "stat_spend_scope": "此账户的 AWS 账单"
       }
     }
   },
@@ -7679,7 +7711,12 @@
       "status_failed": "无法读取确认状态。",
       "confirm_failed": "确认未被记录。",
       "withdraw_failed": "确认未被撤销。",
-      "retry": "重试"
+      "retry": "重试",
+      "badge_confirmed": "已确认",
+      "badge_not_enabled": "未启用",
+      "confirmed_on": "已于 {{date}} 确认",
+      "billing_notice_short": "会产生费用。确认前不会发送任何内容。",
+      "withdraw_effect": "撤回后，智能体将停止使用此服务，直到你再次确认。"
     },
     "confirmDialog": {
       "cancel": "取消"

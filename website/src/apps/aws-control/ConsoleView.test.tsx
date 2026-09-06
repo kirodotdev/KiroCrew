@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
-import { fmtCurrency, fmtDate } from '../../i18n/format'
+import { fmtBytes, fmtCurrency, fmtDate, fmtNumber } from '../../i18n/format'
 import type { AwsAccount, DriveStatus, CostReport } from './types'
 
 /* The pane reads only through the api client; mocking it keeps every case
@@ -96,6 +96,9 @@ function stubConsent(map: Record<string, unknown>) {
   )
 }
 
+/** The month-to-date StatCard's value node (absent while its read is in flight). */
+const costValue = () => within(screen.getByTestId('console-cost-stat')).getByTestId('stat-card-value')
+
 beforeEach(() => {
   vi.clearAllMocks()
   // Default: consent status never resolves → granted is UNDEFINED, not false.
@@ -112,26 +115,42 @@ describe('UsagePane', () => {
     const pane = await screen.findByTestId('usage-pane')
     expect(within(pane).getByTestId('page-title')).toHaveTextContent(i18nT('apps.awsControl.rail.usage'))
 
-    // The bill arrives async — wait for the figure, not the '…' placeholder.
-    const stats = screen.getByTestId('console-stats')
-    await waitFor(() =>
-      expect(within(stats).getByTestId('console-cost-value')).toHaveTextContent(fmtCurrency(12.5, 'USD')),
-    )
+    // The bill arrives async — wait for the figure, not the skeleton.
+    screen.getByTestId('console-stats')
+    await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
     // fresh:true → no "as of" staleness hint.
     const asOf = i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costsFresh.fetchedAt) })
-    expect(within(stats).queryByText(asOf)).toBeNull()
+    expect(screen.queryByText(asOf)).toBeNull()
   })
 
-  it('does NOT mount the CE consent ask while the consent status is still unknown', async () => {
-    // The gate mounts on granted === false only. The default awsConsent mock
-    // never resolves, so `granted` is undefined here — the ask must not flash.
+  it('states storage and object count as their own figures beside the bill', async () => {
+    // The strip is the pane's answer to "how much, and how much of it": the
+    // meter below splits the storage by section but never states the total.
     vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
 
     renderWithProviders(<UsagePane account={ACCOUNT} />)
 
-    await screen.findByTestId('console-cost-value')
+    const storage = await screen.findByTestId('console-storage-stat')
+    await waitFor(() =>
+      expect(within(storage).getByTestId('stat-card-value')).toHaveTextContent(fmtBytes(3_500_000_000)),
+    )
+    expect(within(screen.getByTestId('console-objects-stat')).getByTestId('stat-card-value'))
+      .toHaveTextContent(fmtNumber(42))
+  })
+
+  it('does NOT mount the CE consent ask while the consent status is still unknown', async () => {
+    // The gate mounts on granted === false only. The default awsConsent mock
+    // never resolves, so `granted` is undefined here — the ask must not flash,
+    // and with no row to hold, the Paid services card must not exist either.
+    vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
+    vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
+
+    renderWithProviders(<UsagePane account={ACCOUNT} />)
+
+    await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
     expect(screen.queryByTestId('costs-consent-gate')).toBeNull()
+    expect(screen.queryByTestId('paid-services')).toBeNull()
   })
 
   it('renders an em dash on consentMissing and mounts the CE ask when consent reports granted:false', async () => {
@@ -145,19 +164,30 @@ describe('UsagePane', () => {
     renderWithProviders(<UsagePane account={ACCOUNT} />)
 
     // The consentMissing branch renders "—", never a zero figure or the as-of line.
-    const stats = await screen.findByTestId('console-stats')
-    await waitFor(() =>
-      expect(within(stats).getByTitle(i18nT('apps.awsControl.console.costs_consent_missing'))).toHaveTextContent('—'),
-    )
-    expect(within(stats).queryByTestId('console-cost-value')).toBeNull()
-    // WHY there is no figure is on the row itself, not only behind a hover.
-    expect(within(stats).getByTestId('console-cost-reason')).toHaveTextContent(
+    await screen.findByTestId('console-stats')
+    await waitFor(() => expect(costValue()).toHaveTextContent('—'))
+    expect(costValue()).not.toHaveTextContent(fmtCurrency(0, 'USD'))
+    // WHY there is no figure is a visible sub-line, not a hover-only title.
+    expect(screen.getByTestId('console-cost-reason')).toHaveTextContent(
       i18nT('apps.awsControl.console.costs_consent_missing'),
     )
 
     // granted === false → the Cost Explorer ask mounts, and fetches ce status.
     expect(await screen.findByTestId('costs-consent-gate')).toBeTruthy()
     await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('ce'))
+  })
+
+  it('a stale bill served from cache keeps its figure and says the refresh failed', async () => {
+    vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
+    vi.mocked(awsControlApi.costs).mockResolvedValue({
+      ...costsFresh, fresh: false, fetchedAt: '2026-09-05T08:00:00Z', fetchError: 'Throttling',
+    })
+    renderWithProviders(<UsagePane account={ACCOUNT} />)
+
+    await screen.findByTestId('console-stats')
+    await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
+    const notice = await screen.findByTestId('costs-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.costs_refresh_failed'))
   })
 
   it('renders the month-to-date stat as an em dash when the cost read fails, without a consent ask', async () => {
@@ -169,15 +199,12 @@ describe('UsagePane', () => {
 
     // The costs query carries retry:1, so its error settles after one
     // backoff — give waitFor room.
-    const stats = await screen.findByTestId('console-stats')
-    await waitFor(
-      () => expect(within(stats).getByTitle(i18nT('apps.awsControl.console.costs_unavailable'))).toHaveTextContent('—'),
-      { timeout: 4000 },
-    )
-    expect(within(stats).queryByTestId('console-cost-value')).toBeNull()
-    // A failed read is an error surface: the notice below says it once, so
-    // the inline reason slot stays empty rather than doubling the sentence.
-    expect(within(stats).queryByTestId('console-cost-reason')).toBeNull()
+    await screen.findByTestId('console-stats')
+    await waitFor(() => expect(costValue()).toHaveTextContent('—'), { timeout: 4000 })
+    // A failed read is an error surface: the notice below says the sentence
+    // once, and the stat carries no caption of its own. The consent sub-line
+    // stays empty — this is a failure, not a pending decision.
+    expect(screen.queryByTestId('console-cost-reason')).toBeNull()
     // No consent ask fires — this is a failure, not a missing gate.
     expect(screen.queryByTestId('costs-consent-gate')).toBeNull()
     // The em dash stays quiet, but the failure itself is said — with the
@@ -188,8 +215,8 @@ describe('UsagePane', () => {
   })
 
   it('a consent-refused 409 on costs is the ask, not an error notice', async () => {
-    // The gate's own refusal is answered by the CE ask below the row; a red
-    // banner beside it would report the reader's pending decision as a fault.
+    // The gate's own refusal is answered by the CE ask row; a red banner beside
+    // it would report the reader's pending decision as a fault.
     const { AwsControlError } = await import('./api')
     vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
     vi.mocked(awsControlApi.costs).mockRejectedValue(new AwsControlError('aws_consent_required', 409))
@@ -198,10 +225,7 @@ describe('UsagePane', () => {
     renderWithProviders(<UsagePane account={ACCOUNT} />)
 
     expect(await screen.findByTestId('costs-consent-gate')).toBeTruthy()
-    await waitFor(
-      () => expect(within(screen.getByTestId('console-stats')).getByTitle(i18nT('apps.awsControl.console.costs_unavailable'))).toBeTruthy(),
-      { timeout: 4000 },
-    )
+    await waitFor(() => expect(costValue()).toHaveTextContent('—'), { timeout: 4000 })
     expect(screen.queryByTestId('costs-error')).toBeNull()
   })
 
@@ -215,13 +239,11 @@ describe('UsagePane', () => {
 
     renderWithProviders(<UsagePane account={ACCOUNT} />)
 
-    const stats = await screen.findByTestId('console-stats')
-    await waitFor(() =>
-      expect(within(stats).getByTestId('console-cost-value')).toHaveTextContent(fmtCurrency(9.99, 'USD')),
-    )
+    await screen.findByTestId('console-stats')
+    await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(9.99, 'USD')))
     // Visible rather than a hover-only title, so staleness is stated, not hidden.
     const asOf = i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate('2026-08-24T05:00:00Z') })
-    expect(within(stats).getByText(asOf)).toBeTruthy()
+    expect(screen.getByText(asOf)).toBeTruthy()
   })
 
   it('renders the storage block (bucket line + meter) only when the drive exists', async () => {
@@ -244,9 +266,12 @@ describe('UsagePane', () => {
 
     renderWithProviders(<UsagePane account={ACCOUNT} />)
 
-    await screen.findByTestId('console-cost-value')
+    await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
     expect(screen.queryByTestId('usage-storage')).toBeNull()
     expect(screen.queryByTestId('drive-storage-meter')).toBeNull()
+    // The strip still answers instead of skeletoning forever.
+    expect(within(screen.getByTestId('console-storage-stat')).getByTestId('stat-card-value'))
+      .toHaveTextContent('—')
   })
 
   it('carries both receipts once each grant is recorded for THIS account, and no CE ask', async () => {
@@ -263,24 +288,29 @@ describe('UsagePane', () => {
     expect(screen.queryByTestId('costs-consent-gate')).toBeNull()
   })
 
-  it('shows no receipts section at all when nothing is granted', async () => {
-    // The section must not exist when there is nothing to show, or it becomes
-    // an always-present placeholder heading.
+  it('lists the CE ask as a row in Paid services, with no receipt, when nothing is granted', async () => {
+    // The ask and the receipt are the same row with a different right-hand
+    // control, so they belong in one list — a reader comparing "enabled"
+    // against "not enabled" is reading one thing. What must NOT appear is a
+    // receipt for a grant that does not exist.
     vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
     stubConsent({ s3: notGranted, ce: notGranted })
 
-    const r = renderWithProviders(<UsagePane account={ACCOUNT} />)
+    renderWithProviders(<UsagePane account={ACCOUNT} />)
 
-    await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('s3'))
-    await screen.findByTestId('console-cost-value')
-    expect(r.container.querySelector('[data-testid="paid-services"]')).toBeNull()
+    const services = await screen.findByTestId('paid-services')
+    const ask = within(services).getByTestId('costs-consent-gate')
+    expect(within(ask).getByRole('button', { name: /confirm and enable/i })).toBeTruthy()
+    expect(within(services).queryByTestId('aws-consent-s3')).toBeNull()
+    expect(within(services).queryByRole('button', { name: /withdraw confirmation/i })).toBeNull()
   })
 
   it('never shows a receipt for a grant recorded under a DIFFERENT account', async () => {
     // The withdraw control is GLOBAL: one grant per service. A receipt shown on
     // the wrong account's pane is not a cosmetic mislabel — clicking it revokes
-    // the grant the OTHER account's drive and cost figure run on.
+    // the grant the OTHER account's drive and cost figure run on. Neither is
+    // there an ask to show, so the card itself must not exist.
     vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
     vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
     stubConsent({ s3: grantElsewhere, ce: grantElsewhere })
@@ -288,7 +318,7 @@ describe('UsagePane', () => {
     renderWithProviders(<UsagePane account={ACCOUNT} />)
 
     await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('s3'))
-    await screen.findByTestId('console-cost-value')
+    await waitFor(() => expect(costValue()).toHaveTextContent(fmtCurrency(12.5, 'USD')))
     expect(screen.queryByTestId('paid-services')).toBeNull()
   })
 
@@ -325,10 +355,10 @@ describe('UsagePane', () => {
 })
 
 describe('ConnectionsSection', () => {
-  it('names the account its keys belong to in the header', async () => {
-    // The section sits under a list of several accounts; a bare heading read as
-    // a global list, so the header scopes itself to the one account it shows.
-    renderWithProviders(<ConnectionsSection account={ACCOUNT} />)
+  it('names the account its keys belong to in the title', async () => {
+    // The card sits under a list of several accounts; a bare heading read as
+    // a global list, so the title scopes itself to the one account it shows.
+    renderWithProviders(<ConnectionsSection account={ACCOUNT} askAgent />)
     const conns = await screen.findByTestId('connections-section')
     expect(conns).toHaveTextContent(
       i18nT('apps.awsControl.console.keys_for_account', { name: ACCOUNT.name }),
@@ -345,6 +375,9 @@ describe('ConnectionsSection', () => {
     expect(rows[0]).toHaveTextContent(i18nT('apps.awsControl.page.kind_sso'))
     expect(rows[0]).toHaveTextContent('us-west-2')
     expect(rows[0]).toHaveTextContent(i18nT('apps.awsControl.console.key_healthy'))
+    // The dot is decoration: the badge word carries the state, so the dot does
+    // not announce it a second time.
+    expect(within(rows[0]).getByTestId('connection-health').getAttribute('aria-hidden')).toBe('true')
     expect(within(rows[0]).queryByTestId('reconnect-toggle')).toBeNull()
   })
 
@@ -366,7 +399,7 @@ describe('ConnectionsSection', () => {
     renderWithProviders(<ConnectionsSection account={DEGRADED} askAgent />)
 
     const row = await screen.findByTestId('connection-row')
-    expect(row).toHaveTextContent(i18nT('apps.awsControl.console.key_failed'))
+    expect(row).toHaveTextContent(i18nT('apps.awsControl.console.key_needs_attention'))
 
     // The plan query is disabled until the toggle opens the panel.
     expect(awsControlApi.reconnectPlan).not.toHaveBeenCalled()

@@ -4821,7 +4821,6 @@
         "keys_count_other": "{{count}}টি কী",
         "keys_for_account": "{{name}}-এর কী",
         "key_healthy": "সুস্থ",
-        "key_failed": "ব্যর্থ",
         "parent_folders": "প্যারেন্ট ফোল্ডার",
         "folder_actions": "ফোল্ডারের কাজ",
         "file_actions": "ফাইলের কাজ",
@@ -4874,7 +4873,6 @@
         "search_files": "ফাইলের নাম বা পাথ দিয়ে খুঁজুন…",
         "search_clear": "অনুসন্ধান মুছুন",
         "search_pending": "খোঁজা হচ্ছে…",
-        "search_no_results": "“{{query}}” এর সাথে মেলে এমন কোনো ফাইল নেই।",
         "search_capped": "অনেক বেশি মিল — শুধু প্রথম {{count}}টি দেখানো হচ্ছে।",
         "search_failed": "অনুসন্ধান ব্যর্থ হয়েছে। আবার চেষ্টা করুন।",
         "search_goto": "ধারক ফোল্ডার খুলুন",
@@ -4889,7 +4887,13 @@
         "move_root": "ফাইল (শীর্ষ স্তর)",
         "move_up": "উপরে {{name}}-এ",
         "move_no_folders": "এখানে সরানোর জন্য অন্য কোনো ফোল্ডার নেই। প্রথমে একটি তৈরি করুন।",
-        "move_moving": "সরানো হচ্ছে…"
+        "move_moving": "সরানো হচ্ছে…",
+        "stat_storage": "স্টোরেজ",
+        "stat_objects": "অবজেক্ট",
+        "key_needs_attention": "নজর দরকার",
+        "backup_state_current": "ব্যাকআপ হয়েছে",
+        "backup_state_never": "কখনো চলেনি",
+        "costs_refresh_failed": "সর্বশেষ বিল পড়া ব্যর্থ হয়েছে; এটি ক্যাশ করা সংখ্যা।"
       },
       "page": {
         "totals_summary": "{{accounts}} অ্যাকাউন্ট · {{keys}}টির মধ্যে {{healthy}}টি কী সুস্থ",
@@ -4939,7 +4943,6 @@
         "add_accounts_error": "সেই প্রোফাইলগুলি নিবন্ধন করা যায়নি। কিছুই যোগ করা হয়নি। আবার চেষ্টা করুন।",
         "add_accounts_load_error": "স্থানীয় AWS প্রোফাইলগুলোর তালিকা করা যায়নি।",
         "search_placeholder": "অ্যাকাউন্ট খুঁজুন",
-        "search_none": "“{{query}}” এর সাথে মেলে এমন কোনো অ্যাকাউন্ট নেই।",
         "paid_services_title": "পেইড পরিষেবা",
         "orphan_consent": "এখানে নিবন্ধিত নয় এমন একটি AWS অ্যাকাউন্টের জন্য নিশ্চিত করা হয়েছে। নিচে নিশ্চিতকরণ প্রত্যাহার করুন, বা সেই অ্যাকাউন্টটি আবার নিবন্ধন করে তার নিজের পেজ থেকে পরিচালনা করুন।",
         "account_actions": "অ্যাকাউন্টের ক্রিয়া",
@@ -4957,6 +4960,38 @@
         "switch_account": "অ্যাকাউন্ট পরিবর্তন করুন",
         "usage": "ব্যবহার ও খরচ",
         "use_account": "এই অ্যাকাউন্টটি ব্যবহার করুন"
+      },
+      "overview": {
+        "title": "ওভারভিউ",
+        "subtitle": "আপনার এজেন্টরা যে অ্যাকাউন্ট, কী, ক্লাউড ড্রাইভ ও পেইড সার্ভিস ব্যবহার করতে পারে, সবের জন্য একটি ঘর।",
+        "stat_accounts": "অ্যাকাউন্ট",
+        "stat_accounts_attention_one": "{{count}}টি অ্যাকাউন্টে নজর দরকার",
+        "stat_accounts_attention_other": "{{count}}টি অ্যাকাউন্টে নজর দরকার",
+        "stat_accounts_all_ok": "সব ঠিক আছে",
+        "stat_keys": "কী ঠিক আছে",
+        "stat_keys_sub_one": "{{count}}টি কী নিবন্ধিত",
+        "stat_keys_sub_other": "{{count}}টি কী নিবন্ধিত",
+        "stat_drive": "ড্রাইভ ব্যবহৃত",
+        "stat_drive_none": "এখনও ড্রাইভ নেই",
+        "stat_spend": "এই মাসে এখন পর্যন্ত",
+        "stat_spend_consent": "খরচের রিপোর্ট বন্ধ",
+        "stat_shares_none": "কিছু শেয়ার করা নেই",
+        "stat_shares_sub_one": "{{count}}টি সক্রিয় লিংক",
+        "stat_shares_sub_other": "{{count}}টি সক্রিয় লিংক",
+        "stat_backups_nightly": "প্রতি রাতে",
+        "stat_backups_manual": "ম্যানুয়াল",
+        "stat_backups_sub_nightly": "প্রতি রাতে চলে",
+        "stat_backups_sub_manual": "কোনো সময়সূচি নেই",
+        "accounts_title": "অ্যাকাউন্ট",
+        "accounts_note": "এজেন্টরা এই কীগুলো ব্যবহার করে কিন্তু কখনো দেখে না; কী-এর কোনো অংশ চ্যাটে আসে না।",
+        "add_account": "অ্যাকাউন্ট যোগ করুন",
+        "drive_title": "ক্লাউড ড্রাইভ",
+        "drive_bar_label": "{{size}} রাখা আছে: ফাইল, আর্টিফ্যাক্ট লাইব্রেরি ও ব্যাকআপ",
+        "drive_empty_title": "এখনও ক্লাউড ড্রাইভ নেই",
+        "drive_empty_body": "আপনার ফাইল, আর্টিফ্যাক্ট লাইব্রেরি ও ব্যাকআপের জন্য এই অ্যাকাউন্টে একটি প্রাইভেট, এনক্রিপ্টেড বাকেট তৈরি করুন।",
+        "drive_setup": "ক্লাউড ড্রাইভ সেট করুন",
+        "drive_bucket_label": "বাকেট",
+        "stat_spend_scope": "এই অ্যাকাউন্টের AWS বিল"
       }
     }
   },
@@ -7785,7 +7820,12 @@
       "status_failed": "নিশ্চিতকরণের অবস্থা পড়া যায়নি।",
       "confirm_failed": "নিশ্চিতকরণ রেকর্ড করা হয়নি।",
       "withdraw_failed": "নিশ্চিতকরণ প্রত্যাহার করা হয়নি।",
-      "retry": "আবার চেষ্টা করুন"
+      "retry": "আবার চেষ্টা করুন",
+      "badge_confirmed": "নিশ্চিত",
+      "badge_not_enabled": "চালু নেই",
+      "confirmed_on": "{{date}} তারিখে নিশ্চিত",
+      "billing_notice_short": "চার্জ হবে। আপনি নিশ্চিত করার আগে কিছু পাঠানো হয় না।",
+      "withdraw_effect": "প্রত্যাহার করলে এজেন্টরা এই সার্ভিস ব্যবহার বন্ধ করবে, যতক্ষণ না তুমি আবার নিশ্চিত করো।"
     },
     "confirmDialog": {
       "cancel": "বাতিল"

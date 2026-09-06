@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
+import { i18nT } from '../i18n/t'
+import { fmtDate } from '../i18n/format'
 import type { AwsConsentStatus } from '../api/client'
 
 /* ── api client mock ───────────────────────────────────────────────────────
@@ -139,7 +141,7 @@ describe('AwsConsentGate', () => {
     expect(screen.queryByRole('button', { name: /confirm and enable/i })).toBeNull()
   })
 
-  it('the compact receipt keeps the credential source in the row', async () => {
+  it('the compact receipt is one row: badge, account, credential source and date', async () => {
     // The row is the only receipt on the usage pane; without the source the
     // sole way to learn which profile bills a service was to withdraw the grant
     // and re-read the full ask — a destructive act to answer an audit question.
@@ -160,10 +162,85 @@ describe('AwsConsentGate', () => {
 
     const source = await screen.findByTestId('aws-consent-source')
     expect(source).toHaveTextContent('profile prod-readonly')
-    expect(screen.getByTestId('aws-consent-polly')).toHaveTextContent('111122223333')
-    // Still a row, not the full card: no confirm button, withdraw present.
+    const row = screen.getByTestId('aws-consent-polly')
+    expect(row).toHaveTextContent('111122223333')
+    expect(row).toHaveTextContent(i18nT('components.awsConsentGate.badge_confirmed'))
+    // The date goes through the i18n seam (fmtDate), never a raw
+    // toLocaleDateString and never the raw ISO string.
+    const grantedAt = screen.getByTestId('aws-consent-granted-at')
+    expect(grantedAt).toHaveTextContent(
+      i18nT('components.awsConsentGate.confirmed_on', { date: fmtDate('2026-08-21T00:00:00+00:00') }),
+    )
+    expect(grantedAt.textContent).not.toContain('2026-08-21T00:00:00')
+    // Compact draws NO container: the host's card is the only card, or two
+    // borders would stack inside one list.
+    expect(row.className).not.toContain('bg-card')
+    // Still a row, not the full card: no confirm button, withdraw present, and
+    // the withdraw keeps its object even at this size.
     expect(screen.queryByRole('button', { name: /confirm and enable/i })).toBeNull()
-    expect(screen.getByRole('button', { name: /withdraw confirmation/i })).toBeTruthy()
+    const withdraw = screen.getByRole('button', { name: /withdraw confirmation/i })
+    expect(withdraw).toHaveTextContent(i18nT('components.awsConsentGate.withdraw'))
+    // And what the withdraw does, said before it is clicked.
+    expect(screen.getByTestId('aws-consent-withdraw-effect')).toHaveTextContent(
+      i18nT('components.awsConsentGate.withdraw_effect'),
+    )
+  })
+
+  it('the compact ASK is one row that still names region, credentials and the billing note', async () => {
+    // Compact is smaller, not less informed: a confirmation that starts billing
+    // must say what it would bill through even when it renders as a row inside
+    // someone else's list.
+    vi.mocked(api.awsConsent).mockResolvedValue(status({ profile: 'voice', credentialSource: 'profile voice' }))
+    renderWithProviders(<AwsConsentGate service="polly" compact />)
+
+    const row = await screen.findByTestId('aws-consent-polly')
+    expect(row).toHaveTextContent(i18nT('components.awsConsentGate.billing_notice_short'))
+    // The ACCOUNT it would bill, first: the gate resolves it from the
+    // credentials, not from the app's selected account, so the row is the one
+    // place a mismatch can show before the confirm.
+    expect(screen.getByTestId('aws-consent-account')).toHaveTextContent('111122223333')
+    expect(row).toHaveTextContent('us-east-1')
+    expect(screen.getByTestId('aws-consent-source')).toHaveTextContent('profile voice')
+    expect(row).toHaveTextContent(i18nT('components.awsConsentGate.badge_not_enabled'))
+    expect(row.className).not.toContain('bg-card')
+
+    // The grant still records the values the ROW displayed.
+    fireEvent.click(screen.getByRole('button', { name: /confirm and enable/i }))
+    await waitFor(() =>
+      expect(api.grantAwsConsent).toHaveBeenCalledWith('polly', {
+        profile: 'voice',
+        region: 'us-east-1',
+        account: '111122223333',
+      }),
+    )
+  })
+
+  it('the compact ask says why its confirm is inert when the account is unresolved', async () => {
+    vi.mocked(api.awsConsent).mockResolvedValue(
+      status({ identityResolved: false, account: '', identityDetail: 'creds did not resolve' }),
+    )
+    renderWithProviders(<AwsConsentGate service="polly" compact />)
+
+    const button = await screen.findByRole('button', { name: /confirm and enable/i })
+    expect(button.hasAttribute('disabled')).toBe(true)
+    // The reason is on the row, not only in the disabled state.
+    expect(screen.getByTestId('aws-consent-identity-error')).toHaveTextContent('creds did not resolve')
+  })
+
+  it('a failed status read is still one row in compact mode, with its retry', async () => {
+    vi.mocked(api.awsConsent)
+      .mockRejectedValueOnce(new Error('consent store unreadable'))
+      .mockResolvedValue(status())
+    renderWithProviders(<AwsConsentGate service="polly" compact />)
+
+    const card = await screen.findByTestId('aws-consent-polly-error-card')
+    expect(within(card).getByTestId('aws-consent-polly-error')).toHaveTextContent('consent store unreadable')
+    expect(card.className).not.toContain('bg-card')
+
+    fireEvent.click(within(card).getByTestId('aws-consent-polly-error-retry'))
+    await waitFor(() => expect(api.awsConsent).toHaveBeenCalledTimes(2))
+    // The second read succeeded: the ask row replaces the notice.
+    expect(await screen.findByRole('button', { name: /confirm and enable/i })).toBeTruthy()
   })
 
   it('explains an automatic withdrawal after the account changed', async () => {

@@ -13,13 +13,14 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  ChevronDown, RefreshCw, Copy, Check, HardDrive, Star, Link2, ShieldCheck, Wallet, } from 'lucide-react'
-import { Btn, Badge, ContentSkeleton } from '../../components/ui'
+  ChevronDown, RefreshCw, Copy, Check, HardDrive, Star, KeyRound, ShieldCheck, Wallet, Receipt, Cloud,
+} from 'lucide-react'
+import { Btn, Badge, Card, CardTitle, StatCard, Skeleton } from '../../components/ui'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import { i18nT } from '../../i18n/t'
-import { CopyBtn, SectionHeader, PaneHeader, AwsErrorNotice } from './shared'
+import { CopyBtn, PaneHeader, AwsErrorNotice } from './shared'
 import { StorageMeter } from './DrivePage'
-import { fmtCurrency, fmtDate } from '../../i18n/format'
+import { fmtBytes, fmtCurrency, fmtDate, fmtNumber } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
 import { api, type AwsConsentStatus } from '../../api/client'
 import type {
@@ -92,14 +93,18 @@ export function ReconnectAction({ profile, askAgent }: { profile: AwsProfile; as
           />
           {planQ.data && (
             <>
-              <p className="text-muted mb-2">{i18nT(RECONNECT_HINT_KEY[planQ.data.kind])}</p>
-              <div className="flex items-center gap-2">
-                <code
-                  className="flex-1 min-w-0 break-all rounded bg-bg px-2 py-1.5 font-mono text-[12px] text-text"
-                  data-testid="reconnect-command"
-                >
-                  {planQ.data.command}
-                </code>
+              <p className="mb-2 text-[12px] text-muted">{i18nT(RECONNECT_HINT_KEY[planQ.data.kind])}</p>
+              {/* The command owns its own line and the copy button sits under it,
+                  right-aligned. Sharing one row made the command the loser of
+                  every width contest: it is the long, unbreakable, mono string,
+                  so at 390px it was the part that got squeezed. */}
+              <code
+                className="block min-w-0 break-all rounded bg-bg px-2 py-1.5 font-mono text-[12px] text-text"
+                data-testid="reconnect-command"
+              >
+                {planQ.data.command}
+              </code>
+              <div className="mt-2 flex justify-end">
                 <Btn onClick={copy} data-testid="reconnect-copy">
                   {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                   {copied ? i18nT('apps.awsControl.page.copied') : i18nT('apps.awsControl.page.copy')}
@@ -113,23 +118,43 @@ export function ReconnectAction({ profile, askAgent }: { profile: AwsProfile; as
   )
 }
 
-/** One thin row per profile/key: name, kind, region, health + Reconnect if failing. */
+/** One row per profile/key: name, kind, region, health + Reconnect if failing. */
 function ConnectionRow({ profile, askAgent }: { profile: AwsProfile; askAgent: boolean }) {
   return (
-    <div className="px-3 py-2.5" data-testid="connection-row">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="font-mono text-[13px] text-text" data-testid="connection-name">{profile.name}</span>
-        {profile.default && (
-          <Star size={11} className="text-accent fill-accent" aria-label={i18nT('apps.awsControl.page.default_profile')} />
-        )}
-        <Badge variant="muted">{i18nT(PROFILE_KIND_LABEL_KEY[profile.kind])}</Badge>
-        <span className="font-mono text-[12px] text-muted">{profile.region}</span>
-        <span className="ml-auto flex items-center gap-1.5 text-[12px]">
-          <span className={`h-2 w-2 rounded-full ${profile.identityOk ? 'bg-ok' : 'bg-warn'}`} role="img" aria-label={profile.identityOk ? i18nT('apps.awsControl.console.key_healthy') : i18nT('apps.awsControl.console.key_failed')} data-testid="connection-health" data-ok={profile.identityOk} />
-          <span className={profile.identityOk ? 'text-ok' : 'text-warn'}>
-            {profile.identityOk ? i18nT('apps.awsControl.console.key_healthy') : i18nT('apps.awsControl.console.key_failed')}
-          </span>
-        </span>
+    <div className="px-1 py-2.5 md:px-3" data-testid="connection-row">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="min-w-0 flex-1 basis-[11rem]">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="min-w-0 truncate font-mono text-[13px] text-text-strong" data-testid="connection-name">{profile.name}</span>
+            {/* The star alone was a glyph a first-time reader could not name;
+                the word rides with it. */}
+            {profile.default && (
+              <Badge variant="muted" className="shrink-0" data-testid="connection-default">
+                <Star className="h-3 w-3 fill-accent text-accent" aria-hidden="true" />
+                {i18nT('apps.awsControl.page.default_profile')}
+              </Badge>
+            )}
+            <Badge variant="muted">{i18nT(PROFILE_KIND_LABEL_KEY[profile.kind])}</Badge>
+          </div>
+          <div className="mt-0.5 font-mono text-[12px] text-muted">{profile.region}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Dot plus word, not dot plus coloured text: the badge carries the
+              state for a reader who cannot see the hue, so the dot is
+              decoration and is hidden from assistive technology rather than
+              announcing the same fact twice. */}
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${profile.identityOk ? 'bg-ok' : 'bg-warn'}`}
+            aria-hidden="true"
+            data-testid="connection-health"
+            data-ok={profile.identityOk}
+          />
+          <Badge variant={profile.identityOk ? 'ok' : 'warn'}>
+            {profile.identityOk
+              ? i18nT('apps.awsControl.console.key_healthy')
+              : i18nT('apps.awsControl.console.key_needs_attention')}
+          </Badge>
+        </div>
       </div>
       {!profile.identityOk && <ReconnectAction profile={profile} askAgent={askAgent} />}
     </div>
@@ -137,32 +162,35 @@ function ConnectionRow({ profile, askAgent }: { profile: AwsProfile; askAgent: b
 }
 
 /**
- * The keys card for ONE account: a thin row per key, with inline Reconnect for
- * failing ones. The header names the account, because this section sits under
- * a list of several accounts and a bare heading read as a global list — a
- * reader concluded the other accounts had no keys. `askAgent` flows down to
- * the Reconnect notices; the accounts pane that hosts this card decides it from
+ * The keys card for ONE account: a row per key, with inline Reconnect for
+ * failing ones. The title names the account, because this card sits under a
+ * list of several accounts and a bare heading read as a global list — a reader
+ * concluded the other accounts had no keys. `askAgent` flows down to the
+ * Reconnect notices; the accounts pane that hosts this card decides it from
  * whether a registration draft is open.
  */
 export function ConnectionsSection({ account, askAgent }: { account: AwsAccount; askAgent: boolean }) {
   return (
-    <section data-testid="connections-section">
-      <SectionHeader
-        icon={<Link2 size={15} />}
-        title={i18nT('apps.awsControl.console.keys_for_account', { name: account.name || account.account })}
-      />
+    <Card data-testid="connections-section">
+      <CardTitle>
+        <KeyRound className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+        {i18nT('apps.awsControl.console.keys_for_account', { name: account.name || account.account })}
+      </CardTitle>
       {account.profiles.length === 0 ? (
+        // One line, not `EmptyState`: its 96px well and 40px glyph are taller
+        // than this card's whole populated state (a single ~44px row), so an
+        // account with no keys would draw more of the eye than one with keys.
         <p className="text-[13px] text-muted" data-testid="connections-empty">
           {i18nT('apps.awsControl.page.not_connected_yet')}
         </p>
       ) : (
-        <div className="rounded-md border border-border bg-card divide-y divide-border" data-testid="connections-list">
+        <div className="divide-y divide-border" data-testid="connections-list">
           {account.profiles.map((p) => (
             <ConnectionRow key={p.name} profile={p} askAgent={askAgent} />
           ))}
         </div>
       )}
-    </section>
+    </Card>
   )
 }
 
@@ -188,23 +216,21 @@ export function SetupCard({ account, region }: { account: string; region: string
   const busy = previewMut.isPending || confirmMut.isPending
 
   return (
-    <div className="rounded-lg border border-border bg-card px-4 py-4 shadow-sm" data-testid="drive-setup">
-      <div className="flex items-center gap-2 mb-1">
-        <HardDrive size={16} className="text-accent" />
-        <h2 className="text-sm font-semibold text-text-strong">
-          {i18nT('apps.awsControl.console.setup_title')}
-        </h2>
-      </div>
-      <p className="text-[13px] text-muted mb-1">{i18nT('apps.awsControl.console.setup_body')}</p>
-      <p className="text-[13px] text-muted mb-3">{i18nT('apps.awsControl.console.setup_costs_note')}</p>
+    <Card className="mb-0" data-testid="drive-setup">
+      <CardTitle>
+        <Cloud className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+        {i18nT('apps.awsControl.console.setup_title')}
+      </CardTitle>
+      <p className="mb-1 text-[13px] text-muted">{i18nT('apps.awsControl.console.setup_body')}</p>
+      <p className="mb-3 text-[13px] text-muted">{i18nT('apps.awsControl.console.setup_costs_note')}</p>
 
       {preview && !confirmMut.isSuccess && (
-        <div className="mb-3 rounded-md border border-border bg-bg-elevated p-3 text-[13px]" data-testid="drive-preview">
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-muted">
-            <dt>{i18nT('apps.awsControl.console.setup_preview_region')}</dt>
-            <dd className="text-text font-mono">{preview.region || region}</dd>
-            <dt>{i18nT('apps.awsControl.console.setup_preview_resource')}</dt>
-            <dd className="text-text font-mono break-all">{preview.resource}</dd>
+        <div className="mb-3 rounded-md border border-border bg-bg-elevated p-3" data-testid="drive-preview">
+          <dl className="grid grid-cols-1 gap-x-3 gap-y-1 sm:grid-cols-[auto_1fr]">
+            <dt className="text-[12px] text-muted">{i18nT('apps.awsControl.console.setup_preview_region')}</dt>
+            <dd className="mb-1 min-w-0 break-all font-mono text-[13px] text-text sm:mb-0">{preview.region || region}</dd>
+            <dt className="text-[12px] text-muted">{i18nT('apps.awsControl.console.setup_preview_resource')}</dt>
+            <dd className="min-w-0 break-all font-mono text-[13px] text-text">{preview.resource}</dd>
           </dl>
         </div>
       )}
@@ -244,19 +270,14 @@ export function SetupCard({ account, region }: { account: string; region: string
 
       {/* Collapsed "show the exact permissions to paste" drawer for AccessDenied setups. */}
       <div className="mt-3">
-        <button
-          onClick={() => setShowPolicy((v) => !v)}
-          className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text cursor-pointer bg-transparent border-none p-0"
-          aria-expanded={showPolicy}
-          data-testid="policy-toggle"
-        >
-          <ShieldCheck size={12} />
+        <Btn onClick={() => setShowPolicy((v) => !v)} aria-expanded={showPolicy} data-testid="policy-toggle">
+          <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
           {i18nT('apps.awsControl.console.setup_policy_label')}
-          <ChevronDown size={12} className={`transition-transform ${showPolicy ? 'rotate-180' : ''}`} />
-        </button>
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showPolicy ? 'rotate-180' : ''}`} aria-hidden="true" />
+        </Btn>
         {showPolicy && (
           <div className="mt-2" data-testid="policy-drawer">
-            {policyQ.isLoading && <div className="text-muted text-[12px]">{i18nT('apps.awsControl.console.loading')}</div>}
+            {policyQ.isLoading && <div className="text-[12px] text-muted">{i18nT('apps.awsControl.console.loading')}</div>}
             <AwsErrorNotice
               askAgent
               error={policyQ.error}
@@ -265,17 +286,22 @@ export function SetupCard({ account, region }: { account: string; region: string
               testId="policy-error"
             />
             {policyQ.data && (
-              <div className="flex flex-col gap-2">
-                <pre className="max-h-64 overflow-auto rounded-md bg-bg px-3 py-2 font-mono text-[11px] text-text whitespace-pre-wrap break-all">
+              // The copy button sits ON the block, top-right, so it is where the
+              // eye already is when the policy is what you came for. `pr-24`
+              // keeps the longest ARN clear of it instead of running underneath.
+              <div className="relative rounded-md border border-border bg-bg-elevated p-3">
+                <div className="absolute right-2 top-2">
+                  <CopyBtn text={policyQ.data.policy} testId="policy-copy" />
+                </div>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all pr-24 font-mono text-[11px] text-text">
                   {policyQ.data.policy}
                 </pre>
-                <div><CopyBtn text={policyQ.data.policy} testId="policy-copy" /></div>
               </div>
             )}
           </div>
         )}
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -325,6 +351,9 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
   // a throttle, a dead key) gets a notice the agent can read.
   const costsErr = costsQ.error instanceof AwsControlError ? costsQ.error : null
   const costsFailed = costsQ.isError && costsErr?.message !== 'aws_consent_required'
+  // A 200 carrying a stale figure with `fetchError` is a failed refresh served
+  // from cache: keep the number, say the failure.
+  const costsStale = Boolean(costs?.fetchError)
   const s3ConsentQ = useQuery<AwsConsentStatus>({
     queryKey: ['awsConsent', 's3'],
     queryFn: () => api.awsConsent('s3'),
@@ -337,6 +366,13 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
     c?.granted === true && c.grant?.account === id
   const s3Receipt = confirmedHere(s3ConsentQ.data) && !driveConsentRefused
   const ceReceipt = confirmedHere(ceConsentQ.data) && !costs?.consentMissing
+  // The Cost Explorer ask, driven by the CONSENT state rather than by
+  // `costs.consentMissing`. That field only arrives when the backend has a
+  // cached cost reading to attach it to; with no cache — the state a
+  // never-confirmed account is always in — the costs request is a bare 409 and
+  // the field never exists, so keying the ask on it would leave Cost Explorer
+  // with no confirmation control anywhere in the product.
+  const ceAsk = ceConsentQ.data?.granted === false
   // Both surfaces whose content a grant decides. The ask reads a cached refusal
   // and the meter reads a cached listing, so a grant change has to reach them
   // or the pane keeps rendering the previous answer.
@@ -345,68 +381,85 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
     qcTop.invalidateQueries({ queryKey: ['aws-control', 'costs', id] })
   }
 
+  // The three figures this pane states. Each is `undefined` while its read is
+  // in flight, which is what makes `StatCard` draw its own skeleton in place —
+  // the strip never changes height between loading and loaded. A read that
+  // settled with no number renders the em dash, and the sub-lines below say
+  // why, on the row rather than behind a hover.
+  const costFigure = costs && !costs.consentMissing && !costsQ.isError
+  const mtdValue = costsQ.isLoading
+    ? undefined
+    : costFigure ? fmtCurrency(costs.monthToDate, costs.currency) : '—'
+  const storageValue = driveQ.isLoading
+    ? undefined
+    : drive?.exists ? fmtBytes(drive.usage.bytes) : '—'
+  const objectsValue = driveQ.isLoading
+    ? undefined
+    : drive?.exists ? fmtNumber(drive.usage.objects) : '—'
+
   return (
     <section data-testid="usage-pane">
       <PaneHeader icon={<Wallet size={18} />} title={i18nT('apps.awsControl.rail.usage')} />
 
-      {/* One figure this pane alone can state: the month-to-date bill. Label
-          left, amount right, in the same row language as the meter below. */}
-      <div className="overflow-hidden rounded-lg border border-border bg-card" data-testid="console-stats">
-        <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-          <Wallet size={15} className="shrink-0 text-accent" aria-hidden="true" />
-          <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.stat_this_month')}</span>
-          {costs && !costs.consentMissing && !costsQ.isError && !costs.fresh && (
-            <span className="text-[12px] text-muted">{i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costs.fetchedAt) })}</span>
-          )}
-          {/* WHY there is no figure, said in the same slot the cached-as-of
-              note uses — visible, not a tooltip. A dash with its reason on
-              hover left a mouse-less reader with a blank they could not
-              explain; the same sentence is also the row's `title`, so a hover
-              still answers. Only the consent case lives here: it is status,
-              not a failure. A failed bill read is an error and is reported by
-              the notice under this card, never as a second inline string. */}
-          {costs?.consentMissing && (
-            <span className="text-[12px] text-muted" data-testid="console-cost-reason">{i18nT('apps.awsControl.console.costs_consent_missing')}</span>
-          )}
-          <span className="flex-1" />
-          {costs?.consentMissing ? (
-            <span className="text-[13px] text-muted" title={i18nT('apps.awsControl.console.costs_consent_missing')}>—</span>
-          ) : costsQ.isError ? (
-            // A failed bill read (Cost Explorer not enabled on the account,
-            // network, throttle) must not skeleton forever — say "no number".
-            <span className="text-[13px] text-muted" title={i18nT('apps.awsControl.console.costs_unavailable')}>—</span>
-          ) : (
-            <span className="text-[15px] font-semibold text-text-strong" data-testid="console-cost-value">
-              {costs ? fmtCurrency(costs.monthToDate, costs.currency) : '…'}
-            </span>
-          )}
-        </div>
+      {/* The pane's three figures, with the bill in accent because it is the one
+          this pane alone can state. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3" data-testid="console-stats">
+        <StatCard
+          label={i18nT('apps.awsControl.console.stat_this_month')}
+          value={mtdValue}
+          accent
+          className="tabular-nums"
+          data-testid="console-cost-stat"
+        />
+        <StatCard
+          label={i18nT('apps.awsControl.console.stat_storage')}
+          value={storageValue}
+          className="tabular-nums"
+          data-testid="console-storage-stat"
+        />
+        <StatCard
+          label={i18nT('apps.awsControl.console.stat_objects')}
+          value={objectsValue}
+          className="tabular-nums"
+          data-testid="console-objects-stat"
+        />
+      </div>
+      {/* The bill's context sits under the whole strip rather than under its own
+          card: a note inside one grid cell made that card a different height
+          from its two neighbours. WHY there is no figure is a visible line, not
+          a `title` attribute: a dash with its reason on hover left a mouse-less
+          reader with a blank they could not explain. Only the consent case gets
+          the full sentence; a failed READ is reported once by the notice below,
+          so its line says only that the number is missing. */}
+      <div className="mb-4 mt-1.5 min-h-[1.25rem] text-[12px] text-muted">
+        {costs && costFigure && !costs.fresh && (
+          <span>{i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costs.fetchedAt) })}</span>
+        )}
+        {costs?.consentMissing && (
+          <span data-testid="console-cost-reason">
+            {i18nT('apps.awsControl.console.costs_consent_missing')}
+          </span>
+        )}
       </div>
       <AwsErrorNotice
         askAgent
         error={costsQ.error}
-        message={costsFailed ? i18nT('apps.awsControl.console.costs_unavailable') : null}
+        message={costsFailed
+          ? i18nT('apps.awsControl.console.costs_unavailable')
+          : costsStale
+            ? i18nT('apps.awsControl.console.costs_refresh_failed')
+            : null}
         onRetry={() => costsQ.refetch()}
-        className="mt-2"
+        className="mb-4"
         testId="costs-error"
       />
-
-      {/* Cost Explorer ask, driven by the CONSENT state rather than by
-          `costs.consentMissing`. That field only arrives when the backend has
-          a cached cost reading to attach it to; with no cache — the state a
-          never-confirmed account is always in — the costs request is a bare
-          409 and the field never exists, so keying the ask on it would leave
-          Cost Explorer with no confirmation control anywhere in the product. */}
-      {ceConsentQ.data?.granted === false && (
-        <div className="mt-6" data-testid="costs-consent-gate">
-          <AwsConsentGate service="ce" onConsentChange={refetchGated} askAgent />
-        </div>
-      )}
 
       {/* Storage: the meter split by section, headed by the bucket it reports.
           The sections themselves are the rail's own items, so this pane states
           sizes only and links nowhere. */}
-      {driveQ.isLoading && <div className="mt-6"><ContentSkeleton rows={3} /></div>}
+      {/* A box the same size as the meter, so the pane does not jump when the
+          listing lands. */}
+      {driveQ.isLoading && <Skeleton className="mb-4 h-[104px] rounded-lg" data-testid="usage-storage-skeleton" />}
       {/* The storage meter's read failing rendered no meter and no explanation.
           A dead connection (409) points back at Reconnect; anything else is a
           read to diagnose. The consent 409 is excluded because its ask lives on
@@ -422,13 +475,13 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
             : null
         }
         onRetry={() => driveQ.refetch()}
-        className="mt-6"
+        className="mb-4"
         testId="usage-drive-error"
       />
       {drive?.exists && (
-        <div className="mt-6" data-testid="usage-storage">
+        <div data-testid="usage-storage">
           <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
-            <HardDrive size={15} className="shrink-0 text-accent" aria-hidden="true" />
+            <HardDrive className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
             <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.drive_title')}</span>
             <span className="min-w-0 truncate font-mono text-[12px] text-muted" data-testid="drive-bucket">{drive.bucket}</span>
             <CopyBtn text={drive.bucket} testId="drive-copy-bucket" />
@@ -438,24 +491,35 @@ export default function UsagePane({ account }: { account: AwsAccount }) {
         </div>
       )}
 
-      {/* The confirmations recorded for THIS account, once each is granted and
-          its ask has cleared. Each card is mounted on its own condition rather
-          than the section's, because the two services are granted separately
-          and a receipt for one must not be implied by the other. Withdrawing
-          here revokes the one grant this account's drive and cost figure run
-          on. `onConsentChange` is what makes a withdraw recoverable: the asks
-          are decided by cached refusals, so without invalidating them the
-          receipt would unmount with no ask taking its place. */}
-      {(s3Receipt || ceReceipt) && (
-        <section className="mt-8" data-testid="paid-services">
-          <h2 className="text-sm font-semibold text-text-strong">
+      {/* The paid services this account bills through: a receipt once a grant is
+          recorded for THIS account and its ask has cleared, and the Cost
+          Explorer ask itself as a row in the same list. The ask belongs here
+          rather than in a banner of its own for one reason — a reader comparing
+          "what is enabled" against "what is not" is reading one list, and the
+          two states are the same row with a different right-hand control.
+          Each row is mounted on its own condition rather than the card's,
+          because the two services are granted separately and a receipt for one
+          must not be implied by the other. Withdrawing here revokes the one
+          grant this account's drive and cost figure run on. `onConsentChange` is
+          what makes a withdraw recoverable: the asks are decided by cached
+          refusals, so without invalidating them the receipt would unmount with
+          no ask taking its place. */}
+      {(s3Receipt || ceReceipt || ceAsk) && (
+        <Card data-testid="paid-services">
+          <CardTitle>
+            <Receipt className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
             {i18nT('apps.awsControl.page.paid_services_title')}
-          </h2>
-          <div className="mt-3 overflow-hidden rounded-md border border-border bg-card divide-y divide-border">
+          </CardTitle>
+          <div className="divide-y divide-border">
             {s3Receipt && <AwsConsentGate service="s3" compact onConsentChange={refetchGated} askAgent />}
             {ceReceipt && <AwsConsentGate service="ce" compact onConsentChange={refetchGated} askAgent />}
+            {ceAsk && (
+              <div data-testid="costs-consent-gate">
+                <AwsConsentGate service="ce" compact onConsentChange={refetchGated} askAgent />
+              </div>
+            )}
           </div>
-        </section>
+        </Card>
       )}
     </section>
   )

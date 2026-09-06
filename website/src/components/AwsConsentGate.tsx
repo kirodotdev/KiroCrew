@@ -1,9 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, ShieldCheck } from 'lucide-react'
+import { RefreshCw, ShieldCheck, Receipt } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../api/client'
 import ErrorNotice from './ErrorNotice'
-import { Btn } from './ui'
+import { Btn, Badge, Card, CardTitle } from './ui'
 import { i18nT } from '../i18n/t'
+import { fmtDate } from '../i18n/format'
 
 /**
  * Confirmation gate for a paid AWS service (Amazon Polly, Amazon Transcribe).
@@ -39,11 +40,17 @@ export default function AwsConsentGate({
   /** Invalidate caller-owned queries whose content depends on this grant. */
   onConsentChange?: () => void
   /**
-   * Render a GRANTED receipt as one thin row instead of the full card. The ask
-   * state ignores this: a confirmation that starts billing must keep its full
-   * facts (service, region, credential source, account) regardless of where it
-   * mounts. Receipts are records, not decisions, so a row is enough — the
-   * withdraw stays reachable but no longer dominates the page.
+   * Render as ONE ROW instead of the full card, for a host that already owns a
+   * "Paid services" card and stacks several gates in a `divide-y` list. Every
+   * state — receipt, ask, failed status read — is one row, and compact mode
+   * draws no container of its own, so the host's card is the only card.
+   *
+   * The ask keeps the facts a confirmation needs (region, credential source,
+   * and the account it would bill) in the row's own meta line rather than
+   * dropping them: the row is smaller, not less informed. The receipt keeps the
+   * credential source for the same reason — the only other way to read it was
+   * to withdraw and re-read the full ask, a destructive act to answer an audit
+   * question.
    */
   compact?: boolean
   /**
@@ -82,6 +89,13 @@ export default function AwsConsentGate({
     onSettled: invalidate,
   })
 
+  // One row geometry for all three compact states, so a receipt, an ask and a
+  // failed read line up in the host's list. `flex-wrap` plus a text-block basis
+  // is what makes the right-hand cluster drop UNDER the text at 390px instead
+  // of squeezing the service name to nothing.
+  const rowClass = 'flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5 text-[13px]'
+  const rowTextClass = 'min-w-0 flex-1 basis-[12rem]'
+
   // A status read that failed used to render NOTHING — indistinguishable from a
   // gate that has nothing to ask, on the surface that decides whether a paid
   // service may bill. The message is the transport's own (journaled), so the
@@ -90,19 +104,36 @@ export default function AwsConsentGate({
   // controls gone this notice is the card's only surface, so it carries the
   // retry itself rather than relying on the host to offer one.
   if (consentQ.isError) {
+    const notice = (
+      <ErrorNotice
+        message={consentQ.error instanceof Error ? consentQ.error.message : String(consentQ.error)}
+        title={i18nT('components.awsConsentGate.status_failed')}
+        askAgent={askAgent}
+        // Inline in a row, boxed when the gate is the card. The notice is the
+        // whole content either way, so it takes the full width it is given.
+        variant={compact ? 'inline' : 'block'}
+        className="w-full"
+        testId={'aws-consent-' + service + '-error'}
+      />
+    )
+    const retry = (
+      <Btn onClick={() => consentQ.refetch()} data-testid={'aws-consent-' + service + '-error-retry'}>
+        <RefreshCw size={13} />
+        {i18nT('components.awsConsentGate.retry')}
+      </Btn>
+    )
+    if (compact) {
+      return (
+        <div className={rowClass} data-testid={'aws-consent-' + service + '-error-card'}>
+          <div className={rowTextClass}>{notice}</div>
+          {retry}
+        </div>
+      )
+    }
     return (
       <div className="flex flex-col items-start gap-2" data-testid={'aws-consent-' + service + '-error-card'}>
-        <ErrorNotice
-          message={consentQ.error instanceof Error ? consentQ.error.message : String(consentQ.error)}
-          title={i18nT('components.awsConsentGate.status_failed')}
-          askAgent={askAgent}
-          className="w-full"
-          testId={'aws-consent-' + service + '-error'}
-        />
-        <Btn onClick={() => consentQ.refetch()} data-testid={'aws-consent-' + service + '-error-retry'}>
-          <RefreshCw size={13} />
-          {i18nT('components.awsConsentGate.retry')}
-        </Btn>
+        {notice}
+        {retry}
       </div>
     )
   }
@@ -131,40 +162,51 @@ export default function AwsConsentGate({
   // actually confirmed is more useful than "could not be resolved" -- it is
   // also the account the gate is still enforcing against.
   const account = c.identityResolved ? c.account : c.grant?.account || ''
+  const accountText = account || i18nT('components.awsConsentGate.unresolved_account')
+  const sep = <span aria-hidden="true">·</span>
 
-  // A granted receipt in compact mode is one row: the service, where it runs,
-  // the credentials it bills through, and the account — with withdraw kept
-  // small on the right. The credential source stays in the row because the
-  // only other way to read it was to withdraw and re-read the full ask, a
-  // destructive act to answer an audit question. The account-changed warning
-  // still forces the full card, because that state needs its sentence.
+  // A granted receipt in compact mode is one row: what is confirmed, the
+  // account and credentials it bills through, when it was confirmed, and the
+  // withdraw on the right. The withdraw keeps its object ("Withdraw
+  // confirmation") even here: a bare "Withdraw" beside a cloud-drive row read
+  // as withdrawing the drive itself.
   if (compact && c.granted && !c.revokedOnAccountChange) {
     return (
-      <div
-        className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-[13px]"
-        data-testid={'aws-consent-' + service}
-      >
-        <ShieldCheck size={14} className="shrink-0 text-ok" aria-hidden="true" />
-        <span className="font-medium text-text-strong">{c.serviceLabel}</span>
-        <span className="text-muted">{region}</span>
-        <span
-          className="min-w-0 truncate text-[12px] text-muted"
-          title={i18nT('components.awsConsentGate.credential_source')}
-          data-testid="aws-consent-source"
-        >
-          {c.credentialSource}
-        </span>
-        <span className="min-w-0 truncate font-mono text-[12px] text-muted">
-          {account || i18nT('components.awsConsentGate.unresolved_account')}
-        </span>
-        <span className="flex-1" />
-        <button
-          className="cursor-pointer bg-transparent border-none p-0 text-[12px] text-muted underline hover:text-danger"
-          disabled={busy}
-          onClick={() => revokeMut.mutate()}
-        >
-          {i18nT('components.awsConsentGate.withdraw')}
-        </button>
+      <div className={rowClass} data-testid={'aws-consent-' + service}>
+        <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden="true" />
+        <div className={rowTextClass}>
+          <div className="truncate font-medium text-text-strong">{c.serviceLabel}</div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-muted">
+            <span className="font-mono" data-testid="aws-consent-account">{accountText}</span>
+            {sep}
+            <span className="min-w-0 truncate font-mono" data-testid="aws-consent-source">{c.credentialSource}</span>
+            {c.grant?.granted_at && (
+              <>
+                {sep}
+                <span data-testid="aws-consent-granted-at">
+                  {i18nT('components.awsConsentGate.confirmed_on', { date: fmtDate(c.grant.granted_at) })}
+                </span>
+              </>
+            )}
+          </div>
+          {/* What the withdraw DOES, said before it is clicked: a reader who
+              could not tell whether the drive would keep working did not dare
+              click it, and the row is its only surface on the landing pane. */}
+          <div className="mt-0.5 text-[12px] text-muted" data-testid="aws-consent-withdraw-effect">
+            {i18nT('components.awsConsentGate.withdraw_effect')}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="ok">{i18nT('components.awsConsentGate.badge_confirmed')}</Badge>
+          <Btn
+            danger
+            disabled={busy}
+            onClick={() => revokeMut.mutate()}
+            data-testid={'aws-consent-' + service + '-withdraw'}
+          >
+            {i18nT('components.awsConsentGate.withdraw')}
+          </Btn>
+        </div>
         {/* A full-width child of the row, so a refused withdraw is said under the
             receipt it failed to remove rather than breaking the row's layout. */}
         {writeNotice('basis-full')}
@@ -172,40 +214,104 @@ export default function AwsConsentGate({
     )
   }
 
+  // The compact ASK: the same row, with the billing sentence and the facts the
+  // confirmation would apply to — the ACCOUNT it would bill first among them,
+  // because the gate resolves that from the credentials and not from the
+  // account the app has selected, and the row is the only place that mismatch
+  // can show. `revokedOnAccountChange` keeps its own sentence here rather than
+  // forcing the full card — the state's whole point is that the reader must
+  // re-read the account, and the meta line names it.
+  //
+  // A grant that is BOTH recorded and account-revoked is not a state the
+  // backend produces; if it ever appears it falls through to the full card
+  // below, which has room to say both things.
+  if (compact && !c.granted) {
+    return (
+      <div className={rowClass} data-testid={'aws-consent-' + service}>
+        <Receipt className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />
+        <div className={rowTextClass}>
+          <div className="truncate font-medium text-text-strong">{c.serviceLabel}</div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-muted">
+            <span>{i18nT('components.awsConsentGate.billing_notice_short')}</span>
+            {sep}
+            <span className="font-mono" data-testid="aws-consent-account">{accountText}</span>
+            {sep}
+            <span>{region}</span>
+            {sep}
+            <span className="min-w-0 truncate font-mono" data-testid="aws-consent-source">{c.credentialSource}</span>
+          </div>
+          {c.revokedOnAccountChange && (
+            <div className="mt-0.5 text-[12px] text-warn" data-testid="aws-consent-account-changed">
+              {i18nT('components.awsConsentGate.account_changed')}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="muted">{i18nT('components.awsConsentGate.badge_not_enabled')}</Badge>
+          <Btn
+            primary
+            disabled={busy || !c.identityResolved}
+            onClick={() => grantMut.mutate()}
+            data-testid={'aws-consent-' + service + '-confirm'}
+          >
+            {i18nT('components.awsConsentGate.confirm_button')}
+          </Btn>
+        </div>
+        {/* Why the confirm is inert. `identityDetail` is only set when the
+            identity probe FAILED, so it is an error surface and the hand-off is
+            the host's call, exactly as in the full card. */}
+        {!c.identityResolved && c.identityDetail ? (
+          <ErrorNotice
+            variant="inline"
+            className="basis-full"
+            askAgent={askAgent}
+            testId="aws-consent-identity-error"
+            message={c.identityDetail}
+          />
+        ) : null}
+        {writeNotice('basis-full')}
+      </div>
+    )
+  }
+
   return (
-    <div
-      className={
-        'rounded-md border px-3 py-2.5 text-[13px] ' +
-        (c.granted ? 'border-border' : 'border-warn')
-      }
+    <Card
+      // No bottom margin: every host of this card already spaces it (a settings
+      // panel's own row rhythm, or the accounts pane's `gap-3` column), and a
+      // margin here would stack on top of that.
+      className={'mb-0' + (c.granted ? '' : ' border-warn')}
       data-testid={'aws-consent-' + service}
     >
-      <div className="font-medium mb-1">
+      <CardTitle>
+        <ShieldCheck className={'h-3.5 w-3.5 shrink-0 ' + (c.granted ? 'text-ok' : 'text-accent')} aria-hidden="true" />
         {c.granted
           ? i18nT('components.awsConsentGate.confirmed_title')
           : i18nT('components.awsConsentGate.confirm_title')}
-      </div>
+      </CardTitle>
 
       {c.revokedOnAccountChange ? (
-        <div className="text-warn mb-1.5">
+        <p className="mb-2 text-[13px] text-warn">
           {i18nT('components.awsConsentGate.account_changed')}
-        </div>
+        </p>
       ) : null}
 
       {/* One column by default, two from `sm` up. A translated label can be long
           ("Quelle der Anmeldedaten"), and an `auto` label column sized to it
           would leave the value column nothing at 320px. Stacking below `sm`
-          gives each value the full width instead. */}
-      <dl className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 mb-2 text-muted">
-        <dt>{i18nT('components.awsConsentGate.service')}</dt>
-        <dd className="text-text min-w-0 break-all mb-1 sm:mb-0">{c.serviceLabel}</dd>
-        <dt>{i18nT('components.awsConsentGate.region')}</dt>
-        <dd className="text-text min-w-0 break-all mb-1 sm:mb-0">{region}</dd>
-        <dt>{i18nT('components.awsConsentGate.credential_source')}</dt>
-        <dd className="text-text min-w-0 break-all mb-1 sm:mb-0">{c.credentialSource}</dd>
-        <dt>{i18nT('components.awsConsentGate.aws_account')}</dt>
-        <dd className="text-text min-w-0 break-all">
-          {account || i18nT('components.awsConsentGate.unresolved_account')}
+          gives each value the full width instead. Labels are the 12px meta
+          size, values the 13px reading size, so the pair reads as one fact. */}
+      <dl className="mb-3 grid grid-cols-1 gap-x-3 gap-y-1 sm:grid-cols-[auto_1fr]">
+        <dt className="text-[12px] text-muted">{i18nT('components.awsConsentGate.service')}</dt>
+        <dd className="mb-1 min-w-0 break-all text-[13px] text-text sm:mb-0">{c.serviceLabel}</dd>
+        <dt className="text-[12px] text-muted">{i18nT('components.awsConsentGate.region')}</dt>
+        <dd className="mb-1 min-w-0 break-all text-[13px] text-text sm:mb-0">{region}</dd>
+        <dt className="text-[12px] text-muted">{i18nT('components.awsConsentGate.credential_source')}</dt>
+        <dd className="mb-1 min-w-0 break-all font-mono text-[13px] text-text sm:mb-0" data-testid="aws-consent-source">
+          {c.credentialSource}
+        </dd>
+        <dt className="text-[12px] text-muted">{i18nT('components.awsConsentGate.aws_account')}</dt>
+        <dd className="min-w-0 break-all font-mono text-[13px] text-text" data-testid="aws-consent-account">
+          {accountText}
         </dd>
       </dl>
 
@@ -224,26 +330,23 @@ export default function AwsConsentGate({
       ) : null}
 
       {c.granted ? (
-        <button
-          className="underline cursor-pointer bg-transparent border-none text-danger p-0"
-          disabled={busy}
-          onClick={() => revokeMut.mutate()}
-        >
+        <Btn danger disabled={busy} onClick={() => revokeMut.mutate()} data-testid={'aws-consent-' + service + '-withdraw'}>
           {i18nT('components.awsConsentGate.withdraw')}
-        </button>
+        </Btn>
       ) : (
         <>
-          <div className="mb-2">{i18nT('components.awsConsentGate.billing_notice')}</div>
-          <button
-            className="rounded-md border border-border px-2 py-1 cursor-pointer bg-transparent disabled:opacity-50"
+          <p className="mb-2 text-[13px] text-muted">{i18nT('components.awsConsentGate.billing_notice')}</p>
+          <Btn
+            primary
             disabled={busy || !c.identityResolved}
             onClick={() => grantMut.mutate()}
+            data-testid={'aws-consent-' + service + '-confirm'}
           >
             {i18nT('components.awsConsentGate.confirm_button')}
-          </button>
+          </Btn>
         </>
       )}
       {writeNotice('mt-2')}
-    </div>
+    </Card>
   )
 }

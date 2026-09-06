@@ -4741,7 +4741,6 @@
         "keys_count_other": "キー {{count}} 個",
         "keys_for_account": "{{name}} のキー",
         "key_healthy": "正常",
-        "key_failed": "失敗",
         "parent_folders": "上位フォルダー",
         "folder_actions": "フォルダーの操作",
         "file_actions": "ファイルの操作",
@@ -4793,7 +4792,6 @@
         "search_files": "ファイル名またはパスで検索…",
         "search_clear": "検索をクリア",
         "search_pending": "検索中…",
-        "search_no_results": "「{{query}}」に一致するファイルはありません。",
         "search_capped": "一致が多すぎるため、先頭の {{count}} 件のみ表示しています。",
         "search_failed": "検索に失敗しました。もう一度お試しください。",
         "search_goto": "格納フォルダーを開く",
@@ -4808,7 +4806,13 @@
         "move_root": "ファイル（最上位）",
         "move_up": "上の {{name}} へ",
         "move_no_folders": "ここには移動先となる別のフォルダーがありません。まずフォルダーを作成してください。",
-        "move_moving": "移動中…"
+        "move_moving": "移動中…",
+        "stat_storage": "ストレージ",
+        "stat_objects": "オブジェクト",
+        "key_needs_attention": "対応が必要",
+        "backup_state_current": "バックアップ済み",
+        "backup_state_never": "未実行",
+        "costs_refresh_failed": "最新の請求額の読み取りに失敗しました。表示中の数値はキャッシュです。"
       },
       "page": {
         "totals_summary": "アカウント {{accounts}} 件 · キー {{keys}} 個のうち {{healthy}} 個が正常",
@@ -4853,7 +4857,6 @@
         "add_accounts_error": "それらのプロファイルを登録できませんでした。何も追加されていません。もう一度お試しください。",
         "add_accounts_load_error": "ローカルの AWS プロファイルを一覧できませんでした。",
         "search_placeholder": "アカウントを検索",
-        "search_none": "「{{query}}」に一致するアカウントはありません。",
         "paid_services_title": "有料サービス",
         "orphan_consent": "ここに登録されていない AWS アカウントに対して確認済みです。下で確認を取り消すか、そのアカウントを再登録して専用ページから管理してください。",
         "account_actions": "アカウントの操作",
@@ -4871,6 +4874,35 @@
         "switch_account": "アカウントを切り替え",
         "usage": "使用量とコスト",
         "use_account": "このアカウントを使用"
+      },
+      "overview": {
+        "title": "概要",
+        "subtitle": "エージェントが利用できるアカウント、キー、クラウドドライブ、有料サービスをここでまとめて管理します。",
+        "stat_accounts": "アカウント",
+        "stat_accounts_attention_other": "{{count}}件が対応必要",
+        "stat_accounts_all_ok": "すべて正常",
+        "stat_keys": "キーは正常",
+        "stat_keys_sub_other": "キー{{count}}件を登録済み",
+        "stat_drive": "ドライブ使用量",
+        "stat_drive_none": "ドライブなし",
+        "stat_spend": "今月の累計",
+        "stat_spend_consent": "コストレポートはオフ",
+        "stat_shares_none": "共有なし",
+        "stat_shares_sub_other": "有効なリンク{{count}}件",
+        "stat_backups_nightly": "毎晩",
+        "stat_backups_manual": "手動",
+        "stat_backups_sub_nightly": "毎晩実行",
+        "stat_backups_sub_manual": "スケジュール未設定",
+        "accounts_title": "アカウント",
+        "accounts_note": "エージェントはこれらのキーを使いますが、キー自体を見ることはありません。キーの内容がチャットに現れることはありません。",
+        "add_account": "アカウントを追加",
+        "drive_title": "クラウドドライブ",
+        "drive_bar_label": "{{size}}を保存中。ファイル、アーティファクトライブラリ、バックアップに分散しています。",
+        "drive_empty_title": "クラウドドライブがありません",
+        "drive_empty_body": "このアカウントに非公開の暗号化バケットを1つ作成し、ファイル、アーティファクトライブラリ、バックアップを保存します。",
+        "drive_setup": "クラウドドライブを設定",
+        "drive_bucket_label": "バケット",
+        "stat_spend_scope": "このアカウントの AWS 請求額"
       }
     }
   },
@@ -7679,7 +7711,12 @@
       "status_failed": "確認の状態を読み取れませんでした。",
       "confirm_failed": "確認は記録されませんでした。",
       "withdraw_failed": "確認は取り消されませんでした。",
-      "retry": "再試行"
+      "retry": "再試行",
+      "badge_confirmed": "確認済み",
+      "badge_not_enabled": "無効",
+      "confirmed_on": "{{date}}に確認済み",
+      "billing_notice_short": "課金対象です。確認するまで送信されません。",
+      "withdraw_effect": "撤回すると、再度確認するまでエージェントはこのサービスを使えなくなります。"
     },
     "confirmDialog": {
       "cancel": "キャンセル"
