@@ -1583,7 +1583,10 @@ Triggers pane) and both follow the editor's two-step Apply → Save: Apply commi
 to the editor draft only, Save changes writes the record. The **ghost tier** is
 pure config — POST `/api/agents` and PUT `/api/agents/{name}` accept
 `avatar: {"kind":"ghost","traits":{…}}` (or `{}` to reset) and reject any other
-non-empty shape with 400 `invalid_avatar`, mirroring `session_color`. The
+non-empty shape with 400 `invalid_avatar`, mirroring `session_color`. Either kind
+may also carry the optional per-state `expressions` and `sounds` keys (see
+`config.md`), which are validated and then round-tripped, and whose junk is
+stripped rather than refused, so a malformed cue never costs the crew its face. The
 **picture tier** adds two owner-only, SEL-audited routes and a staging protocol
 whose invariant is that *no request other than a successful config save changes
 what the roster serves*: POST `/api/agents/{name}/avatar` (multipart, read into

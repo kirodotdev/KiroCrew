@@ -949,8 +949,11 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   booleans must be real JSON booleans (`bool("false")` is `True`, so a
   string-typed value is read as `False`); `tile` is the one pinned value — it is
   interpolated into SVG markup, so it goes through the same `#rrggbb` validator
-  as `session_color`. An all-empty trait set collapses to `{}` (the one canonical
-  "reset" spelling) rather than storing a featureless third state.
+  as `session_color`. An all-empty trait set drops the `traits` key rather than
+  storing a featureless third state, and a ghost override left with nothing but
+  `kind` collapses to `{}` (the one canonical "reset" spelling). `traits` is
+  therefore optional: `{"kind": "ghost", "sounds": {...}}` is valid and means
+  "name-derived face, plus these per-state overrides".
 - `{"kind": "image", "v": <int>, "file": "<16-hex>.<png|jpg|webp>"}` — the crew
   wears an uploaded picture served from `GET /api/agents/{name}/avatar`; the
   file itself lives under `<data home>/run/avatars/` and the record only marks
@@ -959,8 +962,35 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   content-addressed variant and must match `^[0-9a-f]{16}\.(png|jpg|webp)$`.
   Wire-only keys (`promote`, `token`) never reach the record.
 
-Anything else — a non-dict, an unknown `kind`, a ghost override without a
-`traits` dict — collapses to `{}` on load (config.json is hand-editable and
+**Per-state overrides (`expressions`, `sounds`).** Both kinds may carry two
+optional keys, keyed on the agent lifecycle state (`working`, `done`, `error`
+exactly; any other key is dropped, so a version-skewed caller cannot grow the
+key set):
+
+- `expressions: {"<state>": {"eyes"?: str, "mouth"?: str}}` — only those two
+  axes, under the same 32-char truncation as a trait, with an empty string
+  dropped (it already means "absent"). The identity axes
+  (`brows`/`accessory`/`prop`/`tile`/`blush`/`flip`) are deliberately not
+  accepted per state: a crew must stay recognisable as itself while its
+  expression changes. Legal on `kind: "image"` too — stored, and ignored by the
+  picture renderer.
+- `sounds: {"<state>": "none"|"chime"|"ding"|"blip"|"pop"|"pulse"}` — a shipped
+  cue preset. Unlike a trait value this IS pinned to a vocabulary, because the
+  name selects a shipped asset rather than an option the renderer can resolve to
+  absent. `"none"` is kept as explicit silence, distinct from an absent state
+  (also silent), so one state can opt out of a cue the others use. No per-crew
+  audio upload exists.
+
+Either key is omitted from the record when validation leaves it empty, so a
+stored avatar never carries `{}` for one. Junk (`expressions: "x"`,
+`sounds: {"working": 5}`, a list) is stripped silently and never refused: the
+same forgiveness traits get, so a malformed per-state value costs that value and
+never the crew's whole avatar. The roster masks the `eyes`/`mouth` values like
+any other user-authored string (`_roster_avatar`) and leaves the preset-pinned
+`sounds` intact, for the same reason it leaves `file` intact.
+
+Anything else — a non-dict, an unknown `kind`, a ghost override carrying no
+trait, expression or sound that survives validation — collapses to `{}` on load (config.json is hand-editable and
 agent-writable, so junk must never crash the load), while the endpoints answer a
 non-empty raw value the coercer collapses with 400 `invalid_avatar` — except a
 well-formed ghost override whose traits all coerce to absent, which is the

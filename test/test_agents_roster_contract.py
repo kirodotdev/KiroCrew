@@ -436,6 +436,33 @@ class TestAvatarIsShapeAllowlistedNotMasked:
         assert _carries_mask(avatar["traits"]["eyes"]), "a user-authored trait was not masked"
         assert self.PROBE not in json.dumps(row)
 
+    def test_a_credential_shaped_expression_value_is_masked(self) -> None:
+        """The per-state axes carry user text too, so they mask like traits."""
+        row = _agent_roster_row(
+            "probe",
+            "global",
+            cast(
+                KiroCrewAgentConfig,
+                types.SimpleNamespace(
+                    **{
+                        **{f.name: "" for f in dataclasses.fields(KiroCrewAgentConfig)},
+                        "avatar": {
+                            "kind": "ghost",
+                            "expressions": {"working": {"eyes": self.PROBE}},
+                            "sounds": {"working": "chime"},
+                        },
+                    }
+                ),
+            ),
+            redact=False,
+        )
+        avatar = cast(dict, row["avatar"])
+        assert _carries_mask(avatar["expressions"]["working"]["eyes"])
+        assert self.PROBE not in json.dumps(row)
+        # The direction that rots: a cue name is pinned to a shipped preset by
+        # `_safe_sounds`, so masking it would break the cue and buy nothing.
+        assert avatar["sounds"] == {"working": "chime"}
+
     def test_the_pinned_file_and_kind_survive_intact(self) -> None:
         """The direction that rots. `file` is regex-pinned, so it needs no mask.
 

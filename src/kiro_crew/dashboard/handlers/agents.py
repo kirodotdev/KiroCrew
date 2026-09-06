@@ -2730,10 +2730,13 @@ def _roster_avatar(value: object) -> dict:
       one: the pin REFUSES a bad value where masking would destroy a good one, and
       a masked ``file`` makes the per-crew avatar endpoint resolve nothing --
       silently breaking the image.
-    - ``traits`` values are the only user-authored strings here, so they go through
-      ``_roster_mask`` like any other roster string. The renderer resolves an
-      unrecognized trait to absent (``EYES[k] ?? ''``), so a masked trait degrades
-      that axis rather than breaking the face.
+    - ``traits`` values, and the ``eyes``/``mouth`` values of each
+      ``expressions`` state, are the only user-authored strings here, so they go
+      through ``_roster_mask`` like any other roster string. The renderer resolves
+      an unrecognized trait to absent (``EYES[k] ?? ''``), so a masked trait
+      degrades that axis rather than breaking the face.
+    - ``sounds`` values are constrained by ``_safe_sounds`` to a shipped preset
+      name, so they are pinned rather than masked -- the same reason ``file`` is.
 
     Honest limit on how far the two rules can be told apart: because
     ``_safe_avatar`` already pins every non-``traits`` leaf to a shape the redactors
@@ -2754,6 +2757,17 @@ def _roster_avatar(value: object) -> dict:
         safe["traits"] = {
             axis: (_roster_mask(val) if isinstance(val, str) else val)
             for axis, val in traits.items()
+        }
+    expressions = safe.get("expressions")
+    if isinstance(expressions, dict):
+        safe = dict(safe)
+        safe["expressions"] = {
+            state: {
+                axis: (_roster_mask(val) if isinstance(val, str) else val)
+                for axis, val in axes.items()
+            }
+            for state, axes in expressions.items()
+            if isinstance(axes, dict)
         }
     return safe
 
@@ -3655,7 +3669,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                         },
                         status=400,
                     )
-                _av = {"kind": "image", "v": stamp, "file": _avatar_pin}
+                # Rebuilt, not mutated, so the record carries exactly the
+                # committed stamp and pin. The per-state keys are validated
+                # input rather than commit output, so they have to be carried
+                # across explicitly -- otherwise saving a sound on a crew that
+                # wears a picture reports success and stores nothing.
+                _av = {
+                    "kind": "image",
+                    "v": stamp,
+                    "file": _avatar_pin,
+                    **{k: v for k, v in _av.items() if k in ("expressions", "sounds")},
+                }
             elif agent.avatar.get("kind") == "image":
                 # Leaving the picture tier: the stored file must not linger
                 # as a silently-retrievable orphan — but only once the config

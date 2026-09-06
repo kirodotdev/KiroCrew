@@ -488,6 +488,64 @@ _AVATAR_IMAGE_EXTS = ("png", "jpg", "webp")
 #: currently committed file, so nothing overwrites a committed picture before
 #: the config save that commits its replacement.
 _AVATAR_FILE_PIN_RE = _re.compile(r"^[0-9a-f]{16}\.(?:png|jpg|webp)$")
+#: Agent lifecycle states a crew face may react to. A per-state override keys
+#: on one of these exactly; any other key is dropped, so a version-skewed or
+#: typo'd state name cannot smuggle an unbounded key set into config.json.
+_AVATAR_STATES = ("working", "done", "error")
+#: The only trait axes a per-state expression may move. The identity axes
+#: (brows/accessory/prop/tile/blush/flip) are deliberately excluded: a crew
+#: must stay recognisable as itself while its expression changes.
+_AVATAR_EXPRESSION_AXES = ("eyes", "mouth")
+#: Preset cue names a per-state sound may select. `"none"` is a real value
+#: (explicit silence), distinct from an absent state (the default, also
+#: silent) -- so a crew can opt one state out of a fleet-wide cue.
+_AVATAR_SOUNDS = ("none", "chime", "ding", "blip", "pop", "pulse")
+
+
+def _safe_expressions(value: object) -> dict:
+    """Return validated per-state expression overrides, or ``{}``.
+
+    Same forgiveness as the trait coercer: junk is dropped silently rather
+    than refused, because config.json is hand-editable and a malformed
+    expression must never cost the crew its otherwise-valid avatar. A state
+    whose axes all drop out is omitted, so the record never stores an empty
+    per-state dict.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for state in _AVATAR_STATES:
+        raw = value.get(state)
+        if not isinstance(raw, dict):
+            continue
+        axes = {}
+        for axis in _AVATAR_EXPRESSION_AXES:
+            v = raw.get(axis)
+            # An empty string is "absent", which is what omitting the axis
+            # already means -- storing it would be a second spelling of the
+            # same state.
+            if isinstance(v, str) and v:
+                axes[axis] = v[:_AVATAR_TRAIT_MAX_LEN]
+        if axes:
+            out[state] = axes
+    return out
+
+
+def _safe_sounds(value: object) -> dict:
+    """Return validated per-state sound cues, or ``{}``.
+
+    Unlike a trait value, a cue name IS pinned to a vocabulary: it selects a
+    shipped preset rather than naming an option the renderer can resolve to
+    absent, so an unknown name has no meaning to carry and is dropped.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for state in _AVATAR_STATES:
+        v = value.get(state)
+        if isinstance(v, str) and v in _AVATAR_SOUNDS:
+            out[state] = v
+    return out
 
 
 def _safe_avatar(value: object) -> dict:
@@ -496,7 +554,11 @@ def _safe_avatar(value: object) -> dict:
     Accepted shapes:
 
     - ``{"kind": "ghost", "traits": {...}}`` — pins the ghost face
-      trait-by-trait instead of deriving it from the crew name.
+      trait-by-trait instead of deriving it from the crew name. ``traits`` may
+      be absent (or empty) when the override carries only ``expressions`` /
+      ``sounds``: that spelling means "name-derived face, plus these
+      per-state overrides", and the record omits the key entirely rather than
+      storing ``{}``.
     - ``{"kind": "image"}`` (optional int ``v``, optional ``file``) — the crew
       wears an uploaded picture, served from ``GET /api/agents/{name}/avatar``.
       The file itself lives under the data home's agent-fenced
@@ -513,6 +575,25 @@ def _safe_avatar(value: object) -> dict:
     face. config.json is hand-editable (and agent-writable), so junk collapses
     to ``{}`` rather than crashing the load.
 
+    Both kinds may also carry two optional per-state keys, validated and then
+    round-tripped through the endpoints and config persistence (a string axis is
+    normalized by the same 32-char truncation a trait gets, so a longer value
+    comes back shortened rather than verbatim):
+
+    - ``expressions: {"<state>": {"eyes"?: str, "mouth"?: str}}`` — the face
+      moves those two axes while the agent is in that state. Only ``eyes`` and
+      ``mouth`` are accepted, so the identity axes stay put and the crew
+      remains recognisable as itself. Legal on ``kind: "image"`` too — stored,
+      and ignored by the picture renderer.
+    - ``sounds: {"<state>": "none"|"chime"|"ding"|"blip"|"pop"|"pulse"}`` — a
+      shipped cue preset per state. ``"none"`` is explicit silence, kept
+      distinct from an absent state so one state can opt out of a cue the
+      others use.
+
+    ``<state>`` is one of ``working``, ``done``, ``error``. Either key is
+    omitted from the record when validation leaves it empty, so a stored
+    avatar never carries ``{}`` for one.
+
     Trait *values* are deliberately not checked against the frontend's trait
     vocabulary: the renderer resolves an unknown option to "absent"
     (``EYES[k] ?? ''``), and keeping the vocabulary in one place (the style
@@ -522,6 +603,8 @@ def _safe_avatar(value: object) -> dict:
     """
     if not isinstance(value, dict):
         return {}
+    expressions = _safe_expressions(value.get("expressions"))
+    sounds = _safe_sounds(value.get("sounds"))
     if value.get("kind") == "image":
         out: dict[str, object] = {"kind": "image"}
         v = value.get("v")
@@ -531,30 +614,45 @@ def _safe_avatar(value: object) -> dict:
         f = value.get("file")
         if isinstance(f, str) and _AVATAR_FILE_PIN_RE.fullmatch(f):
             out["file"] = f
+        if expressions:
+            out["expressions"] = expressions
+        if sounds:
+            out["sounds"] = sounds
         return out
     if value.get("kind") != "ghost":
         return {}
     raw = value.get("traits")
-    if not isinstance(raw, dict):
-        return {}
     traits: dict[str, object] = {}
-    for key in _AVATAR_GHOST_STR_TRAITS:
-        v = raw.get(key, "")
-        traits[key] = v[:_AVATAR_TRAIT_MAX_LEN] if isinstance(v, str) else ""
-    for key in _AVATAR_GHOST_BOOL_TRAITS:
-        # `is True`, not bool(): config.json is hand-editable and
-        # bool("false") is True, so a string-typed value would render the
-        # opposite of what its author wrote. Only a real boolean counts.
-        traits[key] = raw.get(key, False) is True
-    traits["tile"] = _safe_color(raw.get("tile", ""))
-    # An all-empty trait set (every axis absent) is indistinguishable in
-    # intent from "no override" but would render a featureless ghost. The
-    # builder cannot produce it (Apply always carries the seeded defaults), so
-    # it only arrives via hand-written config or direct API use — collapse it
-    # to the one canonical "reset" spelling instead of storing a third state.
-    if all(not v for v in traits.values()):
+    if isinstance(raw, dict):
+        for key in _AVATAR_GHOST_STR_TRAITS:
+            v = raw.get(key, "")
+            traits[key] = v[:_AVATAR_TRAIT_MAX_LEN] if isinstance(v, str) else ""
+        for key in _AVATAR_GHOST_BOOL_TRAITS:
+            # `is True`, not bool(): config.json is hand-editable and
+            # bool("false") is True, so a string-typed value would render the
+            # opposite of what its author wrote. Only a real boolean counts.
+            traits[key] = raw.get(key, False) is True
+        traits["tile"] = _safe_color(raw.get("tile", ""))
+        # An all-empty trait set (every axis absent) is indistinguishable in
+        # intent from "no override" but would render a featureless ghost. The
+        # builder cannot produce it (Apply always carries the seeded
+        # defaults), so it only arrives via hand-written config or direct API
+        # use — drop it to the one canonical "no traits" spelling instead of
+        # storing a third state.
+        if all(not v for v in traits.values()):
+            traits = {}
+    ghost: dict[str, object] = {"kind": "ghost"}
+    if traits:
+        ghost["traits"] = traits
+    if expressions:
+        ghost["expressions"] = expressions
+    if sounds:
+        ghost["sounds"] = sounds
+    # `kind` alone carries no override — a bare ghost is the name-derived face,
+    # which is what an absent field already means.
+    if len(ghost) == 1:
         return {}
-    return {"kind": "ghost", "traits": traits}
+    return ghost
 
 
 def _meta(label: str, help: str, **kwargs: object) -> dict:
