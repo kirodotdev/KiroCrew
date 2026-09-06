@@ -2894,10 +2894,18 @@ class KiroCrewConfig:
                 embed_model_url=memory_data.get("embed_model_url", ""),
                 embed_model_path=memory_data.get("embed_model_path", ""),
                 embed_model_id=memory_data.get("embed_model_id", ""),
-                semantic_confidence_threshold=memory_data.get("semantic_confidence_threshold", 0.8),
-                episodic_dedup_threshold=memory_data.get("episodic_dedup_threshold", 0.88),
-                episodic_max_results=memory_data.get("episodic_max_results", 8),
-                episodic_max_count=memory_data.get("episodic_max_count", 10_000),
+                semantic_confidence_threshold=_safe_float(
+                    memory_data.get("semantic_confidence_threshold", 0.8), 0.8, 0.0, 1.0
+                ),
+                episodic_dedup_threshold=_safe_float(
+                    memory_data.get("episodic_dedup_threshold", 0.88), 0.88, 0.0, 1.0
+                ),
+                episodic_max_results=_safe_int(
+                    memory_data.get("episodic_max_results", 8), 8, 1, None
+                ),
+                episodic_max_count=_safe_int(
+                    memory_data.get("episodic_max_count", 10_000), 10_000, 0, None
+                ),
                 decay_rates=(
                     dr if isinstance(dr := memory_data.get("decay_rates", {}), dict) else {}
                 ),

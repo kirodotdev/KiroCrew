@@ -2658,6 +2658,7 @@ class GatewayOrchestrator:
             episodic_limit=self._cfg.memory.episodic_max_results,
             embedding_dim=self._cfg.memory.embedding_dim,
             decay_rates=self._cfg.memory.decay_rates or None,
+            dedup_threshold=self._cfg.memory.episodic_dedup_threshold,
         )
         # Off-loop: init() connects sqlite and runs schema migrations, which
         # scale with store size (VectorMemoryStore's own docs say async
