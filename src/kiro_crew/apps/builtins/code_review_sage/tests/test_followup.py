@@ -28,6 +28,7 @@ from sage_lib import followup as FU  # noqa: N812
 from sage_lib import review_pool as RP  # noqa: N812
 from sage_lib import store
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK
 
 
@@ -35,6 +36,31 @@ def _ev(kind, **over):
     base = {"kind": kind, "text": "", "title": "", "stop_reason": "end_turn"}
     base.update(over)
     return SimpleNamespace(**base)
+
+
+def _make_dir_link(link: Path, target: Path) -> None:
+    """Create a reparse point at *link* resolving to the directory *target*.
+
+    A local mirror of ``test/conftest.py::make_dir_link``, which these in-package
+    tests cannot import: only the ``test/`` testpath gets that conftest.
+
+    ``platform_compat.symlink_or_junction`` is deliberately NOT used here. It
+    tries ``os.symlink`` FIRST and falls back to a junction only where the
+    privilege is missing, so a runner with Developer Mode or an elevated shell
+    gets a SYMLINK and the junction arm these tests exist for is never exercised
+    -- silently, while still reporting green. ``CreateJunction`` is what that
+    helper falls back to, taken directly so the link type is not left to the host.
+    """
+    if platform_compat.IS_WINDOWS:
+        # Function-local because the module does not exist off Windows, so a
+        # top-level import would break collection on POSIX. Both in-repo callers
+        # of CreateJunction do the same -- test/conftest.py::make_dir_link and
+        # platform_compat.symlink_or_junction.
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))  # type: ignore[attr-defined]
+        return
+    link.symlink_to(target, target_is_directory=True)
 
 
 class FakeHandle:
@@ -259,6 +285,76 @@ class LinkedDirectoryTests(_SessionsDirCase):
         self.assertFalse(FU.write_descriptor(
             "run9", "c1", sid="sid-1", root=self.root))
         self.assertEqual(list(outside.iterdir()), [])
+
+    # ── The same plants staged as a Windows JUNCTION ──
+    #
+    # The symlink tests above SKIP on an ordinary Windows host: os.symlink there
+    # needs SeCreateSymbolicLinkPrivilege. A directory junction needs none, so on
+    # the platform where the plant is EASIEST to stage the guard had no coverage.
+    # `_make_dir_link` below mirrors test/conftest.py::make_dir_link for this
+    # -- a plain symlink on POSIX, a junction on Windows -- so these run on every
+    # platform with nothing gated away.
+    #
+    # These assert on followup_dir() directly rather than through
+    # write_descriptor(). write_descriptor has preconditions of its own that
+    # return False for unrelated reasons, which would mask the bypass and make a
+    # green test look like proof.
+
+    def _plant(self, where: str) -> Path:
+        """Plant a directory link at *where* and return the attacker's directory."""
+        outside = Path(self._tmp.name) / f"elsewhere-{where}"
+        outside.mkdir()
+        runs = store.runs_root(self.root)
+        if where == "runs":
+            for child in list(runs.iterdir()):
+                shutil.rmtree(child)
+            runs.rmdir()
+            _make_dir_link(runs, outside)
+        elif where == "run":
+            _make_dir_link(store.run_dir("runJ", self.root), outside)
+        else:
+            run = store.run_dir("runJ", self.root)
+            run.mkdir(parents=True, exist_ok=True)
+            _make_dir_link(run / "chat", outside)
+        return outside
+
+    def test_a_junctioned_runs_ROOT_is_refused(self):
+        """The anchor case, and the only one the pre-resolve check is load-bearing
+        for. resolve() follows a junction, so a junction at the runs root moves
+        the anchor into the attacker's directory and every child then compares as
+        legitimately inside it. The resolved containment check below cannot catch
+        this one -- it is measuring against the attacker's own anchor."""
+        outside = self._plant("runs")
+        with self.assertRaises(FileNotFoundError):
+            FU.followup_dir("runJ", self.root)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_a_junctioned_run_directory_stays_refused(self):
+        """Preservation, not a regression fix: with the anchor still legitimate,
+        the resolved containment check already refuses this one. Pinned so the
+        link-type change cannot quietly weaken it."""
+        self._plant("run")
+        with self.assertRaises(FileNotFoundError):
+            FU.followup_dir("runJ", self.root)
+
+    def test_a_junctioned_chat_directory_stays_refused(self):
+        """Preservation, as above."""
+        self._plant("chat")
+        with self.assertRaises(FileNotFoundError):
+            FU.followup_dir("runJ", self.root)
+
+    def test_the_staged_plant_is_really_a_junction_on_windows(self):
+        """Guards the guard. If the plant were something
+        Path.is_symlink() already catches on this host, the tests above would
+        stop exercising the junction arm and silently cease to be evidence."""
+        outside = Path(self._tmp.name) / "elsewhere-probe"
+        outside.mkdir()
+        link = Path(self._tmp.name) / "probe-link"
+        _make_dir_link(link, outside)
+        self.assertTrue(platform_compat.is_link_or_junction(link))
+        if os.name == "nt":
+            self.assertFalse(
+                link.is_symlink(), "expected a junction -- the arm under test")
 
 
 class ResumableTests(_SessionsDirCase):

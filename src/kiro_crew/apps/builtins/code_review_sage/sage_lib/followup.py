@@ -45,14 +45,32 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 try:
     from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
 except ImportError:  # pragma: no cover - standalone / test fallback
     PROVIDER_LABEL_DEFAULT = "acp"  # type: ignore[assignment]
+
+try:
+    from kiro_crew.platform_compat import is_link_or_junction
+except ImportError:  # pragma: no cover - standalone / test fallback
+    def is_link_or_junction(path: "str | os.PathLike[Any]") -> bool:
+        """Symlink-only fallback when the platform module is unreachable.
+
+        The signature must match the real routine exactly: mypy requires every
+        conditional variant of a name to agree.
+
+        Deliberately NOT a local reparse-point probe: the shim table routes this
+        question through ``platform_compat`` so one implementation is audited.
+        Answering only for the case this can see leaves the caller no weaker than
+        it was, and the packaged app always has the real helper.
+        """
+        return Path(path).is_symlink()
 
 try:
     from kiro_crew.config.paths import kiro_sessions_dir
@@ -165,6 +183,14 @@ def followup_dir(run_id: str, root: "Path | None" = None) -> "Path":
     "inside" it. Once the chain is known to be link-free the lexical path IS the
     real path, which is what makes the resolved comparison meaningful rather than
     circular.
+
+    "Link" here means :func:`platform_compat.is_link_or_junction`, not
+    ``Path.is_symlink``. A Windows directory JUNCTION needs no privilege to
+    create, answers False to ``is_symlink``, and is followed by ``resolve()``
+    exactly like a symlink — so checking only for a symlink lets the plant
+    through the pre-resolve guard and hands the anchor to the attacker anyway.
+    These three paths are the only link check in this module where that
+    matters: the others guard FILE paths, and a junction is directory-only.
     """
     runs = store.runs_root(root)
     run = store.run_dir(run_id, root)
@@ -172,7 +198,7 @@ def followup_dir(run_id: str, root: "Path | None" = None) -> "Path":
     # The runs root is FIRST, and unresolved: a link here would otherwise carry
     # the anchor with it.
     for part in (runs, run, d):
-        if part.is_symlink():
+        if is_link_or_junction(part):
             raise FileNotFoundError(ERR_LINKED_DIR)
     try:
         anchor = runs.resolve()
