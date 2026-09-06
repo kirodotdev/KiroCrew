@@ -576,24 +576,30 @@ class TestLayoutAndDetection:
 
         assert layout.legacy == Path(f"{str(data_home()).rstrip('/')}-venv")
 
-    def test_running_from_legacy_tree_detected(
+    def test_running_from_legacy_tree_detects_symlinked_interpreter(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         legacy = tmp_path / "crew-venv"
         (legacy / "bin").mkdir(parents=True)
+        base_python = tmp_path / "base-python" / "python3"
+        base_python.parent.mkdir()
+        base_python.write_text("")
         exe = legacy / "bin" / "python3"
-        exe.write_text("")
+        exe.symlink_to(base_python)
         layout = ManagedVenvLayout(legacy=legacy, stable_link=tmp_path / "crew-venv-current")
         monkeypatch.setattr(sys, "executable", str(exe))
         assert running_from_managed_venv(layout) is True
 
-    def test_running_from_versioned_tree_detected(
+    def test_running_from_versioned_tree_detects_symlinked_interpreter(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         tree = tmp_path / "crew-venv-1.2.3"
         (tree / "bin").mkdir(parents=True)
+        base_python = tmp_path / "base-python" / "python3"
+        base_python.parent.mkdir()
+        base_python.write_text("")
         exe = tree / "bin" / "python3"
-        exe.write_text("")
+        exe.symlink_to(base_python)
         # Every real versioned install carries the console script; the
         # positive-identification rule keys on it.
         (tree / "bin" / "kirocrew").write_text("")

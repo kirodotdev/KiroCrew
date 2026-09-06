@@ -235,12 +235,16 @@ def running_from_managed_venv(layout: ManagedVenvLayout | None = None) -> bool:
     something else, and building a sibling tree beside a data home they do not
     use would be litter at best. POSIX-only by construction: cli.sh is a POSIX
     installer, so on Windows there is no managed venv to detect.
+
+    Identity comes from the interpreter's ``bin/`` directory, not the file:
+    ``python -m venv`` symlinks ``bin/python3`` to the base interpreter, so
+    resolving that file leaves the venv before the layout can recognize it.
     """
     if not IS_POSIX:
         return False
     if layout is None:
         layout = managed_venv_layout()
-    return layout.is_managed_tree(Path(sys.executable))
+    return layout.is_managed_tree(Path(sys.executable).parent)
 
 
 def _legacy_nested_venv() -> Path:
