@@ -43,6 +43,7 @@ from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
     STEER_REQUEUED,
     STEER_STEERED,
+    normalize_send_id,
     queue_for_next_turn,
     steer_into_running_turn,
 )
@@ -622,11 +623,19 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # pre-send composer state to THIS entry (the dashboard's cancel-queued
         # restore), which no content-based key can do: serialization is not
         # injective and other tabs can queue colliding content.
+        #
+        # The client's `meta.sendId` rides on the entry too (same gate as the
+        # steer path above: `normalize_send_id` treats anything unusable as
+        # absent). The drain unions entry meta onto the row it writes, so the
+        # queued send's row ends up carrying the same id a dispatched send's row
+        # gets from `slot.append(..., meta=user_meta)` below -- the only way a
+        # sender can prove ITS message landed without matching by text.
         qid = queue_for_next_turn(
             state,
             slot,
             message,
             directive_user_origin=not bool(request_app),
+            send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
         )
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
@@ -678,9 +687,15 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
+        # Same entry-meta contract as the busy-slot branch: the client's `sendId`
+        # rides on the queue entry so the drained row carries it.
+        _hold_meta: dict = containment_meta(state, slot)
+        _hold_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
+        if _hold_sid:
+            _hold_meta["sendId"] = _hold_sid
         qid = slot.queue_append(
             message,
-            meta=containment_meta(state, slot),
+            meta=_hold_meta,
             directive_user_origin=not bool(request_app),
         )
         _c, _ = redact_exfiltration_urls(message)

@@ -534,18 +534,33 @@ def queue_for_next_turn(
     message: str,
     *,
     directive_user_origin: bool = False,
+    send_id: str | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
+
+    *send_id* is the client-minted ``meta.sendId`` the plain send path persists
+    on its user row, already passed through ``normalize_send_id`` by the caller.
+    When present it is stamped onto the queue entry's meta: the drain unions
+    every consumed entry's meta onto the row it writes, so this is what gives a
+    QUEUED send's row the same ``meta.sendId`` a dispatched send's row gets --
+    without it the drained row is id-less and a client that sent into a busy
+    slot has no identity to prove its own delivery by (it would have to fall
+    back to text, which a same-text resend or an injection can share). Additive:
+    a send whose POST carried no usable id stores nothing here and the entry
+    meta keeps the exact prior shape.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import containment_meta
 
+    meta: dict[str, Any] = containment_meta(state, slot)
+    if send_id:
+        meta["sendId"] = send_id
     qid = slot.queue_append(
         message,
-        meta=containment_meta(state, slot),
+        meta=meta,
         directive_user_origin=directive_user_origin,
     )
     state.broadcast_ws(

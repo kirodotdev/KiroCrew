@@ -5231,6 +5231,13 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # completion never merges (it drains alone and breaks any user-message
     # merge), so a merged row cannot carry them in the first place.
     _drained_ids: list[str] = []
+    # Client send-correlation ids accumulate for the same reason: a merged row
+    # stands for every queued send folded into it, and a sender proving its own
+    # delivery by identity must be able to find its id on that row even when it
+    # was not the last writer. The single-entry case (the overwhelmingly common
+    # one) keeps the plain-send shape -- `sendId` alone -- so a client reading
+    # only that key sees exactly what a dispatched send's row carries.
+    _drained_send_ids: list[str] = []
     # circular import: session_control imports this package's modules at module level.
     from kiro_crew.dashboard.session_control import (
         QUEUED_CONTAINMENT_META_KEY,
@@ -5259,6 +5266,9 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             _many = _item_meta.get("steer_delivery_ids")
             if isinstance(_many, list):
                 _drained_ids.extend(x for x in _many if isinstance(x, str) and x)
+            _sid = _item_meta.get("sendId")
+            if isinstance(_sid, str) and _sid and _sid not in _drained_send_ids:
+                _drained_send_ids.append(_sid)
             # The admission-time containment snapshot (#5911) is queue plumbing,
             # consumed by _drop_stale_admissions above; it says nothing about the
             # ROW, so it must not ride into the persisted transcript meta.
@@ -5268,6 +5278,12 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     if _drained_ids:
         _drained_meta.pop("steer_delivery_id", None)
         _drained_meta["steer_delivery_ids"] = _drained_ids
+    if len(_drained_send_ids) > 1:
+        # A merged row: `sendId` stays as the union left it (last writer) so the
+        # key is never absent when any entry had one, and `sendIds` names every
+        # send the row stands for. Membership in `sendIds` is the proof a client
+        # should read on a merged row; on a plain row `sendId` is the whole story.
+        _drained_meta["sendIds"] = _drained_send_ids
     # Durable provenance for every `inject` row. `cls` is NOT persisted for this
     # role (chat_persistence only keeps it for `role == "system"`), and the
     # frontend's `meta.cronLabel` exists on the wire only because parse_cls_meta
