@@ -977,18 +977,50 @@ async def _close_ffmpeg_for_execution(
             raise
 
 
+def _describe_ffmpeg_exit(returncode: int | None, stderr_tail: str) -> str:
+    """Render an FFmpeg exit status for a log line, naming a signal death.
+
+    A negative return code is an external signal, not an FFmpeg error, and a
+    signalled child usually wrote no stderr, so a bare "exited -9 ...
+    (no stderr)" reads as corrupt audio. On macOS the likeliest sender for a
+    just-spawned staged binary is the asynchronous system policy assessment
+    denying the exec (#8918), so name that path in the line.
+    """
+    detail = stderr_tail or "(no stderr)"
+    if returncode is None or returncode >= 0:
+        return f"exited {returncode}: {detail}"
+    message = f"was killed by signal {-returncode}: {detail}"
+    if platform_compat.IS_MACOS:
+        message += (
+            "; on macOS a SIGKILL immediately after spawn usually means the"
+            " system policy assessment (Gatekeeper) denied the exec"
+        )
+    return message
+
+
 async def _create_ffmpeg_subprocess(
     executable: str | _AuthenticatedFfmpeg, *args: str, **kwargs: Any
 ) -> asyncio.subprocess.Process:
-    """Spawn FFmpeg while its authenticated image remains immutable/open."""
+    """Spawn FFmpeg while its authenticated image remains immutable/open.
+
+    A returning ``create_subprocess_exec`` means only that the fork/exec was
+    issued, not that the platform authorized it: on macOS the syspolicy
+    assessment resolves the staged *path* asynchronously after the spawn, so
+    closing the handle here (which removes the staged directory) had the
+    kernel deny the exec with SIGKILL (#8918). The caller therefore owns the
+    close and must run it once the child has exited. A failed spawn never
+    produced a child, so nothing depends on the path surviving and the handle
+    is closed here before the error propagates.
+    """
     if isinstance(executable, str):
         return await asyncio.create_subprocess_exec(executable, *args, **kwargs)
     try:
         if not platform_compat.IS_WINDOWS:
             kwargs["pass_fds"] = (executable.descriptor,)
         return await asyncio.create_subprocess_exec(executable.execution_path, *args, **kwargs)
-    finally:
-        await _close_ffmpeg_for_execution(executable)
+    except BaseException:
+        await _close_ffmpeg_for_execution(executable, preserve_active_exception=True)
+        raise
 
 
 def ensure_ffmpeg_in_path() -> None:
@@ -1402,66 +1434,96 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
             raise
         proc = None
         try:
-            proc = await _create_ffmpeg_subprocess(
-                ffmpeg_bin,
-                "-y",
-                "-i",
-                audio_path,
-                "-c:a",
-                "copy",
-                tmp_ogg,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
             try:
-                await asyncio.wait_for(proc.communicate(), timeout=10)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                raise
-            if proc.returncode != 0:
-                raise RuntimeError(f"ffmpeg exited with {proc.returncode}")
-        except Exception:
-            logger.exception("ffmpeg remux failed for %s", audio_path)
-            if tmp_ogg:
-                await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
-            return None
-        except BaseException:
-            # ``CancelledError`` derives from ``BaseException``, so the
-            # ``Exception`` guard above never sees it: a cancellation landing
-            # mid-``communicate`` used to leave the ffmpeg child running and the
-            # owned temp on disk (#5780). Mirror ``_to_native_audio``'s cleanup
-            # (#5777): stop AND reap the child BEFORE the unlink — Windows keeps
-            # the output file locked until the child fully exits, and on POSIX a
-            # live child can race the removal. Every step is best-effort, and
-            # the unlink stays synchronous (one-file unlink, matching #5777): a
-            # repeat cancellation could eat an off-loop hop before it runs. The
-            # exception in flight is the one that must surface.
-            if proc is not None:
+                proc = await _create_ffmpeg_subprocess(
+                    ffmpeg_bin,
+                    "-y",
+                    "-i",
+                    audio_path,
+                    "-c:a",
+                    "copy",
+                    tmp_ogg,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
                 try:
+                    _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                except asyncio.TimeoutError:
                     proc.kill()
-                except (OSError, ProcessLookupError):
-                    logger.debug(
-                        "ffmpeg kill during cancellation cleanup failed",
-                        exc_info=True,
-                    )
-                else:
+                    await proc.communicate()
+                    raise
+                if proc.returncode != 0:
+                    tail = stderr.decode(errors="replace").strip()[-500:] if stderr else ""
+                    raise RuntimeError(f"ffmpeg {_describe_ffmpeg_exit(proc.returncode, tail)}")
+            except Exception:
+                logger.exception("ffmpeg remux failed for %s", audio_path)
+                if tmp_ogg:
+                    await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
+                return None
+            except BaseException:
+                # ``CancelledError`` derives from ``BaseException``, so the
+                # ``Exception`` guard above never sees it: a cancellation landing
+                # mid-``communicate`` used to leave the ffmpeg child running and the
+                # owned temp on disk (#5780). Mirror ``_to_native_audio``'s cleanup
+                # (#5777): stop AND reap the child BEFORE the unlink — Windows keeps
+                # the output file locked until the child fully exits, and on POSIX a
+                # live child can race the removal. Every step is best-effort, and
+                # the unlink stays synchronous (one-file unlink, matching #5777): a
+                # repeat cancellation could eat an off-loop hop before it runs. The
+                # exception in flight is the one that must surface.
+                if proc is not None:
                     try:
-                        await proc.communicate()
-                    except BaseException:
-                        # A repeat cancellation can land on this await; swallow
-                        # it so the unlink below still runs and the ORIGINAL
-                        # exception is the one that propagates.
+                        proc.kill()
+                    except (OSError, ProcessLookupError):
+                        logger.debug(
+                            "ffmpeg kill during cancellation cleanup failed",
+                            exc_info=True,
+                        )
+                    else:
+                        try:
+                            await proc.communicate()
+                        except BaseException:
+                            # A repeat cancellation can land on this await; swallow
+                            # it so the unlink below still runs and the ORIGINAL
+                            # exception is the one that propagates.
+                            pass
+                if tmp_ogg:
+                    try:
+                        _unlink_if_exists(tmp_ogg)
+                    except OSError:
+                        # A not-yet-exited child can still hold the file (Windows
+                        # lock); letting that escape would REPLACE the in-flight
+                        # cancellation with a PermissionError.
                         pass
-            if tmp_ogg:
-                try:
-                    _unlink_if_exists(tmp_ogg)
-                except OSError:
-                    # A not-yet-exited child can still hold the file (Windows
-                    # lock); letting that escape would REPLACE the in-flight
-                    # cancellation with a PermissionError.
-                    pass
-            raise
+                raise
+        finally:
+            # The authenticated handle must outlive the spawn (#8918): every
+            # branch above has already reaped the child (``communicate`` on
+            # success and on a nonzero exit, kill-and-reap on timeout and on
+            # cancellation), so the staged image can be released now. The
+            # ``finally`` makes the close unconditional — the staged 0700
+            # directory must never leak. ``preserve_active_exception`` is set
+            # only while an exception is genuinely in flight, so a cleanup
+            # failure never masks the original error and a cancellation landing
+            # on the close await of a success path still propagates.
+            try:
+                await _close_ffmpeg_for_execution(
+                    ffmpeg_bin,
+                    preserve_active_exception=sys.exc_info()[1] is not None,
+                )
+            except BaseException:
+                # This await is the only suspension point between the remux
+                # child exiting and ``actual_path`` taking ownership of the
+                # temp. A cancellation landing exactly here (it can only raise
+                # on the no-exception-in-flight path) would otherwise propagate
+                # with ``tmp_ogg`` still on disk; the failure branches already
+                # unlinked, and ``_unlink_if_exists`` tolerates that.
+                if tmp_ogg:
+                    try:
+                        _unlink_if_exists(tmp_ogg)
+                    except OSError:
+                        pass
+                raise
         actual_path = tmp_ogg
 
     transcript_parts: list[str] = []
@@ -1695,21 +1757,34 @@ async def _pcm_via_ffmpeg(audio_path: str, timeout_secs: int) -> np.ndarray | No
         if proc.returncode != 0:
             tail = stderr.decode(errors="replace").strip()[-500:] if stderr else ""
             logger.error(
-                "ffmpeg exited %s decoding %s: %s",
-                proc.returncode,
+                "ffmpeg %s decoding %s",
+                _describe_ffmpeg_exit(proc.returncode, tail),
                 audio_path,
-                tail or "(no stderr)",
             )
             return None
         return await asyncio.to_thread(_pcm_from_wav, tmp_wav)
     finally:
-        # Off the loop, and scheduled as its own task BEFORE it is awaited, so a
-        # repeat cancellation landing on the await abandons only the wait while
-        # the removal still runs to completion in its worker thread. ``shield``
-        # keeps that cancellation out of the removal task; the exception itself
-        # still reaches the awaiter.
+        # Off the loop, and scheduled as its own task BEFORE anything is
+        # awaited, so a repeat cancellation landing on an await abandons only
+        # the wait while the removal still runs to completion in its worker
+        # thread. ``shield`` keeps that cancellation out of the removal task;
+        # the exception itself still reaches the awaiter.
         rm = asyncio.ensure_future(asyncio.to_thread(_unlink_if_exists, tmp_wav))
-        await asyncio.shield(rm)
+        try:
+            # The authenticated handle must outlive the spawn (#8918): every
+            # path reaching this ``finally`` has already reaped the child
+            # (``communicate`` on success and on a nonzero exit, kill-and-reap
+            # on timeout and on cancellation) or never spawned one, so the
+            # staged image can be released now. ``preserve_active_exception``
+            # is set only while an exception is genuinely in flight, so a
+            # cleanup failure never masks the original error and a cancellation
+            # landing on the close await of a success path still propagates.
+            await _close_ffmpeg_for_execution(
+                ffmpeg_bin,
+                preserve_active_exception=sys.exc_info()[1] is not None,
+            )
+        finally:
+            await asyncio.shield(rm)
 
 
 async def _transcribe_local(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]

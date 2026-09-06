@@ -30,6 +30,7 @@ import os
 import platform
 import stat
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -544,6 +545,7 @@ async def _to_native_audio(audio_path: str) -> tuple[str, bool]:
     from kiro_crew.transcribe import (
         _close_ffmpeg_for_execution,
         _create_ffmpeg_subprocess,
+        _describe_ffmpeg_exit,
         _resolve_ffmpeg_for_execution,
         ensure_ffmpeg_in_path,
     )
@@ -576,44 +578,74 @@ async def _to_native_audio(audio_path: str) -> tuple[str, bool]:
     # still-running child can race the removal. Every cleanup step is
     # best-effort — the exception in flight is the one that must surface.
     try:
-        proc = await _create_ffmpeg_subprocess(
-            ffmpeg,
-            "-y",
-            "-i",
-            audio_path,
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            out,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
         try:
-            _, err = await proc.communicate()
+            proc = await _create_ffmpeg_subprocess(
+                ffmpeg,
+                "-y",
+                "-i",
+                audio_path,
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                out,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, err = await proc.communicate()
+            except BaseException:
+                try:
+                    proc.kill()
+                except (OSError, ProcessLookupError):
+                    pass
+                else:
+                    try:
+                        await proc.communicate()
+                    except BaseException:
+                        # A repeat cancellation can land on this await; swallow it
+                        # so the unlink below still runs and the ORIGINAL exception
+                        # is the one that propagates.
+                        pass
+                raise
         except BaseException:
             try:
-                proc.kill()
-            except (OSError, ProcessLookupError):
+                os.unlink(out)
+            except OSError:
                 pass
-            else:
-                try:
-                    await proc.communicate()
-                except BaseException:
-                    # A repeat cancellation can land on this await; swallow it
-                    # so the unlink below still runs and the ORIGINAL exception
-                    # is the one that propagates.
-                    pass
             raise
-    except BaseException:
+    finally:
+        # The authenticated handle must outlive the spawn (#8918): every branch
+        # above has already reaped the child (``communicate`` on success,
+        # kill-and-reap on failure) or never spawned one, so the staged image
+        # can be released now — off the loop, unconditionally, instead of by
+        # ``__del__`` running the close synchronously on the gateway event
+        # loop. ``preserve_active_exception`` is set only while an exception is
+        # genuinely in flight, so a cleanup failure never masks the original
+        # error and a cancellation landing on the close await of a success
+        # path still propagates.
         try:
-            os.unlink(out)
-        except OSError:
-            pass
-        raise
+            await _close_ffmpeg_for_execution(
+                ffmpeg,
+                preserve_active_exception=sys.exc_info()[1] is not None,
+            )
+        except BaseException:
+            # This await is the only suspension point between the child
+            # exiting and the success return transferring ``out`` to the
+            # caller. A cancellation landing exactly here (it can only raise
+            # on the no-exception-in-flight path) would otherwise propagate
+            # with the invocation-owned temp still on disk. The failure
+            # branches already unlinked, so this second unlink is a tolerated
+            # no-op there.
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+            raise
     if proc.returncode != 0:
+        tail = err.decode(errors="replace").strip()[-300:] if err else ""
         logger.warning(
-            "apple_speech: ffmpeg transcode failed: %s", err.decode(errors="replace")[-300:]
+            "apple_speech: ffmpeg transcode %s", _describe_ffmpeg_exit(proc.returncode, tail)
         )
         try:
             os.unlink(out)

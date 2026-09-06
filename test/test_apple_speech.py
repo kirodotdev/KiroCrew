@@ -562,6 +562,98 @@ class TestTranscodeTempOwnership:
         assert src.exists()
 
     @pytest.mark.asyncio
+    async def test_transcode_closes_authenticated_decoder_after_child_exit(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression guard for #8918 at this call site: the staged decoder
+        handle outlives the spawn (the macOS syspolicy assessment resolves the
+        staged path asynchronously after ``create_subprocess_exec`` returns) and
+        is released exactly once, after the child has exited, by the invocation
+        itself rather than by ``__del__`` on the gateway event loop."""
+        from kiro_crew import transcribe as tr
+
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+        events: list = []
+
+        binary = tmp_path / "ffmpeg"
+        binary.write_bytes(b"decoder")
+        descriptor = os.open(str(binary), os.O_RDONLY)
+
+        class _Recording(tr._AuthenticatedFfmpeg):
+            def close(self):
+                # Only the first effective close counts: ``close`` is
+                # idempotent and ``__del__`` re-enters it with the descriptor
+                # already surrendered.
+                if self.descriptor >= 0:
+                    events.append("closed")
+                super().close()
+
+        opened = _Recording(str(binary), descriptor, str(binary))
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                assert "closed" not in events, "handle closed before the child exited"
+                events.append("exited")
+                return b"", b""
+
+        async def fake_exec(*_args, **_kwargs):
+            assert "closed" not in events, "handle closed before the spawn returned"
+            return _Proc()
+
+        with (
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value=opened,
+            ),
+            patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
+            patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
+        ):
+            result_path, is_temp = await apple_speech._to_native_audio(str(src))
+        assert result_path == str(owned)
+        assert is_temp is True
+        assert events == ["exited", "closed"]
+
+    @pytest.mark.asyncio
+    async def test_cancellation_on_the_close_await_still_removes_the_owned_temp(
+        self, tmp_path, monkeypatch
+    ):
+        """A cancellation landing exactly on the deferred close await -- the
+        only suspension point between the child exiting and the success return
+        transferring the temp to the caller -- must not propagate with the
+        invocation-owned ``.wav`` still on disk (#8918 round 2)."""
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        async def cancelled_close(_executable, **_kwargs):
+            raise asyncio.CancelledError
+
+        with (
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
+            patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            patch(
+                "kiro_crew.transcribe._close_ffmpeg_for_execution",
+                side_effect=cancelled_close,
+            ),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await apple_speech._to_native_audio(str(src))
+        assert not owned.exists()
+        assert src.exists()
+
+    @pytest.mark.asyncio
     async def test_temp_creation_failure_closes_authenticated_decoder_off_loop(
         self, tmp_path, monkeypatch
     ):
