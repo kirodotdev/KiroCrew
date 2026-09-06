@@ -373,7 +373,7 @@ _APP_BACKEND_OWNED_LEAVES: dict[str, tuple[str, ...]] = {
 }
 
 
-def app_backend_visible_targets(app_name: str) -> tuple[str, ...]:
+def app_backend_visible_targets(app_name: str, mode: str = "standard") -> tuple[str, ...]:
     """Absolute paths of the hidden leaves *app_name*'s own backend owns.
 
     Resolved the same way the launcher and seatbelt builders spell their hidden
@@ -381,7 +381,16 @@ def app_backend_visible_targets(app_name: str) -> tuple[str, ...]:
     paths when ``KIROCREW_HOME`` moves the data home — so each returned path matches
     its mask entry exactly and ``_hidden_path_contains_visible_path`` lifts it.
 
+    A spelling that sits BENEATH an independently masked directory is REFUSED,
+    not carved (see :func:`carveout_shadowed_by_foreign_mask`): carving it out
+    would take that whole foreign mask down with it. The backend keeps its
+    EPERM on such a host — the pre-existing shape of #8762 — which is strictly
+    safer than unmasking a foreign tree.
+
     Returns ``()`` for an app with no owned leaves, leaving its spawn unchanged.
+    *mode* is the tier the caller passes to :func:`wrap_argv` for the same
+    spawn — the shadow guard judges against that tier (post-clamp), so a
+    future caller wrapping at ``cc``/``strict`` must say so here too.
     """
     leaves = _APP_BACKEND_OWNED_LEAVES.get(app_name)
     if not leaves:
@@ -389,7 +398,119 @@ def app_backend_visible_targets(app_name: str) -> tuple[str, ...]:
     home = str(Path.home())
     targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
     targets.extend(_relocated_crew_targets(leaves))
-    return tuple(targets)
+    return tuple(
+        target for target in targets if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+    )
+
+
+def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool:
+    """Whether carving *path* out of the sandbox masks would unmask a foreign tree.
+
+    ``_hidden_path_contains_visible_path`` cancels any hidden mask entry that
+    CONTAINS a visible path, so an ``extra_visible_dirs`` spelling that sits
+    beneath an independently masked directory takes that whole foreign mask
+    down with it — a data home relocated beneath a credential directory (e.g.
+    ``KIROCREW_HOME`` under ``~/.aws``) would hand every spawn that asks for a
+    crew-home carve-out the entire credential tree (#8795). Both EQUALITY-shaped
+    crew-home carve-out producers call this before adding a spelling —
+    :func:`app_backend_visible_targets` and the policy-cache site in
+    ``apps/backend.py``. (The aws-control per-call staging carve-out is the
+    ANCESTOR-LIFT shape — its temp dir is a proper descendant of its own mask
+    by design — so this guard as written would refuse it on every layout; its
+    own-ancestor-exempt variant is tracked in #8961.) On refusal the mask stays
+    and the carve-out's consumer fails closed (EPERM for an app backend's own
+    state, an unreadable cache for a cache-only backend), which is strictly
+    safer than unmasking a foreign tree. The refusal is logged with the
+    offending ancestor so the misconfiguration is actionable.
+
+    The mask universe is the EFFECTIVE tier's dir list — *mode* run through the
+    same ``sandbox.min_level`` clamp :func:`wrap_argv` applies (see
+    :func:`effective_sandbox_mode`) — NOT the union of every tier: ``standard``
+    deliberately leaves ``~/.aws`` visible, so a data home relocated beneath it
+    shadows nothing in an ungoverned standard-mode spawn, and refusing there
+    would break the carve-out's consumer for zero security gain. A governed
+    floor that clamps the spawn up is honoured by construction, because the
+    clamp result is what selects the list. Two deliberate asymmetries, both in
+    the refusal direction: ``cc`` uses the launcher's list on every platform
+    (the macOS profile builder drops ``.aws`` from it in favour of file-level
+    rules, so macOS ``cc`` can only over-refuse), and a tier that cannot be
+    resolved falls back to the union of every tier. The relocated mask entries
+    the builders add in every mode are included on BOTH paths, so a carve-out
+    leaf beneath a relocated wholesale mask is judged against it too. Two
+    builder additions are deliberately absent: ``_voice_runtime_sandbox_paths``
+    (fixed runtime sockets no crew-home carve-out can sit beneath) and a
+    caller's ``extra_hidden_dirs`` (neither guarded producer's spawn passes
+    any).
+
+    The floor is re-read by ``wrap_argv`` at wrap time; a floor RAISED in the
+    interval between this check and the wrap is honoured for the masks but not
+    for this refusal. Exploiting that window requires an operator to both
+    tighten governance and have already relocated the data home beneath a
+    newly-masked tree — operator actions, not agent-reachable ones.
+
+    Equality is not shadowing — carve-out spellings ARE masked entries, and
+    unhiding exactly themselves is the carve-out's whole job; only a PROPER
+    ancestor is foreign.
+
+    Fails toward refusal, never raises: when home (or the path itself) cannot
+    be resolved the mask universe cannot be checked, so the spelling is
+    reported shadowed and the spawn proceeds with the mask intact.
+    """
+    try:
+        home = str(Path.home())
+        candidate = os.path.abspath(path)
+    except Exception:
+        logger.debug("could not resolve home for the carve-out shadow check", exc_info=True)
+        return True
+    try:
+        effective = effective_sandbox_mode(mode)
+        policy = _sandbox_policy()
+        if effective == "strict":
+            tier_dirs = list(policy.strict_dirs())
+        elif effective == "cc":
+            tier_dirs = list(policy.cc_dirs())
+        else:
+            # "standard" — and "off", where no mask exists and ``wrap_argv``
+            # ignores ``extra_visible_dirs`` entirely, so the verdict is inert.
+            tier_dirs = list(_STANDARD_DIRS)
+    except Exception:
+        # Deliberately swallows PlatformCompositionError, which
+        # ``_governance_sandbox_floor`` otherwise propagates so a floor never
+        # silently downgrades DENY to ALLOW: here the union fallback is a
+        # SUPERSET of every tier (refusal-leaning, the opposite of a
+        # downgrade), and ``wrap_argv`` re-reads the floor at wrap time and
+        # still raises for real.
+        tier_dirs = list(dict.fromkeys([*_STRICT_DIRS, *_CC_DIRS, *_STANDARD_DIRS]))
+    ancestors = [os.path.abspath(os.path.join(home, rel)) for rel in dict.fromkeys(tier_dirs)]
+    # The builders extend every mode's hidden set with the relocated crew
+    # entries; mirror that (on both the resolved-tier and fallback paths) so a
+    # relocated wholesale mask still counts. Both helpers never raise.
+    ancestors.extend(
+        os.path.abspath(entry)
+        for entry in (
+            *_relocated_crew_targets(_CREW_HIDDEN_LEAVES),
+            *_relocated_policy_cache_dirs(),
+        )
+    )
+    for ancestor in dict.fromkeys(ancestors):
+        if candidate == ancestor:
+            continue
+        try:
+            contained = os.path.commonpath((ancestor, candidate)) == ancestor
+        except ValueError:
+            continue
+        if contained:
+            logger.warning(
+                "SECURITY: refusing the sandbox carve-out for %s — it sits beneath "
+                "the independently masked directory %s, and carving it out would "
+                "unmask that whole tree. The carve-out's consumer will keep failing "
+                "on the masked path until the data home moves out from under that "
+                "directory.",
+                path,
+                ancestor,
+            )
+            return True
+    return False
 
 
 #: The subset of ``_CREW_READONLY_LEAVES`` the launcher may CREATE in order to seal.

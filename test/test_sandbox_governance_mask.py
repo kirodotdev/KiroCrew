@@ -488,3 +488,130 @@ class TestAppBackendOwnedLeaves:
         src = inspect.getsource(backend_mod._start_app_backend_body)
         assert "app_backend_visible_targets(app_name)" in src
         assert "is_builtin_app(app_root=execution_path, app_name=app_name)" in src
+
+
+class TestForeignMaskShadowGuard:
+    """A carve-out spelling beneath a FOREIGN mask is refused, not carved (#8795).
+
+    ``_hidden_path_contains_visible_path`` cancels any hidden mask entry that
+    CONTAINS a visible path, so an ``extra_visible_dirs`` spelling planted beneath
+    an independently masked directory (a data home relocated under a credential
+    tree) would take that whole foreign mask down with it. Both crew-home carve-out
+    producers — the policy-cache site in ``apps/backend.py`` and
+    ``app_backend_visible_targets`` — must refuse such a spelling and keep the mask;
+    their consumers fail closed on the masked path, which is strictly safer.
+    """
+
+    def test_a_path_beneath_a_masked_credential_tree_is_shadowed(self) -> None:
+        # ``.gnupg`` is masked at EVERY tier, standard included, so a data home
+        # planted beneath it shadows at the tier the app-backend spawn asks for.
+        planted = os.path.join(_home(), ".gnupg", "crew", "policy_cache")
+        assert sandbox.carveout_shadowed_by_foreign_mask(planted)
+
+    def test_standard_mode_ignores_a_strict_only_mask(self) -> None:
+        """``standard`` deliberately leaves ``~/.aws`` visible; there is no mask
+        to take down, so an ungoverned standard-mode carve-out must be allowed
+        (refusing would break md-notebook and cache-only backends for nothing)."""
+        planted = os.path.join(_home(), ".aws", "crew", "policy_cache")
+        assert not sandbox.carveout_shadowed_by_foreign_mask(planted, mode="standard")
+
+    def test_strict_mode_refuses_beneath_a_strict_mask(self) -> None:
+        planted = os.path.join(_home(), ".aws", "crew", "policy_cache")
+        assert sandbox.carveout_shadowed_by_foreign_mask(planted, mode="strict")
+
+    def test_cc_mode_refuses_beneath_a_cc_mask(self) -> None:
+        planted = os.path.join(_home(), ".aws", "crew", "policy_cache")
+        assert sandbox.carveout_shadowed_by_foreign_mask(planted, mode="cc")
+
+    def test_a_sibling_prefix_is_not_an_ancestor(self) -> None:
+        """``~/.gnupg-backup`` shares ``~/.gnupg``'s string prefix but is not
+        beneath it — a ``startswith`` misimplementation reds here."""
+        planted = os.path.join(_home(), ".gnupg-backup", "crew", "policy_cache")
+        assert not sandbox.carveout_shadowed_by_foreign_mask(planted)
+
+    def test_the_producer_threads_its_mode_to_the_guard(self, monkeypatch, tmp_path) -> None:
+        """``app_backend_visible_targets(mode=...)`` must reach the guard: the
+        same relocated spelling under a strict-only mask survives a standard
+        spawn and is dropped from a strict one."""
+        monkeypatch.setattr(sandbox.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".aws" / "relocated-crew"))
+        reloc = str(tmp_path / ".aws" / "relocated-crew" / "workspace" / "md-notebook" / "pat")
+
+        assert reloc in sandbox.app_backend_visible_targets("md-notebook")
+        assert reloc not in sandbox.app_backend_visible_targets("md-notebook", mode="strict")
+
+    def test_a_governance_floor_clamps_the_check_up(self, monkeypatch) -> None:
+        """A ``sandbox.min_level`` floor raises the tier the masks are built for,
+        so the shadow check must judge against the clamped tier, not the ask."""
+        monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: "strict")
+        planted = os.path.join(_home(), ".aws", "crew", "policy_cache")
+        assert sandbox.carveout_shadowed_by_foreign_mask(planted, mode="standard")
+
+    def test_a_masked_entry_itself_is_not_shadowed(self) -> None:
+        """Equality is the carve-out's whole job; only a PROPER ancestor is foreign."""
+        for target in (
+            _crew_path(".kiro/crew", "workspace/md-notebook/pat"),
+            # The default policy-cache spelling IS a masked entry (every tier list
+            # carries ``.kiro/crew/policy_cache``); the cache-only carve-out must
+            # keep working on a default layout.
+            _crew_path(".kiro/crew", "policy_cache"),
+        ):
+            assert not sandbox.carveout_shadowed_by_foreign_mask(target), target
+
+    def test_an_unmasked_location_is_not_shadowed(self) -> None:
+        assert not sandbox.carveout_shadowed_by_foreign_mask(
+            os.path.join(_home(), "projects", "notes")
+        )
+
+    def test_an_unresolvable_home_fails_toward_refusal(self, monkeypatch) -> None:
+        """No mask universe to check means no carve-out, never a carve-anyway."""
+
+        def _boom() -> object:
+            raise RuntimeError("no home")
+
+        monkeypatch.setattr(sandbox.Path, "home", staticmethod(_boom))
+        assert sandbox.carveout_shadowed_by_foreign_mask("/anywhere/at/all")
+
+    def test_the_md_notebook_carveout_drops_a_shadowed_spelling(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A data home relocated beneath a masked tree keeps that tree's mask.
+
+        ``.gnupg`` is masked at the ``standard`` tier the app-backend spawn asks
+        for. ``Path.home`` is pinned to ``tmp_path`` so the resolver (which
+        CREATES the relocated directory) never writes beneath the real home.
+        """
+        monkeypatch.setattr(sandbox.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".gnupg" / "relocated-crew"))
+
+        # Positive first, so the absence loop below cannot pass vacuously: the
+        # relocated spelling really is minted by the resolver and really does
+        # trip the guard.
+        shadowed_leaf = str(
+            tmp_path / ".gnupg" / "relocated-crew" / "workspace" / "md-notebook" / "pat"
+        )
+        assert shadowed_leaf in sandbox._relocated_crew_targets(("workspace/md-notebook/pat",))
+        assert sandbox.carveout_shadowed_by_foreign_mask(shadowed_leaf)
+
+        targets = sandbox.app_backend_visible_targets("md-notebook")
+
+        shadowed_root = str(tmp_path / ".gnupg") + os.sep
+        assert targets, "the default home spellings must survive the refusal"
+        for target in targets:
+            assert not target.startswith(shadowed_root), f"{target} would unmask ~/.gnupg"
+        # The refusal is per-spelling: the default-home entries are still carved.
+        assert os.path.join(str(tmp_path), ".kiro/crew/workspace/md-notebook/pat") in targets
+
+    def test_the_cache_site_guards_its_carveout(self) -> None:
+        """`apps/backend.py` must thread the cache path through the shadow guard.
+
+        Asserted structurally rather than by a full spawn (which needs a manifest, a
+        reserved port, and a live interpreter), mirroring the sibling test above: the
+        cache-only carve-out must consult the guard before widening ``_visible``.
+        """
+        import inspect
+
+        from kiro_crew.apps import backend as backend_mod
+
+        src = inspect.getsource(backend_mod._start_app_backend_body)
+        assert "carveout_shadowed_by_foreign_mask(_cache_target)" in src

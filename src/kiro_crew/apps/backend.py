@@ -41,6 +41,7 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
     app_backend_visible_targets,
+    carveout_shadowed_by_foreign_mask,
     cgroup_scope_argv,
     popen_limited,
     run_limited,
@@ -1152,7 +1153,16 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     if is_builtin_app(app_root=execution_path, app_name=app_name):
         _visible = app_backend_visible_targets(app_name)
     if _cache_visible:
-        _visible = _visible + (str(policy_cache_dir()),)
+        # SECURITY (#8795): refuse rather than carve when the cache sits beneath an
+        # independently masked directory (a data home relocated under a credential
+        # tree). ``extra_visible_dirs`` cancels any hidden mask entry that CONTAINS
+        # a visible path, so carving the cache out would unmask that whole foreign
+        # tree for this spawn. With the mask kept, the cache-only child fails
+        # closed on the unreadable cache — strictly safer — and the guard's log
+        # line names the offending ancestor so the misconfiguration is actionable.
+        _cache_target = str(policy_cache_dir())
+        if not carveout_shadowed_by_foreign_mask(_cache_target):
+            _visible = _visible + (_cache_target,)
     sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
     if _cache_visible and list(sandboxed_cmd) == list(cmd):
         # The wrap was a no-op, so this host has no OS confinement at all: no sandbox backend,
