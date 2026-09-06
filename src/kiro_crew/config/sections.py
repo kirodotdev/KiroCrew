@@ -25,6 +25,7 @@ from kiro_crew import model_registry
 # config.json. Only what it reads changed: the registry, instead of a frozen
 # literal.
 from kiro_crew.acp_backends import resolve_selected_backend
+from kiro_crew.appearance_packs import safe_pack_id as _safe_pack_id
 from kiro_crew.computer_use.types import DEFAULT_ATTACH_SCREENSHOT as _CU_DEFAULT_ATTACH_SCREENSHOT
 from kiro_crew.computer_use.types import DEFAULT_MAX_TREE_DEPTH as _CU_DEFAULT_MAX_TREE_DEPTH
 from kiro_crew.computer_use.types import DEFAULT_MAX_TREE_NODES as _CU_DEFAULT_MAX_TREE_NODES
@@ -576,12 +577,21 @@ def _safe_avatar(value: object) -> dict:
       under the crew's stem. Every install lands at a digest-named path, so a
       replacement never overwrites the committed file before the config save
       commits it, and serving resolves only the pinned file.
+    - ``{"kind": "pack", "id": "<pack id>"}`` — the crew wears an appearance
+      pack from the crew library (``GET /api/appearances``). ``id`` is
+      validated by :func:`kiro_crew.appearance_packs.safe_pack_id`, the same
+      rule the pack store applies to a directory name, so a value stored here
+      can always be looked up. A junk id collapses the WHOLE override to
+      ``{}``: an unrenderable pack reference is worse than the default face.
+      Whether the pack still EXISTS is deliberately not checked — config load
+      must not touch the disk — so a dangling id renders as the name-derived
+      ghost on the client.
 
     Empty means "no override" — the frontend keeps rendering the name-seeded
     face. config.json is hand-editable (and agent-writable), so junk collapses
     to ``{}`` rather than crashing the load.
 
-    Both kinds may also carry two optional per-state keys, validated and then
+    All three kinds may also carry two optional per-state keys, validated and
     round-tripped through the endpoints and config persistence (a string axis is
     normalized by the same 32-char truncation a trait gets, so a longer value
     comes back shortened rather than verbatim):
@@ -625,6 +635,22 @@ def _safe_avatar(value: object) -> dict:
         if sounds:
             out["sounds"] = sounds
         return out
+    if value.get("kind") == "pack":
+        ident = _safe_pack_id(value.get("id"))
+        if ident is None:
+            # No canonical "pack with no id" spelling exists: a pack avatar IS
+            # its id, so a missing or malformed one leaves nothing to render.
+            return {}
+        pack: dict[str, object] = {"kind": "pack", "id": ident}
+        if expressions:
+            # Accepted for symmetry with the other two kinds and round-tripped
+            # faithfully, but a pack renderer IGNORES it: the art is the pack's
+            # own files, not a trait-composed ghost, so there is no eyes/mouth
+            # axis to move. `sounds` behaves exactly as it does elsewhere.
+            pack["expressions"] = expressions
+        if sounds:
+            pack["sounds"] = sounds
+        return pack
     if value.get("kind") != "ghost":
         return {}
     raw = value.get("traits")

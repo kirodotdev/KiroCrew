@@ -252,6 +252,12 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # in-sandbox ``mcp_cron`` service is a store accessor and never starts.
     "cron-running",
     "workflow_library",
+    # The crew appearance library: user-imported packs a crew wears. Written and
+    # read only by the GATEWAY (the owner-gated ``/api/appearances`` routes); no
+    # in-sandbox code opens it. Left visible, a sandboxed agent could ``rm -rf``
+    # packs the user cannot get back -- the same data-loss class ``backup`` and
+    # ``workflow_library`` are masked for.
+    "appearance-library",
     "agentcore-inbound",
     "routing",
     "webhooks",
@@ -609,7 +615,17 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: same-UID agent can swap the transfer's destination for a link. Materialised
 #: (empty, 0o700) before every namespace spawn instead, so the mask always has a
 #: name to bind over.
-_CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = ("aws-control-staging",)
+#:
+#: ``appearance-library`` is here for the same reason with a different consequence:
+#: ``dashboard/appearances.py`` builds the crew library on FIRST USE, so an install
+#: that has never imported a pack has no directory for the mask loop to bind over,
+#: and the first import then creates it visible to every sandbox already running --
+#: where a same-UID agent can ``rm -rf`` packs the user cannot get back. The store
+#: tolerates finding its root already present and empty.
+_CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
+    "aws-control-staging",
+    "appearance-library",
+)
 
 #: What a materialised ceiling holds — the empty JSON object every reader above
 #: already treats as its absent default. NOT a zero-byte file, which is not valid

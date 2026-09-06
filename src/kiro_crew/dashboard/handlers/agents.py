@@ -2726,8 +2726,9 @@ def _roster_avatar(value: object) -> dict:
 
     **A shape allowlist, with masking confined to the leaves that can carry user
     text.** ``_safe_avatar`` is the config's own validator, so only
-    ``{"kind": "ghost", "traits": {...}}`` and ``{"kind": "image", "v": ...,
-    "file": "<digest>.<ext>"}`` survive and junk collapses to ``{}``. Within that,
+    ``{"kind": "ghost", "traits": {...}}``, ``{"kind": "image", "v": ...,
+    "file": "<digest>.<ext>"}`` and ``{"kind": "pack", "id": "<pack id>"}`` survive
+    and junk collapses to ``{}``. Within that,
     ONLY ``traits`` values are masked:
 
     - ``kind`` and ``v`` are structural. Mask ``kind`` and the dashboard can no
@@ -2744,6 +2745,11 @@ def _roster_avatar(value: object) -> dict:
       degrades that axis rather than breaking the face.
     - ``sounds`` values are constrained by ``_safe_sounds`` to a shipped preset
       name, so they are pinned rather than masked -- the same reason ``file`` is.
+    - ``id`` (on ``kind: "pack"``) is pinned by
+      ``appearance_packs.safe_pack_id`` to letters, digits, dash and underscore,
+      so it is not arbitrary text either — and masking it would make the pack
+      routes resolve nothing, silently blanking the face for the same reason a
+      masked ``file`` breaks the image.
 
     Honest limit on how far the two rules can be told apart: because
     ``_safe_avatar`` already pins every non-``traits`` leaf to a shape the redactors
@@ -3501,7 +3507,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     if _raw_avatar not in (None, {}) and not avatar and not _is_ghost_shaped(_raw_avatar):
         return web.json_response(
             {
-                "error": "avatar must be {'kind': 'ghost', 'traits': {...}}, {'kind': 'image'}, or empty",
+                "error": "avatar must be {'kind': 'ghost', 'traits': {...}}, {'kind': 'image'}, {'kind': 'pack', 'id': ...}, or empty",
                 "code": "invalid_avatar",
             },
             status=400,
@@ -3703,11 +3709,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             if _raw_av not in (None, {}) and not _av and not _is_ghost_shaped(_raw_av):
                 return web.json_response(
                     {
-                        "error": "avatar must be {'kind': 'ghost', 'traits': {...}}, {'kind': 'image'}, or empty",
+                        "error": "avatar must be {'kind': 'ghost', 'traits': {...}}, {'kind': 'image'}, {'kind': 'pack', 'id': ...}, or empty",
                         "code": "invalid_avatar",
                     },
                     status=400,
                 )
+            _av = _carry_pack_through_faceless_save(agent.avatar, _raw_av, _av)
             if _av.get("kind") == "image":
                 # THE commit point for pictures, under this same config lock.
                 # `promote` is a wire-only directive (never persisted — the
@@ -3887,6 +3894,38 @@ _AVATAR_CONTENT_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image
 #: compliant upload is tens of KB; 1 MB tolerates a generous margin while
 #: keeping a hostile body from ballooning memory (parts accumulate in RAM).
 _AVATAR_MAX_BYTES = 1024 * 1024
+
+
+def _carry_pack_through_faceless_save(stored: dict, raw: object, validated: dict) -> dict:
+    """Keep a worn pack when a save names no face at all.
+
+    The shipped crew editor rebuilds the avatar from a CLOSED shape -- ghost or
+    picture -- so for a crew wearing a pack it sees neither, renders the
+    name-derived face, and on ANY unrelated save (a model change, a colour)
+    submits ``{}`` or a faceless ``{"kind": "ghost", "sounds": ...}``. Taken at
+    face value that is "reset", and the pack the user chose through the API is
+    gone with no click that meant it. Until the picker can show a pack, a save
+    that names no face therefore keeps the pack it found, and the reactions the
+    save DID carry ride onto it -- so editing a sound on a pack-wearing crew
+    stores the sound and keeps the pack.
+
+    Deliberately narrow:
+
+    * only when the CURRENT record is a pack -- ghost and picture keep their
+      existing reset semantics untouched;
+    * ``None`` on the wire is still an explicit reset (the editor never sends it,
+      so it stays available to a caller that means it);
+    * a real face -- a ghost with traits, a picture, another pack -- replaces the
+      pack exactly as before.
+    """
+    if stored.get("kind") != "pack" or raw is None:
+        return validated
+    kind = validated.get("kind")
+    if kind is None or (kind == "ghost" and "traits" not in validated):
+        kept = {"kind": "pack", "id": stored["id"]}
+        kept.update({k: v for k, v in validated.items() if k in ("expressions", "sounds")})
+        return kept
+    return validated
 
 
 def _is_ghost_shaped(value: object) -> bool:

@@ -1,4 +1,5 @@
-"""Route registration for workspaces, agents, agent CRUD, edition capability agents.
+"""Route registration for workspaces, agents, agent CRUD, edition capability agents,
+the crew roster, and the shared appearance library.
 
 One contiguous slice of the dashboard's route table, kept in its original
 order. aiohttp resolves routes in REGISTRATION order, and several routes here
@@ -55,3 +56,17 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members/{slug}/activity", handlers.api_member_activity)
     app.router.add_get("/api/members/{slug}/rules", handlers.api_member_rules_get)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
+
+    # Crew appearance library: the dashboard's own pack store, separate from
+    # Crew Companion's. On the dashboard router so a crew's face renders while
+    # that app is disabled or absent.
+    #
+    # Literals before the {id} pattern: aiohttp resolves in registration order,
+    # so `/api/appearances/import` registered after `/api/appearances/{id}`
+    # would be swallowed by it.
+    app.router.add_get("/api/appearances", handlers.api_appearances_list)
+    app.router.add_post("/api/appearances/import", handlers.api_appearances_import)
+    app.router.add_post("/api/appearances/petdex/fetch", handlers.api_appearances_petdex_fetch)
+    app.router.add_get("/api/appearances/{id}", handlers.api_appearance_detail)
+    app.router.add_delete("/api/appearances/{id}", handlers.api_appearance_delete)
+    app.router.add_get("/api/appearances/{id}/slot/{slot}", handlers.api_appearance_slot)
