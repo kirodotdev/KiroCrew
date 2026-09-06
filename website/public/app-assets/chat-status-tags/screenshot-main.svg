@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" width="960" height="600" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="960" height="600" fill="#0f1117"/>
+  <!-- sidebar -->
+  <rect x="0" y="0" width="320" height="600" fill="#151823"/>
+  <text x="20" y="36" fill="#e5e7eb" font-size="15" font-weight="600">Chats</text>
+
+  <!-- chat rows: title + tag chips -->
+  <g font-size="12">
+    <rect x="12" y="52" width="296" height="58" rx="8" fill="#1c2030"/>
+    <text x="24" y="74" fill="#e5e7eb" font-size="13">Add rate limiting to uploads</text>
+    <rect x="24" y="84" width="104" height="18" rx="9" fill="#3b82f6" opacity="0.25"/>
+    <text x="34" y="97" fill="#93c5fd">implementation</text>
+
+    <rect x="12" y="118" width="296" height="58" rx="8" fill="#1c2030"/>
+    <text x="24" y="140" fill="#e5e7eb" font-size="13">Fix the flaky session test</text>
+    <rect x="24" y="150" width="56" height="18" rx="9" fill="#a855f7" opacity="0.25"/>
+    <text x="34" y="163" fill="#d8b4fe">review</text>
+    <rect x="86" y="150" width="52" height="18" rx="9" fill="#f59e0b" opacity="0.3"/>
+    <text x="96" y="163" fill="#fcd34d">stuck</text>
+
+    <rect x="12" y="184" width="296" height="58" rx="8" fill="#1c2030"/>
+    <text x="24" y="206" fill="#e5e7eb" font-size="13">Migrate config loader</text>
+    <rect x="24" y="216" width="48" height="18" rx="9" fill="#22c55e" opacity="0.25"/>
+    <text x="34" y="229" fill="#86efac">done</text>
+
+    <rect x="12" y="250" width="296" height="58" rx="8" fill="#1c2030"/>
+    <text x="24" y="272" fill="#e5e7eb" font-size="13">Refactor the auth middleware</text>
+    <rect x="24" y="282" width="64" height="18" rx="9" fill="#0ea5e9" opacity="0.3"/>
+    <text x="34" y="295" fill="#7dd3fc">network</text>
+    <rect x="94" y="282" width="104" height="18" rx="9" fill="#3b82f6" opacity="0.25"/>
+    <text x="104" y="295" fill="#93c5fd">implementation</text>
+
+    <rect x="12" y="316" width="296" height="58" rx="8" fill="#1c2030"/>
+    <text x="24" y="338" fill="#e5e7eb" font-size="13">Design the export format</text>
+    <rect x="24" y="348" width="52" height="18" rx="9" fill="#ef4444" opacity="0.3"/>
+    <text x="34" y="361" fill="#fca5a5">error</text>
+    <rect x="82" y="348" width="66" height="18" rx="9" fill="#6b7280" opacity="0.3"/>
+    <text x="92" y="361" fill="#d1d5db">planned</text>
+  </g>
+
+  <!-- main pane: what the tags mean -->
+  <text x="352" y="60" fill="#e5e7eb" font-size="20" font-weight="600">Every chat says where it stands</text>
+  <g font-size="14">
+    <circle cx="360" cy="110" r="6" fill="#3b82f6"/>
+    <text x="378" y="115" fill="#9ca3af">Status set by the agent itself at each phase change</text>
+    <circle cx="360" cy="150" r="6" fill="#f59e0b"/>
+    <text x="378" y="155" fill="#9ca3af">Running but silent for 30 minutes — flagged stuck</text>
+    <circle cx="360" cy="190" r="6" fill="#0ea5e9"/>
+    <text x="378" y="195" fill="#9ca3af">Killed by a network drop — resumed once the link holds</text>
+    <circle cx="360" cy="230" r="6" fill="#ef4444"/>
+    <text x="378" y="235" fill="#9ca3af">Needs you — auth failures are never auto-resumed</text>
+    <circle cx="360" cy="270" r="6" fill="#22c55e"/>
+    <text x="378" y="275" fill="#9ca3af">Pull requests merged — promoted to done, hourly</text>
+  </g>
+  <rect x="352" y="320" width="560" height="1" fill="#2a2f42"/>
+  <text x="352" y="356" fill="#6b7280" font-size="13" font-style="italic">Health tags clear themselves the moment the condition clears.</text>
+</svg>

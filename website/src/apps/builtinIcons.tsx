@@ -30,6 +30,7 @@ import {
   Contact,
   ShoppingBag,
   Activity,
+  Tags,
 } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { reportSeamCollision } from './seamCollision'
@@ -55,6 +56,7 @@ const BUILTIN_ICON_REGISTRY: Record<string, ReactElement> = {
   Contact: <Contact size={16} />,
   ShoppingBag: <ShoppingBag size={16} />,
   Activity: <Activity size={16} />,
+  Tags: <Tags size={16} />,
 }
 
 /**

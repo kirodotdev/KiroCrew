@@ -1,0 +1,77 @@
+{
+  "name": "chat-status-tags",
+  "version": "0.1.0",
+  "displayName": "Chat Status Tags",
+  "description": "Keeps your Chats sidebar honest. Tags every conversation with where its work stands (planned, todo, implementation, review, done) and how it is doing (stuck, network, error) — agents tag their own chat at each phase change via the bundled skill, a zero-token health sweep flags hung and errored chats, chats killed by a network drop are quietly resumed once the connection holds, and an hourly reconciler promotes chats whose pull requests merged.",
+  "author": "kirocrew",
+  "license": "MIT",
+  "defaultEnabled": false,
+  "tags": [
+    "chats",
+    "tags",
+    "sdlc",
+    "health",
+    "automation"
+  ],
+  "highlights": [
+    "Agents tag their own chat at each SDLC phase change — one bash call from the bundled self-tag-chat skill",
+    "Zero-token health sweep every minute: running-but-silent chats get 'stuck', dropped connections get 'network', chats needing you get 'error'",
+    "Network-killed chats are auto-resumed — only after the connection holds for a full minute, capped per failure so a flapping link never causes a resume storm",
+    "Auth failures and unknown errors are never auto-resumed; they stay tagged for you",
+    "Hourly reconciler promotes a chat to 'review' when it owns an open pull request and to 'done' when they all merge — promotions only, never downgrades",
+    "Health tags clear themselves the moment the condition clears"
+  ],
+  "backend": {
+    "routes": "backend.routes:register_routes",
+    "hooks": {
+      "on_startup": "hooks:on_startup",
+      "on_shutdown": "hooks:on_shutdown"
+    }
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/chat-status-tags",
+        "label": "Chat Status Tags",
+        "icon": "Tags"
+      }
+    ]
+  },
+  "skills": [
+    "skills/self-tag-chat"
+  ],
+  "permissions": {
+    "api": [
+      "/api/chat",
+      "/api/chat/*"
+    ],
+    "storage": true,
+    "network": true,
+    "cron": true
+  },
+  "crons": [
+    {
+      "name": "sdlc-tag-reconcile",
+      "cron_expr": "23 * * * *",
+      "silent": true,
+      "persistent_session": false,
+      "enabled": true,
+      "message": "You are the SDLC tag reconciler for dashboard chats. Backstop the two transitions an idle chat's agent forgets: a chat that OWNS an open pull request should carry the 'review' status tag, and a chat whose owned pull requests have ALL merged should carry 'done'. Promotions only — NEVER downgrade a status tag, and never touch the stuck/network/error health tags. You reach the gateway's chat API ONLY through the `chat_status_tags_api` MCP tool — call it with {method, path, slot_key?, query?, body_json?}. Do NOT mint a dashboard token: `kirocrew token` is refused by security policy and would make this run silently do nothing. Procedure: (1) call `chat_status_tags_api` with method='GET' path='/slots'. This returns every slot; each slot object carries `key`, `tags` (its current tag ids), and `source_links` — the pull-request, merge-request and issue URLs already extracted from that slot's messages. You CANNOT read a chat's raw messages (there is no message-detail path in this surface, by design); `source_links` is your ONLY view of what a chat references, so work from it. Keep idle slots whose status tag is not already 'done'. (2) For each candidate, take the pull-request URLs from its `source_links` entries whose `kind` is 'change' and that match github.com/<owner>/<repo>/pull/<n>; skip slots with none. (3) A chat that references a pull request in its own transcript is treated as OWNING it — `source_links` already reflects what the chat worked on, so every 'change' link on the slot counts as owned. (4) Check each owned PR's state with `gh pr view <url> --json state,mergedAt`. A PR counts as merged ONLY when `mergedAt` is non-null; a closed-but-unmerged PR is neither merged nor open — it never justifies 'done'. (5) Decide: all owned PRs merged -> 'done'; any owned PR open -> 'review'; otherwise leave unchanged. (6) Apply only strict promotions in the order planned < todo < implementation < review < done: call method='GET' path='/tags' to map tag names to ids (creating a missing status tag with method='POST' path='/tags' body_json='{\"name\": \"<name>\", \"status\": true}'), then call method='PUT' path='/slots/{slot}/tags' with the slot's `key` as slot_key and body_json holding the slot's current tag ids minus any status-tag id plus the new status tag's id. If `gh` is unavailable, produce NO output and stop. If nothing changed, produce NO output. Otherwise report one line per promotion."
+    }
+  ],
+  "dependencies": {
+    "optionalCommands": [
+      "gh"
+    ]
+  },
+  "useCases": [
+    "See at a glance which chats are working, which are blocked on you, and where every piece of SDLC work stands — without opening them."
+  ],
+  "configuration": [
+    "Enable the app and the tag vocabulary seeds itself. Optional config keys: stuck_min (minutes of silence before a running chat is flagged stuck, default 30) and probe_hosts (list of host:port strings the auto-resume connectivity gate must reach, default the model backend plus a control endpoint). The hourly reconciler needs the gh CLI to be authenticated; without it, it stays silent."
+  ],
+  "iconUrl": "/app-assets/chat-status-tags/icon.svg",
+  "screenshots": [
+    "/app-assets/chat-status-tags/screenshot-main.svg"
+  ]
+}
