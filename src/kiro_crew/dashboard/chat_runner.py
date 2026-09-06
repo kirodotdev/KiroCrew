@@ -206,6 +206,7 @@ from kiro_crew.llm_helpers import (
     configured_fallback_chain,
     fallback_rewound_transient_budget,
     probe_fallback_restore,
+    provider_active_model,
     record_interaction_event,
     run_bg_oneliner,
     transient_retry_delay,
@@ -9782,13 +9783,37 @@ async def _run_chat(
                 # `kiro_crew.agent_sdk` — the boundary's sanctioned surface, and an
                 # RFC-governed addition rather than a telemetry change.
                 #
-                # A fallback model serving the turn blanks the ROW's model for the
-                # reason it always has — billing a model that never executed is
-                # wrong, and model_source records what actually ran. The metric
-                # prefers the SERVED id instead (see the emit below): billing and
-                # attribution are different questions.
+                # A fallback model serving the turn records the model that RAN,
+                # not the one the user pinned: billing a model that never
+                # executed is wrong.
+                #
+                # Read from the LIVE client rather than from
+                # `slot._active_fallback_model` directly, because that sticky
+                # field can outlive the swap it records. It deliberately survives
+                # a landed turn (the session stays on the fallback until the
+                # start-of-turn restore probe succeeds), and that probe is skipped
+                # for a synthetic recovery message — so a turn that reset the
+                # session and resumed it on `slot.model` runs on the PRIMARY with
+                # the sticky candidate still set. Recording the candidate there
+                # would bill a model that, again, never executed.
+                #
+                # `provider_active_model` reads the provider's own
+                # `served_model` / `_model` accessor directly — no wrapper walk,
+                # so unlike `persist_token_record_async`'s `model_source` path it
+                # is not subject to `_wrapper_chain`'s 8-node cap (#8531). That
+                # cap is why blanking here and leaving recovery to `model_source`
+                # lost the id outright on a session with accumulated wrapper
+                # layers: the walk reported nothing and the row persisted
+                # `"model": ""`, which read time renders as `unknown`, merging
+                # this turn's credits with genuinely attribute-less rows.
+                #
+                # An unreadable provider still yields `""` and falls through to
+                # the `model_source` walk exactly as before — no worse than the
+                # blank it would have written anyway.
                 _provider_name = "claude_code" if is_claude_backend(client) else "acp"
-                _record_model = "" if slot._active_fallback_model else slot.model
+                _record_model = slot.model
+                if slot._active_fallback_model:
+                    _record_model = provider_active_model(client)
                 # One shared predicate across every persist gate (#6758): a
                 # claude-seam turn ending via a synthetic EVENT_COMPLETE
                 # (timeout, tool-stall, cancel-unacked) can carry cost or cache
@@ -9800,10 +9825,16 @@ async def _run_chat(
                     # slot.model may still be empty here even though the
                     # provider learned the model mid-turn. Read it back
                     # before persisting so tokens.jsonl is never tagged
-                    # with a blank model for CC sessions. Skipped while a
-                    # fallback is active (same guard as the pre-turn site):
-                    # the provider reports the FALLBACK, and writing it into
-                    # slot.model would make the temporary swap a permanent pin.
+                    # with a blank model for CC sessions.
+                    #
+                    # The `_active_fallback_model` clause guards the slot.model
+                    # WRITE, not the row's value: the provider reports the
+                    # FALLBACK, and writing it into slot.model would make the
+                    # temporary swap a permanent pin (same guard as the pre-turn
+                    # site). Kept as its own condition rather than folded into the
+                    # `_record_model` check above, so the write's safety does not
+                    # depend on whether the live provider happened to report a
+                    # served model.
                     #
                     # _record_model / _provider_name are already resolved above
                     # the gate; this only refines the model, and only here
@@ -9879,13 +9910,14 @@ async def _run_chat(
                     # the row store and the instruments describe one turn's
                     # NUMBERS identically.
                     usage=event.usage,
-                    # Attribution, not billing: `_turn_model` is the id the
-                    # backend actually served (read_turn_model), so a turn a
-                    # fallback model served is attributed to the model that ran
-                    # rather than dropped from the split. The row deliberately
-                    # blanks that case instead, because billing a model that never
-                    # executed is a different kind of wrong. `_record_model` is the
-                    # fallback for a backend that reported no id.
+                    # Attribution: `_turn_model` is the id the backend actually
+                    # served (read_turn_model), so a turn a fallback model served
+                    # is attributed to the model that ran rather than dropped
+                    # from the split. `_record_model` is the fallback for a
+                    # backend whose wrapper chain reported no id — which for a
+                    # fallback-served turn is the live served model read off the
+                    # provider directly, so the row and this sample name the same
+                    # model rather than diverging.
                     model=_turn_model or _record_model,
                     provider=_provider_name,
                 )
