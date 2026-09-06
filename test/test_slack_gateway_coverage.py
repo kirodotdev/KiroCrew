@@ -1107,15 +1107,16 @@ class TestAutonudgeRouterAndObserver:
         orch.dashboard_state = _mock_dashboard_state()
         _on_fire, observer, _inst = await self._wire(orch)
 
-        loop = _loop("chat-1-1721", cycle_count=2)
-        observer("armed", loop)
+        loop = _loop("chat-1-1721", cycle_count=2, active=False, stopped_reason="runtime_budget")
+        observer("updated", loop)
 
         topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
         assert topic == "autonudge_state"
-        assert payload["event"] == "armed"
+        assert payload["event"] == "updated"
         assert payload["slot"] == "chat-1-1721"
         assert payload["loop"]["id"] == "loop-1"
         assert payload["loop"]["cycle_count"] == 2
+        assert payload["loop"]["stopped_reason"] == "runtime_budget"
 
     @pytest.mark.asyncio
     async def test_observer_broadcasts_structured_state_to_owners_only(self):

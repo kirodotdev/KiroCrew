@@ -256,8 +256,8 @@ async def test_stall_hook_ignores_unknown_and_inactive_loops(svc, _nosleep):
 async def test_a_settings_save_on_an_active_loop_keeps_the_evidence(svc, _nosleep):
     """Only an actual revival spends the evidence, not any ``active=True``.
 
-    The goal popover sends ``active: true`` on every edit of an existing loop, so
-    a save landing between the stall and the next wake would otherwise erase
+    A caller may repeat ``active: true`` while revising an existing active loop,
+    so a settings edit landing between the stall and the next wake must not erase
     evidence recorded moments earlier and let one more doomed cycle fire.
     """
     loop = await _armed(svc)

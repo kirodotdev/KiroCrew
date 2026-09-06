@@ -94,6 +94,14 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   const parseIdle = (s: string) => parseInt(s, 10) || 60
   const parseCycles = (s: string) => parseInt(s, 10) || 0
+  const parsedMaxCycles = parseCycles(maxCyclesInput)
+  // A retained stopped loop is restartable through PATCH only when the stop's
+  // own condition has been cleared. Runtime-budget and manual stops need a
+  // fresh monitor_start (new runtime anchor) rather than a misleading pulse.
+  const resumeOnSave = !!loop && !loop.active && (
+    loop.stopped_reason === 'approval_stalled' ||
+    (loop.stopped_reason === 'cycle_cap' && (parsedMaxCycles === 0 || parsedMaxCycles > loop.cycle_count))
+  )
 
   // Only a genuine user edit should persist a draft. Seeding from the live loop
   // or restoring a remembered draft on open must NOT re-write the store (doing
@@ -175,7 +183,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       const max_cycles = parseCycles(maxCyclesInput)
       const body = JSON.stringify({ slot_key: slotKey, message, idle_secs, max_cycles })
       const resp = loop
-        ? await fetch(`/api/autonudge/${loop.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, idle_secs, max_cycles, active: true }) })
+        ? await fetch(`/api/autonudge/${loop.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, idle_secs, max_cycles, ...(resumeOnSave ? { active: true } : {}) }),
+          })
         : await fetch('/api/autonudge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
@@ -382,7 +394,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             disabled={saving || !message.trim()}
             className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
           >
-            {loop ? i18nT('components.autoNudgePopover.save') : i18nT('components.autoNudgePopover.start_loop')}
+            {!loop || resumeOnSave ? i18nT('components.autoNudgePopover.start_loop') : i18nT('components.autoNudgePopover.save')}
           </button>
         </div>
       </PopoverContent>

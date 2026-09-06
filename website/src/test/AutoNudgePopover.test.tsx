@@ -189,6 +189,39 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     const body = JSON.parse(save![1]!.body!)
     expect(body.idle_secs).toBe(45)
   })
+
+  it('Save preserves a runtime-budget-stopped loop instead of presenting a false restart', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'runtime_budget' }))
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Save$/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no PATCH for the existing goal was issued').toBeTruthy()
+    const body = JSON.parse(patch![1]!.body!)
+    expect(body).toEqual({ message: 'active loop goal', idle_secs: 90, max_cycles: 3 })
+    // `active: true` made an expired goal briefly pulse in the UI, but its
+    // already-spent runtime anchor stopped it again immediately. Save edits
+    // configuration only; a fresh monitor_start owns explicit re-arming.
+    expect(body).not.toHaveProperty('active')
+  })
+
+  it('offers an explicit restart after a cycle-capped loop receives a higher cap', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'cycle_cap', cycle_count: 3, max_cycles: 3 }))
+    fireEvent.change(cyclesField(), { target: { value: '4' } })
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the capped goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toEqual({
+      message: 'active loop goal',
+      idle_secs: 90,
+      max_cycles: 4,
+      active: true,
+    })
+  })
 })
 
 describe('AutoNudgePopover trigger chip — interrupted state', () => {
