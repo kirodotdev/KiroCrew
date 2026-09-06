@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
@@ -188,6 +189,31 @@ _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 # in none of them. Spelled here rather than imported so this low-level module keeps not
 # importing the 7k-line security module (the ``_POLICY_CACHE_LEAF`` convention above).
 
+#: The md-notebook builtin's name, and its own state files under the crew data home.
+#: Named so the mask, the backend carve-out that lifts it, and the materialiser that
+#: gives it a mount target cannot drift apart on a literal.
+MD_NOTEBOOK_APP_NAME: str = "md-notebook"
+_MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = (
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/pat",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json",
+)
+#: The backend's write-staging directory, masked as a WHOLE DIRECTORY like ``whatsapp``.
+#: Every md-notebook state writer stages its temp file HERE and renames onto its target,
+#: because a temp staged BESIDE the target carries the real PAT bytes under a name the
+#: three leaf masks do not cover — and a SIGKILL between write and rename leaves that
+#: unmasked sibling readable by a same-uid sandboxed agent forever. A directory mask
+#: covers every name inside it, present and future, so the staging window and any crash
+#: orphan both stay masked.
+#:
+#: A TOP-LEVEL leaf, for the same reason ``aws-control-staging`` is one: a mask covers the
+#: leaf, not its ancestors, so a staging dir under the agent-writable
+#: ``workspace/md-notebook`` could be renamed out from under its own mask and a later PAT
+#: write would publish through the replacement, unmasked, into a live agent's view. It
+#: stays on the same filesystem as the state files (both under the crew data home), so the
+#: publish rename is still atomic.
+_MD_NOTEBOOK_STAGING_LEAF: str = f"{MD_NOTEBOOK_APP_NAME}-staging"
+
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # Channel credentials. Already file-masked in cc/strict via ``_CC_FILES``; listing
@@ -234,9 +260,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The backend spawn therefore passes them back as ``extra_visible_dirs`` via
     # :func:`app_backend_visible_targets` — the mask still applies to every OTHER
     # sandboxed process, which is the population it exists to fence.
-    "workspace/md-notebook/pat",
-    "workspace/md-notebook/vaults.json",
-    "workspace/md-notebook/settings.json",
+    *_MD_NOTEBOOK_STATE_LEAVES,
+    # The staging directory those three writers publish through. Masked as a whole
+    # DIRECTORY so the in-flight temp — which holds the same bytes as the leaves above,
+    # PAT included — and any crash orphan are covered at every name, present and future.
+    _MD_NOTEBOOK_STAGING_LEAF,
     # Browser session material. The extension token reaches the CLI through the
     # environment, never by ``open()``, so masking the file costs nothing; the other
     # four are retired leaves with no reader left in the tree. The LIVE browser paths
@@ -395,10 +423,12 @@ _CREW_READONLY_TARGETS: list[str] = _crew_home_entries(_CREW_READONLY_LEAVES)
 #: backend belong here — an in-process builtin (routes/hooks) runs unsandboxed in the
 #: gateway and needs no exemption.
 _APP_BACKEND_OWNED_LEAVES: dict[str, tuple[str, ...]] = {
-    "md-notebook": (
-        "workspace/md-notebook/pat",
-        "workspace/md-notebook/vaults.json",
-        "workspace/md-notebook/settings.json",
+    MD_NOTEBOOK_APP_NAME: (
+        *_MD_NOTEBOOK_STATE_LEAVES,
+        # The writers stage here and rename onto the leaves above, so the backend needs
+        # this directory back too — carving out only the three targets would leave every
+        # state write failing on the masked staging dir instead of the masked leaf.
+        _MD_NOTEBOOK_STAGING_LEAF,
     ),
 }
 
@@ -429,8 +459,48 @@ def app_backend_visible_targets(app_name: str, mode: str = "standard") -> tuple[
     targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
     targets.extend(_relocated_crew_targets(leaves))
     return tuple(
-        target for target in targets if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+        target
+        for target in targets
+        if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+        and not carveout_chain_has_planted_link(target)
     )
+
+
+def carveout_chain_has_planted_link(path: str) -> bool:
+    """Whether *path*'s parent chain passes through a link, so it must not be carved out.
+
+    The boolean form of :func:`atomic_write.refuse_linked_parent`, for
+    the two producers that must DEGRADE rather than raise. An app's state leaves sit under
+    an agent-writable tree, so a link planted at an intermediate component means this
+    process cannot tell which directory a write to that name will land in — and handing a
+    spawn a carve-out for such a name unmasks whatever the link currently points at.
+
+    Refusing the CARVE-OUT is the proportionate response, not refusing the spawn. Withhold
+    it and the owning backend fails on its own masked state, which is the app's problem;
+    refuse the spawn and one optional app's on-disk layout takes every sandboxed process on
+    the host down with it. The two are safe together because they are keyed off this one
+    predicate: while it holds, the backend cannot write the state, so a leaf left
+    unmaterialised — and therefore unmasked — has nothing to expose.
+
+    Fails toward "unsafe": an unresolvable chain is reported as planted, so the carve-out is
+    withheld rather than granted on a path this process could not verify.
+    """
+    try:
+        refuse_linked_parent(path)
+    except OSError as exc:
+        logger.warning(
+            "SECURITY: not carving %s out of the sandbox masks — a parent component is a "
+            "link (%s), so this process cannot tell which directory a write to that name "
+            "would reach. The owning app backend will fail on its own state until the link "
+            "is replaced with a real directory; every other spawn is unaffected.",
+            path,
+            exc,
+        )
+        return True
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not check the carve-out chain for %s", path, exc_info=True)
+        return True
+    return False
 
 
 def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool:
@@ -643,12 +713,50 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
     "appearance-library",
     "quarantined-clones",
+    # md-notebook's write-staging directory, for the same reason and by the same rule: a
+    # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
+    # creation, a sandbox spawned before the first state write finds it absent, the
+    # ``SENSITIVE_DIRS`` loop skips it, and the directory the backend creates later shows
+    # up INSIDE that running sandbox — with the PAT staging window in it.
+    _MD_NOTEBOOK_STAGING_LEAF,
 )
+
+#: The masked md-notebook leaves materialised before a namespace spawn, and what each
+#: holds. This is the per-leaf argument the sibling-gap note above asks for: ``mount(2)``
+#: cannot mask an absent path and the ``SENSITIVE_FILES`` loop guards on ``isfile``, so an
+#: ABSENT leaf gets NO mask, and a namespace that outlives the leaf's later creation reads
+#: the real bytes — the PAT among them. That was vacuous while nothing could create these
+#: files on a sandboxed host; the backend carve-out
+#: (:func:`app_backend_visible_targets`) makes creation possible, so the mask has to be
+#: made non-vacuous first. Each document is its reader's absent-equivalent, and the
+#: md-notebook backend is the only reader:
+#:
+#:   * ``vaults.json`` — ``_read_vaults_sync`` returns ``[]`` for absent (OSError) and
+#:     for ``[]`` alike;
+#:   * ``settings.json`` — ``_load_settings_sync`` returns the defaults for absent and
+#:     reads ``{}`` as every-field-default;
+#:   * ``pat`` — ``_read_pat_sync`` maps absent (OSError) and empty (``"" or None``) both
+#:     to ``None``.
+#:
+#: The STALE-read criterion that excludes most hidden leaves does not arise: the agent's
+#: view is the pinned empty MASK file either way, never this document, which is exactly
+#: the mask's intent.
+_MD_NOTEBOOK_PRECREATE_CONTENT: dict[str, bytes] = {
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/pat": b"",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json": b"[]\n",
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json": b"{}\n",
+}
+assert set(_MD_NOTEBOOK_PRECREATE_CONTENT) == set(_MD_NOTEBOOK_STATE_LEAVES)
 
 #: What a materialised ceiling holds — the empty JSON object every reader above
 #: already treats as its absent default. NOT a zero-byte file, which is not valid
 #: JSON and would read as CORRUPT rather than as absent.
 _EMPTY_CEILING_DOCUMENT: bytes = b"{}\n"
+
+#: Prefix of the in-flight temp ``_publish_empty_ceiling`` stages in its target's
+#: parent. Named so a sweep of that directory can tell a gateway-owned temp mid-publish
+#: from an orphan it is meant to remove.
+_CEILING_TEMP_PREFIX: str = ".kirocrew-ceiling-"
 
 
 def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
@@ -853,8 +961,10 @@ def _require_real_dir_nofollow(target: str) -> None:
         )
 
 
-def _publish_empty_ceiling(target: str, parent: str) -> bool:
-    """Write the empty document to a sibling temp file, then link it into place.
+def _publish_empty_ceiling(
+    target: str, parent: str, content: bytes = _EMPTY_CEILING_DOCUMENT
+) -> bool:
+    """Write *content* (default: the empty document) to a sibling temp, then link it in.
 
     Two steps rather than ``open(target, O_CREAT | O_EXCL)`` followed by a write,
     because the one-step form publishes the NAME before the BYTES: a crash, a full
@@ -880,13 +990,13 @@ def _publish_empty_ceiling(target: str, parent: str) -> bool:
     fd = -1
     tmp = ""
     try:
-        fd, tmp = tempfile.mkstemp(dir=parent, prefix=".kirocrew-ceiling-", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(dir=parent, prefix=_CEILING_TEMP_PREFIX, suffix=".tmp")
         # ``os.write`` is not obliged to consume the whole buffer, and a short write is
         # not an error — it returns a count. Taking that count for success would link a
         # TRUNCATED document, which reads as corrupt rather than as absent and is the
         # exact outcome the temp-then-link shape exists to prevent. Loop, and treat zero
         # progress as an error so a filesystem that accepts nothing cannot spin here.
-        view = memoryview(_EMPTY_CEILING_DOCUMENT)
+        view = memoryview(content)
         while view:
             written = os.write(fd, view)
             if written <= 0:
@@ -1045,6 +1155,336 @@ def _materialize_maskable_dirs() -> list[str]:
                 f"cannot create the masked directory {target}: {exc}"
             ) from exc
         created.append(target)
+    return created
+
+
+def _md_notebook_degraded_mask_dirs() -> list[str]:
+    """The md-notebook state directories to mask WHOLESALE because the app is degraded.
+
+    Normally only the three secret leaves are masked, and that is deliberate: the same
+    directory holds the vault clone data, which agents are meant to read. Masking it
+    wholesale on a healthy host would hide the user's notes from every agent — the app's
+    whole purpose.
+
+    When a component of the chain is a planted link the calculus inverts. The carve-out is
+    withheld under this same predicate, so the backend cannot write there and the app is
+    already non-functional for that root; hiding the directory costs nothing that still
+    works. What it buys is the one exposure skipping leaves behind: a legacy staging orphan
+    holding real PAT bytes that :func:`_sweep_one_md_notebook_state_dir` cannot delete
+    through a link, and that the three leaf masks do not cover because its name is neither
+    ``pat`` nor a state file. A directory mask covers every name inside it, orphans
+    included.
+
+    Masking is fail-safe in the direction that matters: the launcher binds an empty
+    directory over the resolved path INSIDE the namespace only, so a link pointing
+    somewhere unexpected costs that sandbox visibility of a path it should not have been
+    reading, never anything on the host.
+    """
+    dirs: list[str] = []
+    roots: list[str] = []
+    try:
+        roots.append(str(config_dir()))
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for the md-notebook mask")
+    try:
+        home = Path.home()
+        roots.extend(str(home / Path(prefix)) for prefix in _CREW_HOME_PREFIXES)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("could not resolve $HOME for the md-notebook mask")
+    for root in dict.fromkeys(roots):
+        state_dir = os.path.join(root, *_MD_NOTEBOOK_STATE_COMPONENTS)
+        # Ask the predicate about a LEAF, exactly as the carve-out filter does, not about
+        # the directory: it judges a path's PARENT chain, so passing the directory would
+        # miss a link at the directory itself — the very case the sweep's final-component
+        # refusal leaves unswept. Sharing the input shape keeps "withheld" and "masked"
+        # literally the same decision rather than two that merely agree today.
+        probe = os.path.join(state_dir, os.path.basename(_MD_NOTEBOOK_STATE_LEAVES[0]))
+        if carveout_chain_has_planted_link(probe):
+            dirs.append(state_dir)
+    return dirs
+
+
+def _sweep_legacy_md_notebook_temps() -> list[str]:
+    """Remove pre-upgrade staging temps left BESIDE md-notebook's state files.
+
+    Before the staging directory existed, all three state writers staged a sibling of
+    their target: ``vaults.json.<hex>.tmp`` and ``settings.json.<hex>.tmp`` from
+    ``git_ops.staged_temp_name``, and ``tmp<random>.tmp`` from ``atomic_write``'s
+    ``mkstemp(dir=path.parent, suffix=".tmp")``. A SIGKILL in that window left a file
+    holding the real PAT bytes at a name NO mask covers — not the three leaves, and not
+    the staging directory. Materialising forward does not help: the exposure is an
+    artefact already on disk, so on an upgraded host the exact bytes this carve-out
+    exists to fence would stay readable by a same-uid agent forever.
+
+    Runs on EVERY sandbox launch path, Linux namespace and macOS Seatbelt alike, and is
+    deliberately NOT part of :func:`_materialize_md_notebook_mask_targets`. Materialising
+    is Linux-only for a good reason — a Seatbelt deny is a path rule that holds for a name
+    that does not exist yet — but that reasoning does not transfer to an orphan that DOES
+    exist at a name no rule names: the Seatbelt profile denies the leaves and the staging
+    directory, never an arbitrary ``*.tmp`` sibling, so skipping macOS would leave the
+    token readable there forever. For the same asymmetry it sweeps EVERY crew-home
+    spelling, live and legacy, while materialising touches only the live one.
+
+    Every ``*.tmp`` DIRECT child of the state directory is such an orphan by
+    construction: the state writers now stage inside the top-level staging directory, and
+    note temps live beside their note inside ``vaults/<id>/``. Directories, links, and
+    special files are left alone — only regular files are removed, judged by ``lstat`` so
+    a link is never followed.
+
+    **Fail-closed like the materialiser.** If an orphan cannot be removed the spawn is
+    refused, naming the path: launching would hand the agent the PAT this whole mechanism
+    is built to hide, and the operator can delete the file. Returns the paths it removed.
+    """
+    removed: list[str] = []
+    # Every crew-home spelling, not just the live one. The mask covers BOTH prefixes
+    # (see ``_crew_home_entries``), so a pre-upgrade orphan under an un-migrated or
+    # rolled-back ``~/.kirocrew`` is exposed exactly as one under the current home. This
+    # is the opposite requirement from MATERIALISING, which is live-home-only because a
+    # stub in a home nothing reads would be a file nobody opens: a token already written
+    # to the legacy home stays readable no matter which home is live now. De-duplicated so
+    # a relocated ``KIROCREW_HOME`` coinciding with a prefix is swept once.
+    roots: list[str] = []
+    try:
+        roots.append(str(config_dir()))
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug(
+            "could not resolve the crew data home for the md-notebook sweep", exc_info=True
+        )
+    try:
+        home = Path.home()
+        roots.extend(str(home / Path(prefix)) for prefix in _CREW_HOME_PREFIXES)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("could not resolve $HOME for the md-notebook sweep", exc_info=True)
+    for root in dict.fromkeys(roots):
+        removed.extend(_sweep_one_md_notebook_state_dir(root))
+    return removed
+
+
+#: The components between a crew data home and the md-notebook state directory. The
+#: sweep descends them ONE AT A TIME from the home, so each name is resolved by the
+#: kernel inside a directory this process already holds open.
+_MD_NOTEBOOK_STATE_COMPONENTS: tuple[str, ...] = ("workspace", MD_NOTEBOOK_APP_NAME)
+
+
+def _open_dir_anchored(anchor: str, components: tuple[str, ...]) -> int | None:
+    """Open ``anchor/*components`` by descending one component at a time, or return None.
+
+    Every step uses ``O_NOFOLLOW | O_DIRECTORY`` relative to the descriptor of the step
+    above it, so the kernel refuses a link AT EACH component and resolves each name inside
+    a directory this process is already holding. Opening the joined PATH instead would be
+    unsound however carefully the chain was pre-checked: ``O_NOFOLLOW`` constrains only the
+    FINAL component, so an intermediate directory swapped between the check and the open
+    would silently redirect the whole descent, and the caller would then ``unlink`` inside
+    a tree the agent chose. The descriptor chain closes that window structurally rather
+    than narrowing it.
+
+    ``anchor`` must be a trusted path (a crew data home), and the caller owns the returned
+    descriptor. None means some component is absent, is not a directory, or is a link —
+    all of which are "nothing safe to do here", never an error to escalate.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(anchor, flags)
+    except OSError:
+        return None
+    for name in components:
+        try:
+            nxt = os.open(name, flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=fd)
+        except OSError:
+            os.close(fd)
+            return None
+        os.close(fd)
+        fd = nxt
+    return fd
+
+
+def _sweep_one_md_notebook_state_dir(root: str) -> list[str]:
+    """Remove the legacy staging orphans in ONE md-notebook state directory.
+
+    The guards here are stricter than the sibling materialiser's for a concrete reason:
+    that function only ever creates, while this one ``unlink``s, and an unlink through an
+    attacker-chosen directory is irreversible.
+
+    The intermediate components (``workspace/``, ``workspace/md-notebook``) are
+    agent-writable, so a RESOLVING link planted at one of them would otherwise make this
+    sweep list and delete ``*.tmp`` files in a tree the agent picked. The descent from
+    *root* is therefore anchored and per-component (:func:`_open_dir_anchored`), and every
+    ``lstat`` and ``unlink`` is issued against the pinned final descriptor.
+
+    A root whose descent fails is SKIPPED, not escalated to a spawn refusal: skipping
+    removes the deletion hazard completely, and refusing would fail every agent spawn on a
+    host whose layout is merely unusual rather than hostile — one that symlinks the legacy
+    ``~/.kirocrew`` at the new home, say. An orphan under such a root survives unswept,
+    which is why the same predicate that degrades the app also masks the whole state
+    directory (:func:`_md_notebook_degraded_mask_dirs`): the orphan is then hidden from the
+    sandbox even though it could not be deleted.
+    """
+    removed: list[str] = []
+    state_dir = os.path.join(root, *_MD_NOTEBOOK_STATE_COMPONENTS)
+    dir_fd = _open_dir_anchored(root, _MD_NOTEBOOK_STATE_COMPONENTS)
+    if dir_fd is None:
+        # Absent, not a directory, or a link at some component. Nothing safe to do here.
+        return removed
+    try:
+        names = os.listdir(dir_fd)
+        protected = {os.path.basename(leaf) for leaf in _MD_NOTEBOOK_STATE_LEAVES}
+        for name in names:
+            if not name.endswith(".tmp") or name in protected:
+                continue
+            # ``_publish_empty_ceiling`` stages ITS temp in the target's parent — this
+            # very directory — under this prefix, and publishes with ``os.link``. Two
+            # concurrent spawns would otherwise let one's sweep unlink the other's
+            # in-flight temp between its ``mkstemp`` and its ``link``, failing that spawn
+            # for no reason. These are gateway-owned and short-lived, never the legacy
+            # orphans this sweep is for.
+            if name.startswith(_CEILING_TEMP_PREFIX):
+                continue
+            candidate = os.path.join(state_dir, name)
+            # Both syscalls go through the pinned descriptor, so the name is resolved
+            # inside the directory this function verified — never through a component
+            # something swapped after the check.
+            try:
+                if not stat.S_ISREG(os.lstat(name, dir_fd=dir_fd).st_mode):
+                    continue
+            except OSError:
+                continue
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise SandboxCeilingUnsealable(
+                    f"cannot remove the legacy md-notebook staging temp {candidate}: "
+                    f"{exc}. It was staged beside the state files by a pre-upgrade "
+                    "writer, so it can hold the real PAT bytes at a name no mask covers. "
+                    "Launching anyway would leave it readable inside every agent "
+                    "namespace — delete it and retry."
+                ) from exc
+            logger.warning(
+                "SECURITY: removed a legacy md-notebook staging temp at %s. A pre-upgrade "
+                "writer staged it beside the state files, where no sandbox mask covers "
+                "it, so it may have held the GitHub token in cleartext. Treat that token "
+                "as exposed to anything that ran as this user and rotate it if in doubt.",
+                candidate,
+            )
+            removed.append(candidate)
+    finally:
+        os.close(dir_fd)
+    return removed
+
+
+def _materialize_md_notebook_mask_targets() -> list[str]:
+    """Create md-notebook's absent state files and staging dir so their masks can mount.
+
+    The NESTED counterpart to :func:`_materialize_maskable_dirs`, whose plain ``mkdir``
+    is sound only for a DIRECT child of the data home. These leaves sit under
+    ``workspace/md-notebook/``, and that restriction names exactly why the difference
+    matters: the intermediate components are agent-writable, so a RESOLVING link planted
+    at one of them would land the materialised files under an attacker-chosen tree while
+    the launcher masks the lexical path. Every chain this function walks therefore goes
+    through :func:`atomic_write.refuse_linked_parent` BEFORE any
+    ``mkdir``, because ``mkdir`` itself follows a planted link.
+
+    Closes the sibling gap named at :data:`_CREW_PRECREATE_READONLY_DIR_LEAVES`: the
+    ``SENSITIVE_FILES`` mask loop guards on ``isfile``, so an ABSENT leaf gets no mask at
+    all. :data:`_MD_NOTEBOOK_PRECREATE_CONTENT` carries the per-leaf absent-equivalence
+    argument that gap note requires.
+
+    Runs on the Linux spawn path only, at the same site as
+    :func:`_materialize_sealable_ceilings`; the macOS profile needs nothing here because
+    Seatbelt denies are path rules that hold for names that do not exist yet.
+    **Fail-closed** for the same reason the ceiling materialiser is: launching anyway
+    would run the agent with a mask the launcher silently skipped. Creation happens only
+    under the LIVE data home (``config_dir()``) — a stub in the deprecated spelling would
+    be a file nothing reads — and an absent data home root is left absent, mirroring
+    ``_sealable_absent_ceilings``.
+
+    Never truncates and never removes: an existing regular file is left byte-for-byte
+    alone, and ``EEXIST`` outcomes are the benign race.
+    """
+    created: list[str] = []
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for md-notebook masking", exc_info=True)
+        return created
+    if not os.path.isdir(root):
+        return created
+
+    # The staging DIRECTORY is not created here: it is a direct child of the data home, so
+    # ``_materialize_maskable_dirs`` above already covers it under its own rule. The legacy
+    # sweep is not here either — it must run on the macOS path too, so both launch sites
+    # call it directly.
+    for leaf, content in _MD_NOTEBOOK_PRECREATE_CONTENT.items():
+        target = os.path.join(root, leaf)
+        # A link planted at an intermediate component means this process cannot tell which
+        # directory the write would reach, so the leaf is SKIPPED rather than materialised —
+        # and the spawn proceeds. Refusing here would let one optional app's on-disk layout
+        # take every sandboxed process on the host down with it: an operator who symlinks
+        # ``workspace/`` to another disk would find no agent could start, over a Notes file
+        # they may never have created.
+        #
+        # Skipping is safe only because it is keyed off the SAME predicate that withholds
+        # the carve-out (:func:`carveout_chain_has_planted_link`, applied in
+        # :func:`app_backend_visible_targets`). While the condition holds the backend cannot
+        # write this state at all, so a leaf left unmaterialised — and therefore unmasked —
+        # has nothing to expose. The two must never be decided separately: granting the
+        # carve-out while skipping materialisation is exactly the hole this function exists
+        # to close, which is why a test pins them together.
+        if carveout_chain_has_planted_link(target):
+            continue
+        if os.path.exists(target):
+            # Present is acceptable only as a REGULAR file, and ``lstat`` is what
+            # decides — so this is also the LINK refusal. A mount RESOLVES its target,
+            # so a resolving link here would mask the referent while the lexical name
+            # stayed an agent-replaceable link in a writable parent: swap it after
+            # launch and a later PAT write publishes to an unmasked name inside the
+            # live namespace. (``atomic_write`` deliberately ALLOWS a leaf link,
+            # because ``os.replace`` does not follow the final component; a mount
+            # target has the opposite requirement.) A FIFO, socket, or device node is
+            # refused for a different reason: the launcher's hiding loops classify with
+            # ``isdir``/``isfile`` and a special file matches NEITHER, so its mask
+            # would be silently skipped for the whole sandbox.
+            if not stat.S_ISREG(os.lstat(target).st_mode):
+                raise SandboxCeilingUnsealable(
+                    f"the md-notebook state mask target {target} exists but is not a "
+                    "regular file (a link, or a special file). The mask would bind "
+                    "over a referent, or be skipped by the launcher's isdir/isfile "
+                    "loops. Remove or replace it with a regular file."
+                )
+            continue
+        parent = os.path.dirname(target)
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot create {parent} to give the md-notebook state mask a mount "
+                f"target: {exc}. Launching anyway would leave {target} maskless in every "
+                "agent namespace once the Notes backend creates it."
+            ) from exc
+        if _publish_empty_ceiling(target, parent, content=content):
+            created.append(target)
+        else:
+            # A lost publish race is benign ONLY when the winner clears the SAME bar an
+            # existing target had to: a regular file. ``lstat`` judges it, so this also
+            # catches a DANGLING leaf link — ``exists()`` is False for one, so it reaches
+            # the publish, where ``os.link`` fails EEXIST on the link's own name. And it
+            # catches an agent racing ``mkfifo``/``symlink`` between the validation and
+            # the publish, which accepting bare existence here would have let through.
+            try:
+                winner = os.lstat(target)
+            except OSError as exc:
+                raise SandboxCeilingUnsealable(
+                    f"cannot re-check the md-notebook state mask target {target} after a "
+                    f"publish race: {exc}"
+                ) from exc
+            if not stat.S_ISREG(winner.st_mode):
+                raise SandboxCeilingUnsealable(
+                    f"the md-notebook state mask target {target} is not a regular file "
+                    "after the publish (a link, or a special file that won the race), so "
+                    "the mask would bind over a referent or be skipped by the launcher's "
+                    "isdir/isfile loops. Remove or replace it with a regular file."
+                )
     return created
 
 
@@ -3373,6 +3813,12 @@ def _build_launcher_script(
     hidden_dirs.extend(_pod_os_home_targets(tuple(dirs)))
     hidden_dirs.extend(_relocated_policy_cache_dirs())
     hidden_dirs.extend(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
+    # Placed BEFORE the extra_visible_dirs filter on purpose: the predicate that adds
+    # these is the same one that withholds the backend's carve-out, so in practice they
+    # never collide — and if a future change did hand the backend its state paths while
+    # the chain is linked, cancelling this mask is the correct, visible consequence of
+    # that decision rather than a silently retained one.
+    hidden_dirs.extend(_md_notebook_degraded_mask_dirs())
     hidden_dirs.extend(_voice_runtime_sandbox_paths())
     hidden_dirs.extend(os.path.abspath(path) for path in extra_hidden_dirs)
     unhidden = [
@@ -4382,6 +4828,14 @@ def namespace_argv(
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs()
+    # And the ``SENSITIVE_FILES`` loop is guarded on ``isfile``, so md-notebook's state
+    # leaves — creatable on a sandboxed host now that the backend carve-out exists —
+    # need a mount target too.
+    _materialize_md_notebook_mask_targets()
+    # A pre-upgrade orphan already ON disk is a different problem from an absent mask
+    # target, and this one is not Linux-specific: see the sweep's own docstring for why
+    # the macOS path calls it too.
+    _sweep_legacy_md_notebook_temps()
 
     script = _build_launcher_script(
         sandbox_level,
@@ -4564,6 +5018,11 @@ def _build_seatbelt_profile(
         + _pod_os_home_targets(tuple(dirs))
         + _relocated_policy_cache_dirs()
         + _relocated_crew_targets(_CREW_HIDDEN_LEAVES)
+        # Seatbelt needs this for the same reason the Linux launcher does: the sweep
+        # cannot delete an orphan through a linked chain on either platform, so the
+        # directory mask is what keeps that orphan out of the sandbox. Omitting it here
+        # would close the exposure on Linux and leave it open on macOS.
+        + _md_notebook_degraded_mask_dirs()
         + list(_voice_runtime_sandbox_paths())
     )
     for target in masked_targets:
@@ -4920,6 +5379,13 @@ def sandbox_exec_argv(
     resolved_argv = list(argv)
     if resolved_argv:
         resolved_argv[0] = _resolve_agent_executable(resolved_argv[0])
+
+    # A pre-upgrade md-notebook staging temp holding the PAT sits at a name this profile
+    # never denies (it names the state leaves and the staging directory, not an arbitrary
+    # ``*.tmp`` sibling), so removing it is NOT Linux-only work. File materialisation
+    # stays on the namespace path — a Seatbelt deny is a path rule that holds for a name
+    # that does not exist yet — but an orphan already on disk needs sweeping here too.
+    _sweep_legacy_md_notebook_temps()
 
     profile = _build_seatbelt_profile(
         sandbox_level,

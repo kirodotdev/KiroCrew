@@ -51,6 +51,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.sandbox import (
+    MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
     app_backend_visible_targets,
@@ -1695,6 +1696,16 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         logger.warning("Refusing to spawn third-party app %s backend: %s", app_name, denied)
         return None
 
+    # Whether this spawn executes the SHIPPED md-notebook backend — provenance on the
+    # executed path the admission gate above vetted. Only the isolated-startup branch
+    # below reads it: that is the one spawn whose namespace holds an unmasked PAT, so
+    # interpreter startup hooks must not ride along. The state-file carve-out further
+    # down is keyed off the GENERIC ``is_builtin_app`` check instead, because it applies
+    # to every app that owns hidden leaves.
+    _shipped_md_notebook = app_name == MD_NOTEBOOK_APP_NAME and is_builtin_app(
+        app_name=app_name, app_root=execution_path
+    )
+
     if is_module_entry:
         entry = None  # sentinel; no file path for module-style entries
     else:
@@ -2036,15 +2047,47 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                     logger.warning("Failed to install npm deps for app %s: %s", app_name, exc)
 
     # --- Module-style Python builtin (e.g. kiro_crew.apps.builtins.<name>) ---
-    # Module-style entries have no file path — invoke via `python -m <module>`.
-    # Run under the gateway's own python interpreter (sys.executable) so the
-    # module path resolves against the gateway's installed packages, with
-    # cwd at the KiroCrew source root so relative imports inside the module
-    # work without venv setup.
+    # Module-style entries have no file path — the module runs under the gateway's own
+    # interpreter (sys.executable) so it resolves against the gateway's installed
+    # packages, with cwd at the kiro_crew source root so relative imports inside the
+    # module work without venv setup.
+    #
+    # The md-notebook spawn ALONE starts isolated (``-I``): a bare ``python -m`` runs the
+    # interpreter's startup hooks — ``sitecustomize`` / ``usercustomize`` / user-site
+    # ``.pth`` — and the default user site is an agent-writable, gateway-independent
+    # injection path a FRESH interpreter honours even though the running gateway never
+    # re-imports it. For md-notebook that startup code would run inside the one namespace
+    # where the PAT is unmasked, so the hooks must not ride along. Scoped to the spawn
+    # that carries the carve-out, not to every module builtin: the others have no
+    # unmasked secret in their namespace, and rewriting their import environment here
+    # would be a rider on a fix scoped to one.
+    #
+    # ``-I`` also drops cwd-on-sys.path, the user site's PACKAGES, and ``PYTHONPATH`` (it
+    # implies ``-E``), so the import universe the module needs is restated EXPLICITLY:
+    # ``runpy`` (the machinery behind ``-m``) runs the module after inserting the root
+    # kiro_crew ITSELF was imported from — backend.py lives in that same package, so its
+    # own tree root IS that root. Correct across a venv install (site-packages, harmless
+    # duplicate), a --user install (the user-site dir re-admitted as a plain path entry
+    # WITHOUT its hooks — a plain sys.path insert never imports usercustomize and never
+    # processes ``.pth``), and a source tree (the repo ``src`` root). ``repr`` keeps both
+    # injected strings inert literals.
     elif entry is None:
         python_bin = sys.executable
-        cmd = [python_bin, "-m", entry_point]
-        cwd = str(Path(__file__).resolve().parent.parent.parent)
+        _import_root = str(Path(__file__).resolve().parent.parent.parent)
+        cwd = _import_root
+        if _shipped_md_notebook:
+            cmd = [
+                python_bin,
+                "-I",
+                "-c",
+                (
+                    "import runpy, sys; "
+                    f"sys.path.insert(0, {_import_root!r}); "
+                    f"runpy.run_module({entry_point!r}, run_name='__main__', alter_sys=True)"
+                ),
+            ]
+        else:
+            cmd = [python_bin, "-m", entry_point]
 
     # --- Exec (shell-launcher) backend ---
     # Explicit `backend.type: "exec"` (exec the entry point file as-is — also
