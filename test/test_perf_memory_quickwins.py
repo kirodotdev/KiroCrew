@@ -17,6 +17,10 @@ Each test is written to FAIL if its corresponding fix is reverted:
   one numpy mat-vec when numpy is available (issue #8548), giving identical
   results to the stdlib loop; ``test_numpy_branch_is_actually_taken`` fails if
   the vectorized branch is reverted.
+- ``TestEpisodicScoringCacheReuse`` — that same tier holds its scoring columns
+  resident (issue #8894), so a second search with no write in between repeats
+  neither the full-population fetch nor the per-row candidate build, and every
+  writer that changes the scored population invalidates the set.
 """
 
 from __future__ import annotations
@@ -574,3 +578,408 @@ class TestEpisodicSqliteCosineNumpy:
                 )
             }
             assert ids == set()
+
+
+class TestEpisodicScoringCacheReuse:
+    """Issue #8894: the sqlite episodic tier keeps its scoring columns resident.
+
+    The scored population changes only when something writes it, so two
+    identical searches with nothing in between must repeat neither the
+    full-population fetch nor the per-row candidate build. Every assertion here
+    is on the SHAPE of the work (which statements run, which helpers are
+    called), never on a duration: a timed ratio false-reds on a shared CI
+    runner.
+
+    The correctness half is the harder half, and it is what the rest of the
+    class pins: a write of any kind between two searches must be visible to the
+    second one, including the three cases a naive append-only cache misses (the
+    backfill on a no-FAISS install, the re-embed reset, and a second process
+    writing the same file).
+    """
+
+    DIM = 8
+    #: Matches the full-population scan whether it comes from the legacy
+    #: per-call fetch or from the cache build — so the "no refetch" assertion
+    #: fails if the cache is reverted rather than silently passing.
+    POPULATION_SCAN = ("SELECT", "FROM episodic_memories", "embedding IS NOT NULL")
+
+    def _store(self, tmp_path: Path, n_entries: int = 6) -> VectorMemoryStore:
+        """A store pinned to the sqlite tier (no FAISS index)."""
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=self.DIM)
+        store.init()
+        store.embed_fn = _fake_embed(self.DIM)
+        store._faiss_index = None
+        store._faiss_id_map = []
+        for i in range(n_entries):
+            store.write_episodic(f"episodic memory number {i} about topic alpha beta")
+        return store
+
+    def _query(self) -> list[float]:
+        return _fake_embed(self.DIM)("topic alpha")
+
+    def _search(self, store: VectorMemoryStore, limit: int = 10) -> list[dict]:
+        return store._sqlite_vector_search(self._query(), "topic alpha", limit)
+
+    def test_second_identical_search_refetches_no_rows(self, tmp_path: Path) -> None:
+        """The population scan runs once, not once per call."""
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._store(tmp_path)
+        assert self._search(store), "expected episodic hits to warm the scoring set"
+
+        recorder = _SqlRecorder()
+        store.db.set_trace_callback(recorder)
+        try:
+            second = self._search(store)
+        finally:
+            store.db.set_trace_callback(None)
+
+        assert second, "the cached path must still return the same hits"
+        assert recorder.matching(*self.POPULATION_SCAN) == [], (
+            "a second identical search re-scanned the whole population: "
+            f"{recorder.matching(*self.POPULATION_SCAN)}"
+        )
+
+    def test_cached_path_does_not_build_a_candidate_per_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Decay scoring is vectorized, not a Python dict build per row.
+
+        ``_episodic_candidate`` is the per-row builder the legacy path calls for
+        every surviving row. Computing the decay row by row is what put 40% of
+        the call in that phase, so the cached path must not reach it at all.
+        """
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._store(tmp_path)
+        assert self._search(store)
+
+        def _boom(*args: object, **kwargs: object) -> None:
+            raise AssertionError("per-row candidate build on the cached path")
+
+        monkeypatch.setattr(VectorMemoryStore, "_episodic_candidate", _boom)
+        assert self._search(store), "the cached path must return hits without _episodic_candidate"
+
+    def test_write_between_searches_produces_fresh_results(self, tmp_path: Path) -> None:
+        """An in-process write is visible to the next search."""
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._store(tmp_path)
+        before = self._search(store)
+        assert before
+
+        assert store.write_episodic("a further episodic memory about topic alpha beta gamma")
+        after = self._search(store)
+
+        assert len(after) == len(before) + 1
+        assert {r["id"] for r in before} < {r["id"] for r in after}
+
+    def test_tombstone_between_searches_produces_fresh_results(self, tmp_path: Path) -> None:
+        """A delete is visible to the next search."""
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._store(tmp_path)
+        before = self._search(store)
+        assert len(before) > 1
+
+        assert store.delete_episodic(before[0]["id"])
+        after = self._search(store)
+
+        assert before[0]["id"] not in {r["id"] for r in after}
+        assert len(after) == len(before) - 1
+
+    def test_backfill_is_visible_without_faiss(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The backfill rebuilds FAISS only under ``_HAS_FAISS``; the cache is not.
+
+        A row embedded by the sweep is a row the population scan never saw. A
+        body lookup cannot rescue this — it drops ids that vanished but can
+        never surface ids that appeared — so recall would degrade silently on
+        exactly the install this tier serves.
+        """
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        import kiro_crew.vector_memory as vm
+
+        monkeypatch.setattr(vm, "_HAS_FAISS", False)
+        store = self._store(tmp_path)
+        assert store.write_episodic(
+            "a deferred episodic memory about topic alpha beta", defer_embedding=True
+        )
+        before = self._search(store)
+        assert before
+
+        assert store.backfill_missing_embeddings(pace=False) == 1
+        after = self._search(store)
+
+        assert len(after) == len(before) + 1
+
+    def test_reembed_reset_clears_the_scoring_set(self, tmp_path: Path) -> None:
+        """``reconcile_embedding_space`` NULLs every vector; the cache goes with them."""
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._store(tmp_path)
+        assert self._search(store)
+
+        store.reconcile_embedding_space("some-other-model-signature", clear_when_unknown=True)
+
+        assert self._search(store) == []
+
+    def test_another_connection_insert_is_visible(self, tmp_path: Path) -> None:
+        """A second process writing the same store must not be served stale.
+
+        The in-process consistency gate cannot see it, so the cache is keyed on
+        ``PRAGMA data_version`` as well: it moves when ANOTHER connection
+        commits.
+        """
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        import sqlite3 as _sqlite3
+        import struct as _struct
+        from datetime import datetime, timezone
+
+        store = self._store(tmp_path)
+        before = self._search(store)
+        assert before
+
+        other = _sqlite3.connect(str(tmp_path / "mem.db"))
+        try:
+            other.execute(
+                "INSERT INTO episodic_memories "
+                "(id, conversation_id, text, embedding, tags, importance, created_at, is_deleted) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                (
+                    "from-another-process",
+                    "conv-other",
+                    "an episodic memory written by another process about topic alpha",
+                    _struct.pack(f"{self.DIM}f", *self._query()),
+                    "[]",
+                    0.5,
+                    datetime.now(tz=timezone.utc).isoformat(),
+                ),
+            )
+            other.commit()
+        finally:
+            other.close()
+
+        after = self._search(store)
+        assert "from-another-process" in {r["id"] for r in after}
+
+    def test_every_episodic_writer_invalidates_the_scoring_set(self) -> None:
+        """Ratchet: a new writer cannot land without covering the cache.
+
+        Missing an invalidation degrades recall with no error and no failing
+        test, so the guard is structural rather than a list of cases someone
+        remembers to extend.
+        """
+        import ast
+
+        src_root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        write_verbs = (
+            "INSERT INTO episodic_memories",
+            "UPDATE episodic_memories",
+            "DELETE FROM episodic_memories",
+        )
+        # Writers that provably touch no cached column. `last_accessed_at` is
+        # resolved per search from the winners' row bodies, never from the
+        # cache, so debouncing it must not drop the scoring set.
+        exempt = {"_touch_last_accessed"}
+        offenders: list[str] = []
+
+        for path in sorted(src_root.rglob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            if not any(verb in text for verb in write_verbs):
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if node.name in exempt:
+                    continue
+                body = ast.dump(node)
+                if not any(verb in body for verb in write_verbs):
+                    continue
+                if "_invalidate_episodic_scoring" in body:
+                    continue
+                offenders.append(f"{path.relative_to(src_root)}::{node.name}")
+
+        assert not offenders, (
+            "these functions write episodic_memories without invalidating the "
+            f"resident scoring set: {offenders}"
+        )
+
+
+class TestEpisodicCachedRankingParity:
+    """The resident scoring set must not change what a search returns.
+
+    Filtering runs across the FULL population before ``limit`` — a tag matching
+    few rows, or a relevance gate admitting few, must still return those rows
+    rather than whatever fell inside a top-k window. So parity is checked with
+    the filters ON, against the stdlib branch, which reads every row from
+    sqlite on every call and shares no code with the cache.
+    """
+
+    DIM = 8
+
+    @staticmethod
+    def _normed(seed: int, dim: int) -> list[float]:
+        import math as _math
+
+        raw = [float((seed + i) % 5) + 0.25 for i in range(dim)]
+        norm = _math.sqrt(sum(x * x for x in raw))
+        return [x / norm for x in raw]
+
+    def _seed(self, tmp_path: Path) -> VectorMemoryStore:
+        import struct as _struct
+        from datetime import datetime, timedelta, timezone
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=self.DIM)
+        store.init()
+        store._faiss_index = None
+        now = datetime.now(tz=timezone.utc)
+        rows = [
+            ("ep-1", 1, ["alpha"], 0.9, 0, "short row one"),
+            ("ep-2", 3, ["beta"], 0.2, 40, "short row two"),
+            ("ep-3", 7, ["alpha", "beta"], 0.6, 5, "a longer row " + "padding " * 45),
+            ("ep-4", 11, [], 0.5, 400, "short row four"),
+            ("ep-5", 2, ["alpha"], 0.1, 1, "short row five"),
+        ]
+        for mem_id, seed, tags, importance, days, text in rows:
+            store.db.execute(
+                "INSERT INTO episodic_memories "
+                "(id, conversation_id, text, embedding, tags, importance, created_at, is_deleted) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                (
+                    mem_id,
+                    "conv-1",
+                    text,
+                    _struct.pack(f"{self.DIM}f", *self._normed(seed, self.DIM)),
+                    json.dumps(tags),
+                    importance,
+                    (now - timedelta(days=days)).isoformat(),
+                ),
+            )
+        store.db.commit()
+        return store
+
+    def _run(
+        self,
+        store: VectorMemoryStore,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        use_numpy: bool,
+        **kwargs: object,
+    ) -> list[dict]:
+        import kiro_crew.vector_memory as vm
+
+        monkeypatch.setattr(vm, "_HAS_NUMPY", use_numpy)
+        return store._sqlite_vector_search(
+            query_embedding=self._normed(2, self.DIM),
+            query_text="row",
+            limit=3,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},
+            {"mmr": False},
+            {"tag_filter": ["alpha"]},
+            {"relevance_filter": True},
+            {"mmr": False, "relevance_filter": True, "tag_filter": ["beta"]},
+        ],
+    )
+    def test_cached_matches_stdlib(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict
+    ) -> None:
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._seed(tmp_path)
+        cached = self._run(store, monkeypatch, use_numpy=True, **kwargs)
+        # Warm, then run again: the second call is the one served from the cache.
+        cached_again = self._run(store, monkeypatch, use_numpy=True, **kwargs)
+        stdlib = self._run(store, monkeypatch, use_numpy=False, **kwargs)
+
+        assert [r["id"] for r in cached] == [r["id"] for r in stdlib]
+        assert [r["id"] for r in cached_again] == [r["id"] for r in stdlib]
+        for got, want in zip(cached_again, stdlib):
+            assert got.keys() == want.keys()
+            assert abs(got["cosine_sim"] - want["cosine_sim"]) < 1e-6
+            assert abs(got["score"] - want["score"]) < 1e-6
+            assert got["text"] == want["text"]
+            assert got["tags"] == want["tags"]
+
+
+class TestOverBudgetRefusalIsMemoized:
+    """An over-budget store must not pay the build scan on every search.
+
+    Design finding on #8956: `_build_episodic_scoring_set` returning None
+    (population over `_EPISODIC_SCORING_MAX_BYTES`) was not memoized, so every
+    search first full-scanned the population trying to build, then full-scanned
+    again to answer per-call — strictly worse than the pre-cache baseline. The
+    refusal is now memoized under the same (dim, generation, data_version)
+    tokens as a successful build: settled between writes, re-probed after one.
+    """
+
+    DIM = 8
+    #: The BUILD scan is distinguishable from the per-call answer scan: only the
+    #: build selects the computed text-length column.
+    BUILD_SCAN = ("text_len", "FROM episodic_memories")
+
+    def _over_budget_store(self, tmp_path: Path, monkeypatch) -> VectorMemoryStore:
+        import kiro_crew.vector_memory as vm_mod
+
+        # Smaller than a single 8-float embedding blob, so any populated store
+        # refuses to build.
+        monkeypatch.setattr(vm_mod, "_EPISODIC_SCORING_MAX_BYTES", 16)
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=self.DIM)
+        store.init()
+        store.embed_fn = _fake_embed(self.DIM)
+        store._faiss_index = None
+        store._faiss_id_map = []
+        for i in range(4):
+            store.write_episodic(f"episodic memory number {i} about topic alpha beta")
+        return store
+
+    def _search(self, store: VectorMemoryStore) -> list[dict]:
+        return store._sqlite_vector_search(_fake_embed(self.DIM)("topic alpha"), "topic alpha", 10)
+
+    def test_refused_build_is_not_retried_per_search(self, tmp_path: Path, monkeypatch) -> None:
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._over_budget_store(tmp_path, monkeypatch)
+        assert self._search(store), "over-budget store must still answer via the per-call read"
+
+        recorder = _SqlRecorder()
+        store.db.set_trace_callback(recorder)
+        try:
+            assert self._search(store)
+        finally:
+            store.db.set_trace_callback(None)
+
+        assert recorder.matching(*self.BUILD_SCAN) == [], (
+            "an over-budget store re-ran the build scan on a later search: "
+            f"{recorder.matching(*self.BUILD_SCAN)}"
+        )
+
+    def test_a_write_reopens_the_probe(self, tmp_path: Path, monkeypatch) -> None:
+        """The memo lives exactly as long as a successful build would."""
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available on this platform")
+        store = self._over_budget_store(tmp_path, monkeypatch)
+        assert self._search(store)
+        assert self._search(store)
+
+        assert store.write_episodic("a new memory about topic alpha")
+
+        recorder = _SqlRecorder()
+        store.db.set_trace_callback(recorder)
+        try:
+            assert self._search(store)
+        finally:
+            store.db.set_trace_callback(None)
+
+        assert recorder.matching(*self.BUILD_SCAN), (
+            "after a write the store must re-probe whether the population now fits"
+        )

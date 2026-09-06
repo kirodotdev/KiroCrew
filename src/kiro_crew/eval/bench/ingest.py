@@ -581,4 +581,8 @@ def _backdate(
             )
             updated += cur.rowcount or 0
         store.db.commit()
+        # created_at feeds the recency decay, which the store holds resident
+        # between searches; reaching past the public API means invalidating it
+        # here too.
+        store._invalidate_episodic_scoring()
     return updated
