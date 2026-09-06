@@ -1024,15 +1024,25 @@ class SafetyOverride:
         # ``take_dropped_grant`` were removed it would fail safe to silence.
         expires_at_wall = datetime.now(tz=timezone.utc).timestamp() + remaining
 
+        # Resolved HERE, on the calling thread, for exactly the reason the deadline
+        # above is: the publish runs later on the worker, and a job that resolved
+        # the path when it RAN would act on whatever the module names at that
+        # moment rather than on the file this transition was about. Nothing in
+        # production repoints it, so this changes no behaviour there -- but a job
+        # that outlives the context it was queued in was deleting and overwriting
+        # an unrelated file, which is issue #8586.
+        path = _breadcrumb_path()
+
         def _publish() -> None:
             with _breadcrumb_io_lock:
                 if gen < self._breadcrumb_published_gen:
                     return
                 self._breadcrumb_published_gen = gen
                 if not active:
-                    _clear_breadcrumb()
+                    _clear_breadcrumb(path)
                     return
                 _write_breadcrumb(
+                    path=path,
                     source=source,
                     expires_at_wall=expires_at_wall,
                     permanent=permanent,
@@ -1200,12 +1210,20 @@ def _breadcrumb_path() -> Path:
     return config_dir() / _BREADCRUMB_FILE
 
 
-def _write_breadcrumb(*, source: str, expires_at_wall: float, permanent: bool) -> None:
+def _write_breadcrumb(
+    *, path: Path, source: str, expires_at_wall: float, permanent: bool
+) -> None:
     """Record that a grant is live. Best-effort: never raises into the grant path.
 
     A failed write costs the operator a notice, never a grant, so it must not
     fail an activation -- and above all must not fail a DEACTIVATION, where
     raising would leave auto-approval on.
+
+    *path* is supplied by the caller rather than resolved here, for the same
+    reason ``expires_at_wall`` is computed at the transition: this runs on the
+    worker thread, so resolving ``_breadcrumb_path()`` here would bind the file
+    as it is WHENEVER THE WORKER GETS TO IT instead of as it was when the
+    transition was made.
     """
     try:
         payload = json.dumps(
@@ -1228,15 +1246,20 @@ def _write_breadcrumb(*, source: str, expires_at_wall: float, permanent: bool) -
             }
         )
         # 0600: the record names the auto-approval posture and its deadline.
-        atomic_write(_breadcrumb_path(), payload, mode=0o600)
+        atomic_write(path, payload, mode=0o600)
     except Exception:
         logger.debug("safety override: breadcrumb write failed", exc_info=True)
 
 
-def _clear_breadcrumb() -> None:
-    """Drop the record. Best-effort, for the same reason the write is."""
+def _clear_breadcrumb(path: Path) -> None:
+    """Drop the record. Best-effort, for the same reason the write is.
+
+    Takes the path for the same reason the write does: a queued clear that
+    resolved ``_breadcrumb_path()`` on the worker thread would unlink whatever
+    the module names at that moment, not the file its transition was about.
+    """
     try:
-        _breadcrumb_path().unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
     except Exception:
         logger.debug("safety override: breadcrumb clear failed", exc_info=True)
 
@@ -1307,7 +1330,7 @@ def _consume_breadcrumb() -> Optional[DroppedGrant]:
     try:
         if path.is_symlink():
             logger.warning("safety override: discarding a restart record that is a link")
-            _clear_breadcrumb()
+            _clear_breadcrumb(path)
             return None
     except OSError:
         return None
@@ -1320,7 +1343,7 @@ def _consume_breadcrumb() -> Optional[DroppedGrant]:
         # ELOOP from O_NOFOLLOW lands here: a symlink IS a refusal, not an error
         # to investigate.
         logger.debug("safety override: breadcrumb could not be opened", exc_info=True)
-        _clear_breadcrumb()
+        _clear_breadcrumb(path)
         return None
 
     # The verdict is decided while the descriptor is open, but every unlink
@@ -1354,13 +1377,13 @@ def _consume_breadcrumb() -> Optional[DroppedGrant]:
             pass
 
     if discard or raw is None:
-        _clear_breadcrumb()
+        _clear_breadcrumb(path)
         return None
 
     try:
         record = json.loads(raw)
         if not isinstance(record, dict):
-            _clear_breadcrumb()
+            _clear_breadcrumb(path)
             return None
         writer_image = str(record.get("image") or "")
         permanent = bool(record.get("permanent"))
@@ -1368,7 +1391,7 @@ def _consume_breadcrumb() -> Optional[DroppedGrant]:
         source = str(record.get("source") or "")
     except Exception:
         logger.debug("safety override: breadcrumb unreadable", exc_info=True)
-        _clear_breadcrumb()
+        _clear_breadcrumb(path)
         return None
 
     # THIS process image's own live grant. Left untouched -- consuming it would
@@ -1388,7 +1411,7 @@ def _consume_breadcrumb() -> Optional[DroppedGrant]:
     # From here the record belongs to a previous process, so it is consumed
     # whatever the verdict: one dropped grant cannot notify twice, and a record
     # left by an older install cannot notify forever.
-    _clear_breadcrumb()
+    _clear_breadcrumb(path)
 
     if permanent:
         return None
