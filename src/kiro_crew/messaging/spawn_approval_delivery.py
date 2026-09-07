@@ -123,11 +123,14 @@ async def deliver_spawn_approval(
         return await hook(request_id, description, parent_session_key)
     except Exception:
         # The surface, not the key: the channel is what an operator acts on, and a
-        # raw session key can carry the peer's platform id.
+        # raw session key can carry the peer's platform id. The request id is named
+        # too so this seam-level warning matches the granularity of the
+        # dispatcher-level one (which also logs the ``rid``) when both fire.
         logger.warning(
-            "Spawn-approval channel delivery failed on %s; falling through to "
-            "the Slack/dashboard path",
+            "Spawn-approval channel delivery failed on %s for %s; falling through "
+            "to the Slack/dashboard path",
             channel_namespace_of(parent_session_key) or "unknown",
+            request_id,
             exc_info=True,
         )
         return None

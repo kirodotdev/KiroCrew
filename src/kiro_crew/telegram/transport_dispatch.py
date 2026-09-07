@@ -2721,6 +2721,16 @@ class TelegramDispatcher:
         approval does, so Trust still runs ``add_trusted_session`` and a spawn id
         (``spawn:<agent_id>``) cannot collide with an opaque tool id in the
         registry keyed by ``session_key:request_id``.
+
+        The prompt is armed under ``parent_session_key`` VERBATIM (its ``:genN``
+        suffix included), but a press recomputes the key from the LIVE
+        conversation (``_callback_session_key``). A generation rotation between the
+        spawn and the press — ``/new``, an idle reset, a daily rotation — bumps the
+        generation, so the recomputed key no longer matches the armed one, the
+        press resolves nothing, and the prompt deny-by-defaults at the timeout
+        (the user sees "already expired"). This mirrors how a mid-run tool prompt
+        behaves across a rotation; it is not surfaced here as a decision, so the
+        gate simply falls through to Slack/dashboard when the wait elapses.
         """
         client = self.client
         if client is None:

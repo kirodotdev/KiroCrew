@@ -38,6 +38,7 @@ import pytest
 from test_telegram import _dispatcher  # noqa: E402
 
 from kiro_crew.messaging import spawn_approval_delivery as seam
+from kiro_crew.messaging.link import CHAT_TYPE_FORUM, parse_session_key
 from kiro_crew.messaging.session_trust import (
     _trusted_sessions,
     clear_trusted_sessions,
@@ -333,6 +334,126 @@ class TestTelegramDeliveryHook:
             await task
 
         asyncio.run(_go())
+
+    def test_a_forum_parent_threads_the_prompt_into_the_originating_topic(self) -> None:
+        # A supergroup forum Topic parent: the only branch of _spawn_chat_target
+        # that derives a thread id. The prompt must be posted into that Topic
+        # (message_thread_id carried through) and the press through the same
+        # forum-shaped callback resolves it.
+        chat_id, thread = -1001234567890, 42
+        d, cli, _sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[chat_id])
+        route = (CHAT_TYPE_FORUM, f"{chat_id}:{thread}")
+        session_key = d._session_key(route)
+        # The parent key is a genuine forum shape: telegram:{agent}:forum:{chat}:{thread}.
+        parsed = parse_session_key(session_key)
+        assert parsed is not None and parsed.chat_type == CHAT_TYPE_FORUM
+        assert parsed.scope == (str(chat_id), str(thread))
+
+        async def _go() -> bool:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
+            )
+            for _ in range(50):
+                if cli.sent:
+                    break
+                await asyncio.sleep(0.01)
+            # The prompt was threaded into the originating Topic, not the group root.
+            assert cli.send_threads == [thread]
+            key = TelegramApprovalDecider.key(session_key, "spawn:abc")
+            for _ in range(50):
+                if key in TelegramApprovalDecider._REGISTRY:
+                    break
+                await asyncio.sleep(0.01)
+            nonce = TelegramApprovalDecider._NONCES[key]
+            cb = SimpleNamespace(
+                callback_query_id="q1",
+                user_id=7,
+                chat_id=chat_id,
+                message_id=100,
+                data=f"a:spawn:abc:{nonce}:1",
+                label="",
+                chat_type="supergroup",
+                message_thread_id=thread,
+            )
+            await d.on_callback(cb)
+            return await task
+
+        assert asyncio.run(_go()) is True
+
+    def test_a_generation_rotation_between_spawn_and_press_expires_the_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The prompt is armed under parent_session_key VERBATIM, but a press
+        # recomputes the key from the LIVE conversation. A /new (or idle/daily)
+        # rotation between spawn and press bumps the generation, so the recomputed
+        # key no longer matches the armed one: the press resolves nothing and the
+        # prompt deny-by-defaults at the timeout. Pin that coupling here.
+        import kiro_crew.telegram.renderer as renderer_mod
+
+        monkeypatch.setattr(renderer_mod, "_APPROVAL_TIMEOUT_S", 0.2)
+        d, cli, _sess = _dispatcher({7})
+        route = ("direct", "7")
+        session_key = d._session_key(route)  # gen0
+
+        async def _go() -> bool:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
+            )
+            key = TelegramApprovalDecider.key(session_key, "spawn:abc")
+            for _ in range(50):
+                if key in TelegramApprovalDecider._REGISTRY:
+                    break
+                await asyncio.sleep(0.01)
+            nonce = TelegramApprovalDecider._NONCES[key]
+            # Rotate the parent conversation's generation AFTER arming.
+            d._conv.bump_gen(route)
+            # The press recomputes the (now rotated) key, which diverges from the
+            # armed one, so the approve press cannot resolve the gen0 prompt.
+            assert d._session_key(route) != session_key
+            cb = SimpleNamespace(
+                callback_query_id="q1",
+                user_id=7,
+                chat_id=7,
+                message_id=100,
+                data=f"a:spawn:abc:{nonce}:1",
+                label="",
+                chat_type="private",
+            )
+            await d.on_callback(cb)
+            # The armed prompt is still pending — the press landed on a different
+            # key — so it deny-by-defaults when the (shortened) timeout elapses.
+            return await task
+
+        assert asyncio.run(_go()) is False
+
+    def test_a_cancelled_awaiting_decider_leaks_no_registry_or_nonce_entry(self) -> None:
+        # The prompt posts and the hook awaits the press, but the awaiting task is
+        # cancelled mid-prompt (e.g. gateway teardown) before a press arrives. The
+        # decider's finally must still pop BOTH the registry future and the armed
+        # nonce so a later request-id reuse cannot match a stale entry.
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        key = TelegramApprovalDecider.key(session_key, "spawn:abc")
+
+        async def _go() -> None:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
+            )
+            for _ in range(50):
+                if key in TelegramApprovalDecider._REGISTRY:
+                    break
+                await asyncio.sleep(0.01)
+            # Prompt is live and awaiting: both entries armed.
+            assert key in TelegramApprovalDecider._REGISTRY
+            assert key in TelegramApprovalDecider._NONCES
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_go())
+        # No leak: the finally ran on cancellation and cleared both maps.
+        assert key not in TelegramApprovalDecider._REGISTRY
+        assert key not in TelegramApprovalDecider._NONCES
 
     def test_a_non_telegram_parent_key_falls_through(self) -> None:
         d, cli, _sess = _dispatcher({7})
