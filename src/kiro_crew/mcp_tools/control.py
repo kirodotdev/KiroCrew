@@ -1249,6 +1249,12 @@ def monitor_inspect(name: str, args: dict[str, Any]) -> str:
 def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
     """Project the browser record into a bounded, agent-oriented status."""
     compact = {key: result.get(key) for key in ("enabled", "active", "monitor_id") if key in result}
+    # Surface the auto-nudge loop reading (#9194) so a caller can tell an armed
+    # auto-nudge loop from nothing armed. It is already a bounded, fixed-key dict
+    # from the handler, so it passes through as-is; absent on responses that
+    # predate the field, and None when no loop is armed.
+    if "autonudge_loop" in result:
+        compact["autonudge_loop"] = result.get("autonudge_loop")
     raw = result.get("monitor")
     if not isinstance(raw, dict):
         compact["monitor"] = None

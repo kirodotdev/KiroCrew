@@ -224,3 +224,56 @@ def test_monitor_inspect_reports_internal_read_failure_as_error():
         result = control.monitor_inspect("monitor_inspect", {})
 
     assert result == "Error: Monitor inspection failed: gateway unavailable"
+
+
+def test_monitor_inspect_surfaces_armed_autonudge_loop():
+    """#9194: monitor_inspect must let a caller see an armed auto-nudge loop.
+
+    The gateway reports ``monitor: None`` (no structured monitor) together with
+    a truthful ``autonudge_loop`` reading; the compact projection must pass that
+    reading through so the caller can tell armed-auto-nudge from nothing armed.
+    """
+    with (
+        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1-1"),
+        patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "enabled": True,
+                "monitor": None,
+                "autonudge_loop": {
+                    "id": "lp-9",
+                    "active": True,
+                    "idle_secs": 300,
+                    "cycle_count": 4,
+                    "last_fire_ts": 123.0,
+                },
+            },
+        ),
+    ):
+        result = control.monitor_inspect("monitor_inspect", {})
+
+    payload = json.loads(result)
+    assert payload["monitor"] is None
+    assert payload["autonudge_loop"] == {
+        "id": "lp-9",
+        "active": True,
+        "idle_secs": 300,
+        "cycle_count": 4,
+        "last_fire_ts": 123.0,
+    }
+
+
+def test_monitor_inspect_reports_no_loop_distinctly_from_armed():
+    """The no-loop reading carries ``autonudge_loop: None``, distinct from armed."""
+    with (
+        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1-1"),
+        patch(
+            "kiro_crew.mcp_core._get",
+            return_value={"enabled": True, "monitor": None, "autonudge_loop": None},
+        ),
+    ):
+        result = control.monitor_inspect("monitor_inspect", {})
+
+    payload = json.loads(result)
+    assert payload["monitor"] is None
+    assert payload["autonudge_loop"] is None

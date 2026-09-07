@@ -115,6 +115,35 @@ def _serialize_monitor(loop: Any) -> dict[str, Any]:
     return _serialize(loop)
 
 
+def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
+    """Project a plain auto-nudge loop into a bounded, agent-oriented status.
+
+    This is the reading #9194 asks for: enough to answer "is a loop armed on
+    this session, and is it firing" from inside the session, which
+    ``monitor_inspect`` previously could not do for an auto-nudge loop (it only
+    ever described the structured monitor, so an armed auto-nudge loop and no
+    loop at all both read as ``monitor: None``).
+
+    Only presence, cadence and progress fields are surfaced. The loop's
+    ``message`` is agent-controlled free text and is NOT included — it is not
+    needed to verify arming, and leaving it out keeps this read narrow.
+    """
+    return {
+        "id": loop.id,
+        "active": bool(loop.active),
+        "idle_secs": loop.idle_secs,
+        "max_cycles": loop.max_cycles,
+        "cycle_count": loop.cycle_count,
+        "max_runtime_secs": loop.max_runtime_secs,
+        "gate": bool(loop.gate),
+        "last_fire_ts": loop.last_fire_ts,
+        "created_ts": loop.created_ts,
+        "next_due_ts": loop.next_due_ts,
+        "stopped_reason": loop.stopped_reason,
+        "has_banner": bool(loop.banner),
+    }
+
+
 def _monitor_error(message: str, code: str, *, status: int = 400) -> web.Response:
     response = web.json_response({"error": message, "code": code})
     response.set_status(status)
@@ -299,8 +328,23 @@ async def api_session_monitor_get(request: web.Request) -> web.Response:
     if svc is None:
         return web.json_response({"enabled": False, "monitor": None})
     loop = svc.get_by_slot(binding)
-    if loop is None or not is_structured_monitor_loop(loop):
-        return web.json_response({"enabled": True, "monitor": None})
+    if loop is None:
+        # Nothing is armed on this session. This is the ONLY case that reads as
+        # "not armed", and it is now DISTINCT from an armed auto-nudge loop below
+        # — the two were previously collapsed into an identical ``monitor: None``,
+        # which is the observability gap #9194 reports: a caller could not tell an
+        # accepted-and-armed loop from an accepted-and-dropped request.
+        return web.json_response({"enabled": True, "monitor": None, "autonudge_loop": None})
+    if not is_structured_monitor_loop(loop):
+        # A plain auto-nudge loop IS armed. ``monitor`` stays None because a
+        # structured monitor genuinely does not exist, but ``autonudge_loop``
+        # now carries a truthful presence/cadence/progress reading so the caller
+        # can verify arming instead of being told "do not assume" with no
+        # instrument. The loop's free-text ``message`` is deliberately omitted:
+        # this reading answers "is it armed and firing", not "what does it say".
+        return web.json_response(
+            {"enabled": True, "monitor": None, "autonudge_loop": _autonudge_loop_reading(loop)}
+        )
     monitor = loop.monitor
     assert monitor is not None
     return web.json_response(
@@ -309,6 +353,7 @@ async def api_session_monitor_get(request: web.Request) -> web.Response:
             "active": bool(loop.active),
             "monitor_id": loop.id,
             "monitor": _redact_monitor_value(monitor_state_public_dict(monitor)),
+            "autonudge_loop": None,
         }
     )
 

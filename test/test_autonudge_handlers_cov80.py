@@ -913,3 +913,80 @@ async def test_delete_of_an_unknown_loop_is_audited_as_a_noop(
     kwargs = sel_mock.log_tool_invocation.call_args.kwargs
     assert kwargs["outcome"] == "noop"
     assert kwargs["session_key"] == ""
+
+
+# --- #9194: an armed auto-nudge loop must read as armed, distinct from none ---
+
+
+def _authed_session_monitor_request() -> web.Request:
+    return _mk(
+        "GET",
+        "/api/autonudge/session-monitor",
+        headers={"X-Session-Key": "dashboard:chat-1-111"},
+        internal_auth=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_monitor_read_reports_no_loop_as_not_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session with NOTHING armed reads as not armed.
+
+    This is the negative case #9194 turns on: a loop that did not arm must be
+    distinguishable from one that did. Here no loop exists at all.
+    """
+    _svc(monkeypatch, _FakeSvc([]))
+
+    payload = _body(await h.api_session_monitor_get(_authed_session_monitor_request()))
+
+    assert payload["monitor"] is None
+    assert payload["autonudge_loop"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_monitor_read_reports_armed_autonudge_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain auto-nudge loop reads as armed via ``autonudge_loop``.
+
+    Previously this collapsed to ``monitor: None`` — identical to the no-loop
+    case above — which is the observability gap the issue reports.
+    """
+    loop = _loop(slot_key="chat-1-111")
+    loop.cycle_count = 4
+    loop.last_fire_ts = 123.0
+    loop.message = "keep driving PR 42"  # agent-controlled: must NOT be echoed
+    _svc(monkeypatch, _FakeSvc([loop]))
+
+    payload = _body(await h.api_session_monitor_get(_authed_session_monitor_request()))
+
+    # The structured monitor genuinely does not exist, so that stays None...
+    assert payload["monitor"] is None
+    # ...but the auto-nudge loop is now readable, and the reading is distinct
+    # from the no-loop case (a dict, not None).
+    reading = payload["autonudge_loop"]
+    assert reading is not None
+    assert reading["id"] == loop.id
+    assert reading["active"] is True
+    assert reading["idle_secs"] == 300
+    assert reading["cycle_count"] == 4
+    assert reading["last_fire_ts"] == 123.0
+    # The free-text instruction is not surfaced by this presence reading.
+    assert "message" not in reading
+    assert "keep driving PR 42" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_session_monitor_read_structured_monitor_carries_null_autonudge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A structured monitor keeps its authoritative reading; autonudge_loop null."""
+    loop = _monitor_loop(slot_key="chat-1-111")
+    _svc(monkeypatch, _FakeSvc([loop]))
+
+    payload = _body(await h.api_session_monitor_get(_authed_session_monitor_request()))
+
+    assert payload["monitor_id"] == loop.id
+    assert payload["monitor"]["target"] == "https://github.com/acme/widgets/pull/7"
+    assert payload["autonudge_loop"] is None
