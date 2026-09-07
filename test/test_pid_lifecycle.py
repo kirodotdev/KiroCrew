@@ -2993,3 +2993,93 @@ class TestBrowserSessionOwnerAlive:
         with patch.object(sp, "sys") as mock_sys:
             mock_sys.platform = "darwin"
             assert sp._browser_session_owner_alive(900, b"kc-1a2b3c4d") is True
+
+
+class TestAcquiringAPidLockDoesNotTruncateTheLockFile:
+    """A lock file must be opened WRITABLE but never TRUNCATING.
+
+    ``msvcrt.locking`` needs a writable handle, so the fd cannot be opened
+    ``"r"``. But ``"w"`` truncates at open, and on Windows a truncating open of a
+    lock file whose first byte another holder already locked raises a sharing
+    violation instead of waiting — so the contending acquirer crashes with a bare
+    ``OSError`` *before* it reaches ``file_lock``, and the serialisation the lock
+    exists to provide never happens. POSIX ``flock`` tolerates the truncate, which
+    is why the defect is invisible on Linux and reddened only the Windows shards.
+
+    Issue #9248; same defect and same fix as ``work_ledger._open_lock`` (PR #9237)
+    and ``dashboard/handlers/mcp.py``'s ``_McpFileLock``, which was already
+    written this way.
+
+    Truncation is the direct, PLATFORM-INDEPENDENT observable, and that is what
+    these assert: seed the lock file with bytes, take and release the lock, and
+    require the bytes to have survived. Under the old ``open(lock_path, "w")``
+    every one of these fails on every platform, so the guard does not depend on
+    running the suite on Windows to have teeth.
+    """
+
+    SEED = b"lock-file-content-that-must-survive"
+
+    def test_session_pid_file_lock_preserves_the_lock_file(self, session_pid_file: Path) -> None:
+        from kiro_crew.session_pid import _session_pid_file_lock, _session_pid_file_path
+
+        lock_path = _session_pid_file_path().with_suffix(".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_bytes(self.SEED)
+
+        with _session_pid_file_lock():
+            pass
+
+        assert lock_path.read_bytes() == self.SEED
+
+    def test_pid_file_lock_preserves_the_lock_file(self, pid_file: Path) -> None:
+        from kiro_crew.session_pid import _pid_file_lock, _pid_file_path
+
+        lock_path = _pid_file_path().with_suffix(".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_bytes(self.SEED)
+
+        with _pid_file_lock():
+            pass
+
+        assert lock_path.read_bytes() == self.SEED
+
+    def test_the_periodic_sweep_preserves_the_lock_file(self, session_pid_file: Path) -> None:
+        """The sweep is the site most likely to feel this in production.
+
+        It runs on a timer while ``_track_session_pid`` contends for the same
+        lock, which is exactly the interleaving a truncating open turns into a
+        crash rather than a wait.
+        """
+        from kiro_crew.session_pid import _periodic_pid_sweep, _session_pid_file_path
+
+        path = _session_pid_file_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # The sweep returns early unless the pid file exists, so it must exist
+        # for the lock to be reached at all.
+        path.write_text(f"{os.getpid()}:999999\n", encoding="utf-8")
+        lock_path = path.with_suffix(".lock")
+        lock_path.write_bytes(self.SEED)
+
+        _periodic_pid_sweep(os.getpid(), set())
+
+        assert lock_path.read_bytes() == self.SEED
+
+    def test_the_lock_is_still_actually_acquired(self, pid_file: Path) -> None:
+        """Guard the guard: a non-truncating open that never locks would pass above.
+
+        ``file_lock`` is asked for the lock through the same helper the production
+        path uses, so this fails if the fd stopped being writable — the failure
+        mode a naive ``"r"`` fix would introduce, and the reason ``"r+"`` rather
+        than ``"r"`` is the answer.
+        """
+        from kiro_crew.session_pid import _pid_file_path
+
+        lock_path = _pid_file_path().with_suffix(".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_bytes(self.SEED)
+
+        lock_path.touch(exist_ok=True)
+        with open(lock_path, "r+") as fd:
+            with platform_compat.file_lock(fd.fileno(), exclusive=True):
+                pass
+        assert lock_path.read_bytes() == self.SEED
